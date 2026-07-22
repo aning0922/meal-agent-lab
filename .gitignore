@@ -1,0 +1,47 @@
+# Operating systems and editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# JavaScript and cross-platform builds
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+.cache/
+unpackage/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Logs, local databases and generated artifacts
+*.log
+*.sqlite
+*.sqlite3
+tmp/
+artifacts/
+
+# Platform tooling
+DerivedData/
+.gradle/
+local.properties
+
+# Local data imports
+data/raw/*
+!data/raw/.gitkeep
