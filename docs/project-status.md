@@ -4,11 +4,11 @@
 
 ## 当前阶段
 
-阶段 05“后端架构与共享契约定稿”已完成。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略已经由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受。
+阶段 06“最小服务端纵切”已完成。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
 
-[`@meal-agent/contracts`](../packages/contracts/) 0.1.0 已成为客户端、未来服务端和测试的共享契约事实源。当前仍没有完整业务服务或正式 App；下一阶段是严格受限的阶段 06 最小服务端纵切。
+[`@meal-agent/contracts`](../packages/contracts/) 0.1.0 是客户端、服务端、测试和 OpenAPI 的共享契约事实源。当前已有登录、session、家庭和库存一致性最小服务，但仍没有菜单推荐、Agent、采购/完整做饭流程或正式 App；下一阶段产品范围尚未决定。
 
-阶段 04 的微信测试号真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；相机、语音、条码、OCR 和外部通知保持原阶段 `Not applicable`。本阶段没有把任何 Deferred 项写为 Pass。
+阶段 04 的微信测试号真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；生产云、托管数据库、Secret 管理和可观测平台也未在本阶段验证。相机、语音、条码、OCR 和外部通知保持原阶段 `Not applicable`。deterministic fake WeChat adapter 没有被当作真实微信链 Pass。
 
 ## 已形成的共识
 
@@ -70,28 +70,62 @@
 - 74/74 个本地 Markdown 链接可解析，18/18 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
 - 提交范围扫描未发现密钥签名、非空 Secret、真实邮箱/手机号或真实用户夹具；`.env.example` 只有空值/假适配器配置。依赖目录、构建目录、日志和 TypeScript 增量缓存均被忽略，没有生成物进入阶段 05 提交。
 
+## 阶段 06 完成
+
+### 工程与契约
+
+- 建立 Node.js 24/Fastify 5 的 `services/api`，配置、request ID、日志脱敏、统一错误映射和 graceful shutdown 已接入。
+- 建立 deterministic fake WeChat adapter 和真实 code2Session adapter port；真实 adapter 只有凭据校验、调用和安全错误边界，没有虚假真实链验证。
+- 所有业务 request/response 复用 `@meal-agent/contracts`；阶段 06 HTTP envelope 也在共享包组合，OpenAPI 从同一批 Zod schema 和路由生成。
+- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。
+
+### 数据库与隔离
+
+- PostgreSQL 18 空库 migration 建立 `users`、`auth_identities`、`sessions`、`households`、`memberships`、`person_profiles`、`inventory_lots`、`inventory_events`、`idempotency_records` 九张业务表。
+- migration owner 与无 `BYPASSRLS` 应用角色分离；六张家庭/幂等表启用并强制 `FORCE ROW LEVEL SECURITY`。
+- PersonProfile→Membership、InventoryLot→Membership、InventoryEvent→Lot/Membership/Event 和 Idempotency→Membership 使用家庭复合外键。
+- creator、只设置 `app.user_id` 的 user-list、以及先 bootstrap active Membership 的 household-resource 三类事务顺序已实现；`app.user_id` / `app.household_id` 只用 transaction-local 设置。
+- 故意漏写 household filter 的查询仍被 RLS 限制；连接复用验证事务结束后 user/household context 和 local role 均不残留。
+
+### 会话、幂等与库存
+
+- fake code 首次创建、再次恢复同一 User；opaque token 只在签发响应出现，数据库只存 SHA-256 digest。
+- disabled User、绝对/不活跃过期、撤销 session 和成员移除都会在下一请求即时失效；Session、AuthIdentity、User 复合关系阻止错配。
+- 创建家庭使用 user-scope 幂等，家庭库存 command 使用 household-scope 幂等；相同 key/body 顺序或并发重放第一次结果，不重复创建家庭、批次或事件；key/body 冲突返回 409。
+- exact-only consumed 生成同单位 exact 负 delta，满足 `after = before + delta` 且 `after >= 0`；0 进入 `depleted`，非 0 保持 `active`。
+- 不同 key/相同 expectedVersion 的并发 consumed 只有一个成功；相同 key/body 的并发 consumed 只执行一次并重放；负库存不写事件或投影。
+
+### 门禁证据
+
+- `@meal-agent/contracts` 类型检查、11 个运行时测试和 declaration/JavaScript 构建通过。
+- `services/api` 类型检查、5 个单元测试、3 个 HTTP integration、14 个 PostgreSQL integration、空库 migration、OpenAPI 一致性检查和构建通过。
+- PostgreSQL integration 使用实际 18.4 一次性空 cluster，不用 SQLite、mock 数据库或 fake migration 结果代替。
+- 两个 User、两个 Household 的正向访问、家庭列表交叉隔离和资源交叉 404 均通过。
+- 应用日志 sentinel 扫描未发现 login code、token、provider subject、UnionID、AppSecret 或成员私密约束。
+- 详细环境、命令和 Deferred 条件见[阶段 06 实施记录](plans/2026-07-stage-06-backend-vertical-slice.md)。
+
 ## 当前验证状态
 
 ### Pass
 
 - 阶段 04 已有的小程序构建、开发者工具模拟器、Mock 登录/存储/网络与适配层测试；
 - 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建；
-- 阶段 05 收尾的一致性、重复核心类型、提交范围、文档链接和静态检查。
+- 阶段 05 收尾的一致性、重复核心类型、提交范围、文档链接和静态检查；
+- 阶段 06 Node/Fastify/Drizzle/`pg` 服务、PostgreSQL 18 migration、三类 RLS bootstrap、会话、幂等、库存并发与 OpenAPI 门禁。
 
 ### 依赖审计
 
 - 正式 Stage 05 根工作区/contracts 的 `pnpm audit --prod` 为 0 个已知漏洞。
+- 阶段 06 根工作区、contracts 和正式 `services/api` 的 `pnpm audit --prod` 为 0 个已知漏洞。
 - 一次性阶段 04 Taro spike 的独立依赖树命中 12 个通告（1 critical、9 moderate、2 low），来自 Taro 4.2.1 固定的 swiper/esbuild/webpack/webpack-dev-server/uuid 范围。
 - 低保真原型的独立依赖树命中 11 个通告（5 high、6 moderate），来自 Next/PostCSS/Sharp 范围。
 - 两个应用都不是正式 App 或 Stage 05 运行时，不得部署或复用到正式工程。消除通告需要升级并重新验证对应实验技术栈，不能用跨不兼容版本的 override 伪装为已修复。
 
 ### 待验证
 
-- Node.js 24 + Fastify 5 + Drizzle + PostgreSQL 18 的实际服务纵切；
-- session 过期/撤销、RLS 连接上下文、复合外键和字段级 redaction；
-- 幂等事务、并发相同 key、库存 version conflict 和负库存；
-- contract → Fastify → OpenAPI 的单一事实源；
-- staging/production 的具体云平台、备份恢复、migration 和可观测性。
+- staging/production 的具体云平台、连接池边界、备份恢复、migration job、Secret 管理和可观测性；
+- 内测负载下的连接池容量、超时、限流和慢查询阈值；
+- 后续产品阶段是否扩展菜单、Agent、采购或完整做饭流程，尚未决定。
 
 ### Deferred — 外部依赖
 
@@ -101,7 +135,7 @@
 - Android、iOS、HarmonyOS 工具链、构建、实机、签名和发布；
 - 生产云账号、域名、证书和托管数据库。
 
-## 阶段 06 最小服务端纵切
+## 阶段 06 范围边界
 
 只实施：
 
@@ -111,8 +145,8 @@
     → 追加一个 exact-only 最小 consumed 事件
 ```
 
-阶段 06 必须建立 `services/api`、九张最小表、健康检查、微信 fake/real adapter 端口、session、家庭创建/列表、库存批次创建/列表和 exact-only 单批次 consumed command，并验证两层 context、三类 RLS bootstrap、用户级/家庭级幂等、两个用户/两个家庭隔离、estimated 请求拒绝、负库存、并发、会话撤销与日志脱敏。
+以上纵切已经实现并通过本地自动门禁。它只证明最小服务端架构、身份、租户和库存一致性边界可运行，不代表完整 MVP、正式 App 或生产部署已经完成。
 
 完整 endpoint、migration、测试门禁和明确非范围见[阶段 05 报告第 10 节](architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
 
-阶段 06 不实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署；最小 consumed command 不关联 Meal、不接受 estimated 数量。真实微信条件不具备时继续标记 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。
+本阶段没有实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署；最小 consumed command 不关联 Meal、不接受 estimated 数量。真实微信条件仍为 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。

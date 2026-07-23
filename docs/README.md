@@ -11,6 +11,7 @@
 - [产品开放决策](product/open-decisions.md)
 - [当前状态](project-status.md)
 - [阶段计划与实施记录](plans/README.md)
+- [阶段 06 最小服务端纵切实施记录](plans/2026-07-stage-06-backend-vertical-slice.md)
 
 ## 设计与架构
 
@@ -19,6 +20,7 @@
 - [阶段 05：后端架构与共享契约定稿](architecture/backend-architecture-and-contracts.md)
 - [架构决策记录](architecture/decisions/README.md)
 - [领域数据模型](domain/data-model.md)
+- [阶段 06 API 工程](../services/api/README.md)
 - [Agent 设计](agent/agent-design.md)
 - [产品与交互设计资料](design/README.md)
 - [App 信息架构](design/information-architecture.md)

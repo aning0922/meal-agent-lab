@@ -18,6 +18,7 @@
 - `InventoryLot.dates` 同一类型最多一项；创建输入最多四项，完整 lot 快照最多九项。
 - `meta.idempotency.scope` 区分创建家庭等用户级 command 与家庭内 command；`pageInfo.hasMore` 与 `nextCursor` 必须一致。
 - `AuthIdentity.providerSubject` 仅供服务端身份映射，不代表它可以出现在面向客户端的响应中。
+- `http.ts` 组合阶段 06 的健康、登录、会话、`me`、家庭和库存 HTTP envelope；服务端路由和 OpenAPI 直接引用这些 schema，不维护第二份 DTO。
 
 ## 命令
 

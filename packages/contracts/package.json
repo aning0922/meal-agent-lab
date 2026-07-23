@@ -24,6 +24,10 @@
       "types": "./dist/identity.d.ts",
       "import": "./dist/identity.js"
     },
+    "./http": {
+      "types": "./dist/http.d.ts",
+      "import": "./dist/http.js"
+    },
     "./inventory": {
       "types": "./dist/inventory.d.ts",
       "import": "./dist/inventory.js"

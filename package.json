@@ -8,9 +8,9 @@
   },
   "packageManager": "pnpm@11.9.0",
   "scripts": {
-    "build": "pnpm --filter @meal-agent/contracts build",
-    "check": "pnpm --filter @meal-agent/contracts check",
-    "test": "pnpm --filter @meal-agent/contracts test",
-    "typecheck": "pnpm --filter @meal-agent/contracts typecheck"
+    "build": "pnpm --filter @meal-agent/contracts build && pnpm --filter @meal-agent/api build",
+    "check": "pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check",
+    "test": "pnpm --filter @meal-agent/contracts test && pnpm --filter @meal-agent/api test",
+    "typecheck": "pnpm --filter @meal-agent/contracts typecheck && pnpm --filter @meal-agent/api typecheck"
   }
 }
