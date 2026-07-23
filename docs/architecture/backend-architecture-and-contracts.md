@@ -284,7 +284,16 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 
 event kind 不匹配、数值或单位不同都会使 `createInventoryLotResultSchema` 失败。`quantityDeltaSchema` 以 precision 判别：estimated 必须带 confidence 和 originalText，exact 禁止 confidence。
 
-`consumeInventoryLotResultSchema` 只接受 `lot.currentQuantity.kind = exact`，event 必须是单位与 lot 相同、`precision = exact`、`source = manual_confirmation` 的 numeric consumed event。扣减后 exact 0 与 depleted 状态是合法成功结果。响应没有前一版本数量，因而不在 schema 中猜测减法；“前一快照 − delta = 当前投影”和负库存阻断留给阶段 06 同事务数据库集成测试。
+`consumeInventoryLotResultSchema` 只接受 `lot.currentQuantity.kind = exact`，event 必须是单位与 lot 相同、`precision = exact`、`source = manual_confirmation` 的 numeric consumed event。响应自身没有 request 和前一版本数量，因而数量运算留给阶段 06 同事务数据库集成测试，并按以下公式验证：
+
+```text
+event.quantityChange.amount === -request.consumedQuantity.amount
+after.amount === before.amount + event.quantityChange.amount
+等价于：
+after.amount === before.amount - request.consumedQuantity.amount
+```
+
+request、event、before lot 和 after lot 的单位必须一致，且 `after.amount >= 0`。`after.amount === 0` 时 `state = depleted`，否则 `state = active`。
 
 日期使用独立 `kind` 和来源：
 
@@ -406,11 +415,12 @@ contract 设计规则：
 5. 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问通过，四种交叉访问均被拒绝。
 6. 家庭资源先 bootstrap Membership 再构造 `HouseholdContext`；故意漏写 household filter 时 RLS 仍阻止跨家庭读取。
 7. 相同 household-scope key/body 只创建一个 lot 和一个 `acquired` event，重放原响应；初始 expected/result/lot version 固定为 `0/1/1`。
-8. consumed command 只接受 exact 请求，并用小于等于现有精确数量的正数生成 exact 负 delta；成功响应返回 exact lot、同单位且为 `manual_confirmation` 来源的 event，允许 exact 0/depleted。approximate/estimated 请求在契约边界被拒绝；数据库集成测试证明前一快照减去 delta 等于当前投影，超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
-9. 两个相同 expectedVersion 的并发 consumed command 只有一个成功，另一个返回 `409 INVENTORY_VERSION_CONFLICT`；相同幂等请求只追加一次。
-10. session 过期、撤销和成员移除立即失效。
-11. contract、类型检查、单元、HTTP integration 和数据库 integration 全部通过。
-12. 日志扫描不含 login code、token、openid、unionid、AppSecret、成员敏感约束。
+8. consumed command 只接受 exact 请求并生成 exact 负 delta；成功响应返回 exact lot、同单位且为 `manual_confirmation` 来源的 event。数据库集成测试验证 `event.quantityChange.amount === -request.consumedQuantity.amount`，以及 `after.amount === before.amount + event.quantityChange.amount`，等价于 `after.amount === before.amount - request.consumedQuantity.amount`。request、event、before/after lot 单位必须一致且 `after.amount >= 0`；`after.amount === 0` 时 `state = depleted`，否则 `state = active`。approximate/estimated 请求在契约边界被拒绝；超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
+9. 使用不同幂等 key、但携带相同 expectedVersion 的并发 consumed command 只有一个成功，另一个返回 `409 INVENTORY_VERSION_CONFLICT`。
+10. 使用相同幂等 key/body 的并发 consumed command 只执行一次，其他请求重放相同成功结果，不重复追加事件。
+11. session 过期、撤销和成员移除立即失效。
+12. contract、类型检查、单元、HTTP integration 和数据库 integration 全部通过。
+13. 日志扫描不含 login code、token、openid、unionid、AppSecret、成员敏感约束。
 
 ### 10.2 明确不做
 
