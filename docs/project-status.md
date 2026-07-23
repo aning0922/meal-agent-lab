@@ -21,8 +21,9 @@
 - PostgreSQL 18 是唯一事务事实库，不引入向量数据库、Redis 或第二事实库。
 - 微信 `openid` 映射到 `AuthIdentity`，不能作为内部 `User.id`。
 - `User`、`Session`、`Membership` 和 `PersonProfile` 生命周期分离；无登录档案不需要 User。
+- `AuthenticatedUserContext` 与 `HouseholdContext` 分离；后者只能在事务内通过 active Membership bootstrap。
 - 家庭隔离同时依赖应用授权、复合外键、RLS 和敏感字段 redaction。
-- 写 command 使用幂等 key，库存并发使用 expected version；纠错追加事件。
+- 创建家庭使用用户级幂等，家庭内 command 使用家庭级幂等；库存并发使用 expected version，纠错追加事件。
 - 客户端与服务端共享 `packages/contracts`，不重复定义核心 DTO。
 - 一级入口采用“今天、库存、采购、我的”，Agent 作为上下文入口而非独立 Tab。
 - P0 采用手动搜索、最近项、常用模板和文本录入；语音、条码及 OCR 放入 P1。
@@ -44,28 +45,29 @@
 
 - 确定 `AuthIdentity → User → Session/Membership → PersonProfile` 映射。
 - 选择高熵 opaque bearer session，数据库只存 digest；不使用 JWT 固化家庭权限。
+- 拆分已认证用户与家庭上下文，固定家庭创建、家庭列表和家庭资源三类 RLS bootstrap/事务顺序。
 - Household 路由显式带 household ID；跨家庭资源返回 404，家庭内权限不足返回 403。
 - 定义 REST `/api/v1`、成功 envelope、RFC 9457 风格错误、stable error code、cursor pagination 和版本策略。
-- 定义幂等作用域、request hash、结果重放、key/body 冲突和 30 天通用记录保留。
+- 定义用户级/家庭级幂等作用域、创建家庭重放、request hash、key/body 冲突和 30 天通用记录保留。
 - 定义 InventoryEvent 追加、numeric/qualitative quantity change、乐观版本和负库存阻断。
 
 ### 共享契约
 
-- 覆盖 User、AuthIdentity、Session、Household、Membership、PersonProfile 和 DietaryConstraint。
-- 覆盖 InventoryLot、InventoryEvent、日期来源、置信度、数量与创建批次请求/结果。
+- 覆盖 User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint 和创建家庭关联结果。
+- 覆盖 InventoryLot、InventoryEvent、日期来源、置信度、数量、创建批次和最小 consumed command 请求/结果。
 - 覆盖 Meal、Recipe、Recommendation 和必须通过 hard constraint check 的候选。
 - 覆盖 ShoppingItem 的待购买、已买待入库、已入库和取消状态。
 - 覆盖 ApiResult、ApiError、Pagination、Idempotency 和 ExpectedVersion。
-- schema 默认 strict；实体 ID 使用 UUIDv7 运行时校验和 nominal brand；类型全部从 Zod schema 推导。
-- 类型检查、8 个运行时测试和 declaration/JavaScript 构建通过。
+- schema 默认 strict；实体 ID 使用 UUIDv7 运行时校验和 nominal brand；API 泛型与类型全部从 Zod schema 推导。
+- 类型检查、10 个运行时测试和 declaration/JavaScript 构建通过。
 
 ### 收尾验收
 
 - ADR-0001/0002/0003、系统概览、领域模型、阶段 05 报告和共享 contract 已逐项核对；客户端边界、运行时、数据层、身份映射、家庭隔离、错误码/status、幂等作用域和库存事件规则一致。
 - `apps/`、`services/` 和 `packages/` 中不存在第二份同名核心 DTO。低保真原型的局部采购展示类型已明确命名为 `PrototypeShoppingItem`；阶段 04 spike 只保留 `SpikeDraft`、`SpikeApiResult`、`MockAuthSession` 等一次性平台验证类型。`services/` 尚无正式业务实现。
-- contract 额外固定实体 UUIDv7、session 撤销/时间、食品安全阻断原因、库存状态/数量、移动/冻结/解冻、追加纠错、推荐预选与采购状态不变量，并增加回归断言。
-- 根工作区 contracts 检查通过：TypeScript、8/8 运行时测试和 declaration/JavaScript 构建；阶段 04 客户端 spike 检查通过：TypeScript、5/5 测试和微信小程序构建；低保真原型通过 TypeScript、2/2 渲染测试、构建和 ESLint。
-- 74/74 个本地 Markdown 链接可解析，14/14 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
+- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、日期上限/类型唯一、批次创建结果关联与初始版本、库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量，并增加反例断言。
+- 根工作区 contracts 检查通过：TypeScript、10/10 运行时测试和 declaration/JavaScript 构建；阶段 04 客户端 spike 检查通过：TypeScript、5/5 测试和微信小程序构建；低保真原型通过 TypeScript、2/2 渲染测试、构建和 ESLint。
+- 74/74 个本地 Markdown 链接可解析，17/17 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
 - 提交范围扫描未发现密钥签名、非空 Secret、真实邮箱/手机号或真实用户夹具；`.env.example` 只有空值/假适配器配置。依赖目录、构建目录、日志和 TypeScript 增量缓存均被忽略，没有生成物进入阶段 05 提交。
 
 ## 当前验证状态
@@ -99,10 +101,11 @@
 ```text
 登录 → 创建/读取家庭 → 手工新增一个库存批次
     → 相同幂等请求重放同一结果
+    → 追加一个最小 consumed 事件
 ```
 
-阶段 06 必须建立 `services/api`、九张最小表、健康检查、微信 fake/real adapter 端口、session、家庭创建/列表和库存批次创建/列表，并验证两个用户/两个家庭隔离、RLS、幂等、并发、会话撤销与日志脱敏。
+阶段 06 必须建立 `services/api`、九张最小表、健康检查、微信 fake/real adapter 端口、session、家庭创建/列表、库存批次创建/列表和单批次 consumed command，并验证两层 context、三类 RLS bootstrap、用户级/家庭级幂等、两个用户/两个家庭隔离、负库存、并发、会话撤销与日志脱敏。
 
 完整 endpoint、migration、测试门禁和明确非范围见[阶段 05 报告第 10 节](architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
 
-阶段 06 不实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署。真实微信条件不具备时继续标记 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。
+阶段 06 不实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署；最小 consumed command 不关联 Meal。真实微信条件不具备时继续标记 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。

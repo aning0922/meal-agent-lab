@@ -81,8 +81,12 @@ export type IdempotencyKey = z.infer<typeof idempotencyKeySchema>;
 
 export const idempotencyHeaderName = "Idempotency-Key" as const;
 
+export const idempotencyScopeSchema = z.enum(["user", "household"]);
+export type IdempotencyScope = z.infer<typeof idempotencyScopeSchema>;
+
 export const idempotencyMetadataSchema = z.strictObject({
   key: idempotencyKeySchema,
+  scope: idempotencyScopeSchema,
   replayed: z.boolean(),
   firstProcessedAt: utcDateTimeSchema,
   originalRequestId: requestIdSchema,
@@ -110,13 +114,13 @@ export const createApiResultSchema = <T extends z.ZodType>(
   dataSchema: T,
 ) => z.union([createApiSuccessSchema(dataSchema), apiErrorSchema]);
 
-export type ApiSuccess<T> = {
-  ok: true;
-  data: T;
-  meta: ApiMeta;
-};
+export type ApiSuccess<T> = z.output<
+  ReturnType<typeof createApiSuccessSchema<z.ZodType<T>>>
+>;
 
-export type ApiResult<T> = ApiSuccess<T> | ApiError;
+export type ApiResult<T> = z.output<
+  ReturnType<typeof createApiResultSchema<z.ZodType<T>>>
+>;
 
 export const cursorSchema = z
   .string()
@@ -126,10 +130,20 @@ export const cursorSchema = z
   .brand<"Cursor">();
 export type Cursor = z.infer<typeof cursorSchema>;
 
-export const pageInfoSchema = z.strictObject({
-  nextCursor: cursorSchema.nullable(),
-  hasMore: z.boolean(),
-});
+export const pageInfoSchema = z
+  .strictObject({
+    nextCursor: cursorSchema.nullable(),
+    hasMore: z.boolean(),
+  })
+  .superRefine((pageInfo, context) => {
+    if (pageInfo.hasMore !== (pageInfo.nextCursor !== null)) {
+      context.addIssue({
+        code: "custom",
+        path: ["nextCursor"],
+        message: "nextCursor must be present if and only if hasMore is true",
+      });
+    }
+  });
 export type PageInfo = z.infer<typeof pageInfoSchema>;
 
 export const createPaginatedDataSchema = <T extends z.ZodType>(
@@ -140,10 +154,9 @@ export const createPaginatedDataSchema = <T extends z.ZodType>(
     pageInfo: pageInfoSchema,
   });
 
-export type PaginatedData<T> = {
-  items: T[];
-  pageInfo: PageInfo;
-};
+export type PaginatedData<T> = z.output<
+  ReturnType<typeof createPaginatedDataSchema<z.ZodType<T>>>
+>;
 
 export const expectedVersionSchema = z.strictObject({
   expectedVersion: z.int().nonnegative(),

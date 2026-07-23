@@ -23,6 +23,24 @@ export const storageLocationSchema = z.enum([
 ]);
 export type StorageLocation = z.infer<typeof storageLocationSchema>;
 
+const addDuplicateDateKindIssues = (
+  dates: readonly { kind: string }[],
+  context: z.RefinementCtx,
+) => {
+  const seenKinds = new Set<string>();
+
+  dates.forEach((date, index) => {
+    if (seenKinds.has(date.kind)) {
+      context.addIssue({
+        code: "custom",
+        path: [index, "kind"],
+        message: `date kind ${date.kind} must be unique within a lot`,
+      });
+    }
+    seenKinds.add(date.kind);
+  });
+};
+
 export const inventoryLotSchema = z
   .strictObject({
     id: inventoryLotIdSchema,
@@ -32,7 +50,10 @@ export const inventoryLotSchema = z
     state: z.enum(["active", "depleted", "discarded"]),
     storageLocation: storageLocationSchema,
     currentQuantity: quantitySchema,
-    dates: z.array(foodDateSchema),
+    dates: z
+      .array(foodDateSchema)
+      .max(9)
+      .superRefine(addDuplicateDateKindIssues),
     safetyAssessment: z.strictObject({
       status: z.enum(["eligible", "blocked", "unknown"]),
       reasonCodes: z.array(z.string().min(1).max(80)),
@@ -123,7 +144,10 @@ export const createInventoryLotRequestSchema = z.strictObject({
   displayName: z.string().min(1).max(120),
   storageLocation: storageLocationSchema,
   initialQuantity: nonEmptyQuantitySchema,
-  dates: z.array(createInventoryLotDateInputSchema),
+  dates: z
+    .array(createInventoryLotDateInputSchema)
+    .max(4)
+    .superRefine(addDuplicateDateKindIssues),
 });
 export type CreateInventoryLotRequest = z.infer<
   typeof createInventoryLotRequestSchema
@@ -398,10 +422,129 @@ export const inventoryEventSchema = z
   });
 export type InventoryEvent = z.infer<typeof inventoryEventSchema>;
 
-export const createInventoryLotResultSchema = z.strictObject({
-  lot: inventoryLotSchema,
-  event: inventoryEventSchema,
-});
+const addLotEventConsistencyIssues = (
+  result: { lot: InventoryLot; event: InventoryEvent },
+  context: z.RefinementCtx,
+) => {
+  if (result.lot.householdId !== result.event.householdId) {
+    context.addIssue({
+      code: "custom",
+      path: ["event", "householdId"],
+      message: "lot and event must belong to the same household",
+    });
+  }
+
+  if (result.lot.id !== result.event.inventoryLotId) {
+    context.addIssue({
+      code: "custom",
+      path: ["event", "inventoryLotId"],
+      message: "event must belong to the returned inventory lot",
+    });
+  }
+
+  if (result.lot.version !== result.event.resultingLotVersion) {
+    context.addIssue({
+      code: "custom",
+      path: ["lot", "version"],
+      message: "lot version must equal the event resulting version",
+    });
+  }
+};
+
+export const createInventoryLotResultSchema = z
+  .strictObject({
+    lot: inventoryLotSchema,
+    event: inventoryEventSchema,
+  })
+  .superRefine((result, context) => {
+    addLotEventConsistencyIssues(result, context);
+
+    if (result.lot.origin !== "manual" || result.lot.state !== "active") {
+      context.addIssue({
+        code: "custom",
+        path: ["lot"],
+        message: "a manually created lot must start active with manual origin",
+      });
+    }
+
+    if (
+      result.event.type !== "acquired" ||
+      result.event.source !== "manual_confirmation"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "type"],
+        message:
+          "a manually created lot requires an acquired manual-confirmation event",
+      });
+    }
+
+    if (
+      result.event.expectedLotVersion !== 0 ||
+      result.event.resultingLotVersion !== 1 ||
+      result.lot.version !== 1
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["lot", "version"],
+        message:
+          "a new lot uses expected version 0 and atomically publishes event and projection version 1",
+      });
+    }
+
+    if (result.lot.createdByUserId !== result.event.actorUserId) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "actorUserId"],
+        message: "initial event actor must be the lot creator",
+      });
+    }
+  });
 export type CreateInventoryLotResult = z.infer<
   typeof createInventoryLotResultSchema
+>;
+
+export const consumeInventoryLotRequestSchema = z.strictObject({
+  consumedQuantity: z.strictObject({
+    amount: z.number().finite().positive(),
+    unit: z.string().min(1).max(32),
+    precision: z.enum(["exact", "estimated"]),
+    originalText: z.string().min(1).max(200).optional(),
+  }),
+  expectedVersion: versionSchema,
+  note: z.string().max(500).optional(),
+});
+export type ConsumeInventoryLotRequest = z.infer<
+  typeof consumeInventoryLotRequestSchema
+>;
+
+export const consumeInventoryLotResultSchema = z
+  .strictObject({
+    lot: inventoryLotSchema,
+    event: inventoryEventSchema,
+  })
+  .superRefine((result, context) => {
+    addLotEventConsistencyIssues(result, context);
+
+    if (
+      result.event.type !== "consumed" ||
+      result.event.quantityChange?.kind !== "numeric"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "type"],
+        message: "consume command requires a numeric consumed event",
+      });
+    }
+
+    if (result.lot.state === "discarded") {
+      context.addIssue({
+        code: "custom",
+        path: ["lot", "state"],
+        message: "a consumed event cannot produce a discarded lot",
+      });
+    }
+  });
+export type ConsumeInventoryLotResult = z.infer<
+  typeof consumeInventoryLotResultSchema
 >;

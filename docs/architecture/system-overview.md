@@ -53,11 +53,12 @@ apps/*                  客户端与运营界面
 ## 核心数据与安全原则
 
 - `AuthIdentity → User → Session/Membership → PersonProfile` 分层；微信 `openid` 不是内部 User ID。
+- 已认证但未绑定家庭的路由使用 `AuthenticatedUserContext`；家庭资源只能在事务内通过 active Membership bootstrap 为 `HouseholdContext`。
 - Household 是数据隔离边界，每个家庭资源同时使用应用授权、`household_id`、复合外键和 PostgreSQL RLS。
 - 成员私有饮食约束另做字段级 response redaction，不能只依赖家庭 RLS。
 - InventoryLot 是批次与当前投影，InventoryEvent 是不可变库存事实；纠错追加事件。
 - 日期保留类型、来源、置信度和规则版本；购买日期不能替代生产日期。
-- 幂等记录、领域写入、库存事件和投影在同一事务提交。
+- 创建家庭使用用户级幂等，家庭资源使用家庭级幂等；幂等记录、领域写入、库存事件和投影在同一事务提交。
 - 过敏、权限、食品安全和库存一致性由确定性规则、应用服务和数据库约束执行。
 
 ## 环境
@@ -72,7 +73,7 @@ local、test、staging 和 production 使用独立数据库、Secret、微信配
 
 - 阶段 04：Taro 4.2.1 微信小程序构建、开发者工具模拟器页面/导航、本地写入和本机 Mock API；
 - 阶段 04：`AuthPort`、`StoragePort`、`NetworkPort` 自动测试与 Mock 登录；
-- 阶段 05：`@meal-agent/contracts` 类型检查、8 个运行时契约测试和声明/JavaScript 构建；
+- 阶段 05：`@meal-agent/contracts` 类型检查、10 个运行时契约测试和声明/JavaScript 构建；
 - 阶段 05：User、Household、Membership、PersonProfile、InventoryLot/Event、Meal/Recipe/Recommendation、ShoppingItem 和通用 API 契约已形成同一事实源。
 
 ### 待验证
@@ -93,4 +94,4 @@ local、test、staging 和 production 使用独立数据库、Secret、微信配
 
 ## 下一纵切
 
-阶段 06 只实施：登录 → 创建/读取家庭 → 手工新增一个库存批次 → 相同幂等请求返回同一结果。明确 endpoint、migration、测试门禁和非范围见[阶段 06 最小服务端纵切](backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
+阶段 06 只实施：登录 → 创建/读取家庭 → 手工新增一个库存批次 → 相同幂等请求返回同一结果 → 追加一个最小 consumed 事件。最后一步只用于验证乐观锁与负库存阻断，不是完整做饭扣减流程。明确 endpoint、migration、测试门禁和非范围见[阶段 06 最小服务端纵切](backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。

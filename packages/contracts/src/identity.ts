@@ -89,11 +89,40 @@ export const sessionTokenSchema = z
   .brand<"SessionToken">();
 export type SessionToken = z.infer<typeof sessionTokenSchema>;
 
-export const authenticatedSessionSchema = z.strictObject({
-  accessToken: sessionTokenSchema,
-  session: sessionSchema,
-  user: userSchema,
-});
+export const authenticatedSessionSchema = z
+  .strictObject({
+    accessToken: sessionTokenSchema,
+    session: sessionSchema,
+    user: userSchema,
+  })
+  .superRefine((authenticatedSession, context) => {
+    if (authenticatedSession.user.status !== "active") {
+      context.addIssue({
+        code: "custom",
+        path: ["user", "status"],
+        message: "authenticated sessions require an active user",
+      });
+    }
+
+    if (authenticatedSession.session.status !== "active") {
+      context.addIssue({
+        code: "custom",
+        path: ["session", "status"],
+        message: "authenticated sessions require an active session",
+      });
+    }
+
+    if (
+      authenticatedSession.session.userId !==
+      authenticatedSession.user.id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["session", "userId"],
+        message: "session user must match the authenticated user",
+      });
+    }
+  });
 export type AuthenticatedSession = z.infer<
   typeof authenticatedSessionSchema
 >;
@@ -226,3 +255,51 @@ export const personProfileSchema = z.strictObject({
   version: versionSchema,
 });
 export type PersonProfile = z.infer<typeof personProfileSchema>;
+
+export const createHouseholdResultSchema = z
+  .strictObject({
+    household: householdSchema,
+    membership: membershipSchema,
+    ownerProfile: personProfileSchema,
+  })
+  .superRefine((result, context) => {
+    if (
+      result.membership.householdId !== result.household.id ||
+      result.ownerProfile.householdId !== result.household.id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["membership", "householdId"],
+        message:
+          "created household, owner membership and owner profile must share a household",
+      });
+    }
+
+    if (
+      result.membership.userId !== result.household.createdByUserId ||
+      result.membership.role !== "owner" ||
+      result.membership.status !== "active"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["membership"],
+        message:
+          "created household requires an active owner membership for its creator",
+      });
+    }
+
+    if (
+      result.ownerProfile.linkedMembershipId !== result.membership.id ||
+      result.ownerProfile.status !== "active"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["ownerProfile", "linkedMembershipId"],
+        message:
+          "created owner profile must be active and linked to the owner membership",
+      });
+    }
+  });
+export type CreateHouseholdResult = z.infer<
+  typeof createHouseholdResultSchema
+>;

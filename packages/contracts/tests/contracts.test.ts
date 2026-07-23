@@ -3,11 +3,16 @@ import test from "node:test";
 
 import {
   apiErrorSchema,
+  authenticatedSessionSchema,
   authIdentitySchema,
-  createHouseholdRequestSchema,
-  createInventoryLotRequestSchema,
-  createApiSuccessSchema,
+  consumeInventoryLotRequestSchema,
+  consumeInventoryLotResultSchema,
   createApiResultSchema,
+  createApiSuccessSchema,
+  createHouseholdRequestSchema,
+  createHouseholdResultSchema,
+  createInventoryLotRequestSchema,
+  createInventoryLotResultSchema,
   createPaginatedDataSchema,
   dietaryConstraintSchema,
   householdSchema,
@@ -26,9 +31,11 @@ import {
 
 const ids = {
   user: "018f0000-0000-7000-8000-000000000001",
+  user2: "018f0000-0000-7000-8000-000000000017",
   identity: "018f0000-0000-7000-8000-000000000002",
   session: "018f0000-0000-7000-8000-000000000003",
   household: "018f0000-0000-7000-8000-000000000004",
+  household2: "018f0000-0000-7000-8000-000000000018",
   membership: "018f0000-0000-7000-8000-000000000005",
   profile: "018f0000-0000-7000-8000-000000000006",
   food: "018f0000-0000-7000-8000-000000000007",
@@ -44,6 +51,7 @@ const ids = {
 } as const;
 
 const now = "2026-07-23T12:00:00Z";
+const accessToken = "a".repeat(43);
 
 test("identity, household, membership and profile contracts compose without using provider identity as a user key", () => {
   const user = userSchema.parse({
@@ -128,6 +136,22 @@ test("identity, household, membership and profile contracts compose without usin
   assert.equal(session.userId, user.id);
   assert.equal(membership.householdId, profile.householdId);
   assert.equal(
+    createHouseholdResultSchema.safeParse({
+      household,
+      membership,
+      ownerProfile: profile,
+    }).success,
+    true,
+  );
+  assert.equal(
+    createHouseholdResultSchema.safeParse({
+      household,
+      membership,
+      ownerProfile: { ...profile, householdId: ids.household2 },
+    }).success,
+    false,
+  );
+  assert.equal(
     sessionSchema.safeParse({
       ...session,
       status: "revoked",
@@ -153,6 +177,58 @@ test("identity, household, membership and profile contracts compose without usin
         cookingSkill: "beginner",
       },
       createdByUserId: ids.user,
+    }).success,
+    false,
+  );
+});
+
+test("authenticated sessions require matching active session and user records", () => {
+  const user = {
+    id: ids.user,
+    status: "active",
+    locale: "zh-CN",
+    createdAt: now,
+    updatedAt: now,
+    version: 0,
+  } as const;
+  const session = {
+    id: ids.session,
+    userId: ids.user,
+    authIdentityId: ids.identity,
+    status: "active",
+    issuedAt: now,
+    expiresAt: "2026-08-22T12:00:00Z",
+    lastSeenAt: now,
+    tokenVersion: 1,
+  } as const;
+  const authenticatedSession = {
+    accessToken,
+    session,
+    user,
+  };
+
+  assert.equal(
+    authenticatedSessionSchema.safeParse(authenticatedSession).success,
+    true,
+  );
+  assert.equal(
+    authenticatedSessionSchema.safeParse({
+      ...authenticatedSession,
+      user: { ...user, status: "disabled" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    authenticatedSessionSchema.safeParse({
+      ...authenticatedSession,
+      session: { ...session, status: "expired" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    authenticatedSessionSchema.safeParse({
+      ...authenticatedSession,
+      session: { ...session, userId: ids.user2 },
     }).success,
     false,
   );
@@ -315,6 +391,34 @@ test("inventory lots preserve date provenance and events enforce append-only ver
   assert.equal(
     createInventoryLotRequestSchema.safeParse({
       ...createRequest,
+      dates: [createRequest.dates[0], createRequest.dates[0]],
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      dates: Array.from({ length: 5 }, () => createRequest.dates[0]),
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryLotSchema.safeParse({
+      ...lot,
+      dates: [...lot.dates, lot.dates[0]],
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryLotSchema.safeParse({
+      ...lot,
+      dates: Array.from({ length: 10 }, () => lot.dates[0]),
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
       dates: [
         {
           kind: "purchase_date",
@@ -415,6 +519,146 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     inventoryEventSchema.safeParse({
       ...event,
       resultingLotVersion: 4,
+    }).success,
+    false,
+  );
+});
+
+test("inventory create and consume results keep lot, event, household and versions aligned", () => {
+  const initialLot = {
+    id: ids.lot,
+    householdId: ids.household,
+    foodConceptId: ids.food,
+    displayName: "豆腐",
+    state: "active",
+    storageLocation: "refrigerated",
+    currentQuantity: {
+      kind: "exact",
+      amount: 2,
+      unit: "box",
+    },
+    dates: [],
+    safetyAssessment: {
+      status: "eligible",
+      reasonCodes: [],
+      policyVersion: "food-safety-1",
+      evaluatedAt: now,
+    },
+    origin: "manual",
+    createdByUserId: ids.user,
+    createdAt: now,
+    updatedAt: now,
+    version: 1,
+  } as const;
+  const initialEvent = {
+    id: ids.event,
+    householdId: ids.household,
+    inventoryLotId: ids.lot,
+    type: "acquired",
+    quantityChange: {
+      kind: "numeric",
+      amount: 2,
+      unit: "box",
+      precision: "exact",
+    },
+    actorUserId: ids.user,
+    source: "manual_confirmation",
+    occurredAt: now,
+    recordedAt: now,
+    idempotencyKey: "inventory-add:018f00000001",
+    expectedLotVersion: 0,
+    resultingLotVersion: 1,
+  } as const;
+  const created = { lot: initialLot, event: initialEvent };
+
+  assert.equal(createInventoryLotResultSchema.safeParse(created).success, true);
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      ...created,
+      event: { ...initialEvent, householdId: ids.household2 },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      ...created,
+      event: {
+        ...initialEvent,
+        inventoryLotId: "018f0000-0000-7000-8000-000000000019",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      lot: { ...initialLot, version: 2 },
+      event: {
+        ...initialEvent,
+        expectedLotVersion: 1,
+        resultingLotVersion: 2,
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      ...created,
+      event: { ...initialEvent, type: "produced" },
+    }).success,
+    false,
+  );
+
+  const consumeRequest = consumeInventoryLotRequestSchema.parse({
+    consumedQuantity: {
+      amount: 1,
+      unit: "box",
+      precision: "exact",
+    },
+    expectedVersion: 1,
+  });
+  const consumed = {
+    lot: {
+      ...initialLot,
+      currentQuantity: { kind: "exact", amount: 1, unit: "box" },
+      updatedAt: "2026-07-23T12:01:00Z",
+      version: 2,
+    },
+    event: {
+      ...initialEvent,
+      type: "consumed",
+      quantityChange: {
+        kind: "numeric",
+        amount: -consumeRequest.consumedQuantity.amount,
+        unit: consumeRequest.consumedQuantity.unit,
+        precision: consumeRequest.consumedQuantity.precision,
+      },
+      source: "manual_confirmation",
+      occurredAt: "2026-07-23T12:01:00Z",
+      recordedAt: "2026-07-23T12:01:00Z",
+      idempotencyKey: "inventory-consume:018f0001",
+      expectedLotVersion: consumeRequest.expectedVersion,
+      resultingLotVersion: 2,
+    },
+  } as const;
+
+  assert.equal(
+    consumeInventoryLotResultSchema.safeParse(consumed).success,
+    true,
+  );
+  assert.equal(
+    consumeInventoryLotRequestSchema.safeParse({
+      ...consumeRequest,
+      consumedQuantity: {
+        ...consumeRequest.consumedQuantity,
+        amount: -1,
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    consumeInventoryLotResultSchema.safeParse({
+      ...consumed,
+      event: { ...consumed.event, type: "adjusted" },
     }).success,
     false,
   );
@@ -609,6 +853,7 @@ test("API result, error, pagination and idempotency schemas have stable semantic
       requestId: ids.request,
       idempotency: {
         key,
+        scope: "household",
         replayed: false,
         firstProcessedAt: now,
         originalRequestId: ids.request,
@@ -634,6 +879,84 @@ test("API result, error, pagination and idempotency schemas have stable semantic
     false,
   );
   assert.equal(idempotencyKeySchema.safeParse("short").success, false);
+  assert.equal(
+    resultSchema.safeParse({
+      ...success,
+      data: {
+        ...success.data,
+        pageInfo: { nextCursor: null, hasMore: true },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    resultSchema.safeParse({
+      ...success,
+      data: {
+        ...success.data,
+        pageInfo: { nextCursor: "next_cursor", hasMore: false },
+      },
+    }).success,
+    false,
+  );
+
+  const createHouseholdSuccessSchema = createApiSuccessSchema(
+    createHouseholdResultSchema,
+  );
+  const firstHouseholdResult = createHouseholdSuccessSchema.parse({
+    ok: true,
+    data: {
+      household: {
+        id: ids.household,
+        name: "新家庭",
+        timezone: "Asia/Shanghai",
+        locale: "zh-CN",
+        status: "active",
+        createdByUserId: ids.user,
+        createdAt: now,
+        updatedAt: now,
+        version: 0,
+      },
+      membership: {
+        id: ids.membership,
+        householdId: ids.household,
+        userId: ids.user,
+        role: "owner",
+        capabilities: [],
+        status: "active",
+        joinedAt: now,
+        updatedAt: now,
+        version: 0,
+      },
+      ownerProfile: {
+        id: ids.profile,
+        householdId: ids.household,
+        linkedMembershipId: ids.membership,
+        displayName: "创建者",
+        status: "active",
+        defaultParticipation: true,
+        defaultPortionScale: 1,
+        cookingSkill: "beginner",
+        dietaryConstraints: [],
+        createdAt: now,
+        updatedAt: now,
+        version: 0,
+      },
+    },
+    meta: {
+      requestId: ids.request,
+      idempotency: {
+        key: "household-create:018f0001",
+        scope: "user",
+        replayed: true,
+        firstProcessedAt: now,
+        originalRequestId: ids.request,
+      },
+    },
+  });
+  assert.equal(firstHouseholdResult.data.household.id, ids.household);
+  assert.equal(firstHouseholdResult.meta.idempotency?.scope, "user");
+  assert.equal(firstHouseholdResult.meta.idempotency?.replayed, true);
 });
 
 test("contracts reject undeclared fields at trust boundaries", () => {

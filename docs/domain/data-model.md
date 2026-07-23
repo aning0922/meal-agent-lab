@@ -38,6 +38,7 @@ AuthIdentity ──> User ──> Session
 - `Membership` 表示 User 在 Household 的权限；`PersonProfile` 表示实际用餐者。
 - 一个 User 可加入多个 Household，一个无登录 PersonProfile 不需要 User 或 Session。
 - Session 只关联 User/AuthIdentity，不把当前 Household 或权限快照作为授权事实。
+- `AuthenticatedUserContext` 只在 active User、active Session 且二者 User ID 一致时成立；`HouseholdContext` 必须在事务内读取 active Membership 后从前者扩展。
 - 详细生命周期和安全约束见 [ADR-0003](../architecture/decisions/0003-identity-tenancy-and-api-semantics.md)。
 
 ## 家庭租户
@@ -72,6 +73,8 @@ Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 
 
 已确认识别结果还需记录确认人；`estimated_use_by_date` 只能来自带版本的审核规则。未填写表示未知，不生成虚构日期。
 
+`InventoryLot.dates` 是当前日期事实/推导快照，同一 `kind` 最多一项，最多九项；重复冷冻、解冻、开封等历史仍保存在 `InventoryEvent`。创建批次输入只允许四种包装/录入日期，最多四项且 `kind` 不重复。
+
 ## 数量
 
 同时保留用户原始表达和可选的标准化数量，例如“半颗白菜”和估算标准单位。系统应允许“充足、不多、快没了”等模糊状态，避免制造虚假的精度。
@@ -79,8 +82,10 @@ Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 
 ## 幂等与版本
 
 - 创建事件或推进状态的 command 必须有 `Idempotency-Key`。
+- 创建家庭使用 `userId + method + route + key` 的用户级作用域；家庭内 command 增加 `householdId` 使用家庭级作用域。
 - 相同作用域/key/body 重放第一次结果；相同 key/不同 body 返回冲突。
 - 聚合使用 non-negative integer `version`；写入携带 `expectedVersion`。
+- 新批次以逻辑 pre-version 0 开始，初始 `acquired` 事件和 lot projection 在同一事务发布为 version 1。
 - 库存事件满足 `resultingLotVersion = expectedLotVersion + 1`，且数字扣减不得产生负库存。
 - 幂等记录、事件和投影在同一事务提交。
 

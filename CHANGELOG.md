@@ -15,5 +15,6 @@
 - 新增一次性 Taro 客户端 spike，验证页面导航、本地状态、模拟 API、平台适配边界、自动测试及微信开发者工具预览。
 - 调整阶段 04 验收范围，统一使用四态验证结果；新增 Mock `AuthPort`、测试号预览准备命令，并将真实登录/合法域名、体验版、审核和发布移至对应后续门禁。
 - 完成阶段 05 后端架构定稿，接受 Node.js 24/Fastify 模块化单体、PostgreSQL 18/Drizzle、内部身份与家庭租户、REST/幂等/RLS 基线。
-- 建立 `@meal-agent/contracts` 正式共享契约，覆盖身份、家庭、库存批次与事件、餐食与推荐、采购和统一 API 语义，并通过类型检查、8 个测试和构建。
-- 明确 local/test/staging/production 隔离边界与阶段 06“登录 → 家庭 → 库存批次 → 幂等重放”最小纵切范围，同时保留阶段 04 Deferred 项。
+- 建立 `@meal-agent/contracts` 正式共享契约，覆盖身份、家庭、库存批次与事件、餐食与推荐、采购和统一 API 语义，并通过类型检查、10 个测试和构建。
+- 明确 local/test/staging/production 隔离边界与阶段 06“登录 → 家庭 → 库存批次 → 幂等重放 → 最小 consumed 事件”纵切范围，同时保留阶段 04 Deferred 项。
+- 完成阶段 05 合并前修订：拆分认证/家庭上下文与 RLS bootstrap，区分用户级/家庭级幂等，并加强 session、库存创建结果、日期、分页和 schema 推导不变量。

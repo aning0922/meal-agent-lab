@@ -159,25 +159,32 @@ packages/contracts ← transport mapper → internal domain / database rows
 - v1 内允许新增 optional 字段、新 endpoint 和客户端声明可忽略的新 error code。
 - 删除/重命名字段、把 optional 改 required、改变状态机或 ID 含义时建立 v2。
 - cursor 是服务端签发的 opaque token，最多 512 字符；客户端不得解析。
+- `pageInfo.hasMore` 为 true 当且仅当 `nextCursor` 非空，禁止给出互相矛盾的分页状态。
 - 公开内测后，废弃 endpoint 至少提前 90 天发布 `Deprecation`/`Sunset` 信息；此前内部阶段仍需同步升级客户端和 contract。
 
 ## 6. 家庭隔离、权限与敏感字段
 
 ### 6.1 应用层
 
-统一 `HouseholdContext` 只能由 auth middleware 构造，至少包含：
+服务端内部上下文拆分为：
 
 ```text
+AuthenticatedUserContext
 requestId
 sessionId
 userId
+
+HouseholdContext
+AuthenticatedUserContext 的全部字段
 householdId
 membershipId
 role
 capabilities
 ```
 
-业务方法接受该 context，不接受客户端自行声明的 actor。所有者管理成员和家庭；普通成员只使用固定 capability，不在 P0 建立自定义角色编辑器。
+受保护路由先开始事务，以 token digest 对 Session/User 做 `SELECT ... FOR SHARE`；只有 `authenticatedSessionSchema` 验证 User active、Session active 且 `session.userId === user.id` 后才能构造 `AuthenticatedUserContext`。创建家庭和家庭列表使用它；它不包含虚构的当前家庭。认证查询不读取家庭私有行，明文 token 不进入数据库或 context。
+
+`HouseholdContext` 只能在家庭资源事务内读取 active Membership 后构造，不能由只验证 bearer token 的 middleware 直接构造。家庭业务方法接受该 context，不接受客户端自行声明的 actor。所有者管理成员和家庭；普通成员只使用固定 capability，不在 P0 建立自定义角色编辑器。
 
 ### 6.2 数据库层
 
@@ -192,6 +199,18 @@ capabilities
 
 连接池只能在事务内用 `set_config(..., true)` 设置上下文，不能使用跨请求残留的 session-level `SET`。
 
+RLS bootstrap 与事务顺序：
+
+| 流程 | context 与事务顺序 | policy |
+| --- | --- | --- |
+| 创建家庭 | BEGIN → 验证/锁定 Session/User → `AuthenticatedUserContext` → 设置 `app.user_id` → 锁定 user-scope 幂等记录 → 生成并设置 `app.household_id` → 插入 Household/owner Membership/owner PersonProfile → 完成幂等记录 → COMMIT | creator bootstrap INSERT 只接受当前用户创建的新家庭及其第一个 active owner |
+| 家庭列表 | BEGIN → 验证/锁定 Session/User → `AuthenticatedUserContext` → 只设置 `app.user_id` → 读取自己的 active Membership 与 Household 摘要 → COMMIT | user bootstrap SELECT 只暴露 `membership.user_id = app.user_id` 及对应 Household |
+| 家庭资源 | BEGIN → 验证/锁定 Session/User → `AuthenticatedUserContext` → 设置 `app.user_id`/路径 `app.household_id` → bootstrap 查询 active Membership；无则 404 → 构造 `HouseholdContext`/检查 capability → 资源读写 → COMMIT | household resource policy 同时要求目标 household 和 active Membership；复合外键阻止跨家庭引用 |
+
+creator bootstrap 还要求新 Household 的 `id = app.household_id`、`createdByUserId = app.user_id`，第一个 Membership 属于同一新家庭/用户且为 active owner，并且该家庭此前没有 Membership。实际 SQL policy、事务 helper 和连接复用仍须阶段 06 集成测试，当前是**已决定设计、待验证实现**。
+
+`idempotency_records` 同样分 policy：user scope 只允许当前 `app.user_id` 且 `household_id IS NULL`；household scope 还要求匹配 `app.household_id` 和 active Membership。
+
 ### 6.3 响应 redaction
 
 RLS 只解决家庭行隔离，不解决同一家庭内的敏感字段。`subject_and_owner` 饮食约束：
@@ -205,9 +224,19 @@ RLS 只解决家庭行隔离，不解决同一家庭内的敏感字段。`subjec
 
 ### 7.1 幂等记录
 
-创建领域事件或推进业务状态的 write command 使用 `Idempotency-Key`，服务端记录：
+创建领域事件或推进业务状态的 write command 使用 `Idempotency-Key`。幂等作用域分为：
 
 ```text
+user scope      = userId + method + normalized route + key
+household scope = userId + householdId + method + normalized route + key
+```
+
+`POST /api/v1/households` 使用 user scope；家庭内库存 command 使用 household scope。服务端记录：
+
+```text
+scope_kind (user/household)
+user_id
+household_id (user scope 为空)
 scope_hash
 request_hash
 state (processing/completed/failed)
@@ -217,7 +246,7 @@ first_request_id
 created_at / expires_at
 ```
 
-幂等记录和业务写入同事务提交。相同 key/相同 body 重放第一次结果；相同 key/不同 body 返回 `IDEMPOTENCY_KEY_REUSED`。库存和采购事件自身长期保存 key 的唯一约束，通用 response cache 至少保留 30 天。
+幂等记录和业务写入同事务提交。相同作用域/key/body 重放第一次结果；相同作用域/key/不同 body 返回 `IDEMPOTENCY_KEY_REUSED`。创建家庭的 user-scope 记录必须与 Household、owner Membership、owner PersonProfile 同事务提交，重放返回同一个 Household ID。库存和采购事件自身长期保存 key 的唯一约束，通用 response cache 至少保留 30 天。
 
 登录 token 签发和 session 撤销不使用通用 response replay，避免为重放持久化明文 token。登录网络失败时客户端重新取得微信 code；User/AuthIdentity 唯一映射阻止重复账号，旧 session 可按安全策略回收。幂等 response cache 禁止保存 token、provider identifier 和私有约束。
 
@@ -233,7 +262,8 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 - acquired/produced/consumed/discarded/adjusted/corrected 等数量事件保存 numeric delta 或 qualitative change；
 - opened/moved/frozen/thawed 是状态事件；
 - `currentQuantity` 是可重建投影，不是覆盖历史的事实；
-- `expectedLotVersion` 必须与当前 version 相同；
+- 新建批次以逻辑 pre-version `0` 开始，在同一事务追加一个 `acquired` 事件并发布 lot/event version `1`；
+- 后续 `expectedLotVersion` 必须与当前 version 相同；
 - `resultingLotVersion = expectedLotVersion + 1`；
 - 数字扣减不能产生负库存；
 - 模糊数量保持原始表达和置信度，不伪造精确值；
@@ -277,8 +307,8 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 | 文件 | 主要 contract |
 | --- | --- |
 | `primitives.ts` | opaque IDs、日期/来源/置信度、精确/模糊数量 |
-| `identity.ts` | User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、登录/创建家庭请求 |
-| `inventory.ts` | InventoryLot、InventoryEvent、创建批次请求/结果 |
+| `identity.ts` | User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、登录及创建家庭请求/结果 |
+| `inventory.ts` | InventoryLot、InventoryEvent、创建批次与最小 consumed command 的请求/结果 |
 | `meals.ts` | Meal、Recipe、Recommendation 及候选 |
 | `shopping.ts` | ShoppingItem 与来源/状态 |
 | `api.ts` | ApiResult、ApiError、Pagination、Idempotency、ExpectedVersion |
@@ -286,6 +316,7 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 contract 设计规则：
 
 - runtime schema 与 TypeScript type 同源；
+- `ApiSuccess<T>`、`ApiResult<T>`、`PaginatedData<T>` 从 schema factory 的输出推导，不维护手写平行泛型；
 - object 默认 strict，拒绝未声明字段；
 - 实体 ID 使用 UUIDv7 运行时校验和 nominal brand，JSON 消费方仍把它当作 opaque string；`requestId` 接受标准 UUID；
 - API input 不包含 actor、审计、版本结果等服务端字段；
@@ -299,9 +330,11 @@ contract 设计规则：
 - 过敏等硬约束不能降级为软偏好；
 - 日期来源和规则估算要求；
 - 库存事件方向、版本递增和纠错引用；
+- 创建批次结果必须是同家庭/同批次的初始 `acquired` 事件和 version 1；
+- 每个 lot 的日期类型唯一且有数量上限；
 - 推荐候选必须有 hard constraint pass；
 - 已买与已入库状态分离；
-- API error/status、pagination 和 idempotency；
+- API error/status、pageInfo cursor 一致性、用户级/家庭级 idempotency；
 - trust boundary 拒绝额外字段；
 - declaration/JavaScript 构建。
 
@@ -309,7 +342,7 @@ contract 设计规则：
 
 ### 10.1 必须实施
 
-阶段 06 只实现“登录 → 创建/读取家庭 → 手工新增一个库存批次 → 重试得到同一结果”的最小纵切。
+阶段 06 只实现“登录 → 创建/读取家庭 → 手工新增一个库存批次 → 重试得到同一结果 → 对该批次追加一个最小 consumed 事件”的最小纵切。consumed command 仅用于证明乐观锁、幂等和负库存阻断，不扩展为做饭完成流程。
 
 工程：
 
@@ -343,26 +376,29 @@ contract 设计规则：
 | `POST /api/v1/households` | 同事务创建 Household、owner Membership 和 owner PersonProfile |
 | `GET /api/v1/households` | 只列出当前 User 的 active Membership |
 | `GET /api/v1/households/{id}/inventory-lots` | cursor list，仅当前家庭 |
-| `POST /api/v1/households/{id}/inventory-lots` | 创建 lot、初始 event、幂等记录和 projection |
+| `POST /api/v1/households/{id}/inventory-lots` | 创建 lot、`acquired` 初始 event、家庭级幂等记录和 version 1 projection |
+| `POST /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed` | 接受正数消耗量和 expectedVersion，追加负 delta `consumed` event；不得产生负库存 |
 
 测试门禁：
 
 1. PostgreSQL 18 从空库执行全部 migration。
 2. fake 微信 code 能首次创建、再次恢复同一 User，provider subject 不进入 response/log。
-3. 两个 User、两个 Household 的正向访问通过，四种交叉访问均被拒绝。
-4. RLS 在故意漏写 household filter 的测试查询中仍阻止跨家庭读取。
-5. 相同 idempotency key/body 只创建一个 lot 和一个 event，并重放原响应。
-6. 相同 key/不同 body 返回 409。
-7. 并发扣减或版本更新只有一个成功；不产生负库存或静默覆盖。
-8. session 过期、撤销和成员移除立即失效。
-9. contract、类型检查、单元、HTTP integration 和数据库 integration 全部通过。
-10. 日志扫描不含 login code、token、openid、unionid、AppSecret、成员敏感约束。
+3. `authenticatedSessionSchema` 及 auth service 拒绝 disabled user、expired/revoked session 和 user/session 不匹配。
+4. 创建家庭不用 `HouseholdContext`；相同 user-scope key/body 只创建一个家庭并重放同一 Household ID，key/body 冲突返回 409。
+5. 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问通过，四种交叉访问均被拒绝。
+6. 家庭资源先 bootstrap Membership 再构造 `HouseholdContext`；故意漏写 household filter 时 RLS 仍阻止跨家庭读取。
+7. 相同 household-scope key/body 只创建一个 lot 和一个 `acquired` event，重放原响应；初始 expected/result/lot version 固定为 `0/1/1`。
+8. consumed command 用小于等于现有精确数量的正数请求生成负 delta；超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
+9. 两个相同 expectedVersion 的并发 consumed command 只有一个成功，另一个返回 `409 INVENTORY_VERSION_CONFLICT`；相同幂等请求只追加一次。
+10. session 过期、撤销和成员移除立即失效。
+11. contract、类型检查、单元、HTTP integration 和数据库 integration 全部通过。
+12. 日志扫描不含 login code、token、openid、unionid、AppSecret、成员敏感约束。
 
 ### 10.2 明确不做
 
 - 完整菜单推荐、菜谱内容导入、模型调用或 Agent 对话；
 - OCR、语音、条码、图片、外部通知和异步 worker；
-- 采购、做饭、餐后扣减和剩菜回库的完整 API；
+- 采购、做饭、餐后扣减和剩菜回库的完整 API；阶段 06 只有不关联 Meal 的单批次 consumed 一致性 command；
 - Redis、消息队列、向量数据库或微服务拆分；
 - 正式 App、真实生产域名、生产云资源或真实家庭数据；
 - 体验版上传、审核、发布和 Android/iOS/HarmonyOS；
@@ -388,7 +424,7 @@ contract 设计规则：
 ## 12. 本阶段完成证据
 
 - ADR-0002 与 ADR-0003 状态为 `Accepted`；
-- `packages/contracts` 类型检查、8 个运行时测试和构建通过；
+- `packages/contracts` 类型检查、10 个运行时测试和构建通过；
 - 本文给出环境隔离和阶段 06 endpoint/migration/test 清单；
 - 系统概览、领域模型、ADR 导航、文档导航和项目状态已同步；
 - 阶段 04 Deferred 项未改为 Pass。

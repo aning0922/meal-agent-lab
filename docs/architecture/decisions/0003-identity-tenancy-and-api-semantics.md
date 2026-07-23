@@ -76,14 +76,27 @@ wx.login()
 /api/v1/households/{householdId}/inventory-lots
 ```
 
-每个请求按顺序执行：
+服务端内部上下文拆为两层，二者都不是网络 contract：
 
-1. 从 opaque session 解析内部 `User.id`；
-2. 检查该 User 在目标 Household 的 active Membership；
-3. 检查固定 role/capability；
-4. 在数据库事务内设置 request-scoped `app.user_id` 和 `app.household_id`；
-5. 执行带 `household_id` 的查询/写入；
-6. 提交后清除事务局部上下文。
+```text
+AuthenticatedUserContext
+  = requestId + sessionId + userId
+  前提：User active、Session active、Session.userId = User.id
+
+HouseholdContext
+  = AuthenticatedUserContext
+  + householdId + membershipId + role + capabilities
+  前提：事务内读取到该 user/household 的 active Membership
+```
+
+受保护路由先开始事务，以 token digest 对 Session/User 做 `SELECT ... FOR SHARE`，再由 `authenticatedSessionSchema` 验证 active 状态和 User ID 关联并构造 `AuthenticatedUserContext`。认证查询不读取家庭私有行，明文 token 不进入数据库或 context。家庭创建、家庭列表不能伪造一个尚不存在或不唯一的 `HouseholdContext`。三类事务顺序固定为：
+
+1. **创建家庭**：BEGIN → 验证/锁定 Session 和 User → 构造 `AuthenticatedUserContext` → `set_config('app.user_id', userId, true)` → 取得用户级幂等记录 → 生成新 `householdId` 并设置事务局部 `app.household_id` → 插入 Household、owner Membership、owner PersonProfile → 完成用户级幂等记录 → COMMIT。相同 key/body 重放第一次的家庭结果，不能再次创建家庭。
+2. **家庭列表**：BEGIN → 验证/锁定 Session 和 User → 构造 `AuthenticatedUserContext` → 只设置事务局部 `app.user_id` → 通过 user bootstrap policy 读取该用户自己的 active Membership 及可见 Household 摘要 → COMMIT。列表操作不构造 `HouseholdContext`。
+3. **家庭资源路由**：BEGIN → 验证/锁定 Session 和 User → 构造 `AuthenticatedUserContext` → 设置事务局部 `app.user_id` 和路径中的 `app.household_id` → 通过 membership bootstrap policy 读取匹配的 active Membership；不存在则返回 404 → 在内存中构造 `HouseholdContext` 并检查 capability；权限不足返回 403 → 执行家庭资源 policy 保护的查询/写入 → COMMIT。
+
+`HouseholdContext` 因此只能在数据库事务内部完成 bootstrap，不能由只验证 bearer token 的通用 auth middleware 直接构造。
+任一步失败均回滚事务；`HouseholdContext` 不得在该事务提交/回滚后继续复用。
 
 数据库约束：
 
@@ -94,6 +107,15 @@ wx.login()
 - migration owner 与应用运行角色分离；
 - 全局审核菜谱不绑定 household，但推荐、菜单、库存和采购均绑定 household。
 
+RLS policy 分为：
+
+- **user bootstrap SELECT**：`memberships` 只允许 `user_id = app.user_id` 的行；`households` 只允许当前用户存在 active Membership 的行，用于家庭列表；
+- **creator bootstrap INSERT**：新 Household 必须满足 `id = app.household_id` 且 `created_by_user_id = app.user_id`；首个 Membership 必须属于该新家庭、属于当前用户、为 active owner，且该家庭尚无 Membership；
+- **idempotency bootstrap**：user-scope 记录只允许 `user_id = app.user_id` 且 `household_id IS NULL`；household-scope 记录还必须匹配 `app.household_id` 和该用户的 active Membership；
+- **household resource**：家庭私有行必须同时匹配 `app.household_id`，且当前 `app.user_id` 在该家庭有 active Membership；写入另叠加应用层 capability 和复合外键。
+
+这些 bootstrap policy 只解决从已认证用户进入家庭租户的“第一跳”，不允许用 `userId` 或请求体跳过 session 校验。`set_config(..., true)` 只能在事务中由统一 persistence helper 调用，连接归还池前由事务边界自动清除。
+
 对其他家庭资源统一返回 `404 RESOURCE_NOT_FOUND`，避免确认资源是否存在；已确认在当前家庭内但缺少操作权限时返回 `403 FORBIDDEN`。成员私有饮食约束在家庭隔离之外继续执行字段级授权和 response redaction。
 
 ### API 风格与版本
@@ -102,7 +124,7 @@ wx.login()
 - 资源查询使用 `GET`，创建使用 `POST`，局部更新使用 `PATCH`；状态迁移可使用明确 command 子资源。
 - 成功响应为 `{ ok: true, data, meta }`，`meta` 至少含 `requestId`。
 - 错误使用 RFC 9457 风格的 `application/problem+json` 根对象，并增加稳定的 `code`、`requestId`、`retryable` 和 `ok: false`。
-- 列表使用 opaque cursor pagination，不使用跨更新易漂移的 page number/offset 作为正式契约。
+- 列表使用 opaque cursor pagination，不使用跨更新易漂移的 page number/offset 作为正式契约；`hasMore` 为 true 当且仅当 `nextCursor` 非空。
 - 同一 v1 内只做兼容性新增；字段删除、重命名、必填性收紧、状态语义改变或 ID 语义改变进入 `/api/v2`。
 - `@meal-agent/contracts` 独立按 semantic versioning 发布；API major 和 package major 分别管理，但 breaking API change 必须提升两者相应 major。
 - OpenAPI 在阶段 06 从路由和共享 schema 生成，不维护平行手写 DTO。
@@ -125,20 +147,30 @@ wx.login()
 
 ### 幂等与并发
 
-所有可能创建领域事件或推进业务状态的写 command 必须带 `Idempotency-Key`。token 签发和撤销不使用通用 response replay：服务端不为重放而持久化明文 token；登录网络失败时客户端重新调用 `wx.login` 获取新 code，User/AuthIdentity 映射仍保持唯一。服务端把业务幂等的以下值作为作用域：
+所有可能创建领域事件或推进业务状态的写 command 必须带 `Idempotency-Key`。token 签发和撤销不使用通用 response replay：服务端不为重放而持久化明文 token；登录网络失败时客户端重新调用 `wx.login` 获取新 code，User/AuthIdentity 映射仍保持唯一。
+
+业务幂等显式区分两种作用域：
 
 ```text
-user_id + household_id + HTTP method + normalized route + idempotency_key
+user scope
+  = user_id + HTTP method + normalized route + idempotency_key
+  用于 POST /api/v1/households 等尚无 householdId 的 command
+
+household scope
+  = user_id + household_id + HTTP method + normalized route + idempotency_key
+  用于库存及其他家庭内 command
 ```
 
 行为：
 
-1. 同作用域、同 key、同 request hash：返回第一次的 status/body，并标记 `meta.idempotency.replayed = true`。
-2. 同作用域、同 key、不同 request hash：返回 `409 IDEMPOTENCY_KEY_REUSED`。
-3. 首次请求的幂等记录、领域写入、InventoryEvent 和投影更新在同一事务提交。
-4. 并发相同 key 只能有一个执行者，其他请求等待并重放结果。
-5. 通用幂等响应记录不得包含 token、provider identifier 或私有约束，至少保留 30 天；库存和采购事件上的幂等唯一约束随事件长期保留。
-6. 客户端重试必须复用原 key，不得为同一用户动作生成新 key。
+1. 幂等记录保存 `scope_kind`；user scope 的 `household_id` 为空，household scope 必须有 `household_id`，两类 key 不互相冲突。
+2. 同作用域、同 key、同 request hash：返回第一次的 status/body，并标记 `meta.idempotency.scope` 和 `replayed = true`。
+3. 创建家庭的 user-scope 幂等记录、Household、owner Membership、owner PersonProfile 和响应在同一事务提交；重放返回同一 Household ID。
+4. 同作用域、同 key、不同 request hash：返回 `409 IDEMPOTENCY_KEY_REUSED`。
+5. 首次请求的幂等记录、领域写入、InventoryEvent 和投影更新在同一事务提交。
+6. 并发相同 key 只能有一个执行者，其他请求等待并重放结果。
+7. 通用幂等响应记录不得包含 token、provider identifier 或私有约束，至少保留 30 天；库存和采购事件上的幂等唯一约束随事件长期保留。
+8. 客户端重试必须复用原 key，不得为同一用户动作生成新 key。
 
 实体并发使用 `expectedVersion` 乐观锁。库存事件只有在当前 lot version 与 `expectedLotVersion` 相同、且扣减后不会为负时才追加；冲突返回最新版本摘要，由客户端重新确认。纠错通过新的 `corrected` 事件引用原事件，不改写或删除历史事件。
 
@@ -187,9 +219,9 @@ JWT 适合多个服务离线验证，但当前是单体。把角色/家庭放入
 ### 已决定
 
 - `AuthIdentity → User → Session/Membership → PersonProfile` 映射；
-- opaque session、Bearer 鉴权、显式 Household 路由上下文；
+- opaque session、Bearer 鉴权、`AuthenticatedUserContext` 与事务内 bootstrap 的 `HouseholdContext`；
 - 应用授权 + 复合外键 + PostgreSQL RLS；
-- REST `/api/v1`、统一 result/error、cursor、幂等和乐观版本；
+- REST `/api/v1`、统一 result/error、cursor、用户级/家庭级幂等和乐观版本；
 - 库存事件不可变，纠错追加新事件。
 
 ### 待验证
@@ -208,7 +240,7 @@ JWT 适合多个服务离线验证，但当前是单体。把角色/家庭放入
 
 ## 验证与复审
 
-阶段 06 至少用两个用户、两个家庭证明正向访问和跨家庭拒绝，并覆盖会话过期、成员移除、相同幂等 key 重放、key/body 冲突、库存 version 冲突和负库存阻断。
+阶段 06 至少用两个用户、两个家庭证明正向访问和跨家庭拒绝，并覆盖无家庭上下文的创建/列表 bootstrap、创建家庭 user-scope 重放、家庭内 key/body 冲突、会话过期、成员移除，以及最小 consumed command 的库存 version 冲突和负库存阻断。
 
 以下情况触发复审：
 
