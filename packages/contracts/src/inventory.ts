@@ -586,6 +586,37 @@ export const consumeInventoryLotResultSchema = z
       });
     }
 
+    if (result.lot.currentQuantity.kind !== "exact") {
+      context.addIssue({
+        code: "custom",
+        path: ["lot", "currentQuantity", "kind"],
+        message: "consume command must return an exact lot quantity",
+      });
+    }
+
+    if (
+      result.lot.currentQuantity.kind === "exact" &&
+      result.event.quantityChange?.kind === "numeric" &&
+      result.event.quantityChange.unit !==
+        result.lot.currentQuantity.unit
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "quantityChange", "unit"],
+        message:
+          "consumed event unit must match the returned exact lot quantity unit",
+      });
+    }
+
+    if (result.event.source !== "manual_confirmation") {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "source"],
+        message:
+          "consume command requires a manual-confirmation event source",
+      });
+    }
+
     if (result.lot.state === "discarded") {
       context.addIssue({
         code: "custom",

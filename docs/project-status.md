@@ -65,7 +65,7 @@
 
 - ADR-0001/0002/0003、系统概览、领域模型、阶段 05 报告和共享 contract 已逐项核对；客户端边界、运行时、数据层、身份映射、家庭隔离、错误码/status、幂等作用域和库存事件规则一致。
 - `apps/`、`services/` 和 `packages/` 中不存在第二份同名核心 DTO。低保真原型的局部采购展示类型已明确命名为 `PrototypeShoppingItem`；阶段 04 spike 只保留 `SpikeDraft`、`SpikeApiResult`、`MockAuthSession` 等一次性平台验证类型。`services/` 尚无正式业务实现。
-- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、私密 owner constraint redaction、日期上限/类型唯一、正式初始数量结构、初始事件可重建批次数量、estimated/exact delta 判别、exact-only consumed、库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量，并增加反例断言。
+- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、私密 owner constraint redaction、日期上限/类型唯一、正式初始数量结构、初始事件可重建批次数量、estimated/exact delta 判别、exact-only consumed 请求/event，以及 consumed 响应的 exact lot、同单位、人工确认来源和 exact 0/depleted 正例；库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量均有反例断言。
 - 根工作区 contracts 检查通过：TypeScript、10/10 运行时测试和 declaration/JavaScript 构建；阶段 04 客户端 spike 检查通过：TypeScript、5/5 测试和微信小程序构建；低保真原型通过 TypeScript、2/2 渲染测试、构建和 ESLint。
 - 74/74 个本地 Markdown 链接可解析，18/18 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
 - 提交范围扫描未发现密钥签名、非空 Secret、真实邮箱/手机号或真实用户夹具；`.env.example` 只有空值/假适配器配置。依赖目录、构建目录、日志和 TypeScript 增量缓存均被忽略，没有生成物进入阶段 05 提交。

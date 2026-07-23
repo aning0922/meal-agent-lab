@@ -918,6 +918,80 @@ test("inventory create and consume results keep lot, event, household and versio
     true,
   );
   assert.equal(
+    consumeInventoryLotResultSchema.safeParse({
+      ...consumed,
+      lot: {
+        ...consumed.lot,
+        currentQuantity: {
+          kind: "approximate",
+          amount: 1,
+          unit: "box",
+          confidence: "medium",
+          originalText: "约一盒",
+        },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    consumeInventoryLotResultSchema.safeParse({
+      ...consumed,
+      lot: {
+        ...consumed.lot,
+        currentQuantity: {
+          kind: "qualitative",
+          level: "some",
+          originalText: "还有一些",
+        },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    consumeInventoryLotResultSchema.safeParse({
+      ...consumed,
+      event: {
+        ...consumed.event,
+        quantityChange: {
+          ...consumed.event.quantityChange,
+          unit: "kg",
+        },
+      },
+    }).success,
+    false,
+  );
+  for (const source of [
+    "meal_completion_confirmation",
+    "confirmed_recognition",
+    "administrative_recovery",
+  ] as const) {
+    assert.equal(
+      consumeInventoryLotResultSchema.safeParse({
+        ...consumed,
+        event: {
+          ...consumed.event,
+          source,
+        },
+      }).success,
+      false,
+    );
+  }
+  assert.equal(
+    consumeInventoryLotResultSchema.safeParse({
+      ...consumed,
+      lot: {
+        ...consumed.lot,
+        state: "depleted",
+        currentQuantity: {
+          kind: "exact",
+          amount: 0,
+          unit: "box",
+        },
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
     consumeInventoryLotRequestSchema.safeParse({
       ...consumeRequest,
       consumedQuantity: {
