@@ -30,12 +30,14 @@ test("server-renders the Meal Agent review prototype", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Meal Agent · 低保真原型<\/title>/i);
-  assert.match(html, /先从今晚这一顿开始/);
+  assert.match(html, /继续使用 Meal Agent/);
+  assert.match(html, /登录与恢复/);
   assert.match(html, /技术验证产品基线/);
   assert.match(html, /少填、快比、可确认/);
   assert.match(html, /首次引导/);
   assert.match(html, /建议组合与加菜/);
-  assert.match(html, /库存扣减与回库/);
+  assert.match(html, /完成与库存确认/);
+  assert.match(html, /Agent 二级页/);
   assert.match(html, /当前页面状态模拟/);
   assert.match(html, /安全阻断/);
   assert.match(html, /重复提交/);
@@ -72,6 +74,15 @@ test("removes starter-only preview code and keeps review content explicit", asyn
   assert.match(page, /步骤进度已保存/);
   assert.match(page, /当前组合还不能确认/);
   assert.match(page, /status: "stocked"/);
+  assert.match(page, /库存搜索与筛选/);
+  assert.match(page, /批次详情与历史/);
+  assert.match(page, /成员、邀请与隐私/);
+  assert.match(page, /Agent 任务工作区/);
+  assert.match(page, /选择后立即在本页核对预计消耗/);
+  assert.match(page, /保持零消耗并结束本餐/);
+  assert.match(page, /我的/);
+  assert.doesNotMatch(page, /下一步：核对实际消耗/);
+  assert.doesNotMatch(page, /navigate\("c05"\)/);
   assert.doesNotMatch(page, /\.purchased\b/);
   assert.match(readme, /它不是正式客户端/);
   assert.match(sitesPlugin, /hosting\.json/);

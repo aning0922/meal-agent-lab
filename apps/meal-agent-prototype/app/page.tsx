@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 
 type ScreenId =
+  | "a01"
   | "o01"
   | "o02"
   | "o03"
@@ -10,17 +11,20 @@ type ScreenId =
   | "o05"
   | "h01"
   | "i01"
+  | "i02"
+  | "i03"
   | "r01"
   | "r02"
   | "r03"
   | "s01"
   | "s02"
-  | "f01"
+  | "m01"
+  | "m02"
+  | "ag01"
   | "c01"
   | "c02"
   | "c03"
-  | "c04"
-  | "c05";
+  | "c04";
 
 type ReviewState =
   | "default"
@@ -93,10 +97,16 @@ type ShoppingItem = {
   actor?: string;
 };
 
+type InventoryLotName = "番茄" | "鸡蛋" | "上海青" | "鲜面条" | "生鸡肉";
+
 const pageGroups: Array<{
   title: string;
   pages: Array<{ id: ScreenId; code: string; label: string }>;
 }> = [
+  {
+    title: "账户与恢复",
+    pages: [{ id: "a01", code: "A-01", label: "登录与恢复" }],
+  },
   {
     title: "首次引导",
     pages: [
@@ -112,6 +122,8 @@ const pageGroups: Array<{
     pages: [
       { id: "h01", code: "H-01", label: "今天" },
       { id: "i01", code: "I-01", label: "库存与临期" },
+      { id: "i02", code: "I-02", label: "库存搜索与筛选" },
+      { id: "i03", code: "I-03", label: "批次详情与历史" },
       { id: "r01", code: "R-01", label: "本餐条件" },
       { id: "r02", code: "R-02", label: "建议组合与加菜" },
       { id: "r03", code: "R-03", label: "本餐组合详情" },
@@ -125,17 +137,23 @@ const pageGroups: Array<{
     ],
   },
   {
-    title: "家庭上下文",
-    pages: [{ id: "f01", code: "F-01", label: "家庭设置" }],
+    title: "我的与家庭",
+    pages: [
+      { id: "m01", code: "M-01", label: "我的" },
+      { id: "m02", code: "M-02", label: "成员、邀请与隐私" },
+    ],
+  },
+  {
+    title: "Agent 上下文",
+    pages: [{ id: "ag01", code: "AG-01", label: "Agent 二级页" }],
   },
   {
     title: "做饭与扣减",
     pages: [
       { id: "c01", code: "C-01", label: "开始前检查" },
       { id: "c02", code: "C-02", label: "做饭模式" },
-      { id: "c03", code: "C-03", label: "完成状态" },
-      { id: "c04", code: "C-04", label: "库存扣减与回库" },
-      { id: "c05", code: "C-05", label: "完成回执" },
+      { id: "c03", code: "C-03", label: "完成与库存确认" },
+      { id: "c04", code: "C-04", label: "完成回执" },
     ],
   },
 ];
@@ -144,6 +162,12 @@ const pageMeta: Record<
   ScreenId,
   { code: string; title: string; risk: string; observe: string[] }
 > = {
+  a01: {
+    code: "A-01",
+    title: "登录与恢复",
+    risk: "身份与恢复",
+    observe: ["新用户与已有家庭入口是否分清", "恢复失败是否保留可重试路径"],
+  },
   o01: {
     code: "O-01",
     title: "首次欢迎",
@@ -186,6 +210,18 @@ const pageMeta: Record<
     risk: "食品安全",
     observe: ["日期来源与未知状态是否清楚", "高风险未知食材是否没有利用入口"],
   },
+  i02: {
+    code: "I-02",
+    title: "库存搜索与筛选",
+    risk: "查找效率",
+    observe: ["搜索无结果与空库存是否分得清", "筛选后是否仍保留批次未知状态"],
+  },
+  i03: {
+    code: "I-03",
+    title: "批次详情与历史",
+    risk: "可追溯性",
+    observe: ["日期来源与置信度是否可核对", "纠正是否追加事件而非覆盖历史"],
+  },
   r01: {
     code: "R-01",
     title: "本餐条件",
@@ -216,11 +252,23 @@ const pageMeta: Record<
     risk: "录入成本",
     observe: ["能否批量补齐最少信息", "数量与日期是否允许保持模糊或未知"],
   },
-  f01: {
-    code: "F-01",
-    title: "家庭设置",
+  m01: {
+    code: "M-01",
+    title: "我的",
     risk: "权限与隐私",
-    observe: ["成员、约束、厨艺与厨具是否一致", "敏感限制是否最少披露"],
+    observe: ["个人资料与家庭设置是否容易区分", "所有者身份是否清楚"],
+  },
+  m02: {
+    code: "M-02",
+    title: "成员、邀请与隐私",
+    risk: "权限与数据控制",
+    observe: ["邀请与用餐档案是否分得清", "导出、删除和退出的后果是否明确"],
+  },
+  ag01: {
+    code: "AG-01",
+    title: "Agent 二级页",
+    risk: "上下文与确认",
+    observe: ["是否沿用来源页对象而非重新描述", "工具失败与写操作确认是否可见"],
   },
   c01: {
     code: "C-01",
@@ -236,18 +284,12 @@ const pageMeta: Record<
   },
   c03: {
     code: "C-03",
-    title: "完成状态",
+    title: "完成与库存确认",
     risk: "餐后扣减",
-    observe: ["是否理解做完不等于已经扣库存", "部分完成是否符合真实情况"],
+    observe: ["一页内能否先选完成状态再核对用量", "45 秒内能否完成调整与回库"],
   },
   c04: {
     code: "C-04",
-    title: "库存扣减与回库",
-    risk: "餐后扣减",
-    observe: ["45 秒内能否调整、排除并回库", "冲突重算与具体批次是否容易理解"],
-  },
-  c05: {
-    code: "C-05",
     title: "完成回执",
     risk: "闭环信心",
     observe: ["是否确信扣减已记录", "剩菜新批次与轻反馈是否清楚"],
@@ -774,13 +816,13 @@ function BottomNav({
   onHome,
   onInventory,
   onShopping,
-  onFamily,
+  onMine,
 }: {
-  active: "home" | "inventory" | "shopping" | "family";
+  active: "home" | "inventory" | "shopping" | "mine";
   onHome: () => void;
   onInventory: () => void;
   onShopping: () => void;
-  onFamily: () => void;
+  onMine: () => void;
 }) {
   return (
     <nav className="bottom-nav" aria-label="一级导航">
@@ -809,12 +851,12 @@ function BottomNav({
         采购
       </button>
       <button
-        className={active === "family" ? "is-active" : ""}
-        onClick={onFamily}
+        className={active === "mine" ? "is-active" : ""}
+        onClick={onMine}
         type="button"
       >
-        <span>家</span>
-        家庭
+        <span>我</span>
+        我的
       </button>
     </nav>
   );
@@ -897,28 +939,28 @@ function ContextAgentSheet({
       title: "核对当前批次",
       object: "鸡蛋 · 冷藏 · 日期未知",
       result: "可以补充包装日期或标记数量不准；不会根据外观判断安全。",
-      action: "生成待确认纠正单",
+      action: "打开待确认工作区",
     },
     menu: {
       eyebrow: "来自本餐组合",
       title: "解释或调整菜单",
       object: "今晚的已选菜 · 当前条件与库存快照",
       result: "可以解释推荐依据、降低难度或少买一项；修改后会重新校验。",
-      action: "带着当前菜单继续",
+      action: "打开菜单任务工作区",
     },
     shopping: {
       eyebrow: "来自共享采购",
       title: "解释这项为什么要买",
       object: "当前清单 · 来源菜单与建议数量",
       result: "可以合并、改数量或移除；任何变更先形成可见确认单。",
-      action: "生成待确认修改",
+      action: "打开采购任务工作区",
     },
     cooking: {
       eyebrow: "来自当前做饭步骤",
       title: "只回答眼前这一步",
       object: "当前菜品、步骤、用量与安全点",
       result: "Agent 可解释火候和动作，但不能跳过或弱化食品安全提示。",
-      action: "回到当前步骤",
+      action: "打开步骤解释",
     },
   }[context];
 
@@ -960,12 +1002,19 @@ function ContextAgentSheet({
 }
 
 export default function Home() {
-  const [screen, setScreen] = useState<ScreenId>("o01");
+  const [screen, setScreen] = useState<ScreenId>("a01");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewState, setReviewState] = useState<ReviewState>("default");
   const [agentContext, setAgentContext] = useState<
     "home" | "inventory" | "menu" | "shopping" | "cooking" | null
   >(null);
+  const [agentOrigin, setAgentOrigin] = useState<
+    "home" | "inventory" | "menu" | "shopping" | "cooking"
+  >("home");
+  const [agentReturnScreen, setAgentReturnScreen] =
+    useState<ScreenId>("h01");
+  const [agentDraftReady, setAgentDraftReady] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [homeName, setHomeName] = useState("林然的家");
   const [members, setMembers] = useState<HouseholdMember[]>([
@@ -979,6 +1028,11 @@ export default function Home() {
   const [pantry, setPantry] = useState<string[]>([]);
   const [ingredients, setIngredients] = useState(initialIngredients);
   const [ingredientQuery, setIngredientQuery] = useState("");
+  const [inventoryQuery, setInventoryQuery] = useState("");
+  const [inventoryFilter, setInventoryFilter] = useState("全部");
+  const [inventoryActionNotice, setInventoryActionNotice] = useState("");
+  const [selectedInventoryLot, setSelectedInventoryLot] =
+    useState<InventoryLotName>("番茄");
   const [timeLimit, setTimeLimit] = useState("30");
   const [shoppingTolerance, setShoppingTolerance] = useState("少量补购");
   const [selectedDishIds, setSelectedDishIds] = useState<string[]>([
@@ -1026,6 +1080,9 @@ export default function Home() {
     "tomato" | "chicken" | null
   >(null);
   const [feedback, setFeedback] = useState<string[]>([]);
+  const [privacyNotice, setPrivacyNotice] = useState<
+    "invite" | "export" | "delete" | null
+  >(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const currentMeta = pageMeta[screen];
@@ -1094,10 +1151,14 @@ export default function Home() {
   };
 
   const resetPrototype = () => {
-    setScreen("o01");
+    setScreen("a01");
     setReviewOpen(false);
     setReviewState("default");
     setAgentContext(null);
+    setAgentOrigin("home");
+    setAgentReturnScreen("h01");
+    setAgentDraftReady(false);
+    setRecoveryOpen(false);
     setToast("");
     setHomeName("林然的家");
     setMembers([{ name: "林然", role: "家庭所有者" }]);
@@ -1109,6 +1170,10 @@ export default function Home() {
     setPantry([]);
     setIngredients(initialIngredients);
     setIngredientQuery("");
+    setInventoryQuery("");
+    setInventoryFilter("全部");
+    setInventoryActionNotice("");
+    setSelectedInventoryLot("番茄");
     setTimeLimit("30");
     setShoppingTolerance("少量补购");
     setSelectedDishIds([...recommendedDishIds]);
@@ -1135,6 +1200,7 @@ export default function Home() {
     setMealRecorded(false);
     setExpiryNotice(null);
     setFeedback([]);
+    setPrivacyNotice(null);
   };
 
   const toggleListValue = (
@@ -1285,7 +1351,7 @@ export default function Home() {
       setMealRecorded(true);
       setDeductionSubmitting(false);
       setMealStarted(false);
-      navigate("c05");
+      navigate("c04");
     }, 450);
   };
 
@@ -1296,12 +1362,12 @@ export default function Home() {
       navigate("r01");
       return;
     }
-    if (agentContext === "cooking") {
-      setAgentContext(null);
-      return;
+    if (agentContext) {
+      setAgentOrigin(agentContext);
+      setAgentReturnScreen(screen);
+      setAgentDraftReady(false);
+      navigate("ag01");
     }
-    setToast("已生成结构化待确认结果；原型不会由 Agent 直接写入。");
-    setAgentContext(null);
   };
 
   const adjustDeduction = (id: string, delta: number) => {
@@ -1313,6 +1379,70 @@ export default function Home() {
       ),
     }));
   };
+
+  const renderAccount = () => (
+    <>
+      <PrototypeHeader eyebrow="P0 账户入口" title="登录与恢复" />
+      <div className="screen-body account-body">
+        <section className="intro-copy">
+          <span className="eyebrow">先确认身份，再读取家庭数据</span>
+          <h1>继续使用 Meal Agent</h1>
+          <p>平台身份只用于登录；家庭、成员和库存使用独立内部身份，不会在未授权时展示。</p>
+        </section>
+        <button
+          className="primary-button full"
+          onClick={() => navigate("o01")}
+          type="button"
+        >
+          微信快捷登录并创建家庭
+        </button>
+        <button
+          className="secondary-button full"
+          onClick={() => setRecoveryOpen((value) => !value)}
+          type="button"
+        >
+          在新设备恢复已有家庭
+        </button>
+        {recoveryOpen && (
+          <section className="recovery-card">
+            <div className="recovery-icon">家</div>
+            <div>
+              <span className="eyebrow">找到 1 个可恢复家庭</span>
+              <h2>林然的家</h2>
+              <p>所有者 · 最近同步：刚刚 · 需再次校验成员权限</p>
+            </div>
+            <button
+              className="primary-button compact"
+              onClick={() => navigate("h01")}
+              type="button"
+            >
+              确认恢复
+            </button>
+          </section>
+        )}
+        <section className="detail-section account-invite">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">通过邀请加入</span>
+              <h2>已有家庭邀请？</h2>
+            </div>
+          </div>
+          <p>登录后核对家庭名称、邀请状态和你的身份；邀请过期或已使用会显示明确结果。</p>
+          <button
+            className="text-button"
+            onClick={() => setToast("邀请链接有效，登录后将进入家庭信息确认。")}
+            type="button"
+          >
+            使用邀请链接继续 →
+          </button>
+        </section>
+        <div className="process-note">
+          <b>恢复边界</b>
+          <span>失败不会创建空家庭；无权限不会暴露成员、约束或库存信息。</span>
+        </div>
+      </div>
+    </>
+  );
 
   const renderOnboarding = () => {
     if (screen === "o01") {
@@ -1899,9 +2029,9 @@ export default function Home() {
       </div>
       <BottomNav
         active="home"
-        onFamily={() => navigate("f01")}
         onHome={() => navigate("h01")}
         onInventory={() => navigate("i01")}
+        onMine={() => navigate("m01")}
         onShopping={() => navigate("s01")}
       />
     </>
@@ -1931,13 +2061,22 @@ export default function Home() {
           <button className="is-active" role="tab" type="button">
             需处理 3
           </button>
-          <button role="tab" type="button">
+          <button onClick={() => navigate("i02")} role="tab" type="button">
             全部 5
           </button>
           <button role="tab" type="button">
             常备 {pantry.length}
           </button>
         </div>
+        <button
+          className="inventory-search-entry"
+          onClick={() => navigate("i02")}
+          type="button"
+        >
+          <span>⌕</span>
+          搜索、筛选或查看批次
+          <b>→</b>
+        </button>
         <section className="attention-card inventory-attention">
           <div className="section-heading compact">
             <div>
@@ -1955,7 +2094,14 @@ export default function Home() {
             >
               用它找菜单
             </button>
-            <button className="secondary-button compact" type="button">
+            <button
+              className="secondary-button compact"
+              onClick={() => {
+                setSelectedInventoryLot("番茄");
+                navigate("i03");
+              }}
+              type="button"
+            >
               更新信息
             </button>
           </div>
@@ -2039,29 +2185,388 @@ export default function Home() {
       </div>
       <BottomNav
         active="inventory"
-        onFamily={() => navigate("f01")}
         onHome={() => navigate("h01")}
         onInventory={() => navigate("i01")}
+        onMine={() => navigate("m01")}
         onShopping={() => navigate("s01")}
       />
     </>
   );
 
-  const renderFamily = () => (
+  const renderInventorySearch = () => {
+    const allRows: Array<{
+      name: InventoryLotName;
+      summary: string;
+      state: string;
+      filter: string[];
+    }> = [
+      {
+        name: "番茄",
+        summary: "约 2 个 · 冷藏",
+        state: "标签日期：明天 · 用户录入",
+        filter: ["冷藏", "需处理"],
+      },
+      {
+        name: "鸡蛋",
+        summary: "约半盒 · 冷藏",
+        state: "日期未知 · 待核对包装",
+        filter: ["冷藏", "日期未知", "需处理"],
+      },
+      {
+        name: "上海青",
+        summary: "约半袋 · 冷藏",
+        state: "数量为估算 · 家庭同步",
+        filter: ["冷藏"],
+      },
+      {
+        name: "鲜面条",
+        summary: "1 袋 · 冷藏",
+        state: "刚入库 · 标签日期未知",
+        filter: ["冷藏", "日期未知"],
+      },
+      {
+        name: "生鸡肉",
+        summary: "约 1 盒 · 冷藏",
+        state: "安全状态未知 · 已阻止推荐",
+        filter: ["冷藏", "日期未知", "需处理"],
+      },
+    ];
+    const rows = allRows.filter(
+      (row) =>
+        (!inventoryQuery.trim() || row.name.includes(inventoryQuery.trim())) &&
+        (inventoryFilter === "全部" || row.filter.includes(inventoryFilter)),
+    );
+
+    return (
+      <>
+        <PrototypeHeader
+          eyebrow="库存"
+          onBack={() => navigate("i01")}
+          title="搜索与筛选"
+        />
+        <div className="screen-body inventory-search-body">
+          <label className="inventory-search-box">
+            <span>⌕</span>
+            <input
+              aria-label="搜索库存"
+              onChange={(event) => setInventoryQuery(event.target.value)}
+              placeholder="搜索食材名称"
+              value={inventoryQuery}
+            />
+            {inventoryQuery && (
+              <button
+                aria-label="清空搜索"
+                onClick={() => setInventoryQuery("")}
+                type="button"
+              >
+                ×
+              </button>
+            )}
+          </label>
+          <div className="filter-chips" aria-label="库存筛选">
+            {["全部", "冷藏", "日期未知", "需处理"].map((filter) => (
+              <button
+                aria-pressed={inventoryFilter === filter}
+                className={inventoryFilter === filter ? "is-selected" : ""}
+                key={filter}
+                onClick={() => setInventoryFilter(filter)}
+                type="button"
+              >
+                {filter}
+              </button>
+            ))}
+          </div>
+          <div className="search-result-heading">
+            <span>当前结果</span>
+            <b>{rows.length} 个聚合食材</b>
+          </div>
+          {rows.length ? (
+            <section className="inventory-result-list">
+              {rows.map((row) => (
+                <button
+                  key={row.name}
+                  onClick={() => {
+                    setSelectedInventoryLot(row.name);
+                    setInventoryActionNotice("");
+                    navigate("i03");
+                  }}
+                  type="button"
+                >
+                  <span className="inventory-result-icon">{row.name.slice(0, 1)}</span>
+                  <span>
+                    <b>{row.name}</b>
+                    <small>{row.summary}</small>
+                    <em>{row.state}</em>
+                  </span>
+                  <strong>→</strong>
+                </button>
+              ))}
+            </section>
+          ) : (
+            <section className="inline-empty-state">
+              <span>⌕</span>
+              <h2>没有匹配结果</h2>
+              <p>这不代表家里没有该食材；可以清空筛选或新建待确认批次。</p>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  setInventoryQuery("");
+                  setInventoryFilter("全部");
+                }}
+                type="button"
+              >
+                清空搜索与筛选
+              </button>
+            </section>
+          )}
+        </div>
+        <BottomNav
+          active="inventory"
+          onHome={() => navigate("h01")}
+          onInventory={() => navigate("i01")}
+          onMine={() => navigate("m01")}
+          onShopping={() => navigate("s01")}
+        />
+      </>
+    );
+  };
+
+  const renderInventoryLot = () => {
+    const lot =
+      {
+        番茄: {
+          name: "番茄",
+          icon: "番",
+          quantity: "约 2 个",
+          lotId: "番茄-0721",
+          location: "冷藏",
+          state: "未开封状态未知",
+          labelDate: "明天",
+          labelSource: "用户从包装录入 · 高置信",
+          purchaseDate: "7 月 21 日",
+          purchaseSource: "用户输入 · 不等于生产日",
+          blocked: false,
+        },
+        鸡蛋: {
+          name: "鸡蛋",
+          icon: "蛋",
+          quantity: "约半盒",
+          lotId: "鸡蛋-0722",
+          location: "冷藏",
+          state: "包装信息待确认",
+          labelDate: "未知",
+          labelSource: "未录入 · 保持未知",
+          purchaseDate: "7 月 22 日",
+          purchaseSource: "用户输入 · 不等于生产日",
+          blocked: false,
+        },
+        上海青: {
+          name: "上海青",
+          icon: "青",
+          quantity: "约半袋",
+          lotId: "上海青-0722",
+          location: "冷藏",
+          state: "数量为家庭估算",
+          labelDate: "未知",
+          labelSource: "未录入 · 保持未知",
+          purchaseDate: "未知",
+          purchaseSource: "没有可追溯输入",
+          blocked: false,
+        },
+        鲜面条: {
+          name: "鲜面条",
+          icon: "面",
+          quantity: "1 袋",
+          lotId: "鲜面条-0723",
+          location: "冷藏",
+          state: "刚从采购入库",
+          labelDate: "未知",
+          labelSource: "包装日期未填",
+          purchaseDate: "未知",
+          purchaseSource: "已买时间不等于购买日",
+          blocked: false,
+        },
+        生鸡肉: {
+          name: "生鸡肉",
+          icon: "鸡",
+          quantity: "约 1 盒",
+          lotId: "生鸡肉-待确认",
+          location: "冷藏",
+          state: "冷链状态未知 · 高风险",
+          labelDate: "未知",
+          labelSource: "没有可追溯包装信息",
+          purchaseDate: "未知",
+          purchaseSource: "不会由系统补造",
+          blocked: true,
+        },
+      }[selectedInventoryLot] ?? {
+        name: "番茄",
+        icon: "番",
+        quantity: "约 2 个",
+        lotId: "番茄-0721",
+        location: "冷藏",
+        state: "未开封状态未知",
+        labelDate: "明天",
+        labelSource: "用户从包装录入 · 高置信",
+        purchaseDate: "7 月 21 日",
+        purchaseSource: "用户输入 · 不等于生产日",
+        blocked: false,
+      };
+
+    return (
+    <>
+      <PrototypeHeader
+        eyebrow="库存批次"
+        onBack={() => navigate("i02")}
+        title={`${lot.name} · 批次详情`}
+      />
+      <div className="screen-body lot-detail-body">
+        <section className="lot-summary-card">
+          <div className="lot-summary-title">
+            <span>{lot.icon}</span>
+            <div>
+              <span className="eyebrow">批次 #{lot.lotId}</span>
+              <h1>{lot.name} · {lot.quantity}</h1>
+              <p>{lot.location} · {lot.state}</p>
+            </div>
+          </div>
+          <div className="source-grid">
+            <p>
+              <span>标签日期</span>
+              <b>{lot.labelDate}</b>
+              <small>{lot.labelSource}</small>
+            </p>
+            <p>
+              <span>购买日</span>
+              <b>{lot.purchaseDate}</b>
+              <small>{lot.purchaseSource}</small>
+            </p>
+            <p>
+              <span>生产日</span>
+              <b>未知</b>
+              <small>不会由系统补造</small>
+            </p>
+            <p>
+              <span>当前数量</span>
+              <b>{lot.quantity}</b>
+              <small>模糊数量 · 可待盘点</small>
+            </p>
+          </div>
+        </section>
+        <section className="detail-section">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">先生成确认单</span>
+              <h2>快捷操作</h2>
+            </div>
+          </div>
+          {lot.blocked && (
+            <div className="safety-note strong">
+              <b>高风险未知批次没有使用入口</b>
+              <span>只能补充可追溯储存信息，或生成丢弃确认单。</span>
+            </div>
+          )}
+          <div className="lot-action-grid">
+            {(lot.blocked
+              ? ["补充储存信息", "生成丢弃确认单"]
+              : ["标记已打开", "用了一些", "移动位置", "数量不准", "冷冻", "丢弃"]
+            ).map(
+              (action) => (
+                <button
+                  key={action}
+                  onClick={() =>
+                    setInventoryActionNotice(
+                      `已生成“${action}”确认单，尚未写入库存事件。`,
+                    )
+                  }
+                  type="button"
+                >
+                  {action}
+                </button>
+              ),
+            )}
+          </div>
+          {inventoryActionNotice && (
+            <div className="success-banner compact">
+              <span>✓</span>
+              <div>
+                <b>{inventoryActionNotice}</b>
+                <small>确认后追加新事件，不覆盖原始批次历史。</small>
+              </div>
+              <button
+                onClick={() => setInventoryActionNotice("")}
+                type="button"
+              >
+                取消
+              </button>
+            </div>
+          )}
+        </section>
+        <section className="detail-section">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">可追溯事件</span>
+              <h2>批次历史</h2>
+            </div>
+            <span className="muted-count">3 条</span>
+          </div>
+          <ol className="event-timeline">
+            <li>
+              <span />
+              <div>
+                <b>{lot.name}数量纠正为{lot.quantity}</b>
+                <small>林然 · 今天 18:40 · 纠正事件</small>
+              </div>
+            </li>
+            <li>
+              <span />
+              <div>
+                <b>移动到{lot.location}</b>
+                <small>林然 · 7 月 21 日 20:12</small>
+              </div>
+            </li>
+            <li>
+              <span />
+              <div>
+                <b>创建{lot.name}批次</b>
+                <small>来源：手动录入 · 7 月 21 日 20:10</small>
+              </div>
+            </li>
+          </ol>
+        </section>
+        <div className="process-note">
+          <b>历史不可静默覆盖</b>
+          <span>纠正、丢弃和数量变化都会追加操作者、时间和来源。</span>
+        </div>
+      </div>
+    </>
+    );
+  };
+
+  const renderMine = () => (
     <>
       <div className="shopping-topbar">
         <div>
-          <span className="eyebrow">共享上下文与个人资料</span>
-          <h1>家庭</h1>
+          <span className="eyebrow">个人资料与家庭上下文</span>
+          <h1>我的</h1>
         </div>
         <span className="hard-tag">你是所有者</span>
       </div>
       <div className="screen-body family-body">
+        <section className="profile-card">
+          <div className="profile-avatar">然</div>
+          <div>
+            <span className="eyebrow">当前登录账号</span>
+            <h2>林然</h2>
+            <p>微信登录 · 可在新设备恢复</p>
+          </div>
+          <button type="button">编辑</button>
+        </section>
         <section className="detail-section">
           <div className="section-heading compact">
             <div>
               <span className="eyebrow">{homeName}</span>
-              <h2>成员与用餐档案</h2>
+              <h2>家庭成员与用餐档案</h2>
             </div>
             <span className="muted-count">{members.length} 人</span>
           </div>
@@ -2075,14 +2580,14 @@ export default function Home() {
                   {member.constraint ? " · 有已确认硬约束" : ""}
                 </p>
               </div>
-              <button type="button">管理</button>
+              <button onClick={() => navigate("m02")} type="button">
+                管理
+              </button>
             </div>
           ))}
           <button
             className="add-row"
-            onClick={() =>
-              setToast("邀请登录成员与新增用餐档案会先区分身份，再进入确认。")
-            }
+            onClick={() => navigate("m02")}
             type="button"
           >
             ＋ 邀请成员或添加用餐档案
@@ -2109,7 +2614,9 @@ export default function Home() {
         <section className="detail-section">
           <div className="section-heading compact">
             <h2>厨艺与厨房设备</h2>
-            <button type="button">编辑</button>
+            <button onClick={() => navigate("o03")} type="button">
+              编辑
+            </button>
           </div>
           <p className="family-setting-row">
             <span>林然的厨艺</span>
@@ -2120,20 +2627,311 @@ export default function Home() {
             <b>{equipment.length ? equipment.join("、") : "未知"}</b>
           </p>
         </section>
-        <section className="process-note">
-          <b>隐私与数据</b>
-          <span>可查看数据用途、导出与删除路径；敏感限制不进入通用分析事件。</span>
-        </section>
+        <button
+          className="privacy-entry-card"
+          onClick={() => navigate("m02")}
+          type="button"
+        >
+          <span>
+            <b>邀请、隐私与数据</b>
+            <small>成员权限、导出、退出和删除路径</small>
+          </span>
+          <strong>→</strong>
+        </button>
       </div>
       <BottomNav
-        active="family"
-        onFamily={() => navigate("f01")}
+        active="mine"
         onHome={() => navigate("h01")}
         onInventory={() => navigate("i01")}
+        onMine={() => navigate("m01")}
         onShopping={() => navigate("s01")}
       />
     </>
   );
+
+  const renderPrivacyAndInvites = () => (
+    <>
+      <PrototypeHeader
+        eyebrow="我的"
+        onBack={() => navigate("m01")}
+        title="成员、邀请与隐私"
+      />
+      <div className="screen-body privacy-body">
+        <section className="detail-section">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">先区分身份</span>
+              <h2>添加家庭参与者</h2>
+            </div>
+            <span className="hard-tag">仅所有者</span>
+          </div>
+          <div className="identity-choice-grid">
+            <button
+              onClick={() => setPrivacyNotice("invite")}
+              type="button"
+            >
+              <span>登</span>
+              <b>邀请登录成员</b>
+              <small>可操作共享库存与采购</small>
+            </button>
+            <button
+              onClick={() =>
+                setToast("将创建不登录的用餐档案，只参与人数与约束校验。")
+              }
+              type="button"
+            >
+              <span>餐</span>
+              <b>新增用餐档案</b>
+              <small>儿童、老人或访客</small>
+            </button>
+          </div>
+          {privacyNotice === "invite" && (
+            <div className="invite-result-card">
+              <span className="eyebrow">邀请已生成 · 24 小时有效</span>
+              <b>林然的家 · 普通成员</b>
+              <p>加入前会再次确认家庭、邀请状态和数据权限；已使用或过期不能重复加入。</p>
+              <button
+                onClick={() =>
+                  setToast("邀请链接已复制；原型不会向外部应用发送消息。")
+                }
+                type="button"
+              >
+                复制邀请链接
+              </button>
+            </div>
+          )}
+        </section>
+        <section className="constraint-box">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">最少披露</span>
+              <h2>成员权限与敏感信息</h2>
+            </div>
+          </div>
+          <p className="family-setting-row">
+            <span>所有者</span>
+            <b>成员、共享数据与删除请求</b>
+          </p>
+          <p className="family-setting-row">
+            <span>普通成员</span>
+            <b>库存、菜单与采购</b>
+          </p>
+          <p className="family-setting-row">
+            <span>过敏信息</span>
+            <b>只显示完成校验所需内容</b>
+          </p>
+          <small>普通成员不能修改他人敏感约束，也不能读取其他家庭数据。</small>
+        </section>
+        <section className="detail-section data-control-section">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">个人数据控制</span>
+              <h2>导出、退出与删除</h2>
+            </div>
+          </div>
+          <button
+            onClick={() => setPrivacyNotice("export")}
+            type="button"
+          >
+            <span>
+              <b>导出我的数据</b>
+              <small>异步生成；失败可恢复，不包含其他成员受限信息</small>
+            </span>
+            <strong>→</strong>
+          </button>
+          <button
+            onClick={() => setToast("退出前会说明个人资料与家庭共享记录如何保留。")}
+            type="button"
+          >
+            <span>
+              <b>退出当前家庭</b>
+              <small>所有者需先转移所有权或解散家庭</small>
+            </span>
+            <strong>→</strong>
+          </button>
+          <button
+            className="is-danger"
+            onClick={() => setPrivacyNotice("delete")}
+            type="button"
+          >
+            <span>
+              <b>请求删除账号</b>
+              <small>不会直接删除家庭共享事件历史</small>
+            </span>
+            <strong>→</strong>
+          </button>
+        </section>
+        {privacyNotice === "export" && (
+          <div className="success-banner compact">
+            <span>✓</span>
+            <div>
+              <b>导出任务已进入待确认</b>
+              <small>确认身份后开始；失败会保留任务进度并允许重试。</small>
+            </div>
+            <button onClick={() => setPrivacyNotice(null)} type="button">
+              取消
+            </button>
+          </div>
+        )}
+        {privacyNotice === "delete" && (
+          <div className="safety-note strong">
+            <b>删除前必须完成所有权处理</b>
+            <span>
+              当前账号是家庭所有者。需先转移所有权或确认解散家庭，并再次验证身份。
+            </span>
+            <button
+              onClick={() =>
+                setToast("已进入身份验证步骤；尚未删除任何数据。")
+              }
+              type="button"
+            >
+              继续身份验证
+            </button>
+          </div>
+        )}
+      </div>
+    </>
+  );
+
+  const renderAgentWorkspace = () => {
+    const context = {
+      home: {
+        source: "今天",
+        object: "今晚 2 人 · 30 分钟 · 尽量少买菜",
+        intent: "整理本餐条件",
+        result: "参与者 2 人；总时间 30 分钟；采购容忍度为少量补购。",
+      },
+      inventory: {
+        source: "库存",
+        object: "鸡蛋 · 冷藏 · 日期未知",
+        intent: "纠正当前批次",
+        result: "保留日期未知；建议补充包装信息并把数量标记为待盘点。",
+      },
+      menu: {
+        source: "本餐组合",
+        object: `${selectedMenu.title} · ${selectedMenu.time} · 缺 ${selectedMenu.missing.length} 项`,
+        intent: "解释或调整菜单",
+        result: "可降低难度或减少采购；修改后需要重新校验全部硬约束。",
+      },
+      shopping: {
+        source: "共享采购",
+        object: `${pendingShoppingCount} 项待购买 · ${purchasedCount} 项待入库`,
+        intent: "合并或修改采购项",
+        result: "保留每项来源和原始数量，只对确认的项目生成修改单。",
+      },
+      cooking: {
+        source: "做饭步骤",
+        object: `步骤 ${cookStep + 1}/${selectedMenu.cookSteps.length} · ${selectedMenu.cookSteps[cookStep]?.title}`,
+        intent: "解释当前火候",
+        result: "只解释当前动作；鸡蛋全熟与生熟分开提示保持不可跳过。",
+      },
+    }[agentOrigin];
+
+    return (
+      <>
+        <PrototypeHeader
+          eyebrow={`来自${context.source}`}
+          onBack={() => navigate(agentReturnScreen)}
+          title="Agent 任务工作区"
+        />
+        <div className="screen-body agent-workspace-body">
+          <section className="agent-object-card">
+            <span className="eyebrow">已带入业务对象</span>
+            <h1>{context.intent}</h1>
+            <p>{context.object}</p>
+          </section>
+          <section className="agent-tool-card">
+            <div className="section-heading compact">
+              <div>
+                <span className="eyebrow">工具结果可见</span>
+                <h2>本次使用的上下文</h2>
+              </div>
+              <span className="soft-tag">最新校验</span>
+            </div>
+            <ol>
+              <li>
+                <span>✓</span>
+                <div>
+                  <b>读取当前业务对象</b>
+                  <small>来源页、对象版本和最后同步时间已记录</small>
+                </div>
+              </li>
+              <li>
+                <span>✓</span>
+                <div>
+                  <b>应用权限与硬约束</b>
+                  <small>{constraintCount} 条硬约束 · 当前身份可执行此查询</small>
+                </div>
+              </li>
+              <li>
+                <span>△</span>
+                <div>
+                  <b>保留未知信息</b>
+                  <small>日期、数量或库存未知不会被补造成确定事实</small>
+                </div>
+              </li>
+            </ol>
+          </section>
+          <section className="agent-result-card">
+            <span className="eyebrow">结构化结果</span>
+            <h2>{agentDraftReady ? "待确认变更单" : "建议结果"}</h2>
+            <p>{context.result}</p>
+            {agentDraftReady ? (
+              <div className="agent-change-summary">
+                <p>
+                  <span>将修改</span>
+                  <b>当前对象 1 项</b>
+                </p>
+                <p>
+                  <span>不会修改</span>
+                  <b>永久硬约束与其他家庭数据</b>
+                </p>
+                <p>
+                  <span>写入状态</span>
+                  <b>尚未提交</b>
+                </p>
+              </div>
+            ) : (
+              <button
+                className="primary-button full"
+                onClick={() => setAgentDraftReady(true)}
+                type="button"
+              >
+                生成结构化待确认结果
+              </button>
+            )}
+          </section>
+          <div className="write-warning compact">
+            <span>!</span>
+            <div>
+              <b>Agent 不能直接写入</b>
+              <p>权限、安全、并发和幂等校验与结构化页面完全一致。</p>
+            </div>
+          </div>
+          {agentDraftReady && (
+            <div className="agent-workspace-actions">
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  setToast("正在修改同一待确认操作，不会创建第二份记录。")
+                }
+                type="button"
+              >
+                修改同一确认单
+              </button>
+              <button
+                className="primary-button"
+                onClick={() => navigate(agentReturnScreen)}
+                type="button"
+              >
+                回到来源页确认
+              </button>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  };
 
   const renderMealConditions = () => (
     <>
@@ -2764,9 +3562,9 @@ export default function Home() {
       </div>
       <BottomNav
         active="shopping"
-        onFamily={() => navigate("f01")}
         onHome={() => navigate("h01")}
         onInventory={() => navigate("i01")}
+        onMine={() => navigate("m01")}
         onShopping={() => navigate("s01")}
       />
     </>
@@ -3114,95 +3912,77 @@ export default function Home() {
     );
   };
 
-  const renderCompletionState = () => (
+  const renderCompletionControls = () => (
+    <section className="completion-inline">
+      <div className="section-heading compact">
+        <div>
+          <span className="eyebrow">先确认完成状态</span>
+          <h2>实际做了多少？</h2>
+        </div>
+        <span className="soft-tag">默认全部完成</span>
+      </div>
+      <p className="micro-copy">
+        选择后立即在本页核对预计消耗；确认前不会扣库存或保存剩菜。
+      </p>
+      <div className="completion-options">
+        {[
+          {
+            id: "all" as const,
+            title: "全部完成",
+            text: "按菜单份量预填预计消耗",
+            mark: "100%",
+          },
+          {
+            id: "partial" as const,
+            title: "只做了一部分",
+            text: "先按菜排除，再调整实际用量",
+            mark: "部分",
+          },
+          {
+            id: "none" as const,
+            title: "没有做",
+            text: "保持零消耗并结束本餐",
+            mark: "0%",
+          },
+        ].map((option) => (
+          <button
+            aria-pressed={completionState === option.id}
+            className={completionState === option.id ? "is-selected" : ""}
+            key={option.id}
+            onClick={() => setCompletionState(option.id)}
+            type="button"
+          >
+            <span>{option.mark}</span>
+            <div>
+              <b>{option.title}</b>
+              <small>{option.text}</small>
+            </div>
+            <i>{completionState === option.id ? "●" : "○"}</i>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+
+  const renderCompletionAndDeduction = () => (
     <>
       <PrototypeHeader
         eyebrow="结束本次做饭"
         onBack={() => navigate("c02")}
-        title="实际做了多少？"
-      />
-      <div className="screen-body completion-body">
-        <div className="completion-wire" aria-hidden="true">
-          <span>完</span>
-        </div>
-        <section className="intro-copy centered">
-          <h1>先确认完成状态</h1>
-          <p>
-            这一步只决定后续如何估算消耗。库存还没有扣减，下一页仍可逐项修改。
-          </p>
-        </section>
-        <div className="completion-options">
-          {[
-            {
-              id: "all" as const,
-              title: "全部完成",
-              text: "按菜单份量预填预计消耗",
-              mark: "100%",
-            },
-            {
-              id: "partial" as const,
-              title: "只做了一部分",
-              text: "保留菜品，逐项核对实际用量",
-              mark: "部分",
-            },
-            {
-              id: "none" as const,
-              title: "没有做",
-              text: "不扣库存，可记录中止原因",
-              mark: "0%",
-            },
-          ].map((option) => (
-            <button
-              aria-pressed={completionState === option.id}
-              className={
-                completionState === option.id ? "is-selected" : ""
-              }
-              key={option.id}
-              onClick={() => setCompletionState(option.id)}
-              type="button"
-            >
-              <span>{option.mark}</span>
-              <div>
-                <b>{option.title}</b>
-                <small>{option.text}</small>
-              </div>
-              <i>{completionState === option.id ? "●" : "○"}</i>
-            </button>
-          ))}
-        </div>
-        <div className="process-note">
-          <b>当前还不会发生</b>
-          <span>不会自动扣库存 · 不会自动保存剩菜 · 不会把临时反馈变成硬约束</span>
-        </div>
-      </div>
-      <div className="sticky-action">
-        <button
-          className="primary-button"
-          onClick={() => {
-            if (completionState === "none") {
-              setMealStarted(false);
-              setMealRecorded(true);
-              navigate("c05");
-            } else {
-              navigate("c04");
-            }
-          }}
-          type="button"
-        >
-          {completionState === "none" ? "确认没有做" : "下一步：核对实际消耗"}
-        </button>
-      </div>
-    </>
-  );
-
-  const renderDeduction = () => (
-    <>
-      <PrototypeHeader
-        eyebrow={completionState === "partial" ? "部分完成" : "全部完成"}
-        onBack={() => navigate("c03")}
-        title="核对实际消耗"
+        title="完成与库存确认"
       />
       <div className="screen-body deduction-body">
+        {renderCompletionControls()}
+        {completionState === "none" ? (
+          <section className="zero-deduction-card">
+            <span>0</span>
+            <div>
+              <h2>本餐没有做</h2>
+              <p>不会写入库存消耗，也不会创建剩菜批次；只记录本餐已中止。</p>
+            </div>
+          </section>
+        ) : (
+          <>
         <div className="write-warning">
           <span>!</span>
           <div>
@@ -3399,6 +4179,8 @@ export default function Home() {
             {leftover ? " · 1 个剩菜批次" : ""}
           </b>
         </div>
+          </>
+        )}
       </div>
       <div className="sticky-action">
         <button
@@ -3411,7 +4193,9 @@ export default function Home() {
             ? "本餐已记录，不会重复写入"
             : deductionSubmitting
               ? "正在写入，请勿重复提交…"
-              : "确认扣减并完成本餐"}
+              : completionState === "none"
+                ? "确认没有做并结束本餐"
+                : "确认扣减并完成本餐"}
         </button>
       </div>
     </>
@@ -3537,19 +4321,23 @@ export default function Home() {
   };
 
   const renderScreen = () => {
+    if (screen === "a01") return renderAccount();
     if (screen.startsWith("o")) return renderOnboarding();
     if (screen === "h01") return renderHome();
     if (screen === "i01") return renderInventory();
+    if (screen === "i02") return renderInventorySearch();
+    if (screen === "i03") return renderInventoryLot();
     if (screen === "r01") return renderMealConditions();
     if (screen === "r02") return renderMenuComparison();
     if (screen === "r03") return renderMenuDetail();
     if (screen === "s01") return renderShopping();
     if (screen === "s02") return renderPendingInventory();
-    if (screen === "f01") return renderFamily();
+    if (screen === "m01") return renderMine();
+    if (screen === "m02") return renderPrivacyAndInvites();
+    if (screen === "ag01") return renderAgentWorkspace();
     if (screen === "c01") return renderPreCook();
     if (screen === "c02") return renderCooking();
-    if (screen === "c03") return renderCompletionState();
-    if (screen === "c04") return renderDeduction();
+    if (screen === "c03") return renderCompletionAndDeduction();
     return renderReceipt();
   };
 
@@ -3560,7 +4348,7 @@ export default function Home() {
           <span>MA</span>
           <div>
             <b>Meal Agent</b>
-            <small>技术验证产品基线 · v0.3</small>
+            <small>技术验证产品基线 · v0.4</small>
           </div>
         </div>
         <div className="review-legend">
@@ -3645,6 +4433,7 @@ export default function Home() {
                 <li>把采购项从“已买”确认到“已入库”</li>
                 <li>部分完成：调整鸡蛋、排除小葱、保存剩菜</li>
                 <li>模拟库存冲突并解释重算结果</li>
+                <li>从业务页进入 Agent 二级页并返回确认</li>
               </ol>
             </section>
             <button
@@ -3731,7 +4520,7 @@ export default function Home() {
               <i>
                 <em
                   style={{
-                    width: ["c03", "c04", "c05"].includes(screen)
+                    width: ["c03", "c04"].includes(screen)
                       ? "75%"
                       : "25%",
                   }}
@@ -3749,7 +4538,8 @@ export default function Home() {
           <section className="decision-note">
             <span className="eyebrow">请特别留意</span>
             <p>“已买”与“已入库”是否清楚？</p>
-            <p>“做完”后再确认扣减是否显得重复？</p>
+            <p>完成状态与库存确认合并后是否足够轻量？</p>
+            <p>“我的”是否能同时承载个人与家庭设置？</p>
           </section>
         </aside>
       </div>
