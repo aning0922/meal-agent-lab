@@ -53,7 +53,7 @@
 
 ### 共享契约
 
-- 覆盖 User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint 和创建家庭关联结果。
+- 覆盖 User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、安全 owner profile 响应和创建家庭关联结果。
 - 覆盖 InventoryLot、InventoryEvent、日期来源、置信度、数量、创建批次和最小 consumed command 请求/结果。
 - 覆盖 Meal、Recipe、Recommendation 和必须通过 hard constraint check 的候选。
 - 覆盖 ShoppingItem 的待购买、已买待入库、已入库和取消状态。
@@ -65,9 +65,9 @@
 
 - ADR-0001/0002/0003、系统概览、领域模型、阶段 05 报告和共享 contract 已逐项核对；客户端边界、运行时、数据层、身份映射、家庭隔离、错误码/status、幂等作用域和库存事件规则一致。
 - `apps/`、`services/` 和 `packages/` 中不存在第二份同名核心 DTO。低保真原型的局部采购展示类型已明确命名为 `PrototypeShoppingItem`；阶段 04 spike 只保留 `SpikeDraft`、`SpikeApiResult`、`MockAuthSession` 等一次性平台验证类型。`services/` 尚无正式业务实现。
-- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、日期上限/类型唯一、批次创建结果关联与初始版本、库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量，并增加反例断言。
+- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、私密 owner constraint redaction、日期上限/类型唯一、初始事件可重建批次数量、库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量，并增加反例断言。
 - 根工作区 contracts 检查通过：TypeScript、10/10 运行时测试和 declaration/JavaScript 构建；阶段 04 客户端 spike 检查通过：TypeScript、5/5 测试和微信小程序构建；低保真原型通过 TypeScript、2/2 渲染测试、构建和 ESLint。
-- 74/74 个本地 Markdown 链接可解析，17/17 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
+- 74/74 个本地 Markdown 链接可解析，18/18 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
 - 提交范围扫描未发现密钥签名、非空 Secret、真实邮箱/手机号或真实用户夹具；`.env.example` 只有空值/假适配器配置。依赖目录、构建目录、日志和 TypeScript 增量缓存均被忽略，没有生成物进入阶段 05 提交。
 
 ## 当前验证状态
@@ -77,6 +77,13 @@
 - 阶段 04 已有的小程序构建、开发者工具模拟器、Mock 登录/存储/网络与适配层测试；
 - 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建；
 - 阶段 05 收尾的一致性、重复核心类型、提交范围、文档链接和静态检查。
+
+### 依赖审计
+
+- 正式 Stage 05 根工作区/contracts 的 `pnpm audit --prod` 为 0 个已知漏洞。
+- 一次性阶段 04 Taro spike 的独立依赖树命中 12 个通告（1 critical、9 moderate、2 low），来自 Taro 4.2.1 固定的 swiper/esbuild/webpack/webpack-dev-server/uuid 范围。
+- 低保真原型的独立依赖树命中 11 个通告（5 high、6 moderate），来自 Next/PostCSS/Sharp 范围。
+- 两个应用都不是正式 App 或 Stage 05 运行时，不得部署或复用到正式工程。消除通告需要升级并重新验证对应实验技术栈，不能用跨不兼容版本的 override 伪装为已修复。
 
 ### 待验证
 

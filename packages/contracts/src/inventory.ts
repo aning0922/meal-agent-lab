@@ -451,6 +451,54 @@ const addLotEventConsistencyIssues = (
   }
 };
 
+const addInitialQuantityRebuildIssues = (
+  result: { lot: InventoryLot; event: InventoryEvent },
+  context: z.RefinementCtx,
+) => {
+  const quantity = result.lot.currentQuantity;
+  const change = result.event.quantityChange;
+  let canRebuild = false;
+
+  if (quantity.kind === "exact") {
+    canRebuild =
+      change?.kind === "numeric" &&
+      change.precision === "exact" &&
+      change.confidence === undefined &&
+      change.amount === quantity.amount &&
+      change.unit === quantity.unit &&
+      change.originalText === quantity.originalText;
+  }
+
+  if (quantity.kind === "approximate") {
+    canRebuild =
+      quantity.amount !== undefined &&
+      quantity.unit !== undefined &&
+      change?.kind === "numeric" &&
+      change.precision === "estimated" &&
+      change.confidence === quantity.confidence &&
+      change.amount === quantity.amount &&
+      change.unit === quantity.unit &&
+      change.originalText === quantity.originalText;
+  }
+
+  if (quantity.kind === "qualitative") {
+    canRebuild =
+      change?.kind === "qualitative" &&
+      change.fromLevel === "empty" &&
+      change.toLevel === quantity.level &&
+      change.originalText === quantity.originalText;
+  }
+
+  if (!canRebuild) {
+    context.addIssue({
+      code: "custom",
+      path: ["event", "quantityChange"],
+      message:
+        "initial event quantity must canonically rebuild the returned lot quantity",
+    });
+  }
+};
+
 export const createInventoryLotResultSchema = z
   .strictObject({
     lot: inventoryLotSchema,
@@ -458,6 +506,7 @@ export const createInventoryLotResultSchema = z
   })
   .superRefine((result, context) => {
     addLotEventConsistencyIssues(result, context);
+    addInitialQuantityRebuildIssues(result, context);
 
     if (result.lot.origin !== "manual" || result.lot.state !== "active") {
       context.addIssue({

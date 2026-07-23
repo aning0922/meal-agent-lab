@@ -118,6 +118,8 @@ RLS policy 分为：
 
 对其他家庭资源统一返回 `404 RESOURCE_NOT_FOUND`，避免确认资源是否存在；已确认在当前家庭内但缺少操作权限时返回 `403 FORBIDDEN`。成员私有饮食约束在家庭隔离之外继续执行字段级授权和 response redaction。
 
+创建家庭响应中的 owner profile 使用专用安全响应 schema，只允许 `visibility = household` 的约束。`subject_and_owner` 约束在序列化/缓存前必须解析失败，不能进入 user-scope 幂等 response body。
+
 ### API 风格与版本
 
 - 使用 HTTPS JSON REST API，路径前缀 `/api/v1`。

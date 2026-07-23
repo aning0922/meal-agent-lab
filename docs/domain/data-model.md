@@ -79,6 +79,15 @@ Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 
 
 同时保留用户原始表达和可选的标准化数量，例如“半颗白菜”和估算标准单位。系统应允许“充足、不多、快没了”等模糊状态，避免制造虚假的精度。
 
+批次初始 `acquired` 事件必须能重建当前数量：
+
+- exact 使用同 amount/unit/originalText 的 exact numeric change；
+- approximate 只有在 amount 与 unit 同时存在时才保留为 approximate，使用同 amount/unit/originalText/confidence 的 estimated numeric change；
+- 未得到成对 amount/unit 的 approximate 输入必须经用户确认后规范化为 qualitative，不能把缺少一半的数值结构写入批次；
+- qualitative 使用 `empty → 当前 level`，并保留 originalText。
+
+模型或未确认识别不能决定 qualitative level，也不能补造 amount/unit。
+
 ## 幂等与版本
 
 - 创建事件或推进状态的 command 必须有 `Idempotency-Key`。

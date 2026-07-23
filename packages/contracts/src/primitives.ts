@@ -191,13 +191,26 @@ export const exactQuantitySchema = z.strictObject({
   originalText: z.string().min(1).max(200).optional(),
 });
 
-export const approximateQuantitySchema = z.strictObject({
-  kind: z.literal("approximate"),
-  amount: z.number().finite().positive().optional(),
-  unit: z.string().min(1).max(32).optional(),
-  originalText: z.string().min(1).max(200),
-  confidence: confidenceSchema,
-});
+export const approximateQuantitySchema = z
+  .strictObject({
+    kind: z.literal("approximate"),
+    amount: z.number().finite().positive().optional(),
+    unit: z.string().min(1).max(32).optional(),
+    originalText: z.string().min(1).max(200),
+    confidence: confidenceSchema,
+  })
+  .superRefine((quantity, context) => {
+    if (
+      (quantity.amount === undefined) !== (quantity.unit === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["unit"],
+        message:
+          "approximate amount and unit must be both present or both absent",
+      });
+    }
+  });
 
 export const qualitativeQuantitySchema = z.strictObject({
   kind: z.literal("qualitative"),
@@ -227,15 +240,26 @@ export const nonEmptyQuantitySchema = quantitySchema.superRefine(
 );
 export type NonEmptyQuantity = z.infer<typeof nonEmptyQuantitySchema>;
 
-export const quantityDeltaSchema = z.strictObject({
-  kind: z.literal("numeric"),
-  amount: z.number().finite().refine((amount) => amount !== 0, {
-    message: "quantity delta cannot be zero",
-  }),
-  unit: z.string().min(1).max(32),
-  precision: z.enum(["exact", "estimated"]),
-  originalText: z.string().min(1).max(200).optional(),
-});
+export const quantityDeltaSchema = z
+  .strictObject({
+    kind: z.literal("numeric"),
+    amount: z.number().finite().refine((amount) => amount !== 0, {
+      message: "quantity delta cannot be zero",
+    }),
+    unit: z.string().min(1).max(32),
+    precision: z.enum(["exact", "estimated"]),
+    confidence: confidenceSchema.optional(),
+    originalText: z.string().min(1).max(200).optional(),
+  })
+  .superRefine((change, context) => {
+    if (change.precision === "exact" && change.confidence !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["confidence"],
+        message: "exact quantity changes cannot carry estimated confidence",
+      });
+    }
+  });
 export type QuantityDelta = z.infer<typeof quantityDeltaSchema>;
 
 export const qualitativeQuantityChangeSchema = z.strictObject({

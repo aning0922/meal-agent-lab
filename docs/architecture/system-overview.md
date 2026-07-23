@@ -56,7 +56,9 @@ apps/*                  客户端与运营界面
 - 已认证但未绑定家庭的路由使用 `AuthenticatedUserContext`；家庭资源只能在事务内通过 active Membership bootstrap 为 `HouseholdContext`。
 - Household 是数据隔离边界，每个家庭资源同时使用应用授权、`household_id`、复合外键和 PostgreSQL RLS。
 - 成员私有饮食约束另做字段级 response redaction，不能只依赖家庭 RLS。
+- 创建家庭结果使用安全 owner profile 契约，`subject_and_owner` 约束不得进入响应或幂等缓存。
 - InventoryLot 是批次与当前投影，InventoryEvent 是不可变库存事实；纠错追加事件。
+- 初始 `acquired` 事件按 canonical quantity mapping 保存 kind、amount/unit 与置信信息，必须能重建批次当前数量。
 - 日期保留类型、来源、置信度和规则版本；购买日期不能替代生产日期。
 - 创建家庭使用用户级幂等，家庭资源使用家庭级幂等；幂等记录、领域写入、库存事件和投影在同一事务提交。
 - 过敏、权限、食品安全和库存一致性由确定性规则、应用服务和数据库约束执行。

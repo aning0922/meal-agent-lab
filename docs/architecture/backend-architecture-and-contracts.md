@@ -220,6 +220,8 @@ RLS 只解决家庭行隔离，不解决同一家庭内的敏感字段。`subjec
 - 其他成员只能看到“存在不可绕过的限制”及必要的安全阻断，不返回敏感原文；
 - 日志、分析和模型 prompt 不默认包含成员姓名和完整限制。
 
+`createHouseholdResultSchema.ownerProfile` 使用专用 `safeOwnerProfileResponseSchema`，只接受 `visibility = household` 的约束；任何 `subject_and_owner` 约束都会在响应序列化前解析失败。因此创建家庭的 user-scope 幂等响应缓存不能写入私密 dietary constraint。
+
 ## 7. 幂等、库存事件与并发
 
 ### 7.1 幂等记录
@@ -269,6 +271,17 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 - 模糊数量保持原始表达和置信度，不伪造精确值；
 - 纠错追加 `corrected` 事件并引用原事件，不修改历史。
 
+初始 `acquired` 事件必须能规范化重建 `lot.currentQuantity`：
+
+| lot quantity | 初始 event quantityChange | 规则 |
+| --- | --- | --- |
+| `exact` | `numeric` | amount/unit/originalText 相同，`precision = exact`，不带 confidence |
+| `approximate` | `numeric` | 只有 amount 与 unit 同时存在时可持久化；二者、originalText、confidence 必须相同，`precision = estimated` |
+| 无结构化 amount/unit 的 approximate 输入 | 先规范化为 `qualitative` lot | 不允许在结果中保留为 approximate；服务端按确认结果选择 level 并保留 originalText |
+| `qualitative` | `qualitative` | `fromLevel = empty`，`toLevel = lot.level`，originalText 相同 |
+
+amount/unit 只出现一个、event kind 不匹配、数值或单位不同都会使 `createInventoryLotResultSchema` 失败。规范化是确定性应用逻辑；模型或未确认识别不得自行选择 qualitative level。
+
 日期使用独立 `kind` 和来源：
 
 - `purchase_date` 不能被解释为 `production_date`；
@@ -307,7 +320,7 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 | 文件 | 主要 contract |
 | --- | --- |
 | `primitives.ts` | opaque IDs、日期/来源/置信度、精确/模糊数量 |
-| `identity.ts` | User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、登录及创建家庭请求/结果 |
+| `identity.ts` | User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、安全 owner profile 响应、登录及创建家庭请求/结果 |
 | `inventory.ts` | InventoryLot、InventoryEvent、创建批次与最小 consumed command 的请求/结果 |
 | `meals.ts` | Meal、Recipe、Recommendation 及候选 |
 | `shopping.ts` | ShoppingItem 与来源/状态 |
@@ -331,6 +344,7 @@ contract 设计规则：
 - 日期来源和规则估算要求；
 - 库存事件方向、版本递增和纠错引用；
 - 创建批次结果必须是同家庭/同批次的初始 `acquired` 事件和 version 1；
+- 创建家庭结果拒绝 `subject_and_owner` 约束，初始事件的 kind/amount/unit/provenance 必须可重建 lot quantity；
 - 每个 lot 的日期类型唯一且有数量上限；
 - 推荐候选必须有 hard constraint pass；
 - 已买与已入库状态分离；

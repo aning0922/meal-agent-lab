@@ -131,6 +131,10 @@ test("identity, household, membership and profile contracts compose without usin
     updatedAt: now,
     version: 0,
   });
+  const safeOwnerProfile = {
+    ...profile,
+    dietaryConstraints: [],
+  };
 
   assert.equal(identity.userId, user.id);
   assert.equal(session.userId, user.id);
@@ -139,7 +143,7 @@ test("identity, household, membership and profile contracts compose without usin
     createHouseholdResultSchema.safeParse({
       household,
       membership,
-      ownerProfile: profile,
+      ownerProfile: safeOwnerProfile,
     }).success,
     true,
   );
@@ -147,7 +151,18 @@ test("identity, household, membership and profile contracts compose without usin
     createHouseholdResultSchema.safeParse({
       household,
       membership,
-      ownerProfile: { ...profile, householdId: ids.household2 },
+      ownerProfile: {
+        ...safeOwnerProfile,
+        householdId: ids.household2,
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createHouseholdResultSchema.safeParse({
+      household,
+      membership,
+      ownerProfile: profile,
     }).success,
     false,
   );
@@ -606,6 +621,114 @@ test("inventory create and consume results keep lot, event, household and versio
       event: { ...initialEvent, type: "produced" },
     }).success,
     false,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      ...created,
+      event: {
+        ...initialEvent,
+        quantityChange: { ...initialEvent.quantityChange, amount: 3 },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      ...created,
+      event: {
+        ...initialEvent,
+        quantityChange: { ...initialEvent.quantityChange, unit: "kg" },
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      ...created,
+      event: {
+        ...initialEvent,
+        quantityChange: {
+          kind: "qualitative",
+          fromLevel: "empty",
+          toLevel: "some",
+        },
+      },
+    }).success,
+    false,
+  );
+
+  const approximateCreated = {
+    lot: {
+      ...initialLot,
+      currentQuantity: {
+        kind: "approximate",
+        amount: 0.5,
+        unit: "box",
+        originalText: "半盒",
+        confidence: "medium",
+      },
+    },
+    event: {
+      ...initialEvent,
+      quantityChange: {
+        kind: "numeric",
+        amount: 0.5,
+        unit: "box",
+        precision: "estimated",
+        confidence: "medium",
+        originalText: "半盒",
+      },
+    },
+  } as const;
+  assert.equal(
+    createInventoryLotResultSchema.safeParse(approximateCreated).success,
+    true,
+  );
+  assert.equal(
+    createInventoryLotResultSchema.safeParse({
+      lot: {
+        ...approximateCreated.lot,
+        currentQuantity: {
+          kind: "approximate",
+          originalText: "约半盒",
+          confidence: "low",
+        },
+      },
+      event: {
+        ...approximateCreated.event,
+        quantityChange: {
+          kind: "qualitative",
+          fromLevel: "empty",
+          toLevel: "unknown",
+          originalText: "约半盒",
+        },
+      },
+    }).success,
+    false,
+  );
+
+  const qualitativeCreated = {
+    lot: {
+      ...initialLot,
+      currentQuantity: {
+        kind: "qualitative",
+        level: "some",
+        originalText: "还有一些",
+      },
+    },
+    event: {
+      ...initialEvent,
+      quantityChange: {
+        kind: "qualitative",
+        fromLevel: "empty",
+        toLevel: "some",
+        originalText: "还有一些",
+      },
+    },
+  } as const;
+  assert.equal(
+    createInventoryLotResultSchema.safeParse(qualitativeCreated).success,
+    true,
   );
 
   const consumeRequest = consumeInventoryLotRequestSchema.parse({

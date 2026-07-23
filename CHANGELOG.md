@@ -18,3 +18,4 @@
 - 建立 `@meal-agent/contracts` 正式共享契约，覆盖身份、家庭、库存批次与事件、餐食与推荐、采购和统一 API 语义，并通过类型检查、10 个测试和构建。
 - 明确 local/test/staging/production 隔离边界与阶段 06“登录 → 家庭 → 库存批次 → 幂等重放 → 最小 consumed 事件”纵切范围，同时保留阶段 04 Deferred 项。
 - 完成阶段 05 合并前修订：拆分认证/家庭上下文与 RLS bootstrap，区分用户级/家庭级幂等，并加强 session、库存创建结果、日期、分页和 schema 推导不变量。
+- 完成第二轮合并前修订：创建家庭结果使用安全 owner profile，初始库存事件按 canonical quantity mapping 可重建批次投影。

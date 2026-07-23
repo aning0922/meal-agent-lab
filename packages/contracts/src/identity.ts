@@ -256,11 +256,27 @@ export const personProfileSchema = z.strictObject({
 });
 export type PersonProfile = z.infer<typeof personProfileSchema>;
 
+const householdVisibleDietaryConstraintSchema =
+  dietaryConstraintSchema.refine(
+    (constraint) => constraint.visibility === "household",
+    {
+      message:
+        "safe profile responses cannot contain subject_and_owner constraints",
+    },
+  );
+
+export const safeOwnerProfileResponseSchema = personProfileSchema.extend({
+  dietaryConstraints: z.array(householdVisibleDietaryConstraintSchema),
+});
+export type SafeOwnerProfileResponse = z.infer<
+  typeof safeOwnerProfileResponseSchema
+>;
+
 export const createHouseholdResultSchema = z
   .strictObject({
     household: householdSchema,
     membership: membershipSchema,
-    ownerProfile: personProfileSchema,
+    ownerProfile: safeOwnerProfileResponseSchema,
   })
   .superRefine((result, context) => {
     if (
