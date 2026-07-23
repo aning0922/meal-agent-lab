@@ -1,7 +1,11 @@
 import { createServer } from 'node:http'
 
-const host = '127.0.0.1'
-const port = 8787
+const host = process.env.MEAL_AGENT_MOCK_API_HOST ?? '127.0.0.1'
+const port = Number(process.env.MEAL_AGENT_MOCK_API_PORT ?? '8787')
+
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error('MEAL_AGENT_MOCK_API_PORT 必须是有效端口号')
+}
 
 const server = createServer((request, response) => {
   if (request.method === 'GET' && request.url === '/spike/today') {

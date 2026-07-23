@@ -13,6 +13,7 @@
     "check": "pnpm run typecheck && pnpm run test && pnpm run build:weapp",
     "dev:weapp": "taro build --type weapp --watch",
     "mock:api": "node scripts/mock-api.mjs",
+    "prepare:test-account": "pnpm run build:weapp && node scripts/prepare-test-account.mjs",
     "preview:weapp": "node scripts/open-weapp.mjs",
     "test": "node --import tsx --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit"

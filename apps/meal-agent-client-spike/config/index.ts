@@ -15,6 +15,11 @@ export default defineConfig<'webpack5'>(async (merge, { command }) => {
     outputRoot: 'dist',
     framework: 'react',
     compiler: 'webpack5',
+    defineConstants: {
+      __MEAL_AGENT_MOCK_API_BASE_URL__: JSON.stringify(
+        process.env.MEAL_AGENT_MOCK_API_BASE_URL ?? 'http://127.0.0.1:8787'
+      )
+    },
     cache: {
       enable: false
     },

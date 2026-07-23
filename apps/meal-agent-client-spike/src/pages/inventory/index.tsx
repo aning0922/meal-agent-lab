@@ -3,7 +3,7 @@ import { Button, View } from '@tarojs/components'
 import { platform } from '../../platform'
 
 export default function InventoryPage() {
-  const draft = platform.draft.load()
+  const draft = platform.storage.loadDraft()
 
   return (
     <View className='page'>

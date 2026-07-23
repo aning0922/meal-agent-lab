@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-低保真原型已完成独立评审并修订为产品基线 v0.4。首发客户端跨端技术验证已经完成，[ADR-0001](architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 接受 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3，以微信小程序优先。当前仍未开始正式业务代码，Android、iOS、HarmonyOS 尚未实机验证，后端运行时、身份体系、部署环境和模型供应商也未锁定。
+低保真原型已完成独立评审并修订为产品基线 v0.4。阶段 04 已完成可在当前环境执行的首发客户端跨端验证，[ADR-0001](architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 接受 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3，以微信小程序优先。测试号真机预览为 `Deferred — 外部依赖`。当前仍未开始正式业务代码，Android、iOS、HarmonyOS 尚未实机验证，后端运行时、身份体系、部署环境和模型供应商也未锁定。
 
 ## 已形成的共识
 
@@ -52,9 +52,11 @@
 - 审计 macOS、Git、Node.js、pnpm、微信开发者工具及三套原生平台工具链；本次只安装微信开发者工具，没有提前安装 HBuilderX、Xcode、Android SDK 或 DevEco Studio。
 - 基于 2026-07-23 的官方文档比较 Taro、uni-app x 和分端实现，记录微信、Android、iOS、HarmonyOS、平台 API、原生扩展、测试、调试和 CI 差异。
 - 在 `apps/meal-agent-client-spike/` 建立明确的一次性实验，包含“今天”“库存”页面壳、导航、本地状态、模拟 API 和平台适配接口，不包含正式业务。
-- 固定 Taro 4.2.1 依赖和安装脚本白名单；TypeScript 检查、4 个适配层测试、peer dependency 检查和微信小程序构建通过。
-- 在微信开发者工具游客模式完成人工预览，验证两个页面、导航、本地写入和本机模拟 API。
-- [ADR-0001](architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 状态为 `Accepted`，同时把 Taro RN 版本滞后、Harmony 独立工具链、真实微信账号/真机和平台能力语义列为未验证风险。
+- `Pass`：固定 Taro 4.2.1 依赖和安装脚本白名单、TypeScript 检查、5 个适配层测试、peer dependency 检查和微信小程序构建。
+- 建立 `AuthPort`、`StoragePort`、`NetworkPort`；Mock 登录、恢复和退出、本地存储及 Mock API 为 `Pass`。
+- 在微信开发者工具游客模式完成人工模拟器预览，验证两个页面、导航、本地写入和本机模拟 API。
+- 提供微信测试号预览目录和局域网 Mock API 的可复现命令；由于尚无本轮测试号真机扫码证据，结果保持 `Deferred — 外部依赖`。
+- [ADR-0001](architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 状态为 `Accepted`，同时把 Taro RN 版本滞后、Harmony 独立工具链、真实微信登录/合法域名和平台能力语义列为未验证风险。
 
 ## 产品负责人已确认
 
@@ -66,10 +68,11 @@
 
 ## 建议的下一里程碑
 
-产品与技术可以并行开展三类验证：
+产品与技术可以并行开展四类验证：
 
 1. 按 `docs/design/low-fidelity-prototype.md` 的评审任务开展目标用户测试，记录完成时间、误触、求助和口头理解。
-2. 在正式 `apps/client/` 建立前，用真实微信 AppID 完成登录、合法域名、分享/订阅消息、真机和发布链验证，并单独形成身份体系决定。
-3. 选择后端运行时和部署边界，按 P0 页面状态基线验证幂等写入、批次事件、权限、安全阻断、并发重算和中途恢复。
+2. 条件具备时用微信测试号补做真机预览、真机本地存储和局域网 Mock API；未执行前保持 `Deferred — 外部依赖`。
+3. 选择后端运行时和部署边界；06 最小服务端完成后验证真实微信登录、内部会话和 HTTPS 合法域名。
+4. 按 P0 页面状态基线验证幂等写入、批次事件、权限、安全阻断、并发重算和中途恢复。
 
-Android、iOS、HarmonyOS 分别在进入该平台正式业务开发前建立独立 spike；不能从本次微信实验推定已经可用。
+家庭内测前验证体验版上传；发布候选阶段验证审核和发布链。Android、iOS、HarmonyOS 分别在进入该平台正式业务开发前建立独立 spike；不能从本次微信实验推定已经可用。

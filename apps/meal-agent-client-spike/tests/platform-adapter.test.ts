@@ -42,19 +42,19 @@ test('persists and reloads a spike draft through the storage port', () => {
   const { runtime } = createFakeRuntime()
   const adapter = createPlatformAdapter(runtime)
 
-  assert.deepEqual(adapter.draft.load(), { note: '', updatedAt: null })
+  assert.deepEqual(adapter.storage.loadDraft(), { note: '', updatedAt: null })
 
-  const saved = adapter.draft.save('adapter boundary')
+  const saved = adapter.storage.saveDraft('adapter boundary')
   assert.equal(saved.note, 'adapter boundary')
   assert.match(saved.updatedAt ?? '', /^\d{4}-\d{2}-\d{2}T/)
-  assert.deepEqual(adapter.draft.load(), saved)
+  assert.deepEqual(adapter.storage.loadDraft(), saved)
 })
 
 test('calls the configured mock API through the request port', async () => {
   const { requestedUrls, runtime } = createFakeRuntime()
   const adapter = createPlatformAdapter(runtime, 'http://example.test')
 
-  const result = await adapter.mockApi.loadTodaySignal()
+  const result = await adapter.network.loadTodaySignal()
 
   assert.equal(result.source, 'local-mock')
   assert.deepEqual(requestedUrls, ['http://example.test/spike/today'])
@@ -70,12 +70,40 @@ test('routes both tab pages through the navigation port', async () => {
   assert.deepEqual(navigationUrls, [INVENTORY_ROUTE, TODAY_ROUTE])
 })
 
-test('marks P0 spike capabilities separately from future boundaries', () => {
+test('persists and clears a mock session through the auth port', async () => {
   const { runtime } = createFakeRuntime()
   const adapter = createPlatformAdapter(runtime)
-  const implemented = adapter.capabilities
-    .filter(({ verification }) => verification === 'implemented')
-    .map(({ name }) => name)
 
-  assert.deepEqual(implemented, ['本地存储', '网络请求', '页面导航'])
+  assert.equal(adapter.auth.restore(), null)
+
+  const session = await adapter.auth.login()
+  assert.equal(session.source, 'mock')
+  assert.equal(session.userId, 'stage-04-mock-user')
+  assert.deepEqual(adapter.auth.restore(), session)
+
+  adapter.auth.logout()
+  assert.equal(adapter.auth.restore(), null)
+})
+
+test('uses the four allowed verification results without overstating deferred work', () => {
+  const { runtime } = createFakeRuntime()
+  const adapter = createPlatformAdapter(runtime)
+  const byName = new Map(
+    adapter.capabilities.map(({ name, result }) => [name, result])
+  )
+
+  assert.equal(byName.get('本地存储'), 'Pass')
+  assert.equal(byName.get('Mock API 网络'), 'Pass')
+  assert.equal(byName.get('Mock 登录'), 'Pass')
+  assert.equal(byName.get('真实微信登录'), 'Deferred — 外部依赖')
+  assert.equal(byName.get('分享'), 'Deferred — 外部依赖')
+  assert.equal(byName.get('相机'), 'Not applicable')
+  assert.equal(byName.get('外部通知'), 'Not applicable')
+  assert.equal(
+    adapter.capabilities.some(
+      ({ name, result }) =>
+        name === '真实微信登录' && result === 'Pass'
+    ),
+    false
+  )
 })

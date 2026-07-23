@@ -2,25 +2,40 @@ import { useEffect, useState } from 'react'
 import { Button, Input, Text, View } from '@tarojs/components'
 
 import { platform } from '../../platform'
-import type { SpikeApiResult, SpikeDraft } from '../../platform/contracts'
+import type {
+  MockAuthSession,
+  SpikeApiResult,
+  SpikeDraft
+} from '../../platform/contracts'
 
 export default function TodayPage() {
   const [draft, setDraft] = useState<SpikeDraft>({ note: '', updatedAt: null })
+  const [session, setSession] = useState<MockAuthSession | null>(null)
   const [apiResult, setApiResult] = useState<SpikeApiResult | null>(null)
   const [apiStatus, setApiStatus] = useState('尚未调用本地模拟 API')
 
   useEffect(() => {
-    setDraft(platform.draft.load())
+    setDraft(platform.storage.loadDraft())
+    setSession(platform.auth.restore())
   }, [])
 
   const saveDraft = () => {
-    setDraft(platform.draft.save(draft.note))
+    setDraft(platform.storage.saveDraft(draft.note))
+  }
+
+  const loginWithMock = async () => {
+    setSession(await platform.auth.login())
+  }
+
+  const logoutMock = () => {
+    platform.auth.logout()
+    setSession(null)
   }
 
   const callMockApi = async () => {
     setApiStatus('请求中…')
     try {
-      const result = await platform.mockApi.loadTodaySignal()
+      const result = await platform.network.loadTodaySignal()
       setApiResult(result)
       setApiStatus('模拟 API 调用成功')
     } catch (error) {
@@ -59,6 +74,26 @@ export default function TodayPage() {
       </View>
 
       <View className='card'>
+        <View className='card-title'>Mock 登录</View>
+        <View className='body'>
+          只验证 AuthPort、Mock 会话与本地恢复；不会调用 wx.login。
+        </View>
+        <View className='button-row'>
+          <Button className='button' onClick={loginWithMock}>
+            Mock 登录
+          </Button>
+          <Button className='button button-secondary' onClick={logoutMock}>
+            退出 Mock
+          </Button>
+        </View>
+        <View className='status'>
+          {session
+            ? `${session.displayName} · ${session.source} · ${session.createdAt}`
+            : '当前没有 Mock 会话'}
+        </View>
+      </View>
+
+      <View className='card'>
         <View className='card-title'>模拟 API</View>
         <View className='body'>
           请求本机 127.0.0.1:8787；需要先运行 pnpm mock:api。
@@ -89,7 +124,7 @@ export default function TodayPage() {
           <View className='capability-row' key={capability.name}>
             <Text>{capability.name}</Text>
             <Text className='capability-value'>
-              {capability.verification === 'implemented' ? '已接入实验' : '仅保留接口边界'}
+              {capability.result}
             </Text>
           </View>
         ))}
