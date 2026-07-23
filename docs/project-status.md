@@ -4,75 +4,95 @@
 
 ## 当前阶段
 
-低保真原型已完成独立评审并修订为产品基线 v0.4。阶段 04 已完成可在当前环境执行的首发客户端跨端验证，[ADR-0001](architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 接受 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3，以微信小程序优先。测试号真机预览为 `Deferred — 外部依赖`。当前仍未开始正式业务代码，Android、iOS、HarmonyOS 尚未实机验证，后端运行时、身份体系、部署环境和模型供应商也未锁定。
+阶段 05“后端架构与共享契约定稿”已完成。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略已经由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受。
+
+[`@meal-agent/contracts`](../packages/contracts/) 0.1.0 已成为客户端、未来服务端和测试的共享契约事实源。当前仍没有完整业务服务或正式 App；下一阶段是严格受限的阶段 06 最小服务端纵切。
+
+阶段 04 的微信测试号真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；相机、语音、条码、OCR 和外部通知保持原阶段 `Not applicable`。本阶段没有把任何 Deferred 项写为 Pass。
 
 ## 已形成的共识
 
 - 产品定位为家庭餐食决策与厨房库存系统，Agent 是入口而不是唯一界面。
 - 首要风险是库存维护成本，而不是模型生成能力。
-- 库存必须按批次和事件管理。
-- 过敏、日期、权限与食品安全使用确定性校验。
-- 首发应验证完整闭环，不同时建设四套独立原生客户端。
+- 库存必须按批次和追加事件管理；当前数量是可重建投影。
+- 过敏、日期、权限、食品安全和库存一致性使用确定性校验。
+- 微信小程序作为首发目标，正式客户端采用 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3。
+- 后端从 Node.js/Fastify 模块化单体开始，不提前拆微服务。
+- PostgreSQL 18 是唯一事务事实库，不引入向量数据库、Redis 或第二事实库。
+- 微信 `openid` 映射到 `AuthIdentity`，不能作为内部 `User.id`。
+- `User`、`Session`、`Membership` 和 `PersonProfile` 生命周期分离；无登录档案不需要 User。
+- 家庭隔离同时依赖应用授权、复合外键、RLS 和敏感字段 redaction。
+- 写 command 使用幂等 key，库存并发使用 expected version；纠错追加事件。
+- 客户端与服务端共享 `packages/contracts`，不重复定义核心 DTO。
 - 一级入口采用“今天、库存、采购、我的”，Agent 作为上下文入口而非独立 Tab。
 - P0 采用手动搜索、最近项、常用模板和文本录入；语音、条码及 OCR 放入 P1。
-- 菜单按单道主食或 1–3 道菜的一餐组织。
-- 菜单选择采用“建议数量 + 预选组合 + 可选菜增减”，不再使用三个完整菜单三选一。
-- 完成状态与库存扣减采用同页渐进披露，最终确认前不写库存。
-- MVP 使用所有者、普通成员和无登录用餐档案三类身份。
-- P0 只做应用内临期提醒，外部通知放入 P1。
-- 微信小程序作为首发目标，架构保留 Android、iOS 和 HarmonyOS 扩展能力。
+- 菜单采用“建议数量 + 预选组合 + 可选菜增减”，支持单道主食或 1–3 道菜。
+- 完成状态与库存扣减同页渐进披露，最终确认前不写库存。
 
-## 产品基线
+## 阶段 05 完成
 
-产品层选择统一记录在 `docs/product/open-decisions.md`。独立评审结果见 `docs/design/low-fidelity-prototype-review.md`，页面状态与恢复行为见 `docs/design/p0-page-state-baseline.md`。
+### 架构与 ADR
 
-目标用户阶段仍需重点验证：
+- 比较 Node.js、Go、Bun/Deno，选择 Node.js 24 LTS + TypeScript。
+- 比较 Fastify、NestJS、Hono 和 Express，选择 Fastify 5。
+- 比较 PostgreSQL、MySQL、SQLite 和文档数据库，选择 PostgreSQL 18。
+- 比较 Drizzle、Prisma、Kysely/原生 SQL 和 Active Record，选择 Drizzle + `pg`，使用可审查 SQL migration。
+- 确定 P0 只有 `services/api` 一个部署单元；Agent 编排先是内部模块，worker 按 P1 真实需求启用。
+- 确定 local、test、staging、production 的数据库、Secret、微信配置、域名和数据强隔离。
 
-1. 首次录入能否在较低维护成本下完成。
-2. 用户能否理解建议菜品数量，并高效增减可选菜组成一餐。
-3. 采购完成后的入库确认是否足够轻量。
-4. 做饭完成后的库存扣减和剩菜回库是否容易理解。
+### 身份、安全与 API
 
-跨端首发框架已经确认。后端运行时、登录体系、部署环境以及正式菜谱和保质期数据来源仍需通过技术验证与 ADR 确认。
+- 确定 `AuthIdentity → User → Session/Membership → PersonProfile` 映射。
+- 选择高熵 opaque bearer session，数据库只存 digest；不使用 JWT 固化家庭权限。
+- Household 路由显式带 household ID；跨家庭资源返回 404，家庭内权限不足返回 403。
+- 定义 REST `/api/v1`、成功 envelope、RFC 9457 风格错误、stable error code、cursor pagination 和版本策略。
+- 定义幂等作用域、request hash、结果重放、key/body 冲突和 30 天通用记录保留。
+- 定义 InventoryEvent 追加、numeric/qualitative quantity change、乐观版本和负库存阻断。
 
-## 本阶段完成
+### 共享契约
 
-- 完成独立评审并记录按严重程度排序的问题、修复结果和产品负责人决策。
-- 可点击原型扩展为 22 个 P0 页面，补充登录恢复、库存搜索与批次历史、“我的”、成员邀请与隐私、Agent 二级页。
-- 首次引导不再预填虚构确认值；添加档案、食材搜索、手工采购、暂停恢复均可操作。
-- 菜单组合实时检查时间、采购容忍度、餐桌结构、厨艺和必需设备；不满足条件时禁止确认。
-- 食材采购按“待购买 → 已买待入库 → 已入库”迁移，非库存物品买完即完成；批次写入与餐后扣减展示重复提交幂等结果。
-- 开始做饭前会阻止缺货、设备或条件冲突；当前步骤显示所属菜品用量；暂停后可从今天页恢复。
-- 餐后完成状态和库存扣减已合并；默认不保存剩菜，部分完成可先按菜排除，再核对具体批次和用量。
-- 每个页面可模拟空、加载、未知、失败、无权限、部分成功、冲突、安全阻断、重复提交和恢复状态。
-- 已在 390 × 844 窄屏和桌面评审视图重新走查核心闭环；构建、渲染测试和静态检查通过。
+- 覆盖 User、AuthIdentity、Session、Household、Membership、PersonProfile 和 DietaryConstraint。
+- 覆盖 InventoryLot、InventoryEvent、日期来源、置信度、数量与创建批次请求/结果。
+- 覆盖 Meal、Recipe、Recommendation 和必须通过 hard constraint check 的候选。
+- 覆盖 ShoppingItem 的待购买、已买待入库、已入库和取消状态。
+- 覆盖 ApiResult、ApiError、Pagination、Idempotency 和 ExpectedVersion。
+- schema 默认 strict；ID 使用 nominal brand；类型全部从 Zod schema 推导。
+- 类型检查、8 个运行时测试和 declaration/JavaScript 构建通过。
 
-## 客户端技术验证完成
+## 当前验证状态
 
-- 审计 macOS、Git、Node.js、pnpm、微信开发者工具及三套原生平台工具链；本次只安装微信开发者工具，没有提前安装 HBuilderX、Xcode、Android SDK 或 DevEco Studio。
-- 基于 2026-07-23 的官方文档比较 Taro、uni-app x 和分端实现，记录微信、Android、iOS、HarmonyOS、平台 API、原生扩展、测试、调试和 CI 差异。
-- 在 `apps/meal-agent-client-spike/` 建立明确的一次性实验，包含“今天”“库存”页面壳、导航、本地状态、模拟 API 和平台适配接口，不包含正式业务。
-- `Pass`：固定 Taro 4.2.1 依赖和安装脚本白名单、TypeScript 检查、5 个适配层测试、peer dependency 检查和微信小程序构建。
-- 建立 `AuthPort`、`StoragePort`、`NetworkPort`；Mock 登录、恢复和退出、本地存储及 Mock API 为 `Pass`。
-- 在微信开发者工具游客模式完成人工模拟器预览，验证两个页面、导航、本地写入和本机模拟 API。
-- 提供微信测试号预览目录和局域网 Mock API 的可复现命令；由于尚无本轮测试号真机扫码证据，结果保持 `Deferred — 外部依赖`。
-- [ADR-0001](architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 状态为 `Accepted`，同时把 Taro RN 版本滞后、Harmony 独立工具链、真实微信登录/合法域名和平台能力语义列为未验证风险。
+### Pass
 
-## 产品负责人已确认
+- 阶段 04 已有的小程序构建、开发者工具模拟器、Mock 登录/存储/网络与适配层测试；
+- 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建。
 
-1. 继续采用“建议菜品数量 + 预选组合 + 可选菜增减”，不做三个完整菜单三选一。
-2. 合并“完成状态”和“库存扣减”为同一页面。
-3. 第四个一级导航使用“我的”。
+### 待验证
 
-当前没有仍需产品负责人确认且会阻断技术验证的产品问题。
+- Node.js 24 + Fastify 5 + Drizzle + PostgreSQL 18 的实际服务纵切；
+- session 过期/撤销、RLS 连接上下文、复合外键和字段级 redaction；
+- 幂等事务、并发相同 key、库存 version conflict 和负库存；
+- contract → Fastify → OpenAPI 的单一事实源；
+- staging/production 的具体云平台、备份恢复、migration 和可观测性。
 
-## 建议的下一里程碑
+### Deferred — 外部依赖
 
-产品与技术可以并行开展四类验证：
+- 微信测试号真机扫码、真机存储和真机网络；
+- 真实 `wx.login`/code2Session、AppID/AppSecret 和 HTTPS 合法域名；
+- 邀请分享、体验版、审核、发布和 CI 上传凭据；
+- Android、iOS、HarmonyOS 工具链、构建、实机、签名和发布；
+- 生产云账号、域名、证书和托管数据库。
 
-1. 按 `docs/design/low-fidelity-prototype.md` 的评审任务开展目标用户测试，记录完成时间、误触、求助和口头理解。
-2. 条件具备时用微信测试号补做真机预览、真机本地存储和局域网 Mock API；未执行前保持 `Deferred — 外部依赖`。
-3. 选择后端运行时和部署边界；06 最小服务端完成后验证真实微信登录、内部会话和 HTTPS 合法域名。
-4. 按 P0 页面状态基线验证幂等写入、批次事件、权限、安全阻断、并发重算和中途恢复。
+## 阶段 06 最小服务端纵切
 
-家庭内测前验证体验版上传；发布候选阶段验证审核和发布链。Android、iOS、HarmonyOS 分别在进入该平台正式业务开发前建立独立 spike；不能从本次微信实验推定已经可用。
+只实施：
+
+```text
+登录 → 创建/读取家庭 → 手工新增一个库存批次
+    → 相同幂等请求重放同一结果
+```
+
+阶段 06 必须建立 `services/api`、九张最小表、健康检查、微信 fake/real adapter 端口、session、家庭创建/列表和库存批次创建/列表，并验证两个用户/两个家庭隔离、RLS、幂等、并发、会话撤销与日志脱敏。
+
+完整 endpoint、migration、测试门禁和明确非范围见[阶段 05 报告第 10 节](architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
+
+阶段 06 不实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署。真实微信条件不具备时继续标记 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。

@@ -1,0 +1,16 @@
+{
+  "name": "meal-agent-lab",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.14.0 <25"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "pnpm --filter @meal-agent/contracts build",
+    "check": "pnpm --filter @meal-agent/contracts check",
+    "test": "pnpm --filter @meal-agent/contracts test",
+    "typecheck": "pnpm --filter @meal-agent/contracts typecheck"
+  }
+}

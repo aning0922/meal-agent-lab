@@ -74,4 +74,4 @@ v0.4 已满足进入技术验证的产品基线要求：
 - 过敏、日期来源、库存未知、食品安全、权限、并发和幂等均有可验证的阻断或恢复行为。
 - Agent 保持为业务页面的上下文能力，不成为独立一级导航或绕过结构化确认。
 
-技术验证只验证实现可行性、契约和关键风险，不代表跨端框架、后端运行时、身份体系、部署环境或正式数据来源已经决定。
+本次原型评审本身只证明产品基线可进入技术验证，不代表技术路线已经决定。后续阶段已分别通过 [ADR-0001](../architecture/decisions/0001-client-platform-and-cross-platform-framework.md)、[ADR-0002](../architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](../architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 确定客户端、后端与身份/租户基线；具体云部署和正式数据来源仍待验证。

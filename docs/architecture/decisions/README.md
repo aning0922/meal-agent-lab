@@ -17,3 +17,5 @@ ADR 用于记录影响范围大、迁移成本高或存在明显权衡的技术�
 ## 当前决策
 
 - [ADR-0001：首发客户端平台与跨端框架](0001-client-platform-and-cross-platform-framework.md) — `Accepted`，2026-07-23
+- [ADR-0002：后端运行时、Web 框架与持久化基线](0002-backend-runtime-framework-and-persistence.md) — `Accepted`，2026-07-23
+- [ADR-0003：身份、家庭租户与 API 语义](0003-identity-tenancy-and-api-semantics.md) — `Accepted`，2026-07-23

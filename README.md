@@ -4,7 +4,9 @@
 
 ## 当前阶段
 
-项目处于技术验证阶段。产品基线和低保真原型已完成评审；[ADR-0001](docs/architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 已确定微信小程序优先，客户端采用 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3。仓库中只有一次性客户端 spike，尚未开始正式业务实现；后端运行时、身份体系、部署和模型供应商仍待决定。
+项目已完成阶段 05 后端架构与共享契约定稿。客户端由 [ADR-0001](docs/architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 确定微信小程序优先，采用 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3；后端由 [ADR-0002](docs/architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](docs/architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 确定 Node.js 24/Fastify 模块化单体、PostgreSQL 18/Drizzle、内部身份与家庭租户边界。
+
+仓库已有正式 [`@meal-agent/contracts`](packages/contracts/) 契约基线，但尚未实现完整业务服务或正式 App。阶段 04 的真实微信登录、合法域名、真机、体验版/发布和原生平台项仍保持 `Deferred — 外部依赖`。
 
 优先验证的核心闭环：
 
@@ -42,4 +44,6 @@ tests/       跨模块、端到端、安全与固定测试数据
 
 ## 下一步
 
-下一阶段需要确定后端技术栈、身份体系和部署环境；06 最小服务端完成后验证真实微信登录与 HTTPS 合法域名。家庭内测前验证体验版上传，发布候选阶段验证审核和发布链。测试号真机预览在账号与设备条件具备时补证；Android、iOS、HarmonyOS 在各自开发开始前进行独立技术实验。
+阶段 06 只实施“登录 → 创建/读取家庭 → 手工新增库存批次 → 幂等重放”的最小服务端纵切，验证 session、家庭隔离、RLS、批次事件、冲突与日志脱敏。明确范围见[阶段 05 报告](docs/architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
+
+账号、域名和设备条件具备时补证真实微信登录与 HTTPS 合法域名；家庭内测前验证体验版，发布候选阶段验证审核和发布链。Android、iOS、HarmonyOS 在各自开发开始前单独实验。

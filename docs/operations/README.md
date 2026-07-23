@@ -9,4 +9,4 @@
 - 隐私请求和安全事件响应；
 - 推荐质量、食品安全和模型成本监控。
 
-在具体部署方案确定前不预设云厂商。
+在具体部署方案确定前不预设云厂商。local、test、staging、production 的强制隔离基线已经在[阶段 05 后端架构](../architecture/backend-architecture-and-contracts.md#8-环境边界)确定；实际供应商、部署拓扑、备份 RPO/RTO 和监控产品仍待验证。

@@ -2,9 +2,11 @@
 
 ## 状态
 
-客户端平台决策已由 [ADR-0001](decisions/0001-client-platform-and-cross-platform-framework.md) 接受：微信小程序首发，使用 Taro 4.2.1、React 18.3.1 和 TypeScript 5.9.3。Android、iOS、HarmonyOS 仍需逐端 spike；后端运行时、部署和模型供应商仍是候选。
+客户端平台决策已由 [ADR-0001](decisions/0001-client-platform-and-cross-platform-framework.md) 接受：微信小程序首发，使用 Taro 4.2.1、React 18.3.1 和 TypeScript 5.9.3。Android、iOS、HarmonyOS 仍需逐端 spike。
 
-当前只有 [`apps/meal-agent-client-spike/`](../../apps/meal-agent-client-spike/) 技术实验，正式 `apps/client/` 尚未建立，也未实现业务功能。
+后端基线已由 [ADR-0002](decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](decisions/0003-identity-tenancy-and-api-semantics.md) 接受：Node.js 24 LTS + Fastify 5 模块化单体，PostgreSQL 18 + Drizzle/`pg`，使用 opaque session、显式家庭上下文、复合外键与 RLS。
+
+当前没有完整业务服务或正式 `apps/client`。正式代码只有 [`packages/contracts`](../../packages/contracts/) 共享契约基线；[`apps/meal-agent-client-spike/`](../../apps/meal-agent-client-spike/) 仍是一次性阶段 04 实验。
 
 ## 逻辑边界
 
@@ -15,59 +17,80 @@
           │
 微信 Taro Runtime / 后续原生 Runtime
           │
-       统一 API 契约
+   HTTPS REST /api/v1
           │
-账号与家庭 ─ 库存与批次 ─ 菜谱与菜单 ─ 购物清单 ─ 通知
-          │               │
-      关系数据库      规则与约束引擎
-                          │
-                    Agent 编排层
-                     │         │
-                  模型服务   P1 OCR/识别服务
+services/api（模块化单体）
+├─ 身份与会话
+├─ 家庭、成员与权限
+├─ 库存批次与事件
+├─ 餐食、菜谱与推荐
+├─ 采购清单
+└─ 受限 Agent 工具
+          │
+ PostgreSQL 18（唯一事实库）
 ```
 
-## 初始架构原则
+## 工程边界
 
-- 客户端共享领域契约，通过平台适配器处理登录、分享、相机、通知、本地存储、网络和深链差异；业务页面不直接调用 `wx.*` 或原生 SDK。
-- 服务端从模块化单体开始，保证领域边界清晰但不提前拆分部署。
-- 关系数据库是家庭、库存、权限和菜单事实的权威来源。
-- 多端写操作具有幂等标识；库存使用事件流水和服务端版本处理并发。
-- Agent 通过受限工具读取或修改业务状态，不能直接连接数据库。
-- Agent 是“今天”等业务页面中的上下文能力，不建立独立一级导航。
-- 常规筛选、日期计算和硬约束不依赖模型。
-- P1 的图片、小票和导入任务通过异步任务处理，并保留原始来源与审核状态。
+```text
+apps/*                  客户端与运营界面
+    │
+    ├── consume ──> packages/contracts <── consume ──┐
+    │                                                │
+    └── platform ports                        services/api
+                                             ├─ transport
+                                             ├─ application modules
+                                             ├─ deterministic domain rules
+                                             └─ persistence adapters
+```
 
-## 平台策略
+- `packages/contracts` 导出运行时 schema 和推导类型，不依赖 Taro、Fastify、Drizzle 或 Node 内建模块。
+- 服务端数据库 row、内部领域聚合和 API contract 分开，通过显式 mapper 转换。
+- 业务模块不依赖 Fastify request/reply；route handler 不直接写 SQL。
+- Agent 不直接连接数据库，只能调用复用同一鉴权、权限、幂等与安全校验的应用服务。
+- `services/agent` 和 `services/worker` 当前不是独立部署单元。
 
-按照“共享领域与契约 + 平台薄适配层 + 可替换页面实现”组织：
+## 核心数据与安全原则
 
-1. 微信小程序使用 Taro 构建首发客户端；
-2. Android 和 iOS 先验证 Taro React Native，再决定 React 页面可复用范围；
-3. HarmonyOS 单独验证 Taro Harmony C-API/DevEco 路线；
-4. 若平台 spike 失败，保留 API 契约、领域规则、设计令牌和端口语义，允许该平台使用分端 UI/运行时。
+- `AuthIdentity → User → Session/Membership → PersonProfile` 分层；微信 `openid` 不是内部 User ID。
+- Household 是数据隔离边界，每个家庭资源同时使用应用授权、`household_id`、复合外键和 PostgreSQL RLS。
+- 成员私有饮食约束另做字段级 response redaction，不能只依赖家庭 RLS。
+- InventoryLot 是批次与当前投影，InventoryEvent 是不可变库存事实；纠错追加事件。
+- 日期保留类型、来源、置信度和规则版本；购买日期不能替代生产日期。
+- 幂等记录、领域写入、库存事件和投影在同一事务提交。
+- 过敏、权限、食品安全和库存一致性由确定性规则、应用服务和数据库约束执行。
 
-预计高复用的是 `packages/contracts`、纯 TypeScript 领域规则、API client 语义和状态 action；页面、导航、样式、登录、分享、通知、媒体、权限、深链、签名与上架不能预设高复用。
+## 环境
 
-工程验证顺序为微信小程序 → Android → iOS → HarmonyOS。这是技术落地顺序，不是市场发布承诺。
+local、test、staging 和 production 使用独立数据库、Secret、微信配置、域名和数据集。local/test 默认 fake 外部适配器和合成数据；staging/production 禁止共享凭据或复制真实用户数据到低环境。
+
+云厂商、托管数据库、域名、Secret 管理和可观测产品仍**待验证**。具体矩阵见[阶段 05 后端架构与共享契约](backend-architecture-and-contracts.md#8-环境边界)。
 
 ## 当前验证证据
 
-- `Pass`：Taro 4.2.1 微信小程序固定依赖构建；
-- `Pass`：微信开发者工具模拟器中的“今天”“库存”页面、Tab 导航、本地写入和本机模拟 API；
-- `Pass`：`AuthPort`、`StoragePort`、`NetworkPort` 已建立，平台端口自动测试 5/5；
-- Mock 登录、恢复和退出为 `Pass`，没有调用 `wx.login`；
-- 微信测试号真机预览、真实登录、合法域名和分享为 `Deferred — 外部依赖`；
-- 相机、语音、条码、OCR 和外部通知在阶段 04 为 `Not applicable`；
-- 体验版、审核、发布、CI 上传和三个原生平台均未验证。
+### 已验证
 
-详细环境、候选比较和限制见[首发客户端跨端技术验证](cross-platform-technical-validation.md)。
+- 阶段 04：Taro 4.2.1 微信小程序构建、开发者工具模拟器页面/导航、本地写入和本机 Mock API；
+- 阶段 04：`AuthPort`、`StoragePort`、`NetworkPort` 自动测试与 Mock 登录；
+- 阶段 05：`@meal-agent/contracts` 类型检查、8 个运行时契约测试和声明/JavaScript 构建；
+- 阶段 05：User、Household、Membership、PersonProfile、InventoryLot/Event、Meal/Recipe/Recommendation、ShoppingItem 和通用 API 契约已形成同一事实源。
 
-## 后续架构验证
+### 待验证
 
-- 阶段 04 外部补证：微信测试号真机预览、真机存储和局域网 Mock API；
-- 06 最小服务端完成后：真实微信登录、内部会话、HTTPS 合法域名和网络错误路径；
-- 家庭内测前：体验版上传、成员访问权限、二维码分发和多真机回归；
-- 发布候选阶段：隐私/权限声明、审核、发布、监控和回退；
-- Android/iOS：Taro RN 版本组合、原生模块、权限、性能、签名和商店构建；
-- HarmonyOS：DevEco 工程、C-API 插件、模拟器/真机、签名和商店构建；
-- 跨端通用：离线提交、幂等写入、深链、恢复和 CI 凭据隔离。
+- Node.js 24 + Fastify 5 + Drizzle + PostgreSQL 18 的本项目服务纵切；
+- session digest/撤销、RLS、复合外键、幂等重放和库存并发；
+- shared contract 到 Fastify/OpenAPI 的单一 schema 适配；
+- 四环境实际基础设施、migration、备份恢复和监控。
+
+### Deferred — 外部依赖
+
+- 微信测试号真机、真实登录、合法域名、邀请分享；
+- 体验版、审核、发布和 CI 上传凭据；
+- Android、iOS、HarmonyOS 构建与实机；
+- 生产云资源、正式 AppID/AppSecret 和生产域名。
+
+上述 Deferred 项均保持阶段 04 原状态，没有因架构定稿而转为 Pass。
+
+## 下一纵切
+
+阶段 06 只实施：登录 → 创建/读取家庭 → 手工新增一个库存批次 → 相同幂等请求返回同一结果。明确 endpoint、migration、测试门禁和非范围见[阶段 06 最小服务端纵切](backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。

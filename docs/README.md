@@ -16,6 +16,7 @@
 
 - [系统概览](architecture/system-overview.md)
 - [首发客户端跨端技术验证](architecture/cross-platform-technical-validation.md)
+- [阶段 05：后端架构与共享契约定稿](architecture/backend-architecture-and-contracts.md)
 - [架构决策记录](architecture/decisions/README.md)
 - [领域数据模型](domain/data-model.md)
 - [Agent 设计](agent/agent-design.md)
