@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   authIdentityIdSchema,
+  dietaryConstraintIdSchema,
   foodConceptIdSchema,
   householdIdSchema,
   membershipIdSchema,
@@ -35,23 +36,49 @@ export const authIdentitySchema = z.strictObject({
   providerTenantKey: z.string().min(1).max(128),
   providerSubject: z.string().min(1).max(255),
   providerUnionSubject: z.string().min(1).max(255).optional(),
-  status: z.enum(["active", "unlinked", "disabled"]),
+  status: z.enum(["active", "disabled"]),
   createdAt: utcDateTimeSchema,
   lastAuthenticatedAt: utcDateTimeSchema,
 });
 export type AuthIdentity = z.infer<typeof authIdentitySchema>;
 
-export const sessionSchema = z.strictObject({
-  id: sessionIdSchema,
-  userId: userIdSchema,
-  authIdentityId: authIdentityIdSchema,
-  status: z.enum(["active", "expired", "revoked"]),
-  issuedAt: utcDateTimeSchema,
-  expiresAt: utcDateTimeSchema,
-  lastSeenAt: utcDateTimeSchema,
-  revokedAt: utcDateTimeSchema.optional(),
-  tokenVersion: z.int().positive(),
-});
+export const sessionSchema = z
+  .strictObject({
+    id: sessionIdSchema,
+    userId: userIdSchema,
+    authIdentityId: authIdentityIdSchema,
+    status: z.enum(["active", "expired", "revoked"]),
+    issuedAt: utcDateTimeSchema,
+    expiresAt: utcDateTimeSchema,
+    lastSeenAt: utcDateTimeSchema,
+    revokedAt: utcDateTimeSchema.optional(),
+    tokenVersion: z.int().positive(),
+  })
+  .superRefine((session, context) => {
+    if (session.status === "revoked" && session.revokedAt === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["revokedAt"],
+        message: "revoked sessions require revokedAt",
+      });
+    }
+
+    if (session.status !== "revoked" && session.revokedAt !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["revokedAt"],
+        message: "only revoked sessions may have revokedAt",
+      });
+    }
+
+    if (Date.parse(session.expiresAt) <= Date.parse(session.issuedAt)) {
+      context.addIssue({
+        code: "custom",
+        path: ["expiresAt"],
+        message: "session expiry must be after issuance",
+      });
+    }
+  });
 export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionTokenSchema = z
@@ -134,7 +161,7 @@ export const membershipSchema = z.strictObject({
 export type Membership = z.infer<typeof membershipSchema>;
 
 const hardDietaryConstraintSchema = z.strictObject({
-  id: z.uuid(),
+  id: dietaryConstraintIdSchema,
   kind: z.enum([
     "allergy",
     "religious",
@@ -153,7 +180,7 @@ const hardDietaryConstraintSchema = z.strictObject({
 });
 
 const softDietaryConstraintSchema = z.strictObject({
-  id: z.uuid(),
+  id: dietaryConstraintIdSchema,
   kind: z.literal("preference"),
   enforcement: z.literal("soft"),
   label: z.string().min(1).max(120),

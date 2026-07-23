@@ -87,7 +87,7 @@ type DishOption = {
   deductions: MenuPlan["deductions"];
 };
 
-type ShoppingItem = {
+type PrototypeShoppingItem = {
   id: string;
   name: string;
   quantity: string;
@@ -717,7 +717,7 @@ const defaultDeductionAmounts = Object.fromEntries(
   ),
 );
 
-const initialShopping = (plan: MenuPlan): ShoppingItem[] => [
+const initialShopping = (plan: MenuPlan): PrototypeShoppingItem[] => [
   ...plan.missing.map((name, index) => ({
     id: `${plan.id}-${index}`,
     name,
@@ -1047,7 +1047,7 @@ export default function Home() {
       dishOptions.filter((dish) => selectedDishIds.includes(dish.id)),
     [selectedDishIds],
   );
-  const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>(
+  const [shoppingItems, setShoppingItems] = useState<PrototypeShoppingItem[]>(
     initialShopping(initialMenu),
   );
   const [shoppingQuery, setShoppingQuery] = useState("");

@@ -7,7 +7,7 @@
 - 这里只放跨进程或跨应用需要共同理解的 API、实体快照、事件和错误语义。
 - 数据库表、服务内部聚合、页面状态和平台 SDK 类型不放入本包。
 - 所有 schema 默认拒绝未声明字段；外部输入必须在信任边界执行运行时解析。
-- 标识符在 TypeScript 中使用 nominal brand，在 JSON 中仍是 opaque UUID string。
+- 实体标识符在 TypeScript 中使用 nominal brand，并在运行时校验 UUIDv7；JSON 消费方仍必须把它当作 opaque string。`requestId` 可使用任意标准 UUID。
 - `InventoryLot.currentQuantity` 是事件聚合后的投影；`InventoryEvent` 才是库存变化事实。
 - `AuthIdentity.providerSubject` 仅供服务端身份映射，不代表它可以出现在面向客户端的响应中。
 

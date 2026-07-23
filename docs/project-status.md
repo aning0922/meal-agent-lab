@@ -56,15 +56,25 @@
 - 覆盖 Meal、Recipe、Recommendation 和必须通过 hard constraint check 的候选。
 - 覆盖 ShoppingItem 的待购买、已买待入库、已入库和取消状态。
 - 覆盖 ApiResult、ApiError、Pagination、Idempotency 和 ExpectedVersion。
-- schema 默认 strict；ID 使用 nominal brand；类型全部从 Zod schema 推导。
+- schema 默认 strict；实体 ID 使用 UUIDv7 运行时校验和 nominal brand；类型全部从 Zod schema 推导。
 - 类型检查、8 个运行时测试和 declaration/JavaScript 构建通过。
+
+### 收尾验收
+
+- ADR-0001/0002/0003、系统概览、领域模型、阶段 05 报告和共享 contract 已逐项核对；客户端边界、运行时、数据层、身份映射、家庭隔离、错误码/status、幂等作用域和库存事件规则一致。
+- `apps/`、`services/` 和 `packages/` 中不存在第二份同名核心 DTO。低保真原型的局部采购展示类型已明确命名为 `PrototypeShoppingItem`；阶段 04 spike 只保留 `SpikeDraft`、`SpikeApiResult`、`MockAuthSession` 等一次性平台验证类型。`services/` 尚无正式业务实现。
+- contract 额外固定实体 UUIDv7、session 撤销/时间、食品安全阻断原因、库存状态/数量、移动/冻结/解冻、追加纠错、推荐预选与采购状态不变量，并增加回归断言。
+- 根工作区 contracts 检查通过：TypeScript、8/8 运行时测试和 declaration/JavaScript 构建；阶段 04 客户端 spike 检查通过：TypeScript、5/5 测试和微信小程序构建；低保真原型通过 TypeScript、2/2 渲染测试、构建和 ESLint。
+- 74/74 个本地 Markdown 链接可解析，14/14 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
+- 提交范围扫描未发现密钥签名、非空 Secret、真实邮箱/手机号或真实用户夹具；`.env.example` 只有空值/假适配器配置。依赖目录、构建目录、日志和 TypeScript 增量缓存均被忽略，没有生成物进入阶段 05 提交。
 
 ## 当前验证状态
 
 ### Pass
 
 - 阶段 04 已有的小程序构建、开发者工具模拟器、Mock 登录/存储/网络与适配层测试；
-- 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建。
+- 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建；
+- 阶段 05 收尾的一致性、重复核心类型、提交范围、文档链接和静态检查。
 
 ### 待验证
 

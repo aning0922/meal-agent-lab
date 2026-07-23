@@ -186,15 +186,25 @@ export const recommendationSchema = z
 
     if (
       recommendation.outcome === "options" &&
-      (recommendation.preselectedCandidateIds.length === 0 ||
-        recommendation.preselectedCandidateIds.length >
-          recommendation.suggestedDishCount)
+      recommendation.preselectedCandidateIds.length !==
+        recommendation.suggestedDishCount
     ) {
       context.addIssue({
         code: "custom",
         path: ["preselectedCandidateIds"],
         message:
-          "preselected candidates must be present and fit the suggested dish count",
+          "preselected candidates must match the suggested dish count",
+      });
+    }
+
+    if (
+      recommendation.outcome === "options" &&
+      recommendation.blockerCodes.length > 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["blockerCodes"],
+        message: "an options outcome cannot contain hard blockers",
       });
     }
 

@@ -127,6 +127,20 @@ test("identity, household, membership and profile contracts compose without usin
   assert.equal(identity.userId, user.id);
   assert.equal(session.userId, user.id);
   assert.equal(membership.householdId, profile.householdId);
+  assert.equal(
+    sessionSchema.safeParse({
+      ...session,
+      status: "revoked",
+    }).success,
+    false,
+  );
+  assert.equal(
+    sessionSchema.safeParse({
+      ...session,
+      expiresAt: session.issuedAt,
+    }).success,
+    false,
+  );
 
   assert.equal(
     createHouseholdRequestSchema.safeParse({
@@ -281,6 +295,17 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     true,
   );
   assert.equal(
+    inventoryLotSchema.safeParse({
+      ...lot,
+      safetyAssessment: {
+        ...lot.safetyAssessment,
+        status: "blocked",
+        reasonCodes: [],
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
     createInventoryLotRequestSchema.safeParse({
       ...createRequest,
       initialQuantity: { kind: "exact", amount: 0, unit: "box" },
@@ -305,6 +330,72 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     inventoryEventSchema.safeParse({
       ...event,
       quantityChange: { ...event.quantityChange, amount: 0.5 },
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      type: "consumed",
+      quantityChange: {
+        kind: "qualitative",
+        fromLevel: "low",
+        toLevel: "plenty",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      id: ids.event,
+      type: "corrected",
+      correctionOfEventId: ids.event,
+      quantityChange: {
+        kind: "numeric",
+        amount: 0.25,
+        unit: "box",
+        precision: "estimated",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      correctionOfEventId: ids.event,
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      type: "moved",
+      quantityChange: undefined,
+      fromStorageLocation: "refrigerated",
+      toStorageLocation: "pantry",
+    }).success,
+    true,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      type: "frozen",
+      quantityChange: undefined,
+      fromStorageLocation: "refrigerated",
+      toStorageLocation: "pantry",
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      type: "discarded",
+      quantityChange: {
+        kind: "qualitative",
+        fromLevel: "some",
+        toLevel: "low",
+      },
     }).success,
     false,
   );
@@ -429,6 +520,20 @@ test("meal, recipe and recommendation contracts only expose validated candidates
     }).success,
     false,
   );
+  assert.equal(
+    recommendationSchema.safeParse({
+      ...recommendation,
+      blockerCodes: ["HARD_CONSTRAINT"],
+    }).success,
+    false,
+  );
+  assert.equal(
+    recommendationSchema.safeParse({
+      ...recommendation,
+      suggestedDishCount: 2,
+    }).success,
+    false,
+  );
 });
 
 test("shopping state keeps purchase separate from confirmed inventory", () => {
@@ -453,6 +558,22 @@ test("shopping state keeps purchase separate from confirmed inventory", () => {
     shoppingItemSchema.safeParse({
       ...pending,
       inventoryLotIds: [ids.lot],
+    }).success,
+    false,
+  );
+  assert.equal(
+    shoppingItemSchema.safeParse({
+      ...pending,
+      status: "to_buy",
+    }).success,
+    false,
+  );
+  assert.equal(
+    shoppingItemSchema.safeParse({
+      ...pending,
+      status: "to_buy",
+      inventoryLotIds: [ids.lot],
+      purchasedAt: undefined,
     }).success,
     false,
   );

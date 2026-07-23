@@ -20,6 +20,7 @@ build/
 apps/meal-agent-prototype/build/*
 !apps/meal-agent-prototype/build/sites-vite-plugin.ts
 coverage/
+*.tsbuildinfo
 .turbo/
 .cache/
 unpackage/

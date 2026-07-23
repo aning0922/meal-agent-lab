@@ -72,6 +72,17 @@ export const inventoryLotSchema = z
         message: "depleted or discarded lots require an empty quantity",
       });
     }
+
+    if (
+      lot.safetyAssessment.status === "blocked" &&
+      lot.safetyAssessment.reasonCodes.length === 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["safetyAssessment", "reasonCodes"],
+        message: "blocked safety assessments require a reason code",
+      });
+    }
   });
 export type InventoryLot = z.infer<typeof inventoryLotSchema>;
 
@@ -215,12 +226,61 @@ export const inventoryEventSchema = z
 
     if (
       ["moved", "frozen", "thawed"].includes(event.type) &&
-      event.toStorageLocation === undefined
+      (event.fromStorageLocation === undefined ||
+        event.toStorageLocation === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["fromStorageLocation"],
+        message: `${event.type} requires source and destination storage locations`,
+      });
+    }
+
+    if (
+      !["moved", "frozen", "thawed"].includes(event.type) &&
+      (event.fromStorageLocation !== undefined ||
+        event.toStorageLocation !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["fromStorageLocation"],
+        message: `${event.type} cannot carry a storage transition`,
+      });
+    }
+
+    if (
+      event.type === "frozen" &&
+      event.toStorageLocation !== undefined &&
+      event.toStorageLocation !== "frozen"
     ) {
       context.addIssue({
         code: "custom",
         path: ["toStorageLocation"],
-        message: `${event.type} requires a destination storage location`,
+        message: "frozen events must move the lot to frozen storage",
+      });
+    }
+
+    if (
+      event.type === "thawed" &&
+      ((event.fromStorageLocation !== undefined &&
+        event.fromStorageLocation !== "frozen") ||
+        event.toStorageLocation === "frozen")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["toStorageLocation"],
+        message: "thawed events must move a frozen lot out of frozen storage",
+      });
+    }
+
+    if (
+      event.fromStorageLocation !== undefined &&
+      event.fromStorageLocation === event.toStorageLocation
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["toStorageLocation"],
+        message: "storage transitions must change the location",
       });
     }
 
@@ -232,6 +292,99 @@ export const inventoryEventSchema = z
         code: "custom",
         path: ["correctionOfEventId"],
         message: "corrected events must reference the original event",
+      });
+    }
+
+    if (
+      event.type !== "corrected" &&
+      event.correctionOfEventId !== undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["correctionOfEventId"],
+        message: "only corrected events may reference an original event",
+      });
+    }
+
+    if (
+      event.correctionOfEventId !== undefined &&
+      event.correctionOfEventId === event.id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["correctionOfEventId"],
+        message: "an inventory event cannot correct itself",
+      });
+    }
+
+    if (
+      event.quantityChange?.kind === "qualitative" &&
+      event.quantityChange.fromLevel === event.quantityChange.toLevel
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["quantityChange", "toLevel"],
+        message: "qualitative quantity changes must change the level",
+      });
+    }
+
+    if (
+      event.quantityChange?.kind === "qualitative" &&
+      ["acquired", "produced"].includes(event.type) &&
+      event.quantityChange.toLevel === "empty"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["quantityChange", "toLevel"],
+        message: `${event.type} cannot result in an empty quantity`,
+      });
+    }
+
+    if (event.quantityChange?.kind === "qualitative") {
+      const quantityRank = {
+        empty: 0,
+        low: 1,
+        some: 2,
+        plenty: 3,
+      } as const;
+      const { fromLevel, toLevel } = event.quantityChange;
+
+      if (
+        fromLevel !== "unknown" &&
+        toLevel !== "unknown" &&
+        ["acquired", "produced"].includes(event.type) &&
+        quantityRank[toLevel] <= quantityRank[fromLevel]
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["quantityChange", "toLevel"],
+          message: `${event.type} must increase a known qualitative quantity`,
+        });
+      }
+
+      if (
+        fromLevel !== "unknown" &&
+        toLevel !== "unknown" &&
+        ["consumed", "discarded"].includes(event.type) &&
+        quantityRank[toLevel] >= quantityRank[fromLevel]
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["quantityChange", "toLevel"],
+          message: `${event.type} must decrease a known qualitative quantity`,
+        });
+      }
+    }
+
+    if (
+      event.quantityChange?.kind === "qualitative" &&
+      event.type === "discarded" &&
+      event.quantityChange.toLevel !== "empty"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["quantityChange", "toLevel"],
+        message: "discarded events must result in an empty quantity",
       });
     }
 

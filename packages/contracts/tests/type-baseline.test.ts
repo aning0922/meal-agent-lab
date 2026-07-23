@@ -2,6 +2,7 @@ import test from "node:test";
 
 import {
   householdIdSchema,
+  requestIdSchema,
   type HouseholdId,
   type UserId,
   userIdSchema,
@@ -21,6 +22,13 @@ const checkedHouseholdId: HouseholdId = householdId;
 const wrongUserId: UserId = householdId;
 
 test("entity IDs retain nominal types after schema parsing", () => {
+  const uuidV4 = "123e4567-e89b-42d3-a456-426614174000";
+
+  if (userIdSchema.safeParse(uuidV4).success) {
+    throw new Error("entity IDs must enforce UUIDv7");
+  }
+  requestIdSchema.parse(uuidV4);
+
   void checkedUserId;
   void checkedHouseholdId;
   void wrongUserId;

@@ -69,5 +69,40 @@ export const shoppingItemSchema = z
           "purchased items cannot reference lots before inventory confirmation",
       });
     }
+
+    if (
+      item.status !== "inventoried" &&
+      item.status !== "purchased_pending_inventory" &&
+      item.inventoryLotIds.length > 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["inventoryLotIds"],
+        message: "only inventoried shopping items may reference inventory lots",
+      });
+    }
+
+    if (
+      ["purchased_pending_inventory", "inventoried"].includes(item.status) &&
+      item.purchasedAt === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["purchasedAt"],
+        message: `${item.status} requires purchasedAt`,
+      });
+    }
+
+    if (
+      ["to_buy", "cancelled"].includes(item.status) &&
+      (item.purchasedAt !== undefined ||
+        item.purchasedQuantity !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["purchasedAt"],
+        message: `${item.status} cannot contain purchase confirmation`,
+      });
+    }
   });
 export type ShoppingItem = z.infer<typeof shoppingItemSchema>;

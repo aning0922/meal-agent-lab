@@ -2,22 +2,27 @@ import { z } from "zod";
 
 export const contractVersion = "0.1.0" as const;
 
-export const userIdSchema = z.uuid().brand<"UserId">();
-export const authIdentityIdSchema = z.uuid().brand<"AuthIdentityId">();
-export const sessionIdSchema = z.uuid().brand<"SessionId">();
-export const householdIdSchema = z.uuid().brand<"HouseholdId">();
-export const membershipIdSchema = z.uuid().brand<"MembershipId">();
-export const personProfileIdSchema = z.uuid().brand<"PersonProfileId">();
-export const foodConceptIdSchema = z.uuid().brand<"FoodConceptId">();
-export const inventoryLotIdSchema = z.uuid().brand<"InventoryLotId">();
-export const inventoryEventIdSchema = z.uuid().brand<"InventoryEventId">();
-export const recipeIdSchema = z.uuid().brand<"RecipeId">();
-export const mealIdSchema = z.uuid().brand<"MealId">();
-export const recommendationIdSchema = z.uuid().brand<"RecommendationId">();
+export const userIdSchema = z.uuidv7().brand<"UserId">();
+export const authIdentityIdSchema = z.uuidv7().brand<"AuthIdentityId">();
+export const sessionIdSchema = z.uuidv7().brand<"SessionId">();
+export const householdIdSchema = z.uuidv7().brand<"HouseholdId">();
+export const membershipIdSchema = z.uuidv7().brand<"MembershipId">();
+export const personProfileIdSchema = z.uuidv7().brand<"PersonProfileId">();
+export const dietaryConstraintIdSchema = z
+  .uuidv7()
+  .brand<"DietaryConstraintId">();
+export const foodConceptIdSchema = z.uuidv7().brand<"FoodConceptId">();
+export const inventoryLotIdSchema = z.uuidv7().brand<"InventoryLotId">();
+export const inventoryEventIdSchema = z.uuidv7().brand<"InventoryEventId">();
+export const recipeIdSchema = z.uuidv7().brand<"RecipeId">();
+export const mealIdSchema = z.uuidv7().brand<"MealId">();
+export const recommendationIdSchema = z
+  .uuidv7()
+  .brand<"RecommendationId">();
 export const recommendationCandidateIdSchema = z
-  .uuid()
+  .uuidv7()
   .brand<"RecommendationCandidateId">();
-export const shoppingItemIdSchema = z.uuid().brand<"ShoppingItemId">();
+export const shoppingItemIdSchema = z.uuidv7().brand<"ShoppingItemId">();
 export const requestIdSchema = z.uuid().brand<"RequestId">();
 
 export type UserId = z.infer<typeof userIdSchema>;
@@ -26,6 +31,9 @@ export type SessionId = z.infer<typeof sessionIdSchema>;
 export type HouseholdId = z.infer<typeof householdIdSchema>;
 export type MembershipId = z.infer<typeof membershipIdSchema>;
 export type PersonProfileId = z.infer<typeof personProfileIdSchema>;
+export type DietaryConstraintId = z.infer<
+  typeof dietaryConstraintIdSchema
+>;
 export type FoodConceptId = z.infer<typeof foodConceptIdSchema>;
 export type InventoryLotId = z.infer<typeof inventoryLotIdSchema>;
 export type InventoryEventId = z.infer<typeof inventoryEventIdSchema>;

@@ -287,7 +287,7 @@ contract 设计规则：
 
 - runtime schema 与 TypeScript type 同源；
 - object 默认 strict，拒绝未声明字段；
-- ID 使用 nominal brand，JSON 仍是 opaque UUID string；
+- 实体 ID 使用 UUIDv7 运行时校验和 nominal brand，JSON 消费方仍把它当作 opaque string；`requestId` 接受标准 UUID；
 - API input 不包含 actor、审计、版本结果等服务端字段；
 - entity snapshot 不等同于数据库表；
 - endpoint 新增 input/output 优先在本包演进，不在客户端或服务内复制。
