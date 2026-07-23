@@ -7,6 +7,7 @@ import {
 
 export const apiErrorCodeSchema = z.enum([
   "VALIDATION_FAILED",
+  "URI_TOO_LONG",
   "AUTHENTICATION_REQUIRED",
   "SESSION_EXPIRED",
   "FORBIDDEN",
@@ -25,6 +26,7 @@ export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
 
 export const apiErrorStatus = {
   VALIDATION_FAILED: 400,
+  URI_TOO_LONG: 414,
   AUTHENTICATION_REQUIRED: 401,
   SESSION_EXPIRED: 401,
   FORBIDDEN: 403,
@@ -68,6 +70,11 @@ export const apiErrorSchema = z
         message: `status must match the stable mapping for ${error.code}`,
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "status must match the stable HTTP status mapped from code",
+    ],
   });
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
@@ -130,20 +137,16 @@ export const cursorSchema = z
   .brand<"Cursor">();
 export type Cursor = z.infer<typeof cursorSchema>;
 
-export const pageInfoSchema = z
-  .strictObject({
-    nextCursor: cursorSchema.nullable(),
-    hasMore: z.boolean(),
-  })
-  .superRefine((pageInfo, context) => {
-    if (pageInfo.hasMore !== (pageInfo.nextCursor !== null)) {
-      context.addIssue({
-        code: "custom",
-        path: ["nextCursor"],
-        message: "nextCursor must be present if and only if hasMore is true",
-      });
-    }
-  });
+export const pageInfoSchema = z.discriminatedUnion("hasMore", [
+  z.strictObject({
+    nextCursor: cursorSchema,
+    hasMore: z.literal(true),
+  }),
+  z.strictObject({
+    nextCursor: z.null(),
+    hasMore: z.literal(false),
+  }),
+]);
 export type PageInfo = z.infer<typeof pageInfoSchema>;
 
 export const createPaginatedDataSchema = <T extends z.ZodType>(

@@ -7,11 +7,12 @@
 - deterministic fake WeChat 登录交换，以及真实 code2Session adapter 边界；
 - opaque session 签发、digest 持久化、绝对/不活跃过期和撤销；
 - 家庭创建/列表、库存批次创建/列表、exact-only consumed command；
-- user-scope 与 household-scope 幂等、expected version、负库存阻断；
+- user-scope 与 household-scope 幂等、目标资源指纹、expected version、负库存阻断；
 - 九张业务表、复合外键、migration/app role 分离、`FORCE RLS`；
 - creator、user-list、household-resource 三类 transaction-local bootstrap；
-- request ID、日志脱敏、统一 problem response、就绪检查和 graceful shutdown；
-- 从 `@meal-agent/contracts` Zod schema 生成的 OpenAPI。
+- exact quantity 的 `numeric(15, 6)` 存储与数据库 decimal 扣减，不用 JavaScript 浮点运算更新库存；
+- request ID、日志脱敏、malformed JSON/404/超长 URL 的统一 problem response、就绪检查和 graceful shutdown；
+- 从 `@meal-agent/contracts` Zod schema 生成的 OpenAPI，包括 `application/problem+json` 和 refinement 元数据。
 
 不包含菜单推荐、Agent、OCR、通知、采购、完整做饭流程、Redis、消息队列、向量数据库、微服务、正式 App 或生产部署。
 
@@ -48,7 +49,7 @@ DATABASE_URL=postgresql://... pnpm --filter @meal-agent/api db:migrate
 WECHAT_ADAPTER=fake
 ```
 
-fake adapter 把 login code 单向散列为 deterministic provider subject，只用于验证内部身份、session 和 API。`WECHAT_ADAPTER=real` 必须同时从运行环境提供 `WECHAT_APP_ID` 与 `WECHAT_APP_SECRET`；没有真实凭据、合法域名和真机证据时，真实微信链保持 `Deferred — 外部依赖`。
+fake adapter 把 login code 单向散列为 deterministic provider subject，只用于验证内部身份、session 和 API。`NODE_ENV=production` 强制 `WECHAT_ADAPTER=real`；real adapter 必须同时从运行环境提供 `WECHAT_APP_ID` 与 `WECHAT_APP_SECRET`。没有真实凭据、合法域名和真机证据时，真实微信链保持 `Deferred — 外部依赖`。
 
 ## OpenAPI
 
@@ -76,4 +77,4 @@ POST   /api/v1/households/{id}/inventory-lots
 POST   /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed
 ```
 
-业务写 command 必须带 `Idempotency-Key`。相同作用域/key/body 重放第一次结果；相同 key/不同 body 返回 `409 IDEMPOTENCY_KEY_REUSED`。
+业务写 command 必须带 `Idempotency-Key`。request fingerprint 绑定目标资源与规范化 body：相同作用域/key/目标/body 重放第一次结果；同 key 改变目标 lot 或 body 返回 `409 IDEMPOTENCY_KEY_REUSED`，不会跨 lot 回放结果。

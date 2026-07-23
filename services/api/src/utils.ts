@@ -4,6 +4,10 @@ import {
   cursorSchema,
   type Cursor,
 } from "@meal-agent/contracts/api";
+import {
+  exactQuantityAmountSchema,
+  quantityDecimalScale,
+} from "@meal-agent/contracts";
 import { v7 as uuidv7 } from "uuid";
 
 const sortForCanonicalJson = (value: unknown): unknown => {
@@ -28,6 +32,9 @@ export const sha256 = (value: string): string =>
 
 export const requestHash = (value: unknown): string =>
   sha256(canonicalJson(value));
+
+export const toDatabaseQuantityDecimal = (value: number): string =>
+  exactQuantityAmountSchema.parse(value).toFixed(quantityDecimalScale);
 
 export const issueSessionToken = (): string =>
   randomBytes(32).toString("base64url");

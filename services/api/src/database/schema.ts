@@ -287,9 +287,8 @@ export const inventoryLots = pgTable(
       length: 32,
     }).notNull(),
     currentQuantityAmount: numeric("current_quantity_amount", {
-      precision: 24,
+      precision: 15,
       scale: 6,
-      mode: "number",
     }),
     currentQuantityUnit: varchar("current_quantity_unit", { length: 32 }),
     currentQuantityOriginalText: varchar("current_quantity_original_text", {
@@ -388,9 +387,8 @@ export const inventoryEvents = pgTable(
     type: varchar("type", { length: 32 }).notNull(),
     quantityChangeKind: varchar("quantity_change_kind", { length: 32 }),
     quantityChangeAmount: numeric("quantity_change_amount", {
-      precision: 24,
+      precision: 15,
       scale: 6,
-      mode: "number",
     }),
     quantityChangeUnit: varchar("quantity_change_unit", { length: 32 }),
     quantityChangePrecision: varchar("quantity_change_precision", {

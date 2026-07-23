@@ -87,6 +87,12 @@ export const informationSourceSchema = z
         message: "recognized information must be confirmed by a user",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "verified rules require ruleVersion",
+      "recognized information requires confirmedByUserId",
+    ],
   });
 export type InformationSource = z.infer<typeof informationSourceSchema>;
 
@@ -181,15 +187,35 @@ export const foodDateSchema = z
         message: "state event dates require a user, confirmed, or system source",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "date value shape and source must match the date kind",
+      "purchase date cannot be inferred from a package label",
+    ],
   });
 export type FoodDate = z.infer<typeof foodDateSchema>;
 
 const quantityUnitSchema = z.string().min(1).max(32);
 const quantityOriginalTextSchema = z.string().min(1).max(200);
 
+export const quantityDecimalPrecision = 15;
+export const quantityDecimalScale = 6;
+export const quantityDecimalStep = 0.000_001;
+export const quantityDecimalMax = 999_999_999.999_999;
+
+export const exactQuantityAmountSchema = z
+  .number()
+  .finite()
+  .nonnegative()
+  .max(quantityDecimalMax)
+  .multipleOf(quantityDecimalStep);
+
+const positiveQuantityAmountSchema = exactQuantityAmountSchema.positive();
+
 export const exactQuantitySchema = z.strictObject({
   kind: z.literal("exact"),
-  amount: z.number().finite().nonnegative(),
+  amount: exactQuantityAmountSchema,
   unit: quantityUnitSchema,
   originalText: quantityOriginalTextSchema.optional(),
 });
@@ -197,7 +223,7 @@ export const exactQuantitySchema = z.strictObject({
 export const approximateQuantitySchema = z
   .strictObject({
     kind: z.literal("approximate"),
-    amount: z.number().finite().positive().optional(),
+    amount: positiveQuantityAmountSchema.optional(),
     unit: quantityUnitSchema.optional(),
     originalText: quantityOriginalTextSchema,
     confidence: confidenceSchema,
@@ -213,6 +239,11 @@ export const approximateQuantitySchema = z
           "approximate amount and unit must be both present or both absent",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "approximate amount and unit must be both present or both absent",
+    ],
   });
 
 export const qualitativeQuantitySchema = z.strictObject({
@@ -246,13 +277,13 @@ export type NonEmptyQuantity = z.infer<typeof nonEmptyQuantitySchema>;
 export const persistableInitialQuantitySchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("exact"),
-    amount: z.number().finite().positive(),
+    amount: positiveQuantityAmountSchema,
     unit: quantityUnitSchema,
     originalText: quantityOriginalTextSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal("approximate"),
-    amount: z.number().finite().positive(),
+    amount: positiveQuantityAmountSchema,
     unit: quantityUnitSchema,
     confidence: confidenceSchema,
     originalText: quantityOriginalTextSchema,
@@ -270,8 +301,14 @@ export type PersistableInitialQuantity = z.infer<
 const nonZeroQuantityDeltaAmountSchema = z
   .number()
   .finite()
+  .min(-quantityDecimalMax)
+  .max(quantityDecimalMax)
+  .multipleOf(quantityDecimalStep)
   .refine((amount) => amount !== 0, {
     message: "quantity delta cannot be zero",
+  })
+  .meta({
+    "x-zod-refinements": ["quantity delta cannot be zero"],
   });
 
 export const quantityDeltaSchema = z.discriminatedUnion("precision", [

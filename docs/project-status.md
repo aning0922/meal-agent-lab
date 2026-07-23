@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-阶段 06“最小服务端纵切”已完成。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
+阶段 06“最小服务端纵切”已完成，并已在首个实现提交 `b9b149b` 上完成边界修订。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
 
 [`@meal-agent/contracts`](../packages/contracts/) 0.1.0 是客户端、服务端、测试和 OpenAPI 的共享契约事实源。当前已有登录、session、家庭和库存一致性最小服务，但仍没有菜单推荐、Agent、采购/完整做饭流程或正式 App；下一阶段产品范围尚未决定。
 
@@ -22,7 +22,7 @@
 - 微信 `openid` 映射到 `AuthIdentity`，不能作为内部 `User.id`。
 - `User`、`Session`、`Membership` 和 `PersonProfile` 生命周期分离；无登录档案不需要 User。
 - `AuthenticatedUserContext` 与 `HouseholdContext` 分离；后者只能在事务内通过 active Membership bootstrap。
-- 家庭隔离同时依赖应用授权、复合外键、RLS 和敏感字段 redaction。
+- 家庭隔离同时依赖应用授权、复合外键、RLS 和敏感字段 redaction；通用字段级 response redaction 尚未进入阶段 06 读取端点，保持 `Deferred — 后续范围`。
 - 创建家庭使用用户级幂等，家庭内 command 使用家庭级幂等；库存并发使用 expected version，纠错追加事件。
 - 客户端与服务端共享 `packages/contracts`，不重复定义核心 DTO。
 - 一级入口采用“今天、库存、采购、我的”，Agent 作为上下文入口而非独立 Tab。
@@ -75,9 +75,9 @@
 ### 工程与契约
 
 - 建立 Node.js 24/Fastify 5 的 `services/api`，配置、request ID、日志脱敏、统一错误映射和 graceful shutdown 已接入。
-- 建立 deterministic fake WeChat adapter 和真实 code2Session adapter port；真实 adapter 只有凭据校验、调用和安全错误边界，没有虚假真实链验证。
-- 所有业务 request/response 复用 `@meal-agent/contracts`；阶段 06 HTTP envelope 也在共享包组合，OpenAPI 从同一批 Zod schema 和路由生成。
-- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。
+- 建立 deterministic fake WeChat adapter 和真实 code2Session adapter port；production 配置强制 real adapter 与运行时凭据，真实 adapter 仍只有调用和安全错误边界，没有虚假真实链验证。
+- 所有业务 request/response 复用 `@meal-agent/contracts`；阶段 06 HTTP envelope 也在共享包组合，OpenAPI 从同一批 Zod schema 和路由生成。错误响应声明为 `application/problem+json`，跨字段 refinement 使用可表达的 `oneOf` 或 `x-zod-refinements` 保留。
+- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。malformed JSON、404 和超长 request target 进入同一 problem 边界。
 
 ### 数据库与隔离
 
@@ -86,19 +86,20 @@
 - PersonProfile→Membership、InventoryLot→Membership、InventoryEvent→Lot/Membership/Event 和 Idempotency→Membership 使用家庭复合外键。
 - creator、只设置 `app.user_id` 的 user-list、以及先 bootstrap active Membership 的 household-resource 三类事务顺序已实现；`app.user_id` / `app.household_id` 只用 transaction-local 设置。
 - 故意漏写 household filter 的查询仍被 RLS 限制；连接复用验证事务结束后 user/household context 和 local role 均不残留。
+- exact 数量 contract 与两列数据库金额统一为最多六位小数的 `numeric(15, 6)`；扣减、负库存判断和 depleted 投影使用 PostgreSQL decimal 运算。
 
 ### 会话、幂等与库存
 
 - fake code 首次创建、再次恢复同一 User；opaque token 只在签发响应出现，数据库只存 SHA-256 digest。
 - disabled User、绝对/不活跃过期、撤销 session 和成员移除都会在下一请求即时失效；Session、AuthIdentity、User 复合关系阻止错配。
-- 创建家庭使用 user-scope 幂等，家庭库存 command 使用 household-scope 幂等；相同 key/body 顺序或并发重放第一次结果，不重复创建家庭、批次或事件；key/body 冲突返回 409。
+- 创建家庭使用 user-scope 幂等，家庭库存 command 使用 household-scope 幂等；request fingerprint 绑定目标资源和规范化 body，相同 key/目标/body 顺序或并发重放第一次结果，不重复创建家庭、批次或事件；同 key 改变目标 lot 或 body 返回 409，不跨 lot 回放。
 - exact-only consumed 生成同单位 exact 负 delta，满足 `after = before + delta` 且 `after >= 0`；0 进入 `depleted`，非 0 保持 `active`。
 - 不同 key/相同 expectedVersion 的并发 consumed 只有一个成功；相同 key/body 的并发 consumed 只执行一次并重放；负库存不写事件或投影。
 
 ### 门禁证据
 
 - `@meal-agent/contracts` 类型检查、11 个运行时测试和 declaration/JavaScript 构建通过。
-- `services/api` 类型检查、5 个单元测试、3 个 HTTP integration、14 个 PostgreSQL integration、空库 migration、OpenAPI 一致性检查和构建通过。
+- `services/api` 类型检查、6 个单元测试、4 个 HTTP integration、16 个 PostgreSQL integration、空库 migration、OpenAPI 一致性检查和构建通过。
 - PostgreSQL integration 使用实际 18.4 一次性空 cluster，不用 SQLite、mock 数据库或 fake migration 结果代替。
 - 两个 User、两个 Household 的正向访问、家庭列表交叉隔离和资源交叉 404 均通过。
 - 应用日志 sentinel 扫描未发现 login code、token、provider subject、UnionID、AppSecret 或成员私密约束。
@@ -127,6 +128,10 @@
 - 内测负载下的连接池容量、超时、限流和慢查询阈值；
 - 后续产品阶段是否扩展菜单、Agent、采购或完整做饭流程，尚未决定。
 
+### Deferred — 后续范围
+
+- 通用成员/PersonProfile 读取响应的字段级 redaction 与角色矩阵。阶段 06 只验证创建家庭的安全 owner response schema、幂等缓存 allowlist 和日志脱敏，没有成员/档案读取端点，因此不得记为 Pass。
+
 ### Deferred — 外部依赖
 
 - 微信测试号真机扫码、真机存储和真机网络；
@@ -145,7 +150,7 @@
     → 追加一个 exact-only 最小 consumed 事件
 ```
 
-以上纵切已经实现并通过本地自动门禁。它只证明最小服务端架构、身份、租户和库存一致性边界可运行，不代表完整 MVP、正式 App 或生产部署已经完成。
+以上纵切已经实现并通过本地自动门禁。它只证明最小服务端架构、身份、租户和库存一致性边界可运行，不代表通用字段级 response redaction、完整 MVP、正式 App 或生产部署已经完成。
 
 完整 endpoint、migration、测试门禁和明确非范围见[阶段 05 报告第 10 节](architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
 

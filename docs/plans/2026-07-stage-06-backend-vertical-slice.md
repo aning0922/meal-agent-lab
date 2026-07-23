@@ -3,6 +3,7 @@
 - 日期：2026-07-23
 - 分支：`codex/stage-06-backend-vertical-slice`
 - 基线：本地 `main` `1cc2ecc02e8c0da31d90daa2395238dda4815830`
+- 边界修订基线：`b9b149b790d301cd92068cca77b134169241d0fb`
 - 状态：已完成
 
 ## 范围与依据
@@ -73,6 +74,19 @@ git diff --check
 
 deterministic fake WeChat adapter 只验证内部身份映射、session 和 HTTP 边界。real adapter 在无凭据时只接受编译、单元和边界测试，不记为真实微信链 Pass。
 
+字段级 response redaction 不是外部依赖，但也不在阶段 06 的成员/档案读取范围内。当前只验证 `createHouseholdResultSchema` 的安全 owner allowlist、幂等 response cache 不含私密约束以及日志递归脱敏；通用成员/PersonProfile 读取 redaction 保持 `Deferred — 后续范围`，不得记录为 Pass。
+
+## 边界修订
+
+基于首个阶段 06 提交 `b9b149b790d301cd92068cca77b134169241d0fb` 修订：
+
+- 幂等 request fingerprint 增加目标资源 ID；同 key/body 改投另一个 lot 返回 `409 IDEMPOTENCY_KEY_REUSED`，不回放第一个 lot 的结果。
+- exact amount contract 固定 `numeric(15, 6)` 范围与六位小数；创建输入转换为定标 decimal 字符串，consumed delta、after、负库存和状态由 PostgreSQL `numeric` 表达式计算。
+- production 禁止缺省或显式 fake WeChat adapter，必须选择 real 并提供运行时 AppID/AppSecret；这不改变真实微信链的 Deferred 状态。
+- malformed JSON、404 和超过 2048 bytes 的 request target 统一返回共享 `ApiError` 与 `application/problem+json`。
+- OpenAPI 错误 response 显式使用 `application/problem+json`；pageInfo 不变量生成为 `oneOf`，其余 Zod 跨字段不变量保存在 `x-zod-refinements`。
+- system overview 与项目状态恢复通用字段级 response redaction 的 Deferred 状态。
+
 ## 验证结果
 
 ### 阶段 05 第 10.1 节的 13 项门禁
@@ -86,11 +100,11 @@ deterministic fake WeChat adapter 只验证内部身份映射、session 和 HTTP
 | 5 | Pass | 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问和四种交叉隔离结果通过 |
 | 6 | Pass | 家庭资源在事务内 bootstrap active Membership；故意删除 SQL household filter 后，RLS 仍只返回当前家庭 |
 | 7 | Pass | household-scope 同 key/body 并发创建一个 lot 和一个 acquired event，另一请求重放；版本为 `0/1/1` |
-| 8 | Pass | consumed 只接受 exact；delta、before/after、单位、非负、active/depleted 全部断言；estimated 在 HTTP contract 边界拒绝，负库存返回 409 且不写事件/投影 |
+| 8 | Pass | consumed 只接受最多六位小数的 exact；PostgreSQL `numeric(15, 6)` 验证 `0.3 - 0.1 - 0.2 = 0.000000`，delta、before/after、单位、非负、active/depleted 全部断言；estimated 在 HTTP contract 边界拒绝，负库存返回 409 且不写事件/投影 |
 | 9 | Pass | 不同 key、相同 expectedVersion 的并发 consumed 为一个 201、一个 `409 INVENTORY_VERSION_CONFLICT` |
 | 10 | Pass | 相同 key/body、两个独立 session 的并发 consumed 返回同一 event；只有一次执行，另一请求为 replay |
 | 11 | Pass | session 绝对过期、撤销和 Membership 移除均在下一请求即时失效；不活跃过期路径与绝对过期使用同一 auth service 判断 |
-| 12 | Pass | contract 类型/11 个运行时测试、API 类型/5 个单元测试/3 个 HTTP integration/14 个 PostgreSQL integration、OpenAPI 检查和两个构建全部通过 |
+| 12 | Pass | contract 类型/11 个运行时测试、API 类型/6 个单元测试/4 个 HTTP integration/16 个 PostgreSQL integration、OpenAPI 检查和两个构建全部通过 |
 | 13 | Pass | 单元、HTTP 和数据库日志 sentinel 扫描不含 login code、opaque token、provider subject、UnionID、AppSecret 或成员私密约束 |
 
 ### 最终命令
@@ -107,7 +121,8 @@ git diff --check
 
 - `pnpm audit --prod`：`No known vulnerabilities found`
 - OpenAPI：8 个 path、10 个 route method 均存在；consumed request 只生成 exact schema，提交产物与实时生成结果一致
-- 本地 Markdown：45 个文件中的 85 个本地链接全部可解析
+- OpenAPI 错误响应只声明 `application/problem+json`；pageInfo `oneOf`、exact precision/scale 和 `x-zod-refinements` 均由检查固定
+- 本地 Markdown：48 个文件中的 86 个本地链接全部可解析
 - 提交范围扫描：未发现私钥签名、常见 access token、非空 `.env.example` Secret/数据库 URL、真实手机号/邮箱或第二份核心 DTO
 - 生成物扫描：没有跟踪 `node_modules`、`dist`、coverage、日志或 TypeScript 增量缓存；提交的 OpenAPI 是可复现审查产物
 

@@ -33,6 +33,7 @@ export class AppError extends Error {
 
 const titleByCode = {
   VALIDATION_FAILED: "Request validation failed",
+  URI_TOO_LONG: "Request URI too long",
   AUTHENTICATION_REQUIRED: "Authentication required",
   SESSION_EXPIRED: "Session expired",
   FORBIDDEN: "Forbidden",

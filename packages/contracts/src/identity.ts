@@ -78,6 +78,12 @@ export const sessionSchema = z
         message: "session expiry must be after issuance",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "revokedAt presence must match revoked status",
+      "expiresAt must be after issuedAt",
+    ],
   });
 export type Session = z.infer<typeof sessionSchema>;
 
@@ -122,6 +128,11 @@ export const authenticatedSessionSchema = z
         message: "session user must match the authenticated user",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "authenticated user and session must be active and share the same user id",
+    ],
   });
 export type AuthenticatedSession = z.infer<
   typeof authenticatedSessionSchema
@@ -181,7 +192,10 @@ export const membershipSchema = z.strictObject({
       (capabilities) =>
         new Set(capabilities).size === capabilities.length,
       { message: "membership capabilities must be unique" },
-    ),
+    )
+    .meta({
+      "x-zod-refinements": ["membership capabilities must be unique"],
+    }),
   status: z.enum(["active", "left", "removed"]),
   joinedAt: utcDateTimeSchema,
   updatedAt: utcDateTimeSchema,
@@ -221,23 +235,30 @@ const softDietaryConstraintSchema = z.strictObject({
   confirmedByUserId: userIdSchema,
 });
 
-export const dietaryConstraintSchema = z.discriminatedUnion("enforcement", [
-  hardDietaryConstraintSchema,
-  softDietaryConstraintSchema,
-]).superRefine((constraint, context) => {
-  if (
-    constraint.kind === "allergy" &&
-    constraint.foodConceptIds.length === 0 &&
-    constraint.allergenCodes.length === 0
-  ) {
-    context.addIssue({
-      code: "custom",
-      path: ["allergenCodes"],
-      message:
-        "allergy constraints require an allergen code or food concept",
-    });
-  }
-});
+export const dietaryConstraintSchema = z
+  .discriminatedUnion("enforcement", [
+    hardDietaryConstraintSchema,
+    softDietaryConstraintSchema,
+  ])
+  .superRefine((constraint, context) => {
+    if (
+      constraint.kind === "allergy" &&
+      constraint.foodConceptIds.length === 0 &&
+      constraint.allergenCodes.length === 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["allergenCodes"],
+        message:
+          "allergy constraints require an allergen code or food concept",
+      });
+    }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "allergy constraints require an allergen code or food concept",
+    ],
+  });
 export type DietaryConstraint = z.infer<typeof dietaryConstraintSchema>;
 
 export const personProfileSchema = z.strictObject({
@@ -263,7 +284,11 @@ const householdVisibleDietaryConstraintSchema =
       message:
         "safe profile responses cannot contain subject_and_owner constraints",
     },
-  );
+  ).meta({
+    "x-zod-refinements": [
+      "safe profile responses cannot contain subject_and_owner constraints",
+    ],
+  });
 
 export const safeOwnerProfileResponseSchema = personProfileSchema.extend({
   dietaryConstraints: z.array(householdVisibleDietaryConstraintSchema),
@@ -315,6 +340,11 @@ export const createHouseholdResultSchema = z
           "created owner profile must be active and linked to the owner membership",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "created household, owner membership and owner profile must be linked consistently",
+    ],
   });
 export type CreateHouseholdResult = z.infer<
   typeof createHouseholdResultSchema

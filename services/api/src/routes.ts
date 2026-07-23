@@ -67,14 +67,24 @@ const idempotencyHeadersSchema = z.object({
   "idempotency-key": idempotencyKeySchema,
 });
 
+const problemResponse = {
+  description: "RFC 9457 problem details",
+  content: {
+    "application/problem+json": {
+      schema: apiErrorSchema,
+    },
+  },
+} as const;
+
 const commonErrorResponses = {
-  400: apiErrorSchema,
-  401: apiErrorSchema,
-  403: apiErrorSchema,
-  404: apiErrorSchema,
-  409: apiErrorSchema,
-  500: apiErrorSchema,
-  503: apiErrorSchema,
+  400: problemResponse,
+  401: problemResponse,
+  403: problemResponse,
+  404: problemResponse,
+  409: problemResponse,
+  414: problemResponse,
+  500: problemResponse,
+  503: problemResponse,
 } as const;
 
 const protectedRoute = {
@@ -124,7 +134,8 @@ export const registerRoutes = async (
         tags: ["operations"],
         response: {
           200: serviceLivenessSuccessSchema,
-          500: apiErrorSchema,
+          414: problemResponse,
+          500: problemResponse,
         },
       },
     },
@@ -140,8 +151,9 @@ export const registerRoutes = async (
         tags: ["operations"],
         response: {
           200: serviceReadinessSuccessSchema,
-          503: apiErrorSchema,
-          500: apiErrorSchema,
+          414: problemResponse,
+          500: problemResponse,
+          503: problemResponse,
         },
       },
     },
@@ -170,9 +182,10 @@ export const registerRoutes = async (
         body: wechatLoginExchangeRequestSchema,
         response: {
           200: wechatLoginExchangeSuccessSchema,
-          400: apiErrorSchema,
-          500: apiErrorSchema,
-          503: apiErrorSchema,
+          400: problemResponse,
+          414: problemResponse,
+          500: problemResponse,
+          503: problemResponse,
         },
       },
     },

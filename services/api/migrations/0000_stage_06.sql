@@ -122,7 +122,7 @@ CREATE TABLE inventory_lots (
   storage_location varchar(32) NOT NULL
     CHECK (storage_location IN ('pantry', 'refrigerated', 'frozen', 'other')),
   current_quantity_kind varchar(32) NOT NULL,
-  current_quantity_amount numeric(24, 6),
+  current_quantity_amount numeric(15, 6),
   current_quantity_unit varchar(32),
   current_quantity_original_text varchar(200),
   current_quantity_confidence varchar(16),
@@ -186,7 +186,7 @@ CREATE TABLE inventory_events (
   inventory_lot_id uuid NOT NULL,
   type varchar(32) NOT NULL,
   quantity_change_kind varchar(32),
-  quantity_change_amount numeric(24, 6),
+  quantity_change_amount numeric(15, 6),
   quantity_change_unit varchar(32),
   quantity_change_precision varchar(16),
   quantity_change_confidence varchar(16),

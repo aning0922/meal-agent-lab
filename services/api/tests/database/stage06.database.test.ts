@@ -254,6 +254,36 @@ test("PostgreSQL 18 migration creates nine tables, separated roles, FORCE RLS an
     ],
   );
 
+  const quantityColumns = await persistence.pool.query<{
+    column_name: string;
+    numeric_precision: number;
+    numeric_scale: number;
+  }>(
+    `SELECT column_name, numeric_precision, numeric_scale
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND (
+         (table_name = 'inventory_lots'
+          AND column_name = 'current_quantity_amount')
+         OR
+         (table_name = 'inventory_events'
+          AND column_name = 'quantity_change_amount')
+       )
+     ORDER BY column_name`,
+  );
+  assert.deepEqual(quantityColumns.rows, [
+    {
+      column_name: "current_quantity_amount",
+      numeric_precision: 15,
+      numeric_scale: 6,
+    },
+    {
+      column_name: "quantity_change_amount",
+      numeric_precision: 15,
+      numeric_scale: 6,
+    },
+  ]);
+
   const forced = await persistence.pool.query<{
     relname: string;
     relforcerowsecurity: boolean;
@@ -828,6 +858,131 @@ test("insufficient consumed request returns 409 without writing an event or proj
   assert.deepEqual(unchanged.rows[0], {
     amount: "1.000000",
     version: 1,
+    events: 1,
+  });
+});
+
+test("PostgreSQL numeric arithmetic preserves six-decimal exact quantities", async () => {
+  const session = await login("decimal-arithmetic-user");
+  const household = await createHousehold(session, "decimal-household");
+  const created = await createLot(
+    session,
+    household.data.household.id,
+    "decimal-lot-key01",
+    exactLotRequest("小数库存", 0.3, "kg"),
+  );
+
+  const first = await consume(
+    session,
+    household.data.household.id,
+    created.data.lot.id,
+    "decimal-consume-1",
+    0.1,
+    1,
+  );
+  assert.equal(first.statusCode, 201, first.body);
+  const second = await consume(
+    session,
+    household.data.household.id,
+    created.data.lot.id,
+    "decimal-consume-2",
+    0.2,
+    2,
+  );
+  assert.equal(second.statusCode, 201, second.body);
+
+  const state = await persistence.pool.query<{
+    amount: string;
+    state: string;
+    deltas: string[];
+  }>(
+    `SELECT
+       l.current_quantity_amount::text AS amount,
+       l.state,
+       ARRAY(
+         SELECT e.quantity_change_amount::text
+         FROM inventory_events e
+         WHERE e.inventory_lot_id = l.id
+           AND e.type = 'consumed'
+         ORDER BY e.resulting_lot_version
+       ) AS deltas
+     FROM inventory_lots l
+     WHERE l.id = $1`,
+    [created.data.lot.id],
+  );
+  assert.deepEqual(state.rows[0], {
+    amount: "0.000000",
+    state: "depleted",
+    deltas: ["-0.100000", "-0.200000"],
+  });
+});
+
+test("reusing a consumed idempotency key for another lot returns conflict instead of replaying", async () => {
+  const session = await login("cross-lot-key-user");
+  const household = await createHousehold(session, "cross-lot-key-house");
+  const firstLot = await createLot(
+    session,
+    household.data.household.id,
+    "cross-lot-create-1",
+    exactLotRequest("批次一", 2, "kg"),
+  );
+  const secondLot = await createLot(
+    session,
+    household.data.household.id,
+    "cross-lot-create-2",
+    exactLotRequest("批次二", 2, "kg"),
+  );
+  const key = "cross-lot-consume-key";
+
+  const first = await consume(
+    session,
+    household.data.household.id,
+    firstLot.data.lot.id,
+    key,
+    1,
+    1,
+  );
+  assert.equal(first.statusCode, 201, first.body);
+  const crossLot = await consume(
+    session,
+    household.data.household.id,
+    secondLot.data.lot.id,
+    key,
+    1,
+    1,
+  );
+  assert.equal(crossLot.statusCode, 409);
+  assert.equal(
+    apiErrorSchema.parse(crossLot.json()).code,
+    "IDEMPOTENCY_KEY_REUSED",
+  );
+
+  const state = await persistence.pool.query<{
+    id: string;
+    amount: string;
+    events: number;
+  }>(
+    `SELECT
+       l.id,
+       l.current_quantity_amount::text AS amount,
+       (SELECT count(*)::int
+        FROM inventory_events e
+        WHERE e.inventory_lot_id = l.id) AS events
+     FROM inventory_lots l
+     WHERE l.id IN ($1, $2)
+     ORDER BY l.id`,
+    [firstLot.data.lot.id, secondLot.data.lot.id],
+  );
+  const firstState = state.rows.find((row) => row.id === firstLot.data.lot.id);
+  const secondState = state.rows.find((row) => row.id === secondLot.data.lot.id);
+  assert.deepEqual(firstState, {
+    id: firstLot.data.lot.id,
+    amount: "1.000000",
+    events: 2,
+  });
+  assert.deepEqual(secondState, {
+    id: secondLot.data.lot.id,
+    amount: "2.000000",
     events: 1,
   });
 });

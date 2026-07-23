@@ -58,6 +58,14 @@ const validationError = (error: FastifyError): AppError => {
   return new AppError("VALIDATION_FAILED", "Request does not match schema");
 };
 
+const isMalformedJson = (error: unknown): boolean =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  error.code === "FST_ERR_CTP_INVALID_JSON_BODY";
+
+export const maximumRequestTargetBytes = 2_048;
+
 export const buildApp = async (
   options: BuildAppOptions,
 ): Promise<FastifyInstance<any, any, any, Logger>> => {
@@ -129,6 +137,8 @@ export const buildApp = async (
     const mapped =
       error instanceof AppError
         ? error
+        : isMalformedJson(error)
+          ? new AppError("VALIDATION_FAILED", "Request body is malformed JSON")
         : hasZodFastifySchemaValidationErrors(error)
           ? validationError(error)
           : new AppError("INTERNAL_ERROR", "Internal server error");
@@ -141,11 +151,29 @@ export const buildApp = async (
         "request rejected",
       );
     }
-    const problem = problemFromError(mapped, request.id, request.url);
+    const problemInstance =
+      request.url.split("?", 1)[0]?.slice(0, 500) || "/";
+    const problem = problemFromError(mapped, request.id, problemInstance);
     return reply
       .code(mapped.status)
       .type("application/problem+json")
       .send(problem);
+  });
+
+  app.addHook("onRequest", async (request) => {
+    if (
+      Buffer.byteLength(request.raw.url ?? "", "utf8") >
+      maximumRequestTargetBytes
+    ) {
+      throw new AppError(
+        "URI_TOO_LONG",
+        `Request target exceeds ${maximumRequestTargetBytes} bytes`,
+      );
+    }
+  });
+
+  app.setNotFoundHandler(async () => {
+    throw new AppError("RESOURCE_NOT_FOUND", "Route was not found");
   });
 
   await registerRoutes(app, operations, readiness);

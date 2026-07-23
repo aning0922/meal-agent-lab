@@ -44,6 +44,30 @@ test("config validates Node service settings and requires real WeChat credential
   assert.equal(real.wechatAdapter, "real");
 });
 
+test("production rejects the fake WeChat adapter, including its default", () => {
+  assert.throws(() =>
+    loadConfig({
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://localhost/meal_agent",
+    }),
+  );
+  assert.throws(() =>
+    loadConfig({
+      ...baseEnvironment,
+      NODE_ENV: "production",
+    }),
+  );
+
+  const production = loadConfig({
+    ...baseEnvironment,
+    NODE_ENV: "production",
+    WECHAT_ADAPTER: "real",
+    WECHAT_APP_ID: "configured-at-runtime",
+    WECHAT_APP_SECRET: "configured-at-runtime",
+  });
+  assert.equal(production.wechatAdapter, "real");
+});
+
 test("canonical request hashes are independent of object key order", () => {
   assert.equal(
     canonicalJson({ second: 2, first: { b: 2, a: 1 } }),

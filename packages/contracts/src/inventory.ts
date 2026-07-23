@@ -6,6 +6,7 @@ import {
   householdIdSchema,
   inventoryEventIdSchema,
   inventoryLotIdSchema,
+  exactQuantityAmountSchema,
   persistableInitialQuantitySchema,
   quantityChangeSchema,
   quantitySchema,
@@ -53,7 +54,12 @@ export const inventoryLotSchema = z
     dates: z
       .array(foodDateSchema)
       .max(9)
-      .superRefine(addDuplicateDateKindIssues),
+      .superRefine(addDuplicateDateKindIssues)
+      .meta({
+        "x-zod-refinements": [
+          "date kind must be unique within an inventory lot",
+        ],
+      }),
     safetyAssessment: z.strictObject({
       status: z.enum(["eligible", "blocked", "unknown"]),
       reasonCodes: z.array(z.string().min(1).max(80)),
@@ -104,6 +110,12 @@ export const inventoryLotSchema = z
         message: "blocked safety assessments require a reason code",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "lot state must match whether current quantity is empty",
+      "blocked safety assessments require at least one reason code",
+    ],
   });
 export type InventoryLot = z.infer<typeof inventoryLotSchema>;
 
@@ -137,6 +149,11 @@ const createInventoryLotDateInputSchema = z
         message: "a package label cannot establish a purchase date",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "a package label cannot establish a purchase date",
+    ],
   });
 
 export const createInventoryLotRequestSchema = z.strictObject({
@@ -147,7 +164,12 @@ export const createInventoryLotRequestSchema = z.strictObject({
   dates: z
     .array(createInventoryLotDateInputSchema)
     .max(4)
-    .superRefine(addDuplicateDateKindIssues),
+    .superRefine(addDuplicateDateKindIssues)
+    .meta({
+      "x-zod-refinements": [
+        "date kind must be unique within an inventory lot",
+      ],
+    }),
 });
 export type CreateInventoryLotRequest = z.infer<
   typeof createInventoryLotRequestSchema
@@ -419,6 +441,12 @@ export const inventoryEventSchema = z
         message: "resulting lot version must increment by one",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "event type determines quantity-change shape and direction",
+      "resulting lot version must increment expected lot version by one",
+    ],
   });
 export type InventoryEvent = z.infer<typeof inventoryEventSchema>;
 
@@ -547,6 +575,11 @@ export const createInventoryLotResultSchema = z
         message: "initial event actor must be the lot creator",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "created lot and acquired event must have consistent ids, quantity, actor, source, and versions",
+    ],
   });
 export type CreateInventoryLotResult = z.infer<
   typeof createInventoryLotResultSchema
@@ -555,7 +588,7 @@ export type CreateInventoryLotResult = z.infer<
 export const consumeInventoryLotRequestSchema = z.strictObject({
   consumedQuantity: z.strictObject({
     kind: z.literal("exact"),
-    amount: z.number().finite().positive(),
+    amount: exactQuantityAmountSchema.positive(),
     unit: z.string().min(1).max(32),
     originalText: z.string().min(1).max(200).optional(),
   }),
@@ -624,6 +657,11 @@ export const consumeInventoryLotResultSchema = z
         message: "a consumed event cannot produce a discarded lot",
       });
     }
+  })
+  .meta({
+    "x-zod-refinements": [
+      "consumed result requires a consistent exact negative event and exact nonnegative lot projection",
+    ],
   });
 export type ConsumeInventoryLotResult = z.infer<
   typeof consumeInventoryLotResultSchema

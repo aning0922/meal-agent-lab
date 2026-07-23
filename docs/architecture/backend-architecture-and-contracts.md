@@ -248,7 +248,7 @@ first_request_id
 created_at / expires_at
 ```
 
-幂等记录和业务写入同事务提交。相同作用域/key/body 重放第一次结果；相同作用域/key/不同 body 返回 `IDEMPOTENCY_KEY_REUSED`。创建家庭的 user-scope 记录必须与 Household、owner Membership、owner PersonProfile 同事务提交，重放返回同一个 Household ID。库存和采购事件自身长期保存 key 的唯一约束，通用 response cache 至少保留 30 天。
+幂等记录和业务写入同事务提交。request hash 使用目标资源标识与规范化 body 的 canonical fingerprint；相同作用域/key/目标/body 重放第一次结果，同 key 改变目标资源或 body 返回 `IDEMPOTENCY_KEY_REUSED`。因此 consumed command 不能把一个 lot 的结果回放给另一个 lot。创建家庭的 user-scope 记录必须与 Household、owner Membership、owner PersonProfile 同事务提交，重放返回同一个 Household ID。库存和采购事件自身长期保存 key 的唯一约束，通用 response cache 至少保留 30 天。
 
 登录 token 签发和 session 撤销不使用通用 response replay，避免为重放持久化明文 token。登录网络失败时客户端重新取得微信 code；User/AuthIdentity 唯一映射阻止重复账号，旧 session 可按安全策略回收。幂等 response cache 禁止保存 token、provider identifier 和私有约束。
 

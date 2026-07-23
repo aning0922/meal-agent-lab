@@ -37,6 +37,7 @@ import {
   issueSessionToken,
   newEntityId,
   requestHash,
+  toDatabaseQuantityDecimal,
 } from "../utils.js";
 import type { WechatAdapter } from "../wechat/adapter.js";
 import {
@@ -77,10 +78,15 @@ export interface HouseholdContext extends AuthenticatedUserContext {
 
 export interface Page<T> {
   readonly items: T[];
-  readonly pageInfo: {
-    readonly nextCursor: Cursor | null;
-    readonly hasMore: boolean;
-  };
+  readonly pageInfo:
+    | {
+        readonly nextCursor: Cursor;
+        readonly hasMore: true;
+      }
+    | {
+        readonly nextCursor: null;
+        readonly hasMore: false;
+      };
 }
 
 export interface IdempotentResponse<T> {
@@ -473,6 +479,7 @@ export class ApiRepository {
       readonly method: string;
       readonly normalizedRoute: string;
       readonly key: string;
+      readonly resourceTarget?: unknown;
       readonly payload: unknown;
       readonly requestId: RequestId;
       readonly statusCode: number;
@@ -480,7 +487,10 @@ export class ApiRepository {
     operation: () => Promise<T>,
   ): Promise<IdempotentResponse<T>> {
     const key = idempotencyKeySchema.parse(input.key);
-    const hash = requestHash(input.payload);
+    const hash = requestHash({
+      resourceTarget: input.resourceTarget ?? null,
+      payload: input.payload,
+    });
     const now = new Date();
     const recordId = newEntityId();
     const insert = await client.query<{ id: string }>(
@@ -680,11 +690,13 @@ export class ApiRepository {
         const last = visibleRows.at(-1);
         return {
           items: visibleRows.map(mapHousehold),
-          pageInfo: {
-            hasMore,
-            nextCursor:
-              hasMore && last !== undefined ? encodeCursor(last.id) : null,
-          },
+          pageInfo:
+            hasMore && last !== undefined
+              ? {
+                  hasMore: true,
+                  nextCursor: encodeCursor(last.id),
+                }
+              : { hasMore: false, nextCursor: null },
         };
       },
     );
@@ -828,11 +840,13 @@ export class ApiRepository {
         const last = visibleRows.at(-1);
         return {
           items: visibleRows.map(mapInventoryLot),
-          pageInfo: {
-            hasMore,
-            nextCursor:
-              hasMore && last !== undefined ? encodeCursor(last.id) : null,
-          },
+          pageInfo:
+            hasMore && last !== undefined
+              ? {
+                  hasMore: true,
+                  nextCursor: encodeCursor(last.id),
+                }
+              : { hasMore: false, nextCursor: null },
         };
       },
     );
@@ -886,7 +900,9 @@ export class ApiRepository {
             }));
             const quantity = request.initialQuantity;
             const isQualitative = quantity.kind === "qualitative";
-            const quantityAmount = isQualitative ? null : quantity.amount;
+            const quantityAmount = isQualitative
+              ? null
+              : toDatabaseQuantityDecimal(quantity.amount);
             const quantityUnit = isQualitative ? null : quantity.unit;
             const quantityOriginalText = quantity.originalText ?? null;
             const quantityConfidence =
@@ -1012,6 +1028,7 @@ export class ApiRepository {
             method: "POST",
             normalizedRoute: normalizedRoutes.consumeInventoryLot,
             key: idempotencyKey,
+            resourceTarget: { inventoryLotId: lotId },
             payload: request,
             requestId,
             statusCode: 201,
@@ -1047,33 +1064,30 @@ export class ApiRepository {
                 "Consumed quantity unit must match an exact inventory lot",
               );
             }
-            const beforeAmount = Number(before.current_quantity_amount);
-            const consumedAmount = request.consumedQuantity.amount;
-            if (consumedAmount > beforeAmount) {
-              throw new AppError(
-                "INVENTORY_INSUFFICIENT",
-                "Consumed quantity exceeds available inventory",
-              );
-            }
-            const afterAmount = beforeAmount - consumedAmount;
+            const consumedAmount = toDatabaseQuantityDecimal(
+              request.consumedQuantity.amount,
+            );
             const resultingVersion = before.version + 1;
             const now = new Date();
             const lotResult = await client.query<InventoryLotRow>(
               `UPDATE inventory_lots
-               SET current_quantity_amount = $3,
+               SET current_quantity_amount =
+                     current_quantity_amount - $3::numeric(15, 6),
                    current_quantity_original_text = NULL,
-                   state = CASE WHEN $3::numeric = 0
+                   state = CASE
+                     WHEN current_quantity_amount - $3::numeric(15, 6) = 0
                                 THEN 'depleted' ELSE 'active' END,
                    updated_at = $4,
                    version = $5
                WHERE household_id = $1
                  AND id = $2
                  AND version = $6
+                 AND current_quantity_amount >= $3::numeric(15, 6)
                RETURNING *`,
               [
                 householdId,
                 lotId,
-                afterAmount,
+                consumedAmount,
                 now,
                 resultingVersion,
                 request.expectedVersion,
@@ -1081,8 +1095,8 @@ export class ApiRepository {
             );
             if (lotResult.rowCount !== 1) {
               throw new AppError(
-                "INVENTORY_VERSION_CONFLICT",
-                "Inventory lot version changed concurrently",
+                "INVENTORY_INSUFFICIENT",
+                "Consumed quantity exceeds available inventory",
               );
             }
 
@@ -1096,7 +1110,8 @@ export class ApiRepository {
                  normalized_route, expected_lot_version,
                  resulting_lot_version, note
                ) VALUES (
-                 $1, $2, $3, 'consumed', 'numeric', $4, $5, 'exact', $6,
+                 $1, $2, $3, 'consumed', 'numeric',
+                 -$4::numeric(15, 6), $5, 'exact', $6,
                  $7, 'manual_confirmation', $8, $8, $9, $10, $11, $12, $13
                )
                RETURNING *`,
@@ -1104,7 +1119,7 @@ export class ApiRepository {
                 newEntityId(),
                 householdId,
                 lotId,
-                -consumedAmount,
+                consumedAmount,
                 request.consumedQuantity.unit,
                 request.consumedQuantity.originalText ?? null,
                 context.userId,

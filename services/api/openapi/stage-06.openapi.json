@@ -114,10 +114,10 @@
               }
             }
           },
-          "500": {
-            "description": "Default Response",
+          "414": {
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -145,6 +145,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -227,7 +228,132 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -348,10 +474,10 @@
               }
             }
           },
-          "500": {
-            "description": "Default Response",
+          "414": {
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -379,6 +505,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -461,15 +588,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -497,6 +749,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -579,7 +832,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -700,7 +956,11 @@
                             "lastSeenAt",
                             "tokenVersion"
                           ],
-                          "additionalProperties": false
+                          "additionalProperties": false,
+                          "x-zod-refinements": [
+                            "revokedAt presence must match revoked status",
+                            "expiresAt must be after issuedAt"
+                          ]
                         },
                         "user": {
                           "type": "object",
@@ -760,7 +1020,10 @@
                         "session",
                         "user"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "x-zod-refinements": [
+                        "authenticated user and session must be active and share the same user id"
+                      ]
                     },
                     "meta": {
                       "type": "object",
@@ -827,9 +1090,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -857,6 +1120,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -939,15 +1203,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -975,6 +1364,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1057,15 +1447,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1093,6 +1486,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1175,7 +1569,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -1288,9 +1685,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1318,6 +1715,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1400,15 +1798,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1436,6 +1837,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1518,15 +1920,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1554,6 +1959,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1636,15 +2042,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1672,6 +2081,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1754,15 +2164,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1790,6 +2203,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1872,15 +2286,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -1908,6 +2447,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -1990,15 +2530,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2026,6 +2569,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -2108,7 +2652,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -2336,9 +2883,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2366,6 +2913,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -2448,15 +2996,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2484,6 +3035,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -2566,15 +3118,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2602,6 +3157,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -2684,15 +3240,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2720,6 +3279,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -2802,15 +3362,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2838,6 +3401,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -2920,15 +3484,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -2956,6 +3645,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -3038,15 +3728,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -3074,6 +3767,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -3156,7 +3850,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -3368,7 +4065,10 @@
                                   "meal:write",
                                   "shopping:write"
                                 ]
-                              }
+                              },
+                              "x-zod-refinements": [
+                                "membership capabilities must be unique"
+                              ]
                             },
                             "status": {
                               "type": "string",
@@ -3616,6 +4316,9 @@
                                     ],
                                     "additionalProperties": false
                                   }
+                                ],
+                                "x-zod-refinements": [
+                                  "safe profile responses cannot contain subject_and_owner constraints"
                                 ]
                               }
                             },
@@ -3656,7 +4359,10 @@
                         "membership",
                         "ownerProfile"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "x-zod-refinements": [
+                        "created household, owner membership and owner profile must be linked consistently"
+                      ]
                     },
                     "meta": {
                       "type": "object",
@@ -3723,9 +4429,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -3753,6 +4459,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -3835,15 +4542,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -3871,6 +4581,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -3953,15 +4664,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -3989,6 +4703,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4071,15 +4786,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -4107,6 +4825,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4189,15 +4908,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -4225,6 +4947,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4307,15 +5030,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -4343,6 +5191,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4425,15 +5274,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -4461,6 +5313,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4543,7 +5396,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -4670,24 +5526,53 @@
                           }
                         },
                         "pageInfo": {
-                          "type": "object",
-                          "properties": {
-                            "nextCursor": {
-                              "nullable": true,
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 512,
-                              "pattern": "^[A-Za-z0-9_-]+$"
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "nextCursor": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "hasMore": {
+                                  "type": "boolean",
+                                  "enum": [
+                                    true
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "nextCursor",
+                                "hasMore"
+                              ],
+                              "additionalProperties": false
                             },
-                            "hasMore": {
-                              "type": "boolean"
+                            {
+                              "type": "object",
+                              "properties": {
+                                "nextCursor": {
+                                  "type": "string",
+                                  "nullable": true,
+                                  "enum": [
+                                    null
+                                  ]
+                                },
+                                "hasMore": {
+                                  "type": "boolean",
+                                  "enum": [
+                                    false
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "nextCursor",
+                                "hasMore"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "nextCursor",
-                            "hasMore"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
                       },
                       "required": [
@@ -4761,9 +5646,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -4791,6 +5676,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4873,15 +5759,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -4909,6 +5798,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -4991,15 +5881,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -5027,6 +5920,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -5109,15 +6003,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -5145,6 +6042,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -5227,15 +6125,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -5263,6 +6164,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -5345,15 +6247,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -5381,6 +6408,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -5463,15 +6491,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -5499,6 +6530,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -5581,7 +6613,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -5706,7 +6741,9 @@
                                       },
                                       "amount": {
                                         "type": "number",
-                                        "minimum": 0
+                                        "minimum": 0,
+                                        "maximum": 999999999.999999,
+                                        "multipleOf": 0.000001
                                       },
                                       "unit": {
                                         "type": "string",
@@ -5738,7 +6775,9 @@
                                       "amount": {
                                         "type": "number",
                                         "minimum": 0,
-                                        "exclusiveMinimum": true
+                                        "exclusiveMinimum": true,
+                                        "maximum": 999999999.999999,
+                                        "multipleOf": 0.000001
                                       },
                                       "unit": {
                                         "type": "string",
@@ -5764,7 +6803,10 @@
                                       "originalText",
                                       "confidence"
                                     ],
-                                    "additionalProperties": false
+                                    "additionalProperties": false,
+                                    "x-zod-refinements": [
+                                      "approximate amount and unit must be both present or both absent"
+                                    ]
                                   },
                                   {
                                     "type": "object",
@@ -5880,7 +6922,11 @@
                                         "confidence",
                                         "capturedAt"
                                       ],
-                                      "additionalProperties": false
+                                      "additionalProperties": false,
+                                      "x-zod-refinements": [
+                                        "verified rules require ruleVersion",
+                                        "recognized information requires confirmedByUserId"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -5888,8 +6934,15 @@
                                     "value",
                                     "source"
                                   ],
-                                  "additionalProperties": false
-                                }
+                                  "additionalProperties": false,
+                                  "x-zod-refinements": [
+                                    "date value shape and source must match the date kind",
+                                    "purchase date cannot be inferred from a package label"
+                                  ]
+                                },
+                                "x-zod-refinements": [
+                                  "date kind must be unique within an inventory lot"
+                                ]
                               },
                               "safetyAssessment": {
                                 "type": "object",
@@ -5974,28 +7027,61 @@
                               "updatedAt",
                               "version"
                             ],
-                            "additionalProperties": false
+                            "additionalProperties": false,
+                            "x-zod-refinements": [
+                              "lot state must match whether current quantity is empty",
+                              "blocked safety assessments require at least one reason code"
+                            ]
                           }
                         },
                         "pageInfo": {
-                          "type": "object",
-                          "properties": {
-                            "nextCursor": {
-                              "nullable": true,
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 512,
-                              "pattern": "^[A-Za-z0-9_-]+$"
+                          "oneOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "nextCursor": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 512,
+                                  "pattern": "^[A-Za-z0-9_-]+$"
+                                },
+                                "hasMore": {
+                                  "type": "boolean",
+                                  "enum": [
+                                    true
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "nextCursor",
+                                "hasMore"
+                              ],
+                              "additionalProperties": false
                             },
-                            "hasMore": {
-                              "type": "boolean"
+                            {
+                              "type": "object",
+                              "properties": {
+                                "nextCursor": {
+                                  "type": "string",
+                                  "nullable": true,
+                                  "enum": [
+                                    null
+                                  ]
+                                },
+                                "hasMore": {
+                                  "type": "boolean",
+                                  "enum": [
+                                    false
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "nextCursor",
+                                "hasMore"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "nextCursor",
-                            "hasMore"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
                       },
                       "required": [
@@ -6069,9 +7155,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6099,6 +7185,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6181,15 +7268,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6217,6 +7307,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6299,15 +7390,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6335,6 +7429,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6417,15 +7512,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6453,6 +7551,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6535,15 +7634,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6571,6 +7673,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6653,15 +7756,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6689,6 +7917,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6771,15 +8000,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -6807,6 +8039,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -6889,7 +8122,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -6941,7 +8177,9 @@
                           "amount": {
                             "type": "number",
                             "minimum": 0,
-                            "exclusiveMinimum": true
+                            "exclusiveMinimum": true,
+                            "maximum": 999999999.999999,
+                            "multipleOf": 0.000001
                           },
                           "unit": {
                             "type": "string",
@@ -6973,7 +8211,9 @@
                           "amount": {
                             "type": "number",
                             "minimum": 0,
-                            "exclusiveMinimum": true
+                            "exclusiveMinimum": true,
+                            "maximum": 999999999.999999,
+                            "multipleOf": 0.000001
                           },
                           "unit": {
                             "type": "string",
@@ -7092,8 +8332,14 @@
                         "value",
                         "source"
                       ],
-                      "additionalProperties": false
-                    }
+                      "additionalProperties": false,
+                      "x-zod-refinements": [
+                        "a package label cannot establish a purchase date"
+                      ]
+                    },
+                    "x-zod-refinements": [
+                      "date kind must be unique within an inventory lot"
+                    ]
                   }
                 },
                 "required": [
@@ -7205,7 +8451,9 @@
                                     },
                                     "amount": {
                                       "type": "number",
-                                      "minimum": 0
+                                      "minimum": 0,
+                                      "maximum": 999999999.999999,
+                                      "multipleOf": 0.000001
                                     },
                                     "unit": {
                                       "type": "string",
@@ -7237,7 +8485,9 @@
                                     "amount": {
                                       "type": "number",
                                       "minimum": 0,
-                                      "exclusiveMinimum": true
+                                      "exclusiveMinimum": true,
+                                      "maximum": 999999999.999999,
+                                      "multipleOf": 0.000001
                                     },
                                     "unit": {
                                       "type": "string",
@@ -7263,7 +8513,10 @@
                                     "originalText",
                                     "confidence"
                                   ],
-                                  "additionalProperties": false
+                                  "additionalProperties": false,
+                                  "x-zod-refinements": [
+                                    "approximate amount and unit must be both present or both absent"
+                                  ]
                                 },
                                 {
                                   "type": "object",
@@ -7379,7 +8632,11 @@
                                       "confidence",
                                       "capturedAt"
                                     ],
-                                    "additionalProperties": false
+                                    "additionalProperties": false,
+                                    "x-zod-refinements": [
+                                      "verified rules require ruleVersion",
+                                      "recognized information requires confirmedByUserId"
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -7387,8 +8644,15 @@
                                   "value",
                                   "source"
                                 ],
-                                "additionalProperties": false
-                              }
+                                "additionalProperties": false,
+                                "x-zod-refinements": [
+                                  "date value shape and source must match the date kind",
+                                  "purchase date cannot be inferred from a package label"
+                                ]
+                              },
+                              "x-zod-refinements": [
+                                "date kind must be unique within an inventory lot"
+                              ]
                             },
                             "safetyAssessment": {
                               "type": "object",
@@ -7473,7 +8737,11 @@
                             "updatedAt",
                             "version"
                           ],
-                          "additionalProperties": false
+                          "additionalProperties": false,
+                          "x-zod-refinements": [
+                            "lot state must match whether current quantity is empty",
+                            "blocked safety assessments require at least one reason code"
+                          ]
                         },
                         "event": {
                           "type": "object",
@@ -7522,7 +8790,13 @@
                                           ]
                                         },
                                         "amount": {
-                                          "type": "number"
+                                          "type": "number",
+                                          "minimum": -999999999.999999,
+                                          "maximum": 999999999.999999,
+                                          "multipleOf": 0.000001,
+                                          "x-zod-refinements": [
+                                            "quantity delta cannot be zero"
+                                          ]
                                         },
                                         "unit": {
                                           "type": "string",
@@ -7559,7 +8833,13 @@
                                           ]
                                         },
                                         "amount": {
-                                          "type": "number"
+                                          "type": "number",
+                                          "minimum": -999999999.999999,
+                                          "maximum": 999999999.999999,
+                                          "multipleOf": 0.000001,
+                                          "x-zod-refinements": [
+                                            "quantity delta cannot be zero"
+                                          ]
                                         },
                                         "unit": {
                                           "type": "string",
@@ -7725,14 +9005,21 @@
                             "expectedLotVersion",
                             "resultingLotVersion"
                           ],
-                          "additionalProperties": false
+                          "additionalProperties": false,
+                          "x-zod-refinements": [
+                            "event type determines quantity-change shape and direction",
+                            "resulting lot version must increment expected lot version by one"
+                          ]
                         }
                       },
                       "required": [
                         "lot",
                         "event"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "x-zod-refinements": [
+                        "created lot and acquired event must have consistent ids, quantity, actor, source, and versions"
+                      ]
                     },
                     "meta": {
                       "type": "object",
@@ -7799,9 +9086,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -7829,6 +9116,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -7911,15 +9199,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -7947,6 +9238,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -8029,15 +9321,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -8065,6 +9360,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -8147,15 +9443,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -8183,6 +9482,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -8265,15 +9565,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -8301,6 +9604,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -8383,15 +9687,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -8419,6 +9848,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -8501,15 +9931,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -8537,6 +9970,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -8619,7 +10053,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
@@ -8652,7 +10089,9 @@
                       "amount": {
                         "type": "number",
                         "minimum": 0,
-                        "exclusiveMinimum": true
+                        "exclusiveMinimum": true,
+                        "maximum": 999999999.999999,
+                        "multipleOf": 0.000001
                       },
                       "unit": {
                         "type": "string",
@@ -8799,7 +10238,9 @@
                                     },
                                     "amount": {
                                       "type": "number",
-                                      "minimum": 0
+                                      "minimum": 0,
+                                      "maximum": 999999999.999999,
+                                      "multipleOf": 0.000001
                                     },
                                     "unit": {
                                       "type": "string",
@@ -8831,7 +10272,9 @@
                                     "amount": {
                                       "type": "number",
                                       "minimum": 0,
-                                      "exclusiveMinimum": true
+                                      "exclusiveMinimum": true,
+                                      "maximum": 999999999.999999,
+                                      "multipleOf": 0.000001
                                     },
                                     "unit": {
                                       "type": "string",
@@ -8857,7 +10300,10 @@
                                     "originalText",
                                     "confidence"
                                   ],
-                                  "additionalProperties": false
+                                  "additionalProperties": false,
+                                  "x-zod-refinements": [
+                                    "approximate amount and unit must be both present or both absent"
+                                  ]
                                 },
                                 {
                                   "type": "object",
@@ -8973,7 +10419,11 @@
                                       "confidence",
                                       "capturedAt"
                                     ],
-                                    "additionalProperties": false
+                                    "additionalProperties": false,
+                                    "x-zod-refinements": [
+                                      "verified rules require ruleVersion",
+                                      "recognized information requires confirmedByUserId"
+                                    ]
                                   }
                                 },
                                 "required": [
@@ -8981,8 +10431,15 @@
                                   "value",
                                   "source"
                                 ],
-                                "additionalProperties": false
-                              }
+                                "additionalProperties": false,
+                                "x-zod-refinements": [
+                                  "date value shape and source must match the date kind",
+                                  "purchase date cannot be inferred from a package label"
+                                ]
+                              },
+                              "x-zod-refinements": [
+                                "date kind must be unique within an inventory lot"
+                              ]
                             },
                             "safetyAssessment": {
                               "type": "object",
@@ -9067,7 +10524,11 @@
                             "updatedAt",
                             "version"
                           ],
-                          "additionalProperties": false
+                          "additionalProperties": false,
+                          "x-zod-refinements": [
+                            "lot state must match whether current quantity is empty",
+                            "blocked safety assessments require at least one reason code"
+                          ]
                         },
                         "event": {
                           "type": "object",
@@ -9116,7 +10577,13 @@
                                           ]
                                         },
                                         "amount": {
-                                          "type": "number"
+                                          "type": "number",
+                                          "minimum": -999999999.999999,
+                                          "maximum": 999999999.999999,
+                                          "multipleOf": 0.000001,
+                                          "x-zod-refinements": [
+                                            "quantity delta cannot be zero"
+                                          ]
                                         },
                                         "unit": {
                                           "type": "string",
@@ -9153,7 +10620,13 @@
                                           ]
                                         },
                                         "amount": {
-                                          "type": "number"
+                                          "type": "number",
+                                          "minimum": -999999999.999999,
+                                          "maximum": 999999999.999999,
+                                          "multipleOf": 0.000001,
+                                          "x-zod-refinements": [
+                                            "quantity delta cannot be zero"
+                                          ]
                                         },
                                         "unit": {
                                           "type": "string",
@@ -9319,14 +10792,21 @@
                             "expectedLotVersion",
                             "resultingLotVersion"
                           ],
-                          "additionalProperties": false
+                          "additionalProperties": false,
+                          "x-zod-refinements": [
+                            "event type determines quantity-change shape and direction",
+                            "resulting lot version must increment expected lot version by one"
+                          ]
                         }
                       },
                       "required": [
                         "lot",
                         "event"
                       ],
-                      "additionalProperties": false
+                      "additionalProperties": false,
+                      "x-zod-refinements": [
+                        "consumed result requires a consistent exact negative event and exact nonnegative lot projection"
+                      ]
                     },
                     "meta": {
                       "type": "object",
@@ -9393,9 +10873,9 @@
             }
           },
           "400": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -9423,6 +10903,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -9505,15 +10986,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "401": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -9541,6 +11025,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -9623,15 +11108,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "403": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -9659,6 +11147,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -9741,15 +11230,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -9777,6 +11269,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -9859,15 +11352,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "409": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -9895,6 +11391,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -9977,15 +11474,140 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "414": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "500": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -10013,6 +11635,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -10095,15 +11718,18 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }
           },
           "503": {
-            "description": "Default Response",
+            "description": "RFC 9457 problem details",
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -10131,6 +11757,7 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
                         "FORBIDDEN",
@@ -10213,7 +11840,10 @@
                     "requestId",
                     "retryable"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
                 }
               }
             }

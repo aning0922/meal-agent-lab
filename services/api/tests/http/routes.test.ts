@@ -8,7 +8,11 @@ import {
   serviceLivenessSuccessSchema,
 } from "@meal-agent/contracts";
 
-import { buildApp, type BuildAppOptions } from "../../src/app.js";
+import {
+  buildApp,
+  maximumRequestTargetBytes,
+  type BuildAppOptions,
+} from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import { createLogger } from "../../src/logging.js";
 
@@ -128,6 +132,57 @@ test("HTTP contract rejects estimated consumed requests before a handler can wri
     });
     assert.equal(response.statusCode, 400);
     assert.equal(apiErrorSchema.parse(response.json()).code, "VALIDATION_FAILED");
+  } finally {
+    await app.close();
+  }
+});
+
+test("malformed JSON, missing routes and overlong request targets share the problem boundary", async () => {
+  const app = await buildApp({
+    config,
+    operations,
+    readiness: async () => true,
+  });
+  try {
+    const malformed = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/wechat/exchange",
+      headers: { "content-type": "application/json" },
+      payload: '{"loginCode":',
+    });
+    const missing = await app.inject({
+      method: "GET",
+      url: "/api/v1/not-a-route",
+    });
+    const overlong = await app.inject({
+      method: "GET",
+      url: `/healthz?padding=${"x".repeat(maximumRequestTargetBytes)}`,
+    });
+
+    for (const response of [malformed, missing, overlong]) {
+      assert.equal(
+        response.headers["content-type"]?.includes(
+          "application/problem+json",
+        ),
+        true,
+      );
+      apiErrorSchema.parse(response.json());
+    }
+    assert.equal(malformed.statusCode, 400);
+    assert.equal(
+      apiErrorSchema.parse(malformed.json()).code,
+      "VALIDATION_FAILED",
+    );
+    assert.equal(missing.statusCode, 404);
+    assert.equal(
+      apiErrorSchema.parse(missing.json()).code,
+      "RESOURCE_NOT_FOUND",
+    );
+    assert.equal(overlong.statusCode, 414);
+    assert.equal(
+      apiErrorSchema.parse(overlong.json()).code,
+      "URI_TOO_LONG",
+    );
   } finally {
     await app.close();
   }

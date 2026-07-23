@@ -166,9 +166,9 @@ household scope
 行为：
 
 1. 幂等记录保存 `scope_kind`；user scope 的 `household_id` 为空，household scope 必须有 `household_id`，两类 key 不互相冲突。
-2. 同作用域、同 key、同 request hash：返回第一次的 status/body，并标记 `meta.idempotency.scope` 和 `replayed = true`。
+2. request hash 绑定目标资源标识与规范化 body；同作用域、同 key、同目标、同 request hash 返回第一次的 status/body，并标记 `meta.idempotency.scope` 和 `replayed = true`。
 3. 创建家庭的 user-scope 幂等记录、Household、owner Membership、owner PersonProfile 和响应在同一事务提交；重放返回同一 Household ID。
-4. 同作用域、同 key、不同 request hash：返回 `409 IDEMPOTENCY_KEY_REUSED`。
+4. 同作用域、同 key、改变目标资源或 body：返回 `409 IDEMPOTENCY_KEY_REUSED`，不得跨资源回放第一次结果。
 5. 首次请求的幂等记录、领域写入、InventoryEvent 和投影更新在同一事务提交。
 6. 并发相同 key 只能有一个执行者，其他请求等待并重放结果。
 7. 通用幂等响应记录不得包含 token、provider identifier 或私有约束，至少保留 30 天；库存和采购事件上的幂等唯一约束随事件长期保留。
@@ -232,7 +232,10 @@ JWT 适合多个服务离线验证，但当前是单体。把角色/家庭放入
 - session digest、轮换、过期、撤销和并发登录；
 - 幂等表锁、request hash、重放和 30 天清理；
 - API contract 到 Fastify/OpenAPI 的单一事实源；
-- 私有饮食约束的字段级 redaction。
+
+### Deferred — 后续范围
+
+- 私有饮食约束的通用成员/PersonProfile 读取字段级 response redaction。阶段 06 的安全 owner 创建响应与日志脱敏不能替代该端点级验证。
 
 ### 外部依赖
 

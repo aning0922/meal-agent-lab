@@ -22,6 +22,8 @@ import {
   mealSchema,
   membershipSchema,
   personProfileSchema,
+  quantityDecimalMax,
+  quantityDecimalStep,
   recipeSchema,
   recommendationSchema,
   sessionSchema,
@@ -997,6 +999,36 @@ test("inventory create and consume results keep lot, event, household and versio
       consumedQuantity: {
         ...consumeRequest.consumedQuantity,
         amount: -1,
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    consumeInventoryLotRequestSchema.safeParse({
+      ...consumeRequest,
+      consumedQuantity: {
+        ...consumeRequest.consumedQuantity,
+        amount: 0.123_456,
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    consumeInventoryLotRequestSchema.safeParse({
+      ...consumeRequest,
+      consumedQuantity: {
+        ...consumeRequest.consumedQuantity,
+        amount: 0.123_456_7,
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    consumeInventoryLotRequestSchema.safeParse({
+      ...consumeRequest,
+      consumedQuantity: {
+        ...consumeRequest.consumedQuantity,
+        amount: quantityDecimalMax + quantityDecimalStep,
       },
     }).success,
     false,

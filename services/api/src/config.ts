@@ -40,6 +40,17 @@ const configSchema = z
     SESSION_IDLE_TTL_DAYS: integerFromEnvironment(7).pipe(z.int().max(30)),
   })
   .superRefine((config, context) => {
+    if (
+      config.NODE_ENV === "production" &&
+      config.WECHAT_ADAPTER !== "real"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["WECHAT_ADAPTER"],
+        message: "production requires the real WeChat adapter",
+      });
+    }
+
     if (config.WECHAT_ADAPTER === "real") {
       if (config.WECHAT_APP_ID === undefined) {
         context.addIssue({
