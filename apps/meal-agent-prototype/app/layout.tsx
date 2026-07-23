@@ -4,7 +4,7 @@ import "./globals.css";
 
 const title = "Meal Agent · 低保真原型";
 const description =
-  "覆盖首次引导、今天吃什么、建议组合与可选菜、共享采购、做饭完成与库存扣减的可评审低保真原型。";
+  "覆盖首次引导、菜单组合、临期库存、共享采购、做饭闭环、上下文 Agent 与全页面状态的技术验证产品基线。";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

@@ -16,6 +16,9 @@ Thumbs.db
 node_modules/
 dist/
 build/
+!apps/meal-agent-prototype/build/
+apps/meal-agent-prototype/build/*
+!apps/meal-agent-prototype/build/sites-vite-plugin.ts
 coverage/
 .turbo/
 .cache/

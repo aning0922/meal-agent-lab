@@ -9,16 +9,37 @@ type ScreenId =
   | "o04"
   | "o05"
   | "h01"
+  | "i01"
   | "r01"
   | "r02"
   | "r03"
   | "s01"
   | "s02"
+  | "f01"
   | "c01"
   | "c02"
   | "c03"
   | "c04"
   | "c05";
+
+type ReviewState =
+  | "default"
+  | "empty"
+  | "loading"
+  | "unknown"
+  | "failure"
+  | "permission"
+  | "partial"
+  | "conflict"
+  | "safety"
+  | "duplicate"
+  | "resume";
+
+type HouseholdMember = {
+  name: string;
+  role: "家庭所有者" | "用餐档案";
+  constraint?: string;
+};
 
 type MenuPlan = {
   id: string;
@@ -67,7 +88,8 @@ type ShoppingItem = {
   name: string;
   quantity: string;
   source: string;
-  purchased: boolean;
+  stockable: boolean;
+  status: "pending" | "purchased" | "stocked" | "completed";
   actor?: string;
 };
 
@@ -89,6 +111,7 @@ const pageGroups: Array<{
     title: "今天吃什么",
     pages: [
       { id: "h01", code: "H-01", label: "今天" },
+      { id: "i01", code: "I-01", label: "库存与临期" },
       { id: "r01", code: "R-01", label: "本餐条件" },
       { id: "r02", code: "R-02", label: "建议组合与加菜" },
       { id: "r03", code: "R-03", label: "本餐组合详情" },
@@ -100,6 +123,10 @@ const pageGroups: Array<{
       { id: "s01", code: "S-01", label: "共享采购" },
       { id: "s02", code: "S-02", label: "已买待入库" },
     ],
+  },
+  {
+    title: "家庭上下文",
+    pages: [{ id: "f01", code: "F-01", label: "家庭设置" }],
   },
   {
     title: "做饭与扣减",
@@ -153,6 +180,12 @@ const pageMeta: Record<
     risk: "任务入口",
     observe: ["今天吃什么是否是第一主操作", "临期信息是否清楚区分来源"],
   },
+  i01: {
+    code: "I-01",
+    title: "库存与临期",
+    risk: "食品安全",
+    observe: ["日期来源与未知状态是否清楚", "高风险未知食材是否没有利用入口"],
+  },
   r01: {
     code: "R-01",
     title: "本餐条件",
@@ -182,6 +215,12 @@ const pageMeta: Record<
     title: "已买待入库",
     risk: "录入成本",
     observe: ["能否批量补齐最少信息", "数量与日期是否允许保持模糊或未知"],
+  },
+  f01: {
+    code: "F-01",
+    title: "家庭设置",
+    risk: "权限与隐私",
+    observe: ["成员、约束、厨艺与厨具是否一致", "敏感限制是否最少披露"],
   },
   c01: {
     code: "C-01",
@@ -214,6 +253,92 @@ const pageMeta: Record<
     observe: ["是否确信扣减已记录", "剩菜新批次与轻反馈是否清楚"],
   },
 };
+
+const reviewStates: Array<{
+  id: ReviewState;
+  label: string;
+  title: string;
+  description: string;
+  action: string;
+}> = [
+  {
+    id: "default",
+    label: "正常流程",
+    title: "正常流程",
+    description: "展示当前页面的主路径与可执行操作。",
+    action: "继续当前任务",
+  },
+  {
+    id: "empty",
+    label: "首次空状态",
+    title: "这里还没有内容",
+    description: "解释数据用途，只给一个最短起步动作，不制造示例事实。",
+    action: "完成最短动作",
+  },
+  {
+    id: "loading",
+    label: "加载 / 提交中",
+    title: "正在处理",
+    description: "保留当前输入并禁用重复提交；长任务可以取消。",
+    action: "取消本次处理",
+  },
+  {
+    id: "unknown",
+    label: "无数据 / 信息未知",
+    title: "有些信息还不确定",
+    description: "未知不等于没有；展示来源、置信度和补充信息入口。",
+    action: "补充或保持未知",
+  },
+  {
+    id: "failure",
+    label: "网络 / 服务失败",
+    title: "这次没有保存",
+    description: "明确未保存范围，保留输入，并允许按同一幂等请求重试。",
+    action: "重试",
+  },
+  {
+    id: "permission",
+    label: "无权限",
+    title: "你没有执行此操作的权限",
+    description: "说明需要的角色，不泄露受限成员或其他家庭的敏感数据。",
+    action: "返回可访问页面",
+  },
+  {
+    id: "partial",
+    label: "部分成功",
+    title: "只完成了一部分",
+    description: "逐项列出成功、待确认和失败结果，不把部分成功显示成全部完成。",
+    action: "只重试失败项",
+  },
+  {
+    id: "conflict",
+    label: "多人并发冲突",
+    title: "数据刚被家人更新",
+    description: "读取最新版本后重新计算；不静默覆盖，也不产生负库存。",
+    action: "查看重算结果",
+  },
+  {
+    id: "safety",
+    label: "安全阻断",
+    title: "已阻止继续",
+    description: "硬约束、日期或食品安全校验未通过；没有绕过入口。",
+    action: "修改条件或移除风险项",
+  },
+  {
+    id: "duplicate",
+    label: "重复提交",
+    title: "操作已经完成",
+    description: "返回第一次成功结果，不再创建库存、采购或消耗事件。",
+    action: "查看原结果",
+  },
+  {
+    id: "resume",
+    label: "返回 / 取消 / 恢复",
+    title: "草稿和进度已保留",
+    description: "可以继续、取消并说明后果，页面重载不会自动完成或扣减。",
+    action: "继续上次任务",
+  },
+];
 
 const dishOptions: DishOption[] = [
   {
@@ -519,7 +644,7 @@ function composeMenu(selectedIds: string[]): MenuPlan {
     uses,
     reason: `按 ${safeDishes.length} 道菜合并计算时间、采购和库存消耗；系统建议的 2 道已预先选中。`,
     assumption:
-      "总时间按可并行步骤估算；假设家中有已确认的食用油、盐和酱油。",
+      "总时间按可并行步骤估算；常备调味品只采用用户已确认状态。",
     equipment: equipment.length ? equipment.join(" · ") : "无需特殊设备",
     cookSteps: safeDishes.flatMap((dish) =>
       dish.cookSteps.map((step) => ({
@@ -541,7 +666,7 @@ const suggestedIngredients = [
   "酸奶",
 ];
 
-const initialIngredients = ["鸡蛋", "番茄", "上海青"];
+const initialIngredients: string[] = [];
 const initialMenu = composeMenu(recommendedDishIds);
 
 const defaultDeductionAmounts = Object.fromEntries(
@@ -561,14 +686,16 @@ const initialShopping = (plan: MenuPlan): ShoppingItem[] => [
           ? "1 把"
           : "约 1 份",
     source: plan.title,
-    purchased: false,
+    stockable: true,
+    status: "pending" as const,
   })),
   {
     id: "manual-paper",
     name: "厨房纸",
     quantity: "1 卷",
     source: "小北手动添加",
-    purchased: false,
+    stockable: false,
+    status: "pending" as const,
     actor: "小北 · 2分钟前",
   },
 ];
@@ -645,13 +772,15 @@ function PrototypeHeader({
 function BottomNav({
   active,
   onHome,
+  onInventory,
   onShopping,
-  onOutOfScope,
+  onFamily,
 }: {
-  active: "home" | "shopping";
+  active: "home" | "inventory" | "shopping" | "family";
   onHome: () => void;
+  onInventory: () => void;
   onShopping: () => void;
-  onOutOfScope: (label: string) => void;
+  onFamily: () => void;
 }) {
   return (
     <nav className="bottom-nav" aria-label="一级导航">
@@ -663,7 +792,11 @@ function BottomNav({
         <span>今</span>
         今天
       </button>
-      <button onClick={() => onOutOfScope("库存")} type="button">
+      <button
+        className={active === "inventory" ? "is-active" : ""}
+        onClick={onInventory}
+        type="button"
+      >
         <span>库</span>
         库存
       </button>
@@ -675,7 +808,11 @@ function BottomNav({
         <span>采</span>
         采购
       </button>
-      <button onClick={() => onOutOfScope("家庭")} type="button">
+      <button
+        className={active === "family" ? "is-active" : ""}
+        onClick={onFamily}
+        type="button"
+      >
         <span>家</span>
         家庭
       </button>
@@ -683,17 +820,165 @@ function BottomNav({
   );
 }
 
+function StateScenarioSurface({
+  meta,
+  state,
+  onReset,
+}: {
+  meta: (typeof pageMeta)[ScreenId];
+  state: Exclude<ReviewState, "default">;
+  onReset: () => void;
+}) {
+  const scenario = reviewStates.find((item) => item.id === state)!;
+  return (
+    <>
+      <PrototypeHeader eyebrow={`${meta.code} · 状态基线`} title={scenario.label} />
+      <div className="screen-body state-scenario-body">
+        <div className={`state-scenario-mark is-${state}`}>
+          {state === "loading" ? "…" : state === "safety" ? "!" : "◇"}
+        </div>
+        <section className="intro-copy centered">
+          <span className="eyebrow">{meta.title}</span>
+          <h1>{scenario.title}</h1>
+          <p>{scenario.description}</p>
+        </section>
+        <div className="state-contract-card">
+          <span>本状态必须做到</span>
+          <b>{scenario.action}</b>
+          <ul>
+            <li>保留已输入内容和当前业务上下文</li>
+            <li>说明哪些数据已写入、未写入或仍然未知</li>
+            <li>安全、权限与并发校验不能被 Agent 绕过</li>
+          </ul>
+        </div>
+        {state === "partial" && (
+          <div className="partial-result-list">
+            <p>
+              <b>✓ 已完成</b>
+              <span>2 项已保存</span>
+            </p>
+            <p>
+              <b>△ 待确认</b>
+              <span>1 项信息未知</span>
+            </p>
+            <p>
+              <b>× 未完成</b>
+              <span>1 项可单独重试</span>
+            </p>
+          </div>
+        )}
+        <button className="secondary-button full" onClick={onReset} type="button">
+          返回正常流程
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ContextAgentSheet({
+  context,
+  onClose,
+  onPrimary,
+}: {
+  context: "home" | "inventory" | "menu" | "shopping" | "cooking";
+  onClose: () => void;
+  onPrimary: () => void;
+}) {
+  const content = {
+    home: {
+      eyebrow: "来自今天页",
+      title: "整理本餐条件",
+      object: "今晚 2 人 · 30 分钟 · 尽量少买菜",
+      result: "已解析为参与者、总时间和采购容忍度；永久约束保持不变。",
+      action: "去确认结构化条件",
+    },
+    inventory: {
+      eyebrow: "来自库存页",
+      title: "核对当前批次",
+      object: "鸡蛋 · 冷藏 · 日期未知",
+      result: "可以补充包装日期或标记数量不准；不会根据外观判断安全。",
+      action: "生成待确认纠正单",
+    },
+    menu: {
+      eyebrow: "来自本餐组合",
+      title: "解释或调整菜单",
+      object: "今晚的已选菜 · 当前条件与库存快照",
+      result: "可以解释推荐依据、降低难度或少买一项；修改后会重新校验。",
+      action: "带着当前菜单继续",
+    },
+    shopping: {
+      eyebrow: "来自共享采购",
+      title: "解释这项为什么要买",
+      object: "当前清单 · 来源菜单与建议数量",
+      result: "可以合并、改数量或移除；任何变更先形成可见确认单。",
+      action: "生成待确认修改",
+    },
+    cooking: {
+      eyebrow: "来自当前做饭步骤",
+      title: "只回答眼前这一步",
+      object: "当前菜品、步骤、用量与安全点",
+      result: "Agent 可解释火候和动作，但不能跳过或弱化食品安全提示。",
+      action: "回到当前步骤",
+    },
+  }[context];
+
+  return (
+    <div className="agent-sheet-backdrop" role="presentation">
+      <section aria-label="上下文 Agent" className="agent-sheet">
+        <div className="agent-sheet-head">
+          <div>
+            <span className="eyebrow">{content.eyebrow}</span>
+            <h2>{content.title}</h2>
+          </div>
+          <button aria-label="关闭 Agent" onClick={onClose} type="button">
+            ×
+          </button>
+        </div>
+        <div className="agent-context-object">
+          <span>已带入上下文</span>
+          <b>{content.object}</b>
+        </div>
+        <p>{content.result}</p>
+        <div className="write-warning compact">
+          <span>✓</span>
+          <div>
+            <b>业务结果会回到结构化页面</b>
+            <p>涉及写入时仍需确认、权限和服务端校验。</p>
+          </div>
+        </div>
+        <div className="agent-sheet-actions">
+          <button className="secondary-button" onClick={onClose} type="button">
+            取消
+          </button>
+          <button className="primary-button" onClick={onPrimary} type="button">
+            {content.action}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export default function Home() {
   const [screen, setScreen] = useState<ScreenId>("o01");
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewState, setReviewState] = useState<ReviewState>("default");
+  const [agentContext, setAgentContext] = useState<
+    "home" | "inventory" | "menu" | "shopping" | "cooking" | null
+  >(null);
   const [toast, setToast] = useState("");
   const [homeName, setHomeName] = useState("林然的家");
-  const [selectedDiners, setSelectedDiners] = useState(["林然", "小北"]);
-  const [hardConstraintConfirmed, setHardConstraintConfirmed] = useState(true);
-  const [skill, setSkill] = useState("家常熟练");
-  const [equipment, setEquipment] = useState(["炒锅", "汤锅", "电饭煲"]);
-  const [pantry, setPantry] = useState(["食用油", "盐", "酱油", "醋"]);
+  const [members, setMembers] = useState<HouseholdMember[]>([
+    { name: "林然", role: "家庭所有者" },
+  ]);
+  const [memberEditorOpen, setMemberEditorOpen] = useState(false);
+  const [selectedDiners, setSelectedDiners] = useState(["林然"]);
+  const [hardConstraintConfirmed, setHardConstraintConfirmed] = useState(false);
+  const [skill, setSkill] = useState("");
+  const [equipment, setEquipment] = useState<string[]>([]);
+  const [pantry, setPantry] = useState<string[]>([]);
   const [ingredients, setIngredients] = useState(initialIngredients);
+  const [ingredientQuery, setIngredientQuery] = useState("");
   const [timeLimit, setTimeLimit] = useState("30");
   const [shoppingTolerance, setShoppingTolerance] = useState("少量补购");
   const [selectedDishIds, setSelectedDishIds] = useState<string[]>([
@@ -711,11 +996,16 @@ export default function Home() {
   const [shoppingItems, setShoppingItems] = useState<ShoppingItem[]>(
     initialShopping(initialMenu),
   );
+  const [shoppingQuery, setShoppingQuery] = useState("");
   const [inventoryConfirmed, setInventoryConfirmed] = useState(false);
+  const [inventorySubmitting, setInventorySubmitting] = useState(false);
+  const [lastStockedCount, setLastStockedCount] = useState(0);
   const [cookStep, setCookStep] = useState(0);
+  const [mealStarted, setMealStarted] = useState(false);
+  const [cookPaused, setCookPaused] = useState(false);
   const [completionState, setCompletionState] = useState<
     "all" | "partial" | "none"
-  >("partial");
+  >("all");
   const [includedDeductions, setIncludedDeductions] = useState<
     Record<string, boolean>
   >(() =>
@@ -728,46 +1018,109 @@ export default function Home() {
   const [deductionAmounts, setDeductionAmounts] = useState<
     Record<string, number>
   >(defaultDeductionAmounts);
-  const [leftover, setLeftover] = useState(true);
+  const [leftover, setLeftover] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [deductionSubmitting, setDeductionSubmitting] = useState(false);
+  const [mealRecorded, setMealRecorded] = useState(false);
+  const [expiryNotice, setExpiryNotice] = useState<
+    "tomato" | "chicken" | null
+  >(null);
   const [feedback, setFeedback] = useState<string[]>([]);
   const contentRef = useRef<HTMLDivElement>(null);
 
   const currentMeta = pageMeta[screen];
-  const purchasedCount = shoppingItems.filter((item) => item.purchased).length;
-  const inventoryRows = shoppingItems.filter((item) => item.purchased);
+  const purchasedCount = shoppingItems.filter(
+    (item) => item.status === "purchased",
+  ).length;
+  const pendingShoppingCount = shoppingItems.filter(
+    (item) => item.status === "pending",
+  ).length;
+  const completedShoppingCount = shoppingItems.filter((item) =>
+    ["stocked", "completed"].includes(item.status),
+  ).length;
+  const inventoryRows = shoppingItems.filter(
+    (item) => item.status === "purchased" && item.stockable,
+  );
+  const constraintCount = members.filter((member) => member.constraint).length;
+  const requiredEquipment = uniqueValues(
+    selectedDishes.flatMap((dish) => dish.equipment),
+  );
+  const missingEquipment = requiredEquipment.filter(
+    (item) => !equipment.includes(item),
+  );
+  const planIssues = useMemo(() => {
+    const issues: string[] = [];
+    if (
+      !selectedDishes.some(
+        (dish) => dish.category === "主食" || dish.category === "主菜",
+      )
+    ) {
+      issues.push("当前只有配菜，缺少可作为一餐主体的主食或主菜");
+    }
+    if (Number.parseInt(selectedMenu.time, 10) > Number.parseInt(timeLimit, 10)) {
+      issues.push(`整餐预计 ${selectedMenu.time}，超过 ${timeLimit} 分钟条件`);
+    }
+    if (shoppingTolerance === "不买菜" && selectedMenu.missing.length > 0) {
+      issues.push(`仍缺 ${selectedMenu.missing.length} 项食材，不符合“不买菜”`);
+    }
+    if (!skill) {
+      issues.push("本餐厨师水平未知，需要先确认难度是否可执行");
+    }
+    if (missingEquipment.length > 0) {
+      issues.push(`缺少必需设备：${missingEquipment.join("、")}`);
+    }
+    return issues;
+  }, [
+    missingEquipment,
+    selectedDishes,
+    selectedMenu.missing.length,
+    selectedMenu.time,
+    shoppingTolerance,
+    skill,
+    timeLimit,
+  ]);
+  const canStartCook =
+    planIssues.length === 0 &&
+    (selectedMenu.missing.length === 0 || inventoryConfirmed);
 
   const navigate = (next: ScreenId) => {
     setScreen(next);
     setReviewOpen(false);
+    setAgentContext(null);
     setToast("");
     requestAnimationFrame(() => {
       contentRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     });
   };
 
-  const showScopeNote = (label: string) => {
-    setToast(`${label}完整页面不在本轮原型范围，可从评审目录继续核心闭环。`);
-  };
-
   const resetPrototype = () => {
     setScreen("o01");
     setReviewOpen(false);
+    setReviewState("default");
+    setAgentContext(null);
     setToast("");
     setHomeName("林然的家");
-    setSelectedDiners(["林然", "小北"]);
-    setHardConstraintConfirmed(true);
-    setSkill("家常熟练");
-    setEquipment(["炒锅", "汤锅", "电饭煲"]);
-    setPantry(["食用油", "盐", "酱油", "醋"]);
+    setMembers([{ name: "林然", role: "家庭所有者" }]);
+    setMemberEditorOpen(false);
+    setSelectedDiners(["林然"]);
+    setHardConstraintConfirmed(false);
+    setSkill("");
+    setEquipment([]);
+    setPantry([]);
     setIngredients(initialIngredients);
+    setIngredientQuery("");
     setTimeLimit("30");
     setShoppingTolerance("少量补购");
     setSelectedDishIds([...recommendedDishIds]);
     setShoppingItems(initialShopping(initialMenu));
+    setShoppingQuery("");
     setInventoryConfirmed(false);
+    setInventorySubmitting(false);
+    setLastStockedCount(0);
     setCookStep(0);
-    setCompletionState("partial");
+    setMealStarted(false);
+    setCookPaused(false);
+    setCompletionState("all");
     setIncludedDeductions(
       Object.fromEntries(
         dishOptions.flatMap((dish) =>
@@ -776,8 +1129,11 @@ export default function Home() {
       ),
     );
     setDeductionAmounts(defaultDeductionAmounts);
-    setLeftover(true);
+    setLeftover(false);
     setConflict(false);
+    setDeductionSubmitting(false);
+    setMealRecorded(false);
+    setExpiryNotice(null);
     setFeedback([]);
   };
 
@@ -794,9 +1150,57 @@ export default function Home() {
   };
 
   const confirmMenu = () => {
+    if (planIssues.length > 0) {
+      setToast("当前组合未通过条件校验，请先调整菜品或本餐条件。");
+      return;
+    }
     setShoppingItems(initialShopping(selectedMenu));
     setInventoryConfirmed(false);
+    setLastStockedCount(0);
+    setMealRecorded(false);
     navigate("s01");
+  };
+
+  const addDemoMember = () => {
+    if (!members.some((member) => member.name === "小北")) {
+      setMembers((current) => [
+        ...current,
+        { name: "小北", role: "用餐档案", constraint: "花生过敏" },
+      ]);
+      setSelectedDiners((current) => uniqueValues([...current, "小北"]));
+    }
+    setHardConstraintConfirmed(false);
+    setMemberEditorOpen(false);
+  };
+
+  const addIngredient = () => {
+    const value = ingredientQuery.trim();
+    if (!value) return;
+    if (ingredients.includes(value)) {
+      setToast(`${value} 已在待确认列表中，不会重复添加。`);
+      return;
+    }
+    setIngredients((current) => [...current, value]);
+    setIngredientQuery("");
+    setToast(`${value} 已加入待确认批次。`);
+  };
+
+  const addShoppingItem = () => {
+    const value = shoppingQuery.trim();
+    if (!value) return;
+    setShoppingItems((current) => [
+      ...current,
+      {
+        id: `manual-${current.length}-${value}`,
+        name: value,
+        quantity: "约 1 份",
+        source: "你手动添加",
+        stockable: true,
+        status: "pending",
+        actor: "你 · 刚刚",
+      },
+    ]);
+    setShoppingQuery("");
   };
 
   const toggleDish = (dishId: string) => {
@@ -826,8 +1230,13 @@ export default function Home() {
         item.id === id
           ? {
               ...item,
-              purchased: !item.purchased,
-              actor: !item.purchased ? "你 · 刚刚" : undefined,
+              status:
+                item.status === "pending"
+                  ? item.stockable
+                    ? "purchased"
+                    : "completed"
+                  : "pending",
+              actor: item.status === "pending" ? "你 · 刚刚" : undefined,
             }
           : item,
       ),
@@ -838,10 +1247,61 @@ export default function Home() {
     setShoppingItems((items) =>
       items.map((item) => ({
         ...item,
-        purchased: true,
+        status:
+          item.status === "pending"
+            ? item.stockable
+              ? "purchased"
+              : "completed"
+            : item.status,
         actor: item.actor ?? "你 · 刚刚",
       })),
     );
+  };
+
+  const confirmInventory = () => {
+    if (inventorySubmitting || inventoryConfirmed || inventoryRows.length === 0) {
+      return;
+    }
+    const count = inventoryRows.length;
+    setInventorySubmitting(true);
+    window.setTimeout(() => {
+      setShoppingItems((items) =>
+        items.map((item) =>
+          item.status === "purchased" && item.stockable
+            ? { ...item, status: "stocked" }
+            : item,
+        ),
+      );
+      setLastStockedCount(count);
+      setInventoryConfirmed(true);
+      setInventorySubmitting(false);
+    }, 450);
+  };
+
+  const confirmDeductions = () => {
+    if (deductionSubmitting || mealRecorded) return;
+    setDeductionSubmitting(true);
+    window.setTimeout(() => {
+      setMealRecorded(true);
+      setDeductionSubmitting(false);
+      setMealStarted(false);
+      navigate("c05");
+    }, 450);
+  };
+
+  const handleAgentPrimary = () => {
+    if (agentContext === "home") {
+      setShoppingTolerance("少量补购");
+      setTimeLimit("30");
+      navigate("r01");
+      return;
+    }
+    if (agentContext === "cooking") {
+      setAgentContext(null);
+      return;
+    }
+    setToast("已生成结构化待确认结果；原型不会由 Agent 直接写入。");
+    setAgentContext(null);
   };
 
   const adjustDeduction = (id: string, delta: number) => {
@@ -920,25 +1380,58 @@ export default function Home() {
                 value={homeName}
               />
             </div>
-            <section className="person-card is-selected">
-              <div className="avatar-box">林</div>
-              <div>
-                <strong>林然</strong>
-                <p>家庭所有者 · 本餐默认参加</p>
-              </div>
-              <span className="check-mark">✓</span>
-            </section>
-            <section className="person-card is-selected">
-              <div className="avatar-box">北</div>
-              <div>
-                <strong>小北</strong>
-                <p>用餐档案 · 本餐默认参加</p>
-              </div>
-              <span className="check-mark">✓</span>
-            </section>
-            <button className="add-row" type="button">
-              ＋ 添加家庭成员或用餐档案
-            </button>
+            {members.map((member) => (
+              <section className="person-card is-selected" key={member.name}>
+                <div className="avatar-box">{member.name.slice(-1)}</div>
+                <div>
+                  <strong>{member.name}</strong>
+                  <p>{member.role} · 本餐默认参加</p>
+                </div>
+                <span className="check-mark">✓</span>
+              </section>
+            ))}
+            {memberEditorOpen ? (
+              <section className="inline-editor">
+                <span className="eyebrow">新增用餐档案</span>
+                <div className="field-block compact">
+                  <label htmlFor="demo-member-name">昵称</label>
+                  <input id="demo-member-name" readOnly value="小北" />
+                </div>
+                <div className="field-block compact">
+                  <label htmlFor="demo-member-constraint">硬约束</label>
+                  <input
+                    id="demo-member-constraint"
+                    readOnly
+                    value="花生过敏"
+                  />
+                </div>
+                <p>这是虚构评审数据；保存后仍需再次确认硬约束。</p>
+                <div className="inline-editor-actions">
+                  <button
+                    className="secondary-button"
+                    onClick={() => setMemberEditorOpen(false)}
+                    type="button"
+                  >
+                    取消
+                  </button>
+                  <button
+                    className="primary-button"
+                    onClick={addDemoMember}
+                    type="button"
+                  >
+                    保存档案
+                  </button>
+                </div>
+              </section>
+            ) : (
+              <button
+                className="add-row"
+                onClick={() => setMemberEditorOpen(true)}
+                type="button"
+              >
+                ＋ 添加家庭成员或用餐档案
+              </button>
+            )}
             <section className="constraint-box">
               <div className="section-heading">
                 <div>
@@ -947,19 +1440,26 @@ export default function Home() {
                 </div>
                 <span className="hard-tag">不可绕过</span>
               </div>
-              <label className="check-row">
-                <input
-                  checked={hardConstraintConfirmed}
-                  onChange={(event) =>
-                    setHardConstraintConfirmed(event.target.checked)
-                  }
-                  type="checkbox"
-                />
-                <span>
-                  <b>已确认：小北花生过敏</b>
-                  <small>推荐、替代食材和调味品都必须排除花生</small>
-                </span>
-              </label>
+              {members.some((member) => member.name === "小北") ? (
+                <label className="check-row">
+                  <input
+                    checked={hardConstraintConfirmed}
+                    onChange={(event) =>
+                      setHardConstraintConfirmed(event.target.checked)
+                    }
+                    type="checkbox"
+                  />
+                  <span>
+                    <b>再次确认：小北花生过敏</b>
+                    <small>推荐、替代食材和调味品都必须排除花生</small>
+                  </span>
+                </label>
+              ) : (
+                <div className="empty-box compact">
+                  <b>还没有其他用餐档案</b>
+                  <span>添加小北的演示档案后，再确认花生过敏。</span>
+                </div>
+              )}
               <button className="subtle-button" type="button">
                 ＋ 添加其他过敏或禁忌
               </button>
@@ -972,7 +1472,10 @@ export default function Home() {
           <div className="sticky-action">
             <button
               className="primary-button"
-              disabled={!hardConstraintConfirmed}
+              disabled={
+                !hardConstraintConfirmed ||
+                !members.some((member) => member.name === "小北")
+              }
               onClick={() => navigate("o03")}
               type="button"
             >
@@ -1048,7 +1551,11 @@ export default function Home() {
           <div className="sticky-action split">
             <button
               className="secondary-button"
-              onClick={() => navigate("o04")}
+              onClick={() => {
+                setSkill("");
+                setEquipment([]);
+                navigate("o04");
+              }}
               type="button"
             >
               跳过
@@ -1123,7 +1630,10 @@ export default function Home() {
           <div className="sticky-action split">
             <button
               className="secondary-button"
-              onClick={() => navigate("o05")}
+              onClick={() => {
+                setPantry([]);
+                navigate("o05");
+              }}
               type="button"
             >
               全部跳过
@@ -1157,15 +1667,33 @@ export default function Home() {
             <span>⌕</span>
             <input
               aria-label="搜索并连续添加食材"
+              onChange={(event) => setIngredientQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") addIngredient();
+              }}
               placeholder="搜索食材，添加后可继续输入"
+              value={ingredientQuery}
             />
-            <button type="button">添加</button>
+            <button
+              disabled={!ingredientQuery.trim()}
+              onClick={addIngredient}
+              type="button"
+            >
+              添加
+            </button>
           </div>
           <section className="quick-add">
             <div className="section-heading compact">
               <h2>最近与常用</h2>
               <button
-                onClick={() => setIngredients(suggestedIngredients.slice(0, 5))}
+                onClick={() =>
+                  setIngredients((current) =>
+                    uniqueValues([...current, ...suggestedIngredients]).slice(
+                      0,
+                      Math.max(5, current.length),
+                    ),
+                  )
+                }
                 type="button"
               >
                 一键填充 5 项
@@ -1279,7 +1807,9 @@ export default function Home() {
               <span className="eyebrow">需要优先处理 · 2 项</span>
               <h2>先看看这些食材</h2>
             </div>
-            <button type="button">查看全部</button>
+            <button onClick={() => navigate("i01")} type="button">
+              查看全部
+            </button>
           </div>
           <div className="attention-row">
             <span className="food-placeholder">番</span>
@@ -1301,10 +1831,16 @@ export default function Home() {
         <section className="meal-launch">
           <div className="meal-launch-copy">
             <span className="eyebrow">本餐默认条件</span>
-            <h2>2 人 · 林然做饭 · 30 分钟</h2>
-            <div className="avatar-stack" aria-label="林然和小北参加">
-              <span>林</span>
-              <span>北</span>
+            <h2>
+              {selectedDiners.length} 人 · 林然做饭 · {timeLimit} 分钟
+            </h2>
+            <div
+              className="avatar-stack"
+              aria-label={`${selectedDiners.join("、")}参加`}
+            >
+              {selectedDiners.map((person) => (
+                <span key={person}>{person.slice(-1)}</span>
+              ))}
               <button type="button">＋</button>
             </div>
           </div>
@@ -1318,31 +1854,282 @@ export default function Home() {
           </button>
           <button
             className="quick-agent"
-            onClick={() => navigate("r01")}
+            onClick={() => setAgentContext("home")}
             type="button"
           >
             <span>⌁</span>
-            “今晚三个人，30 分钟，尽量少买菜”
+            “今晚两个人，30 分钟，尽量少买菜”
             <b>发送</b>
           </button>
           <small className="agent-caption">
             Agent 会先把条件整理成可编辑信息，再开始推荐
           </small>
         </section>
-        <section className="resume-card">
-          <span className="outline-icon">菜</span>
-          <div>
-            <span className="eyebrow">上次做过</span>
-            <strong>香菇鸡肉焖饭</strong>
-            <small>4 天前 · 家庭评价“省事”</small>
-          </div>
-          <button type="button">再来一次</button>
-        </section>
+        {mealStarted || cookPaused ? (
+          <section className="resume-card is-current">
+            <span className="outline-icon">续</span>
+            <div>
+              <span className="eyebrow">做饭进度已保存</span>
+              <strong>{selectedMenu.title}</strong>
+              <small>
+                步骤 {cookStep + 1}/{selectedMenu.cookSteps.length} · 未扣库存
+              </small>
+            </div>
+            <button
+              onClick={() => {
+                setCookPaused(false);
+                navigate("c02");
+              }}
+              type="button"
+            >
+              继续
+            </button>
+          </section>
+        ) : (
+          <section className="resume-card">
+            <span className="outline-icon">菜</span>
+            <div>
+              <span className="eyebrow">上次做过</span>
+              <strong>香菇鸡肉焖饭</strong>
+              <small>4 天前 · 家庭评价“省事”</small>
+            </div>
+            <button type="button">再来一次</button>
+          </section>
+        )}
       </div>
       <BottomNav
         active="home"
+        onFamily={() => navigate("f01")}
         onHome={() => navigate("h01")}
-        onOutOfScope={showScopeNote}
+        onInventory={() => navigate("i01")}
+        onShopping={() => navigate("s01")}
+      />
+    </>
+  );
+
+  const renderInventory = () => (
+    <>
+      <div className="shopping-topbar">
+        <div>
+          <span className="eyebrow">按批次与事件记录</span>
+          <h1>库存</h1>
+        </div>
+        <button
+          className="context-agent-button"
+          onClick={() => setAgentContext("inventory")}
+          type="button"
+        >
+          ⌁ 问库存 Agent
+        </button>
+      </div>
+      <div className="screen-body inventory-body">
+        <div className="sync-line">
+          <span className="sync-dot" />
+          家庭库存已同步 · 刚刚
+        </div>
+        <div className="inventory-tabs" role="tablist">
+          <button className="is-active" role="tab" type="button">
+            需处理 3
+          </button>
+          <button role="tab" type="button">
+            全部 5
+          </button>
+          <button role="tab" type="button">
+            常备 {pantry.length}
+          </button>
+        </div>
+        <section className="attention-card inventory-attention">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">可优先使用</span>
+              <h2>番茄 · 约 2 个</h2>
+            </div>
+            <span className="soft-tag">标签日期：明天</span>
+          </div>
+          <p>冷藏 · 日期由用户从包装录入 · 批次 #番茄-0721</p>
+          <div className="card-actions">
+            <button
+              className="primary-button compact"
+              onClick={() => setExpiryNotice("tomato")}
+              type="button"
+            >
+              用它找菜单
+            </button>
+            <button className="secondary-button compact" type="button">
+              更新信息
+            </button>
+          </div>
+          {expiryNotice === "tomato" && (
+            <div className="success-banner compact">
+              <span>✓</span>
+              <div>
+                <b>已预填“优先使用番茄”</b>
+                <small>仍会检查全部参与者硬约束与最新库存</small>
+              </div>
+              <button onClick={() => navigate("r01")} type="button">
+                去确认
+              </button>
+            </div>
+          )}
+        </section>
+        <section className="attention-card inventory-attention is-unknown">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">信息待确认</span>
+              <h2>鸡蛋 · 约半盒</h2>
+            </div>
+            <span className="soft-tag">日期未知</span>
+          </div>
+          <p>冷藏 · 未知不等于没有 · 建议核对包装日期</p>
+          <div className="card-actions">
+            <button className="secondary-button compact" type="button">
+              补充包装信息
+            </button>
+            <button
+              className="secondary-button compact"
+              onClick={() => setAgentContext("inventory")}
+              type="button"
+            >
+              数量不准
+            </button>
+          </div>
+        </section>
+        <section className="attention-card inventory-attention is-blocked">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">安全状态未知 · 高风险</span>
+              <h2>生鸡肉 · 约 1 盒</h2>
+            </div>
+            <span className="hard-tag">不参与推荐</span>
+          </div>
+          <p>冷链状态未知 · 来源：用户明确标记 · 不提供“尽量利用”入口</p>
+          <div className="card-actions">
+            <button
+              className="secondary-button compact"
+              onClick={() => setExpiryNotice("chicken")}
+              type="button"
+            >
+              查看安全处理
+            </button>
+          </div>
+          {expiryNotice === "chicken" && (
+            <div className="safety-note strong">
+              <b>已阻止进入菜单</b>
+              <span>
+                可补充可追溯的储存信息，或生成丢弃确认单；不能根据外观或气味证明安全。
+              </span>
+              <button
+                onClick={() =>
+                  setToast("已生成“丢弃生鸡肉”确认单，尚未写入库存事件。")
+                }
+                type="button"
+              >
+                生成丢弃确认单
+              </button>
+            </div>
+          )}
+        </section>
+        <button
+          className="add-row"
+          onClick={() => navigate("o05")}
+          type="button"
+        >
+          ＋ 快速添加食材批次
+        </button>
+      </div>
+      <BottomNav
+        active="inventory"
+        onFamily={() => navigate("f01")}
+        onHome={() => navigate("h01")}
+        onInventory={() => navigate("i01")}
+        onShopping={() => navigate("s01")}
+      />
+    </>
+  );
+
+  const renderFamily = () => (
+    <>
+      <div className="shopping-topbar">
+        <div>
+          <span className="eyebrow">共享上下文与个人资料</span>
+          <h1>家庭</h1>
+        </div>
+        <span className="hard-tag">你是所有者</span>
+      </div>
+      <div className="screen-body family-body">
+        <section className="detail-section">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">{homeName}</span>
+              <h2>成员与用餐档案</h2>
+            </div>
+            <span className="muted-count">{members.length} 人</span>
+          </div>
+          {members.map((member) => (
+            <div className="person-card is-selected" key={member.name}>
+              <div className="avatar-box">{member.name.slice(-1)}</div>
+              <div>
+                <strong>{member.name}</strong>
+                <p>
+                  {member.role}
+                  {member.constraint ? " · 有已确认硬约束" : ""}
+                </p>
+              </div>
+              <button type="button">管理</button>
+            </div>
+          ))}
+          <button
+            className="add-row"
+            onClick={() =>
+              setToast("邀请登录成员与新增用餐档案会先区分身份，再进入确认。")
+            }
+            type="button"
+          >
+            ＋ 邀请成员或添加用餐档案
+          </button>
+        </section>
+        <section className="constraint-box">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">硬约束 · 最少披露</span>
+              <h2>饮食安全</h2>
+            </div>
+            <span className="hard-tag">不可绕过</span>
+          </div>
+          {members
+            .filter((member) => member.constraint)
+            .map((member) => (
+              <p className="family-setting-row" key={member.name}>
+                <span>{member.name}</span>
+                <b>{member.constraint}</b>
+              </p>
+            ))}
+          <small>普通成员只能看到完成校验所需的最少信息。</small>
+        </section>
+        <section className="detail-section">
+          <div className="section-heading compact">
+            <h2>厨艺与厨房设备</h2>
+            <button type="button">编辑</button>
+          </div>
+          <p className="family-setting-row">
+            <span>林然的厨艺</span>
+            <b>{skill || "未知"}</b>
+          </p>
+          <p className="family-setting-row">
+            <span>已有设备</span>
+            <b>{equipment.length ? equipment.join("、") : "未知"}</b>
+          </p>
+        </section>
+        <section className="process-note">
+          <b>隐私与数据</b>
+          <span>可查看数据用途、导出与删除路径；敏感限制不进入通用分析事件。</span>
+        </section>
+      </div>
+      <BottomNav
+        active="family"
+        onFamily={() => navigate("f01")}
+        onHome={() => navigate("h01")}
+        onInventory={() => navigate("i01")}
         onShopping={() => navigate("s01")}
       />
     </>
@@ -1372,25 +2159,26 @@ export default function Home() {
             <span className="hard-tag">不可绕过</span>
           </div>
           <div className="person-toggle-row">
-            {["林然", "小北", "妈妈"].map((person) => (
+            {members.map((member) => (
               <button
                 className={
-                  selectedDiners.includes(person) ? "is-selected" : ""
+                  selectedDiners.includes(member.name) ? "is-selected" : ""
                 }
-                key={person}
+                aria-pressed={selectedDiners.includes(member.name)}
+                key={member.name}
                 onClick={() =>
-                  toggleListValue(person, selectedDiners, setSelectedDiners)
+                  toggleListValue(
+                    member.name,
+                    selectedDiners,
+                    setSelectedDiners,
+                  )
                 }
                 type="button"
               >
-                <span>{person.slice(-1)}</span>
-                <b>{person}</b>
+                <span>{member.name.slice(-1)}</span>
+                <b>{member.name}</b>
                 <small>
-                  {person === "小北"
-                    ? "花生过敏"
-                    : person === "妈妈"
-                      ? "今天不在家"
-                      : "无已知过敏"}
+                  {member.constraint ?? "无已记录硬约束"}
                 </small>
               </button>
             ))}
@@ -1399,7 +2187,7 @@ export default function Home() {
         <section className="condition-card">
           <div className="condition-row">
             <span>做饭者</span>
-            <button type="button">林然 · {skill}⌄</button>
+            <button type="button">林然 · {skill || "厨艺未知"}⌄</button>
           </div>
           <div className="condition-group">
             <span>总时间</span>
@@ -1444,7 +2232,10 @@ export default function Home() {
         </section>
         <div className="constraint-summary">
           <b>开始前会校验</b>
-          <span>2 位用餐者 · 1 条过敏限制 · 3 件可用设备 · 最新库存</span>
+          <span>
+            {selectedDiners.length} 位用餐者 · {constraintCount} 条硬约束 ·{" "}
+            {equipment.length} 件已确认设备 · 最新库存
+          </span>
         </div>
       </div>
       <div className="sticky-action">
@@ -1467,8 +2258,13 @@ export default function Home() {
         onBack={() => navigate("r01")}
         title={`今晚建议做 ${recommendedDishIds.length} 道`}
         trailing={
-          <button className="icon-button" type="button">
-            ⋯
+          <button
+            aria-label="询问当前菜单"
+            className="icon-button"
+            onClick={() => setAgentContext("menu")}
+            type="button"
+          >
+            ⌁
           </button>
         }
       />
@@ -1491,6 +2287,11 @@ export default function Home() {
             <p>默认选好 2 道；想丰盛一点，可再加 1 道。</p>
           </div>
         </section>
+        <div className="tradeoff-strip" aria-label="三种加菜取舍方向">
+          <span>更丰盛 · 多买 1 项</span>
+          <span>更省时 · 不占灶台</span>
+          <span>更合口味 · 会超时</span>
+        </div>
 
         <section className="dish-section" aria-label="系统建议的菜">
           <div className="section-heading compact">
@@ -1550,8 +2351,15 @@ export default function Home() {
           <div className="dish-stack optional-dishes">
             {dishOptions
               .filter((dish) => !dish.recommended)
+              .slice(0, 3)
               .map((dish) => {
                 const selected = selectedDishIds.includes(dish.id);
+                const tradeoff =
+                  dish.id === "minced-tofu"
+                    ? "更丰盛"
+                    : dish.id === "cucumber"
+                      ? "更省时"
+                      : "更合口味";
                 return (
                   <button
                     aria-label={`${selected ? "移除" : "加入"} ${dish.title}`}
@@ -1568,6 +2376,7 @@ export default function Home() {
                       <span className="dish-card-top">
                         <i>{dish.category}</i>
                         <strong>{dish.title}</strong>
+                        <mark>{tradeoff}</mark>
                       </span>
                       <small>{dish.summary}</small>
                       <span className="dish-card-meta">
@@ -1611,6 +2420,17 @@ export default function Home() {
             <b>动态估算</b>
             <span>每次增减都会重算整餐时间、采购项与库存消耗。</span>
           </div>
+          {planIssues.length > 0 && (
+            <div className="validation-block">
+              <b>当前组合还不能确认</b>
+              {planIssues.map((issue) => (
+                <span key={issue}>· {issue}</span>
+              ))}
+              <button onClick={() => navigate("r01")} type="button">
+                修改条件
+              </button>
+            </div>
+          )}
         </section>
 
         <button
@@ -1624,10 +2444,13 @@ export default function Home() {
       <div className="sticky-action">
         <button
           className="primary-button"
+          disabled={planIssues.length > 0}
           onClick={() => navigate("r03")}
           type="button"
         >
-          查看已选的 {selectedDishIds.length} 道菜
+          {planIssues.length > 0
+            ? "先解决条件冲突"
+            : `查看已选的 ${selectedDishIds.length} 道菜`}
         </button>
       </div>
     </>
@@ -1654,7 +2477,9 @@ export default function Home() {
           </div>
           <div className="menu-wire-caption">
             <b>{selectedMenu.dishes}</b>
-            <span>2 人份 · {selectedMenu.equipment}</span>
+            <span>
+              {selectedDiners.length} 人份 · {selectedMenu.equipment}
+            </span>
           </div>
         </section>
         <div className="stat-strip">
@@ -1671,16 +2496,41 @@ export default function Home() {
             <b>{selectedMenu.difficulty}</b>
           </div>
         </div>
-        <section className="latest-check">
+        <section
+          className={`latest-check ${planIssues.length ? "has-error" : ""}`}
+        >
           <div>
-            <span className="check-mark">✓</span>
+            <span className="check-mark">{planIssues.length ? "!" : "✓"}</span>
             <div>
-              <b>刚刚通过最新校验</b>
-              <small>2 位用餐者 · 花生过敏已排除 · 库存版本 14:32</small>
+              <b>
+                {planIssues.length
+                  ? "当前条件校验未通过"
+                  : "刚刚通过最新校验"}
+              </b>
+              <small>
+                {selectedDiners.length} 位用餐者 · {constraintCount} 条硬约束
+                · 库存版本 14:32
+              </small>
             </div>
           </div>
-          <button type="button">查看依据</button>
+          <button
+            onClick={() =>
+              planIssues.length
+                ? navigate("r01")
+                : setAgentContext("menu")
+            }
+            type="button"
+          >
+            {planIssues.length ? "修改条件" : "查看依据"}
+          </button>
         </section>
+        {planIssues.length > 0 && (
+          <div className="validation-block">
+            {planIssues.map((issue) => (
+              <span key={issue}>· {issue}</span>
+            ))}
+          </div>
+        )}
         <section className="detail-section">
           <div className="section-heading compact">
             <h2>食材准备</h2>
@@ -1732,13 +2582,30 @@ export default function Home() {
         </div>
         <div className="assumption-line">
           <b>关键假设</b>
-          <span>{selectedMenu.assumption}</span>
+          <span>
+            {pantry.length
+              ? `${selectedMenu.assumption} 已确认常备：${pantry.join("、")}。`
+              : "常备调味品信息未知；未知不等于没有，开火前需要确认油、盐和酱油。"}
+          </span>
         </div>
+        <button
+          className="context-agent-button full"
+          onClick={() => setAgentContext("menu")}
+          type="button"
+        >
+          ⌁ 带着这份组合问 Agent
+        </button>
       </div>
       <div className="sticky-action">
-        <button className="primary-button" onClick={confirmMenu} type="button">
-          确认 {selectedDishIds.length} 道菜 · 加入{" "}
-          {selectedMenu.missing.length} 项采购
+        <button
+          className="primary-button"
+          disabled={planIssues.length > 0}
+          onClick={confirmMenu}
+          type="button"
+        >
+          {planIssues.length > 0
+            ? "当前组合未通过校验"
+            : `确认 ${selectedDishIds.length} 道菜 · 加入 ${selectedMenu.missing.length} 项采购`}
         </button>
       </div>
     </>
@@ -1752,8 +2619,9 @@ export default function Home() {
           <h1>采购</h1>
         </div>
         <div className="shopping-avatars">
-          <span>林</span>
-          <span>北</span>
+          {members.map((member) => (
+            <span key={member.name}>{member.name.slice(-1)}</span>
+          ))}
           <i>在线</i>
         </div>
       </div>
@@ -1765,7 +2633,7 @@ export default function Home() {
         <section className="shopping-summary">
           <div>
             <span>待购买</span>
-            <b>{shoppingItems.length - purchasedCount}</b>
+            <b>{pendingShoppingCount}</b>
           </div>
           <div>
             <span>已买待入库</span>
@@ -1776,9 +2644,30 @@ export default function Home() {
           </button>
         </section>
         <div className="add-shopping-row">
-          <input aria-label="手动添加采购项" placeholder="＋ 添加其他要买的" />
-          <button type="button">添加</button>
+          <input
+            aria-label="手动添加采购项"
+            onChange={(event) => setShoppingQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") addShoppingItem();
+            }}
+            placeholder="＋ 添加其他要买的"
+            value={shoppingQuery}
+          />
+          <button
+            disabled={!shoppingQuery.trim()}
+            onClick={addShoppingItem}
+            type="button"
+          >
+            添加
+          </button>
         </div>
+        <button
+          className="context-agent-button full"
+          onClick={() => setAgentContext("shopping")}
+          type="button"
+        >
+          ⌁ 带着当前共享清单问 Agent
+        </button>
         <section className="shopping-section">
           <div className="section-heading compact">
             <h2>当前清单</h2>
@@ -1786,16 +2675,17 @@ export default function Home() {
           </div>
           {shoppingItems.map((item) => (
             <label
-              className={`shopping-row ${item.purchased ? "is-purchased" : ""}`}
+              className={`shopping-row ${item.status !== "pending" ? "is-purchased" : ""}`}
               key={item.id}
             >
               <input
-                checked={item.purchased}
+                checked={item.status !== "pending"}
+                disabled={["stocked", "completed"].includes(item.status)}
                 onChange={() => updateShoppingItem(item.id)}
                 type="checkbox"
               />
               <span className="shopping-check">
-                {item.purchased ? "✓" : ""}
+                {item.status !== "pending" ? "✓" : ""}
               </span>
               <span className="shopping-copy">
                 <strong>{item.name}</strong>
@@ -1803,6 +2693,15 @@ export default function Home() {
                   {item.quantity} · 来源：{item.source}
                 </small>
                 {item.actor && <em>{item.actor}</em>}
+                {item.status !== "pending" && (
+                  <em className="status-label">
+                    {item.status === "purchased"
+                      ? "已买待入库"
+                      : item.status === "stocked"
+                        ? "已入库"
+                        : "买完即完成 · 非库存物品"}
+                  </em>
+                )}
               </span>
               <button aria-label={`编辑${item.name}`} type="button">
                 ⋯
@@ -1827,8 +2726,27 @@ export default function Home() {
           </div>
         </div>
         <p className="micro-copy">
-          勾选“已买”不会猜测数量和日期，也不会直接增加库存。
+          食材勾选“已买”后等待入库；非库存物品买完即完成，不创建食材批次。
         </p>
+        {completedShoppingCount > 0 && (
+          <p className="completion-count">
+            已完成 {completedShoppingCount} 项 · 入库后不会继续停留在“待入库”
+          </p>
+        )}
+        {inventoryConfirmed && (
+          <button
+            className="pending-inventory-card is-done"
+            onClick={() => navigate("c01")}
+            type="button"
+          >
+            <span className="outline-icon">✓</span>
+            <span>
+              <b>采购已完成，回到菜单准备做饭</b>
+              <small>库存已更新，做饭前仍会再次检查硬约束</small>
+            </span>
+            <strong>→</strong>
+          </button>
+        )}
         {purchasedCount > 0 && (
           <button
             className="pending-inventory-card"
@@ -1846,8 +2764,9 @@ export default function Home() {
       </div>
       <BottomNav
         active="shopping"
+        onFamily={() => navigate("f01")}
         onHome={() => navigate("h01")}
-        onOutOfScope={showScopeNote}
+        onInventory={() => navigate("i01")}
         onShopping={() => navigate("s01")}
       />
     </>
@@ -1862,13 +2781,25 @@ export default function Home() {
       />
       <div className="screen-body">
         <div className="parsed-banner neutral">
-          <span>{inventoryRows.length}</span>
+          <span>{inventoryConfirmed ? lastStockedCount : inventoryRows.length}</span>
           <div>
-            <b>只补最必要的信息</b>
-            <p>本次会创建新批次，不覆盖家中已有的同名食材。</p>
+            <b>{inventoryConfirmed ? "已完成入库" : "只补最必要的信息"}</b>
+            <p>
+              {inventoryConfirmed
+                ? "采购状态已经从“已买待入库”迁移为“已入库”。"
+                : "本次会创建新批次，不覆盖家中已有的同名食材。"}
+            </p>
           </div>
         </div>
-        {inventoryRows.length === 0 ? (
+        {inventoryConfirmed ? (
+          <div className="success-banner">
+            <span>✓</span>
+            <div>
+              <b>已创建 {lastStockedCount} 个库存批次</b>
+              <small>重复提交会返回本次结果，不会再次创建批次</small>
+            </div>
+          </div>
+        ) : inventoryRows.length === 0 ? (
           <div className="empty-box tall">
             <b>还没有已买项目</b>
             <span>回到共享清单勾选“已买”，项目才会进入这里。</span>
@@ -1902,34 +2833,29 @@ export default function Home() {
                 </div>
                 <div className="date-source-row">
                   <span>
-                    购买日 <b>今天</b>
-                    <em>用户输入</em>
+                    已买时间 <b>今天</b>
+                    <em>系统记录</em>
                   </span>
-                  <button type="button">其他日期未知</button>
+                  <button type="button">购买日与包装日期未知</button>
                 </div>
               </article>
             ))}
           </section>
         )}
-        <label className="check-row standalone">
-          <input defaultChecked type="checkbox" />
-          <span>
-            <b>使用相同位置和购买日</b>
-            <small>仍会为每项创建独立批次和购入事件</small>
-          </span>
-        </label>
-        <div className="unknown-note">
-          <b>包装日期看不清可以留空</b>
-          <span>购买日不会被替代为生产日；未知信息不会由模型补造。</span>
-        </div>
-        {inventoryConfirmed && (
-          <div className="success-banner">
-            <span>✓</span>
-            <div>
-              <b>已创建 {inventoryRows.length} 个库存批次</b>
-              <small>采购状态已更新为“已入库”</small>
+        {!inventoryConfirmed && (
+          <>
+            <label className="check-row standalone">
+              <input defaultChecked type="checkbox" />
+              <span>
+                <b>这批食材都放冷藏</b>
+                <small>数量和日期仍按每项独立保存，不批量猜测</small>
+              </span>
+            </label>
+            <div className="unknown-note">
+              <b>包装日期看不清可以留空</b>
+              <span>已买时间不等于购买日或生产日；未知信息不会由模型补造。</span>
             </div>
-          </div>
+          </>
         )}
       </div>
       <div className="sticky-action">
@@ -1944,11 +2870,13 @@ export default function Home() {
         ) : (
           <button
             className="primary-button"
-            disabled={inventoryRows.length === 0}
-            onClick={() => setInventoryConfirmed(true)}
+            disabled={inventoryRows.length === 0 || inventorySubmitting}
+            onClick={confirmInventory}
             type="button"
           >
-            确认入库 {inventoryRows.length} 项
+            {inventorySubmitting
+              ? "正在创建批次，请勿重复提交…"
+              : `确认入库 ${inventoryRows.length} 项`}
           </button>
         )}
       </div>
@@ -1963,12 +2891,16 @@ export default function Home() {
         title={selectedMenu.title}
       />
       <div className="screen-body">
-        <section className="preflight-status">
-          <span className="big-check">✓</span>
+        <section className={`preflight-status ${canStartCook ? "" : "is-blocked"}`}>
+          <span className="big-check">{canStartCook ? "✓" : "!"}</span>
           <div>
             <span className="eyebrow">14:41 · 已重新校验</span>
-            <h1>可以开始做饭</h1>
-            <p>参与者、硬约束和库存都已使用最新版本检查。</p>
+            <h1>{canStartCook ? "可以开始做饭" : "暂时不能开始"}</h1>
+            <p>
+              {canStartCook
+                ? "参与者、硬约束和库存都已使用最新版本检查。"
+                : "当前库存或条件未通过校验，原型没有绕过入口。"}
+            </p>
           </div>
         </section>
         <div className="preflight-grid">
@@ -1991,14 +2923,22 @@ export default function Home() {
             </b>
           </div>
         </div>
-        {!inventoryConfirmed && (
+        {!canStartCook && (
           <div className="warning-banner">
-            <b>原型跳转提示</b>
-            <span>
-              采购项还未确认入库。正式产品会阻止开始；可先回采购，或使用评审目录继续看流程。
-            </span>
-            <button onClick={() => navigate("s01")} type="button">
-              去采购确认
+            <b>安全与一致性阻断</b>
+            {planIssues.map((issue) => (
+              <span key={issue}>· {issue}</span>
+            ))}
+            {!inventoryConfirmed && selectedMenu.missing.length > 0 && (
+              <span>· {selectedMenu.missing.length} 项采购食材尚未确认入库</span>
+            )}
+            <button
+              onClick={() =>
+                planIssues.length > 0 ? navigate("r01") : navigate("s01")
+              }
+              type="button"
+            >
+              {planIssues.length > 0 ? "修改本餐条件" : "去采购确认"}
             </button>
           </div>
         )}
@@ -2032,13 +2972,16 @@ export default function Home() {
       <div className="sticky-action">
         <button
           className="primary-button"
+          disabled={!canStartCook}
           onClick={() => {
-            setCookStep(0);
+            if (!mealStarted) setCookStep(0);
+            setMealStarted(true);
+            setCookPaused(false);
             navigate("c02");
           }}
           type="button"
         >
-          开始做饭
+          {canStartCook ? (mealStarted ? "继续做饭" : "开始做饭") : "校验未通过"}
         </button>
       </div>
     </>
@@ -2046,14 +2989,21 @@ export default function Home() {
 
   const renderCooking = () => {
     const currentStep = selectedMenu.cookSteps[cookStep];
+    const currentDish = selectedDishes.find((dish) =>
+      currentStep.title.startsWith(`${dish.title} ·`),
+    );
     return (
       <>
         <PrototypeHeader
           eyebrow={`${selectedMenu.title} · 做饭中`}
-          onBack={() => navigate("c01")}
+          onBack={() => setCookPaused(true)}
           title={`步骤 ${cookStep + 1}/${selectedMenu.cookSteps.length}`}
           trailing={
-            <button className="icon-button" type="button">
+            <button
+              className="icon-button"
+              onClick={() => setCookPaused(true)}
+              type="button"
+            >
               暂停
             </button>
           }
@@ -2075,9 +3025,7 @@ export default function Home() {
           </section>
           <div className="ingredient-callout">
             <b>本步用量</b>
-            <span>
-              {selectedMenu.uses.slice(0, 2).join(" · ") || "按菜单份量准备"}
-            </span>
+            <span>{currentDish?.uses.join(" · ") || "本步不需要新增食材"}</span>
           </div>
           <div className="timer-wire">
             <div>
@@ -2092,7 +3040,11 @@ export default function Home() {
               <span>{currentStep.safety}</span>
             </div>
           )}
-          <button className="agent-question" type="button">
+          <button
+            className="agent-question"
+            onClick={() => setAgentContext("cooking")}
+            type="button"
+          >
             <span>⌁</span>
             问当前步骤：“火候怎么判断？”
             <b>→</b>
@@ -2128,6 +3080,36 @@ export default function Home() {
             </button>
           )}
         </div>
+        {cookPaused && (
+          <div className="pause-sheet-backdrop">
+            <section className="pause-sheet">
+              <span className="eyebrow">步骤进度已保存</span>
+              <h2>
+                下次从步骤 {cookStep + 1}/{selectedMenu.cookSteps.length} 继续
+              </h2>
+              <p>暂停不会把本餐标记完成，也不会扣减任何库存。</p>
+              <div className="agent-sheet-actions">
+                <button
+                  className="secondary-button"
+                  onClick={() => {
+                    setCookPaused(true);
+                    navigate("h01");
+                  }}
+                  type="button"
+                >
+                  回到今天
+                </button>
+                <button
+                  className="primary-button"
+                  onClick={() => setCookPaused(false)}
+                  type="button"
+                >
+                  继续做饭
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </>
     );
   };
@@ -2196,9 +3178,15 @@ export default function Home() {
       <div className="sticky-action">
         <button
           className="primary-button"
-          onClick={() =>
-            completionState === "none" ? navigate("c05") : navigate("c04")
-          }
+          onClick={() => {
+            if (completionState === "none") {
+              setMealStarted(false);
+              setMealRecorded(true);
+              navigate("c05");
+            } else {
+              navigate("c04");
+            }
+          }}
           type="button"
         >
           {completionState === "none" ? "确认没有做" : "下一步：核对实际消耗"}
@@ -2251,6 +3239,41 @@ export default function Home() {
           >
             评审工具：模拟家人刚更新库存
           </button>
+        )}
+        {completionState === "partial" && (
+          <section className="partial-dish-picker">
+            <div className="section-heading compact">
+              <div>
+                <span className="eyebrow">先按菜确认，减少逐项操作</span>
+                <h2>哪些菜实际做了？</h2>
+              </div>
+            </div>
+            {selectedDishes.map((dish) => {
+              const included = dish.deductions.some(
+                (item) => includedDeductions[item.id],
+              );
+              return (
+                <button
+                  aria-pressed={included}
+                  className={included ? "is-selected" : ""}
+                  key={dish.id}
+                  onClick={() =>
+                    setIncludedDeductions((current) => ({
+                      ...current,
+                      ...Object.fromEntries(
+                        dish.deductions.map((item) => [item.id, !included]),
+                      ),
+                    }))
+                  }
+                  type="button"
+                >
+                  <span>{included ? "✓" : "○"}</span>
+                  <b>{dish.title}</b>
+                  <small>{included ? "已做，保留预计用量" : "未做，不会扣减"}</small>
+                </button>
+              );
+            })}
+          </section>
         )}
         <section className="deduction-list">
           <div className="section-heading compact">
@@ -2321,7 +3344,15 @@ export default function Home() {
                         ＋
                       </button>
                     </div>
-                    <button className="fuzzy-link" type="button">
+                    <button
+                      className="fuzzy-link"
+                      onClick={() =>
+                        setToast(
+                          `${item.name}将标记“数量待盘点”，不会制造精确值。`,
+                        )
+                      }
+                      type="button"
+                    >
                       数量不准
                     </button>
                   </div>
@@ -2372,10 +3403,15 @@ export default function Home() {
       <div className="sticky-action">
         <button
           className="primary-button"
-          onClick={() => navigate("c05")}
+          disabled={deductionSubmitting || mealRecorded}
+          onClick={confirmDeductions}
           type="button"
         >
-          确认扣减并完成本餐
+          {mealRecorded
+            ? "本餐已记录，不会重复写入"
+            : deductionSubmitting
+              ? "正在写入，请勿重复提交…"
+              : "确认扣减并完成本餐"}
         </button>
       </div>
     </>
@@ -2404,7 +3440,11 @@ export default function Home() {
           <div className="receipt-check">✓</div>
           <section className="intro-copy centered">
             <h1>{selectedMenu.title}，完成</h1>
-            <p>库存与剩菜都已按你的确认记录，可从操作历史纠正。</p>
+            <p>
+              {completionState === "none"
+                ? "已记录“没有做”，没有创建任何库存消耗或剩菜批次。"
+                : "库存与剩菜都已按你的确认记录，可从操作历史纠正。"}
+            </p>
           </section>
           {completionState === "none" ? (
             <div className="receipt-card">
@@ -2477,7 +3517,9 @@ export default function Home() {
           <div className="process-note">
             <b>完整闭环</b>
             <span>
-              菜单已完成 → 消耗已确认 → 库存已更新 → 剩菜已形成新批次
+              {completionState === "none"
+                ? "本餐未做 → 未写入消耗 → 库存保持不变"
+                : `菜单已完成 → 消耗已确认 → 库存已更新${leftover ? " → 剩菜已形成新批次" : ""}`}
             </span>
           </div>
         </div>
@@ -2497,11 +3539,13 @@ export default function Home() {
   const renderScreen = () => {
     if (screen.startsWith("o")) return renderOnboarding();
     if (screen === "h01") return renderHome();
+    if (screen === "i01") return renderInventory();
     if (screen === "r01") return renderMealConditions();
     if (screen === "r02") return renderMenuComparison();
     if (screen === "r03") return renderMenuDetail();
     if (screen === "s01") return renderShopping();
     if (screen === "s02") return renderPendingInventory();
+    if (screen === "f01") return renderFamily();
     if (screen === "c01") return renderPreCook();
     if (screen === "c02") return renderCooking();
     if (screen === "c03") return renderCompletionState();
@@ -2516,7 +3560,7 @@ export default function Home() {
           <span>MA</span>
           <div>
             <b>Meal Agent</b>
-            <small>可评审低保真原型 · v0.2</small>
+            <small>技术验证产品基线 · v0.3</small>
           </div>
         </div>
         <div className="review-legend">
@@ -2556,6 +3600,23 @@ export default function Home() {
                   <li key={item}>{item}</li>
                 ))}
               </ul>
+            </section>
+            <section className="state-review-card">
+              <label htmlFor="review-state">当前页面状态模拟</label>
+              <select
+                id="review-state"
+                onChange={(event) =>
+                  setReviewState(event.target.value as ReviewState)
+                }
+                value={reviewState}
+              >
+                {reviewStates.map((state) => (
+                  <option key={state.id} value={state.id}>
+                    {state.label}
+                  </option>
+                ))}
+              </select>
+              <small>每个 P0 页面沿用同一状态契约，并补充页面专属处理。</small>
             </section>
             <nav className="page-index" aria-label="原型页面目录">
               {pageGroups.map((group) => (
@@ -2624,8 +3685,23 @@ export default function Home() {
               </div>
             )}
             <div className="phone-content" ref={contentRef}>
-              {renderScreen()}
+              {reviewState === "default" ? (
+                renderScreen()
+              ) : (
+                <StateScenarioSurface
+                  meta={currentMeta}
+                  onReset={() => setReviewState("default")}
+                  state={reviewState}
+                />
+              )}
             </div>
+            {agentContext && reviewState === "default" && (
+              <ContextAgentSheet
+                context={agentContext}
+                onClose={() => setAgentContext(null)}
+                onPrimary={handleAgentPrimary}
+              />
+            )}
           </div>
         </section>
 

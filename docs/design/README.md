@@ -6,6 +6,9 @@
 
 当前低保真原型的页面清单、验证目标与评审任务见 [low-fidelity-prototype.md](low-fidelity-prototype.md)。
 
+独立评审结论见 [low-fidelity-prototype-review.md](low-fidelity-prototype-review.md)，
+P0 页面统一状态与恢复规则见 [p0-page-state-baseline.md](p0-page-state-baseline.md)。
+
 优先设计的页面：
 
 1. 创建家庭与邀请成员。

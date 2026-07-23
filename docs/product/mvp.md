@@ -1,7 +1,7 @@
 # MVP 范围
 
-- 版本：0.2
-- 状态：Accepted for prototyping
+- 版本：0.3
+- 状态：Accepted for technical validation
 
 ## 要验证的假设
 
@@ -22,6 +22,7 @@
 - 临期提醒与简单反馈。
 
 完整功能编号与行为见 [App 功能规格](app-functional-spec.md)。
+所有 P0 页面状态与恢复行为见 [P0 页面状态基线](../design/p0-page-state-baseline.md)。
 
 ## P0 用户故事与验收
 
