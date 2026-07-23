@@ -65,6 +65,48 @@ const isMalformedJson = (error: unknown): boolean =>
   error.code === "FST_ERR_CTP_INVALID_JSON_BODY";
 
 export const maximumRequestTargetBytes = 2_048;
+export const maximumRequestBodyBytes = 1_048_576;
+
+const fastifyContentError = (error: unknown): AppError | undefined => {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const code = "code" in error ? error.code : undefined;
+  const statusCode = "statusCode" in error ? error.statusCode : undefined;
+  if (code === "FST_ERR_CTP_BODY_TOO_LARGE" || statusCode === 413) {
+    return new AppError(
+      "PAYLOAD_TOO_LARGE",
+      `Request body exceeds ${maximumRequestBodyBytes} bytes`,
+    );
+  }
+  if (code === "FST_ERR_CTP_INVALID_MEDIA_TYPE" || statusCode === 415) {
+    return new AppError(
+      "UNSUPPORTED_MEDIA_TYPE",
+      "Request content type is not supported",
+    );
+  }
+  return undefined;
+};
+
+const mapRequestError = (error: unknown): AppError => {
+  if (error instanceof AppError) {
+    return error;
+  }
+  if (isMalformedJson(error)) {
+    return new AppError(
+      "VALIDATION_FAILED",
+      "Request body is malformed JSON",
+    );
+  }
+  const contentError = fastifyContentError(error);
+  if (contentError !== undefined) {
+    return contentError;
+  }
+  if (hasZodFastifySchemaValidationErrors(error)) {
+    return validationError(error);
+  }
+  return new AppError("INTERNAL_ERROR", "Internal server error");
+};
 
 export const buildApp = async (
   options: BuildAppOptions,
@@ -73,6 +115,7 @@ export const buildApp = async (
     options.logger ??
     createLogger(options.config.logLevel);
   const app = Fastify({
+    bodyLimit: maximumRequestBodyBytes,
     loggerInstance: logger,
     genReqId: (request) => {
       const supplied = request.headers["x-request-id"];
@@ -134,14 +177,7 @@ export const buildApp = async (
       : async () => checkReadiness(persistence));
 
   app.setErrorHandler((error, request, reply) => {
-    const mapped =
-      error instanceof AppError
-        ? error
-        : isMalformedJson(error)
-          ? new AppError("VALIDATION_FAILED", "Request body is malformed JSON")
-        : hasZodFastifySchemaValidationErrors(error)
-          ? validationError(error)
-          : new AppError("INTERNAL_ERROR", "Internal server error");
+    const mapped = mapRequestError(error);
 
     if (mapped.code === "INTERNAL_ERROR") {
       request.log.error({ err: error }, "request failed");

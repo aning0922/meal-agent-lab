@@ -43,9 +43,21 @@ assert.equal(consumedRequest.includes('"exact"'), true);
 assert.equal(consumedRequest.includes('"approximate"'), false);
 assert.equal(consumedRequest.includes('"multipleOf":0.000001'), true);
 assert.equal(
+  consumedRequest.includes("without floating-point tolerance"),
+  true,
+);
+assert.equal(
   consumedRequest.includes('"maximum":999999999.999999'),
   true,
 );
+for (const status of ["413", "415"]) {
+  assert.equal(
+    generated.paths["/api/v1/auth/wechat/exchange"]?.post?.responses[
+      status
+    ] === undefined,
+    false,
+  );
+}
 
 const methods = [
   "get",

@@ -16,6 +16,7 @@ import {
   householdPageSuccessSchema,
   inventoryLotPageSuccessSchema,
   meSuccessSchema,
+  quantityDecimalMax,
   serviceReadinessSuccessSchema,
   sessionRevokedSuccessSchema,
   wechatLoginExchangeSuccessSchema,
@@ -914,6 +915,79 @@ test("PostgreSQL numeric arithmetic preserves six-decimal exact quantities", asy
     amount: "0.000000",
     state: "depleted",
     deltas: ["-0.100000", "-0.200000"],
+  });
+});
+
+test("HTTP and PostgreSQL preserve the exact upper bound and reject a seventh decimal without rounding", async () => {
+  const session = await login("upper-bound-decimal-user");
+  const household = await createHousehold(
+    session,
+    "upper-bound-decimal-house",
+  );
+  const created = await createLot(
+    session,
+    household.data.household.id,
+    "upper-bound-lot-key",
+    exactLotRequest("上限库存", quantityDecimalMax, "kg"),
+  );
+  assert.equal(created.data.lot.currentQuantity.kind, "exact");
+  if (created.data.lot.currentQuantity.kind === "exact") {
+    assert.equal(created.data.lot.currentQuantity.amount, quantityDecimalMax);
+  }
+
+  const overPrecision = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${household.data.household.id}` +
+      "/inventory-lots",
+    headers: {
+      ...authHeaders(session),
+      "idempotency-key": "upper-bound-invalid",
+    },
+    payload: exactLotRequest(
+      "不得舍入",
+      999_999_999.999_998_9,
+      "kg",
+    ),
+  });
+  assert.equal(overPrecision.statusCode, 400);
+  assert.equal(
+    apiErrorSchema.parse(overPrecision.json()).code,
+    "VALIDATION_FAILED",
+  );
+
+  const consumed = await consume(
+    session,
+    household.data.household.id,
+    created.data.lot.id,
+    "upper-bound-consume",
+    0.000_001,
+    1,
+  );
+  assert.equal(consumed.statusCode, 201, consumed.body);
+
+  const state = await persistence.pool.query<{
+    amount: string;
+    delta: string;
+    lots: number;
+  }>(
+    `SELECT
+       l.current_quantity_amount::text AS amount,
+       (
+         SELECT e.quantity_change_amount::text
+         FROM inventory_events e
+         WHERE e.inventory_lot_id = l.id
+           AND e.type = 'consumed'
+       ) AS delta,
+       (SELECT count(*)::int FROM inventory_lots) AS lots
+     FROM inventory_lots l
+     WHERE l.id = $1`,
+    [created.data.lot.id],
+  );
+  assert.deepEqual(state.rows[0], {
+    amount: "999999999.999998",
+    delta: "-0.000001",
+    lots: 1,
   });
 });
 

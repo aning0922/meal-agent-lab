@@ -7,6 +7,8 @@ import {
 
 export const apiErrorCodeSchema = z.enum([
   "VALIDATION_FAILED",
+  "PAYLOAD_TOO_LARGE",
+  "UNSUPPORTED_MEDIA_TYPE",
   "URI_TOO_LONG",
   "AUTHENTICATION_REQUIRED",
   "SESSION_EXPIRED",
@@ -26,6 +28,8 @@ export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
 
 export const apiErrorStatus = {
   VALIDATION_FAILED: 400,
+  PAYLOAD_TOO_LARGE: 413,
+  UNSUPPORTED_MEDIA_TYPE: 415,
   URI_TOO_LONG: 414,
   AUTHENTICATION_REQUIRED: 401,
   SESSION_EXPIRED: 401,

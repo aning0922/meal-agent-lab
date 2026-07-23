@@ -33,8 +33,18 @@ export const sha256 = (value: string): string =>
 export const requestHash = (value: unknown): string =>
   sha256(canonicalJson(value));
 
-export const toDatabaseQuantityDecimal = (value: number): string =>
-  exactQuantityAmountSchema.parse(value).toFixed(quantityDecimalScale);
+export const toDatabaseQuantityDecimal = (value: number): string => {
+  const parsed = exactQuantityAmountSchema.parse(value);
+  const [whole, fraction = ""] = parsed.toString().split(".");
+  if (
+    whole === undefined ||
+    fraction.length > quantityDecimalScale ||
+    whole.includes("e")
+  ) {
+    throw new Error("validated quantity could not be formatted exactly");
+  }
+  return `${whole}.${fraction.padEnd(quantityDecimalScale, "0")}`;
+};
 
 export const issueSessionToken = (): string =>
   randomBytes(32).toString("base64url");

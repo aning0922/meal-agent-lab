@@ -114,6 +114,130 @@
               }
             }
           },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
           "414": {
             "description": "RFC 9457 problem details",
             "content": {
@@ -145,6 +269,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -267,6 +517,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -474,6 +726,130 @@
               }
             }
           },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
           "414": {
             "description": "RFC 9457 problem details",
             "content": {
@@ -505,6 +881,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -627,6 +1129,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -749,6 +1253,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1120,6 +1626,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1242,6 +1874,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1364,6 +2122,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1486,6 +2246,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1715,6 +2477,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1837,6 +2601,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -1959,6 +2725,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -2081,6 +2849,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -2203,6 +2973,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -2325,6 +3221,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -2447,6 +3469,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -2569,6 +3593,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -2913,6 +3939,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3035,6 +4063,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3157,6 +4187,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3279,6 +4311,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3401,6 +4435,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3523,6 +4683,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3645,6 +4931,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -3767,6 +5055,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -4459,6 +5749,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -4581,6 +5873,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -4703,6 +5997,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -4825,6 +6121,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -4947,6 +6245,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -5069,6 +6493,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -5191,6 +6741,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -5313,6 +6865,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -5676,6 +7230,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -5798,6 +7354,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -5920,6 +7478,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -6042,6 +7602,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -6164,6 +7726,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -6286,6 +7974,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -6408,6 +8222,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -6530,6 +8346,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -6743,7 +8561,10 @@
                                         "type": "number",
                                         "minimum": 0,
                                         "maximum": 999999999.999999,
-                                        "multipleOf": 0.000001
+                                        "multipleOf": 0.000001,
+                                        "x-zod-refinements": [
+                                          "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                                        ]
                                       },
                                       "unit": {
                                         "type": "string",
@@ -6777,7 +8598,10 @@
                                         "minimum": 0,
                                         "exclusiveMinimum": true,
                                         "maximum": 999999999.999999,
-                                        "multipleOf": 0.000001
+                                        "multipleOf": 0.000001,
+                                        "x-zod-refinements": [
+                                          "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                                        ]
                                       },
                                       "unit": {
                                         "type": "string",
@@ -7185,6 +9009,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -7307,6 +9133,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -7429,6 +9257,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -7551,6 +9381,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -7673,6 +9505,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -7795,6 +9753,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -7917,6 +10001,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -8039,6 +10125,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -8179,7 +10267,10 @@
                             "minimum": 0,
                             "exclusiveMinimum": true,
                             "maximum": 999999999.999999,
-                            "multipleOf": 0.000001
+                            "multipleOf": 0.000001,
+                            "x-zod-refinements": [
+                              "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                            ]
                           },
                           "unit": {
                             "type": "string",
@@ -8213,7 +10304,10 @@
                             "minimum": 0,
                             "exclusiveMinimum": true,
                             "maximum": 999999999.999999,
-                            "multipleOf": 0.000001
+                            "multipleOf": 0.000001,
+                            "x-zod-refinements": [
+                              "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                            ]
                           },
                           "unit": {
                             "type": "string",
@@ -8453,7 +10547,10 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 999999999.999999,
-                                      "multipleOf": 0.000001
+                                      "multipleOf": 0.000001,
+                                      "x-zod-refinements": [
+                                        "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                                      ]
                                     },
                                     "unit": {
                                       "type": "string",
@@ -8487,7 +10584,10 @@
                                       "minimum": 0,
                                       "exclusiveMinimum": true,
                                       "maximum": 999999999.999999,
-                                      "multipleOf": 0.000001
+                                      "multipleOf": 0.000001,
+                                      "x-zod-refinements": [
+                                        "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                                      ]
                                     },
                                     "unit": {
                                       "type": "string",
@@ -8795,6 +10895,7 @@
                                           "maximum": 999999999.999999,
                                           "multipleOf": 0.000001,
                                           "x-zod-refinements": [
+                                            "quantity delta supports at most 6 decimal places without floating-point tolerance",
                                             "quantity delta cannot be zero"
                                           ]
                                         },
@@ -8838,6 +10939,7 @@
                                           "maximum": 999999999.999999,
                                           "multipleOf": 0.000001,
                                           "x-zod-refinements": [
+                                            "quantity delta supports at most 6 decimal places without floating-point tolerance",
                                             "quantity delta cannot be zero"
                                           ]
                                         },
@@ -9116,6 +11218,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9238,6 +11342,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9360,6 +11466,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9482,6 +11590,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9604,6 +11714,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9726,6 +11962,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9848,6 +12210,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -9970,6 +12334,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -10091,7 +12457,10 @@
                         "minimum": 0,
                         "exclusiveMinimum": true,
                         "maximum": 999999999.999999,
-                        "multipleOf": 0.000001
+                        "multipleOf": 0.000001,
+                        "x-zod-refinements": [
+                          "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                        ]
                       },
                       "unit": {
                         "type": "string",
@@ -10240,7 +12609,10 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 999999999.999999,
-                                      "multipleOf": 0.000001
+                                      "multipleOf": 0.000001,
+                                      "x-zod-refinements": [
+                                        "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                                      ]
                                     },
                                     "unit": {
                                       "type": "string",
@@ -10274,7 +12646,10 @@
                                       "minimum": 0,
                                       "exclusiveMinimum": true,
                                       "maximum": 999999999.999999,
-                                      "multipleOf": 0.000001
+                                      "multipleOf": 0.000001,
+                                      "x-zod-refinements": [
+                                        "quantity amount supports at most 6 decimal places without floating-point tolerance"
+                                      ]
                                     },
                                     "unit": {
                                       "type": "string",
@@ -10582,6 +12957,7 @@
                                           "maximum": 999999999.999999,
                                           "multipleOf": 0.000001,
                                           "x-zod-refinements": [
+                                            "quantity delta supports at most 6 decimal places without floating-point tolerance",
                                             "quantity delta cannot be zero"
                                           ]
                                         },
@@ -10625,6 +13001,7 @@
                                           "maximum": 999999999.999999,
                                           "multipleOf": 0.000001,
                                           "x-zod-refinements": [
+                                            "quantity delta supports at most 6 decimal places without floating-point tolerance",
                                             "quantity delta cannot be zero"
                                           ]
                                         },
@@ -10903,6 +13280,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11025,6 +13404,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11147,6 +13528,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11269,6 +13652,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11391,6 +13776,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11513,6 +14024,132 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
+                        "URI_TOO_LONG",
+                        "AUTHENTICATION_REQUIRED",
+                        "SESSION_EXPIRED",
+                        "FORBIDDEN",
+                        "RESOURCE_NOT_FOUND",
+                        "CONFLICT",
+                        "PRECONDITION_FAILED",
+                        "IDEMPOTENCY_KEY_REUSED",
+                        "INVENTORY_VERSION_CONFLICT",
+                        "INVENTORY_INSUFFICIENT",
+                        "SAFETY_BLOCKED",
+                        "RATE_LIMITED",
+                        "EXTERNAL_DEPENDENCY_UNAVAILABLE",
+                        "INTERNAL_ERROR"
+                      ]
+                    },
+                    "detail": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "fieldErrors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              ]
+                            }
+                          },
+                          "code": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 80
+                          },
+                          "message": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "code",
+                          "message"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "type",
+                    "title",
+                    "status",
+                    "code",
+                    "requestId",
+                    "retryable"
+                  ],
+                  "additionalProperties": false,
+                  "x-zod-refinements": [
+                    "status must match the stable HTTP status mapped from code"
+                  ]
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "RFC 9457 problem details",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        false
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11635,6 +14272,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",
@@ -11757,6 +14396,8 @@
                       "type": "string",
                       "enum": [
                         "VALIDATION_FAILED",
+                        "PAYLOAD_TOO_LARGE",
+                        "UNSUPPORTED_MEDIA_TYPE",
                         "URI_TOO_LONG",
                         "AUTHENTICATION_REQUIRED",
                         "SESSION_EXPIRED",

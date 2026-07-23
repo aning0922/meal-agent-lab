@@ -8,11 +8,15 @@ export type FetchLike = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-interface RealWechatConfig {
-  readonly appId: string;
-  readonly appSecret: string;
-  readonly endpoint: string;
-}
+const realWechatConfigSchema = z.strictObject({
+  appId: z.string().min(1),
+  appSecret: z.string().min(1),
+  endpoint: z.url().refine(
+    (value) => new URL(value).protocol === "https:",
+    { message: "WeChat code2Session endpoint must use HTTPS" },
+  ),
+});
+type RealWechatConfig = z.infer<typeof realWechatConfigSchema>;
 
 const successResponseSchema = z.object({
   openid: z.string().min(1),
@@ -33,7 +37,7 @@ export class RealWechatAdapter implements WechatAdapter {
     config: RealWechatConfig,
     fetchImplementation: FetchLike = fetch,
   ) {
-    this.#config = config;
+    this.#config = realWechatConfigSchema.parse(config);
     this.#fetch = fetchImplementation;
   }
 

@@ -15,6 +15,7 @@ import {
   createInventoryLotResultSchema,
   createPaginatedDataSchema,
   dietaryConstraintSchema,
+  exactQuantityAmountSchema,
   householdSchema,
   idempotencyKeySchema,
   inventoryEventSchema,
@@ -1013,6 +1014,13 @@ test("inventory create and consume results keep lot, event, household and versio
     }).success,
     true,
   );
+  for (const amount of [
+    0.000_001,
+    999_999_999.999_998,
+    quantityDecimalMax,
+  ]) {
+    assert.equal(exactQuantityAmountSchema.safeParse(amount).success, true);
+  }
   assert.equal(
     consumeInventoryLotRequestSchema.safeParse({
       ...consumeRequest,
@@ -1023,6 +1031,12 @@ test("inventory create and consume results keep lot, event, household and versio
     }).success,
     false,
   );
+  for (const amount of [
+    0.000_000_1,
+    999_999_999.999_998_9,
+  ]) {
+    assert.equal(exactQuantityAmountSchema.safeParse(amount).success, false);
+  }
   assert.equal(
     consumeInventoryLotRequestSchema.safeParse({
       ...consumeRequest,

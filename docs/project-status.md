@@ -1,10 +1,10 @@
 # 项目状态
 
-更新时间：2026-07-23
+更新时间：2026-07-24
 
 ## 当前阶段
 
-阶段 06“最小服务端纵切”已完成，并已在首个实现提交 `b9b149b` 上完成边界修订。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
+阶段 06“最小服务端纵切”已完成，并已在 `b9b149b`、`d37781f` 两轮修订中补强边界。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
 
 [`@meal-agent/contracts`](../packages/contracts/) 0.1.0 是客户端、服务端、测试和 OpenAPI 的共享契约事实源。当前已有登录、session、家庭和库存一致性最小服务，但仍没有菜单推荐、Agent、采购/完整做饭流程或正式 App；下一阶段产品范围尚未决定。
 
@@ -75,9 +75,9 @@
 ### 工程与契约
 
 - 建立 Node.js 24/Fastify 5 的 `services/api`，配置、request ID、日志脱敏、统一错误映射和 graceful shutdown 已接入。
-- 建立 deterministic fake WeChat adapter 和真实 code2Session adapter port；production 配置强制 real adapter 与运行时凭据，真实 adapter 仍只有调用和安全错误边界，没有虚假真实链验证。
+- 建立 deterministic fake WeChat adapter 和真实 code2Session adapter port；production 配置强制 real adapter、运行时凭据和 HTTPS code2Session URL，`RealWechatAdapter` 构造边界也独立拒绝明文 HTTP。真实 adapter 仍只有调用和安全错误边界，没有虚假真实链验证。
 - 所有业务 request/response 复用 `@meal-agent/contracts`；阶段 06 HTTP envelope 也在共享包组合，OpenAPI 从同一批 Zod schema 和路由生成。错误响应声明为 `application/problem+json`，跨字段 refinement 使用可表达的 `oneOf` 或 `x-zod-refinements` 保留。
-- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。malformed JSON、404 和超长 request target 进入同一 problem 边界。
+- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。malformed JSON、404、413 payload too large、超长 request target 和 415 unsupported media type 进入同一 problem 边界。
 
 ### 数据库与隔离
 
@@ -86,7 +86,7 @@
 - PersonProfile→Membership、InventoryLot→Membership、InventoryEvent→Lot/Membership/Event 和 Idempotency→Membership 使用家庭复合外键。
 - creator、只设置 `app.user_id` 的 user-list、以及先 bootstrap active Membership 的 household-resource 三类事务顺序已实现；`app.user_id` / `app.household_id` 只用 transaction-local 设置。
 - 故意漏写 household filter 的查询仍被 RLS 限制；连接复用验证事务结束后 user/household context 和 local role 均不残留。
-- exact 数量 contract 与两列数据库金额统一为最多六位小数的 `numeric(15, 6)`；扣减、负库存判断和 depleted 投影使用 PostgreSQL decimal 运算。
+- exact 数量 contract 与两列数据库金额统一为最多六位小数的 `numeric(15, 6)`；小数位检查基于规范十进制表示，不使用 Zod `multipleOf` 浮点容差，数据库格式化只补零、不舍入。扣减、负库存判断和 depleted 投影使用 PostgreSQL decimal 运算。
 
 ### 会话、幂等与库存
 
@@ -99,7 +99,7 @@
 ### 门禁证据
 
 - `@meal-agent/contracts` 类型检查、11 个运行时测试和 declaration/JavaScript 构建通过。
-- `services/api` 类型检查、6 个单元测试、4 个 HTTP integration、16 个 PostgreSQL integration、空库 migration、OpenAPI 一致性检查和构建通过。
+- `services/api` 类型检查、8 个单元测试、5 个 HTTP integration、17 个 PostgreSQL integration、空库 migration、环境前置检查、OpenAPI 一致性检查和构建通过。
 - PostgreSQL integration 使用实际 18.4 一次性空 cluster，不用 SQLite、mock 数据库或 fake migration 结果代替。
 - 两个 User、两个 Household 的正向访问、家庭列表交叉隔离和资源交叉 404 均通过。
 - 应用日志 sentinel 扫描未发现 login code、token、provider subject、UnionID、AppSecret 或成员私密约束。

@@ -120,8 +120,8 @@ Redis、向量数据库、独立事件总线和第二事实库均不进入当前
 - TypeScript 类型不等于运行时验证，所有不可信输入仍必须执行 Zod/Fastify 校验；
 - Fastify、Zod 和 JSON Schema 的错误格式需要适配为项目统一错误；
 - Drizzle 仍是 0.x 版本线，升级必须锁 patch、阅读变更并跑 migration/contract test；
-- RLS 的连接上下文如果设置错误会造成越权或全量拒绝，阶段 06 必须测试连接池事务边界；
-- Node.js 24 + Fastify 5 + Drizzle + PostgreSQL 18 的本项目组合尚未纵切运行。
+- RLS 的连接上下文如果设置错误会造成越权或全量拒绝；阶段 06 已用连接复用和漏写 household filter 的集成测试验证事务边界；
+- Node.js 24 + Fastify 5 + Drizzle + PostgreSQL 18 已完成本地最小纵切，目标部署平台仍待验证。
 
 ## 已决定、待验证与外部依赖
 
@@ -132,12 +132,16 @@ Redis、向量数据库、独立事件总线和第二事实库均不进入当前
 - SQL migration 审查、事务内幂等与库存事件；
 - 共享契约独立于 Web 框架和数据库映射。
 
-### 待验证
+### 已由阶段 06 验证
 
 - 精确依赖组合的服务启动、优雅停止和数据库连接；
 - Fastify/Zod request/response adapter 与 OpenAPI 生成；
-- Drizzle 表达复合外键、事务、RLS session context 和 migration 的可维护性；
+- Drizzle 表达复合外键、事务、RLS session context 和 migration；
 - PostgreSQL 18 集成测试和库存并发冲突路径；
+
+### 待验证
+
+- Drizzle 版本升级后的长期可维护性；
 - 目标部署平台的连接池、冷启动和 migration job。
 
 ### 外部依赖
@@ -148,7 +152,7 @@ Redis、向量数据库、独立事件总线和第二事实库均不进入当前
 
 ## 验证与复审
 
-阶段 06 必须完成最小服务启动、PostgreSQL 18 migration、事务、RLS、幂等重放、冲突和 contract test。以下条件触发复审：
+阶段 06 已完成最小服务启动、PostgreSQL 18 migration、事务、RLS、幂等重放、冲突和 contract test。以下条件触发复审：
 
 1. Fastify/Zod 不能在不复制 schema 的情况下提供可靠验证和序列化；
 2. Drizzle 阻碍关键 PostgreSQL 约束、RLS、migration 或诊断；

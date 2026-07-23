@@ -204,12 +204,33 @@ export const quantityDecimalScale = 6;
 export const quantityDecimalStep = 0.000_001;
 export const quantityDecimalMax = 999_999_999.999_999;
 
+export const hasAtMostQuantityDecimalScale = (value: number): boolean => {
+  if (!Number.isFinite(value)) {
+    return false;
+  }
+  const [coefficient, exponentText] = value
+    .toString()
+    .toLowerCase()
+    .split("e");
+  const fractionalDigits = coefficient?.split(".")[1]?.length ?? 0;
+  const exponent = exponentText === undefined ? 0 : Number(exponentText);
+  return Math.max(0, fractionalDigits - exponent) <= quantityDecimalScale;
+};
+
 export const exactQuantityAmountSchema = z
   .number()
   .finite()
   .nonnegative()
   .max(quantityDecimalMax)
-  .multipleOf(quantityDecimalStep);
+  .refine(hasAtMostQuantityDecimalScale, {
+    message: `quantity amount supports at most ${quantityDecimalScale} decimal places`,
+  })
+  .meta({
+    multipleOf: quantityDecimalStep,
+    "x-zod-refinements": [
+      `quantity amount supports at most ${quantityDecimalScale} decimal places without floating-point tolerance`,
+    ],
+  });
 
 const positiveQuantityAmountSchema = exactQuantityAmountSchema.positive();
 
@@ -303,12 +324,18 @@ const nonZeroQuantityDeltaAmountSchema = z
   .finite()
   .min(-quantityDecimalMax)
   .max(quantityDecimalMax)
-  .multipleOf(quantityDecimalStep)
+  .refine(hasAtMostQuantityDecimalScale, {
+    message: `quantity delta supports at most ${quantityDecimalScale} decimal places`,
+  })
   .refine((amount) => amount !== 0, {
     message: "quantity delta cannot be zero",
   })
   .meta({
-    "x-zod-refinements": ["quantity delta cannot be zero"],
+    multipleOf: quantityDecimalStep,
+    "x-zod-refinements": [
+      `quantity delta supports at most ${quantityDecimalScale} decimal places without floating-point tolerance`,
+      "quantity delta cannot be zero",
+    ],
   });
 
 export const quantityDeltaSchema = z.discriminatedUnion("precision", [

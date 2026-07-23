@@ -15,6 +15,7 @@
     "db:migrate": "tsx src/database/migrate.ts",
     "db:migrate:test": "tsx scripts/with-test-database.ts migration",
     "dev": "tsx watch src/index.ts",
+    "environment:check": "tsx scripts/check-stage-environment.ts",
     "openapi:check": "tsx scripts/check-openapi.ts",
     "openapi:generate": "tsx scripts/generate-openapi.ts",
     "start": "node dist/index.js",

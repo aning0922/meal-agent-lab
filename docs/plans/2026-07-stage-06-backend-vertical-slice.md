@@ -1,9 +1,11 @@
 # 阶段 06：最小服务端纵切实施计划
 
 - 日期：2026-07-23
+- 最近修订：2026-07-24
 - 分支：`codex/stage-06-backend-vertical-slice`
 - 基线：本地 `main` `1cc2ecc02e8c0da31d90daa2395238dda4815830`
 - 边界修订基线：`b9b149b790d301cd92068cca77b134169241d0fb`
+- 精度与传输修订基线：`d37781f5c749450ee28f9119a24d2861e273e85d`
 - 状态：已完成
 
 ## 范围与依据
@@ -34,6 +36,8 @@
 
 实施期间通过 Homebrew 安装 PostgreSQL 18.4。全部数据库门禁使用脚本创建、迁移并清理一次性空 cluster；没有启动常驻服务，也没有使用 SQLite、mock 数据库或 fake migration 结果。Docker 仍不可用，但不是本阶段实现或验证的前提。
 
+阶段命令现提供 `pnpm stage06:check` 前置检查：先强制 Node.js `>=24.14.0 <25`，再确认 `postgres`、`initdb`、`pg_ctl`、`createdb` 来自 PostgreSQL 18。Apple Silicon/Intel Homebrew 路径自动发现，其他安装位置通过 `PG_BIN` 显式指定；版本或工具不完整时在门禁开始前失败。
+
 ## 实施步骤
 
 1. 把 `services/api` 加入 pnpm workspace，锁定 Node.js 24、Fastify 5.10.0、Drizzle ORM 0.45.2、Drizzle Kit 0.31.10、`pg` 8.22.0、Zod/Fastify OpenAPI adapter 与测试依赖。
@@ -53,15 +57,13 @@
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm check
-pnpm test
-pnpm build
-pnpm --filter @meal-agent/api openapi:check
+pnpm stage06:check
 pnpm --filter @meal-agent/api db:migrate:test
+pnpm audit --prod
 git diff --check
 ```
 
-数据库 integration 测试将使用 PostgreSQL 18 的 migration owner 与无 `BYPASSRLS` 应用角色，覆盖空库 migration、两个用户/两个家庭隔离、三类 bootstrap、连接复用、会话失效、幂等与库存并发。
+数据库 integration 测试使用 PostgreSQL 18 的 migration owner 与无 `BYPASSRLS` 应用角色，覆盖空库 migration、两个用户/两个家庭隔离、三类 bootstrap、连接复用、会话失效、幂等与库存并发。
 
 ## Deferred — 外部依赖
 
@@ -87,6 +89,14 @@ deterministic fake WeChat adapter 只验证内部身份映射、session 和 HTTP
 - OpenAPI 错误 response 显式使用 `application/problem+json`；pageInfo 不变量生成为 `oneOf`，其余 Zod 跨字段不变量保存在 `x-zod-refinements`。
 - system overview 与项目状态恢复通用字段级 response redaction 的 Deferred 状态。
 
+基于 `d37781f5c749450ee28f9119a24d2861e273e85d` 继续修订：
+
+- 移除 exact amount 对 Zod `multipleOf` 浮点容差的运行时依赖；按规范十进制表示检查小数位，数据库定标字符串只补零、不再用 `toFixed(6)` 舍入。小数、接近 `999999999.999999` 上限和七位反例均有 contract/HTTP/PostgreSQL 回归。
+- production 配置和 `RealWechatAdapter` 构造边界独立要求 HTTPS code2Session URL，并固定明文 HTTP 反例。
+- Fastify 413/415 映射为 `PAYLOAD_TOO_LARGE` / `UNSUPPORTED_MEDIA_TYPE`，与其他错误共用 `application/problem+json`。
+- 新增 `pnpm stage06:check` 环境前置，统一检查 Node 24.14+ 与完整 PostgreSQL 18 工具链。
+- ADR-0002/0003 把阶段 06 已完成验证从未来时/“待验证”移入已验证状态，只保留实际未完成项。
+
 ## 验证结果
 
 ### 阶段 05 第 10.1 节的 13 项门禁
@@ -100,20 +110,20 @@ deterministic fake WeChat adapter 只验证内部身份映射、session 和 HTTP
 | 5 | Pass | 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问和四种交叉隔离结果通过 |
 | 6 | Pass | 家庭资源在事务内 bootstrap active Membership；故意删除 SQL household filter 后，RLS 仍只返回当前家庭 |
 | 7 | Pass | household-scope 同 key/body 并发创建一个 lot 和一个 acquired event，另一请求重放；版本为 `0/1/1` |
-| 8 | Pass | consumed 只接受最多六位小数的 exact；PostgreSQL `numeric(15, 6)` 验证 `0.3 - 0.1 - 0.2 = 0.000000`，delta、before/after、单位、非负、active/depleted 全部断言；estimated 在 HTTP contract 边界拒绝，负库存返回 409 且不写事件/投影 |
+| 8 | Pass | consumed 只接受最多六位小数的 exact，运行时不依赖 `multipleOf` 容差；PostgreSQL `numeric(15, 6)` 验证 `0.3 - 0.1 - 0.2 = 0.000000` 及上限减 `0.000001`，七位小数在 HTTP 前置拒绝且不写库；delta、before/after、单位、非负、active/depleted 全部断言；estimated 与负库存路径保持通过 |
 | 9 | Pass | 不同 key、相同 expectedVersion 的并发 consumed 为一个 201、一个 `409 INVENTORY_VERSION_CONFLICT` |
 | 10 | Pass | 相同 key/body、两个独立 session 的并发 consumed 返回同一 event；只有一次执行，另一请求为 replay |
 | 11 | Pass | session 绝对过期、撤销和 Membership 移除均在下一请求即时失效；不活跃过期路径与绝对过期使用同一 auth service 判断 |
-| 12 | Pass | contract 类型/11 个运行时测试、API 类型/6 个单元测试/4 个 HTTP integration/16 个 PostgreSQL integration、OpenAPI 检查和两个构建全部通过 |
+| 12 | Pass | contract 类型/11 个运行时测试、API 类型/8 个单元测试/5 个 HTTP integration/17 个 PostgreSQL integration、环境前置、OpenAPI 检查和两个构建全部通过 |
 | 13 | Pass | 单元、HTTP 和数据库日志 sentinel 扫描不含 login code、opaque token、provider subject、UnionID、AppSecret 或成员私密约束 |
 
 ### 最终命令
 
-以下命令于 2026-07-23 实际执行并通过：
+以下命令于 2026-07-24 实际执行并通过：
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm check
+pnpm stage06:check
 pnpm --filter @meal-agent/api db:migrate:test
 pnpm audit --prod
 git diff --check
@@ -121,7 +131,7 @@ git diff --check
 
 - `pnpm audit --prod`：`No known vulnerabilities found`
 - OpenAPI：8 个 path、10 个 route method 均存在；consumed request 只生成 exact schema，提交产物与实时生成结果一致
-- OpenAPI 错误响应只声明 `application/problem+json`；pageInfo `oneOf`、exact precision/scale 和 `x-zod-refinements` 均由检查固定
+- OpenAPI 错误响应只声明 `application/problem+json`；413/415、pageInfo `oneOf`、exact precision/scale 和无浮点容差的 `x-zod-refinements` 均由检查固定
 - 本地 Markdown：48 个文件中的 86 个本地链接全部可解析
 - 提交范围扫描：未发现私钥签名、常见 access token、非空 `.env.example` Secret/数据库 URL、真实手机号/邮箱或第二份核心 DTO
 - 生成物扫描：没有跟踪 `node_modules`、`dist`、coverage、日志或 TypeScript 增量缓存；提交的 OpenAPI 是可复现审查产物
@@ -132,7 +142,7 @@ git diff --check
 
 ### 未解决问题
 
-- 当前默认 shell 未把 Codex Node.js 24 运行时加入 `PATH`；验证命令显式使用该运行时。仓库的 `engines` 已阻止跨 major 漂移。
+- 当前默认 shell 未把 Codex Node.js 24 运行时加入 `PATH`；验证命令仍需显式使用该运行时，但 `pnpm stage06:check` 已在执行门禁前验证精确 Node/PostgreSQL 版本和工具完整性。
 - Docker/Docker Compose 仍不可用；本阶段用本机 PostgreSQL 18.4 完成全部数据库门禁，不影响已声明范围。
 - Drizzle ORM 0.45.2 的声明包会加载未安装数据库引擎的可选类型并产生上游 declaration 错误；`services/api` 只对第三方声明启用 `skipLibCheck`，项目源码仍为 strict typecheck，实际 Drizzle/`pg`/PostgreSQL integration 已通过。后续升级 Drizzle 时复审。
 - staging/production 的连接角色授予、migration job、限流、备份恢复和可观测性仍待部署平台确定后验证。

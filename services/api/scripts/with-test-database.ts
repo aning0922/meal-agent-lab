@@ -1,42 +1,17 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 import { Pool } from "pg";
 
 import { applyMigrations } from "../src/database/migrate.js";
-
-const executableExists = async (path: string): Promise<boolean> => {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const findPostgresBin = async (): Promise<string> => {
-  const candidates = [
-    process.env["PG_BIN"],
-    "/opt/homebrew/opt/postgresql@18/bin",
-    "/usr/local/opt/postgresql@18/bin",
-    ...((process.env["PATH"] ?? "")
-      .split(delimiter)
-      .filter((entry) => entry !== "")),
-  ].filter((entry): entry is string => entry !== undefined);
-
-  for (const candidate of candidates) {
-    if (await executableExists(join(candidate, "postgres"))) {
-      return candidate;
-    }
-  }
-  throw new Error(
-    "PostgreSQL 18 binaries are required; set PG_BIN to their bin directory",
-  );
-};
+import {
+  assertStageNodeVersion,
+  findPostgres18Bin,
+} from "./stage-environment.js";
 
 const freePort = async (): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -89,7 +64,8 @@ if (mode !== "migration" && mode !== "test") {
   throw new Error("expected mode: migration or test");
 }
 
-const postgresBin = await findPostgresBin();
+assertStageNodeVersion();
+const { binDirectory: postgresBin } = await findPostgres18Bin();
 const clusterRoot = await mkdtemp(join(tmpdir(), "meal-agent-stage-06-pg18-"));
 const dataDirectory = join(clusterRoot, "data");
 const socketDirectory = join(clusterRoot, "socket");

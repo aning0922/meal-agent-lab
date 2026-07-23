@@ -44,6 +44,6 @@ tests/       跨模块、端到端、安全与固定测试数据
 
 ## 阶段 06 结果
 
-已实施“登录 → 创建/读取家庭 → 手工新增库存批次 → 幂等重放 → exact-only 最小 consumed 事件”，并用 PostgreSQL 18 空库 migration 与数据库 integration 验证 session、两层 context、RLS bootstrap、目标资源绑定的用户级/家庭级幂等、六位 decimal 库存、负库存、并发冲突和日志脱敏。malformed JSON、404 与超长 URL 也进入统一 problem 边界。consumed command 不接受 estimated 数量，也没有扩展为完整做饭流程；实施与门禁结果见[阶段 06 记录](docs/plans/2026-07-stage-06-backend-vertical-slice.md)。
+已实施“登录 → 创建/读取家庭 → 手工新增库存批次 → 幂等重放 → exact-only 最小 consumed 事件”，并用 PostgreSQL 18 空库 migration 与数据库 integration 验证 session、两层 context、RLS bootstrap、目标资源绑定的用户级/家庭级幂等、无浮点容差的六位 decimal 库存、负库存、并发冲突和日志脱敏。malformed JSON、404、413、超长 URL 与 415 也进入统一 problem 边界。consumed command 不接受 estimated 数量，也没有扩展为完整做饭流程；实施与门禁结果见[阶段 06 记录](docs/plans/2026-07-stage-06-backend-vertical-slice.md)。
 
 后续产品范围尚未在本阶段决定。账号、域名和设备条件具备时补证真实微信登录与 HTTPS 合法域名；家庭内测前验证体验版，发布候选阶段验证审核和发布链。Android、iOS、HarmonyOS 在各自开发开始前单独实验。

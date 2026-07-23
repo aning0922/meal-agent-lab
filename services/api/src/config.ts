@@ -6,6 +6,11 @@ const integerFromEnvironment = (fallback: number) =>
     z.int().positive(),
   );
 
+const httpsUrlSchema = z.url().refine(
+  (value) => new URL(value).protocol === "https:",
+  { message: "WeChat code2Session URL must use HTTPS" },
+);
+
 const configSchema = z
   .object({
     NODE_ENV: z
@@ -31,9 +36,9 @@ const configSchema = z
     WECHAT_ADAPTER: z.enum(["fake", "real"]).default("fake"),
     WECHAT_APP_ID: z.string().min(1).optional(),
     WECHAT_APP_SECRET: z.string().min(1).optional(),
-    WECHAT_CODE2SESSION_URL: z
-      .url()
-      .default("https://api.weixin.qq.com/sns/jscode2session"),
+    WECHAT_CODE2SESSION_URL: httpsUrlSchema.default(
+      "https://api.weixin.qq.com/sns/jscode2session",
+    ),
     SESSION_ABSOLUTE_TTL_DAYS: integerFromEnvironment(30).pipe(
       z.int().max(90),
     ),

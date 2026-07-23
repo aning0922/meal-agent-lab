@@ -10,6 +10,7 @@ import {
 
 import {
   buildApp,
+  maximumRequestBodyBytes,
   maximumRequestTargetBytes,
   type BuildAppOptions,
 } from "../../src/app.js";
@@ -103,7 +104,7 @@ test("health and readiness use the shared success/error contracts", async () => 
   }
 });
 
-test("HTTP contract rejects estimated consumed requests before a handler can write", async () => {
+test("HTTP contract rejects estimated and over-precision exact consumed requests before a handler can write", async () => {
   const app = await buildApp({
     config,
     operations,
@@ -132,6 +133,30 @@ test("HTTP contract rejects estimated consumed requests before a handler can wri
     });
     assert.equal(response.statusCode, 400);
     assert.equal(apiErrorSchema.parse(response.json()).code, "VALIDATION_FAILED");
+
+    const overPrecision = await app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${ids.household}` +
+        `/inventory-lots/${ids.lot}/events/consumed`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "idempotency-key": "consume-http-0002",
+      },
+      payload: {
+        consumedQuantity: {
+          kind: "exact",
+          amount: 999_999_999.999_998_9,
+          unit: "kg",
+        },
+        expectedVersion: 1,
+      },
+    });
+    assert.equal(overPrecision.statusCode, 400);
+    assert.equal(
+      apiErrorSchema.parse(overPrecision.json()).code,
+      "VALIDATION_FAILED",
+    );
   } finally {
     await app.close();
   }
@@ -183,6 +208,51 @@ test("malformed JSON, missing routes and overlong request targets share the prob
       apiErrorSchema.parse(overlong.json()).code,
       "URI_TOO_LONG",
     );
+  } finally {
+    await app.close();
+  }
+});
+
+test("oversized and unsupported request bodies share the problem boundary", async () => {
+  const app = await buildApp({
+    config,
+    operations,
+    readiness: async () => true,
+  });
+  try {
+    const oversized = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/wechat/exchange",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({
+        loginCode: "x".repeat(maximumRequestBodyBytes),
+      }),
+    });
+    const unsupported = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/wechat/exchange",
+      headers: { "content-type": "application/xml" },
+      payload: "<loginCode>not-json</loginCode>",
+    });
+
+    assert.equal(oversized.statusCode, 413);
+    assert.equal(
+      apiErrorSchema.parse(oversized.json()).code,
+      "PAYLOAD_TOO_LARGE",
+    );
+    assert.equal(unsupported.statusCode, 415);
+    assert.equal(
+      apiErrorSchema.parse(unsupported.json()).code,
+      "UNSUPPORTED_MEDIA_TYPE",
+    );
+    for (const response of [oversized, unsupported]) {
+      assert.equal(
+        response.headers["content-type"]?.includes(
+          "application/problem+json",
+        ),
+        true,
+      );
+    }
   } finally {
     await app.close();
   }

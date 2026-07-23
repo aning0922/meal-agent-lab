@@ -4,7 +4,11 @@ import test from "node:test";
 
 import { loadConfig } from "../../src/config.js";
 import { createLogger, redactSensitive } from "../../src/logging.js";
-import { canonicalJson, requestHash } from "../../src/utils.js";
+import {
+  canonicalJson,
+  requestHash,
+  toDatabaseQuantityDecimal,
+} from "../../src/utils.js";
 import { FakeWechatAdapter } from "../../src/wechat/fake.js";
 import { RealWechatAdapter } from "../../src/wechat/real.js";
 
@@ -66,6 +70,32 @@ test("production rejects the fake WeChat adapter, including its default", () => 
     WECHAT_APP_SECRET: "configured-at-runtime",
   });
   assert.equal(production.wechatAdapter, "real");
+
+  assert.throws(() =>
+    loadConfig({
+      ...baseEnvironment,
+      NODE_ENV: "production",
+      WECHAT_ADAPTER: "real",
+      WECHAT_APP_ID: "configured-at-runtime",
+      WECHAT_APP_SECRET: "configured-at-runtime",
+      WECHAT_CODE2SESSION_URL: "http://api.weixin.qq.com/sns/jscode2session",
+    }),
+  );
+});
+
+test("quantity decimal formatting pads without rounding and rejects excess scale", () => {
+  assert.equal(toDatabaseQuantityDecimal(0.000_001), "0.000001");
+  assert.equal(
+    toDatabaseQuantityDecimal(999_999_999.999_998),
+    "999999999.999998",
+  );
+  assert.equal(
+    toDatabaseQuantityDecimal(999_999_999.999_999),
+    "999999999.999999",
+  );
+  assert.throws(() =>
+    toDatabaseQuantityDecimal(999_999_999.999_998_9),
+  );
 });
 
 test("canonical request hashes are independent of object key order", () => {
@@ -120,6 +150,16 @@ test("real WeChat adapter exposes only the identity boundary and discards sessio
   });
   assert.equal("sessionKey" in identity, false);
   assert.equal(requestedUrl?.searchParams.get("grant_type"), "authorization_code");
+});
+
+test("real WeChat adapter rejects a plaintext code2Session endpoint at its boundary", () => {
+  assert.throws(() =>
+    new RealWechatAdapter({
+      appId: "runtime-app-id",
+      appSecret: "runtime-app-secret",
+      endpoint: "http://api.weixin.qq.com/sns/jscode2session",
+    }),
+  );
 });
 
 test("recursive redaction prevents secrets and private member constraints from reaching logs", () => {

@@ -82,7 +82,9 @@ const commonErrorResponses = {
   403: problemResponse,
   404: problemResponse,
   409: problemResponse,
+  413: problemResponse,
   414: problemResponse,
+  415: problemResponse,
   500: problemResponse,
   503: problemResponse,
 } as const;
@@ -134,7 +136,9 @@ export const registerRoutes = async (
         tags: ["operations"],
         response: {
           200: serviceLivenessSuccessSchema,
+          413: problemResponse,
           414: problemResponse,
+          415: problemResponse,
           500: problemResponse,
         },
       },
@@ -151,7 +155,9 @@ export const registerRoutes = async (
         tags: ["operations"],
         response: {
           200: serviceReadinessSuccessSchema,
+          413: problemResponse,
           414: problemResponse,
+          415: problemResponse,
           500: problemResponse,
           503: problemResponse,
         },
@@ -183,7 +189,9 @@ export const registerRoutes = async (
         response: {
           200: wechatLoginExchangeSuccessSchema,
           400: problemResponse,
+          413: problemResponse,
           414: problemResponse,
+          415: problemResponse,
           500: problemResponse,
           503: problemResponse,
         },
