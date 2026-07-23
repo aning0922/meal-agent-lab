@@ -96,4 +96,4 @@ local、test、staging 和 production 使用独立数据库、Secret、微信配
 
 ## 下一纵切
 
-阶段 06 只实施：登录 → 创建/读取家庭 → 手工新增一个库存批次 → 相同幂等请求返回同一结果 → 追加一个最小 consumed 事件。最后一步只用于验证乐观锁与负库存阻断，不是完整做饭扣减流程。明确 endpoint、migration、测试门禁和非范围见[阶段 06 最小服务端纵切](backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
+阶段 06 只实施：登录 → 创建/读取家庭 → 手工新增一个库存批次 → 相同幂等请求返回同一结果 → 追加一个 exact-only 最小 consumed 事件。最后一步只用于验证乐观锁与负库存阻断，不接受 estimated 数量，也不是完整做饭扣减流程。明确 endpoint、migration、测试门禁和非范围见[阶段 06 最小服务端纵切](backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。

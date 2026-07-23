@@ -184,19 +184,22 @@ export const foodDateSchema = z
   });
 export type FoodDate = z.infer<typeof foodDateSchema>;
 
+const quantityUnitSchema = z.string().min(1).max(32);
+const quantityOriginalTextSchema = z.string().min(1).max(200);
+
 export const exactQuantitySchema = z.strictObject({
   kind: z.literal("exact"),
   amount: z.number().finite().nonnegative(),
-  unit: z.string().min(1).max(32),
-  originalText: z.string().min(1).max(200).optional(),
+  unit: quantityUnitSchema,
+  originalText: quantityOriginalTextSchema.optional(),
 });
 
 export const approximateQuantitySchema = z
   .strictObject({
     kind: z.literal("approximate"),
     amount: z.number().finite().positive().optional(),
-    unit: z.string().min(1).max(32).optional(),
-    originalText: z.string().min(1).max(200),
+    unit: quantityUnitSchema.optional(),
+    originalText: quantityOriginalTextSchema,
     confidence: confidenceSchema,
   })
   .superRefine((quantity, context) => {
@@ -215,7 +218,7 @@ export const approximateQuantitySchema = z
 export const qualitativeQuantitySchema = z.strictObject({
   kind: z.literal("qualitative"),
   level: z.enum(["plenty", "some", "low", "empty", "unknown"]),
-  originalText: z.string().min(1).max(200).optional(),
+  originalText: quantityOriginalTextSchema.optional(),
 });
 
 export const quantitySchema = z.discriminatedUnion("kind", [
@@ -240,39 +243,67 @@ export const nonEmptyQuantitySchema = quantitySchema.superRefine(
 );
 export type NonEmptyQuantity = z.infer<typeof nonEmptyQuantitySchema>;
 
-export const quantityDeltaSchema = z
-  .strictObject({
-    kind: z.literal("numeric"),
-    amount: z.number().finite().refine((amount) => amount !== 0, {
-      message: "quantity delta cannot be zero",
-    }),
-    unit: z.string().min(1).max(32),
-    precision: z.enum(["exact", "estimated"]),
-    confidence: confidenceSchema.optional(),
-    originalText: z.string().min(1).max(200).optional(),
-  })
-  .superRefine((change, context) => {
-    if (change.precision === "exact" && change.confidence !== undefined) {
-      context.addIssue({
-        code: "custom",
-        path: ["confidence"],
-        message: "exact quantity changes cannot carry estimated confidence",
-      });
-    }
+export const persistableInitialQuantitySchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("exact"),
+    amount: z.number().finite().positive(),
+    unit: quantityUnitSchema,
+    originalText: quantityOriginalTextSchema.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("approximate"),
+    amount: z.number().finite().positive(),
+    unit: quantityUnitSchema,
+    confidence: confidenceSchema,
+    originalText: quantityOriginalTextSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("qualitative"),
+    level: z.enum(["plenty", "some", "low", "unknown"]),
+    originalText: quantityOriginalTextSchema.optional(),
+  }),
+]);
+export type PersistableInitialQuantity = z.infer<
+  typeof persistableInitialQuantitySchema
+>;
+
+const nonZeroQuantityDeltaAmountSchema = z
+  .number()
+  .finite()
+  .refine((amount) => amount !== 0, {
+    message: "quantity delta cannot be zero",
   });
+
+export const quantityDeltaSchema = z.discriminatedUnion("precision", [
+  z.strictObject({
+    kind: z.literal("numeric"),
+    amount: nonZeroQuantityDeltaAmountSchema,
+    unit: quantityUnitSchema,
+    precision: z.literal("exact"),
+    originalText: quantityOriginalTextSchema.optional(),
+  }),
+  z.strictObject({
+    kind: z.literal("numeric"),
+    amount: nonZeroQuantityDeltaAmountSchema,
+    unit: quantityUnitSchema,
+    precision: z.literal("estimated"),
+    confidence: confidenceSchema,
+    originalText: quantityOriginalTextSchema,
+  }),
+]);
 export type QuantityDelta = z.infer<typeof quantityDeltaSchema>;
 
 export const qualitativeQuantityChangeSchema = z.strictObject({
   kind: z.literal("qualitative"),
   fromLevel: qualitativeQuantitySchema.shape.level,
   toLevel: qualitativeQuantitySchema.shape.level,
-  originalText: z.string().min(1).max(200).optional(),
+  originalText: quantityOriginalTextSchema.optional(),
 });
 export type QualitativeQuantityChange = z.infer<
   typeof qualitativeQuantityChangeSchema
 >;
 
-export const quantityChangeSchema = z.discriminatedUnion("kind", [
+export const quantityChangeSchema = z.union([
   quantityDeltaSchema,
   qualitativeQuantityChangeSchema,
 ]);

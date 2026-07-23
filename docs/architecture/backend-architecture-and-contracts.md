@@ -276,11 +276,13 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 | lot quantity | 初始 event quantityChange | 规则 |
 | --- | --- | --- |
 | `exact` | `numeric` | amount/unit/originalText 相同，`precision = exact`，不带 confidence |
-| `approximate` | `numeric` | 只有 amount 与 unit 同时存在时可持久化；二者、originalText、confidence 必须相同，`precision = estimated` |
-| 无结构化 amount/unit 的 approximate 输入 | 先规范化为 `qualitative` lot | 不允许在结果中保留为 approximate；服务端按确认结果选择 level 并保留 originalText |
+| 结构化 `approximate` | `numeric` | amount、unit、originalText、confidence 全部必填且相同，`precision = estimated` |
+| 无结构化 amount/unit 的 approximate 解析结果 | 不得提交正式写入 | 确认界面先让用户确认结构化 amount/unit，或明确选择非 empty qualitative level；调用方完成转换后再提交 |
 | `qualitative` | `qualitative` | `fromLevel = empty`，`toLevel = lot.level`，originalText 相同 |
 
-amount/unit 只出现一个、event kind 不匹配、数值或单位不同都会使 `createInventoryLotResultSchema` 失败。规范化是确定性应用逻辑；模型或未确认识别不得自行选择 qualitative level。
+`createInventoryLotRequestSchema.initialQuantity` 使用专用可持久化 schema：exact 必须为正数且有 unit；approximate 必须同时有正数 amount、unit、confidence 和 originalText；qualitative 必须显式给出非 empty level。原始文本解析 DTO 不是写入 DTO，无结构化 approximate、amount/unit 只出现一个或 empty qualitative 都会在请求边界被拒绝。确认后的调用方负责提交最终结构；服务端、模型和未确认识别都不得替用户选择 qualitative level 或补造 amount/unit。
+
+event kind 不匹配、数值或单位不同都会使 `createInventoryLotResultSchema` 失败。`quantityDeltaSchema` 以 precision 判别：estimated 必须带 confidence 和 originalText，exact 禁止 confidence。
 
 日期使用独立 `kind` 和来源：
 
@@ -321,7 +323,7 @@ amount/unit 只出现一个、event kind 不匹配、数值或单位不同都会
 | --- | --- |
 | `primitives.ts` | opaque IDs、日期/来源/置信度、精确/模糊数量 |
 | `identity.ts` | User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、安全 owner profile 响应、登录及创建家庭请求/结果 |
-| `inventory.ts` | InventoryLot、InventoryEvent、创建批次与最小 consumed command 的请求/结果 |
+| `inventory.ts` | InventoryLot、InventoryEvent、创建批次与 exact-only 最小 consumed command 的请求/结果 |
 | `meals.ts` | Meal、Recipe、Recommendation 及候选 |
 | `shopping.ts` | ShoppingItem 与来源/状态 |
 | `api.ts` | ApiResult、ApiError、Pagination、Idempotency、ExpectedVersion |
@@ -356,7 +358,7 @@ contract 设计规则：
 
 ### 10.1 必须实施
 
-阶段 06 只实现“登录 → 创建/读取家庭 → 手工新增一个库存批次 → 重试得到同一结果 → 对该批次追加一个最小 consumed 事件”的最小纵切。consumed command 仅用于证明乐观锁、幂等和负库存阻断，不扩展为做饭完成流程。
+阶段 06 只实现“登录 → 创建/读取家庭 → 手工新增一个库存批次 → 重试得到同一结果 → 对该批次追加一个最小 exact-only consumed 事件”的最小纵切。consumed command 仅用于证明乐观锁、幂等和负库存阻断，不扩展为估算扣减或做饭完成流程。
 
 工程：
 
@@ -391,7 +393,7 @@ contract 设计规则：
 | `GET /api/v1/households` | 只列出当前 User 的 active Membership |
 | `GET /api/v1/households/{id}/inventory-lots` | cursor list，仅当前家庭 |
 | `POST /api/v1/households/{id}/inventory-lots` | 创建 lot、`acquired` 初始 event、家庭级幂等记录和 version 1 projection |
-| `POST /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed` | 接受正数消耗量和 expectedVersion，追加负 delta `consumed` event；不得产生负库存 |
+| `POST /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed` | 仅接受 `kind = exact` 的正数 amount/unit 和 expectedVersion，追加 `precision = exact` 的负 delta `consumed` event；不得产生负库存 |
 
 测试门禁：
 
@@ -402,7 +404,7 @@ contract 设计规则：
 5. 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问通过，四种交叉访问均被拒绝。
 6. 家庭资源先 bootstrap Membership 再构造 `HouseholdContext`；故意漏写 household filter 时 RLS 仍阻止跨家庭读取。
 7. 相同 household-scope key/body 只创建一个 lot 和一个 `acquired` event，重放原响应；初始 expected/result/lot version 固定为 `0/1/1`。
-8. consumed command 用小于等于现有精确数量的正数请求生成负 delta；超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
+8. consumed command 只接受 exact 请求，并用小于等于现有精确数量的正数生成 exact 负 delta；approximate/estimated 请求在契约边界被拒绝，超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
 9. 两个相同 expectedVersion 的并发 consumed command 只有一个成功，另一个返回 `409 INVENTORY_VERSION_CONFLICT`；相同幂等请求只追加一次。
 10. session 过期、撤销和成员移除立即失效。
 11. contract、类型检查、单元、HTTP integration 和数据库 integration 全部通过。
@@ -412,7 +414,7 @@ contract 设计规则：
 
 - 完整菜单推荐、菜谱内容导入、模型调用或 Agent 对话；
 - OCR、语音、条码、图片、外部通知和异步 worker；
-- 采购、做饭、餐后扣减和剩菜回库的完整 API；阶段 06 只有不关联 Meal 的单批次 consumed 一致性 command；
+- 采购、做饭、餐后扣减和剩菜回库的完整 API；阶段 06 只有不关联 Meal、只接受 exact 数量的单批次 consumed 一致性 command；
 - Redis、消息队列、向量数据库或微服务拆分；
 - 正式 App、真实生产域名、生产云资源或真实家庭数据；
 - 体验版上传、审核、发布和 Android/iOS/HarmonyOS；

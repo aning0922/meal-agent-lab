@@ -6,7 +6,7 @@ import {
   householdIdSchema,
   inventoryEventIdSchema,
   inventoryLotIdSchema,
-  nonEmptyQuantitySchema,
+  persistableInitialQuantitySchema,
   quantityChangeSchema,
   quantitySchema,
   userIdSchema,
@@ -143,7 +143,7 @@ export const createInventoryLotRequestSchema = z.strictObject({
   foodConceptId: foodConceptIdSchema.optional(),
   displayName: z.string().min(1).max(120),
   storageLocation: storageLocationSchema,
-  initialQuantity: nonEmptyQuantitySchema,
+  initialQuantity: persistableInitialQuantitySchema,
   dates: z
     .array(createInventoryLotDateInputSchema)
     .max(4)
@@ -463,7 +463,6 @@ const addInitialQuantityRebuildIssues = (
     canRebuild =
       change?.kind === "numeric" &&
       change.precision === "exact" &&
-      change.confidence === undefined &&
       change.amount === quantity.amount &&
       change.unit === quantity.unit &&
       change.originalText === quantity.originalText;
@@ -555,9 +554,9 @@ export type CreateInventoryLotResult = z.infer<
 
 export const consumeInventoryLotRequestSchema = z.strictObject({
   consumedQuantity: z.strictObject({
+    kind: z.literal("exact"),
     amount: z.number().finite().positive(),
     unit: z.string().min(1).max(32),
-    precision: z.enum(["exact", "estimated"]),
     originalText: z.string().min(1).max(200).optional(),
   }),
   expectedVersion: versionSchema,
@@ -577,12 +576,13 @@ export const consumeInventoryLotResultSchema = z
 
     if (
       result.event.type !== "consumed" ||
-      result.event.quantityChange?.kind !== "numeric"
+      result.event.quantityChange?.kind !== "numeric" ||
+      result.event.quantityChange.precision !== "exact"
     ) {
       context.addIssue({
         code: "custom",
         path: ["event", "type"],
-        message: "consume command requires a numeric consumed event",
+        message: "consume command requires an exact numeric consumed event",
       });
     }
 

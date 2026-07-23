@@ -286,6 +286,8 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     storageLocation: "refrigerated",
     initialQuantity: {
       kind: "approximate",
+      amount: 0.5,
+      unit: "box",
       originalText: "半盒",
       confidence: "medium",
     },
@@ -309,6 +311,8 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     storageLocation: "refrigerated",
     currentQuantity: {
       kind: "approximate",
+      amount: 0.5,
+      unit: "box",
       originalText: "半盒",
       confidence: "medium",
     },
@@ -356,6 +360,7 @@ test("inventory lots preserve date provenance and events enforce append-only ver
       amount: -0.5,
       unit: "box",
       precision: "estimated",
+      confidence: "medium",
       originalText: "用了半盒",
     },
     actorUserId: ids.user,
@@ -400,6 +405,108 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     createInventoryLotRequestSchema.safeParse({
       ...createRequest,
       initialQuantity: { kind: "exact", amount: 0, unit: "box" },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "exact",
+        amount: 1,
+        unit: "box",
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "approximate",
+        originalText: "半盒",
+        confidence: "medium",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "approximate",
+        amount: 0.5,
+        unit: "box",
+        originalText: "半盒",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "approximate",
+        amount: 0.5,
+        unit: "box",
+        confidence: "medium",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "approximate",
+        amount: 0.5,
+        originalText: "半盒",
+        confidence: "medium",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "qualitative",
+        originalText: "还有一些",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "approximate",
+        unit: "box",
+        originalText: "半盒",
+        confidence: "medium",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "qualitative",
+        level: "some",
+        originalText: "还有一些",
+      },
+    }).success,
+    true,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse({
+      ...createRequest,
+      initialQuantity: {
+        kind: "qualitative",
+        level: "empty",
+        originalText: "没有了",
+      },
     }).success,
     false,
   );
@@ -455,6 +562,46 @@ test("inventory lots preserve date provenance and events enforce append-only ver
   assert.equal(
     inventoryEventSchema.safeParse({
       ...event,
+      quantityChange: {
+        kind: "numeric",
+        amount: -0.5,
+        unit: "box",
+        precision: "estimated",
+        originalText: "用了半盒",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      quantityChange: {
+        kind: "numeric",
+        amount: -0.5,
+        unit: "box",
+        precision: "estimated",
+        confidence: "medium",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
+      quantityChange: {
+        kind: "numeric",
+        amount: -0.5,
+        unit: "box",
+        precision: "exact",
+        confidence: "medium",
+        originalText: "用了半盒",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    inventoryEventSchema.safeParse({
+      ...event,
       type: "consumed",
       quantityChange: {
         kind: "qualitative",
@@ -475,6 +622,8 @@ test("inventory lots preserve date provenance and events enforce append-only ver
         amount: 0.25,
         unit: "box",
         precision: "estimated",
+        confidence: "medium",
+        originalText: "修正为四分之一盒",
       },
     }).success,
     false,
@@ -733,9 +882,9 @@ test("inventory create and consume results keep lot, event, household and versio
 
   const consumeRequest = consumeInventoryLotRequestSchema.parse({
     consumedQuantity: {
+      kind: "exact",
       amount: 1,
       unit: "box",
-      precision: "exact",
     },
     expectedVersion: 1,
   });
@@ -753,7 +902,7 @@ test("inventory create and consume results keep lot, event, household and versio
         kind: "numeric",
         amount: -consumeRequest.consumedQuantity.amount,
         unit: consumeRequest.consumedQuantity.unit,
-        precision: consumeRequest.consumedQuantity.precision,
+        precision: "exact",
       },
       source: "manual_confirmation",
       occurredAt: "2026-07-23T12:01:00Z",
@@ -779,9 +928,54 @@ test("inventory create and consume results keep lot, event, household and versio
     false,
   );
   assert.equal(
+    consumeInventoryLotRequestSchema.safeParse({
+      ...consumeRequest,
+      consumedQuantity: {
+        kind: "approximate",
+        amount: 1,
+        unit: "box",
+        confidence: "medium",
+        originalText: "约一盒",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
+    consumeInventoryLotRequestSchema.safeParse({
+      ...consumeRequest,
+      consumedQuantity: {
+        ...consumeRequest.consumedQuantity,
+        precision: "estimated",
+      },
+    }).success,
+    false,
+  );
+  assert.equal(
     consumeInventoryLotResultSchema.safeParse({
       ...consumed,
       event: { ...consumed.event, type: "adjusted" },
+    }).success,
+    false,
+  );
+  const estimatedConsumedEvent = {
+    ...consumed.event,
+    quantityChange: {
+      kind: "numeric",
+      amount: -1,
+      unit: "box",
+      precision: "estimated",
+      confidence: "medium",
+      originalText: "约一盒",
+    },
+  } as const;
+  assert.equal(
+    inventoryEventSchema.safeParse(estimatedConsumedEvent).success,
+    true,
+  );
+  assert.equal(
+    consumeInventoryLotResultSchema.safeParse({
+      ...consumed,
+      event: estimatedConsumedEvent,
     }).success,
     false,
   );

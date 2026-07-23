@@ -12,7 +12,9 @@
 - `InventoryLot.currentQuantity` 是事件聚合后的投影；`InventoryEvent` 才是库存变化事实。
 - `createHouseholdResultSchema` 使用安全 owner profile 响应，只允许 household-visible constraints；私密 `subject_and_owner` 约束不能进入结果或幂等缓存。
 - 手工创建批次的结果固定为同家庭、同批次的初始 `acquired` 事件，`expectedLotVersion/resultingLotVersion/lot.version` 为 `0/1/1`。
-- 初始数量规范化为 exact→exact numeric、结构化 approximate→estimated numeric、qualitative→`empty` 到当前 level；无成对 amount/unit 的 approximate 必须先转为用户确认的 qualitative。
+- 正式初始数量使用专用可持久化 schema：exact 需要正数 amount/unit，approximate 需要正数 amount/unit/confidence/originalText，qualitative 需要显式非 empty level；原始文本解析必须先由确认界面转为其中一种结构再提交。
+- 初始事件规范化为 exact→exact numeric、结构化 approximate→estimated numeric、qualitative→`empty` 到当前 level；estimated delta 必须带 confidence/originalText，exact delta 禁止 confidence。
+- 阶段 06 最小 consumed command 只接受 exact 正数，并只返回 exact numeric consumed event。
 - `InventoryLot.dates` 同一类型最多一项；创建输入最多四项，完整 lot 快照最多九项。
 - `meta.idempotency.scope` 区分创建家庭等用户级 command 与家庭内 command；`pageInfo.hasMore` 与 `nextCursor` 必须一致。
 - `AuthIdentity.providerSubject` 仅供服务端身份映射，不代表它可以出现在面向客户端的响应中。

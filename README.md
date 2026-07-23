@@ -44,6 +44,6 @@ tests/       跨模块、端到端、安全与固定测试数据
 
 ## 下一步
 
-阶段 06 只实施“登录 → 创建/读取家庭 → 手工新增库存批次 → 幂等重放 → 最小 consumed 事件”的服务端纵切，验证 session、两层 context、RLS bootstrap、用户级/家庭级幂等、负库存、冲突与日志脱敏。consumed command 不扩展为完整做饭流程；明确范围见[阶段 05 报告](docs/architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
+阶段 06 只实施“登录 → 创建/读取家庭 → 手工新增库存批次 → 幂等重放 → exact-only 最小 consumed 事件”的服务端纵切，验证 session、两层 context、RLS bootstrap、用户级/家庭级幂等、负库存、冲突与日志脱敏。consumed command 不接受 estimated 数量，也不扩展为完整做饭流程；明确范围见[阶段 05 报告](docs/architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
 
 账号、域名和设备条件具备时补证真实微信登录与 HTTPS 合法域名；家庭内测前验证体验版，发布候选阶段验证审核和发布链。Android、iOS、HarmonyOS 在各自开发开始前单独实验。

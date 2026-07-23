@@ -54,7 +54,7 @@
 ### 共享契约
 
 - 覆盖 User、AuthIdentity、Session、Household、Membership、PersonProfile、DietaryConstraint、安全 owner profile 响应和创建家庭关联结果。
-- 覆盖 InventoryLot、InventoryEvent、日期来源、置信度、数量、创建批次和最小 consumed command 请求/结果。
+- 覆盖 InventoryLot、InventoryEvent、日期来源、置信度、专用可持久化初始数量、创建批次和 exact-only 最小 consumed command 请求/结果。
 - 覆盖 Meal、Recipe、Recommendation 和必须通过 hard constraint check 的候选。
 - 覆盖 ShoppingItem 的待购买、已买待入库、已入库和取消状态。
 - 覆盖 ApiResult、ApiError、Pagination、Idempotency 和 ExpectedVersion。
@@ -65,7 +65,7 @@
 
 - ADR-0001/0002/0003、系统概览、领域模型、阶段 05 报告和共享 contract 已逐项核对；客户端边界、运行时、数据层、身份映射、家庭隔离、错误码/status、幂等作用域和库存事件规则一致。
 - `apps/`、`services/` 和 `packages/` 中不存在第二份同名核心 DTO。低保真原型的局部采购展示类型已明确命名为 `PrototypeShoppingItem`；阶段 04 spike 只保留 `SpikeDraft`、`SpikeApiResult`、`MockAuthSession` 等一次性平台验证类型。`services/` 尚无正式业务实现。
-- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、私密 owner constraint redaction、日期上限/类型唯一、初始事件可重建批次数量、库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量，并增加反例断言。
+- contract 额外固定 active/matching authenticated session、实体 UUIDv7、食品安全阻断原因、私密 owner constraint redaction、日期上限/类型唯一、正式初始数量结构、初始事件可重建批次数量、estimated/exact delta 判别、exact-only consumed、库存状态/数量、追加纠错、推荐预选、采购状态和 pageInfo 不变量，并增加反例断言。
 - 根工作区 contracts 检查通过：TypeScript、10/10 运行时测试和 declaration/JavaScript 构建；阶段 04 客户端 spike 检查通过：TypeScript、5/5 测试和微信小程序构建；低保真原型通过 TypeScript、2/2 渲染测试、构建和 ESLint。
 - 74/74 个本地 Markdown 链接可解析，18/18 个阶段 06 必需 contract export 可从构建产物加载，`git diff --check` 通过。
 - 提交范围扫描未发现密钥签名、非空 Secret、真实邮箱/手机号或真实用户夹具；`.env.example` 只有空值/假适配器配置。依赖目录、构建目录、日志和 TypeScript 增量缓存均被忽略，没有生成物进入阶段 05 提交。
@@ -108,11 +108,11 @@
 ```text
 登录 → 创建/读取家庭 → 手工新增一个库存批次
     → 相同幂等请求重放同一结果
-    → 追加一个最小 consumed 事件
+    → 追加一个 exact-only 最小 consumed 事件
 ```
 
-阶段 06 必须建立 `services/api`、九张最小表、健康检查、微信 fake/real adapter 端口、session、家庭创建/列表、库存批次创建/列表和单批次 consumed command，并验证两层 context、三类 RLS bootstrap、用户级/家庭级幂等、两个用户/两个家庭隔离、负库存、并发、会话撤销与日志脱敏。
+阶段 06 必须建立 `services/api`、九张最小表、健康检查、微信 fake/real adapter 端口、session、家庭创建/列表、库存批次创建/列表和 exact-only 单批次 consumed command，并验证两层 context、三类 RLS bootstrap、用户级/家庭级幂等、两个用户/两个家庭隔离、estimated 请求拒绝、负库存、并发、会话撤销与日志脱敏。
 
 完整 endpoint、migration、测试门禁和明确非范围见[阶段 05 报告第 10 节](architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
 
-阶段 06 不实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署；最小 consumed command 不关联 Meal。真实微信条件不具备时继续标记 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。
+阶段 06 不实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署；最小 consumed command 不关联 Meal、不接受 estimated 数量。真实微信条件不具备时继续标记 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。

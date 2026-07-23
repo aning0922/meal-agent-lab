@@ -242,7 +242,7 @@ JWT 适合多个服务离线验证，但当前是单体。把角色/家庭放入
 
 ## 验证与复审
 
-阶段 06 至少用两个用户、两个家庭证明正向访问和跨家庭拒绝，并覆盖无家庭上下文的创建/列表 bootstrap、创建家庭 user-scope 重放、家庭内 key/body 冲突、会话过期、成员移除，以及最小 consumed command 的库存 version 冲突和负库存阻断。
+阶段 06 至少用两个用户、两个家庭证明正向访问和跨家庭拒绝，并覆盖无家庭上下文的创建/列表 bootstrap、创建家庭 user-scope 重放、家庭内 key/body 冲突、会话过期、成员移除，以及 exact-only 最小 consumed command 的契约拒绝、库存 version 冲突和负库存阻断。
 
 以下情况触发复审：
 
