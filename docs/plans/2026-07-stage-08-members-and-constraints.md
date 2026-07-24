@@ -147,3 +147,36 @@ git diff --check
 ```
 
 完成后按阶段 06/07 相同流程收口：多视角对抗审核 → 修复 → 主负责人独立复验全绿 → 合并 `main`。
+
+## 边界修订（实施追加，保留原文）
+
+实施会话按计划授予的自主微决策空间，记录以下选择与偏差，不改写上文冻结范围：
+
+1. **join 路径二选一** → 采用 **SECURITY DEFINER 赎回函数** `meal_agent_private.redeem_household_invite`：digest 查询、`used_count` 递增与 membership 落库在同一函数内原子完成，`FOR UPDATE` 串行化同码并发，杜绝“未持有效码也能自插成员”的空档（比“应用层专查 digest + 自插成员”更强，且与 0000 既有 SECURITY DEFINER 辅助同构）。
+2. **邀请撤销请求体** → REST 语义下 `DELETE /invites/:inviteId` 为路径寻址、无请求体，故只实现 `revokeHouseholdInviteResult`（返回被撤销邀请），未构造空的 `revokeHouseholdInviteRequest`。约束删除 `DELETE .../dietary-constraints` 按契约携带 `{constraintId, expectedVersion}` 请求体（Node fetch/fastify 支持；weapp happy-path 不含约束删除）。
+3. **成员移除响应** → 契约新增 `removeMembershipResult`（`{membership}`，复用 `membershipSchema`，非第二份 DTO）以承载 `DELETE /memberships/:membershipId` 的 200 响应；属实施必需的 additive 补充。
+4. **PATCH 与 weapp** → 档案编辑/归档沿用冻结路由表的 `PATCH`。Taro 类型接受 `PATCH`、weapp 生产构建通过、Node E2E（fetch）验证归档；weapp 真机 `wx.request` 对 `PATCH` 的支持随基础库版本而定，GUI happy-path（加入→档案→硬约束→移除成员）不含档案编辑/归档，记为待真机复核的已知限制，不改冻结路由。
+5. **工作分支** → 实际 worktree 分支为 `claude/stage-08-members-constraints-ad47e9`（harness provisioned），与计划文案的 `codex/stage-08-members-and-constraints` 命名不同；仅提交到该分支，未合并 `main`、未推送、未改历史，符合边界约束。
+6. **OpenAPI 快照** → 文件名沿用 `services/api/openapi/stage-06.openapi.json`（生成/校验脚本引用该路径），内容已随新路由与 `contractVersion` 0.3.0 重新生成；未改名以免扩大触碰面。
+
+## 验证结果
+
+以下为实施会话的逐条门禁自证，命令均以 Node 24 + PostgreSQL 18 一次性 cluster 实际执行；`pnpm stage08:check` 整体退出码 0。
+
+| # | 门禁 | 结果 | 证据 |
+| --- | --- | --- | --- |
+| 1 | contracts 0.3.0 additive、strict、不变量正反例、无第二份核心 DTO | Pass | `packages/contracts/tests/members.test.ts`（含 0.2.0 消费者不破坏用例）；`contractVersion`/包版本同步 0.3.0；`pnpm --filter @meal-agent/contracts check` 20 测试通过 |
+| 2 | 迁移序列增量+checksum、空库全量、Drizzle 零漂移 | Pass | `db:migrate:test`：第二库先增量应用 0000 断言无 `household_invites`，再增量 0001 断言表出现，重复应用 no-op，篡改 hash 触发 `changed checksum`；`stage08.database.test.ts` 断言 7 条邀请约束名 + 10 表 + FORCE RLS |
+| 3 | 邀请只存 digest、明文仅一次不进日志、四失效路径拒绝加入 | Pass | `stage08.database.test.ts`：“invite stores only a digest…”（`code_digest = sha256(明文)`、库内无明文列、列表/日志无明文）、“all four invalid invite states…”（无效/撤销/过期/用尽均 404 且不含 householdId） |
+| 4 | join user 幂等、无效 404 不泄露、已成员 409、并发 used_count 恰好递增 | Pass | `stage08.database.test.ts`：“join is user-idempotent…”（同键重放同一 membership、新键 409、maxUses=1 并发恰一成功、`used_count=1`/`exhausted`） |
+| 5 | 授权矩阵 member 403、owner 受最后 owner 保护 409、跨家庭 404 | Pass | `stage08.database.test.ts`：“authorization matrix…”（member 签发/撤销/移除他人 403、跨家庭 members 404、owner 移除成员后即时 404、最后 owner 移除 409） |
+| 6 | member RLS 三类 bootstrap 反向 + 第二成员真实用例 | Pass | `stage08.database.test.ts`：“member RLS: second member works…”（缺 user/household/membership 上下文各自 0 行，正向对照 1 行；member 视图可读） |
+| 7 | 硬约束双确认无 confirmation 400、写入 confirmedAt/By、allergy 无编码拒绝 | Pass | `stage08.database.test.ts`：“hard dietary constraints demand confirmation…”（缺 confirmation 400、缺编码 400、成功写入 `confirmedByUserId=操作者`）；契约层 `confirmation.acknowledged` literal(true) 正反例 |
+| 8 | 字段级 redaction 结构性排除 + E2E 双向 + 日志 sentinel；阶段 06 Deferred 转 Pass | Pass | `stage08.database.test.ts`：“household view is structurally free…”（owner 见私密、member others 仅 household 可见、序列化与日志无私密标签）；`stage-08-members-closed-loop` E2E owner 可见/C 结构不可见；`docs/project-status.md` 转 Pass 并注证据 |
+| 9 | 档案乐观并发过期 409、约束增删幂等重放 | Pass | `stage08.database.test.ts`：“profile edits enforce optimistic concurrency…”（过期 `expectedVersion` 409、同键重放不重复追加、version 稳定） |
+| 10 | 客户端三条流零 `wx.*`、状态基线可验证、weapp 构建通过（zod jitless 保持） | Pass | `grep` 确认 src 内除注释外无 `wx.*`/`Taro.*`；`members-flow`/`profile-flow` 覆盖 loading/failure/无权限/冲突/重复提交/成功/本地校验；84 单测通过；`pnpm --filter @meal-agent/client check`（typecheck+test+weapp build）退出 0，`zod-runtime-config.test.ts` 仍通过 |
+| 11 | E2E 双用户全流程（真实 api + PG18） | Pass | `apps/client/tests/e2e/stage-08-members-closed-loop.test.ts` 8/8：A 建家→签码→B 加入→B 建档案+`subject_and_owner` 硬约束（双确认）→A 可见/C 结构不可见→A 撤销、B 退出即时 404、A 归档、最后 owner 保护 |
+| 12 | `pnpm stage08:check` 全绿；CI 覆盖 client；audit --prod 无新增未记录；文档链接可解析 | Pass | `pnpm stage08:check` 退出 0（contracts 20 / api 12+5+27 / client 84 / weapp build / E2E 21）；`.github/workflows/ci.yml` 切换 `stage08:check`；`pnpm install --frozen-lockfile` 无锁文件变更→audit 通告集与阶段 07 一致、无新增（Taro 构建期风险沿用记录）；本次改动 26 条相对文档链接全部解析 |
+| 13 | 提交范围扫描无密钥/真实个人数据/生成物；GUI 模拟器 happy-path 走查 | 部分 | 扫描 Pass：暂存区无密钥/AppID/真实个人数据，过敏/宗教样例一律虚构并标注（`FICTION_*`/“虚构…”），`project.private.config.json` 保持 gitignored，无生成物越界；**GUI 模拟器 happy-path 走查待产品负责人手工执行**（appid 在 gitignored 私有配置），未完成前不记 Pass |
+
+结论：13 条门禁中 12 条 Pass、第 13 条“提交范围扫描”部分 Pass 而“GUI 模拟器走查”须由产品负责人在其环境手工完成后补记。实施仅停在分支 `claude/stage-08-members-constraints-ad47e9`，等待多视角对抗审核、独立复验与合并 `main` 指令。

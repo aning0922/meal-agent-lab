@@ -45,3 +45,5 @@ const lot: InventoryLot = inventoryLotSchema.parse(untrustedPayload);
 契约升级遵循 API 版本策略：同一 major 内只做兼容性新增；删除、重命名、改变必填性或语义时必须进入新的 API major，并更新 ADR。
 
 包版本 0.2.0 记录阶段 06 的 exact 数量线上格式变更（JSON number → plain decimal string）与 approximate 数量的上限/小数位收紧。该变更发生在任何已部署消费者之前，因此按 0.x 语义以 minor 表达破坏性修订，不新开 API major；`contractVersion` 常量与包版本保持一致。
+
+包版本 0.3.0（阶段 08）为纯 additive：新增家庭邀请（`HouseholdInvite`，实体不含明文码与 digest）、加入家庭、成员 redacted 视图（`listHouseholdMembersResult`，owner/self 与 household 两种响应形状）、用餐档案 CRUD 与饮食硬/软约束增删（硬约束请求强制 `confirmation.acknowledged: true`）的请求/响应 schema，经 `./members` 子路径导出。0.2.0 既有 schema 与消费者不受影响。

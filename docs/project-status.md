@@ -1,14 +1,14 @@
 # 项目状态
 
-更新时间：2026-07-24
+更新时间：2026-07-25
 
 ## 当前阶段
 
-阶段 07“正式客户端纵切”已完成实施：[`apps/client`](../apps/client/)（Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3）进入根 pnpm workspace，与阶段 06 的 [`services/api`](../services/api/) 打通第一条端到端真实闭环（登录 → 创建/选择家庭 → 库存批次列表 → 三态数量手工新增 → exact-only 消耗，含幂等重放、版本冲突、401 引导与跨家庭 404）。平台适配层收敛为端口 + 唯一 Taro 触点，页面零直接 `wx.*` 调用；一次性 Taro spike 已按 ADR-0001 承诺删除。实施与验收记录见[阶段 07 计划](plans/2026-07-stage-07-client-vertical-slice.md)。
+阶段 08“家庭成员与硬约束纵切”已完成实施：在阶段 06/07 基线上补齐“凭邀请加入家庭 → 成员与用餐档案 → 饮食硬/软约束（硬约束双确认）→ 字段级 response redaction”的服务端 + 客户端纵切，把推荐引擎（后续阶段）依赖的按参与者硬约束数据面建立起来。服务端新增 8 条路由（邀请签发/列表/撤销、凭码加入、成员列表 redacted 视图、成员移除/退出、用餐档案 CRUD、约束增删），迁移 `0001_stage_08` 新增 `household_invites`（只存 digest、FORCE RLS、join 路径用 SECURITY DEFINER 赎回函数 bootstrap membership）；客户端新增成员页（M-02）、档案与约束页（O-02，硬约束独立确认屏）与加入家庭入口，页面零直接 `wx.*`。实施与验收记录见[阶段 08 计划](plans/2026-07-stage-08-members-and-constraints.md)。
 
-后端基线不变：Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`（[ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md)、[ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md)）。[`@meal-agent/contracts`](../packages/contracts/) 0.2.0 仍是客户端、服务端、测试和 OpenAPI 的唯一契约事实源；客户端不定义第二份核心 DTO。当前仍没有菜单推荐、Agent、采购/完整做饭流程；下一阶段产品范围尚未决定。
+后端基线不变：Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`（[ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md)、[ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md)）。[`@meal-agent/contracts`](../packages/contracts/) 升级 **0.3.0**（additive；0.2.0 消费者不破坏），仍是客户端、服务端、测试和 OpenAPI 的唯一契约事实源；客户端不定义第二份核心 DTO。阶段 06 遗留的“通用成员/档案读取字段级 redaction”在本阶段随成员列表端点**转正为 Pass**（见下）。当前仍没有菜单推荐、Agent、采购/完整做饭流程；下一阶段产品范围尚未决定。
 
-微信真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；生产云、托管数据库、Secret 管理和可观测平台未验证。相机、语音、条码、OCR 和外部通知保持 `Not applicable`。deterministic fake WeChat adapter 没有被当作真实微信链 Pass。
+微信真机预览、真实登录、合法域名、邀请分享（微信分享卡片）、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；生产云、托管数据库、Secret 管理和可观测平台未验证。相机、语音、条码、OCR 和外部通知保持 `Not applicable`。deterministic fake WeChat adapter 没有被当作真实微信链 Pass；邀请码本阶段通过复制文本传递，微信分享只是未来的传输渠道，不影响服务端语义。
 
 ## 已形成的共识
 
@@ -22,7 +22,7 @@
 - 微信 `openid` 映射到 `AuthIdentity`，不能作为内部 `User.id`。
 - `User`、`Session`、`Membership` 和 `PersonProfile` 生命周期分离；无登录档案不需要 User。
 - `AuthenticatedUserContext` 与 `HouseholdContext` 分离；后者只能在事务内通过 active Membership bootstrap。
-- 家庭隔离同时依赖应用授权、复合外键、RLS 和敏感字段 redaction；通用字段级 response redaction 尚未进入阶段 06 读取端点，保持 `Deferred — 后续范围`。
+- 家庭隔离同时依赖应用授权、复合外键、RLS 和敏感字段 redaction；通用字段级 response redaction 已在阶段 08 的成员列表端点落地（`subject_and_owner` 约束由响应形状结构性排除，非运行时删字段）。
 - 创建家庭使用用户级幂等，家庭内 command 使用家庭级幂等；库存并发使用 expected version，纠错追加事件。
 - 客户端与服务端共享 `packages/contracts`，不重复定义核心 DTO。
 - 一级入口采用“今天、库存、采购、我的”，Agent 作为上下文入口而非独立 Tab。
@@ -122,6 +122,34 @@
 - 会话与隔离：撤销后旧 token / 伪造 token 均 401 → 清会话 + 重定向登录 + 原因提示；跨家庭批次列表与消耗均 404 语义，不泄露存在性。
 - 非 exact 批次消耗在客户端本地拒绝；估算/感性数量展示保留来源与置信度，不伪装成精确量。
 
+## 阶段 08 完成
+
+### 契约与数据
+
+- `@meal-agent/contracts` 升级 0.3.0（additive）：新增 `HouseholdInvite`（实体不含明文与 digest）、创建/撤销/加入邀请、成员列表 redacted 视图、用餐档案 CRUD 与硬/软约束增删的请求/响应 schema，全部 strict、含正反例不变量测试；0.2.0 消费者不破坏。
+- 迁移 `0001_stage_08`（首个增量迁移）新增 `household_invites`：code digest（sha256）唯一、复合外键绑定 memberships、`expires_at ≤ created_at + 7 天`、`max_uses 1–10`、`used_count ≤ max_uses` CHECK、FORCE RLS。迁移序列在“已应用 0000 的库”上增量应用 0001 成功且 checksum 校验通过；空库两文件全量成功；Drizzle schema 与 SQL 约束/索引名对齐（数据库层断言 7 条邀请约束名）。
+- join 路径二选一记录：采用 **SECURITY DEFINER 赎回函数** `meal_agent_private.redeem_household_invite`——digest 查询、`used_count` 递增与 membership 落库在一个函数内原子完成，`FOR UPDATE` 串行化同码并发，杜绝“未持有效码也能自插成员”的空档。
+
+### 服务端语义
+
+- 8 条新路由：邀请签发（owner，household 幂等，活跃上限 10，明文只返回一次）、邀请列表（owner，cursor 分页，无明文/digest）、邀请撤销（owner，重复撤销 409）、凭码加入（已认证，user 幂等，并发 `used_count` 恰好递增、不超 `max_uses`，无效/过期/撤销/用尽一律 404 不泄露家庭存在性，已是成员 409）、成员列表（member，owner/self 见 `subject_and_owner`、其余成员结构不可见）、成员移除/退出（owner 移除他人、member 仅退出自己、最后一位 owner 409、被移除者即时 404）、用餐档案创建/编辑/归档（乐观并发）、约束增删（硬约束缺 confirmation 400、成功写入 confirmedAt/confirmedByUserId=操作者、allergy 无结构化编码拒绝）。
+- 授权矩阵：member 不能签发/撤销邀请、不能移除他人、不能改他人档案与约束（403）；owner 全能但受最后 owner 保护（409）；跨家庭一律 404。member 角色 RLS 反向测试补齐阶段 06 盲区：三类 bootstrap（缺 user context / 缺 household context / 缺 membership）单独缺失均被拒绝，并有第二成员真实用例正向对照。
+- 字段级 redaction 采用“响应形状结构性排除”而非运行时删字段，杜绝漏删；数据库层脱敏投影用 `safeOwnerProfileResponseSchema` 二次解析，若过滤有漏会直接抛错。
+
+### 客户端
+
+- `apps/client` 新增 `members-flow`（加入并切换家庭上下文、邀请签发/列表/撤销、成员移除/退出）与 `profile-flow`（档案创建/编辑/归档乐观并发、硬约束录入的结构性双确认）覆盖新端点；M-02 成员页、O-02 档案与约束页（硬约束独立确认屏、`subject_and_owner` 可见性选择）与家庭页的加入入口。页面零直接 `wx.*`，契约类型全部来自 `@meal-agent/contracts`；84 个单元测试（阶段 07 基线 51+ 上扩展）。
+- 双用户 E2E（真实 `services/api` + 一次性 PostgreSQL 18 + fake 微信）：A 建家 → 签码 → B 加入 → B 建档案并录入 `subject_and_owner` 硬约束（双确认）→ A（owner）可见、第三成员 C 结构性不可见 → A 撤销邀请码、B 退出（即时 404）、A 归档档案 → 最后 owner 保护。weapp 生产构建通过（Zod jitless 回归保持）。
+
+### 门禁证据
+
+- `pnpm stage08:check` 全绿：environment 前置检查 + 迁移增量/checksum 证明 + `pnpm check`（contracts 20 / api 单元 12 / api HTTP 5 / api 数据库 27 / client 84，weapp 构建）+ 两套 E2E（阶段 07 十三场景 + 阶段 08 八场景，21/21）。
+- PostgreSQL integration 与 E2E 使用实际 18.4 一次性 cluster，不用 SQLite/mock/fake migration 结果代替。
+- 应用日志 sentinel 扫描未发现邀请明文码、token、provider subject 或成员私密约束标签。
+- 提交范围扫描未发现密钥、AppID 或真实个人数据；过敏/宗教样例一律虚构并标注（`FICTION_*` / “虚构…”）。
+- GUI 模拟器 happy-path 走查（加入 → 档案 → 硬约束 → 移除）**待产品负责人手工执行**（appid 在 gitignored `project.private.config.json`）；未完成前不记为 Pass。
+- 详细环境、命令、边界与逐条门禁自证见[阶段 08 计划](plans/2026-07-stage-08-members-and-constraints.md)。
+
 ## 当前验证状态
 
 ### Pass
@@ -129,12 +157,15 @@
 - 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建；
 - 阶段 05 收尾的一致性、重复核心类型、提交范围、文档链接和静态检查；
 - 阶段 06 Node/Fastify/Drizzle/`pg` 服务、PostgreSQL 18 migration、三类 RLS bootstrap、会话、幂等、库存并发与 OpenAPI 门禁；
-- 阶段 07 `apps/client` typecheck、单元测试、weapp 生产构建与真实 API + PostgreSQL 18 端到端闭环（fake 微信适配器）。
+- 阶段 07 `apps/client` typecheck、单元测试、weapp 生产构建与真实 API + PostgreSQL 18 端到端闭环（fake 微信适配器）；
+- 阶段 08 成员/邀请/用餐档案/硬约束纵切：契约 0.3.0（additive）、迁移 `0001` 增量+checksum、8 条服务端路由、成员 RLS 反向测试、硬约束双确认、字段级 redaction 与双用户 E2E，`pnpm stage08:check` 全绿；
+- **通用成员/PersonProfile 读取响应的字段级 redaction 与角色矩阵**（阶段 06 曾记 `Deferred — 后续范围`）在阶段 08 转正为 Pass：`GET /members` 以两种响应形状固定（owner/self 视图 vs household 视图），household 视图**结构上**不可能携带 `subject_and_owner` 约束（复用 `safeOwnerProfileResponseSchema` 的 allowlist）。证据：契约不变量正反例测试、数据库层 redaction 断言、双用户 E2E（owner 可见、第三成员结构不可见）与日志 sentinel（私密约束标签不入日志）。
 
 ### 依赖审计
 
 - 正式 Stage 05/06 根工作区、contracts 和 `services/api` 的 `pnpm audit --prod` 为 0 个已知漏洞。
 - 阶段 07 `apps/client` 并入根 workspace 后 `pnpm audit --prod` 命中 9 个通告（1 critical、8 moderate），全部位于 Taro 4.2.1 自身锁定路径：moderate 为 webpack-dev-server/esbuild 等本地开发服务器范围（不进入产物）；critical 为 `@tarojs/components>swiper`（H5 端依赖），已核对 weapp 产物只含微信原生 `<swiper>` 组件名映射、npm `swiper` 代码未打包。客户端自身直接依赖 `webpack` 已升至 5.104.1。接受为构建期风险，升级窗口待 Taro 4.3 评估。
+- 阶段 08 未新增任何 npm 依赖（`pnpm install --frozen-lockfile` 无锁文件变更），`pnpm audit --prod` 通告集与阶段 07 基线一致，**无新增未记录通告**；上述 Taro 构建期风险条目继续适用。
 - 低保真原型的独立依赖树命中 11 个通告（5 high、6 moderate），来自 Next/PostCSS/Sharp 范围；原型不是正式 App，不得部署或复用到正式工程。
 
 ### 待验证
@@ -142,10 +173,6 @@
 - staging/production 的具体云平台、连接池边界、备份恢复、migration job、Secret 管理和可观测性；
 - 内测负载下的连接池容量、超时、限流和慢查询阈值；
 - 后续产品阶段是否扩展菜单、Agent、采购或完整做饭流程，尚未决定。
-
-### Deferred — 后续范围
-
-- 通用成员/PersonProfile 读取响应的字段级 redaction 与角色矩阵。阶段 06 只验证创建家庭的安全 owner response schema、幂等缓存 allowlist 和日志脱敏，没有成员/档案读取端点，因此不得记为 Pass。
 
 ### Deferred — 外部依赖
 
@@ -181,3 +208,15 @@
 ```
 
 以上闭环已由自动化 E2E（真实 `services/api` + 一次性 PostgreSQL 18）与 weapp 生产构建门禁验证。它只证明正式客户端骨架、平台适配边界与 API 集成语义可运行，不代表完整 P0 页面、菜单推荐、Agent、采购/做饭流程或视觉完成度已经完成。菜单推荐、Agent 对话、采购清单、成员邀请、语音/条码/OCR、原生平台与发布均不在本阶段范围。微信开发者工具模拟器（服务端口已开）已用自动化验证：编译产物渲染、页面交互、失败态呈现，以及编译后客户端在真实运行时向本地 API 发出的请求构造正确（观测到真实 exchange 请求打到 fake 适配器 + 真实 PG18 并返回合法 session）；完整 happy-path 逐屏走查已由产品负责人在 GUI 手工走通（登录→创建家庭→三态批次→消耗→重复提交→版本冲突→退出，全部符合预期），其闭环行为另由 13 个 E2E 场景覆盖。走查过程中发现并修复了一个 Node 测试全过、仅在真实小程序运行时暴露的缺陷（Zod v4 对象校验 JIT 依赖 `new Function`，被小程序沙箱禁用 → 全局关闭 jitless，提交 `d54f183`），验证了模拟器走查相对纯 Node 测试的独立价值。真机、真实微信登录与合法域名仍为 `Deferred — 外部依赖`（fake 适配器链路不记为真实微信 Pass）。
+
+## 阶段 08 范围边界
+
+只实施成员与硬约束纵切：
+
+```text
+凭邀请码加入家庭 → 成员与用餐档案 → 饮食硬/软约束（硬约束双确认）
+    → 成员列表字段级 redaction（owner/self vs household 视图）
+    → 成员移除/退出（最后 owner 保护、被移除者即时 404）
+```
+
+以上纵切已由 `pnpm stage08:check`（含真实 PostgreSQL 18 数据库测试与双用户 E2E）与 weapp 生产构建验证，并把阶段 06 遗留的通用字段级 redaction 转正。它只证明按参与者的硬约束数据面与成员/邀请边界可运行，不代表菜单推荐、菜谱数据、采购、做饭流程、Agent 对话、报餐/投票（FAM-009）、所有权转移与解散家庭（FAM-010 其余子集）、成员自定义角色或限流已经完成——这些均不在本阶段范围。真实微信分享/真机链路仍为 `Deferred — 外部依赖`，fake 适配器不记为真实微信 Pass。

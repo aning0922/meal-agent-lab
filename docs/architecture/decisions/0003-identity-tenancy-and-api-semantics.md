@@ -234,14 +234,18 @@ JWT 适合多个服务离线验证，但当前是单体。把角色/家庭放入
 - 幂等表锁、request hash、重放和 30 天 `expires_at`；
 - API contract 到 Fastify/OpenAPI 的单一事实源；
 
+### 已由阶段 08 验证
+
+- **私有饮食约束的通用成员/PersonProfile 读取字段级 response redaction**（阶段 06 曾列 `Deferred — 后续范围`）：`GET /members` 以 owner/self 与 household 两种响应形状固定，household 视图结构上不可能携带 `subject_and_owner` 约束（复用安全 owner profile 响应的 allowlist，非运行时删字段）；
+- member 角色的 RLS 反向测试：缺 user context / 缺 household context / 缺 membership 三类 bootstrap 单独缺失均被拒绝，并有第二成员真实用例正向对照（补阶段 06 只有 owner 行的盲区）；
+- 家庭邀请只存 digest、明文只在创建响应出现一次，过期/撤销/用尽/无效四种失效路径一律 404 不泄露家庭存在性；凭码加入为 user 级幂等，并发同码加入 `used_count` 恰好递增、不超 `max_uses`，已是成员 409；
+- 授权矩阵与最后 owner 保护：member 不能签发/撤销邀请、不能移除他人、不能改他人档案与约束（403），owner 全能但最后一位不可移除/退出（409），被移除者下一请求即时 404；
+- 硬约束双确认：缺 `confirmation` 的 hard 写入 400，成功写入记录 `confirmedAt`/`confirmedByUserId`=操作者。
+
 ### 待验证
 
 - session token 轮换策略；
 - 过期幂等记录的生产归档/清理 job。
-
-### Deferred — 后续范围
-
-- 私有饮食约束的通用成员/PersonProfile 读取字段级 response redaction。阶段 06 的安全 owner 创建响应与日志脱敏不能替代该端点级验证。
 
 ### 外部依赖
 

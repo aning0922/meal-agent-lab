@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目已完成阶段 06“最小服务端纵切”。客户端由 [ADR-0001](docs/architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 确定微信小程序优先，采用 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3；后端由 [ADR-0002](docs/architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](docs/architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 确定 Node.js 24/Fastify 模块化单体、PostgreSQL 18/Drizzle、内部身份与家庭租户边界。
+项目已完成阶段 08“家庭成员与硬约束纵切”。客户端由 [ADR-0001](docs/architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 确定微信小程序优先，采用 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3；后端由 [ADR-0002](docs/architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](docs/architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 确定 Node.js 24/Fastify 模块化单体、PostgreSQL 18/Drizzle、内部身份与家庭租户边界。
 
-仓库已有正式 [`@meal-agent/contracts`](packages/contracts/) 契约基线和 [`services/api`](services/api/) 最小业务服务，实现 deterministic fake 微信登录、session、家庭与 exact-only 库存纵切；production 配置禁止 fake adapter。尚未实现完整业务服务或正式 App。通用成员字段级 response redaction 保持 `Deferred — 后续范围`；真实微信登录、合法域名、真机、体验版/发布、生产云和原生平台项仍保持 `Deferred — 外部依赖`。
+仓库已有正式 [`@meal-agent/contracts`](packages/contracts/) 契约基线（0.3.0）、[`services/api`](services/api/) 业务服务与 [`apps/client`](apps/client/) 正式客户端：在阶段 06/07 的登录/家庭/库存纵切之上，阶段 08 补齐“凭邀请加入家庭 → 成员与用餐档案 → 饮食硬/软约束（硬约束双确认）→ 成员列表字段级 redaction”，把推荐引擎依赖的按参与者硬约束数据面建立起来；production 配置禁止 fake adapter。阶段 06 遗留的通用成员/档案读取字段级 response redaction 已在阶段 08 转正为 Pass（`GET /members` 以 owner/self 与 household 两种响应形状固定，`subject_and_owner` 约束结构性排除）。尚未实现菜单推荐、Agent、采购/完整做饭流程或正式发布。真实微信登录/分享、合法域名、真机、体验版/发布、生产云和原生平台项仍保持 `Deferred — 外部依赖`。
 
 优先验证的核心闭环：
 
