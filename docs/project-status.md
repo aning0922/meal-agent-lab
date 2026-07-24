@@ -112,7 +112,7 @@
 - `apps/client` 进入根 pnpm workspace（单一 lockfile），直接依赖锁定 ADR-0001 版本（Taro 4.2.1 / React 18.3.1 / TypeScript 5.9.3），传递依赖重新解析，未复用 spike 锁文件；一次性 spike `apps/meal-agent-client-spike` 已删除。
 - 分层：`platform/`（端口定义 + 唯一 Taro/wx 触点）、`core/`（登录/家庭/库存业务流程、API 客户端、会话存储，纯 TypeScript、Node 可测）、`pages/`（薄 UI）。页面零直接 `wx.*`/Taro API 调用。
 - 所有请求本地经契约模式预校验，所有响应（含 `application/problem+json`）经契约模式验证后才进入页面；客户端零本地 zod schema、零第二份核心 DTO。
-- CI 收敛为 `stage07-check` 单一门禁：contracts/api 全套 + client typecheck、46 个单元测试、weapp 生产构建、13 个 E2E 场景（Ubuntu + PGDG PostgreSQL 18）。
+- CI 收敛为 `stage07-check` 单一门禁：contracts/api 全套 + client typecheck、51 个单元测试（含合并前审核修复的 5 个回归）、weapp 生产构建、13 个 E2E 场景（Ubuntu + PGDG PostgreSQL 18）。
 
 ### 端到端语义
 

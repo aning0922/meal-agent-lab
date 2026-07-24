@@ -69,7 +69,7 @@
 
 | # | 结果 | 证据 |
 | --- | --- | --- |
-| 1 | Pass | `pnpm stage07:check` 全绿：contracts/api 全套门禁 + client typecheck、46 个单元测试、weapp 生产构建、13 个 E2E 场景；CI 工作流改为单一 `stage07-check` 作业（Ubuntu + PGDG PostgreSQL 18） |
+| 1 | Pass | `pnpm stage07:check` 全绿：contracts/api 全套门禁 + client typecheck、51 个单元测试（含审核修复回归 5 个）、weapp 生产构建、13 个 E2E 场景；CI 工作流改为单一 `stage07-check` 作业（Ubuntu + PGDG PostgreSQL 18） |
 | 2 | Pass | `apps/client/src` 零 zod schema 定义、零本地核心 DTO；请求/响应模式全部 import 自 `@meal-agent/contracts`（0.2.0），响应含 problem+json 均经契约模式验证 |
 | 3 | Pass | `@tarojs/taro` import 仅存在于 `src/platform/taro-adapter.ts`；页面仅依赖 `@tarojs/components`、React 与 core/app-runtime；扫描无 `wx.*` 直接调用 |
 | 4 | Pass | E2E（真实 `services/api` + 临时 PostgreSQL 18.4 + fake 微信适配器）驱动客户端 core 流程：登录 → 创建家庭 → 新增批次 → 列表可见 → exact 消耗成功；创建家庭/新增批次/消耗三处同键重复提交均 `replayed=true` 且不产生第二条记录；`expectedVersion` 过期返回 `INVENTORY_VERSION_CONFLICT`，超量消耗返回 `INVENTORY_INSUFFICIENT`。页面层的冲突刷新提示/重放横幅是已实现但未被自动化渲染测试覆盖的 UI 路径（见"未解决问题"） |
