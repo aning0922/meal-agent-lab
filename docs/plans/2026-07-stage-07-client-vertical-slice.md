@@ -82,7 +82,9 @@
 - 三种初始数量端到端保真：exact 十进制字符串金额（`2.50`→`2.5` 归一化）、approximate 数值/单位/置信度/原始描述、qualitative 等级在“客户端 → API → PostgreSQL → 客户端”往返中不丢失、不改精度。
 - 非 exact 批次的消耗在客户端本地拒绝，不发请求；approximate 非数字/缺原始描述在本地经契约模式拦截。
 - 登录依赖不可用（`fake-dependency-unavailable` → 503）返回可重试失败且不写会话。
-- 微信开发者工具模拟器验证（合并后补充，2026-07-24 晚）：产品负责人开启 IDE 服务端口（18054）后尝试 CLI 自动化走查。已取得的真实模拟器证据：weapp 产物在模拟器正常渲染登录页；`wx.login` 失败与网络失败两种情形下页面均按 P0 基线原地显示失败原因与"可直接重试"提示（截图留存）。完整闭环自动化被新版开发者工具阻断：CLI 导入校验 AppID 真实性，不再接受 `touristappid`（报"不存在此 AppID"，游客模式仅 GUI 可选），继续自动化需真实测试号 AppID；产品负责人无现成测试号，决定改为 GUI 手工走查（本地 `dev:stack` 栈与生产构建已就绪）。该项不影响门禁 1–6 的自动化证据。
+- 微信开发者工具模拟器验证（合并后补充，2026-07-24 晚，服务端口 18054 已开）：用 `miniprogram-automator` 连自动化端口驱动真实模拟器，取得的真实证据——① weapp 产物在真机模拟器正常编译渲染，登录页与页面交互（tap/input/navigate）均真实可用；② `wx.login` 失败与网络失败情形下页面按 P0 基线原地显示失败原因与"可直接重试"（截图留存 `tmp/stage-07-devtools-smoke/`）；③ 编译后的客户端在真实模拟器运行时里向本地 `services/api` 发出的请求构造正确——经自动化请求桥观测到 `POST /api/v1/auth/wechat/exchange`（携带登录 code、正确 header）打到真实 API（fake 适配器 + 真实 PG18）并返回合法 200 session 契约。
+- 完整 happy-path 的**端到端 UI 逐屏自动化未能在自动化环境跑通**，原因是工具层限制而非产品缺陷，两条都已核实：① 新版开发者工具自动化实例对 `http://localhost` 强制"合法域名"校验，无视 `setting.urlCheck:false`（common 与 private 两处均设）与 `cli auto --trust-project`——这正是计划门禁 7 已列为 `Deferred — 外部依赖` 的合法域名边界；② 绕过用的自动化请求桥能观测请求、用真实 fetch 打通后端，但 devtools 自动化无法跨 evaluate 边界回灌页面 `wx.request` 的 success 回调（`globalThis` 共享但跨 realm 存取的回调调用无效），故 UI 无法据此继续推进。官方 `wechatide` AI-agent 工具集（MCP 式，随包内置 `automation_wx_api`/`project-config` 等原子工具）经排查其执行入口未随发行版 `cli` 提供（`cli agent tool` 面向小程序 AgentUI 功能、读 app.json `agent.skills`；devtools 自动化用的 `wechatide` wrapper 本机未安装），不构成上述限制的绕过。
+- 结论：完整 happy-path 的可视化逐屏走查以 GUI 手工方式进行（GUI 开发态关闭合法域名校验即正常联调；本地 `dev:stack` 栈与生产构建已就绪）；其**闭环行为**已由 13 个自动化 E2E 场景（真实 API + PostgreSQL 18）驱动同一套客户端 core 模块穷尽验证，模拟器补充证明了 E2E 覆盖不到的"编译产物渲染 + 真实运行时请求构造"。fake 适配器结果不记为真实微信链路 Pass。
 
 ### 合并前对抗审核与修复（2026-07-24）
 
@@ -101,6 +103,6 @@
 
 ### 未解决问题
 
-- 开发者工具模拟器完整闭环走查改由产品负责人在 GUI 手工执行（新版工具 CLI 强制校验 AppID，游客/测试号仅 GUI 可选；登录页渲染与失败态已有模拟器截图证据）。
+- 开发者工具模拟器完整 happy-path 逐屏走查改由产品负责人在 GUI 手工执行（自动化模式对 http localhost 强制合法域名校验、无法逐屏推进，属工具层限制，见上方"补充验证"；模拟器已自动化证明编译渲染、失败态呈现与真实运行时请求构造，闭环行为由 E2E 覆盖）。
 - 页面层未做 React 渲染级测试：页面保持薄 UI，逻辑全部下沉 `core/`（单元 + E2E 覆盖），weapp 生产构建作为编译门禁；如后续页面复杂化再引入渲染测试。
 - Taro 4.2.1 固定依赖树已知通告（阶段 04 已记录）经重新评估处理如下：客户端直接 devDependency `webpack` 升至 5.104.1（构建验证通过；Taro 内部 loader 仍声明 5.91.0 peer，仅告警）。`pnpm audit --prod` 余 9 项（8 moderate + 1 critical）全部位于 Taro 自身锁定路径：moderate 为 webpack-dev-server/esbuild 等本地开发服务器通告（不进入产物）；critical 为 `@tarojs/components>swiper`（GHSA-hmx5-qpq5-p643，H5 端依赖）——已核对 weapp 产物：`dist/taro.js` 仅含微信原生 `<swiper>` 组件名映射，npm `swiper` 包代码未被打包。接受为构建期风险，升级窗口待 Taro 4.3 评估。
