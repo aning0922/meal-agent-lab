@@ -17,7 +17,9 @@ import {
   consumeInventoryLot,
   createInventoryLot,
   loadInventoryLots,
-  type CreateLotQuantityDraft
+  nextPendingConsume,
+  type CreateLotQuantityDraft,
+  type PendingConsume
 } from '../../core/inventory-flow'
 import { createIdempotencyKey } from '../../core/idempotency'
 import {
@@ -108,7 +110,10 @@ export default function InventoryPage() {
   const [consumeStatus, setConsumeStatus] = useState<SubmitState>({
     kind: 'idle'
   })
-  const consumeKeyRef = useRef<IdempotencyKey | null>(null)
+  // 幂等键与 (lotId, version, amount) 绑定，见 nextPendingConsume。
+  const pendingConsumeRef = useRef<PendingConsume | null>(null)
+  // 列表纪元：消耗成功会使在途的旧列表响应作废，防止旧快照覆盖新状态。
+  const listEpochRef = useRef(0)
 
   const leaveToHouseholds = async (): Promise<void> => {
     const services = getAppServices()
@@ -119,11 +124,16 @@ export default function InventoryPage() {
   const refresh = async (
     activeHouseholdId: HouseholdId
   ): Promise<void> => {
+    const epoch = ++listEpochRef.current
     setList({ kind: 'loading' })
     const result = await loadInventoryLots(
       getAppServices(),
       activeHouseholdId
     )
+    if (listEpochRef.current !== epoch) {
+      // 期间发生了更新（新刷新或消耗成功），本次结果已过期，丢弃。
+      return
+    }
     switch (result.kind) {
       case 'loaded':
         setList({
@@ -238,15 +248,20 @@ export default function InventoryPage() {
     }
     setConsumeStatus({ kind: 'working' })
     const services = getAppServices()
-    consumeKeyRef.current ??= createIdempotencyKey(
+    // 同一 (批次, 版本, 数量) 的重试复用同键；任一要素变化自动换键。
+    const pending = nextPendingConsume(
+      pendingConsumeRef.current,
+      lot,
+      consumeAmount,
       services.adapter.runtime
     )
+    pendingConsumeRef.current = pending
     const outcome = await consumeInventoryLot(
       services,
       householdId,
       lot,
       consumeAmount,
-      consumeKeyRef.current
+      pending.key
     )
     switch (outcome.kind) {
       case 'consumed': {
@@ -260,7 +275,9 @@ export default function InventoryPage() {
         setConsumeLotId(null)
         setConsumeAmount('')
         setConsumeStatus({ kind: 'idle' })
-        consumeKeyRef.current = null
+        pendingConsumeRef.current = null
+        // 使在途的旧列表请求作废，再落最新批次投影。
+        listEpochRef.current += 1
         setList((previous) =>
           previous.kind === 'loaded'
             ? {
@@ -277,17 +294,17 @@ export default function InventoryPage() {
         // 并发冲突：不静默覆盖，刷新最新版本后由用户重新决定。
         setBanner({ tone: 'error', text: outcome.message })
         setConsumeStatus({ kind: 'idle' })
-        consumeKeyRef.current = null
+        pendingConsumeRef.current = null
         await refresh(householdId)
         return
       case 'notFound':
         setBanner({ tone: 'error', text: outcome.message })
         setConsumeStatus({ kind: 'idle' })
-        consumeKeyRef.current = null
+        pendingConsumeRef.current = null
         await refresh(householdId)
         return
       case 'invalid':
-        consumeKeyRef.current = null
+        pendingConsumeRef.current = null
         setConsumeStatus(outcome)
         return
       case 'failed':
@@ -593,7 +610,6 @@ export default function InventoryPage() {
                           placeholder='例如：2'
                           onInput={(event) => {
                             setConsumeAmount(event.detail.value)
-                            consumeKeyRef.current = null
                           }}
                         />
                         <Button
@@ -612,12 +628,17 @@ export default function InventoryPage() {
                             : '确认消耗'}
                         </Button>
                         <Button
-                          className='button button--secondary'
+                          className={
+                            consumeStatus.kind === 'working'
+                              ? 'button button--secondary button--disabled'
+                              : 'button button--secondary'
+                          }
+                          disabled={consumeStatus.kind === 'working'}
                           onClick={() => {
                             setConsumeLotId(null)
                             setConsumeAmount('')
                             setConsumeStatus({ kind: 'idle' })
-                            consumeKeyRef.current = null
+                            pendingConsumeRef.current = null
                           }}
                         >
                           取消
@@ -625,12 +646,17 @@ export default function InventoryPage() {
                       </View>
                     ) : (
                       <Button
-                        className='button button--secondary'
+                        className={
+                          consumeStatus.kind === 'working'
+                            ? 'button button--secondary button--disabled'
+                            : 'button button--secondary'
+                        }
+                        disabled={consumeStatus.kind === 'working'}
                         onClick={() => {
                           setConsumeLotId(lot.id)
                           setConsumeAmount('')
                           setConsumeStatus({ kind: 'idle' })
-                          consumeKeyRef.current = null
+                          pendingConsumeRef.current = null
                         }}
                       >
                         消耗

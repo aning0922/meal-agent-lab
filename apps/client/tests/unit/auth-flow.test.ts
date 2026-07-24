@@ -70,6 +70,18 @@ describe('signIn', () => {
     assert.equal(services.session.restore(), null)
   })
 
+  it('登录兑换 401 原地失败：不清导航、不产生重登提示', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    platform.enqueueJson(401, apiErrorBody('AUTHENTICATION_REQUIRED'))
+
+    const result = await signIn(services)
+
+    assert.equal(result.kind, 'failed')
+    assert.deepEqual(platform.navigations, [])
+    assert.equal(services.consumeUnauthorizedNotice(), null)
+  })
+
   it('传输失败可重试，不合契约响应不可重试', async () => {
     const platform = new FakePlatform()
     const services = createAppServices(platform, BASE_URL)
@@ -113,5 +125,19 @@ describe('signOut', () => {
     await signOut(services)
 
     assert.equal(services.session.restore(), null)
+  })
+
+  it('会话已在服务端失效时登出：不残留“会话已过期”提示', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    services.session.save(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueJson(401, apiErrorBody('SESSION_EXPIRED'))
+
+    await signOut(services)
+
+    assert.equal(services.session.restore(), null)
+    assert.equal(services.consumeUnauthorizedNotice(), null)
   })
 })

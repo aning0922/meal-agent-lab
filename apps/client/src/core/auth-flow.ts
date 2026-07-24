@@ -56,12 +56,15 @@ export const signIn = async (
 
 /**
  * 登出：先尽力撤销服务端会话，无论结果如何都清除本地会话，
- * 保证本地不会残留一个用户已放弃的登录态。
+ * 保证本地不会残留一个用户已放弃的登录态。撤销过程中如因会话已
+ * 失效产生 401 提示，也一并吞掉——用户是主动退出，不该看到
+ * "会话已过期"的误导文案。
  */
 export const signOut = async (services: AppServices): Promise<void> => {
   try {
     await services.api.revokeSession()
   } finally {
     services.session.clear()
+    services.consumeUnauthorizedNotice()
   }
 }

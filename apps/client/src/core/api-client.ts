@@ -136,9 +136,12 @@ export class ApiClient {
       }
     }
 
+    // 只有携带了本地会话凭证的请求，其 401 才代表"会话失效需重新登录"；
+    // 登录兑换自身或无凭证请求的 401 走普通错误路径，由页面原地展示。
     if (
-      parsedError.data.code === 'AUTHENTICATION_REQUIRED' ||
-      parsedError.data.code === 'SESSION_EXPIRED'
+      accessToken !== undefined &&
+      (parsedError.data.code === 'AUTHENTICATION_REQUIRED' ||
+        parsedError.data.code === 'SESSION_EXPIRED')
     ) {
       this.options.onUnauthorized(parsedError.data)
     }

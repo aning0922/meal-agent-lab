@@ -142,6 +142,26 @@ describe('ApiClient', () => {
     assert.equal(unauthorizedCalls, 0)
   })
 
+  it('无凭证请求（如登录兑换）的 401 不触发 onUnauthorized', async () => {
+    const platform = new FakePlatform()
+    platform.enqueueJson(401, apiErrorBody('AUTHENTICATION_REQUIRED'))
+    let unauthorizedCalls = 0
+
+    const outcome = await createClient(platform, {
+      onUnauthorized: () => {
+        unauthorizedCalls += 1
+      }
+    }).call({
+      method: 'POST',
+      path: '/api/v1/auth/wechat/exchange',
+      envelope: wechatLoginExchangeSuccessSchema,
+      body: { loginCode: 'rejected-code' }
+    })
+
+    assert.equal(outcome.kind, 'apiError')
+    assert.equal(unauthorizedCalls, 0)
+  })
+
   it('SESSION_EXPIRED 触发 onUnauthorized', async () => {
     const platform = new FakePlatform()
     platform.enqueueJson(401, apiErrorBody('SESSION_EXPIRED'))

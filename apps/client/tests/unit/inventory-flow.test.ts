@@ -9,7 +9,8 @@ import { createAppServices } from '../../src/core/app-services'
 import {
   consumeInventoryLot,
   createInventoryLot,
-  loadInventoryLots
+  loadInventoryLots,
+  nextPendingConsume
 } from '../../src/core/inventory-flow'
 import { FakePlatform } from '../support/fake-platform'
 import {
@@ -117,6 +118,32 @@ describe('createInventoryLot', () => {
     )
 
     assert.equal(outcome.kind, 'invalid')
+    assert.equal(platform.sentRequests.length, 0)
+  })
+
+  it('approximate 拒绝十六进制/指数/尾点等宽松数字形式', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+
+    for (const amount of ['0x10', '5e2', '12.', '.5', '01']) {
+      const outcome = await createInventoryLot(
+        services,
+        HOUSEHOLD_ID,
+        {
+          displayName: '面粉',
+          storageLocation: 'pantry',
+          quantity: {
+            kind: 'approximate',
+            amount,
+            unit: '袋',
+            confidence: 'low',
+            originalText: `大概 ${amount}`
+          }
+        },
+        KEY
+      )
+      assert.equal(outcome.kind, 'invalid', `amount=${amount} 应被拦截`)
+    }
     assert.equal(platform.sentRequests.length, 0)
   })
 
@@ -326,6 +353,26 @@ describe('consumeInventoryLot', () => {
     )
 
     assert.equal(outcome.kind === 'consumed' && outcome.replayed, true)
+  })
+
+  it('幂等键与 (lotId, version, amount) 绑定：同身份复用、任一变化换键', () => {
+    const platform = new FakePlatform()
+    const lotV1 = parseLot(inventoryLotFixture())
+    const lotV2 = parseLot(inventoryLotFixture({ amount: '10', version: 2 }))
+    const otherLot = parseLot(inventoryLotFixture({ sequence: 31 }))
+
+    const first = nextPendingConsume(null, lotV1, '2.5', platform.runtime)
+    const retried = nextPendingConsume(first, lotV1, '2.5', platform.runtime)
+    assert.equal(retried.key, first.key)
+
+    const afterRefresh = nextPendingConsume(first, lotV2, '2.5', platform.runtime)
+    assert.notEqual(afterRefresh.key, first.key)
+
+    const changedAmount = nextPendingConsume(first, lotV1, '3', platform.runtime)
+    assert.notEqual(changedAmount.key, first.key)
+
+    const changedLot = nextPendingConsume(first, otherLot, '2.5', platform.runtime)
+    assert.notEqual(changedLot.key, first.key)
   })
 
   it('404 返回 notFound 由页面刷新判定', async () => {

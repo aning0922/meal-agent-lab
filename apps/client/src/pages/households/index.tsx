@@ -44,6 +44,7 @@ export default function HouseholdsPage() {
   const [name, setName] = useState('')
   const [ownerDisplayName, setOwnerDisplayName] = useState('')
   const [submit, setSubmit] = useState<SubmitState>({ kind: 'idle' })
+  const [signingOut, setSigningOut] = useState(false)
   const pendingKeyRef = useRef<IdempotencyKey | null>(null)
   const currentHouseholdId =
     getAppServices().session.restoreCurrentHouseholdId()
@@ -109,6 +110,10 @@ export default function HouseholdsPage() {
   }
 
   const handleSignOut = async (): Promise<void> => {
+    if (signingOut) {
+      return
+    }
+    setSigningOut(true)
     const services = getAppServices()
     await signOut(services)
     await services.adapter.navigation.reLaunch(LOGIN_ROUTE)
@@ -227,12 +232,17 @@ export default function HouseholdsPage() {
       </View>
 
       <Button
-        className='button button--secondary'
+        className={
+          signingOut
+            ? 'button button--secondary button--disabled'
+            : 'button button--secondary'
+        }
+        disabled={signingOut}
         onClick={() => {
           void handleSignOut()
         }}
       >
-        退出登录
+        {signingOut ? '正在退出…' : '退出登录'}
       </Button>
     </View>
   )

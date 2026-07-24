@@ -127,20 +127,35 @@ export const startE2eStack = async (
         apiProcess?.once('exit', () => resolve())
       })
       apiProcess.kill('SIGTERM')
+      let graceTimer: NodeJS.Timeout | undefined
       await Promise.race([
         exited,
-        new Promise((resolve) => setTimeout(resolve, 5_000))
+        new Promise((resolve) => {
+          graceTimer = setTimeout(resolve, 5_000)
+        })
       ])
+      clearTimeout(graceTimer)
       if (apiProcess.exitCode === null) {
         apiProcess.kill('SIGKILL')
+        await exited
       }
     }
     if (postgresStarted) {
-      await run(
-        join(postgresBin, 'pg_ctl'),
-        ['-D', dataDirectory, '-m', 'immediate', '-w', 'stop'],
-        environment
-      ).catch(() => undefined)
+      try {
+        await run(
+          join(postgresBin, 'pg_ctl'),
+          ['-D', dataDirectory, '-m', 'immediate', '-w', 'stop'],
+          environment
+        )
+      } catch (error) {
+        // 停库失败时保留数据目录现场，避免删除仍在运行的 postmaster 的
+        // 数据文件；泄漏的进程与目录留给人工诊断。
+        console.error(
+          `[stage-07 e2e] pg_ctl stop failed, keeping ${clusterRoot} for diagnosis:`,
+          error instanceof Error ? error.message : error
+        )
+        return
+      }
     }
     await rm(clusterRoot, { recursive: true, force: true })
   }

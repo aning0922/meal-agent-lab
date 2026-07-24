@@ -72,7 +72,7 @@
 | 1 | Pass | `pnpm stage07:check` 全绿：contracts/api 全套门禁 + client typecheck、46 个单元测试、weapp 生产构建、13 个 E2E 场景；CI 工作流改为单一 `stage07-check` 作业（Ubuntu + PGDG PostgreSQL 18） |
 | 2 | Pass | `apps/client/src` 零 zod schema 定义、零本地核心 DTO；请求/响应模式全部 import 自 `@meal-agent/contracts`（0.2.0），响应含 problem+json 均经契约模式验证 |
 | 3 | Pass | `@tarojs/taro` import 仅存在于 `src/platform/taro-adapter.ts`；页面仅依赖 `@tarojs/components`、React 与 core/app-runtime；扫描无 `wx.*` 直接调用 |
-| 4 | Pass | E2E（真实 `services/api` + 临时 PostgreSQL 18.4 + fake 微信适配器）：登录 → 创建家庭 → 新增批次 → 列表可见 → exact 消耗成功；创建家庭/新增批次/消耗三处同键重复提交均 `replayed=true` 且不产生第二条记录；`expectedVersion` 过期返回 `INVENTORY_VERSION_CONFLICT` 并由页面刷新提示，超量消耗返回 `INVENTORY_INSUFFICIENT` |
+| 4 | Pass | E2E（真实 `services/api` + 临时 PostgreSQL 18.4 + fake 微信适配器）驱动客户端 core 流程：登录 → 创建家庭 → 新增批次 → 列表可见 → exact 消耗成功；创建家庭/新增批次/消耗三处同键重复提交均 `replayed=true` 且不产生第二条记录；`expectedVersion` 过期返回 `INVENTORY_VERSION_CONFLICT`，超量消耗返回 `INVENTORY_INSUFFICIENT`。页面层的冲突刷新提示/重放横幅是已实现但未被自动化渲染测试覆盖的 UI 路径（见"未解决问题"） |
 | 5 | Pass | E2E：撤销后旧 token 与伪造 token 均触发 401 → 清会话 + reLaunch 登录页 + 过期提示可消费一次；用户 B 访问用户 A 家庭的批次列表/消耗均得到 404 语义（`householdMissing`/`notFound`），无存在性泄露、无 403 差异化 |
 | 6 | Pass | `apps/meal-agent-client-spike` 已随本阶段删除（`git rm`），apps/README 同步更新 |
 | 7 | Pass（保持 Deferred） | 微信真机、真实登录、合法域名未验证，保持 `Deferred — 外部依赖`；E2E 与本地联调均为 fake 适配器，未记为真实微信链路 Pass |
@@ -83,6 +83,21 @@
 - 非 exact 批次的消耗在客户端本地拒绝，不发请求；approximate 非数字/缺原始描述在本地经契约模式拦截。
 - 登录依赖不可用（`fake-dependency-unavailable` → 503）返回可重试失败且不写会话。
 - 微信开发者工具模拟器手工验证：本机 IDE 服务端口处于关闭状态（属用户安全设置，AI 不越权修改），CLI/自动化不可用；已提供 `dev:stack` 一键本地栈与手工步骤（见 `apps/client/README.md`），待产品负责人自行执行；该项不影响门禁 1–6 的自动化证据。
+
+### 合并前对抗审核与修复（2026-07-24）
+
+按阶段 06 流程执行多视角深读审核：7 个审核视角（契约一致性、幂等重试、会话安全、React/Taro、测试门禁、数据保真、工程接入）共产出 13 个原始发现，每个发现由 3 名独立复核员尝试反驳、多数票裁决——确认 9 个（major 3、minor 6），驳回 4 个。确认项全部修复：
+
+1. **[major] 401 全局处理误伤无凭证请求**（两个视角同根因确认）：`ApiClient` 现仅在请求实际携带 Authorization 头时触发 `onUnauthorized`；登录兑换、无凭证撤销的 401 走普通错误路径由页面原地展示。回归测试 ×2。
+2. **[major] 消耗幂等键与服务端派生状态绑定断裂**：消耗请求体含 `expectedVersion`，而键的重置与刷新脱节，"失败重试 → 手动刷新 → 版本变化 → 同键不同 body"会陷入 `IDEMPOTENCY_KEY_REUSED` 死循环。现以 `nextPendingConsume` 把键与 `(lotId, version, amount)` 绑定：同一逻辑操作重试复用同键同 body，任一要素变化自动换键。回归测试覆盖四种分支。
+3. **[minor] 消耗在途可切面板绕过防重复守卫**：working 期间禁用取消按钮与其他批次的消耗入口，消除晚到响应跨批次串扰入口。
+4. **[minor] 登出无并发守卫且失效会话登出弹"会话已过期"**：退出按钮加 working 守卫；`signOut` 结束时吞掉撤销过程产生的 401 提示。回归测试 ×1。
+5. **[minor] 并发刷新乱序覆盖**：列表引入纪元（epoch）守卫，新刷新与消耗成功都会使在途旧列表响应作废。
+6. **[minor] E2E 栈 teardown**：SIGKILL 后等待进程退出、清理兜底计时器、`pg_ctl stop` 失败时保留数据目录现场并告警而非静默删除。
+7. **[minor] 验收记录门禁 4 措辞**：已改为 core 流程证据，页面提示标注为未测 UI 路径。
+8. **[minor] 估算数量宽松解析**：`Number()` 前先按平实十进制正则校验，拒绝 `0x10`/`5e2`/`12.`/`.5`/`01` 等形式。回归测试 ×1。
+
+被驳回的 4 项（多数复核员判定不成立或超出冻结范围）：malformedResponse 统一不可重试的指引问题、freePort TOCTOU、估算空串文案、以及与第 1 项重复的低票副本。
 
 ### 未解决问题
 
