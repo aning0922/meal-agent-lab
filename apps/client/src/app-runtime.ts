@@ -1,3 +1,6 @@
+// 必须先于任何 @meal-agent/contracts schema 构造（见 zod-runtime-config）。
+import './zod-runtime-config'
+
 import { createTaroPlatformAdapter } from './platform/taro-adapter'
 import { createAppServices, type AppServices } from './core/app-services'
 

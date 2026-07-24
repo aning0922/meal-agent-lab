@@ -113,8 +113,15 @@ export class ApiClient {
     }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
-      const parsed = spec.envelope.safeParse(parsedBody)
-      if (!parsed.success) {
+      // safeParse 正常不抛异常，但在受限运行时（如小程序禁用动态代码执行）
+      // 校验器仍可能抛错；一律降级为 malformedResponse，绝不让页面崩溃。
+      let parsed
+      try {
+        parsed = spec.envelope.safeParse(parsedBody)
+      } catch {
+        parsed = undefined
+      }
+      if (parsed === undefined || !parsed.success) {
         return {
           kind: 'malformedResponse',
           message: `HTTP ${response.statusCode} 成功响应不符合契约`
@@ -128,8 +135,13 @@ export class ApiClient {
       }
     }
 
-    const parsedError = apiErrorSchema.safeParse(parsedBody)
-    if (!parsedError.success) {
+    let parsedError
+    try {
+      parsedError = apiErrorSchema.safeParse(parsedBody)
+    } catch {
+      parsedError = undefined
+    }
+    if (parsedError === undefined || !parsedError.success) {
       return {
         kind: 'malformedResponse',
         message: `HTTP ${response.statusCode} 错误响应不符合 problem+json 契约`

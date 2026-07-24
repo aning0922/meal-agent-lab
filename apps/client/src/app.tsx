@@ -1,3 +1,5 @@
+import './zod-runtime-config'
+
 import type { PropsWithChildren } from 'react'
 
 import './app.css'
