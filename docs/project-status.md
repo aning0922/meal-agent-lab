@@ -4,11 +4,11 @@
 
 ## 当前阶段
 
-阶段 06“最小服务端纵切”已完成，并已在 `b9b149b`、`d37781f`、`b7d79c7` 三轮修订与合并前审核修复（独立复验全量门禁 + 对抗审核）中补强边界。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
+阶段 07“正式客户端纵切”已完成实施：[`apps/client`](../apps/client/)（Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3）进入根 pnpm workspace，与阶段 06 的 [`services/api`](../services/api/) 打通第一条端到端真实闭环（登录 → 创建/选择家庭 → 库存批次列表 → 三态数量手工新增 → exact-only 消耗，含幂等重放、版本冲突、401 引导与跨家庭 404）。平台适配层收敛为端口 + 唯一 Taro 触点，页面零直接 `wx.*` 调用；一次性 Taro spike 已按 ADR-0001 承诺删除。实施与验收记录见[阶段 07 计划](plans/2026-07-stage-07-client-vertical-slice.md)。
 
-[`@meal-agent/contracts`](../packages/contracts/) 0.2.0 是客户端、服务端、测试和 OpenAPI 的共享契约事实源。当前已有登录、session、家庭和库存一致性最小服务，但仍没有菜单推荐、Agent、采购/完整做饭流程或正式 App；下一阶段产品范围尚未决定。
+后端基线不变：Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`（[ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md)、[ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md)）。[`@meal-agent/contracts`](../packages/contracts/) 0.2.0 仍是客户端、服务端、测试和 OpenAPI 的唯一契约事实源；客户端不定义第二份核心 DTO。当前仍没有菜单推荐、Agent、采购/完整做饭流程；下一阶段产品范围尚未决定。
 
-阶段 04 的微信测试号真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；生产云、托管数据库、Secret 管理和可观测平台也未在本阶段验证。相机、语音、条码、OCR 和外部通知保持原阶段 `Not applicable`。deterministic fake WeChat adapter 没有被当作真实微信链 Pass。
+微信真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；生产云、托管数据库、Secret 管理和可观测平台未验证。相机、语音、条码、OCR 和外部通知保持 `Not applicable`。deterministic fake WeChat adapter 没有被当作真实微信链 Pass。
 
 ## 已形成的共识
 
@@ -105,22 +105,37 @@
 - 应用日志 sentinel 扫描未发现 login code、token、provider subject、UnionID、AppSecret 或成员私密约束。
 - 详细环境、命令和 Deferred 条件见[阶段 06 实施记录](plans/2026-07-stage-06-backend-vertical-slice.md)。
 
+## 阶段 07 完成
+
+### 工程与分层
+
+- `apps/client` 进入根 pnpm workspace（单一 lockfile），直接依赖锁定 ADR-0001 版本（Taro 4.2.1 / React 18.3.1 / TypeScript 5.9.3），传递依赖重新解析，未复用 spike 锁文件；一次性 spike `apps/meal-agent-client-spike` 已删除。
+- 分层：`platform/`（端口定义 + 唯一 Taro/wx 触点）、`core/`（登录/家庭/库存业务流程、API 客户端、会话存储，纯 TypeScript、Node 可测）、`pages/`（薄 UI）。页面零直接 `wx.*`/Taro API 调用。
+- 所有请求本地经契约模式预校验，所有响应（含 `application/problem+json`）经契约模式验证后才进入页面；客户端零本地 zod schema、零第二份核心 DTO。
+- CI 收敛为 `stage07-check` 单一门禁：contracts/api 全套 + client typecheck、46 个单元测试、weapp 生产构建、13 个 E2E 场景（Ubuntu + PGDG PostgreSQL 18）。
+
+### 端到端语义
+
+- E2E 使用真实 `services/api` + 一次性 PostgreSQL 18 集群 + fake 微信适配器，覆盖：登录会话持久化、创建家庭、三态初始数量（exact 十进制字符串 / approximate 数值+置信度+原始描述 / qualitative 等级）端到端保真、批次列表、exact-only 消耗。
+- 幂等：创建家庭、新增批次、消耗三处同键重复提交均重放第一次结果（`replayed=true`），不产生第二条记录、不重复扣减；表单修改后换新幂等键。
+- 并发：过期 `expectedVersion` 消耗返回 `INVENTORY_VERSION_CONFLICT`，页面刷新提示不静默覆盖；超量消耗返回 `INVENTORY_INSUFFICIENT`。
+- 会话与隔离：撤销后旧 token / 伪造 token 均 401 → 清会话 + 重定向登录 + 原因提示；跨家庭批次列表与消耗均 404 语义，不泄露存在性。
+- 非 exact 批次消耗在客户端本地拒绝；估算/感性数量展示保留来源与置信度，不伪装成精确量。
+
 ## 当前验证状态
 
 ### Pass
 
-- 阶段 04 已有的小程序构建、开发者工具模拟器、Mock 登录/存储/网络与适配层测试；
 - 阶段 05 `packages/contracts` 的类型检查、运行时测试和构建；
 - 阶段 05 收尾的一致性、重复核心类型、提交范围、文档链接和静态检查；
-- 阶段 06 Node/Fastify/Drizzle/`pg` 服务、PostgreSQL 18 migration、三类 RLS bootstrap、会话、幂等、库存并发与 OpenAPI 门禁。
+- 阶段 06 Node/Fastify/Drizzle/`pg` 服务、PostgreSQL 18 migration、三类 RLS bootstrap、会话、幂等、库存并发与 OpenAPI 门禁；
+- 阶段 07 `apps/client` typecheck、单元测试、weapp 生产构建与真实 API + PostgreSQL 18 端到端闭环（fake 微信适配器）。
 
 ### 依赖审计
 
-- 正式 Stage 05 根工作区/contracts 的 `pnpm audit --prod` 为 0 个已知漏洞。
-- 阶段 06 根工作区、contracts 和正式 `services/api` 的 `pnpm audit --prod` 为 0 个已知漏洞。
-- 一次性阶段 04 Taro spike 的独立依赖树命中 12 个通告（1 critical、9 moderate、2 low），来自 Taro 4.2.1 固定的 swiper/esbuild/webpack/webpack-dev-server/uuid 范围。
-- 低保真原型的独立依赖树命中 11 个通告（5 high、6 moderate），来自 Next/PostCSS/Sharp 范围。
-- 两个应用都不是正式 App 或 Stage 05 运行时，不得部署或复用到正式工程。消除通告需要升级并重新验证对应实验技术栈，不能用跨不兼容版本的 override 伪装为已修复。
+- 正式 Stage 05/06 根工作区、contracts 和 `services/api` 的 `pnpm audit --prod` 为 0 个已知漏洞。
+- 阶段 07 `apps/client` 并入根 workspace 后 `pnpm audit --prod` 命中 9 个通告（1 critical、8 moderate），全部位于 Taro 4.2.1 自身锁定路径：moderate 为 webpack-dev-server/esbuild 等本地开发服务器范围（不进入产物）；critical 为 `@tarojs/components>swiper`（H5 端依赖），已核对 weapp 产物只含微信原生 `<swiper>` 组件名映射、npm `swiper` 代码未打包。客户端自身直接依赖 `webpack` 已升至 5.104.1。接受为构建期风险，升级窗口待 Taro 4.3 评估。
+- 低保真原型的独立依赖树命中 11 个通告（5 high、6 moderate），来自 Next/PostCSS/Sharp 范围；原型不是正式 App，不得部署或复用到正式工程。
 
 ### 待验证
 
@@ -155,3 +170,14 @@
 完整 endpoint、migration、测试门禁和明确非范围见[阶段 05 报告第 10 节](architecture/backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
 
 本阶段没有实现完整推荐、Agent 对话、OCR/通知、采购/做饭闭环、微服务、向量数据库、正式 App 或生产部署；最小 consumed command 不关联 Meal、不接受 estimated 数量。真实微信条件仍为 `Deferred — 外部依赖`，fake adapter 不能代替真实 Pass。
+
+## 阶段 07 范围边界
+
+只实施客户端侧闭环：
+
+```text
+登录（fake adapter）→ 创建/选择家庭 → 库存批次列表 → 手工新增批次
+    → exact-only 消耗（幂等重放、版本冲突刷新、401 引导、跨家庭 404）
+```
+
+以上闭环已由自动化 E2E（真实 `services/api` + 一次性 PostgreSQL 18）与 weapp 生产构建门禁验证。它只证明正式客户端骨架、平台适配边界与 API 集成语义可运行，不代表完整 P0 页面、菜单推荐、Agent、采购/做饭流程或视觉完成度已经完成。菜单推荐、Agent 对话、采购清单、成员邀请、语音/条码/OCR、原生平台与发布均不在本阶段范围；微信开发者工具模拟器手工走查待产品负责人开启工具服务端口后执行（步骤见 [`apps/client`](../apps/client/)）。

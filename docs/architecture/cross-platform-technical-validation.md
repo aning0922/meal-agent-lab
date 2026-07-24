@@ -3,7 +3,7 @@
 - 验证日期：2026-07-23
 - 结论状态：框架决策 `Accepted`；微信构建和开发者工具模拟器纵切为 `Pass`；测试号真机预览为 `Deferred — 外部依赖`
 - 正式决策：[ADR-0001](decisions/0001-client-platform-and-cross-platform-framework.md)
-- 实验代码：[`apps/meal-agent-client-spike/`](../../apps/meal-agent-client-spike/)
+- 实验代码：`apps/meal-agent-client-spike/`（一次性资产，已按 ADR-0001 承诺于阶段 07 删除；历史内容见 git 记录）
 
 ## 1. 范围与判定标准
 
@@ -156,7 +156,7 @@ Today / Inventory 页面壳
 
 本轮没有 `Fail` 项。游客模式控制台存在微信开发者工具自身的 `webapi_getwxaasyncsecinfo` / `wx.operateWXData` 账号能力告警，以及因 `touristappid` 和本地 HTTP 产生的开发态提示；未发现项目源代码问题。这些提示不能作为测试号、真实账号或真机通过的证据。
 
-复现命令、IDE 导入步骤和安全限制见[实验 README](../../apps/meal-agent-client-spike/README.md)。
+复现命令、IDE 导入步骤和安全限制原记录于实验 README（实验目录已随阶段 07 删除，可在 git 历史 `apps/meal-agent-client-spike/README.md` 查阅）。
 
 ## 5. 结论与剩余风险
 

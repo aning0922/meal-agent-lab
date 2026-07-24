@@ -6,7 +6,7 @@
 
 后端基线已由 [ADR-0002](decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](decisions/0003-identity-tenancy-and-api-semantics.md) 接受：Node.js 24 LTS + Fastify 5 模块化单体，PostgreSQL 18 + Drizzle/`pg`，使用 opaque session、显式家庭上下文、复合外键与 RLS。
 
-当前已有 [`packages/contracts`](../../packages/contracts/) 共享契约基线和 [`services/api`](../../services/api/) 阶段 06 最小业务服务；[`apps/meal-agent-client-spike/`](../../apps/meal-agent-client-spike/) 仍是一次性阶段 04 实验。尚无完整菜单/Agent/采购/做饭业务或正式 `apps/client`。
+当前已有 [`packages/contracts`](../../packages/contracts/) 共享契约基线、[`services/api`](../../services/api/) 阶段 06 最小业务服务和 [`apps/client`](../../apps/client/) 阶段 07 正式客户端纵切（登录、家庭、库存批次与 exact-only 消耗）；一次性阶段 04 实验 `apps/meal-agent-client-spike` 已在阶段 07 删除。尚无完整菜单/Agent/采购/做饭业务。
 
 ## 逻辑边界
 

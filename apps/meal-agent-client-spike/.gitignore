@@ -1,6 +1,0 @@
-node_modules/
-dist/
-coverage/
-.swc/
-.wechat-test-preview/
-project.private.config.json

@@ -27,7 +27,7 @@ Meal Agent 首发目标是微信小程序，后续需要适配 Android、iOS 和
 
 该决定是对“微信首发客户端基线”的正式接受，不等于提前接受 Taro React Native 或 Taro HarmonyOS 为无条件的最终实现。Android、iOS、HarmonyOS 必须在进入正式业务开发前分别通过最小 spike；失败时允许保留共享契约和领域逻辑，改用分端 UI 或平台运行时。
 
-现有 [`apps/meal-agent-client-spike/`](../../../apps/meal-agent-client-spike/) 是一次性验证资产，不是正式 `apps/client/`，不得直接扩写为完整业务。
+一次性验证资产 `apps/meal-agent-client-spike/` 不是正式 `apps/client/`，不得直接扩写为完整业务；该目录已在阶段 07 建立正式 [`apps/client`](../../../apps/client/)（契约 + 平台端口重新落地）后删除。
 
 阶段 04 的验证结果只允许 `Pass`、`Fail`、`Deferred — 外部依赖` 和 `Not applicable`。外部依赖未满足时保留 `Deferred`，不得因为 ADR 已接受而推定平台能力通过。
 

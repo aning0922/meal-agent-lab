@@ -11,7 +11,7 @@
     "build": "pnpm --filter @meal-agent/contracts build && pnpm --filter @meal-agent/api build",
     "check": "pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check && pnpm --filter @meal-agent/client check",
     "stage06:check": "pnpm --filter @meal-agent/api environment:check && pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check",
-    "stage07:check": "pnpm --filter @meal-agent/api environment:check && pnpm check",
+    "stage07:check": "pnpm --filter @meal-agent/api environment:check && pnpm check && pnpm --filter @meal-agent/client test:e2e",
     "test": "pnpm --filter @meal-agent/contracts test && pnpm --filter @meal-agent/api test && pnpm --filter @meal-agent/client test",
     "typecheck": "pnpm --filter @meal-agent/contracts typecheck && pnpm --filter @meal-agent/api typecheck && pnpm --filter @meal-agent/client typecheck"
   }
