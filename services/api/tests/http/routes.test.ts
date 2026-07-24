@@ -53,13 +53,23 @@ const unavailable = async (): Promise<never> => {
 };
 
 const operations = {
+  addDietaryConstraint: unavailable,
   consumeInventoryLot: unavailable,
   createHousehold: unavailable,
+  createHouseholdInvite: unavailable,
   createInventoryLot: unavailable,
+  createPersonProfile: unavailable,
   exchangeWechatCode: async () => login,
   getMe: unavailable,
+  joinHousehold: unavailable,
+  listHouseholdInvites: unavailable,
+  listHouseholdMembers: unavailable,
   listHouseholds: unavailable,
   listInventoryLots: unavailable,
+  patchPersonProfile: unavailable,
+  removeDietaryConstraint: unavailable,
+  removeMembership: unavailable,
+  revokeHouseholdInvite: unavailable,
   revokeSession: unavailable,
 } satisfies NonNullable<BuildAppOptions["operations"]>;
 

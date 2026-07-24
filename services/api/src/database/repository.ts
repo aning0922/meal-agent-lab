@@ -1,6 +1,7 @@
 import {
   authenticatedSessionSchema,
   createHouseholdResultSchema,
+  dietaryConstraintSchema,
   type AuthenticatedSession,
   type CreateHouseholdRequest,
   type CreateHouseholdResult,
@@ -8,6 +9,27 @@ import {
   type Membership,
   type User,
 } from "@meal-agent/contracts/identity";
+import {
+  createHouseholdInviteResultSchema,
+  joinHouseholdResultSchema,
+  listHouseholdMembersResultSchema,
+  personProfileResultSchema,
+  removeMembershipResultSchema,
+  revokeHouseholdInviteResultSchema,
+  type AddDietaryConstraintRequest,
+  type CreateHouseholdInviteRequest,
+  type CreateHouseholdInviteResult,
+  type CreatePersonProfileRequest,
+  type HouseholdInvite,
+  type JoinHouseholdRequest,
+  type JoinHouseholdResult,
+  type ListHouseholdMembersResult,
+  type PatchPersonProfileRequest,
+  type PersonProfileResult,
+  type RemoveDietaryConstraintRequest,
+  type RemoveMembershipResult,
+  type RevokeHouseholdInviteResult,
+} from "@meal-agent/contracts/members";
 import {
   consumeInventoryLotResultSchema,
   createInventoryLotResultSchema,
@@ -32,8 +54,10 @@ import type { AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import {
   decodeCursor,
+  digestInviteCode,
   digestSessionToken,
   encodeCursor,
+  issueInviteCode,
   issueSessionToken,
   newEntityId,
   requestHash,
@@ -43,12 +67,15 @@ import {
 import type { WechatAdapter } from "../wechat/adapter.js";
 import {
   mapHousehold,
+  mapHouseholdInvite,
   mapInventoryEvent,
   mapInventoryLot,
   mapMembership,
   mapPersonProfile,
+  mapRedactedPersonProfile,
   mapSession,
   mapUser,
+  type HouseholdInviteRow,
   type HouseholdRow,
   type InventoryEventRow,
   type InventoryLotRow,
@@ -141,6 +168,17 @@ const normalizedRoutes = {
   createInventoryLot: "/api/v1/households/{id}/inventory-lots",
   consumeInventoryLot:
     "/api/v1/households/{id}/inventory-lots/{lotId}/events/consumed",
+  createHouseholdInvite: "/api/v1/households/{id}/invites",
+  revokeHouseholdInvite: "/api/v1/households/{id}/invites/{inviteId}",
+  joinHousehold: "/api/v1/households/join",
+  removeMembership: "/api/v1/households/{id}/memberships/{membershipId}",
+  createPersonProfile: "/api/v1/households/{id}/person-profiles",
+  patchPersonProfile:
+    "/api/v1/households/{id}/person-profiles/{profileId}",
+  addDietaryConstraint:
+    "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints",
+  removeDietaryConstraint:
+    "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints",
 } as const;
 
 const plusDays = (date: Date, days: number): Date =>
@@ -1154,6 +1192,960 @@ export class ApiRepository {
             return consumeInventoryLotResultSchema.parse({
               lot: mapInventoryLot(lotRow),
               event: mapInventoryEvent(eventRow),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  #requireOwner(
+    context: HouseholdContext,
+    message = "An owner role is required",
+  ): void {
+    if (context.role !== "owner") {
+      throw new AppError("FORBIDDEN", message);
+    }
+  }
+
+  async #loadAuthorizedProfile(
+    client: PoolClient,
+    context: HouseholdContext,
+    householdId: string,
+    profileId: string,
+  ): Promise<PersonProfileRow> {
+    const result = await client.query<PersonProfileRow>(
+      "SELECT * FROM person_profiles WHERE household_id = $1 AND id = $2",
+      [householdId, profileId],
+    );
+    const row = result.rows[0];
+    if (row === undefined) {
+      throw new AppError("RESOURCE_NOT_FOUND", "Profile was not found");
+    }
+    const ownsProfile =
+      row.linked_membership_id !== null &&
+      row.linked_membership_id === context.membershipId;
+    if (context.role !== "owner" && !ownsProfile) {
+      throw new AppError(
+        "FORBIDDEN",
+        "You may not modify another member's profile",
+      );
+    }
+    return row;
+  }
+
+  public async createHouseholdInvite(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    idempotencyKey: string,
+    request: CreateHouseholdInviteRequest,
+  ): Promise<IdempotentResponse<CreateHouseholdInviteResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        this.#requireOwner(context, "Only an owner may issue invites");
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute: normalizedRoutes.createHouseholdInvite,
+            key: idempotencyKey,
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            // 每家庭串行化邀请签发，让活跃邀请上限检查免于竞态。
+            await client.query(
+              "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+              [`household-invites:${householdId}`],
+            );
+            const active = await client.query<{ count: number }>(
+              `SELECT count(*)::int AS count
+               FROM household_invites
+               WHERE household_id = $1 AND status = 'active'`,
+              [householdId],
+            );
+            if ((active.rows[0]?.count ?? 0) >= 10) {
+              throw new AppError(
+                "CONFLICT",
+                "Household already has the maximum number of active invites",
+              );
+            }
+            const code = issueInviteCode();
+            const now = new Date();
+            const expiresAt = new Date(
+              now.getTime() + request.expiresInHours * 3_600_000,
+            );
+            const inviteResult = await client.query<HouseholdInviteRow>(
+              `INSERT INTO household_invites (
+                 id, household_id, created_by_user_id, code_digest, status,
+                 max_uses, used_count, expires_at, created_at, version
+               ) VALUES ($1, $2, $3, $4, 'active', $5, 0, $6, $7, 0)
+               RETURNING *`,
+              [
+                newEntityId(),
+                householdId,
+                context.userId,
+                digestInviteCode(code),
+                request.maxUses,
+                expiresAt,
+                now,
+              ],
+            );
+            const inviteRow = inviteResult.rows[0];
+            if (inviteRow === undefined) {
+              throw new AppError(
+                "INTERNAL_ERROR",
+                "Invite could not be created",
+              );
+            }
+            return createHouseholdInviteResultSchema.parse({
+              invite: mapHouseholdInvite(inviteRow),
+              inviteCode: code,
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async listHouseholdInvites(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    options: { readonly cursor?: string; readonly limit: number },
+  ): Promise<Page<HouseholdInvite>> {
+    const cursorId = safeCursorId(options.cursor);
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        this.#requireOwner(context, "Only an owner may list invites");
+        const result = await client.query<HouseholdInviteRow>(
+          `SELECT *
+           FROM household_invites
+           WHERE household_id = $1
+             AND ($2::uuid IS NULL OR id > $2::uuid)
+           ORDER BY id
+           LIMIT $3`,
+          [householdId, cursorId ?? null, options.limit + 1],
+        );
+        const hasMore = result.rows.length > options.limit;
+        const visibleRows = result.rows.slice(0, options.limit);
+        const last = visibleRows.at(-1);
+        return {
+          items: visibleRows.map(mapHouseholdInvite),
+          pageInfo:
+            hasMore && last !== undefined
+              ? { hasMore: true, nextCursor: encodeCursor(last.id) }
+              : { hasMore: false, nextCursor: null },
+        };
+      },
+    );
+  }
+
+  public async revokeHouseholdInvite(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    inviteId: string,
+    idempotencyKey: string,
+  ): Promise<IdempotentResponse<RevokeHouseholdInviteResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        this.#requireOwner(context, "Only an owner may revoke invites");
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "DELETE",
+            normalizedRoute: normalizedRoutes.revokeHouseholdInvite,
+            key: idempotencyKey,
+            resourceTarget: { inviteId },
+            payload: {},
+            requestId,
+            statusCode: 200,
+          },
+          async () => {
+            const revoked = await client.query<HouseholdInviteRow>(
+              `UPDATE household_invites
+               SET status = 'revoked', version = version + 1
+               WHERE household_id = $1 AND id = $2 AND status = 'active'
+               RETURNING *`,
+              [householdId, inviteId],
+            );
+            const row = revoked.rows[0];
+            if (row === undefined) {
+              const existing = await client.query(
+                `SELECT 1
+                 FROM household_invites
+                 WHERE household_id = $1 AND id = $2`,
+                [householdId, inviteId],
+              );
+              if (existing.rowCount === 0) {
+                throw new AppError(
+                  "RESOURCE_NOT_FOUND",
+                  "Invite was not found",
+                );
+              }
+              throw new AppError(
+                "CONFLICT",
+                "Invite is no longer active",
+              );
+            }
+            return revokeHouseholdInviteResultSchema.parse({
+              invite: mapHouseholdInvite(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async joinHousehold(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    idempotencyKey: string,
+    request: JoinHouseholdRequest,
+  ): Promise<IdempotentResponse<JoinHouseholdResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, context) =>
+        this.#runIdempotent(
+          client,
+          {
+            scope: "user",
+            userId: context.userId,
+            method: "POST",
+            normalizedRoute: normalizedRoutes.joinHousehold,
+            key: idempotencyKey,
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            const now = new Date();
+            const redeemed = await client.query<{
+              result_code: string;
+              out_household_id: string | null;
+              out_membership_id: string | null;
+            }>(
+              `SELECT result_code, out_household_id, out_membership_id
+               FROM meal_agent_private.redeem_household_invite(
+                 $1, $2, $3::jsonb, $4
+               )`,
+              [
+                digestInviteCode(request.inviteCode),
+                newEntityId(),
+                JSON.stringify([]),
+                now,
+              ],
+            );
+            const outcome = redeemed.rows[0];
+            if (outcome === undefined) {
+              throw new AppError(
+                "INTERNAL_ERROR",
+                "Invite redemption failed",
+              );
+            }
+            if (outcome.result_code === "already_member") {
+              throw new AppError(
+                "CONFLICT",
+                "You are already a member of this household",
+              );
+            }
+            if (
+              outcome.result_code !== "joined" ||
+              outcome.out_household_id === null ||
+              outcome.out_membership_id === null
+            ) {
+              // 无效 / 过期 / 撤销 / 用尽一律 404，不泄露家庭存在性。
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "The invite code is invalid",
+              );
+            }
+            const joinedHouseholdId = outcome.out_household_id;
+            await setHouseholdContext(client, joinedHouseholdId);
+            const membershipResult = await client.query<MembershipRow>(
+              "SELECT * FROM memberships WHERE household_id = $1 AND id = $2",
+              [joinedHouseholdId, outcome.out_membership_id],
+            );
+            const householdResult = await client.query<HouseholdRow>(
+              "SELECT * FROM households WHERE id = $1",
+              [joinedHouseholdId],
+            );
+            const membershipRow = membershipResult.rows[0];
+            const householdRow = householdResult.rows[0];
+            if (membershipRow === undefined || householdRow === undefined) {
+              throw new AppError(
+                "INTERNAL_ERROR",
+                "Joined household could not be loaded",
+              );
+            }
+            return joinHouseholdResultSchema.parse({
+              membership: mapMembership(membershipRow),
+              household: mapHousehold(householdRow),
+            });
+          },
+        ),
+    );
+  }
+
+  public async listHouseholdMembers(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+  ): Promise<ListHouseholdMembersResult> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        const membershipsResult = await client.query<MembershipRow>(
+          `SELECT *
+           FROM memberships
+           WHERE household_id = $1 AND status = 'active'
+           ORDER BY id`,
+          [householdId],
+        );
+        const profilesResult = await client.query<PersonProfileRow>(
+          `SELECT *
+           FROM person_profiles
+           WHERE household_id = $1
+             AND linked_membership_id IS NOT NULL
+             AND status = 'active'`,
+          [householdId],
+        );
+        const profileByMembership = new Map<string, PersonProfileRow>();
+        for (const row of profilesResult.rows) {
+          if (row.linked_membership_id !== null) {
+            profileByMembership.set(row.linked_membership_id, row);
+          }
+        }
+
+        if (context.role === "owner") {
+          const members = membershipsResult.rows.map((membershipRow) => {
+            const profileRow = profileByMembership.get(membershipRow.id);
+            return {
+              membership: mapMembership(membershipRow),
+              profile:
+                profileRow === undefined
+                  ? null
+                  : mapPersonProfile(profileRow),
+            };
+          });
+          return listHouseholdMembersResultSchema.parse({
+            viewerRole: "owner",
+            members,
+          });
+        }
+
+        let self:
+          | {
+              readonly membership: Membership;
+              readonly profile: ReturnType<typeof mapPersonProfile> | null;
+            }
+          | undefined;
+        const others = [];
+        for (const membershipRow of membershipsResult.rows) {
+          const profileRow = profileByMembership.get(membershipRow.id);
+          if (membershipRow.id === context.membershipId) {
+            self = {
+              membership: mapMembership(membershipRow),
+              profile:
+                profileRow === undefined
+                  ? null
+                  : mapPersonProfile(profileRow),
+            };
+          } else {
+            others.push({
+              membership: mapMembership(membershipRow),
+              profile:
+                profileRow === undefined
+                  ? null
+                  : mapRedactedPersonProfile(profileRow),
+            });
+          }
+        }
+        if (self === undefined) {
+          throw new AppError(
+            "INTERNAL_ERROR",
+            "The requesting member is missing from the household",
+          );
+        }
+        return listHouseholdMembersResultSchema.parse({
+          viewerRole: "member",
+          self,
+          others,
+        });
+      },
+    );
+  }
+
+  public async removeMembership(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    membershipId: string,
+    idempotencyKey: string,
+  ): Promise<IdempotentResponse<RemoveMembershipResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "DELETE",
+            normalizedRoute: normalizedRoutes.removeMembership,
+            key: idempotencyKey,
+            resourceTarget: { membershipId },
+            payload: {},
+            requestId,
+            statusCode: 200,
+          },
+          async () => {
+            // 每家庭串行化成员变更，让最后一位 owner 的保护免于竞态。
+            await client.query(
+              "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+              [`household-memberships:${householdId}`],
+            );
+            const targetResult = await client.query<MembershipRow>(
+              "SELECT * FROM memberships WHERE household_id = $1 AND id = $2",
+              [householdId, membershipId],
+            );
+            const target = targetResult.rows[0];
+            if (target === undefined) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Membership was not found",
+              );
+            }
+            const isSelf = target.user_id === context.userId;
+            if (context.role !== "owner" && !isSelf) {
+              throw new AppError(
+                "FORBIDDEN",
+                "Only an owner may remove other members",
+              );
+            }
+            if (target.status !== "active") {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Membership is not active",
+              );
+            }
+            if (target.role === "owner") {
+              const owners = await client.query<{ count: number }>(
+                `SELECT count(*)::int AS count
+                 FROM memberships
+                 WHERE household_id = $1
+                   AND role = 'owner'
+                   AND status = 'active'`,
+                [householdId],
+              );
+              if ((owners.rows[0]?.count ?? 0) <= 1) {
+                throw new AppError(
+                  "CONFLICT",
+                  "The last owner cannot leave or be removed",
+                );
+              }
+            }
+            const nextStatus = isSelf ? "left" : "removed";
+            const updated = await client.query<MembershipRow>(
+              `UPDATE memberships
+               SET status = $3, updated_at = clock_timestamp(),
+                   version = version + 1
+               WHERE household_id = $1 AND id = $2 AND status = 'active'
+               RETURNING *`,
+              [householdId, membershipId, nextStatus],
+            );
+            const row = updated.rows[0];
+            if (row === undefined) {
+              throw new AppError(
+                "CONFLICT",
+                "Membership changed concurrently",
+              );
+            }
+            return removeMembershipResultSchema.parse({
+              membership: mapMembership(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async createPersonProfile(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    idempotencyKey: string,
+    request: CreatePersonProfileRequest,
+  ): Promise<IdempotentResponse<PersonProfileResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        if (request.linkedMembershipId === undefined) {
+          this.#requireOwner(
+            context,
+            "Only an owner may create a dining-only profile",
+          );
+        } else if (
+          context.role !== "owner" &&
+          request.linkedMembershipId !== context.membershipId
+        ) {
+          throw new AppError(
+            "FORBIDDEN",
+            "Members may only create their own linked profile",
+          );
+        }
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute: normalizedRoutes.createPersonProfile,
+            key: idempotencyKey,
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            if (request.linkedMembershipId !== undefined) {
+              const membership = await client.query(
+                `SELECT 1
+                 FROM memberships
+                 WHERE household_id = $1 AND id = $2 AND status = 'active'`,
+                [householdId, request.linkedMembershipId],
+              );
+              if (membership.rowCount === 0) {
+                throw new AppError(
+                  "RESOURCE_NOT_FOUND",
+                  "The linked membership was not found",
+                );
+              }
+              const existing = await client.query(
+                `SELECT 1
+                 FROM person_profiles
+                 WHERE household_id = $1 AND linked_membership_id = $2`,
+                [householdId, request.linkedMembershipId],
+              );
+              if ((existing.rowCount ?? 0) > 0) {
+                throw new AppError(
+                  "CONFLICT",
+                  "This member already has a profile",
+                );
+              }
+            }
+            const now = new Date();
+            const inserted = await client.query<PersonProfileRow>(
+              `INSERT INTO person_profiles (
+                 id, household_id, linked_membership_id, display_name,
+                 status, default_participation, default_portion_scale,
+                 cooking_skill, dietary_constraints, created_at, updated_at,
+                 version
+               ) VALUES (
+                 $1, $2, $3, $4, 'active', $5, $6, $7, '[]'::jsonb, $8, $8, 0
+               )
+               RETURNING *`,
+              [
+                newEntityId(),
+                householdId,
+                request.linkedMembershipId ?? null,
+                request.displayName,
+                request.defaultParticipation ? 1 : 0,
+                request.defaultPortionScale,
+                request.cookingSkill,
+                now,
+              ],
+            );
+            const row = inserted.rows[0];
+            if (row === undefined) {
+              throw new AppError(
+                "INTERNAL_ERROR",
+                "Profile could not be created",
+              );
+            }
+            return personProfileResultSchema.parse({
+              profile: mapPersonProfile(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async patchPersonProfile(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    profileId: string,
+    idempotencyKey: string,
+    request: PatchPersonProfileRequest,
+  ): Promise<IdempotentResponse<PersonProfileResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        await this.#loadAuthorizedProfile(
+          client,
+          context,
+          householdId,
+          profileId,
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "PATCH",
+            normalizedRoute: normalizedRoutes.patchPersonProfile,
+            key: idempotencyKey,
+            resourceTarget: { profileId },
+            payload: request,
+            requestId,
+            statusCode: 200,
+          },
+          async () => {
+            const locked = await client.query<PersonProfileRow>(
+              `SELECT *
+               FROM person_profiles
+               WHERE household_id = $1 AND id = $2
+               FOR UPDATE`,
+              [householdId, profileId],
+            );
+            const before = locked.rows[0];
+            if (before === undefined) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Profile was not found",
+              );
+            }
+            if (before.version !== request.expectedVersion) {
+              throw new AppError(
+                "CONFLICT",
+                `Profile is at version ${before.version}`,
+              );
+            }
+            const now = new Date();
+            let row: PersonProfileRow | undefined;
+            if (request.operation === "archive") {
+              const updated = await client.query<PersonProfileRow>(
+                `UPDATE person_profiles
+                 SET status = 'archived', updated_at = $3,
+                     version = version + 1
+                 WHERE household_id = $1 AND id = $2 AND version = $4
+                 RETURNING *`,
+                [householdId, profileId, now, request.expectedVersion],
+              );
+              row = updated.rows[0];
+            } else {
+              const updated = await client.query<PersonProfileRow>(
+                `UPDATE person_profiles
+                 SET display_name = COALESCE($3, display_name),
+                     default_participation =
+                       COALESCE($4, default_participation),
+                     default_portion_scale =
+                       COALESCE($5, default_portion_scale),
+                     cooking_skill = COALESCE($6, cooking_skill),
+                     updated_at = $7, version = version + 1
+                 WHERE household_id = $1 AND id = $2 AND version = $8
+                 RETURNING *`,
+                [
+                  householdId,
+                  profileId,
+                  request.displayName ?? null,
+                  request.defaultParticipation === undefined
+                    ? null
+                    : request.defaultParticipation
+                      ? 1
+                      : 0,
+                  request.defaultPortionScale ?? null,
+                  request.cookingSkill ?? null,
+                  now,
+                  request.expectedVersion,
+                ],
+              );
+              row = updated.rows[0];
+            }
+            if (row === undefined) {
+              throw new AppError(
+                "CONFLICT",
+                "Profile changed concurrently",
+              );
+            }
+            return personProfileResultSchema.parse({
+              profile: mapPersonProfile(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async addDietaryConstraint(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    profileId: string,
+    idempotencyKey: string,
+    request: AddDietaryConstraintRequest,
+  ): Promise<IdempotentResponse<PersonProfileResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        await this.#loadAuthorizedProfile(
+          client,
+          context,
+          householdId,
+          profileId,
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute: normalizedRoutes.addDietaryConstraint,
+            key: idempotencyKey,
+            resourceTarget: { profileId },
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            const locked = await client.query<PersonProfileRow>(
+              `SELECT *
+               FROM person_profiles
+               WHERE household_id = $1 AND id = $2
+               FOR UPDATE`,
+              [householdId, profileId],
+            );
+            const before = locked.rows[0];
+            if (before === undefined) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Profile was not found",
+              );
+            }
+            if (before.version !== request.expectedVersion) {
+              throw new AppError(
+                "CONFLICT",
+                `Profile is at version ${before.version}`,
+              );
+            }
+            const input = request.constraint;
+            // confirmedAt / confirmedByUserId 由服务端写入，操作者即确认人；
+            // 硬约束的 confirmation 已在契约层强制（缺失 → 400）。
+            const confirmedAt = new Date().toISOString();
+            const base = {
+              id: newEntityId(),
+              kind: input.kind,
+              enforcement: input.enforcement,
+              label: input.label,
+              foodConceptIds: input.foodConceptIds,
+              visibility: input.visibility,
+              confirmedAt,
+              confirmedByUserId: context.userId,
+              ...(input.notes === undefined ? {} : { notes: input.notes }),
+            };
+            const constraint =
+              input.enforcement === "hard"
+                ? { ...base, allergenCodes: input.allergenCodes }
+                : { ...base, preference: input.preference };
+            // 防御性再校验：落库前必须满足既有 dietaryConstraintSchema。
+            const validated = dietaryConstraintSchema.parse(constraint);
+            const existing = Array.isArray(before.dietary_constraints)
+              ? before.dietary_constraints
+              : [];
+            const next = [...existing, validated];
+            const updated = await client.query<PersonProfileRow>(
+              `UPDATE person_profiles
+               SET dietary_constraints = $3::jsonb, updated_at = $4,
+                   version = version + 1
+               WHERE household_id = $1 AND id = $2 AND version = $5
+               RETURNING *`,
+              [
+                householdId,
+                profileId,
+                JSON.stringify(next),
+                new Date(),
+                request.expectedVersion,
+              ],
+            );
+            const row = updated.rows[0];
+            if (row === undefined) {
+              throw new AppError(
+                "CONFLICT",
+                "Profile changed concurrently",
+              );
+            }
+            return personProfileResultSchema.parse({
+              profile: mapPersonProfile(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async removeDietaryConstraint(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    profileId: string,
+    idempotencyKey: string,
+    request: RemoveDietaryConstraintRequest,
+  ): Promise<IdempotentResponse<PersonProfileResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        await this.#loadAuthorizedProfile(
+          client,
+          context,
+          householdId,
+          profileId,
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "DELETE",
+            normalizedRoute: normalizedRoutes.removeDietaryConstraint,
+            key: idempotencyKey,
+            resourceTarget: { profileId, constraintId: request.constraintId },
+            payload: { expectedVersion: request.expectedVersion },
+            requestId,
+            statusCode: 200,
+          },
+          async () => {
+            const locked = await client.query<PersonProfileRow>(
+              `SELECT *
+               FROM person_profiles
+               WHERE household_id = $1 AND id = $2
+               FOR UPDATE`,
+              [householdId, profileId],
+            );
+            const before = locked.rows[0];
+            if (before === undefined) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Profile was not found",
+              );
+            }
+            if (before.version !== request.expectedVersion) {
+              throw new AppError(
+                "CONFLICT",
+                `Profile is at version ${before.version}`,
+              );
+            }
+            const existing = Array.isArray(before.dietary_constraints)
+              ? before.dietary_constraints
+              : [];
+            const next = existing.filter(
+              (constraint) =>
+                typeof constraint !== "object" ||
+                constraint === null ||
+                (constraint as { id?: unknown }).id !==
+                  request.constraintId,
+            );
+            if (next.length === existing.length) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Dietary constraint was not found",
+              );
+            }
+            const updated = await client.query<PersonProfileRow>(
+              `UPDATE person_profiles
+               SET dietary_constraints = $3::jsonb, updated_at = $4,
+                   version = version + 1
+               WHERE household_id = $1 AND id = $2 AND version = $5
+               RETURNING *`,
+              [
+                householdId,
+                profileId,
+                JSON.stringify(next),
+                new Date(),
+                request.expectedVersion,
+              ],
+            );
+            const row = updated.rows[0];
+            if (row === undefined) {
+              throw new AppError(
+                "CONFLICT",
+                "Profile changed concurrently",
+              );
+            }
+            return personProfileResultSchema.parse({
+              profile: mapPersonProfile(row),
             });
           },
         );

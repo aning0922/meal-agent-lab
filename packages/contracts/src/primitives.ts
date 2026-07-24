@@ -1,11 +1,14 @@
 import { z } from "zod";
 
-export const contractVersion = "0.2.0" as const;
+export const contractVersion = "0.3.0" as const;
 
 export const userIdSchema = z.uuidv7().brand<"UserId">();
 export const authIdentityIdSchema = z.uuidv7().brand<"AuthIdentityId">();
 export const sessionIdSchema = z.uuidv7().brand<"SessionId">();
 export const householdIdSchema = z.uuidv7().brand<"HouseholdId">();
+export const householdInviteIdSchema = z
+  .uuidv7()
+  .brand<"HouseholdInviteId">();
 export const membershipIdSchema = z.uuidv7().brand<"MembershipId">();
 export const personProfileIdSchema = z.uuidv7().brand<"PersonProfileId">();
 export const dietaryConstraintIdSchema = z
@@ -29,6 +32,7 @@ export type UserId = z.infer<typeof userIdSchema>;
 export type AuthIdentityId = z.infer<typeof authIdentityIdSchema>;
 export type SessionId = z.infer<typeof sessionIdSchema>;
 export type HouseholdId = z.infer<typeof householdIdSchema>;
+export type HouseholdInviteId = z.infer<typeof householdInviteIdSchema>;
 export type MembershipId = z.infer<typeof membershipIdSchema>;
 export type PersonProfileId = z.infer<typeof personProfileIdSchema>;
 export type DietaryConstraintId = z.infer<

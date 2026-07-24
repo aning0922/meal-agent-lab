@@ -1,0 +1,747 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { Writable } from "node:stream";
+import { after, before, beforeEach, test } from "node:test";
+
+import {
+  authenticatedSessionSchema,
+  createHouseholdInviteSuccessSchema,
+  createHouseholdSuccessSchema,
+  householdInvitePageSuccessSchema,
+  joinHouseholdSuccessSchema,
+  listHouseholdMembersSuccessSchema,
+  personProfileSuccessSchema,
+  removeMembershipSuccessSchema,
+  revokeHouseholdInviteSuccessSchema,
+  wechatLoginExchangeSuccessSchema,
+  type AuthenticatedSession,
+} from "@meal-agent/contracts";
+import type { LightMyRequestResponse } from "fastify";
+
+import { buildApp } from "../../src/app.js";
+import { loadConfig } from "../../src/config.js";
+import {
+  createPersistence,
+  setHouseholdContext,
+  setUserContext,
+  withAppTransaction,
+  type Persistence,
+} from "../../src/database/pool.js";
+import { createLogger } from "../../src/logging.js";
+import { FakeWechatAdapter } from "../../src/wechat/fake.js";
+
+const databaseUrl = process.env["TEST_DATABASE_URL"];
+if (databaseUrl === undefined) {
+  throw new Error("TEST_DATABASE_URL is required");
+}
+
+const config = loadConfig({
+  NODE_ENV: "test",
+  LOG_LEVEL: "info",
+  DATABASE_URL: databaseUrl,
+  DATABASE_APP_ROLE: "meal_agent_app",
+  WECHAT_ADAPTER: "fake",
+  SESSION_ABSOLUTE_TTL_DAYS: "30",
+  SESSION_IDLE_TTL_DAYS: "7",
+});
+
+let logs = "";
+const logStream = new Writable({
+  write(chunk, _encoding, callback) {
+    logs += chunk.toString();
+    callback();
+  },
+});
+let persistence: Persistence;
+let app: Awaited<ReturnType<typeof buildApp>>;
+
+before(async () => {
+  persistence = createPersistence(config);
+  app = await buildApp({
+    config,
+    persistence,
+    wechatAdapter: new FakeWechatAdapter(),
+    logger: createLogger("info", logStream),
+    closePersistence: true,
+  });
+  await app.ready();
+});
+
+beforeEach(async () => {
+  logs = "";
+  await persistence.pool.query(`
+    TRUNCATE TABLE
+      idempotency_records,
+      inventory_events,
+      inventory_lots,
+      person_profiles,
+      household_invites,
+      memberships,
+      households,
+      sessions,
+      auth_identities,
+      users
+    CASCADE
+  `);
+});
+
+after(async () => {
+  await app.close();
+});
+
+const login = async (code: string): Promise<AuthenticatedSession> => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/wechat/exchange",
+    payload: { loginCode: code },
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  return wechatLoginExchangeSuccessSchema.parse(response.json()).data;
+};
+
+const authHeaders = (session: AuthenticatedSession) => ({
+  authorization: `Bearer ${session.accessToken}`,
+});
+
+// 幂等键契约要求 16–128 字符；测试里用短名做键，这里统一补齐到合法长度
+// （确定性变换，保证重放用同名仍命中同一条幂等记录）。
+const normalizeKey = (key: string): string =>
+  `s08-${key}`.padEnd(16, "0").slice(0, 128);
+
+const idempotent = (session: AuthenticatedSession, key: string) => ({
+  ...authHeaders(session),
+  "idempotency-key": normalizeKey(key),
+});
+
+const createHousehold = async (
+  session: AuthenticatedSession,
+  key: string,
+  name = "测试家庭",
+) => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/households",
+    headers: idempotent(session, key),
+    payload: {
+      name,
+      timezone: "Asia/Shanghai",
+      locale: "zh-CN",
+      ownerProfile: {
+        displayName: `${name}户主`,
+        defaultPortionScale: 1,
+        cookingSkill: "beginner",
+      },
+    },
+  });
+  assert.equal(response.statusCode, 201, response.body);
+  return createHouseholdSuccessSchema.parse(response.json()).data;
+};
+
+const createInvite = (
+  session: AuthenticatedSession,
+  householdId: string,
+  key: string,
+  body: { maxUses?: number; expiresInHours?: number } = {},
+): Promise<LightMyRequestResponse> =>
+  app.inject({
+    method: "POST",
+    url: `/api/v1/households/${householdId}/invites`,
+    headers: idempotent(session, key),
+    payload: body,
+  });
+
+const issueInvite = async (
+  session: AuthenticatedSession,
+  householdId: string,
+  key: string,
+  body: { maxUses?: number; expiresInHours?: number } = {},
+) => {
+  const response = await createInvite(session, householdId, key, body);
+  assert.equal(response.statusCode, 201, response.body);
+  return createHouseholdInviteSuccessSchema.parse(response.json()).data;
+};
+
+const join = (
+  session: AuthenticatedSession,
+  inviteCode: string,
+  key: string,
+): Promise<LightMyRequestResponse> =>
+  app.inject({
+    method: "POST",
+    url: "/api/v1/households/join",
+    headers: idempotent(session, key),
+    payload: { inviteCode },
+  });
+
+const listMembers = (
+  session: AuthenticatedSession,
+  householdId: string,
+): Promise<LightMyRequestResponse> =>
+  app.inject({
+    method: "GET",
+    url: `/api/v1/households/${householdId}/members`,
+    headers: authHeaders(session),
+  });
+
+const createProfile = (
+  session: AuthenticatedSession,
+  householdId: string,
+  key: string,
+  body: Record<string, unknown>,
+): Promise<LightMyRequestResponse> =>
+  app.inject({
+    method: "POST",
+    url: `/api/v1/households/${householdId}/person-profiles`,
+    headers: idempotent(session, key),
+    payload: body,
+  });
+
+const addConstraint = (
+  session: AuthenticatedSession,
+  householdId: string,
+  profileId: string,
+  key: string,
+  body: Record<string, unknown>,
+): Promise<LightMyRequestResponse> =>
+  app.inject({
+    method: "POST",
+    url: `/api/v1/households/${householdId}/person-profiles/${profileId}/dietary-constraints`,
+    headers: idempotent(session, key),
+    payload: body,
+  });
+
+const sha256Hex = (value: string): string =>
+  createHash("sha256").update(value).digest("hex");
+
+// 虚构的敏感样例，供 redaction 测试使用（非真实个人数据）。
+const privateHardConstraint = (label: string) => ({
+  expectedVersion: 0,
+  constraint: {
+    kind: "allergy" as const,
+    enforcement: "hard" as const,
+    label,
+    allergenCodes: ["FICTION_TREE_NUT"],
+    visibility: "subject_and_owner" as const,
+    confirmation: { acknowledged: true as const },
+  },
+});
+
+test("invite stores only a digest, returns plaintext once, and lists without secrets", async () => {
+  const owner = await login("invite-owner");
+  const household = await createHousehold(owner, "invite-owner-hh");
+  const householdId = household.household.id;
+
+  const created = await issueInvite(owner, householdId, "invite-key-1", {
+    maxUses: 3,
+  });
+  assert.match(created.inviteCode, /^[A-Za-z0-9_-]{22,128}$/);
+  assert.equal(created.invite.status, "active");
+  assert.equal(created.invite.usedCount, 0);
+  assert.equal(created.invite.maxUses, 3);
+  // 实体不含明文或 digest 字段（strict schema 已保证；这里再断言运行时）。
+  assert.equal("code" in created.invite, false);
+  assert.equal("codeDigest" in created.invite, false);
+
+  // 库里只有 digest，且等于明文码的 sha256。
+  const stored = await persistence.pool.query<{
+    code_digest: string;
+    plaintext: string | null;
+  }>(
+    `SELECT code_digest,
+            to_jsonb(household_invites) ->> 'code' AS plaintext
+     FROM household_invites WHERE id = $1`,
+    [created.invite.id],
+  );
+  assert.equal(stored.rows[0]?.code_digest, sha256Hex(created.inviteCode));
+  assert.equal(stored.rows[0]?.plaintext, null);
+
+  // 列表响应不泄露明文/digest。
+  const listResponse = await app.inject({
+    method: "GET",
+    url: `/api/v1/households/${householdId}/invites`,
+    headers: authHeaders(owner),
+  });
+  assert.equal(listResponse.statusCode, 200, listResponse.body);
+  const page = householdInvitePageSuccessSchema.parse(listResponse.json());
+  assert.equal(page.data.items.length, 1);
+  assert.equal(JSON.stringify(page.data).includes(created.inviteCode), false);
+
+  // 明文邀请码不得进入日志（幂等缓存里存的是响应体，也不含明文）。
+  assert.equal(logs.includes(created.inviteCode), false);
+});
+
+test("all four invalid invite states are rejected with a 404 that hides the household", async () => {
+  const owner = await login("invite-reject-owner");
+  const household = await createHousehold(owner, "invite-reject-hh");
+  const householdId = household.household.id;
+  const outsider = await login("invite-reject-outsider");
+
+  // 无效码。
+  const invalid = await join(outsider, "Z".repeat(32), "join-invalid");
+  assert.equal(invalid.statusCode, 404, invalid.body);
+
+  // 撤销。
+  const revokedInvite = await issueInvite(owner, householdId, "inv-rev");
+  const revokeResponse = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/households/${householdId}/invites/${revokedInvite.invite.id}`,
+    headers: idempotent(owner, "revoke-key-1"),
+  });
+  assert.equal(revokeResponse.statusCode, 200, revokeResponse.body);
+  revokeHouseholdInviteSuccessSchema.parse(revokeResponse.json());
+  const revokedJoin = await join(
+    outsider,
+    revokedInvite.inviteCode,
+    "join-revoked",
+  );
+  assert.equal(revokedJoin.statusCode, 404);
+
+  // 过期：把 created_at/expires_at 一起挪到过去（CHECK 要求 expires_at >
+  // created_at，故不能只改 expires_at 到 created_at 之前）。
+  const expiredInvite = await issueInvite(owner, householdId, "inv-exp");
+  await persistence.pool.query(
+    `UPDATE household_invites
+     SET created_at = clock_timestamp() - interval '2 days',
+         expires_at = clock_timestamp() - interval '1 day'
+     WHERE id = $1`,
+    [expiredInvite.invite.id],
+  );
+  const expiredJoin = await join(
+    outsider,
+    expiredInvite.inviteCode,
+    "join-expired",
+  );
+  assert.equal(expiredJoin.statusCode, 404);
+
+  // 用尽（maxUses=1，先让一人用掉）。
+  const exhaustInvite = await issueInvite(owner, householdId, "inv-exh", {
+    maxUses: 1,
+  });
+  const firstUser = await login("invite-exhaust-first");
+  const firstJoin = await join(
+    firstUser,
+    exhaustInvite.inviteCode,
+    "join-exhaust-1",
+  );
+  assert.equal(firstJoin.statusCode, 201, firstJoin.body);
+  const secondUser = await login("invite-exhaust-second");
+  const secondJoin = await join(
+    secondUser,
+    exhaustInvite.inviteCode,
+    "join-exhaust-2",
+  );
+  assert.equal(secondJoin.statusCode, 404);
+
+  // 全部失败态返回体一律不含 householdId，不泄露家庭存在性。
+  for (const response of [invalid, revokedJoin, expiredJoin, secondJoin]) {
+    assert.equal(response.body.includes(householdId), false);
+  }
+});
+
+test("join is user-idempotent, rejects a repeat member, and never over-issues under concurrency", async () => {
+  const owner = await login("join-owner");
+  const household = await createHousehold(owner, "join-owner-hh");
+  const invite = await issueInvite(owner, household.household.id, "join-inv", {
+    maxUses: 2,
+  });
+
+  const member = await login("join-member");
+  const first = await join(member, invite.inviteCode, "join-key-a");
+  assert.equal(first.statusCode, 201, first.body);
+  const firstResult = joinHouseholdSuccessSchema.parse(first.json());
+  assert.equal(firstResult.data.membership.role, "member");
+  assert.equal(firstResult.meta.idempotency?.replayed, false);
+  const membershipId = firstResult.data.membership.id;
+
+  // 同键同体重放 → 同一 membership。
+  const replay = await join(member, invite.inviteCode, "join-key-a");
+  assert.equal(replay.statusCode, 201, replay.body);
+  const replayResult = joinHouseholdSuccessSchema.parse(replay.json());
+  assert.equal(replayResult.meta.idempotency?.replayed, true);
+  assert.equal(replayResult.data.membership.id, membershipId);
+
+  // 新键再加入 → 已是成员 409。
+  const repeat = await join(member, invite.inviteCode, "join-key-b");
+  assert.equal(repeat.statusCode, 409);
+
+  // 并发：maxUses=1 的邀请被两个不同用户同时消费，恰好一个成功。
+  const soleInvite = await issueInvite(
+    owner,
+    household.household.id,
+    "sole-inv",
+    { maxUses: 1 },
+  );
+  const racerB = await login("join-racer-b");
+  const racerC = await login("join-racer-c");
+  const [raceB, raceC] = await Promise.all([
+    join(racerB, soleInvite.inviteCode, "race-b"),
+    join(racerC, soleInvite.inviteCode, "race-c"),
+  ]);
+  const statuses = [raceB.statusCode, raceC.statusCode].sort();
+  assert.deepEqual(statuses, [201, 404]);
+  const usage = await persistence.pool.query<{
+    used_count: number;
+    status: string;
+  }>("SELECT used_count, status FROM household_invites WHERE id = $1", [
+    soleInvite.invite.id,
+  ]);
+  assert.equal(usage.rows[0]?.used_count, 1);
+  assert.equal(usage.rows[0]?.status, "exhausted");
+});
+
+test("authorization matrix: members cannot manage invites, other members, or foreign households", async () => {
+  const owner = await login("authz-owner");
+  const household = await createHousehold(owner, "authz-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "authz-inv", {
+    maxUses: 5,
+  });
+  const member = await login("authz-member");
+  const joinResponse = await join(member, invite.inviteCode, "authz-join");
+  assert.equal(joinResponse.statusCode, 201, joinResponse.body);
+  const memberMembershipId = joinHouseholdSuccessSchema.parse(
+    joinResponse.json(),
+  ).data.membership.id;
+
+  // member 不能签发邀请。
+  const memberInvite = await createInvite(member, householdId, "m-inv");
+  assert.equal(memberInvite.statusCode, 403);
+
+  // member 不能撤销邀请。
+  const memberRevoke = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/households/${householdId}/invites/${invite.invite.id}`,
+    headers: idempotent(member, "m-revoke"),
+  });
+  assert.equal(memberRevoke.statusCode, 403);
+
+  // member 不能移除他人（这里尝试移除 owner）。
+  const ownerMembershipId = household.membership.id;
+  const memberRemovesOwner = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/households/${householdId}/memberships/${ownerMembershipId}`,
+    headers: idempotent(member, "m-remove-owner"),
+  });
+  assert.equal(memberRemovesOwner.statusCode, 403);
+
+  // 跨家庭：member 访问一个自己不属于的家庭 → 404（不泄露存在性）。
+  const otherOwner = await login("authz-other-owner");
+  const otherHousehold = await createHousehold(otherOwner, "authz-other-hh");
+  const crossMembers = await listMembers(
+    member,
+    otherHousehold.household.id,
+  );
+  assert.equal(crossMembers.statusCode, 404);
+
+  // owner 移除 member 成功；被移除者下一请求立即 404。
+  const removed = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/households/${householdId}/memberships/${memberMembershipId}`,
+    headers: idempotent(owner, "owner-remove-member"),
+  });
+  assert.equal(removed.statusCode, 200, removed.body);
+  removeMembershipSuccessSchema.parse(removed.json());
+  const afterRemoval = await listMembers(member, householdId);
+  assert.equal(afterRemoval.statusCode, 404);
+
+  // 最后一位 owner 不可被移除。
+  const lastOwner = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/households/${householdId}/memberships/${ownerMembershipId}`,
+    headers: idempotent(owner, "owner-remove-self"),
+  });
+  assert.equal(lastOwner.statusCode, 409);
+});
+
+test("hard dietary constraints demand confirmation and record who confirmed; soft ones do not", async () => {
+  const owner = await login("confirm-owner");
+  const household = await createHousehold(owner, "confirm-hh");
+  const householdId = household.household.id;
+  const profileId = household.ownerProfile.id;
+
+  // 无 confirmation 的硬约束 → 400（契约层拒绝）。
+  const missingConfirmation = await addConstraint(
+    owner,
+    householdId,
+    profileId,
+    "hard-noconfirm",
+    {
+      expectedVersion: 0,
+      constraint: {
+        kind: "allergy",
+        enforcement: "hard",
+        label: "虚构花生过敏",
+        allergenCodes: ["FICTION_PEANUT"],
+        visibility: "household",
+      },
+    },
+  );
+  assert.equal(missingConfirmation.statusCode, 400);
+
+  // allergy 无结构化编码 → 400。
+  const noCode = await addConstraint(
+    owner,
+    householdId,
+    profileId,
+    "hard-nocode",
+    {
+      expectedVersion: 0,
+      constraint: {
+        kind: "allergy",
+        enforcement: "hard",
+        label: "缺编码过敏",
+        visibility: "household",
+        confirmation: { acknowledged: true },
+      },
+    },
+  );
+  assert.equal(noCode.statusCode, 400);
+
+  // 合法硬约束 → 201，服务端写入 confirmedAt + confirmedByUserId=操作者。
+  const added = await addConstraint(
+    owner,
+    householdId,
+    profileId,
+    "hard-ok",
+    {
+      expectedVersion: 0,
+      constraint: {
+        kind: "allergy",
+        enforcement: "hard",
+        label: "虚构花生过敏",
+        allergenCodes: ["FICTION_PEANUT"],
+        visibility: "household",
+        confirmation: { acknowledged: true },
+      },
+    },
+  );
+  assert.equal(added.statusCode, 201, added.body);
+  const profile = personProfileSuccessSchema.parse(added.json()).data.profile;
+  assert.equal(profile.dietaryConstraints.length, 1);
+  const constraint = profile.dietaryConstraints[0];
+  assert.equal(constraint?.confirmedByUserId, owner.user.id);
+  assert.equal(typeof constraint?.confirmedAt, "string");
+  assert.equal(profile.version, 1);
+});
+
+test("household view is structurally free of subject_and_owner constraints; owner and self still see them", async () => {
+  const owner = await login("redact-owner");
+  const household = await createHousehold(owner, "redact-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "redact-inv", {
+    maxUses: 5,
+  });
+
+  // 成员 B 加入并建立自己的档案，录入 subject_and_owner 硬约束（双确认）。
+  const memberB = await login("redact-member-b");
+  const joinB = joinHouseholdSuccessSchema.parse(
+    (await join(memberB, invite.inviteCode, "redact-join-b")).json(),
+  );
+  const profileResponse = await createProfile(
+    memberB,
+    householdId,
+    "redact-b-profile",
+    {
+      linkedMembershipId: joinB.data.membership.id,
+      displayName: "成员B",
+      defaultParticipation: true,
+      defaultPortionScale: 1,
+      cookingSkill: "beginner",
+    },
+  );
+  assert.equal(profileResponse.statusCode, 201, profileResponse.body);
+  const profileB = personProfileSuccessSchema.parse(
+    profileResponse.json(),
+  ).data.profile;
+  const privateAdd = await addConstraint(
+    memberB,
+    householdId,
+    profileB.id,
+    "redact-b-constraint",
+    privateHardConstraint("虚构坚果忌口"),
+  );
+  assert.equal(privateAdd.statusCode, 201, privateAdd.body);
+
+  // 第三成员 C 加入。
+  const memberC = await login("redact-member-c");
+  const joinC = await join(memberC, invite.inviteCode, "redact-join-c");
+  assert.equal(joinC.statusCode, 201, joinC.body);
+
+  // owner 视图：能看到 B 的私密约束。
+  const ownerView = listHouseholdMembersSuccessSchema.parse(
+    (await listMembers(owner, householdId)).json(),
+  ).data;
+  assert.equal(ownerView.viewerRole, "owner");
+  if (ownerView.viewerRole !== "owner") {
+    return;
+  }
+  const ownerSeesB = ownerView.members.find(
+    (entry) => entry.membership.id === joinB.data.membership.id,
+  );
+  assert.equal(
+    ownerSeesB?.profile?.dietaryConstraints.some(
+      (constraint) => constraint.visibility === "subject_and_owner",
+    ),
+    true,
+  );
+
+  // C 的 member 视图：本人在 self，其余在 others；others 结构上不含私密约束。
+  const cView = listHouseholdMembersSuccessSchema.parse(
+    (await listMembers(memberC, householdId)).json(),
+  ).data;
+  assert.equal(cView.viewerRole, "member");
+  if (cView.viewerRole !== "member") {
+    return;
+  }
+  const cSeesB = cView.others.find(
+    (entry) => entry.membership.id === joinB.data.membership.id,
+  );
+  assert.notEqual(cSeesB, undefined);
+  for (const entry of cView.others) {
+    for (const constraint of entry.profile?.dietaryConstraints ?? []) {
+      assert.equal(constraint.visibility, "household");
+    }
+  }
+  // 序列化后整个 others 里不出现私密约束的标签。
+  assert.equal(JSON.stringify(cView.others).includes("虚构坚果忌口"), false);
+
+  // 日志不泄露私密约束标签。
+  assert.equal(logs.includes("虚构坚果忌口"), false);
+});
+
+test("profile edits enforce optimistic concurrency and idempotent replay", async () => {
+  const owner = await login("concurrency-owner");
+  const household = await createHousehold(owner, "concurrency-hh");
+  const householdId = household.household.id;
+  const profileId = household.ownerProfile.id;
+
+  // 过期 expectedVersion → 409。
+  const stale = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/households/${householdId}/person-profiles/${profileId}`,
+    headers: idempotent(owner, "patch-stale"),
+    payload: { operation: "update", expectedVersion: 5, displayName: "改名" },
+  });
+  assert.equal(stale.statusCode, 409);
+
+  // 正确版本 → 200，version 递增。
+  const updated = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/households/${householdId}/person-profiles/${profileId}`,
+    headers: idempotent(owner, "patch-ok"),
+    payload: { operation: "update", expectedVersion: 0, displayName: "新户主名" },
+  });
+  assert.equal(updated.statusCode, 200, updated.body);
+  const updatedProfile = personProfileSuccessSchema.parse(
+    updated.json(),
+  ).data.profile;
+  assert.equal(updatedProfile.displayName, "新户主名");
+  assert.equal(updatedProfile.version, 1);
+
+  // 加约束后同键重放 → 同一结果、不重复追加。
+  const addKey = "add-idem";
+  const addBody = {
+    expectedVersion: 1,
+    constraint: {
+      kind: "preference" as const,
+      enforcement: "soft" as const,
+      label: "少油",
+      preference: "dislike" as const,
+      visibility: "household" as const,
+    },
+  };
+  const firstAdd = await addConstraint(
+    owner,
+    householdId,
+    profileId,
+    addKey,
+    addBody,
+  );
+  assert.equal(firstAdd.statusCode, 201, firstAdd.body);
+  const afterFirst = personProfileSuccessSchema.parse(firstAdd.json()).data
+    .profile;
+  assert.equal(afterFirst.dietaryConstraints.length, 1);
+  assert.equal(afterFirst.version, 2);
+
+  const replayAdd = await addConstraint(
+    owner,
+    householdId,
+    profileId,
+    addKey,
+    addBody,
+  );
+  assert.equal(replayAdd.statusCode, 201, replayAdd.body);
+  const afterReplay = personProfileSuccessSchema.parse(replayAdd.json()).data
+    .profile;
+  assert.equal(afterReplay.dietaryConstraints.length, 1);
+  assert.equal(afterReplay.version, 2);
+});
+
+test("member RLS: second member works, and each missing bootstrap context is denied", async () => {
+  const owner = await login("rls-owner");
+  const household = await createHousehold(owner, "rls-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "rls-inv");
+  const member = await login("rls-member");
+  const joinResult = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "rls-join")).json(),
+  );
+  const memberUserId = member.user.id;
+  const memberMembershipId = joinResult.data.membership.id;
+
+  // 第二成员真实用例：member 能读取成员列表（member 视图）。
+  const memberList = await listMembers(member, householdId);
+  assert.equal(memberList.statusCode, 200, memberList.body);
+  const view = listHouseholdMembersSuccessSchema.parse(memberList.json()).data;
+  assert.equal(view.viewerRole, "member");
+
+  // 反向：三类 bootstrap 单独缺失，直接以 meal_agent_app 角色查询都应 0 行。
+  const outsider = await login("rls-outsider");
+
+  const missingUser = await withAppTransaction(persistence, async (client) => {
+    // 只设 household，不设 user。
+    await setHouseholdContext(client, householdId);
+    return client.query("SELECT id FROM memberships WHERE household_id = $1", [
+      householdId,
+    ]);
+  });
+  assert.equal(missingUser.rowCount, 0);
+
+  const missingHousehold = await withAppTransaction(
+    persistence,
+    async (client) => {
+      // 只设 user，不设 household：household 作用域策略要求匹配 household。
+      await setUserContext(client, memberUserId);
+      return client.query(
+        "SELECT id FROM person_profiles WHERE household_id = $1",
+        [householdId],
+      );
+    },
+  );
+  assert.equal(missingHousehold.rowCount, 0);
+
+  const missingMembership = await withAppTransaction(
+    persistence,
+    async (client) => {
+      // user + household 都设，但该 user 不是成员。
+      await setUserContext(client, outsider.user.id);
+      await setHouseholdContext(client, householdId);
+      return client.query(
+        "SELECT id FROM person_profiles WHERE household_id = $1",
+        [householdId],
+      );
+    },
+  );
+  assert.equal(missingMembership.rowCount, 0);
+
+  // 正向对照：成员 + household 上下文齐全时能看到成员行。
+  const present = await withAppTransaction(persistence, async (client) => {
+    await setUserContext(client, memberUserId);
+    await setHouseholdContext(client, householdId);
+    return client.query(
+      "SELECT id FROM memberships WHERE household_id = $1 AND id = $2",
+      [householdId, memberMembershipId],
+    );
+  });
+  assert.equal(present.rowCount, 1);
+});

@@ -133,10 +133,12 @@ try {
            AND table_type = 'BASE TABLE'
          ORDER BY table_name`,
       );
+      // 空库两文件全量成功：主库已由上面的 applyMigrations 建好全部表。
       assert.deepEqual(
         tables.rows.map((row) => row.table_name),
         [
           "auth_identities",
+          "household_invites",
           "households",
           "idempotency_records",
           "inventory_events",
@@ -150,6 +152,75 @@ try {
     } finally {
       await pool.end();
     }
+
+    // 增量应用 + checksum 校验：新建第二个库，先只上 0000（断言此时没有
+    // household_invites），再单独增量上 0001（断言表出现、0000 未重跑），
+    // 最后篡改存储 hash 证明 checksum 守卫会拒绝漂移。
+    const incrementalDatabase = "meal_agent_incremental_test";
+    await run(
+      join(postgresBin, "createdb"),
+      [incrementalDatabase],
+      environment,
+    );
+    const incrementalUrl = `postgresql://postgres@127.0.0.1:${port}/${incrementalDatabase}`;
+
+    await applyMigrations(incrementalUrl, {
+      onlyThrough: "0000_stage_06.sql",
+    });
+    const baselinePool = new Pool({ connectionString: incrementalUrl });
+    try {
+      const invitesBefore = await baselinePool.query<{
+        present: string | null;
+      }>("SELECT to_regclass('public.household_invites') AS present");
+      assert.equal(
+        invitesBefore.rows[0]?.present,
+        null,
+        "household_invites must not exist before 0001 is applied",
+      );
+      const appliedBaseline = await baselinePool.query<{ name: string }>(
+        "SELECT name FROM drizzle.__meal_agent_migrations ORDER BY name",
+      );
+      assert.deepEqual(
+        appliedBaseline.rows.map((row) => row.name),
+        ["0000_stage_06.sql"],
+      );
+    } finally {
+      await baselinePool.end();
+    }
+
+    await applyMigrations(incrementalUrl);
+    const incrementalPool = new Pool({ connectionString: incrementalUrl });
+    try {
+      const invitesAfter = await incrementalPool.query<{
+        present: string | null;
+      }>("SELECT to_regclass('public.household_invites') AS present");
+      assert.notEqual(
+        invitesAfter.rows[0]?.present,
+        null,
+        "household_invites must exist after 0001 is applied incrementally",
+      );
+      const appliedIncrement = await incrementalPool.query<{ name: string }>(
+        "SELECT name FROM drizzle.__meal_agent_migrations ORDER BY name",
+      );
+      assert.deepEqual(
+        appliedIncrement.rows.map((row) => row.name),
+        ["0000_stage_06.sql", "0001_stage_08.sql"],
+      );
+      // 重复应用是幂等 no-op：全部 checksum 匹配，不抛错、不重跑。
+      await applyMigrations(incrementalUrl);
+      // checksum 守卫：把 0001 的存储 hash 改坏后再应用必须抛错。
+      await incrementalPool.query(
+        `UPDATE drizzle.__meal_agent_migrations
+         SET hash = repeat('0', 64)
+         WHERE name = '0001_stage_08.sql'`,
+      );
+      await assert.rejects(
+        applyMigrations(incrementalUrl),
+        /changed checksum/,
+      );
+    } finally {
+      await incrementalPool.end();
+    }
   } else {
     const testsDirectory = new URL("../tests/database/", import.meta.url);
     const testFiles = (await readdir(testsDirectory))
@@ -159,7 +230,9 @@ try {
     assert.ok(testFiles.length > 0, "database tests are required");
     await run(
       process.execPath,
-      ["--import", "tsx", "--test", ...testFiles],
+      // 多个数据库测试文件共享同一套一次性库；串行执行文件，避免各文件
+      // beforeEach 的 TRUNCATE 相互竞态。
+      ["--import", "tsx", "--test", "--test-concurrency=1", ...testFiles],
       {
         ...process.env,
         TEST_DATABASE_URL: databaseUrl,

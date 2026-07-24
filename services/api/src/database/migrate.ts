@@ -44,7 +44,18 @@ const prepareMigrationMetadata = async (
   `);
 };
 
-export const applyMigrations = async (databaseUrl: string): Promise<void> => {
+export interface ApplyMigrationsOptions {
+  /**
+   * 只应用文件名 <= 该值的迁移（含），用于验证多文件序列的增量应用：
+   * 先只上 0000，再单独增量上 0001。缺省应用全部待应用迁移。
+   */
+  readonly onlyThrough?: string;
+}
+
+export const applyMigrations = async (
+  databaseUrl: string,
+  options: ApplyMigrationsOptions = {},
+): Promise<void> => {
   const pool = new Pool({
     connectionString: databaseUrl,
     max: 1,
@@ -57,6 +68,12 @@ export const applyMigrations = async (databaseUrl: string): Promise<void> => {
     await prepareMigrationMetadata(client);
 
     for (const migration of await readMigrations()) {
+      if (
+        options.onlyThrough !== undefined &&
+        migration.name > options.onlyThrough
+      ) {
+        break;
+      }
       const existing = await client.query<{ hash: string }>(
         "SELECT hash FROM drizzle.__meal_agent_migrations WHERE name = $1",
         [migration.name],

@@ -216,6 +216,59 @@ export const memberships = pgTable(
   ],
 );
 
+export const householdInvites = pgTable(
+  "household_invites",
+  {
+    id: uuid("id").primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id),
+    createdByUserId: uuid("created_by_user_id").notNull(),
+    codeDigest: char("code_digest", { length: 64 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull(),
+    maxUses: integer("max_uses").notNull(),
+    usedCount: integer("used_count").notNull().default(0),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    version: integer("version").notNull().default(0),
+  },
+  (table) => [
+    unique("household_invites_code_digest_unique").on(table.codeDigest),
+    foreignKey({
+      name: "household_invites_creator_membership_foreign",
+      columns: [table.householdId, table.createdByUserId],
+      foreignColumns: [memberships.householdId, memberships.userId],
+    }),
+    check(
+      "household_invites_status_check",
+      sql`${table.status} IN ('active', 'revoked', 'exhausted', 'expired')`,
+    ),
+    check(
+      "household_invites_max_uses_check",
+      sql`${table.maxUses} BETWEEN 1 AND 10`,
+    ),
+    check(
+      "household_invites_used_count_check",
+      sql`${table.usedCount} >= 0 AND ${table.usedCount} <= ${table.maxUses}`,
+    ),
+    check(
+      "household_invites_expiry_check",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '7 days'`,
+    ),
+    check("household_invites_version_check", sql`${table.version} >= 0`),
+    index("household_invites_household_status_index").on(
+      table.householdId,
+      table.status,
+    ),
+  ],
+);
+
 export const personProfiles = pgTable(
   "person_profiles",
   {
@@ -580,6 +633,7 @@ export const stage06Tables = {
   sessions,
   households,
   memberships,
+  householdInvites,
   personProfiles,
   inventoryLots,
   inventoryEvents,

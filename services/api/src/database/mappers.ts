@@ -2,14 +2,20 @@ import {
   householdSchema,
   membershipSchema,
   personProfileSchema,
+  safeOwnerProfileResponseSchema,
   sessionSchema,
   userSchema,
   type Household,
   type Membership,
   type PersonProfile,
+  type SafeOwnerProfileResponse,
   type Session,
   type User,
 } from "@meal-agent/contracts/identity";
+import {
+  householdInviteSchema,
+  type HouseholdInvite,
+} from "@meal-agent/contracts/members";
 import {
   inventoryEventSchema,
   inventoryLotSchema,
@@ -80,6 +86,18 @@ export interface PersonProfileRow {
   readonly dietary_constraints: unknown;
   readonly created_at: TimestampValue;
   readonly updated_at: TimestampValue;
+  readonly version: number;
+}
+
+export interface HouseholdInviteRow {
+  readonly id: string;
+  readonly household_id: string;
+  readonly created_by_user_id: string;
+  readonly status: string;
+  readonly max_uses: number;
+  readonly used_count: number;
+  readonly expires_at: TimestampValue;
+  readonly created_at: TimestampValue;
   readonly version: number;
 }
 
@@ -186,23 +204,67 @@ export const mapMembership = (row: MembershipRow): Membership =>
     version: row.version,
   });
 
+const personProfileFields = (
+  row: PersonProfileRow,
+  dietaryConstraints: unknown,
+) => ({
+  id: row.id,
+  householdId: row.household_id,
+  ...(row.linked_membership_id === null
+    ? {}
+    : { linkedMembershipId: row.linked_membership_id }),
+  displayName: row.display_name,
+  status: row.status,
+  defaultParticipation: row.default_participation === 1,
+  defaultPortionScale: Number(row.default_portion_scale),
+  cookingSkill: row.cooking_skill,
+  dietaryConstraints,
+  createdAt: toIsoString(row.created_at),
+  updatedAt: toIsoString(row.updated_at),
+  version: row.version,
+});
+
 export const mapPersonProfile = (
   row: PersonProfileRow,
 ): PersonProfile =>
-  personProfileSchema.parse({
+  personProfileSchema.parse(
+    personProfileFields(row, row.dietary_constraints),
+  );
+
+/**
+ * household 视图脱敏：先剔除 subject_and_owner 约束，再用
+ * safeOwnerProfileResponseSchema 解析——若过滤有漏，schema 会直接抛错，
+ * 保证私密约束在结构上不可能出现在脱敏投影里。
+ */
+export const mapRedactedPersonProfile = (
+  row: PersonProfileRow,
+): SafeOwnerProfileResponse => {
+  const constraints = Array.isArray(row.dietary_constraints)
+    ? row.dietary_constraints.filter(
+        (constraint) =>
+          typeof constraint === "object" &&
+          constraint !== null &&
+          (constraint as { visibility?: unknown }).visibility ===
+            "household",
+      )
+    : [];
+  return safeOwnerProfileResponseSchema.parse(
+    personProfileFields(row, constraints),
+  );
+};
+
+export const mapHouseholdInvite = (
+  row: HouseholdInviteRow,
+): HouseholdInvite =>
+  householdInviteSchema.parse({
     id: row.id,
     householdId: row.household_id,
-    ...(row.linked_membership_id === null
-      ? {}
-      : { linkedMembershipId: row.linked_membership_id }),
-    displayName: row.display_name,
+    createdByUserId: row.created_by_user_id,
     status: row.status,
-    defaultParticipation: row.default_participation === 1,
-    defaultPortionScale: Number(row.default_portion_scale),
-    cookingSkill: row.cooking_skill,
-    dietaryConstraints: row.dietary_constraints,
+    maxUses: row.max_uses,
+    usedCount: row.used_count,
+    expiresAt: toIsoString(row.expires_at),
     createdAt: toIsoString(row.created_at),
-    updatedAt: toIsoString(row.updated_at),
     version: row.version,
   });
 

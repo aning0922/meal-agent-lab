@@ -1,6 +1,6 @@
 {
   "name": "@meal-agent/contracts",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Runtime-validatable shared contracts for Meal Agent clients and services",
   "license": "UNLICENSED",
@@ -31,6 +31,10 @@
     "./inventory": {
       "types": "./dist/inventory.d.ts",
       "import": "./dist/inventory.js"
+    },
+    "./members": {
+      "types": "./dist/members.d.ts",
+      "import": "./dist/members.js"
     },
     "./meals": {
       "types": "./dist/meals.d.ts",

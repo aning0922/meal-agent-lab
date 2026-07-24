@@ -14,6 +14,14 @@ const requiredPaths = [
   "/api/v1/households",
   "/api/v1/households/{id}/inventory-lots",
   "/api/v1/households/{id}/inventory-lots/{lotId}/events/consumed",
+  "/api/v1/households/{id}/invites",
+  "/api/v1/households/{id}/invites/{inviteId}",
+  "/api/v1/households/join",
+  "/api/v1/households/{id}/members",
+  "/api/v1/households/{id}/memberships/{membershipId}",
+  "/api/v1/households/{id}/person-profiles",
+  "/api/v1/households/{id}/person-profiles/{profileId}",
+  "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints",
 ] as const;
 
 const generated = await generateOpenApiDocument();

@@ -16,6 +16,15 @@ import {
   createInventoryLotResultSchema,
   inventoryLotSchema,
 } from "./inventory.js";
+import {
+  createHouseholdInviteResultSchema,
+  householdInviteSchema,
+  joinHouseholdResultSchema,
+  listHouseholdMembersResultSchema,
+  personProfileResultSchema,
+  removeMembershipResultSchema,
+  revokeHouseholdInviteResultSchema,
+} from "./members.js";
 
 export const serviceLivenessSchema = z.strictObject({
   status: z.literal("ok"),
@@ -50,6 +59,13 @@ export const inventoryLotPageSchema =
   createPaginatedDataSchema(inventoryLotSchema);
 export type InventoryLotPage = z.infer<typeof inventoryLotPageSchema>;
 
+export const householdInvitePageSchema = createPaginatedDataSchema(
+  householdInviteSchema,
+);
+export type HouseholdInvitePage = z.infer<
+  typeof householdInvitePageSchema
+>;
+
 export const serviceLivenessSuccessSchema =
   createApiSuccessSchema(serviceLivenessSchema);
 export const serviceReadinessSuccessSchema =
@@ -69,5 +85,27 @@ export const createInventoryLotSuccessSchema =
   createApiSuccessSchema(createInventoryLotResultSchema);
 export const consumeInventoryLotSuccessSchema =
   createApiSuccessSchema(consumeInventoryLotResultSchema);
+
+export const createHouseholdInviteSuccessSchema = createApiSuccessSchema(
+  createHouseholdInviteResultSchema,
+);
+export const householdInvitePageSuccessSchema = createApiSuccessSchema(
+  householdInvitePageSchema,
+);
+export const revokeHouseholdInviteSuccessSchema = createApiSuccessSchema(
+  revokeHouseholdInviteResultSchema,
+);
+export const joinHouseholdSuccessSchema = createApiSuccessSchema(
+  joinHouseholdResultSchema,
+);
+export const listHouseholdMembersSuccessSchema = createApiSuccessSchema(
+  listHouseholdMembersResultSchema,
+);
+export const removeMembershipSuccessSchema = createApiSuccessSchema(
+  removeMembershipResultSchema,
+);
+export const personProfileSuccessSchema = createApiSuccessSchema(
+  personProfileResultSchema,
+);
 
 export const stage06ErrorResponseSchema = apiErrorSchema;

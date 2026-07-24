@@ -65,6 +65,15 @@ export const issueSessionToken = (): string =>
 
 export const digestSessionToken = (token: string): string => sha256(token);
 
+/**
+ * 邀请码：24 随机字节 = 192 bit 熵，base64url 编码为 32 字符，远超
+ * ≥128 bit 与契约 22–128 字符要求；只存 sha256 digest，明文仅返回一次。
+ */
+export const issueInviteCode = (): string =>
+  randomBytes(24).toString("base64url");
+
+export const digestInviteCode = (code: string): string => sha256(code);
+
 export const newEntityId = (): string => uuidv7();
 
 export const toIsoString = (value: Date | string): string =>

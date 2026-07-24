@@ -84,6 +84,7 @@ beforeEach(async () => {
       inventory_events,
       inventory_lots,
       person_profiles,
+      household_invites,
       memberships,
       households,
       sessions,
@@ -217,7 +218,7 @@ const consume = async (
     },
   });
 
-test("PostgreSQL 18 migration creates nine tables, separated roles, FORCE RLS and composite foreign keys", async () => {
+test("PostgreSQL 18 migration creates ten tables, separated roles, FORCE RLS and composite foreign keys", async () => {
   const version = await persistence.pool.query<{ server_version: string }>(
     "SHOW server_version",
   );
@@ -232,7 +233,11 @@ test("PostgreSQL 18 migration creates nine tables, separated roles, FORCE RLS an
      WHERE schemaname = 'public'
      ORDER BY tablename`,
   );
-  assert.equal(tables.rows.length, 9);
+  assert.equal(tables.rows.length, 10);
+  assert.equal(
+    tables.rows.some((row) => row.tablename === "household_invites"),
+    true,
+  );
   assert.equal(
     tables.rows.every((row) => row.tableowner === "meal_agent_migrator"),
     true,
@@ -292,13 +297,42 @@ test("PostgreSQL 18 migration creates nine tables, separated roles, FORCE RLS an
     `SELECT relname, relforcerowsecurity
      FROM pg_class
      WHERE relname IN (
-       'households', 'memberships', 'person_profiles',
-       'inventory_lots', 'inventory_events', 'idempotency_records'
+       'households', 'memberships', 'household_invites',
+       'person_profiles', 'inventory_lots', 'inventory_events',
+       'idempotency_records'
      )
      ORDER BY relname`,
   );
-  assert.equal(forced.rows.length, 6);
+  assert.equal(forced.rows.length, 7);
   assert.equal(forced.rows.every((row) => row.relforcerowsecurity), true);
+
+  // 邀请表：digest 唯一约束存在、明文/绑定成员的复合外键成立。
+  const inviteConstraints = await persistence.pool.query<{
+    conname: string;
+  }>(
+    `SELECT conname
+     FROM pg_constraint
+     WHERE conrelid = 'public.household_invites'::regclass
+     ORDER BY conname`,
+  );
+  const inviteConstraintNames = inviteConstraints.rows.map(
+    (row) => row.conname,
+  );
+  for (const expected of [
+    "household_invites_code_digest_unique",
+    "household_invites_creator_membership_foreign",
+    "household_invites_status_check",
+    "household_invites_max_uses_check",
+    "household_invites_used_count_check",
+    "household_invites_expiry_check",
+    "household_invites_version_check",
+  ]) {
+    assert.equal(
+      inviteConstraintNames.includes(expected),
+      true,
+      `missing constraint ${expected}`,
+    );
+  }
 
   const compositeForeignKeys = await persistence.pool.query<{ count: string }>(
     `SELECT count(*)::text AS count

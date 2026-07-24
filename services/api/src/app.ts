@@ -31,13 +31,23 @@ import {
 
 type ApiOperations = Pick<
   ApiRepository,
+  | "addDietaryConstraint"
   | "consumeInventoryLot"
   | "createHousehold"
+  | "createHouseholdInvite"
   | "createInventoryLot"
+  | "createPersonProfile"
   | "exchangeWechatCode"
   | "getMe"
+  | "joinHousehold"
+  | "listHouseholdInvites"
+  | "listHouseholdMembers"
   | "listHouseholds"
   | "listInventoryLots"
+  | "patchPersonProfile"
+  | "removeDietaryConstraint"
+  | "removeMembership"
+  | "revokeHouseholdInvite"
   | "revokeSession"
 >;
 
