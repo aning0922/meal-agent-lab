@@ -13,6 +13,7 @@
 - [阶段计划与实施记录](plans/README.md)
 - [阶段 06 最小服务端纵切实施记录](plans/2026-07-stage-06-backend-vertical-slice.md)
 - [阶段 07 正式客户端纵切实施计划](plans/2026-07-stage-07-client-vertical-slice.md)
+- [阶段 08 家庭成员与硬约束纵切实施计划](plans/2026-07-stage-08-members-and-constraints.md)
 
 ## 设计与架构
 
