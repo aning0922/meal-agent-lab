@@ -180,3 +180,14 @@ git diff --check
 | 13 | 提交范围扫描无密钥/真实个人数据/生成物；GUI 模拟器 happy-path 走查 | 部分 | 扫描 Pass：暂存区无密钥/AppID/真实个人数据，过敏/宗教样例一律虚构并标注（`FICTION_*`/“虚构…”），`project.private.config.json` 保持 gitignored，无生成物越界；**GUI 模拟器 happy-path 走查待产品负责人手工执行**（appid 在 gitignored 私有配置），未完成前不记 Pass |
 
 结论：13 条门禁中 12 条 Pass、第 13 条“提交范围扫描”部分 Pass 而“GUI 模拟器走查”须由产品负责人在其环境手工完成后补记。实施仅停在分支 `claude/stage-08-members-constraints-ad47e9`，等待多视角对抗审核、独立复验与合并 `main` 指令。
+
+## 主负责人审核修复（合并前）
+
+主负责人对本分支执行独立复验（Node 24.14 + PostgreSQL 18.4，`pnpm stage08:check` 全绿）与多视角对抗审核（5 reader + 3 reviewer + 每条发现 3 票对抗验证）。审核确认 4 个问题（0 误报），处置如下：
+
+1. **[HIGH 已修] 明文邀请码写入幂等记录**：`createHouseholdInvite` 的响应体（含明文码）被 `#runIdempotent` 完整写入 `idempotency_records.response_body` 存 30 天，违反“只存 digest、明文永不落库”不变量。修复：`#runIdempotent` 新增 `redactStoredData` 投影钩子，明文码只在首次响应出现、落库前剔除；契约 `createHouseholdInviteResultSchema.inviteCode` 放宽为 optional（幂等重放不再返回明文码，即“仅一次”安全语义）；客户端成员页对重放无码场景加兜底提示。回归测试：幂等记录 `response_body` 不含明文码、重放响应 `inviteCode` 缺失且实体一致、契约重放形状可解析。
+2. **[LOW 已修] 活跃邀请上限计入过期项**：上限查询只按 `status='active'`，而过期邀请状态永不迁移为 `expired`，导致过期邀请永久占用上限。修复：上限查询增加 `expires_at > now` 过滤。回归测试：`expired invites do not count toward the active-invite cap`。
+3. **[LOW 已修] 并发创建同成员档案返回 500**：`createPersonProfile` 的“SELECT 是否已有档案 → INSERT”无锁，并发下第二个 INSERT 撞唯一索引返回 500 而非 409。修复：加 `pg_advisory_xact_lock` 串行化同一 `linkedMembershipId`（与 `createHouseholdInvite`/`removeMembership` 一致）。回归测试：`concurrent profile creation for the same member returns 409, not 500`。
+4. **[LOW 主负责人裁定] ADR-0003 编辑范围**：实施会话在 ADR-0003 删除 `Deferred — 后续范围` 小节并新增 `已由阶段 08 验证` 小节，严格看超出计划第 127 行“仅允许待验证→已验证”的窄授权。主负责人裁定**接受**：新增 5 条均为本阶段真实验证项，其中“私有约束读取字段级 redaction”正是门禁 #8 要求的阶段 06 Deferred 项转正，改动内容属实且落实门禁；偏差源于计划授权文案写窄，非实施跑偏。记录在案，不回退。
+
+修复后 `pnpm stage08:check` 再次全绿（含 2 个新增回归测试与调整后的 #1 断言）。合并 `main` 由主负责人执行。

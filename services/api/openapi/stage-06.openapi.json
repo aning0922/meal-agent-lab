@@ -14778,8 +14778,7 @@
                         }
                       },
                       "required": [
-                        "invite",
-                        "inviteCode"
+                        "invite"
                       ],
                       "additionalProperties": false,
                       "x-zod-refinements": [

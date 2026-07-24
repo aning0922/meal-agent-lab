@@ -94,8 +94,13 @@ export type CreateHouseholdInviteRequest = z.infer<
 export const createHouseholdInviteResultSchema = z
   .strictObject({
     invite: householdInviteSchema,
-    /** 明文邀请码，仅本次创建响应返回一次；此后无法再读取。 */
-    inviteCode: householdInviteCodeSchema,
+    /**
+     * 明文邀请码。仅首次创建响应携带一次，且**永不落库**（服务端在写入
+     * 幂等记录前剔除）。因此幂等重放（网络重试命中同一 key）返回的响应
+     * 不含该字段——这是"明文仅一次"的安全语义，故本字段为 optional。
+     * 客户端若在重放响应中拿不到码，应引导用户在邀请列表查看或重新生成。
+     */
+    inviteCode: householdInviteCodeSchema.optional(),
   })
   .superRefine((result, context) => {
     if (result.invite.status !== "active") {

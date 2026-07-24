@@ -261,14 +261,22 @@ export default function MembersPage() {
           </Button>
           {reveal.kind === 'revealed' && (
             <View className='section'>
-              <Text className='field-label'>邀请码（仅显示一次）</Text>
-              <Text className='list-item-title' selectable>
-                {reveal.result.inviteCode}
-              </Text>
-              <Text className='list-item-detail'>
-                长按可复制。上限 {reveal.result.invite.maxUses} 次 · 到期
-                {reveal.result.invite.expiresAt}
-              </Text>
+              {reveal.result.inviteCode !== undefined ? (
+                <>
+                  <Text className='field-label'>邀请码（仅显示一次）</Text>
+                  <Text className='list-item-title' selectable>
+                    {reveal.result.inviteCode}
+                  </Text>
+                  <Text className='list-item-detail'>
+                    长按可复制。上限 {reveal.result.invite.maxUses} 次 · 到期
+                    {reveal.result.invite.expiresAt}
+                  </Text>
+                </>
+              ) : (
+                <Text className='list-item-detail'>
+                  邀请已生成，但本次响应未包含明文码（通常因网络重试命中已处理请求）。明文码只显示一次，请撤销此邀请后重新生成。
+                </Text>
+              )}
               <Button
                 className='button button--secondary'
                 onClick={() => {

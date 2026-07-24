@@ -528,6 +528,12 @@ export class ApiRepository {
       readonly payload: unknown;
       readonly requestId: RequestId;
       readonly statusCode: number;
+      /**
+       * 可选：写入幂等记录前对返回数据做投影，剔除只应出现一次的敏感
+       * 字段（如明文邀请码）。首次响应仍返回完整数据；持久化与重放使用
+       * 投影后的数据，保证秘密永不落库、重放不再泄露。
+       */
+      readonly redactStoredData?: (data: T) => T;
     },
     operation: () => Promise<T>,
   ): Promise<IdempotentResponse<T>> {
@@ -634,25 +640,28 @@ export class ApiRepository {
     }
 
     const data = await operation();
-    const body = {
-      ok: true as const,
-      data,
-      meta: {
-        requestId: input.requestId,
-        idempotency: {
-          key,
-          scope: input.scope,
-          replayed: false,
-          firstProcessedAt: now.toISOString(),
-          originalRequestId: input.requestId,
-        },
+    const meta = {
+      requestId: input.requestId,
+      idempotency: {
+        key,
+        scope: input.scope,
+        replayed: false,
+        firstProcessedAt: now.toISOString(),
+        originalRequestId: input.requestId,
       },
     };
+    const body = { ok: true as const, data, meta };
+    // 持久化用投影后的数据：明文邀请码等一次性秘密剔除后再落库，重放时
+    // 也只能读到投影版本。首次响应仍返回完整 body（含明文码）。
+    const storedData = input.redactStoredData
+      ? input.redactStoredData(data)
+      : data;
+    const storedBody = { ok: true as const, data: storedData, meta };
     await client.query(
       `UPDATE idempotency_records
        SET status_code = $2, response_body = $3::jsonb
        WHERE id = $1`,
-      [recordId, input.statusCode, JSON.stringify(body)],
+      [recordId, input.statusCode, JSON.stringify(storedBody)],
     );
 
     return { statusCode: input.statusCode, body };
@@ -1263,6 +1272,8 @@ export class ApiRepository {
             payload: request,
             requestId,
             statusCode: 201,
+            // 明文邀请码永不落库：写幂等记录前剔除，重放响应不含码。
+            redactStoredData: (data) => ({ invite: data.invite }),
           },
           async () => {
             // 每家庭串行化邀请签发，让活跃邀请上限检查免于竞态。
@@ -1270,11 +1281,16 @@ export class ApiRepository {
               "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
               [`household-invites:${householdId}`],
             );
+            const now = new Date();
+            // 上限只计入仍可兑换的邀请：过期项（expires_at 已过）虽仍是
+            // 'active' 状态也不占坑，避免过期邀请永久堵死签发。
             const active = await client.query<{ count: number }>(
               `SELECT count(*)::int AS count
                FROM household_invites
-               WHERE household_id = $1 AND status = 'active'`,
-              [householdId],
+               WHERE household_id = $1
+                 AND status = 'active'
+                 AND expires_at > $2`,
+              [householdId, now],
             );
             if ((active.rows[0]?.count ?? 0) >= 10) {
               throw new AppError(
@@ -1283,7 +1299,6 @@ export class ApiRepository {
               );
             }
             const code = issueInviteCode();
-            const now = new Date();
             const expiresAt = new Date(
               now.getTime() + request.expiresInHours * 3_600_000,
             );
@@ -1759,6 +1774,13 @@ export class ApiRepository {
           },
           async () => {
             if (request.linkedMembershipId !== undefined) {
+              // 串行化同一成员的档案创建，让"SELECT 是否已有档案 → INSERT"
+              // 免于竞态：并发的第二个请求在锁后读到已存在，返回 409 而非
+              // 撞 person_profiles_linked_membership_unique 触发 500。
+              await client.query(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                [`person-profiles:${householdId}:${request.linkedMembershipId}`],
+              );
               const membership = await client.query(
                 `SELECT 1
                  FROM memberships

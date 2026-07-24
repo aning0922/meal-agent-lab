@@ -158,7 +158,13 @@ const issueInvite = async (
 ) => {
   const response = await createInvite(session, householdId, key, body);
   assert.equal(response.statusCode, 201, response.body);
-  return createHouseholdInviteSuccessSchema.parse(response.json()).data;
+  const data = createHouseholdInviteSuccessSchema.parse(response.json()).data;
+  // 首次签发必然返回明文码；收窄类型以便下游 join 使用（重放场景请用
+  // 底层 createInvite 手动解析，那时 inviteCode 才可能缺失）。
+  if (data.inviteCode === undefined) {
+    throw new Error("a freshly issued invite must return a plaintext code");
+  }
+  return { ...data, inviteCode: data.inviteCode };
 };
 
 const join = (
@@ -266,8 +272,40 @@ test("invite stores only a digest, returns plaintext once, and lists without sec
   assert.equal(page.data.items.length, 1);
   assert.equal(JSON.stringify(page.data).includes(created.inviteCode), false);
 
-  // 明文邀请码不得进入日志（幂等缓存里存的是响应体，也不含明文）。
+  // 明文邀请码不得进入日志。
   assert.equal(logs.includes(created.inviteCode), false);
+
+  // 幂等记录的 response_body 落库前已剔除明文码：备份/dump 不泄露可兑换码。
+  // 按 household + 路由定位（此刻该家庭仅一条邀请创建记录），避免依赖
+  // Idempotency-Key 的规范化形态。
+  const idempotencyStored = await persistence.pool.query<{
+    response_body: unknown;
+  }>(
+    `SELECT response_body
+     FROM idempotency_records
+     WHERE household_id = $1 AND normalized_route = $2`,
+    [householdId, "/api/v1/households/{id}/invites"],
+  );
+  assert.equal(idempotencyStored.rowCount, 1);
+  assert.equal(
+    JSON.stringify(idempotencyStored.rows[0]?.response_body ?? {}).includes(
+      created.inviteCode,
+    ),
+    false,
+  );
+
+  // 幂等重放（同 key）返回同一 invite 实体，但不再携带明文码（仅一次语义）。
+  // 用底层 createInvite 手动解析，因为重放响应的 inviteCode 合法地缺失。
+  const replayResponse = await createInvite(owner, householdId, "invite-key-1", {
+    maxUses: 3,
+  });
+  assert.equal(replayResponse.statusCode, 201, replayResponse.body);
+  const replayParsed = createHouseholdInviteSuccessSchema.parse(
+    replayResponse.json(),
+  );
+  assert.equal(replayParsed.meta.idempotency?.replayed, true);
+  assert.equal(replayParsed.data.invite.id, created.invite.id);
+  assert.equal(replayParsed.data.inviteCode, undefined);
 });
 
 test("all four invalid invite states are rejected with a 404 that hides the household", async () => {
@@ -744,4 +782,71 @@ test("member RLS: second member works, and each missing bootstrap context is den
     );
   });
   assert.equal(present.rowCount, 1);
+});
+
+test("expired invites do not count toward the active-invite cap", async () => {
+  const owner = await login("cap-owner");
+  const household = await createHousehold(owner, "cap-hh");
+  const householdId = household.household.id;
+
+  // 建满 10 个活跃邀请，第 11 个触发上限 409。
+  for (let i = 0; i < 10; i += 1) {
+    await issueInvite(owner, householdId, `cap-key-${i}`);
+  }
+  const overCap = await createInvite(owner, householdId, "cap-key-over");
+  assert.equal(overCap.statusCode, 409, overCap.body);
+
+  // 把其中一个整体前移到过去：满足 expires_at > created_at 的 CHECK，
+  // 同时 expires_at 已早于当前时间（模拟自然过期，状态仍是 active）。
+  await persistence.pool.query(
+    `UPDATE household_invites
+     SET created_at = now() - interval '2 hours',
+         expires_at = now() - interval '1 hour'
+     WHERE id = (
+       SELECT id FROM household_invites
+       WHERE household_id = $1
+       ORDER BY created_at
+       LIMIT 1
+     )`,
+    [householdId],
+  );
+
+  // 过期项不再占坑：可再签发一个新邀请。
+  const afterExpiry = await issueInvite(owner, householdId, "cap-key-after");
+  assert.equal(afterExpiry.invite.status, "active");
+});
+
+test("concurrent profile creation for the same member returns 409, not 500", async () => {
+  const owner = await login("pp-race-owner");
+  const household = await createHousehold(owner, "pp-race-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "pp-race-inv");
+  const member = await login("pp-race-member");
+  const joinResult = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "pp-race-join")).json(),
+  );
+  const membershipId = joinResult.data.membership.id;
+
+  const body = {
+    linkedMembershipId: membershipId,
+    displayName: "赛跑档案",
+    defaultParticipation: true,
+    defaultPortionScale: 1,
+    cookingSkill: "beginner",
+  };
+  // 两个不同幂等键、同一 linkedMembershipId 并发：advisory 锁串行化后，
+  // 落败者读到已存在返回 409，而不是撞唯一索引变 500。
+  const [a, b] = await Promise.all([
+    createProfile(owner, householdId, "pp-race-a", body),
+    createProfile(owner, householdId, "pp-race-b", body),
+  ]);
+  const statuses = [a.statusCode, b.statusCode].sort();
+  assert.deepEqual(statuses, [201, 409]);
+
+  const count = await persistence.pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count FROM person_profiles
+     WHERE household_id = $1 AND linked_membership_id = $2`,
+    [householdId, membershipId],
+  );
+  assert.equal(count.rows[0]?.count, 1);
 });

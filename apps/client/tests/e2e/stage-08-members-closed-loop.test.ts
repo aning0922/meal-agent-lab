@@ -97,6 +97,11 @@ describe('stage 08 members closed loop (real API + PostgreSQL 18)', () => {
     if (invite.kind !== 'created') {
       return
     }
+    // 首次签发必然返回明文码（重放才可能缺失）；断言以收窄类型。
+    assert.ok(
+      invite.result.inviteCode,
+      'first-issue invite must include the plaintext code'
+    )
     inviteCode = invite.result.inviteCode
     inviteId = invite.result.invite.id
     assert.match(inviteCode, /^[A-Za-z0-9_-]{22,128}$/)

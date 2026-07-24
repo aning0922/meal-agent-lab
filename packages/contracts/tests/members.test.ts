@@ -151,6 +151,13 @@ test("invite creation defaults to a single use and one week", () => {
     }).success,
     false,
   );
+  // 幂等重放响应不含明文码（inviteCode optional）：仍应通过校验。
+  const { inviteCode: _omitted, ...replayShape } = result;
+  void _omitted;
+  assert.equal(
+    createHouseholdInviteResultSchema.safeParse(replayShape).success,
+    true,
+  );
 });
 
 const membership = {
