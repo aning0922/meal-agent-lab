@@ -41,7 +41,7 @@ pnpm --filter @meal-agent/client dev:weapp    # Taro watch 构建
 
 1. `MEAL_AGENT_DEV_API_PORT=3000 pnpm --filter @meal-agent/client dev:stack`
 2. `pnpm --filter @meal-agent/client build:weapp`（构建默认 API 基址 `http://127.0.0.1:3000`，可用 `MEAL_AGENT_API_BASE_URL` 覆盖）
-3. 用微信开发者工具打开 `apps/client`（`project.config.json` 已关闭 urlCheck，tourist appid）。
+3. 用微信开发者工具导入 `apps/client`（或直接导入 `apps/client/dist`）。新版工具会校验 AppID 真实性、不再接受 `touristappid`：在导入对话框选择/注册**测试号**（游客与测试号仅 GUI 可选，CLI 导入会报"不存在此 AppID"）。确认"不校验合法域名"已开启（`project.config.json` 已声明 urlCheck false，新版工具也读 `project.private.config.json` 私有设置）。
 4. 依次验证：登录 → 创建家庭 → 新增三种数量批次 → 消耗 → 重复点击（应显示重放而非重复扣减）→ 双开模拟并发消耗（应提示版本冲突并刷新）。
 
-注意：开发者工具 CLI/自动化需要在 IDE“设置 → 安全设置”中开启服务端口，属于本机安全设置，由使用者自行决定。真机、真实微信登录与合法域名仍为 `Deferred — 外部依赖`；fake 适配器的通过结果不得记为真实微信链路 Pass。
+注意：开发者工具 CLI/自动化需要在 IDE“设置 → 安全设置”中开启服务端口，且需要真实测试号 AppID，均属本机/账号侧配置，由使用者自行决定。真机、真实微信登录与合法域名仍为 `Deferred — 外部依赖`；fake 适配器的通过结果不得记为真实微信链路 Pass。
