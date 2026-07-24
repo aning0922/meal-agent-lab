@@ -109,8 +109,10 @@ GUI 走查在登录处崩溃（`TypeError: a is not a function`）。这是**一
 
 被驳回的 4 项（多数复核员判定不成立或超出冻结范围）：malformedResponse 统一不可重试的指引问题、freePort TOCTOU、估算空串文案、以及与第 1 项重复的低票副本。
 
-### 未解决问题
+### 开发者工具模拟器完整走查（2026-07-24 晚，已完成）
 
-- 开发者工具模拟器完整 happy-path 逐屏走查改由产品负责人在 GUI 手工执行（自动化模式对 http localhost 强制合法域名校验、无法逐屏推进，属工具层限制，见上方"补充验证"；模拟器已自动化证明编译渲染、失败态呈现与真实运行时请求构造，闭环行为由 E2E 覆盖）。
+产品负责人在开发者工具 GUI（测试号 AppID、关闭合法域名校验、本地 `dev:stack` 栈）加载修复后构建（`d54f183`），手工逐屏走通完整 happy-path：登录 → 创建家庭 → 新增三态数量批次 → exact 消耗 → 重复提交 → 版本冲突 → 退出登录，全部符合预期。结合前述自动化证据（编译渲染、失败态、真实运行时请求构造）与走查中发现并修复的 zod-JIT 缺陷，客户端在真实小程序运行时的可运行性已获人工确认。真机、真实微信登录、合法域名仍为 `Deferred — 外部依赖`；本走查为 fake 适配器链路，不记为真实微信链路 Pass。
+
+### 未解决问题
 - 页面层未做 React 渲染级测试：页面保持薄 UI，逻辑全部下沉 `core/`（单元 + E2E 覆盖），weapp 生产构建作为编译门禁；如后续页面复杂化再引入渲染测试。
 - Taro 4.2.1 固定依赖树已知通告（阶段 04 已记录）经重新评估处理如下：客户端直接 devDependency `webpack` 升至 5.104.1（构建验证通过；Taro 内部 loader 仍声明 5.91.0 peer，仅告警）。`pnpm audit --prod` 余 9 项（8 moderate + 1 critical）全部位于 Taro 自身锁定路径：moderate 为 webpack-dev-server/esbuild 等本地开发服务器通告（不进入产物）；critical 为 `@tarojs/components>swiper`（GHSA-hmx5-qpq5-p643，H5 端依赖）——已核对 weapp 产物：`dist/taro.js` 仅含微信原生 `<swiper>` 组件名映射，npm `swiper` 包代码未被打包。接受为构建期风险，升级窗口待 Taro 4.3 评估。
