@@ -10,19 +10,37 @@ import type {
   ConsumeInventoryLotRequest,
   CreateInventoryLotRequest
 } from '@meal-agent/contracts/inventory'
+import type {
+  AddDietaryConstraintRequest,
+  CreateHouseholdInviteRequest,
+  CreatePersonProfileRequest,
+  JoinHouseholdRequest,
+  PatchPersonProfileRequest,
+  RemoveDietaryConstraintRequest
+} from '@meal-agent/contracts/members'
 import {
   consumeInventoryLotSuccessSchema,
+  createHouseholdInviteSuccessSchema,
   createHouseholdSuccessSchema,
   createInventoryLotSuccessSchema,
+  householdInvitePageSuccessSchema,
   householdPageSuccessSchema,
   inventoryLotPageSuccessSchema,
+  joinHouseholdSuccessSchema,
+  listHouseholdMembersSuccessSchema,
   meSuccessSchema,
+  personProfileSuccessSchema,
+  removeMembershipSuccessSchema,
+  revokeHouseholdInviteSuccessSchema,
   sessionRevokedSuccessSchema,
   wechatLoginExchangeSuccessSchema
 } from '@meal-agent/contracts/http'
 import type {
   HouseholdId,
-  InventoryLotId
+  HouseholdInviteId,
+  InventoryLotId,
+  MembershipId,
+  PersonProfileId
 } from '@meal-agent/contracts'
 
 import type { ApiClient } from './api-client'
@@ -110,6 +128,126 @@ export const createApiEndpoints = (client: ApiClient) => ({
       method: 'POST',
       path: `/api/v1/households/${householdId}/inventory-lots/${lotId}/events/consumed`,
       envelope: consumeInventoryLotSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  // 阶段 08：家庭成员、邀请、用餐档案与饮食约束。
+  createHouseholdInvite: (
+    householdId: HouseholdId,
+    body: CreateHouseholdInviteRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/invites`,
+      envelope: createHouseholdInviteSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  listHouseholdInvites: (householdId: HouseholdId, query: PageQuery = {}) =>
+    client.call({
+      method: 'GET',
+      path: `/api/v1/households/${householdId}/invites`,
+      envelope: householdInvitePageSuccessSchema,
+      query: { cursor: query.cursor, limit: query.limit }
+    }),
+
+  revokeHouseholdInvite: (
+    householdId: HouseholdId,
+    inviteId: HouseholdInviteId,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'DELETE',
+      path: `/api/v1/households/${householdId}/invites/${inviteId}`,
+      envelope: revokeHouseholdInviteSuccessSchema,
+      idempotencyKey
+    }),
+
+  joinHousehold: (
+    body: JoinHouseholdRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: '/api/v1/households/join',
+      envelope: joinHouseholdSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  listHouseholdMembers: (householdId: HouseholdId) =>
+    client.call({
+      method: 'GET',
+      path: `/api/v1/households/${householdId}/members`,
+      envelope: listHouseholdMembersSuccessSchema
+    }),
+
+  removeMembership: (
+    householdId: HouseholdId,
+    membershipId: MembershipId,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'DELETE',
+      path: `/api/v1/households/${householdId}/memberships/${membershipId}`,
+      envelope: removeMembershipSuccessSchema,
+      idempotencyKey
+    }),
+
+  createPersonProfile: (
+    householdId: HouseholdId,
+    body: CreatePersonProfileRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/person-profiles`,
+      envelope: personProfileSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  patchPersonProfile: (
+    householdId: HouseholdId,
+    profileId: PersonProfileId,
+    body: PatchPersonProfileRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'PATCH',
+      path: `/api/v1/households/${householdId}/person-profiles/${profileId}`,
+      envelope: personProfileSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  addDietaryConstraint: (
+    householdId: HouseholdId,
+    profileId: PersonProfileId,
+    body: AddDietaryConstraintRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/person-profiles/${profileId}/dietary-constraints`,
+      envelope: personProfileSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  removeDietaryConstraint: (
+    householdId: HouseholdId,
+    profileId: PersonProfileId,
+    body: RemoveDietaryConstraintRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'DELETE',
+      path: `/api/v1/households/${householdId}/person-profiles/${profileId}/dietary-constraints`,
+      envelope: personProfileSuccessSchema,
       body,
       idempotencyKey
     })

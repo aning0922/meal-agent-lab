@@ -2,7 +2,9 @@ export default defineAppConfig({
   pages: [
     'pages/login/index',
     'pages/households/index',
-    'pages/inventory/index'
+    'pages/inventory/index',
+    'pages/members/index',
+    'pages/profile/index'
   ],
   window: {
     backgroundColor: '#f4f6f1',

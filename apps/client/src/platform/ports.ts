@@ -3,7 +3,7 @@
  * `taro-adapter.ts`。测试注入 fake 实现（见 tests/support）。
  */
 
-export type HttpMethod = 'GET' | 'POST' | 'DELETE'
+export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
 export interface HttpRequest {
   readonly method: HttpMethod
@@ -39,11 +39,15 @@ export interface AuthPort {
 export const LOGIN_ROUTE = '/pages/login/index'
 export const HOUSEHOLDS_ROUTE = '/pages/households/index'
 export const INVENTORY_ROUTE = '/pages/inventory/index'
+export const MEMBERS_ROUTE = '/pages/members/index'
+export const PROFILE_ROUTE = '/pages/profile/index'
 
 export type AppRoute =
   | typeof LOGIN_ROUTE
   | typeof HOUSEHOLDS_ROUTE
   | typeof INVENTORY_ROUTE
+  | typeof MEMBERS_ROUTE
+  | typeof PROFILE_ROUTE
 
 export interface NavigationPort {
   /** 清空页面栈并跳转（用于登录态变化）。 */

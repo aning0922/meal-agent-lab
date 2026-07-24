@@ -6,9 +6,9 @@ on:
   pull_request:
 
 jobs:
-  stage07-check:
+  stage08-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       PG_BIN: /usr/lib/postgresql/18/bin
     steps:
@@ -34,5 +34,5 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Stage 07 full gate (contracts + api + client, real PostgreSQL 18)
-        run: pnpm stage07:check
+      - name: Stage 08 full gate (contracts + api + client, real PostgreSQL 18)
+        run: pnpm stage08:check

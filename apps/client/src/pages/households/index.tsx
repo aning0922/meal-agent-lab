@@ -11,9 +11,11 @@ import {
   HOUSEHOLD_DEFAULTS
 } from '../../core/household-flow'
 import { createIdempotencyKey } from '../../core/idempotency'
+import { joinHousehold } from '../../core/members-flow'
 import {
   INVENTORY_ROUTE,
-  LOGIN_ROUTE
+  LOGIN_ROUTE,
+  MEMBERS_ROUTE
 } from '../../platform/ports'
 
 type ListState =
@@ -45,6 +47,8 @@ export default function HouseholdsPage() {
   const [ownerDisplayName, setOwnerDisplayName] = useState('')
   const [submit, setSubmit] = useState<SubmitState>({ kind: 'idle' })
   const [signingOut, setSigningOut] = useState(false)
+  const [inviteCode, setInviteCode] = useState('')
+  const [joinState, setJoinState] = useState<SubmitState>({ kind: 'idle' })
   const pendingKeyRef = useRef<IdempotencyKey | null>(null)
   const currentHouseholdId =
     getAppServices().session.restoreCurrentHouseholdId()
@@ -77,6 +81,51 @@ export default function HouseholdsPage() {
     const services = getAppServices()
     services.session.saveCurrentHouseholdId(household.id)
     await services.adapter.navigation.reLaunch(INVENTORY_ROUTE)
+  }
+
+  const openMembers = async (household: Household): Promise<void> => {
+    const services = getAppServices()
+    services.session.saveCurrentHouseholdId(household.id)
+    await services.adapter.navigation.navigateTo(MEMBERS_ROUTE)
+  }
+
+  const handleJoin = async (): Promise<void> => {
+    if (joinState.kind === 'working') {
+      return
+    }
+    setJoinState({ kind: 'working' })
+    const services = getAppServices()
+    // 每次加入是一次逻辑写操作；成功或失败后都换新键。
+    const outcome = await joinHousehold(
+      services,
+      inviteCode,
+      createIdempotencyKey(services.adapter.runtime)
+    )
+    switch (outcome.kind) {
+      case 'joined':
+        setJoinState({ kind: 'idle' })
+        setInviteCode('')
+        // 成功加入后切到该家庭的成员页。
+        await services.adapter.navigation.navigateTo(MEMBERS_ROUTE)
+        return
+      case 'invalid':
+        setJoinState({ kind: 'invalid', messages: outcome.messages })
+        return
+      case 'inviteInvalid':
+      case 'alreadyMember':
+        setJoinState({
+          kind: 'failed',
+          message: outcome.message,
+          retryable: false
+        })
+        return
+      case 'failed':
+        setJoinState({
+          kind: 'failed',
+          message: outcome.message,
+          retryable: outcome.retryable
+        })
+    }
   }
 
   const handleCreate = async (): Promise<void> => {
@@ -146,20 +195,37 @@ export default function HouseholdsPage() {
         )}
         {list.kind === 'loaded' &&
           list.households.map((household) => (
-            <View
-              key={household.id}
-              className='list-item'
-              onClick={() => {
-                void openHousehold(household)
-              }}
-            >
-              <Text className='list-item-title'>
+            <View key={household.id} className='list-item'>
+              <Text
+                className='list-item-title'
+                onClick={() => {
+                  void openHousehold(household)
+                }}
+              >
                 {household.name}
                 {household.id === currentHouseholdId ? '（当前）' : ''}
               </Text>
               <Text className='list-item-detail'>
                 时区 {household.timezone} · 语言 {household.locale}
               </Text>
+              <View className='row'>
+                <Button
+                  className='button button--secondary'
+                  onClick={() => {
+                    void openHousehold(household)
+                  }}
+                >
+                  库存
+                </Button>
+                <Button
+                  className='button button--secondary'
+                  onClick={() => {
+                    void openMembers(household)
+                  }}
+                >
+                  成员与档案
+                </Button>
+              </View>
             </View>
           ))}
         {list.kind === 'loaded' && list.hasMore && (
@@ -167,6 +233,44 @@ export default function HouseholdsPage() {
             仅显示前 50 个家庭；更多家庭的浏览不在本阶段范围。
           </Text>
         )}
+      </View>
+
+      <View className='section'>
+        <Text className='section-title'>凭邀请码加入家庭</Text>
+        {joinState.kind === 'invalid' && (
+          <View className='notice notice--error'>
+            {joinState.messages.map((message) => (
+              <Text key={message}>{message}</Text>
+            ))}
+          </View>
+        )}
+        {joinState.kind === 'failed' && (
+          <View className='notice notice--error'>
+            <Text>{joinState.message}</Text>
+          </View>
+        )}
+        <Text className='field-label'>邀请码</Text>
+        <Input
+          className='field-input'
+          value={inviteCode}
+          placeholder='粘贴家庭所有者提供的邀请码'
+          onInput={(event) => {
+            setInviteCode(event.detail.value)
+          }}
+        />
+        <Button
+          className={
+            joinState.kind === 'working'
+              ? 'button button--disabled'
+              : 'button'
+          }
+          disabled={joinState.kind === 'working'}
+          onClick={() => {
+            void handleJoin()
+          }}
+        >
+          {joinState.kind === 'working' ? '正在加入…' : '加入家庭'}
+        </Button>
       </View>
 
       <View className='section'>

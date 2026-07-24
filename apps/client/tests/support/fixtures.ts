@@ -213,3 +213,125 @@ export const apiErrorBody = (
   requestId: REQUEST_ID,
   retryable: overrides.retryable ?? false
 })
+
+// --- 阶段 08：成员、邀请、档案、约束 ---
+
+// 全部为虚构样例，不含真实个人数据。
+export const INVITE_CODE = 'A'.repeat(32)
+
+export const householdInviteFixture = (
+  overrides: {
+    sequence?: number
+    status?: 'active' | 'revoked' | 'exhausted' | 'expired'
+    maxUses?: number
+    usedCount?: number
+  } = {}
+) => ({
+  id: uuidV7(overrides.sequence ?? 50),
+  householdId: uuidV7(10),
+  createdByUserId: uuidV7(1),
+  status: overrides.status ?? ('active' as const),
+  maxUses: overrides.maxUses ?? 1,
+  usedCount: overrides.usedCount ?? 0,
+  expiresAt: T_EXPIRES,
+  createdAt: T0,
+  version: 0
+})
+
+export const createHouseholdInviteResultFixture = (code = INVITE_CODE) => ({
+  invite: householdInviteFixture(),
+  inviteCode: code
+})
+
+export const revokeHouseholdInviteResultFixture = () => ({
+  invite: householdInviteFixture({ status: 'revoked' })
+})
+
+export const membershipFixture = (
+  overrides: {
+    sequence?: number
+    userSeq?: number
+    role?: 'owner' | 'member'
+    status?: 'active' | 'left' | 'removed'
+  } = {}
+) => ({
+  id: uuidV7(overrides.sequence ?? 20),
+  householdId: uuidV7(10),
+  userId: uuidV7(overrides.userSeq ?? 1),
+  role: overrides.role ?? ('member' as const),
+  capabilities: [],
+  status: overrides.status ?? ('active' as const),
+  joinedAt: T0,
+  updatedAt: T0,
+  version: 0
+})
+
+export const joinHouseholdResultFixture = () => ({
+  membership: membershipFixture({ role: 'member', userSeq: 2, sequence: 22 }),
+  household: householdFixture(10)
+})
+
+export const removeMembershipResultFixture = (
+  status: 'left' | 'removed' = 'removed'
+) => ({
+  membership: membershipFixture({ status, sequence: 22, userSeq: 2 })
+})
+
+export const hardConstraintFixture = (
+  overrides: {
+    sequence?: number
+    visibility?: 'household' | 'subject_and_owner'
+    label?: string
+  } = {}
+) => ({
+  id: uuidV7(overrides.sequence ?? 60),
+  kind: 'allergy' as const,
+  enforcement: 'hard' as const,
+  label: overrides.label ?? '虚构花生过敏',
+  foodConceptIds: [],
+  allergenCodes: ['FICTION_PEANUT'],
+  visibility: overrides.visibility ?? ('household' as const),
+  confirmedAt: T0,
+  confirmedByUserId: uuidV7(1)
+})
+
+export const personProfileFixture = (
+  overrides: {
+    sequence?: number
+    membershipSeq?: number
+    displayName?: string
+    version?: number
+    dietaryConstraints?: readonly unknown[]
+  } = {}
+) => ({
+  id: uuidV7(overrides.sequence ?? 21),
+  householdId: uuidV7(10),
+  linkedMembershipId: uuidV7(overrides.membershipSeq ?? 20),
+  displayName: overrides.displayName ?? '成员甲',
+  status: 'active' as const,
+  defaultParticipation: true,
+  defaultPortionScale: 1,
+  cookingSkill: 'beginner' as const,
+  dietaryConstraints: overrides.dietaryConstraints ?? [],
+  createdAt: T0,
+  updatedAt: T0,
+  version: overrides.version ?? 0
+})
+
+export const personProfileResultFixture = (
+  profile: unknown = personProfileFixture()
+) => ({ profile })
+
+export const ownerMembersViewFixture = (members: readonly unknown[]) => ({
+  viewerRole: 'owner' as const,
+  members
+})
+
+export const memberMembersViewFixture = (
+  self: unknown,
+  others: readonly unknown[]
+) => ({
+  viewerRole: 'member' as const,
+  self,
+  others
+})
