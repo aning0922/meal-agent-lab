@@ -58,11 +58,58 @@ export const householdFixture = (sequence = 10) => ({
   version: 1
 })
 
-export const successEnvelope = (data: unknown) => ({
+export const successEnvelope = (
+  data: unknown,
+  meta: Record<string, unknown> = {}
+) => ({
   ok: true,
   data,
-  meta: { requestId: REQUEST_ID }
+  meta: { requestId: REQUEST_ID, ...meta }
 })
+
+export const replayedIdempotencyMeta = (key: string) => ({
+  idempotency: {
+    key,
+    scope: 'user',
+    replayed: true,
+    firstProcessedAt: T0,
+    originalRequestId: REQUEST_ID
+  }
+})
+
+export const createHouseholdResultFixture = () => {
+  const household = householdFixture(10)
+  const membership = {
+    id: uuidV7(20),
+    householdId: household.id,
+    userId: household.createdByUserId,
+    role: 'owner' as const,
+    capabilities: [
+      'inventory:write' as const,
+      'meal:write' as const,
+      'shopping:write' as const
+    ],
+    status: 'active' as const,
+    joinedAt: T0,
+    updatedAt: T0,
+    version: 1
+  }
+  const ownerProfile = {
+    id: uuidV7(21),
+    householdId: household.id,
+    linkedMembershipId: membership.id,
+    displayName: '小明',
+    status: 'active' as const,
+    defaultParticipation: true,
+    defaultPortionScale: 1,
+    cookingSkill: 'beginner' as const,
+    dietaryConstraints: [],
+    createdAt: T0,
+    updatedAt: T0,
+    version: 1
+  }
+  return { household, membership, ownerProfile }
+}
 
 export const apiErrorBody = (
   code: ApiErrorCode,
