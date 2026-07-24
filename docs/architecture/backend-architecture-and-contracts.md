@@ -311,7 +311,7 @@ request、event、before lot 和 after lot 的单位必须一致，且 `after.am
 | 用途 | 人工开发 | 自动化验证 | 发布前集成/真机 | 真实用户 |
 | API | 本机 HTTP/HTTPS | 进程内或临时端口 | 独立 HTTPS 域名 | 独立生产域名 |
 | PostgreSQL | 本地 PostgreSQL 18 容器 | 每套件临时 PostgreSQL 18 | 独立实例/数据库 | 独立实例、备份与恢复 |
-| 微信 | 默认 fake adapter；可选测试号 | deterministic fake，禁止外呼 | 测试/专用 AppID，外部依赖 | 正式 AppID，外部依赖 |
+| 微信 | 显式 `WECHAT_ADAPTER=fake`（无默认值）；可选测试号 | deterministic fake，禁止外呼 | 测试/专用 AppID，外部依赖 | 正式 AppID，外部依赖 |
 | 数据 | 合成 seed | 合成 fixture，测试后销毁 | 合成/授权测试数据，禁止生产复制 | 真实数据 |
 | Secret | 本机忽略文件/临时注入 | CI 临时 Secret | 独立 Secret 项目 | 独立生产 Secret 项目 |
 | migration | 开发 migration | 从空库完整执行 | 发布 job，先备份/演练 | 独立最小权限 job |
@@ -328,7 +328,7 @@ request、event、before lot 和 after lot 的单位必须一致，且 `after.am
 
 ## 9. 共享契约基线
 
-`@meal-agent/contracts` 0.1.0 已包含：
+`@meal-agent/contracts` 0.2.0 已包含：
 
 | 文件 | 主要 contract |
 | --- | --- |

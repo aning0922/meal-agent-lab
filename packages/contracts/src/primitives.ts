@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const contractVersion = "0.1.0" as const;
+export const contractVersion = "0.2.0" as const;
 
 export const userIdSchema = z.uuidv7().brand<"UserId">();
 export const authIdentityIdSchema = z.uuidv7().brand<"AuthIdentityId">();

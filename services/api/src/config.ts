@@ -33,7 +33,9 @@ const configSchema = z
     DATABASE_APP_ROLE: z.string().regex(/^[a-z_][a-z0-9_]*$/).default(
       "meal_agent_app",
     ),
-    WECHAT_ADAPTER: z.enum(["fake", "real"]).default("fake"),
+    // Fail closed: the fake adapter mints sessions for any caller, so the
+    // adapter choice must always be an explicit deployment decision.
+    WECHAT_ADAPTER: z.enum(["fake", "real"]),
     WECHAT_APP_ID: z.string().min(1).optional(),
     WECHAT_APP_SECRET: z.string().min(1).optional(),
     WECHAT_CODE2SESSION_URL: httpsUrlSchema.default(

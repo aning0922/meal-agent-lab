@@ -43,13 +43,13 @@ DATABASE_URL=postgresql://... pnpm --filter @meal-agent/api db:migrate
 
 运行时连接角色必须能 `SET ROLE meal_agent_app`，且不能拥有 `BYPASSRLS`。服务端只在事务内设置 `app.user_id` / `app.household_id`，事务结束后由 PostgreSQL 清除。
 
-本地默认使用：
+`WECHAT_ADAPTER` 没有默认值，必须显式设置；本地与测试使用：
 
 ```text
 WECHAT_ADAPTER=fake
 ```
 
-fake adapter 把 login code 单向散列为 deterministic provider subject，只用于验证内部身份、session 和 API。`NODE_ENV=production` 强制 `WECHAT_ADAPTER=real`；real adapter 必须同时从运行环境提供 `WECHAT_APP_ID`、`WECHAT_APP_SECRET` 与 HTTPS code2Session URL，配置层和 adapter 构造边界都会拒绝明文 HTTP。没有真实凭据、合法域名和真机证据时，真实微信链保持 `Deferred — 外部依赖`。
+fake adapter 把 login code 单向散列为 deterministic provider subject，只用于验证内部身份、session 和 API。缺失该变量时配置校验直接拒绝启动，杜绝部署遗漏时静默回落到 fake。`NODE_ENV=production` 强制 `WECHAT_ADAPTER=real`；real adapter 必须同时从运行环境提供 `WECHAT_APP_ID`、`WECHAT_APP_SECRET` 与 HTTPS code2Session URL，配置层和 adapter 构造边界都会拒绝明文 HTTP。没有真实凭据、合法域名和真机证据时，真实微信链保持 `Deferred — 外部依赖`。
 
 ## OpenAPI
 

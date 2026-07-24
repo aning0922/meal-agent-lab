@@ -7,6 +7,7 @@
 - 边界修订基线：`b9b149b790d301cd92068cca77b134169241d0fb`
 - 精度与传输修订基线：`d37781f5c749450ee28f9119a24d2861e273e85d`
 - 精确网络表示修订基线：`b7d79c7b7212f63e24e9458da6a3e6b2cda33034`
+- 合并前审核修复：主负责人独立复验（Node 24.14 + PostgreSQL 18.4 全量门禁）与多视角对抗审核后收口——微信 errcode 语义、`WECHAT_ADAPTER` fail-closed、schema/迁移对齐与约束命名统一、approximate 数量约束、contracts 0.2.0、CI 与测试库 locale/编码固定
 - 状态：已完成
 
 ## 范围与依据

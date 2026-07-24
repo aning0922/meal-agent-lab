@@ -72,6 +72,10 @@ const socketDirectory = join(clusterRoot, "socket");
 const port = await freePort();
 const environment = {
   ...process.env,
+  // macOS: with LC_ALL unset the postmaster can abort at boot
+  // ("postmaster became multithreaded during startup") when CoreFoundation
+  // initializes locale support, so pin a valid locale for the PG toolchain.
+  LC_ALL: process.env["LC_ALL"] ?? "C",
   PGHOST: "127.0.0.1",
   PGPORT: String(port),
   PGUSER: "postgres",
@@ -80,22 +84,31 @@ let started = false;
 
 try {
   await mkdir(socketDirectory);
-  await run(join(postgresBin, "initdb"), [
-    "-D",
-    dataDirectory,
-    "--auth-local=trust",
-    "--auth-host=trust",
-    "--username=postgres",
-    "--no-instructions",
-  ]);
-  await run(join(postgresBin, "pg_ctl"), [
-    "-D",
-    dataDirectory,
-    "-o",
-    `-F -p ${port} -h 127.0.0.1 -k ${socketDirectory}`,
-    "-w",
-    "start",
-  ]);
+  await run(
+    join(postgresBin, "initdb"),
+    [
+      "-D",
+      dataDirectory,
+      "--auth-local=trust",
+      "--auth-host=trust",
+      "--username=postgres",
+      "--encoding=UTF8",
+      "--no-instructions",
+    ],
+    environment,
+  );
+  await run(
+    join(postgresBin, "pg_ctl"),
+    [
+      "-D",
+      dataDirectory,
+      "-o",
+      `-F -p ${port} -h 127.0.0.1 -k ${socketDirectory}`,
+      "-w",
+      "start",
+    ],
+    environment,
+  );
   started = true;
   await run(
     join(postgresBin, "createdb"),

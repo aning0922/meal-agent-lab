@@ -2,6 +2,7 @@ import {
   char,
   check,
   foreignKey,
+  index,
   integer,
   jsonb,
   numeric,
@@ -119,7 +120,7 @@ export const sessions = pgTable(
     tokenVersion: integer("token_version").notNull().default(1),
   },
   (table) => [
-    uniqueIndex("sessions_token_digest_unique").on(table.tokenDigest),
+    unique("sessions_token_digest_unique").on(table.tokenDigest),
     foreignKey({
       name: "sessions_identity_user_foreign",
       columns: [table.authIdentityId, table.userId],
@@ -205,10 +206,13 @@ export const memberships = pgTable(
       sql`${table.status} IN ('active', 'left', 'removed')`,
     ),
     check(
-      "memberships_capabilities_array_check",
+      "memberships_capabilities_check",
       sql`jsonb_typeof(${table.capabilities}) = 'array'`,
     ),
     check("memberships_version_check", sql`${table.version} >= 0`),
+    index("memberships_user_active_index")
+      .on(table.userId, table.householdId)
+      .where(sql`${table.status} = 'active'`),
   ],
 );
 
@@ -253,19 +257,19 @@ export const personProfiles = pgTable(
       sql`${table.status} IN ('active', 'archived')`,
     ),
     check(
-      "person_profiles_participation_check",
+      "person_profiles_default_participation_check",
       sql`${table.defaultParticipation} IN (0, 1)`,
     ),
     check(
-      "person_profiles_portion_check",
+      "person_profiles_default_portion_scale_check",
       sql`${table.defaultPortionScale} BETWEEN 0.25 AND 4`,
     ),
     check(
-      "person_profiles_skill_check",
+      "person_profiles_cooking_skill_check",
       sql`${table.cookingSkill} IN ('none', 'beginner', 'intermediate', 'advanced')`,
     ),
     check(
-      "person_profiles_constraints_array_check",
+      "person_profiles_dietary_constraints_check",
       sql`jsonb_typeof(${table.dietaryConstraints}) = 'array'`,
     ),
     check("person_profiles_version_check", sql`${table.version} >= 0`),
@@ -330,21 +334,31 @@ export const inventoryLots = pgTable(
       sql`${table.state} IN ('active', 'depleted', 'discarded')`,
     ),
     check(
-      "inventory_lots_storage_check",
+      "inventory_lots_storage_location_check",
       sql`${table.storageLocation} IN ('pantry', 'refrigerated', 'frozen', 'other')`,
     ),
     check(
       "inventory_lots_quantity_shape_check",
       sql`(
-        (${table.currentQuantityKind} IN ('exact', 'approximate')
+        (${table.currentQuantityKind} = 'exact'
           AND ${table.currentQuantityAmount} IS NOT NULL
           AND ${table.currentQuantityAmount} >= 0
           AND ${table.currentQuantityUnit} IS NOT NULL
+          AND ${table.currentQuantityConfidence} IS NULL
+          AND ${table.currentQuantityLevel} IS NULL)
+        OR
+        (${table.currentQuantityKind} = 'approximate'
+          AND ${table.currentQuantityAmount} IS NOT NULL
+          AND ${table.currentQuantityAmount} >= 0
+          AND ${table.currentQuantityUnit} IS NOT NULL
+          AND ${table.currentQuantityConfidence} IN ('high', 'medium', 'low')
+          AND ${table.currentQuantityOriginalText} IS NOT NULL
           AND ${table.currentQuantityLevel} IS NULL)
         OR
         (${table.currentQuantityKind} = 'qualitative'
           AND ${table.currentQuantityAmount} IS NULL
           AND ${table.currentQuantityUnit} IS NULL
+          AND ${table.currentQuantityConfidence} IS NULL
           AND ${table.currentQuantityLevel} IN ('plenty', 'some', 'low', 'empty', 'unknown'))
       )`,
     ),
@@ -363,18 +377,27 @@ export const inventoryLots = pgTable(
       )`,
     ),
     check(
-      "inventory_lots_dates_array_check",
+      "inventory_lots_dates_check",
       sql`jsonb_typeof(${table.dates}) = 'array' AND jsonb_array_length(${table.dates}) <= 9`,
     ),
     check(
-      "inventory_lots_safety_check",
+      "inventory_lots_safety_status_check",
       sql`${table.safetyStatus} IN ('eligible', 'blocked', 'unknown')`,
+    ),
+    check(
+      "inventory_lots_safety_reason_codes_check",
+      sql`jsonb_typeof(${table.safetyReasonCodes}) = 'array'`,
     ),
     check(
       "inventory_lots_origin_check",
       sql`${table.origin} IN ('manual', 'shopping_confirmation', 'leftover', 'confirmed_import')`,
     ),
     check("inventory_lots_version_check", sql`${table.version} > 0`),
+    index("inventory_lots_household_created_index").on(
+      table.householdId,
+      table.createdAt,
+      table.id,
+    ),
   ],
 );
 
@@ -454,6 +477,44 @@ export const inventoryEvents = pgTable(
       "inventory_events_version_check",
       sql`${table.expectedLotVersion} >= 0 AND ${table.resultingLotVersion} = ${table.expectedLotVersion} + 1`,
     ),
+    check(
+      "inventory_events_quantity_shape_check",
+      sql`(
+        (${table.quantityChangeKind} IS NULL
+          AND ${table.quantityChangeAmount} IS NULL
+          AND ${table.quantityFromLevel} IS NULL
+          AND ${table.quantityToLevel} IS NULL)
+        OR
+        (${table.quantityChangeKind} = 'numeric'
+          AND ${table.quantityChangeAmount} IS NOT NULL
+          AND ${table.quantityChangeAmount} <> 0
+          AND ${table.quantityChangeUnit} IS NOT NULL
+          AND ${table.quantityChangePrecision} IN ('exact', 'estimated')
+          AND ${table.quantityFromLevel} IS NULL
+          AND ${table.quantityToLevel} IS NULL
+          AND (
+            (${table.quantityChangePrecision} = 'exact' AND ${table.quantityChangeConfidence} IS NULL)
+            OR
+            (${table.quantityChangePrecision} = 'estimated'
+              AND ${table.quantityChangeConfidence} IN ('high', 'medium', 'low')
+              AND ${table.quantityChangeOriginalText} IS NOT NULL)
+          ))
+        OR
+        (${table.quantityChangeKind} = 'qualitative'
+          AND ${table.quantityChangeAmount} IS NULL
+          AND ${table.quantityChangeUnit} IS NULL
+          AND ${table.quantityChangePrecision} IS NULL
+          AND ${table.quantityFromLevel} IN ('plenty', 'some', 'low', 'empty', 'unknown')
+          AND ${table.quantityToLevel} IN ('plenty', 'some', 'low', 'empty', 'unknown')
+          AND ${table.quantityFromLevel} <> ${table.quantityToLevel})
+      )`,
+    ),
+    index("inventory_events_lot_recorded_index").on(
+      table.householdId,
+      table.inventoryLotId,
+      table.recordedAt,
+      table.id,
+    ),
   ],
 );
 
@@ -501,6 +562,15 @@ export const idempotencyRecords = pgTable(
       "idempotency_records_status_check",
       sql`${table.statusCode} IS NULL OR ${table.statusCode} BETWEEN 200 AND 299`,
     ),
+    unique("idempotency_records_scope_unique")
+      .on(
+        table.userId,
+        table.householdId,
+        table.method,
+        table.normalizedRoute,
+        table.idempotencyKey,
+      )
+      .nullsNotDistinct(),
   ],
 );
 

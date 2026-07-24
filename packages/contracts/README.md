@@ -43,3 +43,5 @@ const lot: InventoryLot = inventoryLotSchema.parse(untrustedPayload);
 ```
 
 契约升级遵循 API 版本策略：同一 major 内只做兼容性新增；删除、重命名、改变必填性或语义时必须进入新的 API major，并更新 ADR。
+
+包版本 0.2.0 记录阶段 06 的 exact 数量线上格式变更（JSON number → plain decimal string）与 approximate 数量的上限/小数位收紧。该变更发生在任何已部署消费者之前，因此按 0.x 语义以 minor 表达破坏性修订，不新开 API major；`contractVersion` 常量与包版本保持一致。

@@ -66,7 +66,7 @@ apps/*                  客户端与运营界面
 
 ## 环境
 
-local、test、staging 和 production 使用独立数据库、Secret、微信配置、域名和数据集。local/test 默认 fake 外部适配器和合成数据；production 配置校验强制 `WECHAT_ADAPTER=real`、运行时凭据和 HTTPS code2Session URL，real adapter 自身也拒绝非 HTTPS endpoint。staging/production 禁止共享凭据或复制真实用户数据到低环境。
+local、test、staging 和 production 使用独立数据库、Secret、微信配置、域名和数据集。`WECHAT_ADAPTER` 必须显式设置（无默认值）；local/test 显式使用 fake 外部适配器和合成数据，production 配置校验强制 `WECHAT_ADAPTER=real`、运行时凭据和 HTTPS code2Session URL，real adapter 自身也拒绝非 HTTPS endpoint。staging/production 禁止共享凭据或复制真实用户数据到低环境。
 
 云厂商、托管数据库、域名、Secret 管理和可观测产品仍**待验证**。具体矩阵见[阶段 05 后端架构与共享契约](backend-architecture-and-contracts.md#8-环境边界)。
 

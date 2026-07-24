@@ -308,6 +308,31 @@ test("PostgreSQL 18 migration creates nine tables, separated roles, FORCE RLS an
   );
   assert.ok(Number(compositeForeignKeys.rows[0]?.count) >= 5);
 
+  const idempotencyUnique = await persistence.pool.query<{
+    contype: string;
+    condef: string;
+  }>(
+    `SELECT contype, pg_get_constraintdef(oid) AS condef
+     FROM pg_constraint
+     WHERE conname = 'idempotency_records_scope_unique'`,
+  );
+  assert.equal(idempotencyUnique.rows[0]?.contype, "u");
+  assert.match(idempotencyUnique.rows[0]?.condef ?? "", /NULLS NOT DISTINCT/);
+
+  const lotQuantityShape = await persistence.pool.query<{ condef: string }>(
+    `SELECT pg_get_constraintdef(oid) AS condef
+     FROM pg_constraint
+     WHERE conname = 'inventory_lots_quantity_shape_check'`,
+  );
+  assert.match(
+    lotQuantityShape.rows[0]?.condef ?? "",
+    /current_quantity_confidence/,
+  );
+  assert.match(
+    lotQuantityShape.rows[0]?.condef ?? "",
+    /current_quantity_original_text IS NOT NULL/,
+  );
+
   const drizzleProbe = await persistence.drizzle.execute(
     sql`SELECT count(*)::int AS count FROM users`,
   );

@@ -1,4 +1,4 @@
-import { requestIdSchema } from "@meal-agent/contracts";
+import { contractVersion, requestIdSchema } from "@meal-agent/contracts";
 import fastifySwagger from "@fastify/swagger";
 import Fastify, {
   type FastifyError,
@@ -136,7 +136,7 @@ export const buildApp = async (
       info: {
         title: "Meal Agent API",
         description: "Stage 06 minimum backend vertical slice",
-        version: "0.1.0",
+        version: contractVersion,
       },
       servers: [],
       components: {

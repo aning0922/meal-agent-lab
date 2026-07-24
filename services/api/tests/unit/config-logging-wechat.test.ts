@@ -3,6 +3,7 @@ import { Writable } from "node:stream";
 import test from "node:test";
 
 import { loadConfig } from "../../src/config.js";
+import { AppError } from "../../src/errors.js";
 import { createLogger, redactSensitive } from "../../src/logging.js";
 import {
   canonicalJson,
@@ -48,7 +49,21 @@ test("config validates Node service settings and requires real WeChat credential
   assert.equal(real.wechatAdapter, "real");
 });
 
-test("production rejects the fake WeChat adapter, including its default", () => {
+test("config refuses to start without an explicit WeChat adapter choice", () => {
+  assert.throws(() =>
+    loadConfig({
+      NODE_ENV: "test",
+      DATABASE_URL: "postgresql://localhost/meal_agent",
+    }),
+  );
+  assert.throws(() =>
+    loadConfig({
+      DATABASE_URL: "postgresql://localhost/meal_agent",
+    }),
+  );
+});
+
+test("production rejects the fake WeChat adapter, including a missing adapter", () => {
   assert.throws(() =>
     loadConfig({
       NODE_ENV: "production",
@@ -150,6 +165,67 @@ test("real WeChat adapter exposes only the identity boundary and discards sessio
   });
   assert.equal("sessionKey" in identity, false);
   assert.equal(requestedUrl?.searchParams.get("grant_type"), "authorization_code");
+});
+
+const realAdapterReturning = (body: Record<string, unknown>) =>
+  new RealWechatAdapter(
+    {
+      appId: "runtime-app-id",
+      appSecret: "runtime-app-secret",
+      endpoint: "https://api.weixin.qq.com/sns/jscode2session",
+    },
+    async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+
+test("real WeChat adapter accepts a success body that includes errcode 0", async () => {
+  const identity = await realAdapterReturning({
+    openid: "provider-open-id",
+    session_key: "provider-session-key",
+    errcode: 0,
+    errmsg: "ok",
+  }).exchange("one-time-login-code");
+  assert.equal(identity.providerSubject, "provider-open-id");
+});
+
+test("real WeChat adapter maps caller rejections to an authentication failure", async () => {
+  for (const errcode of [40_029, 40_163, 40_226]) {
+    await assert.rejects(
+      realAdapterReturning({ errcode, errmsg: "invalid code" }).exchange(
+        "bad-login-code",
+      ),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.code === "AUTHENTICATION_REQUIRED" &&
+        error.retryable === false,
+    );
+  }
+});
+
+test("real WeChat adapter keeps provider outages as retryable dependency failures", async () => {
+  for (const errcode of [-1, 45_011]) {
+    await assert.rejects(
+      realAdapterReturning({ errcode, errmsg: "transient" }).exchange(
+        "one-time-login-code",
+      ),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.code === "EXTERNAL_DEPENDENCY_UNAVAILABLE" &&
+        error.retryable === true,
+    );
+  }
+  await assert.rejects(
+    realAdapterReturning({ errcode: 40_013, errmsg: "invalid appid" }).exchange(
+      "one-time-login-code",
+    ),
+    (error: unknown) =>
+      error instanceof AppError &&
+      error.code === "EXTERNAL_DEPENDENCY_UNAVAILABLE" &&
+      error.retryable === false,
+  );
 });
 
 test("real WeChat adapter rejects a plaintext code2Session endpoint at its boundary", () => {

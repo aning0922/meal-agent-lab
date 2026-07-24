@@ -29,6 +29,16 @@ const errorResponseSchema = z.object({
   errmsg: z.string().optional(),
 });
 
+// code2Session may include errcode 0 ("ok") in success bodies; only a
+// non-zero errcode is a provider rejection. 40029 (invalid js_code),
+// 40163 (js_code already used) and 40226 (high-risk user blocked) are
+// rejections of the caller — authentication failures, not provider
+// outages. -1 ("system busy") and 45011 (per-minute quota) are transient.
+const callerRejectionErrcodes: ReadonlySet<number> = new Set([
+  40_029, 40_163, 40_226,
+]);
+const transientErrcodes: ReadonlySet<number> = new Set([-1, 45_011]);
+
 export class RealWechatAdapter implements WechatAdapter {
   readonly #config: RealWechatConfig;
   readonly #fetch: FetchLike;
@@ -81,11 +91,18 @@ export class RealWechatAdapter implements WechatAdapter {
       );
     }
     const providerError = errorResponseSchema.safeParse(body);
-    if (providerError.success) {
+    if (providerError.success && providerError.data.errcode !== 0) {
+      if (callerRejectionErrcodes.has(providerError.data.errcode)) {
+        throw new AppError(
+          "AUTHENTICATION_REQUIRED",
+          "WeChat rejected the login",
+          { retryable: false },
+        );
+      }
       throw new AppError(
         "EXTERNAL_DEPENDENCY_UNAVAILABLE",
         "WeChat rejected the login exchange",
-        { retryable: false },
+        { retryable: transientErrcodes.has(providerError.data.errcode) },
       );
     }
 

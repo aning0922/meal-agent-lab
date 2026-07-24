@@ -43,7 +43,8 @@ CREATE TABLE sessions (
   id uuid PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES users(id),
   auth_identity_id uuid NOT NULL,
-  token_digest char(64) NOT NULL UNIQUE,
+  token_digest char(64) NOT NULL
+    CONSTRAINT sessions_token_digest_unique UNIQUE,
   status varchar(32) NOT NULL CHECK (status IN ('active', 'expired', 'revoked')),
   issued_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
@@ -147,10 +148,21 @@ CREATE TABLE inventory_lots (
     REFERENCES memberships(household_id, user_id),
   CONSTRAINT inventory_lots_quantity_shape_check CHECK (
     (
-      current_quantity_kind IN ('exact', 'approximate')
+      current_quantity_kind = 'exact'
       AND current_quantity_amount IS NOT NULL
       AND current_quantity_amount >= 0
       AND current_quantity_unit IS NOT NULL
+      AND current_quantity_confidence IS NULL
+      AND current_quantity_level IS NULL
+    )
+    OR
+    (
+      current_quantity_kind = 'approximate'
+      AND current_quantity_amount IS NOT NULL
+      AND current_quantity_amount >= 0
+      AND current_quantity_unit IS NOT NULL
+      AND current_quantity_confidence IN ('high', 'medium', 'low')
+      AND current_quantity_original_text IS NOT NULL
       AND current_quantity_level IS NULL
     )
     OR
@@ -158,6 +170,7 @@ CREATE TABLE inventory_lots (
       current_quantity_kind = 'qualitative'
       AND current_quantity_amount IS NULL
       AND current_quantity_unit IS NULL
+      AND current_quantity_confidence IS NULL
       AND current_quantity_level IN ('plenty', 'some', 'low', 'empty', 'unknown')
     )
   ),
@@ -285,13 +298,11 @@ CREATE TABLE idempotency_records (
   CONSTRAINT idempotency_records_completion_check
     CHECK ((status_code IS NULL) = (response_body IS NULL)),
   CONSTRAINT idempotency_records_status_check
-    CHECK (status_code IS NULL OR status_code BETWEEN 200 AND 299)
+    CHECK (status_code IS NULL OR status_code BETWEEN 200 AND 299),
+  CONSTRAINT idempotency_records_scope_unique
+    UNIQUE NULLS NOT DISTINCT
+    (user_id, household_id, method, normalized_route, idempotency_key)
 );
-
-CREATE UNIQUE INDEX idempotency_records_scope_unique
-  ON idempotency_records
-  (user_id, household_id, method, normalized_route, idempotency_key)
-  NULLS NOT DISTINCT;
 
 CREATE INDEX memberships_user_active_index
   ON memberships(user_id, household_id)

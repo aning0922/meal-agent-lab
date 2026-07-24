@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-阶段 06“最小服务端纵切”已完成，并已在 `b9b149b`、`d37781f` 两轮修订中补强边界。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
+阶段 06“最小服务端纵切”已完成，并已在 `b9b149b`、`d37781f`、`b7d79c7` 三轮修订与合并前审核修复（独立复验全量门禁 + 对抗审核）中补强边界。后端正式基线为 Node.js 24 LTS + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`；身份、家庭租户、API、鉴权、RLS、幂等、错误和版本策略由 [ADR-0002](architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 与 [ADR-0003](architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 接受，并已经在 [`services/api`](../services/api/) 完成第一次实际纵切。
 
-[`@meal-agent/contracts`](../packages/contracts/) 0.1.0 是客户端、服务端、测试和 OpenAPI 的共享契约事实源。当前已有登录、session、家庭和库存一致性最小服务，但仍没有菜单推荐、Agent、采购/完整做饭流程或正式 App；下一阶段产品范围尚未决定。
+[`@meal-agent/contracts`](../packages/contracts/) 0.2.0 是客户端、服务端、测试和 OpenAPI 的共享契约事实源。当前已有登录、session、家庭和库存一致性最小服务，但仍没有菜单推荐、Agent、采购/完整做饭流程或正式 App；下一阶段产品范围尚未决定。
 
 阶段 04 的微信测试号真机预览、真实登录、合法域名、邀请分享、体验版/审核/发布、离线队列和三个原生平台仍保持 `Deferred — 外部依赖`；生产云、托管数据库、Secret 管理和可观测平台也未在本阶段验证。相机、语音、条码、OCR 和外部通知保持原阶段 `Not applicable`。deterministic fake WeChat adapter 没有被当作真实微信链 Pass。
 
