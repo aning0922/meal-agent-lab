@@ -1,0 +1,51 @@
+{
+  "name": "@meal-agent/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Stage 07 WeChat mini-program client vertical slice",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24.14.0 <25"
+  },
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build:weapp": "taro build --type weapp",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build:weapp",
+    "dev:weapp": "taro build --type weapp --watch",
+    "test": "node --import tsx --test tests/unit/*.test.ts",
+    "test:e2e": "node --import tsx --test tests/e2e/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@babel/runtime": "7.29.7",
+    "@meal-agent/contracts": "workspace:*",
+    "@tarojs/components": "4.2.1",
+    "@tarojs/helper": "4.2.1",
+    "@tarojs/plugin-framework-react": "4.2.1",
+    "@tarojs/plugin-platform-weapp": "4.2.1",
+    "@tarojs/react": "4.2.1",
+    "@tarojs/runtime": "4.2.1",
+    "@tarojs/shared": "4.2.1",
+    "@tarojs/taro": "4.2.1",
+    "react": "18.3.1",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/preset-react": "7.29.7",
+    "@pmmmwh/react-refresh-webpack-plugin": "0.5.17",
+    "@tarojs/cli": "4.2.1",
+    "@tarojs/taro-loader": "4.2.1",
+    "@tarojs/webpack5-runner": "4.2.1",
+    "@types/node": "24.13.3",
+    "@types/react": "18.3.31",
+    "@types/webpack-env": "1.18.8",
+    "babel-preset-taro": "4.2.1",
+    "postcss": "8.5.22",
+    "react-refresh": "0.14.2",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "webpack": "5.91.0"
+  }
+}

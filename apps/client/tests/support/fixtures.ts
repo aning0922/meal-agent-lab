@@ -1,0 +1,79 @@
+import {
+  apiErrorStatus,
+  type ApiErrorCode
+} from '@meal-agent/contracts/api'
+
+/** 构造符合 uuidv7 模式的确定性测试 id。 */
+export const uuidV7 = (sequence: number): string => {
+  const tail = sequence.toString(16).padStart(12, '0')
+  return `01900000-0000-7000-8000-${tail}`
+}
+
+export const T0 = '2026-07-24T00:00:00.000Z'
+export const T_EXPIRES = '2026-08-23T00:00:00.000Z'
+
+export const FAKE_ACCESS_TOKEN = 'a'.repeat(43)
+
+export const REQUEST_ID = '3f2b8c1d-9e4a-4c6b-8d7e-5a1b2c3d4e5f'
+
+export const userFixture = (sequence = 1) => ({
+  id: uuidV7(sequence),
+  status: 'active' as const,
+  displayName: '测试用户',
+  locale: 'zh-CN',
+  createdAt: T0,
+  updatedAt: T0,
+  version: 1
+})
+
+export const authenticatedSessionFixture = (
+  overrides: { expiresAt?: string; accessToken?: string } = {}
+) => {
+  const user = userFixture(1)
+  return {
+    accessToken: overrides.accessToken ?? FAKE_ACCESS_TOKEN,
+    session: {
+      id: uuidV7(2),
+      userId: user.id,
+      authIdentityId: uuidV7(3),
+      status: 'active' as const,
+      issuedAt: T0,
+      expiresAt: overrides.expiresAt ?? T_EXPIRES,
+      lastSeenAt: T0,
+      tokenVersion: 1
+    },
+    user
+  }
+}
+
+export const householdFixture = (sequence = 10) => ({
+  id: uuidV7(sequence),
+  name: `测试家庭 ${sequence}`,
+  timezone: 'Asia/Shanghai',
+  locale: 'zh-CN',
+  status: 'active' as const,
+  createdByUserId: uuidV7(1),
+  createdAt: T0,
+  updatedAt: T0,
+  version: 1
+})
+
+export const successEnvelope = (data: unknown) => ({
+  ok: true,
+  data,
+  meta: { requestId: REQUEST_ID }
+})
+
+export const apiErrorBody = (
+  code: ApiErrorCode,
+  overrides: { detail?: string; retryable?: boolean } = {}
+) => ({
+  ok: false,
+  type: 'https://meal-agent.example/problems/' + code.toLowerCase(),
+  title: code,
+  status: apiErrorStatus[code],
+  code,
+  detail: overrides.detail ?? `${code} detail`,
+  requestId: REQUEST_ID,
+  retryable: overrides.retryable ?? false
+})

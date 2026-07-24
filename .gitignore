@@ -23,7 +23,9 @@ coverage/
 *.tsbuildinfo
 .turbo/
 .cache/
+.swc/
 unpackage/
+project.private.config.json
 
 # Python
 __pycache__/
