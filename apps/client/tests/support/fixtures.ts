@@ -111,6 +111,95 @@ export const createHouseholdResultFixture = () => {
   return { household, membership, ownerProfile }
 }
 
+export const inventoryLotFixture = (
+  overrides: {
+    sequence?: number
+    amount?: string
+    unit?: string
+    version?: number
+    currentQuantity?: Record<string, unknown>
+  } = {}
+) => ({
+  id: uuidV7(overrides.sequence ?? 30),
+  householdId: uuidV7(10),
+  displayName: '鸡蛋',
+  state: 'active' as const,
+  storageLocation: 'refrigerated' as const,
+  currentQuantity: overrides.currentQuantity ?? {
+    kind: 'exact' as const,
+    amount: overrides.amount ?? '12',
+    unit: overrides.unit ?? '个'
+  },
+  dates: [],
+  safetyAssessment: {
+    status: 'unknown' as const,
+    reasonCodes: [],
+    policyVersion: 'stage-06-safety-policy-v1',
+    evaluatedAt: T0
+  },
+  origin: 'manual' as const,
+  createdByUserId: uuidV7(1),
+  createdAt: T0,
+  updatedAt: T0,
+  version: overrides.version ?? 1
+})
+
+export const createInventoryLotResultFixture = (
+  idempotencyKey = 'c07-fake-token-000001'
+) => {
+  const lot = inventoryLotFixture()
+  return {
+    lot,
+    event: {
+      id: uuidV7(40),
+      householdId: lot.householdId,
+      inventoryLotId: lot.id,
+      type: 'acquired' as const,
+      quantityChange: {
+        kind: 'numeric' as const,
+        amount: '12',
+        unit: '个',
+        precision: 'exact' as const
+      },
+      actorUserId: lot.createdByUserId,
+      source: 'manual_confirmation' as const,
+      occurredAt: T0,
+      recordedAt: T0,
+      idempotencyKey,
+      expectedLotVersion: 0,
+      resultingLotVersion: 1
+    }
+  }
+}
+
+export const consumeInventoryLotResultFixture = (
+  idempotencyKey = 'c07-fake-token-000001'
+) => {
+  const lot = inventoryLotFixture({ amount: '10', version: 2 })
+  return {
+    lot,
+    event: {
+      id: uuidV7(41),
+      householdId: lot.householdId,
+      inventoryLotId: lot.id,
+      type: 'consumed' as const,
+      quantityChange: {
+        kind: 'numeric' as const,
+        amount: '-2',
+        unit: '个',
+        precision: 'exact' as const
+      },
+      actorUserId: lot.createdByUserId,
+      source: 'manual_confirmation' as const,
+      occurredAt: T0,
+      recordedAt: T0,
+      idempotencyKey,
+      expectedLotVersion: 1,
+      resultingLotVersion: 2
+    }
+  }
+}
+
 export const apiErrorBody = (
   code: ApiErrorCode,
   overrides: { detail?: string; retryable?: boolean } = {}
