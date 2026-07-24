@@ -86,6 +86,14 @@
 - 完整 happy-path 的**端到端 UI 逐屏自动化未能在自动化环境跑通**，原因是工具层限制而非产品缺陷，两条都已核实：① 新版开发者工具自动化实例对 `http://localhost` 强制"合法域名"校验，无视 `setting.urlCheck:false`（common 与 private 两处均设）与 `cli auto --trust-project`——这正是计划门禁 7 已列为 `Deferred — 外部依赖` 的合法域名边界；② 绕过用的自动化请求桥能观测请求、用真实 fetch 打通后端，但 devtools 自动化无法跨 evaluate 边界回灌页面 `wx.request` 的 success 回调（`globalThis` 共享但跨 realm 存取的回调调用无效），故 UI 无法据此继续推进。官方 `wechatide` AI-agent 工具集（MCP 式，随包内置 `automation_wx_api`/`project-config` 等原子工具）经排查其执行入口未随发行版 `cli` 提供（`cli agent tool` 面向小程序 AgentUI 功能、读 app.json `agent.skills`；devtools 自动化用的 `wechatide` wrapper 本机未安装），不构成上述限制的绕过。
 - 结论：完整 happy-path 的可视化逐屏走查以 GUI 手工方式进行（GUI 开发态关闭合法域名校验即正常联调；本地 `dev:stack` 栈与生产构建已就绪）；其**闭环行为**已由 13 个自动化 E2E 场景（真实 API + PostgreSQL 18）驱动同一套客户端 core 模块穷尽验证，模拟器补充证明了 E2E 覆盖不到的"编译产物渲染 + 真实运行时请求构造"。fake 适配器结果不记为真实微信链路 Pass。
 
+### 模拟器走查发现并修复的真实运行时缺陷（2026-07-24 晚，提交 `d54f183`）
+
+GUI 走查在登录处崩溃（`TypeError: a is not a function`）。这是**一个 Node 单测/E2E 全过、却只在真实小程序运行时暴露的产品 bug**，正是模拟器走查的价值所在：
+
+- **根因**：微信小程序运行时禁用动态代码执行（`new Function`/`eval`）；Zod v4 的对象校验默认走 JIT 快路径（动态编译解析器），该路径在沙箱里失效，任何**对象** schema 的 `safeParse` 抛 `a is not a function`。登录响应契约是对象 schema，故 `api-client` 校验响应时崩溃，且该 `safeParse` 未包 try/catch，异常冒泡使登录页崩。用探针在真机运行时逐类隔离确认：`z.string`/`z.uuidv7`/`z.iso.datetime`/`z.url` 均正常，仅 `z.object`/`z.strictObject` 崩。
+- **修复**：全局关闭 zod JIT（`z.config({ jitless: true })`，解释执行、结果一致仅略慢）。JIT 开关在 schema **构造时**被捕获，故必须先于任何 `@meal-agent/contracts` schema 构造执行——新增 `src/zod-runtime-config.ts`，由 `app.tsx` 与 `app-runtime.ts` 作为**首个副作用 import** 引入（小程序保证 `app.js` 早于所有页面加载契约）。附带加固 `api-client`：`safeParse` 抛异常时降级 `malformedResponse` 而非崩页面。
+- **回归**：新增 `zod-runtime-config.test.ts` 固定 jitless 配置（Node 无法复现 weapp 崩溃，退而防止配置被误删）；客户端 53 单测 + 13 E2E 全绿，weapp 构建通过。真机运行时探针复验 `wechatLoginExchangeSuccessSchema.safeParse` 不再抛异常。
+
 ### 合并前对抗审核与修复（2026-07-24）
 
 按阶段 06 流程执行多视角深读审核：7 个审核视角（契约一致性、幂等重试、会话安全、React/Taro、测试门禁、数据保真、工程接入）共产出 13 个原始发现，每个发现由 3 名独立复核员尝试反驳、多数票裁决——确认 9 个（major 3、minor 6），驳回 4 个。确认项全部修复：
