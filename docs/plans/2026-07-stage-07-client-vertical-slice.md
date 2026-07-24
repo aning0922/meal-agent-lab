@@ -3,7 +3,7 @@
 - 日期：2026-07-24
 - 分支：`codex/stage-07-client-vertical-slice`（待建）
 - 基线：`main` `b7a76ea`（阶段 06 后端纵切与合并前审核修复已合并）
-- 状态：**草案 — 待产品负责人批准后冻结**
+- 状态：已冻结（2026-07-24 项目主负责人批准；本项目主要决策由 AI 主负责人完成）
 
 ## 范围与依据
 
@@ -30,7 +30,17 @@
 4. **API 集成语义**：bearer session 存储与过期处理；写操作生成幂等键并在重试时复用；`INVENTORY_VERSION_CONFLICT` 时刷新批次并提示；401/403/404/409/422 按 problem+json 呈现；网络失败可重试。
 5. **联调验证**：本地 `services/api`（fake adapter + 临时 PostgreSQL 18）跑通全闭环的自动化集成测试与开发者工具模拟器手工验证。
 
-## 验收门禁（草案）
+## 实施顺序
+
+1. **M1 工程接入**：`apps/client` 骨架进根 workspace，依赖 contracts 0.2.0，CI 扩展；平台适配层端口与 fake 实现，页面零直接 `wx.*`。
+2. **M2 登录与会话**：对接 `/api/v1/auth/wechat/exchange`（后端 fake adapter），session 存储、过期与 401 重新登录引导。
+3. **M3 家庭**：创建（含幂等键）/列表/切换，403/404 语义呈现。
+4. **M4 库存**：批次列表、三种初始数量的新增表单、exact-only 消耗，幂等重放与 `INVENTORY_VERSION_CONFLICT` 刷新提示。
+5. **M5 收口**：端到端集成测试（本地 `services/api` + 临时 PostgreSQL 18）、删除 `apps/meal-agent-client-spike`、文档与验收记录。
+
+每个里程碑保持可独立提交、可独立验证；M1-M2 完成前不开始 M3+。
+
+## 验收门禁
 
 | # | 门禁 |
 | --- | --- |
