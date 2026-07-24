@@ -210,7 +210,7 @@ const mapCurrentQuantity = (row: InventoryLotRow): unknown => {
   if (row.current_quantity_kind === "exact") {
     return {
       kind: "exact",
-      amount: Number(row.current_quantity_amount),
+      amount: String(row.current_quantity_amount),
       unit: row.current_quantity_unit,
       ...(row.current_quantity_original_text === null
         ? {}
@@ -276,7 +276,10 @@ const mapQuantityChange = (row: InventoryEventRow): unknown => {
   }
   return {
     kind: "numeric",
-    amount: Number(row.quantity_change_amount),
+    amount:
+      row.quantity_change_precision === "exact"
+        ? String(row.quantity_change_amount)
+        : Number(row.quantity_change_amount),
     unit: row.quantity_change_unit,
     precision: row.quantity_change_precision,
     ...(row.quantity_change_confidence === null

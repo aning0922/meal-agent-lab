@@ -61,7 +61,7 @@ apps/*                  客户端与运营界面
 - 初始 `acquired` 事件按 canonical quantity mapping 保存 kind、amount/unit 与置信信息，必须能重建批次当前数量。
 - 日期保留类型、来源、置信度和规则版本；购买日期不能替代生产日期。
 - 创建家庭使用用户级幂等，家庭资源使用家庭级幂等；幂等 request fingerprint 同时绑定规范化 body 与目标资源 ID，不能把一个 lot 的结果回放给另一个 lot。
-- exact 数量统一为 PostgreSQL `numeric(15, 6)` 可表达范围；API contract 用规范十进制表示检查最多六位小数，不依赖 `multipleOf` 浮点容差，数据库字符串只补零不舍入。库存加减由数据库 decimal 表达式执行，不用 JavaScript 浮点数更新投影。
+- exact 数量在 API 中使用 plain fixed-point decimal string，并统一到 PostgreSQL `numeric(15, 6)` 可表达范围；JSON number、指数形式和超过六位小数在 IEEE-754 转换前拒绝，等值字符串别名在幂等哈希前规范化。数据库参数只补零不舍入，库存加减由数据库 decimal 表达式执行，不用 JavaScript 浮点数更新投影。
 - 过敏、权限、食品安全和库存一致性由确定性规则、应用服务和数据库约束执行。
 
 ## 环境
@@ -79,8 +79,8 @@ local、test、staging 和 production 使用独立数据库、Secret、微信配
 - 阶段 05：`@meal-agent/contracts` 类型检查、10 个运行时契约测试和声明/JavaScript 构建；
 - 阶段 05：User、Household、Membership、PersonProfile、InventoryLot/Event、Meal/Recipe/Recommendation、ShoppingItem 和通用 API 契约已形成同一事实源。
 - 阶段 06：Node.js 24 + Fastify 5 + Drizzle/`pg` 最小服务、PostgreSQL 18 空库 migration、九张表、角色分离、复合外键、`FORCE RLS` 和三类 bootstrap；
-- 阶段 06：session 失效、双用户/双家庭隔离、幂等并发、跨 lot key 冲突、exact decimal 库存运算、负库存和 version conflict；
-- 阶段 06：malformed JSON、404、413、超长 URL 与 415 统一 `application/problem+json`；OpenAPI 从共享 Zod schema 生成，错误媒体类型、可表达的 `oneOf`/decimal 约束及跨字段 refinement 元数据均有检查。
+- 阶段 06：session 失效、禁用 identity/user 不得重新登录、双用户/双家庭隔离、幂等并发与 decimal alias、跨 lot key 冲突、exact decimal 库存运算、负库存和 version conflict；
+- 阶段 06：malformed JSON、404、登录 401、413、超长 URL 与 415 统一 `application/problem+json`；OpenAPI 从共享 Zod schema 生成，错误媒体类型、可表达的 `oneOf`/decimal string 约束及跨字段 refinement 元数据均有检查。
 
 ### 待验证
 

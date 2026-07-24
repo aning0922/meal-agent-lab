@@ -64,6 +64,7 @@ wx.login()
 - token 使用加密安全随机数，数据库只保存不可逆 digest；原 token 只在签发时返回。
 - Session 支持服务端撤销、绝对过期和不活跃过期；初始策略为最长 30 天、连续 7 天未使用失效，具体阈值可由非敏感配置收紧。
 - 登录、权限变更、退出、用户禁用或安全事件可以轮换/撤销会话。
+- 登录交换只为 active AuthIdentity 和 active User 签发 Session；任一被禁用时统一返回 401 problem，不区分具体禁用对象，也不新增 Session。
 - 当前不使用 JWT：单体服务不需要离线验证，opaque session 更易立即撤销并避免把家庭权限快照固化在 token 中。
 
 真实 `wx.login`、code2Session、AppID/AppSecret 和合法域名在阶段 06 完成后仍是 `Deferred — 外部依赖`；阶段 06 只用 deterministic fake adapter 验证了内部映射、session 和接口语义，没有把 fake 结果当作真实微信链 Pass。
@@ -250,7 +251,7 @@ JWT 适合多个服务离线验证，但当前是单体。把角色/家庭放入
 
 ## 验证与复审
 
-阶段 06 已使用两个用户、两个家庭证明正向访问和跨家庭拒绝，并覆盖无家庭上下文的创建/列表 bootstrap、创建家庭 user-scope 重放、家庭内 key/body/目标 lot 冲突、会话过期、成员移除，以及 exact-only 最小 consumed command 的契约拒绝、库存 version 冲突和负库存阻断。
+阶段 06 已使用两个用户、两个家庭证明正向访问和跨家庭拒绝，并覆盖无家庭上下文的创建/列表 bootstrap、创建家庭 user-scope 重放、家庭内 key/body/目标 lot 冲突、disabled identity/user 重新登录 401 且不新增 Session、会话过期、成员移除，以及 exact-only 最小 consumed command 的 decimal string 契约拒绝与 alias 重放、库存 version 冲突和负库存阻断。
 
 以下情况触发复审：
 

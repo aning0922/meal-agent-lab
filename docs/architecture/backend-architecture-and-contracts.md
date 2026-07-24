@@ -280,17 +280,17 @@ InventoryEvent（不可变事实 + actor + source + idempotencyKey）
 | 无结构化 amount/unit 的 approximate 解析结果 | 不得提交正式写入 | 确认界面先让用户确认结构化 amount/unit，或明确选择非 empty qualitative level；调用方完成转换后再提交 |
 | `qualitative` | `qualitative` | `fromLevel = empty`，`toLevel = lot.level`，originalText 相同 |
 
-`createInventoryLotRequestSchema.initialQuantity` 使用专用可持久化 schema：exact 必须为正数且有 unit；approximate 必须同时有正数 amount、unit、confidence 和 originalText；qualitative 必须显式给出非 empty level。原始文本解析 DTO 不是写入 DTO，无结构化 approximate、amount/unit 只出现一个或 empty qualitative 都会在请求边界被拒绝。确认后的调用方负责提交最终结构；服务端、模型和未确认识别都不得替用户选择 qualitative level 或补造 amount/unit。
+`createInventoryLotRequestSchema.initialQuantity` 使用专用可持久化 schema：exact 必须为正数 plain fixed-point decimal string 且有 unit；JSON number、指数形式和超过六位小数在转换成 IEEE-754 Number 前拒绝，等值字符串 alias 规范化为同一值。approximate 必须同时有正数 amount、unit、confidence 和 originalText；qualitative 必须显式给出非 empty level。原始文本解析 DTO 不是写入 DTO，无结构化 approximate、amount/unit 只出现一个或 empty qualitative 都会在请求边界被拒绝。确认后的调用方负责提交最终结构；服务端、模型和未确认识别都不得替用户选择 qualitative level 或补造 amount/unit。
 
 event kind 不匹配、数值或单位不同都会使 `createInventoryLotResultSchema` 失败。`quantityDeltaSchema` 以 precision 判别：estimated 必须带 confidence 和 originalText，exact 禁止 confidence。
 
-`consumeInventoryLotResultSchema` 只接受 `lot.currentQuantity.kind = exact`，event 必须是单位与 lot 相同、`precision = exact`、`source = manual_confirmation` 的 numeric consumed event。响应自身没有 request 和前一版本数量，因而数量运算留给阶段 06 同事务数据库集成测试，并按以下公式验证：
+`consumeInventoryLotResultSchema` 只接受 `lot.currentQuantity.kind = exact`，event 必须是单位与 lot 相同、`precision = exact`、`source = manual_confirmation` 的 numeric consumed event。响应自身没有 request 和前一版本数量，因而数量运算留给阶段 06 同事务 PostgreSQL decimal 集成测试。以下公式描述数值语义，不表示用 JavaScript 对字符串执行运算：
 
 ```text
-event.quantityChange.amount === -request.consumedQuantity.amount
-after.amount === before.amount + event.quantityChange.amount
+event.quantityChange.amount = -request.consumedQuantity.amount
+after.amount = before.amount + event.quantityChange.amount
 等价于：
-after.amount === before.amount - request.consumedQuantity.amount
+after.amount = before.amount - request.consumedQuantity.amount
 ```
 
 request、event、before lot 和 after lot 的单位必须一致，且 `after.amount >= 0`。`after.amount === 0` 时 `state = depleted`，否则 `state = active`。
@@ -397,25 +397,25 @@ contract 设计规则：
 | --- | --- |
 | `GET /healthz` | 进程存活，不探测外部依赖 |
 | `GET /readyz` | 数据库和 migration ready |
-| `POST /api/v1/auth/wechat/exchange` | fake/真实 adapter 换码，创建或恢复 User/Session |
+| `POST /api/v1/auth/wechat/exchange` | fake/真实 adapter 换码，创建或恢复 active User/Session；disabled identity/user 返回 401 且不新增 Session |
 | `DELETE /api/v1/session` | 撤销当前 session |
 | `GET /api/v1/me` | 返回内部 User 与可访问家庭摘要 |
 | `POST /api/v1/households` | 同事务创建 Household、owner Membership 和 owner PersonProfile |
 | `GET /api/v1/households` | 只列出当前 User 的 active Membership |
 | `GET /api/v1/households/{id}/inventory-lots` | cursor list，仅当前家庭 |
 | `POST /api/v1/households/{id}/inventory-lots` | 创建 lot、`acquired` 初始 event、家庭级幂等记录和 version 1 projection |
-| `POST /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed` | 仅接受 `kind = exact` 的正数 amount/unit 和 expectedVersion，追加 `precision = exact` 的负 delta `consumed` event；不得产生负库存 |
+| `POST /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed` | 仅接受 `kind = exact` 的正数 plain decimal string amount/unit 和 expectedVersion，追加 `precision = exact` 的负 delta `consumed` event；不得产生负库存 |
 
 测试门禁：
 
 1. PostgreSQL 18 从空库执行全部 migration。
 2. fake 微信 code 能首次创建、再次恢复同一 User，provider subject 不进入 response/log。
-3. `authenticatedSessionSchema` 及 auth service 拒绝 disabled user、expired/revoked session 和 user/session 不匹配。
+3. 登录交换拒绝 disabled AuthIdentity/User 并返回 401 problem，不新增 Session；`authenticatedSessionSchema` 及 auth service 拒绝 disabled user、expired/revoked session 和 user/session 不匹配。
 4. 创建家庭不用 `HouseholdContext`；相同 user-scope key/body 只创建一个家庭并重放同一 Household ID，key/body 冲突返回 409。
 5. 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问通过，四种交叉访问均被拒绝。
 6. 家庭资源先 bootstrap Membership 再构造 `HouseholdContext`；故意漏写 household filter 时 RLS 仍阻止跨家庭读取。
 7. 相同 household-scope key/body 只创建一个 lot 和一个 `acquired` event，重放原响应；初始 expected/result/lot version 固定为 `0/1/1`。
-8. consumed command 只接受 exact 请求并生成 exact 负 delta；成功响应返回 exact lot、同单位且为 `manual_confirmation` 来源的 event。数据库集成测试验证 `event.quantityChange.amount === -request.consumedQuantity.amount`，以及 `after.amount === before.amount + event.quantityChange.amount`，等价于 `after.amount === before.amount - request.consumedQuantity.amount`。request、event、before/after lot 单位必须一致且 `after.amount >= 0`；`after.amount === 0` 时 `state = depleted`，否则 `state = active`。approximate/estimated 请求在契约边界被拒绝；超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
+8. consumed command 只接受 plain decimal string 的 exact 请求并生成 exact 负 delta；JSON number、超精度字符串和指数形式在 HTTP contract 边界拒绝。成功响应返回 exact lot、同单位且为 `manual_confirmation` 来源的 event。等值 fixed-point alias 在幂等哈希前规范化并重放同一结果。数据库集成测试在 PostgreSQL decimal 数值域验证 `event.quantityChange.amount = -request.consumedQuantity.amount`，以及 `after.amount = before.amount + event.quantityChange.amount`，等价于 `after.amount = before.amount - request.consumedQuantity.amount`。request、event、before/after lot 单位必须一致且 `after.amount >= 0`；`after.amount = 0` 时 `state = depleted`，否则 `state = active`。approximate/estimated 请求在契约边界被拒绝；超过库存返回 `409 INVENTORY_INSUFFICIENT`，不写事件或投影。
 9. 使用不同幂等 key、但携带相同 expectedVersion 的并发 consumed command 只有一个成功，另一个返回 `409 INVENTORY_VERSION_CONFLICT`。
 10. 使用相同幂等 key/body 的并发 consumed command 只执行一次，其他请求重放相同成功结果，不重复追加事件。
 11. session 过期、撤销和成员移除立即失效。

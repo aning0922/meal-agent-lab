@@ -80,7 +80,7 @@ export const inventoryLotSchema = z
   .superRefine((lot, context) => {
     const isEmpty =
       (lot.currentQuantity.kind === "exact" &&
-        lot.currentQuantity.amount === 0) ||
+        lot.currentQuantity.amount === "0") ||
       (lot.currentQuantity.kind === "qualitative" &&
         lot.currentQuantity.level === "empty");
 
@@ -249,7 +249,9 @@ export const inventoryEventSchema = z
     if (
       event.quantityChange?.kind === "numeric" &&
       positiveEvents.has(event.type) &&
-      event.quantityChange.amount <= 0
+      (event.quantityChange.precision === "exact"
+        ? event.quantityChange.amount.startsWith("-")
+        : event.quantityChange.amount <= 0)
     ) {
       context.addIssue({
         code: "custom",
@@ -261,7 +263,9 @@ export const inventoryEventSchema = z
     if (
       event.quantityChange?.kind === "numeric" &&
       negativeEvents.has(event.type) &&
-      event.quantityChange.amount >= 0
+      (event.quantityChange.precision === "exact"
+        ? !event.quantityChange.amount.startsWith("-")
+        : event.quantityChange.amount >= 0)
     ) {
       context.addIssue({
         code: "custom",
@@ -588,7 +592,10 @@ export type CreateInventoryLotResult = z.infer<
 export const consumeInventoryLotRequestSchema = z.strictObject({
   consumedQuantity: z.strictObject({
     kind: z.literal("exact"),
-    amount: exactQuantityAmountSchema.positive(),
+    amount: exactQuantityAmountSchema.refine(
+      (amount) => amount !== "0",
+      { message: "consumed quantity amount must be positive" },
+    ),
     unit: z.string().min(1).max(32),
     originalText: z.string().min(1).max(200).optional(),
   }),

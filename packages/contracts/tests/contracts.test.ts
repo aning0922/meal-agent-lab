@@ -24,7 +24,6 @@ import {
   membershipSchema,
   personProfileSchema,
   quantityDecimalMax,
-  quantityDecimalStep,
   recipeSchema,
   recommendationSchema,
   sessionSchema,
@@ -381,7 +380,7 @@ test("inventory lots preserve date provenance and events enforce append-only ver
   assert.equal(
     inventoryLotSchema.safeParse({
       ...lot,
-      currentQuantity: { kind: "exact", amount: 0, unit: "box" },
+      currentQuantity: { kind: "exact", amount: "0", unit: "box" },
     }).success,
     false,
   );
@@ -389,7 +388,7 @@ test("inventory lots preserve date provenance and events enforce append-only ver
     inventoryLotSchema.safeParse({
       ...lot,
       state: "depleted",
-      currentQuantity: { kind: "exact", amount: 0, unit: "box" },
+      currentQuantity: { kind: "exact", amount: "0", unit: "box" },
     }).success,
     true,
   );
@@ -407,7 +406,7 @@ test("inventory lots preserve date provenance and events enforce append-only ver
   assert.equal(
     createInventoryLotRequestSchema.safeParse({
       ...createRequest,
-      initialQuantity: { kind: "exact", amount: 0, unit: "box" },
+      initialQuantity: { kind: "exact", amount: "0", unit: "box" },
     }).success,
     false,
   );
@@ -416,7 +415,7 @@ test("inventory lots preserve date provenance and events enforce append-only ver
       ...createRequest,
       initialQuantity: {
         kind: "exact",
-        amount: 1,
+        amount: "1",
         unit: "box",
       },
     }).success,
@@ -593,7 +592,7 @@ test("inventory lots preserve date provenance and events enforce append-only ver
       ...event,
       quantityChange: {
         kind: "numeric",
-        amount: -0.5,
+        amount: "-0.5",
         unit: "box",
         precision: "exact",
         confidence: "medium",
@@ -701,7 +700,7 @@ test("inventory create and consume results keep lot, event, household and versio
     storageLocation: "refrigerated",
     currentQuantity: {
       kind: "exact",
-      amount: 2,
+      amount: "2",
       unit: "box",
     },
     dates: [],
@@ -724,7 +723,7 @@ test("inventory create and consume results keep lot, event, household and versio
     type: "acquired",
     quantityChange: {
       kind: "numeric",
-      amount: 2,
+      amount: "2",
       unit: "box",
       precision: "exact",
     },
@@ -779,7 +778,7 @@ test("inventory create and consume results keep lot, event, household and versio
       ...created,
       event: {
         ...initialEvent,
-        quantityChange: { ...initialEvent.quantityChange, amount: 3 },
+        quantityChange: { ...initialEvent.quantityChange, amount: "3" },
       },
     }).success,
     false,
@@ -886,7 +885,7 @@ test("inventory create and consume results keep lot, event, household and versio
   const consumeRequest = consumeInventoryLotRequestSchema.parse({
     consumedQuantity: {
       kind: "exact",
-      amount: 1,
+      amount: "1",
       unit: "box",
     },
     expectedVersion: 1,
@@ -894,7 +893,7 @@ test("inventory create and consume results keep lot, event, household and versio
   const consumed = {
     lot: {
       ...initialLot,
-      currentQuantity: { kind: "exact", amount: 1, unit: "box" },
+      currentQuantity: { kind: "exact", amount: "1", unit: "box" },
       updatedAt: "2026-07-23T12:01:00Z",
       version: 2,
     },
@@ -903,7 +902,7 @@ test("inventory create and consume results keep lot, event, household and versio
       type: "consumed",
       quantityChange: {
         kind: "numeric",
-        amount: -consumeRequest.consumedQuantity.amount,
+        amount: `-${consumeRequest.consumedQuantity.amount}`,
         unit: consumeRequest.consumedQuantity.unit,
         precision: "exact",
       },
@@ -987,7 +986,7 @@ test("inventory create and consume results keep lot, event, household and versio
         state: "depleted",
         currentQuantity: {
           kind: "exact",
-          amount: 0,
+          amount: "0",
           unit: "box",
         },
       },
@@ -999,7 +998,7 @@ test("inventory create and consume results keep lot, event, household and versio
       ...consumeRequest,
       consumedQuantity: {
         ...consumeRequest.consumedQuantity,
-        amount: -1,
+        amount: "-1",
       },
     }).success,
     false,
@@ -1009,31 +1008,36 @@ test("inventory create and consume results keep lot, event, household and versio
       ...consumeRequest,
       consumedQuantity: {
         ...consumeRequest.consumedQuantity,
-        amount: 0.123_456,
+        amount: "0.123456",
       },
     }).success,
     true,
   );
   for (const amount of [
-    0.000_001,
-    999_999_999.999_998,
+    "0.000001",
+    "999999999.999998",
     quantityDecimalMax,
   ]) {
     assert.equal(exactQuantityAmountSchema.safeParse(amount).success, true);
   }
+  assert.equal(exactQuantityAmountSchema.parse("1.000000"), "1");
+  assert.equal(exactQuantityAmountSchema.parse("0.100000"), "0.1");
+  assert.equal(exactQuantityAmountSchema.safeParse(1).success, false);
   assert.equal(
     consumeInventoryLotRequestSchema.safeParse({
       ...consumeRequest,
       consumedQuantity: {
         ...consumeRequest.consumedQuantity,
-        amount: 0.123_456_7,
+        amount: "0.1234567",
       },
     }).success,
     false,
   );
   for (const amount of [
-    0.000_000_1,
-    999_999_999.999_998_9,
+    "0.0000001",
+    "999999999.9999991",
+    "900000000.00000001",
+    "1e-6",
   ]) {
     assert.equal(exactQuantityAmountSchema.safeParse(amount).success, false);
   }
@@ -1042,7 +1046,7 @@ test("inventory create and consume results keep lot, event, household and versio
       ...consumeRequest,
       consumedQuantity: {
         ...consumeRequest.consumedQuantity,
-        amount: quantityDecimalMax + quantityDecimalStep,
+        amount: "1000000000",
       },
     }).success,
     false,
@@ -1113,7 +1117,7 @@ test("meal, recipe and recommendation contracts only expose validated candidates
       {
         foodConceptId: ids.food,
         displayName: "番茄",
-        quantity: { kind: "exact", amount: 2, unit: "piece" },
+        quantity: { kind: "exact", amount: "2", unit: "piece" },
         optional: false,
         allergenCodes: [],
         mayContainAllergenCodes: [],

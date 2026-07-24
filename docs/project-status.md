@@ -77,7 +77,7 @@
 - 建立 Node.js 24/Fastify 5 的 `services/api`，配置、request ID、日志脱敏、统一错误映射和 graceful shutdown 已接入。
 - 建立 deterministic fake WeChat adapter 和真实 code2Session adapter port；production 配置强制 real adapter、运行时凭据和 HTTPS code2Session URL，`RealWechatAdapter` 构造边界也独立拒绝明文 HTTP。真实 adapter 仍只有调用和安全错误边界，没有虚假真实链验证。
 - 所有业务 request/response 复用 `@meal-agent/contracts`；阶段 06 HTTP envelope 也在共享包组合，OpenAPI 从同一批 Zod schema 和路由生成。错误响应声明为 `application/problem+json`，跨字段 refinement 使用可表达的 `oneOf` 或 `x-zod-refinements` 保留。
-- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。malformed JSON、404、413 payload too large、超长 request target 和 415 unsupported media type 进入同一 problem 边界。
+- 健康、就绪、登录、session、`me`、家庭和库存共 10 个 route method 已实现；`readyz` 同时检查数据库与 migration checksum。malformed JSON、404、登录交换 401、413 payload too large、超长 request target 和 415 unsupported media type 进入同一 problem 边界。
 
 ### 数据库与隔离
 
@@ -86,20 +86,20 @@
 - PersonProfile→Membership、InventoryLot→Membership、InventoryEvent→Lot/Membership/Event 和 Idempotency→Membership 使用家庭复合外键。
 - creator、只设置 `app.user_id` 的 user-list、以及先 bootstrap active Membership 的 household-resource 三类事务顺序已实现；`app.user_id` / `app.household_id` 只用 transaction-local 设置。
 - 故意漏写 household filter 的查询仍被 RLS 限制；连接复用验证事务结束后 user/household context 和 local role 均不残留。
-- exact 数量 contract 与两列数据库金额统一为最多六位小数的 `numeric(15, 6)`；小数位检查基于规范十进制表示，不使用 Zod `multipleOf` 浮点容差，数据库格式化只补零、不舍入。扣减、负库存判断和 depleted 投影使用 PostgreSQL decimal 运算。
+- exact 数量 contract 使用 plain fixed-point decimal string，并与两列数据库金额统一为最多六位小数的 `numeric(15, 6)`；JSON number、指数形式和超精度字符串在 IEEE-754 转换前拒绝，等值字符串 alias 在幂等哈希前规范化。数据库格式化只补零、不舍入；扣减、负库存判断和 depleted 投影使用 PostgreSQL decimal 运算。
 
 ### 会话、幂等与库存
 
 - fake code 首次创建、再次恢复同一 User；opaque token 只在签发响应出现，数据库只存 SHA-256 digest。
-- disabled User、绝对/不活跃过期、撤销 session 和成员移除都会在下一请求即时失效；Session、AuthIdentity、User 复合关系阻止错配。
-- 创建家庭使用 user-scope 幂等，家庭库存 command 使用 household-scope 幂等；request fingerprint 绑定目标资源和规范化 body，相同 key/目标/body 顺序或并发重放第一次结果，不重复创建家庭、批次或事件；同 key 改变目标 lot 或 body 返回 409，不跨 lot 回放。
+- disabled AuthIdentity/User 不能重新登录或新增 session；disabled User、绝对/不活跃过期、撤销 session 和成员移除都会在下一请求即时失效；Session、AuthIdentity、User 复合关系阻止错配。
+- 创建家庭使用 user-scope 幂等，家庭库存 command 使用 household-scope 幂等；request fingerprint 绑定目标资源和 schema 规范化后的 body，相同 key/目标/body 顺序或并发重放第一次结果，不重复创建家庭、批次或事件；等值 exact decimal alias 重放原结果，同 key 改变目标 lot 或其他语义字段返回 409，不跨 lot 回放。
 - exact-only consumed 生成同单位 exact 负 delta，满足 `after = before + delta` 且 `after >= 0`；0 进入 `depleted`，非 0 保持 `active`。
 - 不同 key/相同 expectedVersion 的并发 consumed 只有一个成功；相同 key/body 的并发 consumed 只执行一次并重放；负库存不写事件或投影。
 
 ### 门禁证据
 
 - `@meal-agent/contracts` 类型检查、11 个运行时测试和 declaration/JavaScript 构建通过。
-- `services/api` 类型检查、8 个单元测试、5 个 HTTP integration、17 个 PostgreSQL integration、空库 migration、环境前置检查、OpenAPI 一致性检查和构建通过。
+- `services/api` 类型检查、8 个单元测试、5 个 HTTP integration、19 个 PostgreSQL integration、空库 migration、环境前置检查、OpenAPI 一致性检查和构建通过。
 - PostgreSQL integration 使用实际 18.4 一次性空 cluster，不用 SQLite、mock 数据库或 fake migration 结果代替。
 - 两个 User、两个 Household 的正向访问、家庭列表交叉隔离和资源交叉 404 均通过。
 - 应用日志 sentinel 扫描未发现 login code、token、provider subject、UnionID、AppSecret 或成员私密约束。

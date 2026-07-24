@@ -61,7 +61,7 @@ test("stage 06 HTTP envelopes retain shared request and identity constraints", (
           type: "consumed",
           quantityChange: {
             kind: "numeric",
-            amount: -1,
+            amount: "-1",
             unit: "kg",
             precision: "estimated",
           },

@@ -33,7 +33,7 @@ export const sha256 = (value: string): string =>
 export const requestHash = (value: unknown): string =>
   sha256(canonicalJson(value));
 
-export const toDatabaseQuantityDecimal = (value: number): string => {
+export const toDatabaseQuantityDecimal = (value: string): string => {
   const parsed = exactQuantityAmountSchema.parse(value);
   const [whole, fraction = ""] = parsed.toString().split(".");
   if (
@@ -42,6 +42,20 @@ export const toDatabaseQuantityDecimal = (value: number): string => {
     whole.includes("e")
   ) {
     throw new Error("validated quantity could not be formatted exactly");
+  }
+  return `${whole}.${fraction.padEnd(quantityDecimalScale, "0")}`;
+};
+
+export const toDatabaseApproximateQuantityDecimal = (
+  value: number,
+): string => {
+  const [whole, fraction = ""] = String(value).split(".");
+  if (
+    whole === undefined ||
+    fraction.length > quantityDecimalScale ||
+    whole.includes("e")
+  ) {
+    throw new Error("approximate quantity could not be formatted");
   }
   return `${whole}.${fraction.padEnd(quantityDecimalScale, "0")}`;
 };

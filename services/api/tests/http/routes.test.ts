@@ -104,7 +104,7 @@ test("health and readiness use the shared success/error contracts", async () => 
   }
 });
 
-test("HTTP contract rejects estimated and over-precision exact consumed requests before a handler can write", async () => {
+test("HTTP contract rejects non-string, over-precision and exponent exact amounts before a handler can write", async () => {
   const app = await buildApp({
     config,
     operations,
@@ -134,27 +134,59 @@ test("HTTP contract rejects estimated and over-precision exact consumed requests
     assert.equal(response.statusCode, 400);
     assert.equal(apiErrorSchema.parse(response.json()).code, "VALIDATION_FAILED");
 
-    const overPrecision = await app.inject({
+    for (const [index, rawAmount] of [
+      "999999999.9999991",
+      "900000000.00000001",
+      "1e-6",
+      "9E8",
+    ].entries()) {
+      const overPrecision = await app.inject({
+        method: "POST",
+        url:
+          `/api/v1/households/${ids.household}` +
+          `/inventory-lots/${ids.lot}/events/consumed`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "idempotency-key": `consume-http-invalid-${index}`,
+        },
+        payload: JSON.stringify({
+          consumedQuantity: {
+            kind: "exact",
+            amount: rawAmount,
+            unit: "kg",
+          },
+          expectedVersion: 1,
+        }),
+      });
+      assert.equal(overPrecision.statusCode, 400);
+      assert.equal(
+        apiErrorSchema.parse(overPrecision.json()).code,
+        "VALIDATION_FAILED",
+      );
+    }
+
+    const numericAmount = await app.inject({
       method: "POST",
       url:
         `/api/v1/households/${ids.household}` +
         `/inventory-lots/${ids.lot}/events/consumed`,
       headers: {
         authorization: `Bearer ${token}`,
-        "idempotency-key": "consume-http-0002",
+        "idempotency-key": "consume-http-number",
       },
       payload: {
         consumedQuantity: {
           kind: "exact",
-          amount: 999_999_999.999_998_9,
+          amount: 1,
           unit: "kg",
         },
         expectedVersion: 1,
       },
     });
-    assert.equal(overPrecision.statusCode, 400);
+    assert.equal(numericAmount.statusCode, 400);
     assert.equal(
-      apiErrorSchema.parse(overPrecision.json()).code,
+      apiErrorSchema.parse(numericAmount.json()).code,
       "VALIDATION_FAILED",
     );
   } finally {

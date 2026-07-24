@@ -201,10 +201,12 @@ const quantityOriginalTextSchema = z.string().min(1).max(200);
 
 export const quantityDecimalPrecision = 15;
 export const quantityDecimalScale = 6;
-export const quantityDecimalStep = 0.000_001;
-export const quantityDecimalMax = 999_999_999.999_999;
+export const quantityDecimalStep = "0.000001";
+export const quantityDecimalMax = "999999999.999999";
 
-export const hasAtMostQuantityDecimalScale = (value: number): boolean => {
+const quantityDecimalNumberMax = 999_999_999.999_999;
+
+const hasAtMostQuantityDecimalScale = (value: number): boolean => {
   if (!Number.isFinite(value)) {
     return false;
   }
@@ -217,22 +219,55 @@ export const hasAtMostQuantityDecimalScale = (value: number): boolean => {
   return Math.max(0, fractionalDigits - exponent) <= quantityDecimalScale;
 };
 
+const unsignedQuantityDecimalPattern =
+  /^(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/;
+const signedQuantityDecimalPattern =
+  /^-?(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/;
+
+export const normalizeQuantityDecimal = (value: string): string => {
+  const negative = value.startsWith("-");
+  const unsigned = negative ? value.slice(1) : value;
+  const [whole = "", fraction = ""] = unsigned.split(".");
+  const trimmedFraction = fraction.replace(/0+$/, "");
+  const normalized =
+    trimmedFraction.length === 0
+      ? whole
+      : `${whole}.${trimmedFraction}`;
+  return negative && normalized !== "0" ? `-${normalized}` : normalized;
+};
+
 export const exactQuantityAmountSchema = z
-  .number()
-  .finite()
-  .nonnegative()
-  .max(quantityDecimalMax)
-  .refine(hasAtMostQuantityDecimalScale, {
-    message: `quantity amount supports at most ${quantityDecimalScale} decimal places`,
+  .string()
+  .min(1)
+  .max(quantityDecimalPrecision + 1)
+  .regex(unsignedQuantityDecimalPattern, {
+    message:
+      "quantity amount must be a plain nonnegative decimal string with at most 9 integer and 6 fractional digits",
   })
+  .overwrite(normalizeQuantityDecimal)
   .meta({
-    multipleOf: quantityDecimalStep,
+    format: "decimal",
+    "x-decimal-maximum": quantityDecimalMax,
+    "x-decimal-scale": quantityDecimalScale,
     "x-zod-refinements": [
-      `quantity amount supports at most ${quantityDecimalScale} decimal places without floating-point tolerance`,
+      "quantity amount rejects JSON numbers and exponent notation before any IEEE-754 conversion",
+      "equivalent fixed-point aliases normalize before idempotency hashing",
     ],
   });
 
-const positiveQuantityAmountSchema = exactQuantityAmountSchema.positive();
+const positiveExactQuantityAmountSchema =
+  exactQuantityAmountSchema.refine((amount) => amount !== "0", {
+    message: "quantity amount must be positive",
+  });
+
+const positiveApproximateQuantityAmountSchema = z
+  .number()
+  .finite()
+  .positive()
+  .max(quantityDecimalNumberMax)
+  .refine(hasAtMostQuantityDecimalScale, {
+    message: `approximate quantity amount supports at most ${quantityDecimalScale} decimal places`,
+  });
 
 export const exactQuantitySchema = z.strictObject({
   kind: z.literal("exact"),
@@ -244,7 +279,7 @@ export const exactQuantitySchema = z.strictObject({
 export const approximateQuantitySchema = z
   .strictObject({
     kind: z.literal("approximate"),
-    amount: positiveQuantityAmountSchema.optional(),
+    amount: positiveApproximateQuantityAmountSchema.optional(),
     unit: quantityUnitSchema.optional(),
     originalText: quantityOriginalTextSchema,
     confidence: confidenceSchema,
@@ -283,7 +318,7 @@ export type Quantity = z.infer<typeof quantitySchema>;
 export const nonEmptyQuantitySchema = quantitySchema.superRefine(
   (quantity, context) => {
     if (
-      (quantity.kind === "exact" && quantity.amount === 0) ||
+      (quantity.kind === "exact" && quantity.amount === "0") ||
       (quantity.kind === "qualitative" && quantity.level === "empty")
     ) {
       context.addIssue({
@@ -298,13 +333,13 @@ export type NonEmptyQuantity = z.infer<typeof nonEmptyQuantitySchema>;
 export const persistableInitialQuantitySchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("exact"),
-    amount: positiveQuantityAmountSchema,
+    amount: positiveExactQuantityAmountSchema,
     unit: quantityUnitSchema,
     originalText: quantityOriginalTextSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal("approximate"),
-    amount: positiveQuantityAmountSchema,
+    amount: positiveApproximateQuantityAmountSchema,
     unit: quantityUnitSchema,
     confidence: confidenceSchema,
     originalText: quantityOriginalTextSchema,
@@ -319,11 +354,11 @@ export type PersistableInitialQuantity = z.infer<
   typeof persistableInitialQuantitySchema
 >;
 
-const nonZeroQuantityDeltaAmountSchema = z
+const nonZeroEstimatedQuantityDeltaAmountSchema = z
   .number()
   .finite()
-  .min(-quantityDecimalMax)
-  .max(quantityDecimalMax)
+  .min(-quantityDecimalNumberMax)
+  .max(quantityDecimalNumberMax)
   .refine(hasAtMostQuantityDecimalScale, {
     message: `quantity delta supports at most ${quantityDecimalScale} decimal places`,
   })
@@ -331,9 +366,31 @@ const nonZeroQuantityDeltaAmountSchema = z
     message: "quantity delta cannot be zero",
   })
   .meta({
-    multipleOf: quantityDecimalStep,
     "x-zod-refinements": [
-      `quantity delta supports at most ${quantityDecimalScale} decimal places without floating-point tolerance`,
+      `estimated quantity delta supports at most ${quantityDecimalScale} decimal places`,
+      "quantity delta cannot be zero",
+    ],
+  });
+
+const nonZeroExactQuantityDeltaAmountSchema = z
+  .string()
+  .min(1)
+  .max(quantityDecimalPrecision + 2)
+  .regex(signedQuantityDecimalPattern, {
+    message:
+      "exact quantity delta must be a plain signed decimal string with at most 9 integer and 6 fractional digits",
+  })
+  .overwrite(normalizeQuantityDecimal)
+  .refine((amount) => amount !== "0", {
+    message: "quantity delta cannot be zero",
+  })
+  .meta({
+    format: "decimal",
+    "x-decimal-minimum": `-${quantityDecimalMax}`,
+    "x-decimal-maximum": quantityDecimalMax,
+    "x-decimal-scale": quantityDecimalScale,
+    "x-zod-refinements": [
+      "exact quantity delta rejects JSON numbers and exponent notation before any IEEE-754 conversion",
       "quantity delta cannot be zero",
     ],
   });
@@ -341,14 +398,14 @@ const nonZeroQuantityDeltaAmountSchema = z
 export const quantityDeltaSchema = z.discriminatedUnion("precision", [
   z.strictObject({
     kind: z.literal("numeric"),
-    amount: nonZeroQuantityDeltaAmountSchema,
+    amount: nonZeroExactQuantityDeltaAmountSchema,
     unit: quantityUnitSchema,
     precision: z.literal("exact"),
     originalText: quantityOriginalTextSchema.optional(),
   }),
   z.strictObject({
     kind: z.literal("numeric"),
-    amount: nonZeroQuantityDeltaAmountSchema,
+    amount: nonZeroEstimatedQuantityDeltaAmountSchema,
     unit: quantityUnitSchema,
     precision: z.literal("estimated"),
     confidence: confidenceSchema,

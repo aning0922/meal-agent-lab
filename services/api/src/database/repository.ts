@@ -37,6 +37,7 @@ import {
   issueSessionToken,
   newEntityId,
   requestHash,
+  toDatabaseApproximateQuantityDecimal,
   toDatabaseQuantityDecimal,
 } from "../utils.js";
 import type { WechatAdapter } from "../wechat/adapter.js";
@@ -263,7 +264,10 @@ export class ApiRepository {
       } else {
         const identity = identityResult.rows[0];
         if (identity === undefined || identity.status !== "active") {
-          throw new AppError("SESSION_EXPIRED", "Login identity is disabled");
+          throw new AppError(
+            "AUTHENTICATION_REQUIRED",
+            "Login is not available",
+          );
         }
         userId = identity.user_id;
         authIdentityId = identity.id;
@@ -287,7 +291,10 @@ export class ApiRepository {
       );
       const userRow = userResult.rows[0];
       if (userRow === undefined || userRow.status !== "active") {
-        throw new AppError("SESSION_EXPIRED", "User is disabled");
+        throw new AppError(
+          "AUTHENTICATION_REQUIRED",
+          "Login is not available",
+        );
       }
 
       const sessionId = newEntityId();
@@ -900,9 +907,14 @@ export class ApiRepository {
             }));
             const quantity = request.initialQuantity;
             const isQualitative = quantity.kind === "qualitative";
-            const quantityAmount = isQualitative
-              ? null
-              : toDatabaseQuantityDecimal(quantity.amount);
+            const quantityAmount =
+              quantity.kind === "qualitative"
+                ? null
+                : quantity.kind === "exact"
+                  ? toDatabaseQuantityDecimal(quantity.amount)
+                  : toDatabaseApproximateQuantityDecimal(
+                      quantity.amount,
+                    );
             const quantityUnit = isQualitative ? null : quantity.unit;
             const quantityOriginalText = quantity.originalText ?? null;
             const quantityConfidence =

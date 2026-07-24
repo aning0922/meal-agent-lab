@@ -6,6 +6,7 @@
 - 基线：本地 `main` `1cc2ecc02e8c0da31d90daa2395238dda4815830`
 - 边界修订基线：`b9b149b790d301cd92068cca77b134169241d0fb`
 - 精度与传输修订基线：`d37781f5c749450ee28f9119a24d2861e273e85d`
+- 精确网络表示修订基线：`b7d79c7b7212f63e24e9458da6a3e6b2cda33034`
 - 状态：已完成
 
 ## 范围与依据
@@ -91,11 +92,18 @@ deterministic fake WeChat adapter 只验证内部身份映射、session 和 HTTP
 
 基于 `d37781f5c749450ee28f9119a24d2861e273e85d` 继续修订：
 
-- 移除 exact amount 对 Zod `multipleOf` 浮点容差的运行时依赖；按规范十进制表示检查小数位，数据库定标字符串只补零、不再用 `toFixed(6)` 舍入。小数、接近 `999999999.999999` 上限和七位反例均有 contract/HTTP/PostgreSQL 回归。
+- 该中间修订移除了 exact amount 对 Zod `multipleOf` 浮点容差的运行时依赖，并停止用 `toFixed(6)` 舍入；但仍在 JavaScript Number 转换后检查。后续 `b7d79c7` 基线修订已进一步用 decimal string 取代该 Number 路径。
 - production 配置和 `RealWechatAdapter` 构造边界独立要求 HTTPS code2Session URL，并固定明文 HTTP 反例。
 - Fastify 413/415 映射为 `PAYLOAD_TOO_LARGE` / `UNSUPPORTED_MEDIA_TYPE`，与其他错误共用 `application/problem+json`。
 - 新增 `pnpm stage06:check` 环境前置，统一检查 Node 24.14+ 与完整 PostgreSQL 18 工具链。
 - ADR-0002/0003 把阶段 06 已完成验证从未来时/“待验证”移入已验证状态，只保留实际未完成项。
+
+基于 `b7d79c7b7212f63e24e9458da6a3e6b2cda33034` 继续修订：
+
+- exact amount 的请求、响应和 exact event delta 改为 plain fixed-point decimal string；JSON number、指数形式和超过六位小数在 IEEE-754 转换前拒绝，PostgreSQL mapper 不再把 exact `numeric` 转成 JavaScript Number。
+- schema 把 `"1.0"`、`"1.000000"` 等等值 alias 规范化为同一字符串后再计算 request hash；HTTP→PostgreSQL 回归证明创建批次和 consumed 均只写一次并重放原结果。
+- 固定原始 JSON 字符串 `999999999.9999991`、`900000000.00000001`、`1e-6`、`9E8` 以及 JSON number 反例；全部在 HTTP contract 边界返回 400 且不写库存。
+- 登录交换为 disabled AuthIdentity/User 返回 401 `application/problem+json`，不新增 Session；OpenAPI 明确声明并检查 401 problem response。
 
 ## 验证结果
 
@@ -104,17 +112,17 @@ deterministic fake WeChat adapter 只验证内部身份映射、session 和 HTTP
 | # | 结果 | 证据 |
 | --- | --- | --- |
 | 1 | Pass | PostgreSQL 18.4 一次性空 cluster 执行全部 migration；public schema 恰好九张业务表；migration/app role、FORCE RLS 和复合外键检查通过 |
-| 2 | Pass | deterministic fake code 首次创建、再次恢复同一 User；身份表只有一条映射，provider subject 不在 response/application log |
+| 2 | Pass | deterministic fake code 首次创建、再次恢复同一 User；身份表只有一条映射，provider subject 不在 response/application log；disabled identity/user 重新交换返回 401 且不新增 Session |
 | 3 | Pass | 共享 `authenticatedSessionSchema` 与数据库 auth service 拒绝 disabled User、expired/revoked Session 和 User/Session 错配；复合外键额外阻止错配写入 |
 | 4 | Pass | 创建家庭不构造 `HouseholdContext`；user-scope 同 key/body 重放同一 Household ID，key/body 冲突返回 `409 IDEMPOTENCY_KEY_REUSED` |
 | 5 | Pass | 家庭列表只设置 `app.user_id`；两个 User、两个 Household 的正向列表/资源访问和四种交叉隔离结果通过 |
 | 6 | Pass | 家庭资源在事务内 bootstrap active Membership；故意删除 SQL household filter 后，RLS 仍只返回当前家庭 |
 | 7 | Pass | household-scope 同 key/body 并发创建一个 lot 和一个 acquired event，另一请求重放；版本为 `0/1/1` |
-| 8 | Pass | consumed 只接受最多六位小数的 exact，运行时不依赖 `multipleOf` 容差；PostgreSQL `numeric(15, 6)` 验证 `0.3 - 0.1 - 0.2 = 0.000000` 及上限减 `0.000001`，七位小数在 HTTP 前置拒绝且不写库；delta、before/after、单位、非负、active/depleted 全部断言；estimated 与负库存路径保持通过 |
+| 8 | Pass | consumed 只接受 plain fixed-point decimal string 的 exact；JSON number、`999999999.9999991`、`900000000.00000001` 和指数形式在 HTTP 前置拒绝且不写库。PostgreSQL `numeric(15, 6)` 验证 `0.3 - 0.1 - 0.2 = 0.000000`、上限减 `0.000001`，以及 decimal alias 规范化后创建/consumed 各只写一次；delta、before/after、单位、非负、active/depleted、estimated 与负库存路径保持通过 |
 | 9 | Pass | 不同 key、相同 expectedVersion 的并发 consumed 为一个 201、一个 `409 INVENTORY_VERSION_CONFLICT` |
 | 10 | Pass | 相同 key/body、两个独立 session 的并发 consumed 返回同一 event；只有一次执行，另一请求为 replay |
 | 11 | Pass | session 绝对过期、撤销和 Membership 移除均在下一请求即时失效；不活跃过期路径与绝对过期使用同一 auth service 判断 |
-| 12 | Pass | contract 类型/11 个运行时测试、API 类型/8 个单元测试/5 个 HTTP integration/17 个 PostgreSQL integration、环境前置、OpenAPI 检查和两个构建全部通过 |
+| 12 | Pass | contract 类型/11 个运行时测试、API 类型/8 个单元测试/5 个 HTTP integration/19 个 PostgreSQL integration、环境前置、OpenAPI 检查和两个构建全部通过 |
 | 13 | Pass | 单元、HTTP 和数据库日志 sentinel 扫描不含 login code、opaque token、provider subject、UnionID、AppSecret 或成员私密约束 |
 
 ### 最终命令
@@ -130,8 +138,8 @@ git diff --check
 ```
 
 - `pnpm audit --prod`：`No known vulnerabilities found`
-- OpenAPI：8 个 path、10 个 route method 均存在；consumed request 只生成 exact schema，提交产物与实时生成结果一致
-- OpenAPI 错误响应只声明 `application/problem+json`；413/415、pageInfo `oneOf`、exact precision/scale 和无浮点容差的 `x-zod-refinements` 均由检查固定
+- OpenAPI：8 个 path、10 个 route method 均存在；consumed request 只生成 decimal string exact schema，提交产物与实时生成结果一致
+- OpenAPI 错误响应只声明 `application/problem+json`；登录 401、413/415、pageInfo `oneOf`、exact string pattern/precision/scale 和 IEEE-754 前置拒绝元数据均由检查固定
 - 本地 Markdown：48 个文件中的 86 个本地链接全部可解析
 - 提交范围扫描：未发现私钥签名、常见 access token、非空 `.env.example` Secret/数据库 URL、真实手机号/邮箱或第二份核心 DTO
 - 生成物扫描：没有跟踪 `node_modules`、`dist`、coverage、日志或 TypeScript 增量缓存；提交的 OpenAPI 是可复现审查产物

@@ -189,6 +189,7 @@ export const registerRoutes = async (
         response: {
           200: wechatLoginExchangeSuccessSchema,
           400: problemResponse,
+          401: problemResponse,
           413: problemResponse,
           414: problemResponse,
           415: problemResponse,

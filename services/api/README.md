@@ -10,8 +10,8 @@
 - user-scope 与 household-scope 幂等、目标资源指纹、expected version、负库存阻断；
 - 九张业务表、复合外键、migration/app role 分离、`FORCE RLS`；
 - creator、user-list、household-resource 三类 transaction-local bootstrap；
-- exact quantity 的 `numeric(15, 6)` 存储、无容差小数位检查和数据库 decimal 扣减；数据库字符串只补零、不舍入，不用 JavaScript 浮点运算更新库存；
-- request ID、日志脱敏、malformed JSON/404/413/超长 URL/415 的统一 problem response、就绪检查和 graceful shutdown；
+- exact quantity 的 plain decimal string 网络契约、`numeric(15, 6)` 存储和数据库 decimal 扣减；JSON number/指数形式在 IEEE-754 转换前被拒绝，等值字符串别名在幂等哈希前规范化，数据库参数只补零、不舍入；
+- request ID、日志脱敏、malformed JSON/404/登录 401/413/超长 URL/415 的统一 problem response、就绪检查和 graceful shutdown；
 - 从 `@meal-agent/contracts` Zod schema 生成的 OpenAPI，包括 `application/problem+json` 和 refinement 元数据。
 
 不包含菜单推荐、Agent、OCR、通知、采购、完整做饭流程、Redis、消息队列、向量数据库、微服务、正式 App 或生产部署。
@@ -77,4 +77,4 @@ POST   /api/v1/households/{id}/inventory-lots
 POST   /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed
 ```
 
-业务写 command 必须带 `Idempotency-Key`。request fingerprint 绑定目标资源与规范化 body：相同作用域/key/目标/body 重放第一次结果；同 key 改变目标 lot 或 body 返回 `409 IDEMPOTENCY_KEY_REUSED`，不会跨 lot 回放结果。
+业务写 command 必须带 `Idempotency-Key`。request fingerprint 绑定目标资源与 schema 规范化后的 body：相同作用域/key/目标/body 重放第一次结果；exact decimal 的等值 fixed-point alias 视为同一 body；同 key 改变目标 lot 或其他语义字段返回 `409 IDEMPOTENCY_KEY_REUSED`，不会跨 lot 回放结果。

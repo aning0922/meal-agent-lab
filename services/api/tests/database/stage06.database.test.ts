@@ -146,7 +146,7 @@ const createHousehold = async (
 
 const exactLotRequest = (
   name: string,
-  amount = 5,
+  amount = "5",
   unit = "kg",
 ): CreateInventoryLotRequest => ({
   displayName: name,
@@ -193,7 +193,7 @@ const consume = async (
   householdId: string,
   lotId: string,
   key: string,
-  amount: number,
+  amount: string,
   expectedVersion: number,
   unit = "kg",
 ): Promise<LightMyRequestResponse> =>
@@ -363,6 +363,72 @@ test("deterministic fake WeChat login creates then restores one internal user wi
   ]) {
     assert.equal(logs.includes(secret), false);
   }
+});
+
+test("disabled identity or user cannot exchange the same login code for another session", async () => {
+  const disabledIdentityCode = "disabled-login-identity";
+  const identityLogin = await login(disabledIdentityCode);
+  await persistence.pool.query(
+    `UPDATE auth_identities
+     SET status = 'disabled'
+     WHERE user_id = $1`,
+    [identityLogin.user.id],
+  );
+  const identityRetry = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/wechat/exchange",
+    payload: { loginCode: disabledIdentityCode },
+  });
+  assert.equal(identityRetry.statusCode, 401, identityRetry.body);
+  assert.equal(
+    identityRetry.headers["content-type"]?.includes(
+      "application/problem+json",
+    ),
+    true,
+  );
+  assert.equal(
+    apiErrorSchema.parse(identityRetry.json()).code,
+    "AUTHENTICATION_REQUIRED",
+  );
+
+  const disabledUserCode = "disabled-login-user";
+  const userLogin = await login(disabledUserCode);
+  await persistence.pool.query(
+    "UPDATE users SET status = 'disabled' WHERE id = $1",
+    [userLogin.user.id],
+  );
+  const userRetry = await app.inject({
+    method: "POST",
+    url: "/api/v1/auth/wechat/exchange",
+    payload: { loginCode: disabledUserCode },
+  });
+  assert.equal(userRetry.statusCode, 401, userRetry.body);
+  assert.equal(
+    userRetry.headers["content-type"]?.includes(
+      "application/problem+json",
+    ),
+    true,
+  );
+  assert.equal(
+    apiErrorSchema.parse(userRetry.json()).code,
+    "AUTHENTICATION_REQUIRED",
+  );
+
+  const sessionCounts = await persistence.pool.query<{
+    user_id: string;
+    sessions: number;
+  }>(
+    `SELECT user_id, count(*)::int AS sessions
+     FROM sessions
+     WHERE user_id IN ($1, $2)
+     GROUP BY user_id
+     ORDER BY user_id`,
+    [identityLogin.user.id, userLogin.user.id],
+  );
+  assert.deepEqual(
+    sessionCounts.rows.map((row) => row.sessions),
+    [1, 1],
+  );
 });
 
 test("auth service rejects disabled users, expired/revoked sessions and database-level identity mismatch", async () => {
@@ -652,7 +718,7 @@ test("same household-scope key and body concurrently create one lot and one acqu
   );
   const householdId = household.data.household.id;
   const key = "lot-concurrent-key1";
-  const request = exactLotRequest("并发批次", 6, "piece");
+  const request = exactLotRequest("并发批次", "6", "piece");
 
   const send = (session: AuthenticatedSession) =>
     app.inject({
@@ -706,7 +772,7 @@ test("exact consumed event preserves delta arithmetic, units, non-negative proje
     session,
     household.data.household.id,
     "consumed-invariant-lot",
-    exactLotRequest("牛奶", 5, "L"),
+    exactLotRequest("牛奶", "5", "L"),
   );
   const beforeAmount = created.data.lot.currentQuantity.kind === "exact"
     ? created.data.lot.currentQuantity.amount
@@ -717,7 +783,7 @@ test("exact consumed event preserves delta arithmetic, units, non-negative proje
     household.data.household.id,
     created.data.lot.id,
     "consumed-invariant-1",
-    2,
+    "2",
     1,
     "L",
   );
@@ -731,14 +797,11 @@ test("exact consumed event preserves delta arithmetic, units, non-negative proje
     assert.fail("expected exact numeric consumed result");
   }
   assert.equal(first.data.event.quantityChange.precision, "exact");
-  assert.equal(first.data.event.quantityChange.amount, -2);
+  assert.equal(first.data.event.quantityChange.amount, "-2");
   assert.equal(first.data.event.quantityChange.unit, "L");
   assert.equal(first.data.lot.currentQuantity.unit, "L");
-  assert.equal(
-    first.data.lot.currentQuantity.amount,
-    beforeAmount + first.data.event.quantityChange.amount,
-  );
-  assert.equal(first.data.lot.currentQuantity.amount, 3);
+  assert.equal(beforeAmount, "5");
+  assert.equal(first.data.lot.currentQuantity.amount, "3");
   assert.equal(first.data.lot.state, "active");
 
   const depletionResponse = await consume(
@@ -746,7 +809,7 @@ test("exact consumed event preserves delta arithmetic, units, non-negative proje
     household.data.household.id,
     created.data.lot.id,
     "consumed-invariant-2",
-    3,
+    "3",
     2,
     "L",
   );
@@ -755,7 +818,7 @@ test("exact consumed event preserves delta arithmetic, units, non-negative proje
   );
   assert.equal(depleted.data.lot.currentQuantity.kind, "exact");
   if (depleted.data.lot.currentQuantity.kind === "exact") {
-    assert.equal(depleted.data.lot.currentQuantity.amount, 0);
+    assert.equal(depleted.data.lot.currentQuantity.amount, "0");
   }
   assert.equal(depleted.data.lot.state, "depleted");
 
@@ -793,7 +856,7 @@ test("insufficient consumed request returns 409 without writing an event or proj
     session,
     household.data.household.id,
     "insufficient-lot",
-    exactLotRequest("少量盐", 1, "kg"),
+    exactLotRequest("少量盐", "1", "kg"),
   );
 
   const response = await consume(
@@ -801,7 +864,7 @@ test("insufficient consumed request returns 409 without writing an event or proj
     household.data.household.id,
     created.data.lot.id,
     "insufficient-event",
-    2,
+    "2",
     1,
   );
   assert.equal(response.statusCode, 409);
@@ -835,7 +898,7 @@ test("insufficient consumed request returns 409 without writing an event or proj
     household.data.household.id,
     created.data.lot.id,
     "wrong-unit-event01",
-    1,
+    "1",
     1,
     "g",
   );
@@ -870,7 +933,7 @@ test("PostgreSQL numeric arithmetic preserves six-decimal exact quantities", asy
     session,
     household.data.household.id,
     "decimal-lot-key01",
-    exactLotRequest("小数库存", 0.3, "kg"),
+    exactLotRequest("小数库存", "0.3", "kg"),
   );
 
   const first = await consume(
@@ -878,7 +941,7 @@ test("PostgreSQL numeric arithmetic preserves six-decimal exact quantities", asy
     household.data.household.id,
     created.data.lot.id,
     "decimal-consume-1",
-    0.1,
+    "0.1",
     1,
   );
   assert.equal(first.statusCode, 201, first.body);
@@ -887,7 +950,7 @@ test("PostgreSQL numeric arithmetic preserves six-decimal exact quantities", asy
     household.data.household.id,
     created.data.lot.id,
     "decimal-consume-2",
-    0.2,
+    "0.2",
     2,
   );
   assert.equal(second.statusCode, 201, second.body);
@@ -935,33 +998,39 @@ test("HTTP and PostgreSQL preserve the exact upper bound and reject a seventh de
     assert.equal(created.data.lot.currentQuantity.amount, quantityDecimalMax);
   }
 
-  const overPrecision = await app.inject({
-    method: "POST",
-    url:
-      `/api/v1/households/${household.data.household.id}` +
-      "/inventory-lots",
-    headers: {
-      ...authHeaders(session),
-      "idempotency-key": "upper-bound-invalid",
-    },
-    payload: exactLotRequest(
-      "不得舍入",
-      999_999_999.999_998_9,
-      "kg",
-    ),
-  });
-  assert.equal(overPrecision.statusCode, 400);
-  assert.equal(
-    apiErrorSchema.parse(overPrecision.json()).code,
-    "VALIDATION_FAILED",
-  );
+  for (const [index, invalidAmount] of [
+    "999999999.9999991",
+    "900000000.00000001",
+    "1e-6",
+    "9E8",
+  ].entries()) {
+    const invalid = await app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${household.data.household.id}` +
+        "/inventory-lots",
+      headers: {
+        ...authHeaders(session),
+        "content-type": "application/json",
+        "idempotency-key": `upper-bound-invalid-${index}`,
+      },
+      payload: JSON.stringify(
+        exactLotRequest("不得舍入", invalidAmount, "kg"),
+      ),
+    });
+    assert.equal(invalid.statusCode, 400, invalid.body);
+    assert.equal(
+      apiErrorSchema.parse(invalid.json()).code,
+      "VALIDATION_FAILED",
+    );
+  }
 
   const consumed = await consume(
     session,
     household.data.household.id,
     created.data.lot.id,
     "upper-bound-consume",
-    0.000_001,
+    "0.000001",
     1,
   );
   assert.equal(consumed.statusCode, 201, consumed.body);
@@ -991,6 +1060,117 @@ test("HTTP and PostgreSQL preserve the exact upper bound and reject a seventh de
   });
 });
 
+test("decimal string aliases share idempotency hashes and one PostgreSQL write", async () => {
+  const session = await login("decimal-alias-user");
+  const household = await createHousehold(session, "decimal-alias-house");
+  const householdId = household.data.household.id;
+  const createKey = "decimal-alias-create";
+  const baseRequest = {
+    displayName: "别名库存",
+    storageLocation: "refrigerated" as const,
+    dates: [],
+  };
+  const firstCreate = await createLot(
+    session,
+    householdId,
+    createKey,
+    {
+      ...baseRequest,
+      initialQuantity: {
+        kind: "exact",
+        amount: "1.0",
+        unit: "kg",
+      },
+    },
+  );
+  const replayCreateResponse = await app.inject({
+    method: "POST",
+    url: `/api/v1/households/${householdId}/inventory-lots`,
+    headers: {
+      ...authHeaders(session),
+      "idempotency-key": createKey,
+    },
+    payload: {
+      ...baseRequest,
+      initialQuantity: {
+        kind: "exact",
+        amount: "1.000000",
+        unit: "kg",
+      },
+    },
+  });
+  assert.equal(replayCreateResponse.statusCode, 201, replayCreateResponse.body);
+  const replayCreate = createInventoryLotSuccessSchema.parse(
+    replayCreateResponse.json(),
+  );
+  assert.equal(replayCreate.data.lot.id, firstCreate.data.lot.id);
+  assert.equal(replayCreate.meta.idempotency?.replayed, true);
+  assert.equal(replayCreate.data.lot.currentQuantity.kind, "exact");
+  if (replayCreate.data.lot.currentQuantity.kind === "exact") {
+    assert.equal(replayCreate.data.lot.currentQuantity.amount, "1");
+  }
+
+  const consumeKey = "decimal-alias-consume";
+  const sendConsumeAlias = (amount: string) =>
+    app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${householdId}` +
+        `/inventory-lots/${firstCreate.data.lot.id}/events/consumed`,
+      headers: {
+        ...authHeaders(session),
+        "idempotency-key": consumeKey,
+      },
+      payload: {
+        consumedQuantity: {
+          kind: "exact",
+          amount,
+          unit: "kg",
+        },
+        expectedVersion: 1,
+      },
+    });
+  const firstConsumeResponse = await sendConsumeAlias("0.1");
+  const replayConsumeResponse = await sendConsumeAlias("0.100000");
+  assert.equal(firstConsumeResponse.statusCode, 201, firstConsumeResponse.body);
+  assert.equal(
+    replayConsumeResponse.statusCode,
+    201,
+    replayConsumeResponse.body,
+  );
+  const firstConsume = consumeInventoryLotSuccessSchema.parse(
+    firstConsumeResponse.json(),
+  );
+  const replayConsume = consumeInventoryLotSuccessSchema.parse(
+    replayConsumeResponse.json(),
+  );
+  assert.equal(replayConsume.data.event.id, firstConsume.data.event.id);
+  assert.equal(replayConsume.meta.idempotency?.replayed, true);
+
+  const state = await persistence.pool.query<{
+    amount: string;
+    events: number;
+    idempotency_records: number;
+  }>(
+    `SELECT
+       l.current_quantity_amount::text AS amount,
+       (SELECT count(*)::int
+        FROM inventory_events e
+        WHERE e.inventory_lot_id = l.id) AS events,
+       (SELECT count(*)::int
+        FROM idempotency_records i
+        WHERE i.idempotency_key IN ($2, $3)) AS idempotency_records
+     FROM inventory_lots l
+     WHERE l.id = $1`,
+    [firstCreate.data.lot.id, createKey, consumeKey],
+  );
+  assert.deepEqual(state.rows[0], {
+    amount: "0.900000",
+    events: 2,
+    idempotency_records: 2,
+  });
+});
+
 test("reusing a consumed idempotency key for another lot returns conflict instead of replaying", async () => {
   const session = await login("cross-lot-key-user");
   const household = await createHousehold(session, "cross-lot-key-house");
@@ -998,13 +1178,13 @@ test("reusing a consumed idempotency key for another lot returns conflict instea
     session,
     household.data.household.id,
     "cross-lot-create-1",
-    exactLotRequest("批次一", 2, "kg"),
+    exactLotRequest("批次一", "2", "kg"),
   );
   const secondLot = await createLot(
     session,
     household.data.household.id,
     "cross-lot-create-2",
-    exactLotRequest("批次二", 2, "kg"),
+    exactLotRequest("批次二", "2", "kg"),
   );
   const key = "cross-lot-consume-key";
 
@@ -1013,7 +1193,7 @@ test("reusing a consumed idempotency key for another lot returns conflict instea
     household.data.household.id,
     firstLot.data.lot.id,
     key,
-    1,
+    "1",
     1,
   );
   assert.equal(first.statusCode, 201, first.body);
@@ -1022,7 +1202,7 @@ test("reusing a consumed idempotency key for another lot returns conflict instea
     household.data.household.id,
     secondLot.data.lot.id,
     key,
-    1,
+    "1",
     1,
   );
   assert.equal(crossLot.statusCode, 409);
@@ -1072,7 +1252,7 @@ test("different idempotency keys with one expectedVersion yield one success and 
     firstSession,
     household.data.household.id,
     "version-conflict-lot",
-    exactLotRequest("并发米", 5, "kg"),
+    exactLotRequest("并发米", "5", "kg"),
   );
 
   const responses = await Promise.all([
@@ -1081,7 +1261,7 @@ test("different idempotency keys with one expectedVersion yield one success and 
       household.data.household.id,
       lot.data.lot.id,
       "version-conflict-a",
-      1,
+      "1",
       1,
     ),
     consume(
@@ -1089,7 +1269,7 @@ test("different idempotency keys with one expectedVersion yield one success and 
       household.data.household.id,
       lot.data.lot.id,
       "version-conflict-b",
-      1,
+      "1",
       1,
     ),
   ]);
@@ -1136,7 +1316,7 @@ test("same idempotency key and body concurrently execute consumed exactly once a
     firstSession,
     household.data.household.id,
     "same-key-consumed-lot",
-    exactLotRequest("并发油", 5, "L"),
+    exactLotRequest("并发油", "5", "L"),
   );
   const key = "same-key-consumed-1";
 
@@ -1146,7 +1326,7 @@ test("same idempotency key and body concurrently execute consumed exactly once a
       household.data.household.id,
       lot.data.lot.id,
       key,
-      1,
+      "1",
       1,
       "L",
     ),
@@ -1155,7 +1335,7 @@ test("same idempotency key and body concurrently execute consumed exactly once a
       household.data.household.id,
       lot.data.lot.id,
       key,
-      1,
+      "1",
       1,
       "L",
     ),

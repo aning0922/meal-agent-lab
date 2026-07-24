@@ -84,17 +84,17 @@ test("production rejects the fake WeChat adapter, including its default", () => 
 });
 
 test("quantity decimal formatting pads without rounding and rejects excess scale", () => {
-  assert.equal(toDatabaseQuantityDecimal(0.000_001), "0.000001");
+  assert.equal(toDatabaseQuantityDecimal("0.000001"), "0.000001");
   assert.equal(
-    toDatabaseQuantityDecimal(999_999_999.999_998),
+    toDatabaseQuantityDecimal("999999999.999998"),
     "999999999.999998",
   );
   assert.equal(
-    toDatabaseQuantityDecimal(999_999_999.999_999),
+    toDatabaseQuantityDecimal("999999999.999999"),
     "999999999.999999",
   );
   assert.throws(() =>
-    toDatabaseQuantityDecimal(999_999_999.999_998_9),
+    toDatabaseQuantityDecimal("999999999.9999991"),
   );
 });
 

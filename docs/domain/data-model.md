@@ -81,12 +81,12 @@ Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 
 
 批次初始 `acquired` 事件必须能重建当前数量：
 
-- exact 写入必须有正数 amount 和 unit，使用同 amount/unit/originalText 的 exact numeric change；
+- exact 写入必须有正数 amount 和 unit，使用同 amount/unit/originalText 的 exact numeric change；跨进程 JSON 的 exact amount 使用 plain fixed-point decimal string，不使用会先经过 IEEE-754 的 JSON number，也不接受指数形式；
 - approximate 写入必须同时有正数 amount、unit、confidence 和 originalText，使用字段完全相同的 estimated numeric change；
 - 原始文本解析结果必须由确认界面转换成结构化 approximate，或由用户明确选择非 empty qualitative level，再提交正式写入；没有 amount/unit 的 approximate 不能提交；
 - qualitative 写入必须显式提供非 empty level，事件使用 `empty → 当前 level` 并保留 originalText。
 
-调用方提交用户确认后的最终结构；服务端、模型或未确认识别不能决定 qualitative level，也不能补造 amount/unit。阶段 06 的最小 consumed command 只接受 exact 正数并产生 exact 负 delta；通用 estimated delta 必须同时保存 confidence 和 originalText，exact delta 禁止 confidence。
+调用方提交用户确认后的最终结构；服务端、模型或未确认识别不能决定 qualitative level，也不能补造 amount/unit。阶段 06 的最小 consumed command 只接受 exact 正数 decimal string 并产生 exact 负 delta string；等值 fixed-point alias 先规范化，再参与幂等哈希。通用 estimated delta 必须同时保存 confidence 和 originalText，exact delta 禁止 confidence。
 
 ## 幂等与版本
 
