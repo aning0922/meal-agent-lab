@@ -352,6 +352,7 @@ try {
           "0001_stage_08.sql",
           "0002_stage_08_audit_closeout.sql",
           "0003_stage_08_secondary_closeout.sql",
+          "0004_stage_08_final_closeout.sql",
         ],
       );
       const converted = await incrementalPool.query<{

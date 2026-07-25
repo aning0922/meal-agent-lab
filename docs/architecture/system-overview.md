@@ -2,7 +2,7 @@
 
 ## 状态
 
-阶段 08 审计整改已在独立分支完成本地实现，尚未合并 main。系统当前只有家庭、成员/用餐档案、硬约束和最小 exact 库存纵切；没有菜单推荐、菜谱、采购、完整做饭或 Agent。
+阶段 08 最终审计整改已在独立分支完成本地实现，尚未合并 main。系统当前只有家庭、成员/用餐档案、硬约束和最小 exact 库存纵切；没有菜单推荐、菜谱、采购、完整做饭或 Agent。
 
 ## 逻辑边界
 
@@ -25,7 +25,7 @@ PostgreSQL 18
   ├─ FORCE RLS + transaction-local user/household context
   ├─ restricted application role
   ├─ SECURITY DEFINER state transitions
-  └─ migrations 0000 → 0001 → 0002 → 0003
+  └─ migrations 0000 → 0001 → 0002 → 0003 → 0004
 ```
 
 服务端保持一个部署单元，领域模块共享契约和事务边界。当前规模不支持拆微服务，也没有检索需求需要向量数据库。
@@ -41,7 +41,8 @@ PostgreSQL 18
 - `subject_and_owner` 约束在安全投影 schema 中结构性不存在；
 - active/archived 明确过滤，archive/restore 复用同一 ID；
 - 成员退出/移除与 linked profile 归档在同一事务；
-- dining-only 关联成员必须 owner 发起、目标用户确认，不按姓名推断。
+- dining-only 关联成员必须 owner 发起、目标用户确认，不按姓名推断；
+- link request 固化 profile version 与安全披露快照；名称或约束变化会提交 `profile_changed` 终态，客户端重新 GET、展示并确认。
 
 ## 写入安全
 
@@ -57,7 +58,7 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 ## 契约与确定性规则
 
-`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须出现在稳定 rule manifest，并逐 schema 绑定：JSON Schema 能表达的生成原生约束，不能表达的生成带 rule ID 的 runtime-only 扩展。生成器、runtime 与 OpenAPI parity 测试阻止规则静默丢失。
+`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须在 schema 定义处通过统一 helper 绑定稳定 rule ID 与 boundary；binding 与 OpenAPI schema components 从实际 Zod metadata 派生，不维护第二份手写 schema 映射。JSON Schema 能表达的生成原生约束，不能表达的在对应 schema 节点生成带 rule ID 的 runtime-only 扩展。生成器、runtime 与 OpenAPI parity 及故意错绑反向测试阻止规则静默丢失。
 
 硬约束由确定性代码处理。当前没有权威 allergen、food concept、宗教、伦理或食品安全映射词表，字符串/UUID 形状校验不构成 structured mapping；所有 hard constraint 使用 `needs_structured_mapping`，推荐边界必须阻断，模型不得补造规则。未知饭量、参与和厨艺保持 `null`。
 

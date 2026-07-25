@@ -2,6 +2,7 @@ import { z } from "zod";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
+import { ruleSuperRefine } from "./contract-rule-schema.js";
 import {
   dietaryConstraintIdSchema,
   foodConceptIdSchema,
@@ -49,8 +50,8 @@ export type HouseholdInviteCode = z.infer<
   typeof householdInviteCodeSchema
 >;
 
-export const householdInviteSchema = z
-  .strictObject({
+export const householdInviteSchema = ruleSuperRefine(
+  z.strictObject({
     id: householdInviteIdSchema,
     householdId: householdIdSchema,
     createdByUserId: userIdSchema,
@@ -60,8 +61,10 @@ export const householdInviteSchema = z
     usedCount: z.int().nonnegative(),
     createdAt: utcDateTimeSchema,
     version: versionSchema,
-  })
-  .superRefine((invite, context) => {
+  }),
+  "members.invite.entity-consistency.v1",
+  "householdInviteSchema",
+  (invite, context) => {
     if (invite.usedCount > invite.maxUses) {
       context.addIssue({
         code: "custom",
@@ -76,13 +79,8 @@ export const householdInviteSchema = z
         message: "invite expiry must be after creation",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "invite used count cannot exceed its maximum uses",
-      "invite expiry must be after creation",
-    ],
-  });
+  },
+);
 export type HouseholdInvite = z.infer<typeof householdInviteSchema>;
 
 export const createHouseholdInviteRequestSchema = z.strictObject({
@@ -94,8 +92,8 @@ export type CreateHouseholdInviteRequest = z.infer<
   typeof createHouseholdInviteRequestSchema
 >;
 
-export const createHouseholdInviteResultSchema = z
-  .strictObject({
+export const createHouseholdInviteResultSchema = ruleSuperRefine(
+  z.strictObject({
     invite: householdInviteSchema,
     /**
      * 明文邀请码。仅首次创建响应携带一次，且**永不落库**（服务端在写入
@@ -104,8 +102,10 @@ export const createHouseholdInviteResultSchema = z
      * 客户端若在重放响应中拿不到码，应引导用户在邀请列表查看或重新生成。
      */
     inviteCode: householdInviteCodeSchema.optional(),
-  })
-  .superRefine((result, context) => {
+  }),
+  "members.invite.create-result.v1",
+  "createHouseholdInviteResultSchema",
+  (result, context) => {
     if (result.invite.status !== "active") {
       context.addIssue({
         code: "custom",
@@ -120,21 +120,19 @@ export const createHouseholdInviteResultSchema = z
         message: "a freshly created invite must have zero uses",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "a freshly created invite is active with zero uses",
-    ],
-  });
+  },
+);
 export type CreateHouseholdInviteResult = z.infer<
   typeof createHouseholdInviteResultSchema
 >;
 
-export const revokeHouseholdInviteResultSchema = z
-  .strictObject({
+export const revokeHouseholdInviteResultSchema = ruleSuperRefine(
+  z.strictObject({
     invite: householdInviteSchema,
-  })
-  .superRefine((result, context) => {
+  }),
+  "members.invite.revoke-result.v1",
+  "revokeHouseholdInviteResultSchema",
+  (result, context) => {
     if (result.invite.status !== "revoked") {
       context.addIssue({
         code: "custom",
@@ -142,10 +140,8 @@ export const revokeHouseholdInviteResultSchema = z
         message: "a revoked invite must report revoked status",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": ["a revoked invite reports revoked status"],
-  });
+  },
+);
 export type RevokeHouseholdInviteResult = z.infer<
   typeof revokeHouseholdInviteResultSchema
 >;
@@ -161,12 +157,14 @@ export type JoinHouseholdRequest = z.infer<
   typeof joinHouseholdRequestSchema
 >;
 
-export const joinHouseholdResultSchema = z
-  .strictObject({
+export const joinHouseholdResultSchema = ruleSuperRefine(
+  z.strictObject({
     membership: membershipSchema,
     household: householdSchema,
-  })
-  .superRefine((result, context) => {
+  }),
+  "members.join.result-consistency.v1",
+  "joinHouseholdResultSchema",
+  (result, context) => {
     if (result.membership.householdId !== result.household.id) {
       context.addIssue({
         code: "custom",
@@ -188,12 +186,8 @@ export const joinHouseholdResultSchema = z
         message: "joining by invite yields a member role, never owner",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "joined membership is an active member of the returned household",
-    ],
-  });
+  },
+);
 export type JoinHouseholdResult = z.infer<
   typeof joinHouseholdResultSchema
 >;
@@ -202,11 +196,13 @@ export type JoinHouseholdResult = z.infer<
 // 成员移除 / 退出
 // ---------------------------------------------------------------------------
 
-export const removeMembershipResultSchema = z
-  .strictObject({
+export const removeMembershipResultSchema = ruleSuperRefine(
+  z.strictObject({
     membership: membershipSchema,
-  })
-  .superRefine((result, context) => {
+  }),
+  "members.remove.result-consistency.v1",
+  "removeMembershipResultSchema",
+  (result, context) => {
     if (result.membership.status === "active") {
       context.addIssue({
         code: "custom",
@@ -214,12 +210,8 @@ export const removeMembershipResultSchema = z
         message: "a removed or departed membership cannot remain active",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "removal yields a left or removed membership, never active",
-    ],
-  });
+  },
+);
 export type RemoveMembershipResult = z.infer<
   typeof removeMembershipResultSchema
 >;
@@ -392,6 +384,26 @@ export const personProfileLinkRequestStatusSchema = z.enum([
   "expired",
 ]);
 
+/**
+ * 关联确认只披露完成知情确认所需的稳定摘要。私密约束只给出数量，不返回
+ * label、notes、结构化 ID 或其他内容。
+ */
+export const personProfileLinkDisclosureSchema = z.strictObject({
+  disclosureVersion: z.literal(1),
+  profileVersion: versionSchema,
+  profileDisplayName: z.string().min(1).max(80),
+  householdVisibleHardConstraintCount: z.int().min(0),
+  householdVisibleSoftConstraintCount: z.int().min(0),
+  privateConstraintCount: z.int().min(0),
+  subjectWillGainProfileAccess: z.literal(true),
+  membershipExitArchivesProfile: z.literal(true),
+  rejoinRestoresAutomatically: z.literal(false),
+  privateConstraintContentsRemainPrivate: z.literal(true),
+});
+export type PersonProfileLinkDisclosure = z.infer<
+  typeof personProfileLinkDisclosureSchema
+>;
+
 export const personProfileLinkRequestSchema = z.strictObject({
   id: personProfileLinkRequestIdSchema,
   householdId: householdIdSchema,
@@ -402,6 +414,7 @@ export const personProfileLinkRequestSchema = z.strictObject({
   createdAt: utcDateTimeSchema,
   expiresAt: utcDateTimeSchema,
   confirmedAt: utcDateTimeSchema.optional(),
+  disclosure: personProfileLinkDisclosureSchema,
   version: versionSchema,
 });
 export type PersonProfileLinkRequest = z.infer<
@@ -452,8 +465,8 @@ export type ConfirmPersonProfileLinkResult = z.infer<
 >;
 
 /** PATCH 子命令：更新可编辑字段（不含约束，约束走独立增删路由）。 */
-export const updatePersonProfileRequestSchema = z
-  .strictObject({
+export const updatePersonProfileRequestSchema = ruleSuperRefine(
+  z.strictObject({
     operation: z.literal("update"),
     expectedVersion: versionSchema,
     displayName: z.string().min(1).max(80).optional(),
@@ -466,8 +479,10 @@ export const updatePersonProfileRequestSchema = z
       .nullable()
       .optional(),
     cookingSkill: cookingSkillSchema.nullable().optional(),
-  })
-  .superRefine((request, context) => {
+  }),
+  "profiles.update.non-empty.v1",
+  "updatePersonProfileRequestSchema",
+  (request, context) => {
     if (
       request.displayName === undefined &&
       request.defaultParticipation === undefined &&
@@ -480,10 +495,8 @@ export const updatePersonProfileRequestSchema = z
         message: "an update must change at least one field",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": ["an update must change at least one field"],
-  });
+  },
+);
 export type UpdatePersonProfileRequest = z.infer<
   typeof updatePersonProfileRequestSchema
 >;
@@ -575,8 +588,8 @@ export const hardConstraintConfirmationFingerprint = (
     ),
   );
 
-const hardConstraintInputSchema = z
-  .strictObject({
+const hardConstraintInputSchema = ruleSuperRefine(
+  z.strictObject({
     kind: z.enum([
       "allergy",
       "religious",
@@ -595,20 +608,10 @@ const hardConstraintInputSchema = z
       acknowledged: z.literal(true),
       fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
     }),
-  })
-  .superRefine((constraint, context) => {
-    if (
-      constraint.kind === "allergy" &&
-      constraint.foodConceptIds.length === 0 &&
-      constraint.allergenCodes.length === 0
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["allergenCodes"],
-        message:
-          "allergy constraints require an allergen code or food concept",
-      });
-    }
+  }),
+  "profiles.constraint.confirmation-fingerprint.v1",
+  "dietaryConstraintInputSchema",
+  (constraint, context) => {
     const { confirmation, ...fingerprintFields } = constraint;
     if (
       confirmation.fingerprint !==
@@ -621,14 +624,8 @@ const hardConstraintInputSchema = z
           "hard constraint confirmation no longer matches all submitted fields",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "hard constraints require explicit confirmation acknowledgement",
-      "allergy constraints require an allergen code or food concept",
-      "hard constraint confirmation fingerprint covers every submitted field including visibility",
-    ],
-  });
+  },
+);
 
 const softConstraintInputSchema = z.strictObject({
   kind: z.literal("preference"),

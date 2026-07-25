@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ruleSuperRefine } from "./contract-rule-schema.js";
 import {
   foodConceptIdSchema,
   householdIdSchema,
@@ -24,8 +25,8 @@ export const recipeIngredientSchema = z.strictObject({
 });
 export type RecipeIngredient = z.infer<typeof recipeIngredientSchema>;
 
-export const recipeSchema = z
-  .strictObject({
+export const recipeSchema = ruleSuperRefine(
+  z.strictObject({
     id: recipeIdSchema,
     version: z.int().positive(),
     status: z.enum(["draft", "reviewed", "retired"]),
@@ -55,8 +56,10 @@ export const recipeSchema = z
       retrievedAt: utcDateTimeSchema,
     }),
     reviewedAt: utcDateTimeSchema.optional(),
-  })
-  .superRefine((recipe, context) => {
+  }),
+  "meal.recipe.review-and-steps.v1",
+  "recipeSchema",
+  (recipe, context) => {
     if (recipe.status === "reviewed" && recipe.reviewedAt === undefined) {
       context.addIssue({
         code: "custom",
@@ -73,7 +76,8 @@ export const recipeSchema = z
         message: "recipe step order values must be unique",
       });
     }
-  });
+  },
+);
 export type Recipe = z.infer<typeof recipeSchema>;
 
 export const mealRecipeSelectionSchema = z.strictObject({
@@ -83,8 +87,8 @@ export const mealRecipeSelectionSchema = z.strictObject({
 });
 export type MealRecipeSelection = z.infer<typeof mealRecipeSelectionSchema>;
 
-export const mealSchema = z
-  .strictObject({
+export const mealSchema = ruleSuperRefine(
+  z.strictObject({
     id: mealIdSchema,
     householdId: householdIdSchema,
     recommendationId: recommendationIdSchema.optional(),
@@ -104,8 +108,10 @@ export const mealSchema = z
     createdAt: utcDateTimeSchema,
     updatedAt: utcDateTimeSchema,
     version: versionSchema,
-  })
-  .superRefine((meal, context) => {
+  }),
+  "meal.instance.unique-participants-recipes.v1",
+  "mealSchema",
+  (meal, context) => {
     if (
       new Set(meal.participantProfileIds).size !==
       meal.participantProfileIds.length
@@ -125,7 +131,8 @@ export const mealSchema = z
         message: "a meal cannot include the same recipe more than once",
       });
     }
-  });
+  },
+);
 export type Meal = z.infer<typeof mealSchema>;
 
 export const recommendationCandidateSchema = z.strictObject({
@@ -150,8 +157,8 @@ export type RecommendationCandidate = z.infer<
   typeof recommendationCandidateSchema
 >;
 
-export const recommendationSchema = z
-  .strictObject({
+export const recommendationSchema = ruleSuperRefine(
+  z.strictObject({
     id: recommendationIdSchema,
     householdId: householdIdSchema,
     outcome: z.enum(["options", "no_feasible_option"]),
@@ -171,8 +178,10 @@ export const recommendationSchema = z
     recommendationPolicyVersion: z.string().min(1).max(100),
     createdAt: utcDateTimeSchema,
     expiresAt: utcDateTimeSchema,
-  })
-  .superRefine((recommendation, context) => {
+  }),
+  "meal.recommendation.outcome-consistency.v1",
+  "recommendationSchema",
+  (recommendation, context) => {
     if (
       recommendation.outcome === "options" &&
       recommendation.candidates.length === 0
@@ -254,5 +263,6 @@ export const recommendationSchema = z
         message: "preselected candidates must be included in candidates",
       });
     }
-  });
+  },
+);
 export type Recommendation = z.infer<typeof recommendationSchema>;

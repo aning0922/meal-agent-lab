@@ -16,6 +16,7 @@ import {
   versionSchema,
 } from "./primitives.js";
 import { idempotencyKeySchema } from "./api.js";
+import { ruleSuperRefine } from "./contract-rule-schema.js";
 
 export const storageLocationSchema = z.enum([
   "pantry",
@@ -43,8 +44,8 @@ const addDuplicateDateKindIssues = (
   });
 };
 
-export const inventoryLotSchema = z
-  .strictObject({
+export const inventoryLotSchema = ruleSuperRefine(
+  z.strictObject({
     id: inventoryLotIdSchema,
     householdId: householdIdSchema,
     foodConceptId: foodConceptIdSchema.optional(),
@@ -52,15 +53,12 @@ export const inventoryLotSchema = z
     state: z.enum(["active", "depleted", "discarded"]),
     storageLocation: storageLocationSchema,
     currentQuantity: quantitySchema,
-    dates: z
-      .array(foodDateSchema)
-      .max(9)
-      .superRefine(addDuplicateDateKindIssues)
-      .meta({
-        "x-zod-refinements": [
-          "date kind must be unique within an inventory lot",
-        ],
-      }),
+    dates: ruleSuperRefine(
+      z.array(foodDateSchema).max(9),
+      "inventory.lot.dates-unique.v1",
+      "inventoryLotSchema.dates",
+      addDuplicateDateKindIssues,
+    ),
     safetyAssessment: z.strictObject({
       status: z.enum(["eligible", "blocked", "unknown"]),
       reasonCodes: z.array(z.string().min(1).max(80)),
@@ -77,8 +75,10 @@ export const inventoryLotSchema = z
     createdAt: utcDateTimeSchema,
     updatedAt: utcDateTimeSchema,
     version: versionSchema,
-  })
-  .superRefine((lot, context) => {
+  }),
+  "inventory.lot.state-quantity-safety.v1",
+  "inventoryLotSchema",
+  (lot, context) => {
     const isEmpty =
       (lot.currentQuantity.kind === "exact" &&
         lot.currentQuantity.amount === "0") ||
@@ -111,17 +111,12 @@ export const inventoryLotSchema = z
         message: "blocked safety assessments require a reason code",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "lot state must match whether current quantity is empty",
-      "blocked safety assessments require at least one reason code",
-    ],
-  });
+  },
+);
 export type InventoryLot = z.infer<typeof inventoryLotSchema>;
 
-export const createInventoryLotDateInputSchema = z
-  .strictObject({
+export const createInventoryLotDateInputSchema = ruleSuperRefine(
+  z.strictObject({
     kind: z.enum([
       "purchase_date",
       "production_date",
@@ -138,8 +133,10 @@ export const createInventoryLotDateInputSchema = z
       confidence: z.enum(["high", "medium", "low"]),
       reference: z.string().min(1).max(500).optional(),
     }),
-  })
-  .superRefine((date, context) => {
+  }),
+  "inventory.create-date.provenance.v1",
+  "createInventoryLotDateInputSchema",
+  (date, context) => {
     if (
       date.kind === "purchase_date" &&
       date.source.kind === "package_label"
@@ -150,27 +147,20 @@ export const createInventoryLotDateInputSchema = z
         message: "a package label cannot establish a purchase date",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "a package label cannot establish a purchase date",
-    ],
-  });
+  },
+);
 
 export const createInventoryLotRequestSchema = z.strictObject({
   foodConceptId: foodConceptIdSchema.optional(),
   displayName: z.string().min(1).max(120),
   storageLocation: storageLocationSchema,
   initialQuantity: persistableInitialQuantitySchema,
-  dates: z
-    .array(createInventoryLotDateInputSchema)
-    .max(4)
-    .superRefine(addDuplicateDateKindIssues)
-    .meta({
-      "x-zod-refinements": [
-        "date kind must be unique within an inventory lot",
-      ],
-    }),
+  dates: ruleSuperRefine(
+    z.array(createInventoryLotDateInputSchema).max(4),
+    "inventory.create.dates-unique.v1",
+    "createInventoryLotRequestSchema.dates",
+    addDuplicateDateKindIssues,
+  ),
 });
 export type CreateInventoryLotRequest = z.infer<
   typeof createInventoryLotRequestSchema
@@ -190,8 +180,8 @@ export const inventoryEventTypeSchema = z.enum([
 ]);
 export type InventoryEventType = z.infer<typeof inventoryEventTypeSchema>;
 
-export const inventoryEventSchema = z
-  .strictObject({
+export const inventoryEventSchema = ruleSuperRefine(
+  z.strictObject({
     id: inventoryEventIdSchema,
     householdId: householdIdSchema,
     inventoryLotId: inventoryLotIdSchema,
@@ -214,8 +204,10 @@ export const inventoryEventSchema = z
     expectedLotVersion: versionSchema,
     resultingLotVersion: z.int().positive(),
     note: z.string().max(500).optional(),
-  })
-  .superRefine((event, context) => {
+  }),
+  "inventory.event.consistency.v1",
+  "inventoryEventSchema",
+  (event, context) => {
     const positiveEvents = new Set(["acquired", "produced"]);
     const negativeEvents = new Set(["consumed", "discarded"]);
     const quantityEvents = new Set([
@@ -446,13 +438,8 @@ export const inventoryEventSchema = z
         message: "resulting lot version must increment by one",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "event type determines quantity-change shape and direction",
-      "resulting lot version must increment expected lot version by one",
-    ],
-  });
+  },
+);
 export type InventoryEvent = z.infer<typeof inventoryEventSchema>;
 
 const addLotEventConsistencyIssues = (
@@ -531,12 +518,14 @@ const addInitialQuantityRebuildIssues = (
   }
 };
 
-export const createInventoryLotResultSchema = z
-  .strictObject({
+export const createInventoryLotResultSchema = ruleSuperRefine(
+  z.strictObject({
     lot: inventoryLotSchema,
     event: inventoryEventSchema,
-  })
-  .superRefine((result, context) => {
+  }),
+  "inventory.create-result.consistency.v1",
+  "createInventoryLotResultSchema",
+  (result, context) => {
     addLotEventConsistencyIssues(result, context);
     addInitialQuantityRebuildIssues(result, context);
 
@@ -580,12 +569,8 @@ export const createInventoryLotResultSchema = z
         message: "initial event actor must be the lot creator",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "created lot and acquired event must have consistent ids, quantity, actor, source, and versions",
-    ],
-  });
+  },
+);
 export type CreateInventoryLotResult = z.infer<
   typeof createInventoryLotResultSchema
 >;
@@ -604,12 +589,14 @@ export type ConsumeInventoryLotRequest = z.infer<
   typeof consumeInventoryLotRequestSchema
 >;
 
-export const consumeInventoryLotResultSchema = z
-  .strictObject({
+export const consumeInventoryLotResultSchema = ruleSuperRefine(
+  z.strictObject({
     lot: inventoryLotSchema,
     event: inventoryEventSchema,
-  })
-  .superRefine((result, context) => {
+  }),
+  "inventory.consume-result.consistency.v1",
+  "consumeInventoryLotResultSchema",
+  (result, context) => {
     addLotEventConsistencyIssues(result, context);
 
     if (
@@ -662,12 +649,8 @@ export const consumeInventoryLotResultSchema = z
         message: "a consumed event cannot produce a discarded lot",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "consumed result requires a consistent exact negative event and exact nonnegative lot projection",
-    ],
-  });
+  },
+);
 export type ConsumeInventoryLotResult = z.infer<
   typeof consumeInventoryLotResultSchema
 >;

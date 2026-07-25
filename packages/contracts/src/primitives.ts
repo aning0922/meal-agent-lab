@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+import {
+  bindNativeContractRule,
+  ruleRefine,
+  ruleSuperRefine,
+} from "./contract-rule-schema.js";
+
 export const contractVersion = "0.4.0" as const;
 
 export const userIdSchema = z.uuidv7().brand<"UserId">();
@@ -63,8 +69,8 @@ export const versionSchema = z.int().nonnegative();
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export type Confidence = z.infer<typeof confidenceSchema>;
 
-export const informationSourceSchema = z
-  .strictObject({
+export const informationSourceSchema = ruleSuperRefine(
+  z.strictObject({
     kind: z.enum([
       "package_label",
       "user_input",
@@ -77,8 +83,10 @@ export const informationSourceSchema = z
     ruleVersion: z.string().min(1).max(100).optional(),
     capturedAt: utcDateTimeSchema,
     confirmedByUserId: userIdSchema.optional(),
-  })
-  .superRefine((source, context) => {
+  }),
+  "quantity.information-source.consistency.v1",
+  "informationSourceSchema",
+  (source, context) => {
     if (source.kind === "verified_rule" && source.ruleVersion === undefined) {
       context.addIssue({
         code: "custom",
@@ -97,17 +105,12 @@ export const informationSourceSchema = z
         message: "recognized information must be confirmed by a user",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "verified rules require ruleVersion",
-      "recognized information requires confirmedByUserId",
-    ],
-  });
+  },
+);
 export type InformationSource = z.infer<typeof informationSourceSchema>;
 
-export const foodDateSchema = z
-  .strictObject({
+export const foodDateSchema = ruleSuperRefine(
+  z.strictObject({
     kind: z.enum([
       "purchase_date",
       "production_date",
@@ -121,8 +124,10 @@ export const foodDateSchema = z
     ]),
     value: z.union([localDateSchema, utcDateTimeSchema]),
     source: informationSourceSchema,
-  })
-  .superRefine((date, context) => {
+  }),
+  "quantity.food-date.kind-source.v1",
+  "foodDateSchema",
+  (date, context) => {
     const timestampKinds = new Set([
       "prepared_at",
       "opened_at",
@@ -197,13 +202,8 @@ export const foodDateSchema = z
         message: "state event dates require a user, confirmed, or system source",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "date value shape and source must match the date kind",
-      "purchase date cannot be inferred from a package label",
-    ],
-  });
+  },
+);
 export type FoodDate = z.infer<typeof foodDateSchema>;
 
 const quantityUnitSchema = z.string().min(1).max(32);
@@ -269,43 +269,45 @@ export const exactQuantityAmountSchema = z
     ],
   });
 
-export const positiveExactQuantityAmountSchema = z
-  .string()
-  .min(1)
-  .max(quantityDecimalPrecision + 1)
-  .regex(positiveQuantityDecimalPattern, {
-    message:
-      "quantity amount must be a plain positive decimal string with at most 9 integer and 6 fractional digits",
-  })
-  .overwrite(normalizeQuantityDecimal)
-  .meta({
-    format: "decimal",
-    "x-decimal-minimum-exclusive": "0",
-    "x-decimal-maximum": quantityDecimalMax,
-    "x-decimal-scale": quantityDecimalScale,
-    "x-meal-agent-rules": [
-      {
-        id: "quantity.exact.positive.v1",
-        enforcement: "native",
-        description:
-          "exact quantity must be positive, including before alias normalization",
-      },
-    ],
-  });
+export const positiveExactQuantityAmountSchema = bindNativeContractRule(
+  z.string()
+    .min(1)
+    .max(quantityDecimalPrecision + 1)
+    .regex(positiveQuantityDecimalPattern, {
+      message:
+        "quantity amount must be a plain positive decimal string with at most 9 integer and 6 fractional digits",
+    })
+    .overwrite(normalizeQuantityDecimal)
+    .meta({
+      format: "decimal",
+      "x-decimal-minimum-exclusive": "0",
+      "x-decimal-maximum": quantityDecimalMax,
+      "x-decimal-scale": quantityDecimalScale,
+      "x-meal-agent-rules": [
+        {
+          id: "quantity.exact.positive.v1",
+          enforcement: "native",
+          description:
+            "exact quantity must be positive, including before alias normalization",
+        },
+      ],
+    }),
+  "quantity.exact.positive.v1",
+  "persistableInitialQuantitySchema.exact.amount",
+);
 
-export const positiveApproximateQuantityAmountSchema = z
-  .number()
+export const positiveApproximateQuantityAmountSchema = ruleRefine(
+  z.number()
   .finite()
   .positive()
-  .max(quantityDecimalNumberMax)
-  .refine(hasAtMostQuantityDecimalScale, {
+  .max(quantityDecimalNumberMax),
+  "quantity.approximate.scale.v1",
+  "approximateQuantitySchema.amount",
+  hasAtMostQuantityDecimalScale,
+  {
     message: `approximate quantity amount supports at most ${quantityDecimalScale} decimal places`,
-  })
-  .meta({
-    "x-zod-refinements": [
-      `approximate quantity amount supports at most ${quantityDecimalScale} decimal places`,
-    ],
-  });
+  },
+);
 
 export const exactQuantitySchema = z.strictObject({
   kind: z.literal("exact"),
@@ -314,15 +316,17 @@ export const exactQuantitySchema = z.strictObject({
   originalText: quantityOriginalTextSchema.optional(),
 });
 
-export const approximateQuantitySchema = z
-  .strictObject({
+export const approximateQuantitySchema = ruleSuperRefine(
+  z.strictObject({
     kind: z.literal("approximate"),
     amount: positiveApproximateQuantityAmountSchema.optional(),
     unit: quantityUnitSchema.optional(),
     originalText: quantityOriginalTextSchema,
     confidence: confidenceSchema,
-  })
-  .superRefine((quantity, context) => {
+  }),
+  "quantity.approximate.amount-unit-pair.v1",
+  "approximateQuantitySchema",
+  (quantity, context) => {
     if (
       (quantity.amount === undefined) !== (quantity.unit === undefined)
     ) {
@@ -333,12 +337,8 @@ export const approximateQuantitySchema = z
           "approximate amount and unit must be both present or both absent",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "approximate amount and unit must be both present or both absent",
-    ],
-  });
+  },
+);
 
 export const qualitativeQuantitySchema = z.strictObject({
   kind: z.literal("qualitative"),
@@ -353,7 +353,10 @@ export const quantitySchema = z.discriminatedUnion("kind", [
 ]);
 export type Quantity = z.infer<typeof quantitySchema>;
 
-export const nonEmptyQuantitySchema = quantitySchema.superRefine(
+export const nonEmptyQuantitySchema = ruleSuperRefine(
+  quantitySchema,
+  "quantity.non-empty.v1",
+  "nonEmptyQuantitySchema",
   (quantity, context) => {
     if (
       (quantity.kind === "exact" && quantity.amount === "0") ||
@@ -392,51 +395,58 @@ export type PersistableInitialQuantity = z.infer<
   typeof persistableInitialQuantitySchema
 >;
 
-export const nonZeroEstimatedQuantityDeltaAmountSchema = z
-  .number()
+const estimatedQuantityDeltaAmountWithScale = ruleRefine(
+  z.number()
   .finite()
   .min(-quantityDecimalNumberMax)
   .max(quantityDecimalNumberMax)
-  .refine(hasAtMostQuantityDecimalScale, {
+  .meta({ not: { const: 0 } }),
+  "quantity.delta.estimated-scale.v1",
+  "quantityDeltaSchema.estimated.amount",
+  hasAtMostQuantityDecimalScale,
+  {
     message: `quantity delta supports at most ${quantityDecimalScale} decimal places`,
-  })
-  .refine((amount) => amount !== 0, {
+  },
+);
+export const nonZeroEstimatedQuantityDeltaAmountSchema = ruleRefine(
+  estimatedQuantityDeltaAmountWithScale,
+  "quantity.delta.estimated-nonzero.v1",
+  "quantityDeltaSchema.estimated.amount",
+  (amount) => amount !== 0,
+  {
     message: "quantity delta cannot be zero",
-  })
-  .meta({
-    not: { const: 0 },
-    "x-zod-refinements": [
-      `estimated quantity delta supports at most ${quantityDecimalScale} decimal places`,
-      "quantity delta cannot be zero",
-    ],
-  });
+  },
+);
 
-const nonZeroExactQuantityDeltaAmountSchema = z
-  .string()
-  .min(1)
-  .max(quantityDecimalPrecision + 2)
-  .regex(nonZeroSignedQuantityDecimalPattern, {
-    message:
-      "exact quantity delta must be a plain signed decimal string with at most 9 integer and 6 fractional digits",
-  })
-  .overwrite(normalizeQuantityDecimal)
-  .meta({
-    format: "decimal",
-    "x-decimal-minimum": `-${quantityDecimalMax}`,
-    "x-decimal-maximum": quantityDecimalMax,
-    "x-decimal-scale": quantityDecimalScale,
-    "x-zod-refinements": [
-      "exact quantity delta rejects JSON numbers and exponent notation before any IEEE-754 conversion",
-      "quantity delta cannot be zero",
-    ],
-    "x-meal-agent-rules": [
-      {
-        id: "quantity.delta.exact-nonzero.v1",
-        enforcement: "native",
-        description: "exact quantity delta cannot be mathematical zero",
-      },
-    ],
-  });
+const nonZeroExactQuantityDeltaAmountSchema = bindNativeContractRule(
+  z.string()
+    .min(1)
+    .max(quantityDecimalPrecision + 2)
+    .regex(nonZeroSignedQuantityDecimalPattern, {
+      message:
+        "exact quantity delta must be a plain signed decimal string with at most 9 integer and 6 fractional digits",
+    })
+    .overwrite(normalizeQuantityDecimal)
+    .meta({
+      format: "decimal",
+      "x-decimal-minimum": `-${quantityDecimalMax}`,
+      "x-decimal-maximum": quantityDecimalMax,
+      "x-decimal-scale": quantityDecimalScale,
+      "x-zod-refinements": [
+        "exact quantity delta rejects JSON numbers and exponent notation before any IEEE-754 conversion",
+        "quantity delta cannot be zero",
+      ],
+      "x-meal-agent-rules": [
+        {
+          id: "quantity.delta.exact-nonzero.v1",
+          enforcement: "native",
+          description: "exact quantity delta cannot be mathematical zero",
+        },
+      ],
+    }),
+  "quantity.delta.exact-nonzero.v1",
+  "quantityDeltaSchema.exact.amount",
+);
 
 export const quantityDeltaSchema = z.discriminatedUnion("precision", [
   z.strictObject({

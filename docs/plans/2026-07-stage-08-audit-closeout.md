@@ -5,8 +5,9 @@
 - worktree：`/Users/aipuli/.codex/worktrees/39f9/meal-agent-lab`
 - 审核基线：`main@6e4fc11607d34f4c30f8bfccf449bf5dfbbddabd`
 - 基线差异：无；本地 main 未前进
+- 最终收口基线：`c68217ed5771252f54cb62e8b8e37d5f67d57269`
 - 远端状态：未配置 remote/upstream，没有远端 CI 证据
-- 状态：**Implemented — 二次整改本地验收完成后等待项目总控评审；未合并 main**
+- 状态：**Implemented — 最终整改本地验收完成，等待项目总控合并前评审；未合并 main**
 
 ## 1. 最终决策与边界
 
@@ -48,6 +49,19 @@
 | S2-08 | rule ID 统一并建立逐 schema binding | contracts/OpenAPI binding 与行为门禁 | Closed |
 | S2-09 | 可移植 Markdown、subprocess/audit 分类和库存/React 文档统一 | 本地 gate 与文档检查 | Closed |
 | S2-10 | GUI 证据裁剪/遮盖、清元数据、重算 hash 并绑定实现树/构建摘要 | [GUI 证据](../evidence/stage-08-gui/README.md) | Closed |
+
+最终收口关闭项：
+
+| ID | 整改 | 关键证据 | 状态 |
+| --- | --- | --- | --- |
+| S3-01 | link 409 终态使用 tagged outcome，事务提交后再映射 HTTP | 每条 409 后查询 raw status/terminal_reason；安全失败回执完成落库并可同 key 重放 | Closed |
+| S3-02 | 新请求物化同 profile 全部旧 pending；self-create 终态化 target 其他 pending | T1→T2、self-create、create/confirm 并发成功 + 409 | Closed |
+| S3-03 | 保存 version + 安全披露快照并阻断 TOCTOU | owner 改名/新增私密约束后 confirm 409，raw `profile_changed` 已提交；API/page 回归 | Closed |
+| S3-04 | Households/Join/Inventory/Profile 统一结果未知幂等状态机 | 请求中编辑、transport 后重试、409 刷新版本页面测试 | Closed |
+| S3-05 | constraint JSONB 在 UPDATE 前完整校验 | app-role 畸形数组/notes 反向测试，内容/version 不变 | Closed |
+| S3-06 | label-only allergy 与隐藏字段清理、五类阻断确认 | contracts/client 五类矩阵与实际页面确认展示 | Closed；FAM-004 仍 Partial |
+| S3-07 | schema 定义处 metadata binding，OpenAPI 对应节点携带 rule ID | 无直接 refine 扫描、故意错绑失败、逐 component 检查 | Closed |
+| S3-08 | production audit policy/退出语义 fail-closed | invalid expiry、signal、exit 2、registry、metadata、新增/消失 advisory 7/7 | Closed |
 
 ## 3. A — 幂等与敏感数据
 
@@ -121,7 +135,7 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 - 生成器校验源码扫描、manifest 覆盖、ID 唯一性和 native/runtime-only 分类；
 - OpenAPI 只由脚本生成，不手工编辑 JSON。
 
-当前 manifest 覆盖 32 条 refine/superRefine 和 2 条原生规则。等价性矩阵至少覆盖：
+当前 manifest 覆盖 31 条 refine/superRefine 和 2 条原生规则。rule ID 与 boundary 在 schema 定义处写入 metadata，binding 和 OpenAPI schema component 从该 metadata 派生；不存在平行手写 boundary map。等价性矩阵至少覆盖：
 
 | 边界 | `"0"` | 正数 | 负数/指数/超精度 |
 | --- | --- | --- | --- |
@@ -154,7 +168,7 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 `pnpm stage08:check` 串联：
 
 1. Node/PostgreSQL environment；
-2. `0000→0001→0002→0003` 空库与增量 migration/checksum；
+2. `0000→0001→0002→0003→0004` 空库与增量 migration/checksum；
 3. contracts typecheck/tests/build；
 4. API unit/HTTP/PostgreSQL/OpenAPI/build；
 5. client typecheck/unit/page rendering/weapp build；
@@ -166,15 +180,16 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 | 门禁 | 结果 |
 | --- | --- |
-| contracts | 23/23 |
+| contracts | 24/24 |
 | API unit | 12/12 |
 | API HTTP | 5/5 |
-| PostgreSQL/RLS/concurrency | 38/38 |
-| client unit/page | 95/95 |
+| PostgreSQL/RLS/concurrency | 41/41 |
+| client unit/page | 102/102 |
 | E2E | 21/21 |
+| audit gate 反向单测 | 7/7 |
 | OpenAPI | 19 paths / 25 operations |
 | weapp build | Pass |
-| GUI | Pass，见[证据](../evidence/stage-08-gui/README.md) |
+| GUI | `c68217ed` 页面视觉范围 Pass；0004 增量由页面/API/DB 自动化验证，未伪造新 GUI Pass |
 | links / diff check | Pass |
 
 ### 依赖 audit 决策
@@ -190,14 +205,14 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 ### GUI
 
-微信开发者工具 RC `2.02.2607171` 从当前 worktree 的实际构建入口完成 fake 登录、合成家庭、owner/self、五类 hard constraint 入口、未经权威映射的阻断态、archive 和同 ID restore。证据裁剪为模拟器区域、移除相机/GPS/创建时间元数据，并绑定实现 tree、构建摘要和 SHA-256；环境与非范围见 [GUI 证据](../evidence/stage-08-gui/README.md)。
+微信开发者工具 RC `2.02.2607171` 的二次复跑绑定前一轮已提交页面实现子树，覆盖 fake 登录、合成家庭、owner/self、五类 hard constraint 入口、未经权威映射的阻断态、archive 和同 ID restore。证据裁剪为模拟器区域、移除相机/GPS/创建时间元数据，并绑定实现 tree、构建摘要和 SHA-256。本轮新增的结果未知状态机与 link TOCTOU 由实际页面、API 和 PostgreSQL 自动化验证，没有伪造新的 GUI Pass；环境与非范围见 [GUI 证据](../evidence/stage-08-gui/README.md)。
 
 ## 9. 影响范围
 
 | 层 | 已修改 |
 | --- | --- |
 | contracts | 0.4.0；receipt、profile collection/lifecycle/link、nullable facts、hard mapping 阻断、逐 schema rule binding、decimal parity |
-| migration | 单事务 `0002` + `0003`；link requests 终态、nullable facts、受控函数、旧数据转换、PersonProfile/成员权限撤销 |
+| migration | 单事务 `0002` + `0003` + `0004`；link 披露/终态、nullable facts、受控函数、严格 JSONB 边界、旧数据转换、PersonProfile/成员权限撤销 |
 | API | 幂等 registry、profile routes/redaction、member/invite 并发和状态、日志脱敏、OpenAPI |
 | client | endpoint/flow/page、同动作 key、完整 hard kind、unknown facts、archive/restore、page tests |
 | tests | contracts、runtime/OpenAPI、DB/RLS/concurrency、HTTP、页面、双用户 E2E |
@@ -215,9 +230,10 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
   → 0001_stage_08
   → 0002_stage_08_audit_closeout
   → 0003_stage_08_secondary_closeout
+  → 0004_stage_08_final_closeout
 ```
 
-`0002` 与 `0003` 都是单一事务。`0003` 严格按“新增终态/函数与约束 → 转换历史 hard mapping → 撤销表级权限和旧函数签名”执行。失败时整笔回滚；成功后只允许 roll-forward：
+`0002`、`0003` 与 `0004` 都是单一事务。`0003` 严格按“新增终态/函数与约束 → 转换历史 hard mapping → 撤销表级权限和旧函数签名”执行；`0004` 按“新增披露结构与约束 → 转换旧 pending → 替换 lifecycle/constraint 函数 → 收紧函数权限”执行。失败时整笔回滚；成功后只允许 roll-forward：
 
 - 不恢复含私密 profile 的幂等响应；
 - 不删除命令标识，也不允许同 key 重新执行；
@@ -238,7 +254,7 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 3. 客户端页面、动作幂等和真实页面测试；
 4. audit gate、ADR、状态文档与 GUI/audit 证据。
 
-不得合并 main；提交后等待项目总控实施后评审。
+不得合并 main；提交后等待项目总控合并前评审。
 
 ## 12. 完整验收命令
 

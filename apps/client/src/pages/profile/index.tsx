@@ -4,6 +4,7 @@ import { Button, Input, Text, View } from '@tarojs/components'
 import type {
   DietaryConstraintId,
   HouseholdId,
+  IdempotencyKey,
   MembershipId,
   PersonProfileId
 } from '@meal-agent/contracts'
@@ -13,7 +14,10 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
-import { PendingActionIdempotency } from '../../core/idempotency'
+import {
+  dispositionForOutcome,
+  PendingActionIdempotency
+} from '../../core/idempotency'
 import { loadMembers } from '../../core/members-flow'
 import {
   addDietaryConstraint,
@@ -48,6 +52,7 @@ type LinkDisclosure = {
   readonly displayName: string
   readonly hardConstraintCount: number
   readonly softConstraintCount: number
+  readonly privateConstraintCount: number
 }
 
 type LoadedState = {
@@ -209,32 +214,17 @@ export default function ProfilePage() {
         : profilesResult.data.self === null
           ? []
           : [profilesResult.data.self]
-    const profileById = new Map(
-      profiles.map((profile) => [profile.id, profile] as const)
-    )
     const linkDisclosures: Record<string, LinkDisclosure> = {}
     for (const request of linksResult.data.requests) {
       if (request.status !== 'pending') continue
-      let profile = profileById.get(request.profileId)
-      if (
-        profile === undefined &&
-        request.targetMembershipId === selfEntry.membership.id
-      ) {
-        const loaded = await services.api.getPersonProfile(id, request.profileId)
-        if (loaded.kind === 'success') {
-          profile = loaded.data.profile
-        }
-      }
-      if (profile !== undefined) {
-        linkDisclosures[request.id] = {
-          displayName: profile.displayName,
-          hardConstraintCount: profile.dietaryConstraints.filter(
-            (item) => item.enforcement === 'hard'
-          ).length,
-          softConstraintCount: profile.dietaryConstraints.filter(
-            (item) => item.enforcement === 'soft'
-          ).length
-        }
+      const disclosure = request.disclosure
+      linkDisclosures[request.id] = {
+        displayName: disclosure.profileDisplayName,
+        hardConstraintCount:
+          disclosure.householdVisibleHardConstraintCount,
+        softConstraintCount:
+          disclosure.householdVisibleSoftConstraintCount,
+        privateConstraintCount: disclosure.privateConstraintCount
       }
     }
     const nextState: LoadedState = {
@@ -284,6 +274,28 @@ export default function ProfilePage() {
     return <View className='page'><Text>未选择家庭，正在返回…</Text></View>
   }
 
+  const executeCommand = async <T extends { readonly kind: string }>(
+    action: string,
+    payload: unknown,
+    operation: (key: IdempotencyKey) => Promise<T>
+  ): Promise<T | null> => {
+    setBusy(true)
+    try {
+      const outcome = await operation(actionKeys.acquire(action, payload))
+      actionKeys.settle(action, dispositionForOutcome(outcome))
+      return outcome
+    } catch {
+      actionKeys.markUnknown(action)
+      setNotice({
+        kind: 'error',
+        message: '请求结果未知；相关输入已冻结，请使用同一请求重试或刷新对账。'
+      })
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const createNewProfile = async (
     linkedMembershipId?: MembershipId
   ): Promise<void> => {
@@ -301,22 +313,23 @@ export default function ProfilePage() {
       linkedMembershipId === undefined
         ? 'profile:create:dining'
         : `profile:create:self:${linkedMembershipId}`
-    setBusy(true)
-    const outcome = await createProfile(
-      getAppServices(),
-      householdId,
+    const outcome = await executeCommand(
+      action,
       payload,
-      actionKeys.acquire(action, payload)
+      (key) => createProfile(
+        getAppServices(),
+        householdId,
+        payload,
+        key
+      )
     )
-    setBusy(false)
+    if (outcome === null) return
     if (outcome.kind === 'created') {
-      actionKeys.complete(action)
       setCreateName('')
       setNotice({ kind: 'info', message: '用餐档案已创建。' })
       setSelectedId(outcome.profile.id)
       await refresh(householdId)
     } else if (outcome.kind === 'invalid') {
-      actionKeys.abandon(action)
       setNotice({ kind: 'error', message: outcome.messages.join('；') })
     } else {
       setNotice({ kind: 'error', message: outcome.message })
@@ -333,22 +346,24 @@ export default function ProfilePage() {
       cookingSkill
     }
     const action = `profile:update:${profile.id}`
-    setBusy(true)
-    const outcome = await updateProfile(
-      getAppServices(),
-      householdId,
-      profile.id,
-      draft,
-      profile.version,
-      actionKeys.acquire(action, { ...draft, version: profile.version })
+    const payload = { ...draft, version: profile.version }
+    const outcome = await executeCommand(
+      action,
+      payload,
+      (key) => updateProfile(
+        getAppServices(),
+        householdId,
+        profile.id,
+        draft,
+        profile.version,
+        key
+      )
     )
-    setBusy(false)
+    if (outcome === null) return
     if (outcome.kind === 'updated') {
-      actionKeys.complete(action)
       setNotice({ kind: 'info', message: '档案事实已更新。' })
       await refresh(householdId)
     } else if (outcome.kind === 'invalid') {
-      actionKeys.abandon(action)
       setNotice({ kind: 'error', message: outcome.messages.join('；') })
     } else {
       setNotice({ kind: 'error', message: outcome.message })
@@ -363,26 +378,25 @@ export default function ProfilePage() {
     if (busy) return
     const action = `profile:${operation}:${profile.id}`
     const payload = { profileId: profile.id, version: profile.version }
-    setBusy(true)
-    const outcome =
+    const outcome = await executeCommand(action, payload, (key) =>
       operation === 'archive'
-        ? await archiveProfile(
-            getAppServices(),
-            householdId,
-            profile.id,
-            profile.version,
-            actionKeys.acquire(action, payload)
-          )
-        : await restoreProfile(
-            getAppServices(),
-            householdId,
-            profile.id,
-            profile.version,
-            actionKeys.acquire(action, payload)
-          )
-    setBusy(false)
+        ? archiveProfile(
+          getAppServices(),
+          householdId,
+          profile.id,
+          profile.version,
+          key
+        )
+        : restoreProfile(
+          getAppServices(),
+          householdId,
+          profile.id,
+          profile.version,
+          key
+        )
+    )
+    if (outcome === null) return
     if (outcome.kind === 'updated') {
-      actionKeys.complete(action)
       setNotice({
         kind: 'info',
         message: operation === 'archive' ? '档案已归档。' : '档案已恢复。'
@@ -427,24 +441,26 @@ export default function ProfilePage() {
             visibility: constraint.visibility
           }
     const action = `constraint:add:${profile.id}`
-    setBusy(true)
-    const outcome = await addDietaryConstraint(
-      getAppServices(),
-      householdId,
-      profile.id,
-      draft,
-      profile.version,
-      actionKeys.acquire(action, { draft, version: profile.version })
+    const payload = { draft, version: profile.version }
+    const outcome = await executeCommand(
+      action,
+      payload,
+      (key) => addDietaryConstraint(
+        getAppServices(),
+        householdId,
+        profile.id,
+        draft,
+        profile.version,
+        key
+      )
     )
-    setBusy(false)
+    if (outcome === null) return
     setConfirmingHard(false)
     if (outcome.kind === 'added') {
-      actionKeys.complete(action)
       setConstraint(EMPTY_CONSTRAINT)
       setNotice({ kind: 'info', message: '约束已登记。' })
       await refresh(householdId)
     } else if (outcome.kind === 'invalid') {
-      actionKeys.abandon(action)
       setNotice({ kind: 'error', message: outcome.messages.join('；') })
     } else {
       setNotice({ kind: 'error', message: outcome.message })
@@ -459,18 +475,20 @@ export default function ProfilePage() {
     if (busy) return
     const action = `constraint:remove:${constraintId}`
     const payload = { constraintId, version: profile.version }
-    setBusy(true)
-    const outcome = await removeDietaryConstraint(
-      getAppServices(),
-      householdId,
-      profile.id,
-      constraintId,
-      profile.version,
-      actionKeys.acquire(action, payload)
+    const outcome = await executeCommand(
+      action,
+      payload,
+      (key) => removeDietaryConstraint(
+        getAppServices(),
+        householdId,
+        profile.id,
+        constraintId,
+        profile.version,
+        key
+      )
     )
-    setBusy(false)
+    if (outcome === null) return
     if (outcome.kind === 'removed') {
-      actionKeys.complete(action)
       setNotice({ kind: 'info', message: '约束已移除。' })
       await refresh(householdId)
     } else if (outcome.kind !== 'invalid') {
@@ -487,16 +505,18 @@ export default function ProfilePage() {
       expiresInHours: 168,
       ownerConfirmation: { acknowledged: true as const }
     }
-    setBusy(true)
-    const outcome = await getAppServices().api.createPersonProfileLinkRequest(
-      householdId,
-      profile.id,
+    const outcome = await executeCommand(
+      action,
       payload,
-      actionKeys.acquire(action, payload)
+      (key) => getAppServices().api.createPersonProfileLinkRequest(
+        householdId,
+        profile.id,
+        payload,
+        key
+      )
     )
-    setBusy(false)
+    if (outcome === null) return
     if (outcome.kind === 'success') {
-      actionKeys.complete(action)
       setNotice({
         kind: 'info',
         message: '关联请求已发出，须由目标成员再次确认。'
@@ -516,20 +536,26 @@ export default function ProfilePage() {
       expectedVersion: request.version,
       subjectConfirmation: { acknowledged: true as const }
     }
-    setBusy(true)
-    const outcome = await getAppServices().api.confirmPersonProfileLinkRequest(
-      householdId,
-      request.id,
+    const outcome = await executeCommand(
+      action,
       payload,
-      actionKeys.acquire(action, payload)
+      (key) => getAppServices().api.confirmPersonProfileLinkRequest(
+        householdId,
+        request.id,
+        payload,
+        key
+      )
     )
-    setBusy(false)
+    if (outcome === null) return
     if (outcome.kind === 'success') {
-      actionKeys.complete(action)
       setNotice({ kind: 'info', message: '关联已确认。' })
       await refresh(householdId)
     } else {
-      setNotice({ kind: 'error', message: '关联确认失败，请刷新后重试。' })
+      setNotice({
+        kind: 'error',
+        message: '档案或约束已变化；已刷新披露，请重新阅读并再次确认。'
+      })
+      await refresh(householdId)
     }
   }
 
@@ -553,6 +579,7 @@ export default function ProfilePage() {
     )
       ? '关联成员当前不在家庭中，无法恢复；重新加入后仍须显式恢复原档案。'
       : null
+  const fieldsLocked = busy || actionKeys.hasAnyPending()
 
   return (
     <View className='page'>
@@ -585,7 +612,7 @@ export default function ProfilePage() {
               <Button
                 key={profile.id}
                 className={profile.id === selectedId ? 'button' : 'button button--secondary'}
-                disabled={busy}
+                disabled={fieldsLocked}
                 onClick={() => chooseProfile(profile)}
               >
                 {profile.displayName} · {profile.status === 'active' ? '使用中' : '已归档'}
@@ -600,6 +627,7 @@ export default function ProfilePage() {
               name={createName}
               setName={setCreateName}
               busy={busy}
+              fieldsLocked={fieldsLocked}
               onCreate={() => void createNewProfile(state.selfMembershipId)}
             />
           )}
@@ -609,6 +637,7 @@ export default function ProfilePage() {
               name={createName}
               setName={setCreateName}
               busy={busy}
+              fieldsLocked={fieldsLocked}
               onCreate={() => void createNewProfile()}
             />
           )}
@@ -633,6 +662,7 @@ export default function ProfilePage() {
               confirmingHard={confirmingHard}
               setConfirmingHard={setConfirmingHard}
               busy={busy}
+              fieldsLocked={fieldsLocked}
               restoreBlockedReason={restoreBlockedReason}
               onSave={() => void saveProfile(selected)}
               onArchive={() => void changeArchiveState(selected, 'archive')}
@@ -664,7 +694,9 @@ export default function ProfilePage() {
                           {state.linkDisclosures[request.id]?.hardConstraintCount}
                           条，偏好
                           {state.linkDisclosures[request.id]?.softConstraintCount}
-                          条。
+                          条；另有私密约束
+                          {state.linkDisclosures[request.id]?.privateConstraintCount}
+                          条（不披露内容）。
                         </Text>
                         <Text className='list-item-detail'>
                           确认后，该档案将关联到你的登录成员；本人和家庭所有者可管理完整档案，
@@ -707,6 +739,7 @@ const CreateSection = (props: {
   readonly name: string
   readonly setName: (value: string) => void
   readonly busy: boolean
+  readonly fieldsLocked: boolean
   readonly onCreate: () => void
 }) => (
   <View className='section'>
@@ -714,7 +747,7 @@ const CreateSection = (props: {
     <Input
       className='field-input'
       value={props.name}
-      disabled={props.busy}
+      disabled={props.fieldsLocked}
       placeholder='称呼'
       onInput={(event) => props.setName(event.detail.value)}
     />
@@ -746,6 +779,7 @@ const ProfileEditor = (props: {
   readonly confirmingHard: boolean
   readonly setConfirmingHard: (value: boolean) => void
   readonly busy: boolean
+  readonly fieldsLocked: boolean
   readonly restoreBlockedReason: string | null
   readonly onSave: () => void
   readonly onArchive: () => void
@@ -781,7 +815,7 @@ const ProfileEditor = (props: {
           <Input
             className='field-input'
             value={props.editName}
-            disabled={props.busy}
+            disabled={props.fieldsLocked}
             onInput={(event) => props.setEditName(event.detail.value)}
           />
           <Text className='field-label'>默认参与</Text>
@@ -794,7 +828,7 @@ const ProfileEditor = (props: {
               <Button
                 key={label}
                 className={props.participation === value ? 'button' : 'button button--secondary'}
-                disabled={props.busy}
+                disabled={props.fieldsLocked}
                 onClick={() => props.setParticipation(value)}
               >
                 {label}
@@ -806,7 +840,7 @@ const ProfileEditor = (props: {
             className='field-input'
             type='digit'
             value={props.portionText}
-            disabled={props.busy}
+            disabled={props.fieldsLocked}
             placeholder='0.25–4'
             onInput={(event) => props.setPortionText(event.detail.value)}
           />
@@ -822,7 +856,7 @@ const ProfileEditor = (props: {
               <Button
                 key={label}
                 className={props.cookingSkill === value ? 'button' : 'button button--secondary'}
-                disabled={props.busy}
+                disabled={props.fieldsLocked}
                 onClick={() => props.setCookingSkill(value)}
               >
                 {label}
@@ -848,7 +882,7 @@ const ProfileEditor = (props: {
             <Button
               key={member.id}
               className={props.linkTarget === member.id ? 'button' : 'button button--secondary'}
-              disabled={props.busy}
+              disabled={props.fieldsLocked}
               onClick={() => props.setLinkTarget(member.id)}
             >
               {member.label}
@@ -900,20 +934,28 @@ const ProfileEditor = (props: {
           <View className='row'>
             <Button
               className={props.constraint.enforcement === 'hard' ? 'button' : 'button button--secondary'}
-              disabled={props.busy}
+              disabled={props.fieldsLocked}
               onClick={() => {
                 props.setConfirmingHard(false)
-                props.setConstraint({ ...props.constraint, enforcement: 'hard' })
+                props.setConstraint({
+                  ...props.constraint,
+                  enforcement: 'hard',
+                  preference: 'dislike'
+                })
               }}
             >
               硬约束
             </Button>
             <Button
               className={props.constraint.enforcement === 'soft' ? 'button' : 'button button--secondary'}
-              disabled={props.busy}
+              disabled={props.fieldsLocked}
               onClick={() => {
                 props.setConfirmingHard(false)
-                props.setConstraint({ ...props.constraint, enforcement: 'soft' })
+                props.setConstraint({
+                  ...props.constraint,
+                  enforcement: 'soft',
+                  allergenCode: ''
+                })
               }}
             >
               普通偏好
@@ -925,10 +967,17 @@ const ProfileEditor = (props: {
                 <Button
                   key={kind}
                   className={props.constraint.hardKind === kind ? 'button' : 'button button--secondary'}
-                  disabled={props.busy}
+                  disabled={props.fieldsLocked}
                   onClick={() => {
                     props.setConfirmingHard(false)
-                    props.setConstraint({ ...props.constraint, hardKind: kind })
+                    props.setConstraint({
+                      ...props.constraint,
+                      hardKind: kind,
+                      allergenCode:
+                        kind === 'allergy'
+                          ? props.constraint.allergenCode
+                          : ''
+                    })
                   }}
                 >
                   {hardKindLabel[kind]}
@@ -939,7 +988,7 @@ const ProfileEditor = (props: {
           <Input
             className='field-input'
             value={props.constraint.label}
-            disabled={props.busy}
+            disabled={props.fieldsLocked}
             placeholder='约束名称'
             onInput={(event) => {
               props.setConfirmingHard(false)
@@ -949,7 +998,7 @@ const ProfileEditor = (props: {
           <Input
             className='field-input'
             value={props.constraint.foodConceptId}
-            disabled={props.busy}
+            disabled={props.fieldsLocked}
             placeholder='FoodConcept 标识（尚未权威映射，可选）'
             onInput={(event) => {
               props.setConfirmingHard(false)
@@ -961,8 +1010,8 @@ const ProfileEditor = (props: {
               <Input
                 className='field-input'
                 value={props.constraint.allergenCode}
-                disabled={props.busy}
-                placeholder='allergen 标识（尚未权威映射）'
+                disabled={props.fieldsLocked}
+                placeholder='权威 allergen 标识（可选；不知道请留空）'
                 onInput={(event) => {
                   props.setConfirmingHard(false)
                   props.setConstraint({ ...props.constraint, allergenCode: event.detail.value })
@@ -971,7 +1020,7 @@ const ProfileEditor = (props: {
             )}
           <Button
             className='button button--secondary'
-            disabled={props.busy}
+            disabled={props.fieldsLocked}
             onClick={() => {
               props.setConfirmingHard(false)
               props.setConstraint({
@@ -989,20 +1038,29 @@ const ProfileEditor = (props: {
               : '仅本人与所有者'}
           </Button>
           {props.constraint.enforcement === 'hard' && !props.confirmingHard ? (
-            <Button
-              className='button'
-              disabled={props.busy}
-              onClick={() => props.setConfirmingHard(true)}
-            >
-              进入硬约束确认
-            </Button>
+            <View>
+              <Text className='list-item-detail'>
+                当前尚无权威词表；只填写自然语言名称也可诚实登记。五类硬约束均保持
+                “待结构化映射”，在安全闭环前一律阻断推荐。
+              </Text>
+              <Button
+                className='button'
+                disabled={props.fieldsLocked}
+                onClick={() => props.setConfirmingHard(true)}
+              >
+                进入硬约束确认
+              </Button>
+            </View>
           ) : props.constraint.enforcement === 'hard' ? (
             <View className='notice'>
               <Text>
                 请确认：类型 {hardKindLabel[props.constraint.hardKind]}、名称
                 {props.constraint.label || '（空）'}、可见性
-                {props.constraint.visibility === 'household' ? '全家' : '私密'}。
-                未完成结构化映射的宗教、伦理或安全约束将阻断推荐，模型不得猜测。
+                {props.constraint.visibility === 'household' ? '全家' : '私密'}、
+                FoodConcept 标识
+                {props.constraint.foodConceptId || '（无）'}、allergen 标识
+                {props.constraint.allergenCode || '（无）'}、映射状态
+                needs_structured_mapping。五类硬约束均将阻断推荐，模型不得猜测。
               </Text>
               <Button className='button' disabled={props.busy} onClick={props.onAddConstraint}>
                 确认全部字段并登记

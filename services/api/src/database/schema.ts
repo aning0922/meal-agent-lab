@@ -357,6 +357,22 @@ export const personProfileLinkRequests = pgTable(
       mode: "date",
     }),
     terminalReason: varchar("terminal_reason", { length: 64 }),
+    disclosureVersion: integer("disclosure_version").notNull(),
+    profileVersionAtRequest: integer(
+      "profile_version_at_request",
+    ).notNull(),
+    disclosedProfileName: varchar("disclosed_profile_name", {
+      length: 80,
+    }).notNull(),
+    disclosedHouseholdHardCount: integer(
+      "disclosed_household_hard_count",
+    ).notNull(),
+    disclosedHouseholdSoftCount: integer(
+      "disclosed_household_soft_count",
+    ).notNull(),
+    disclosedPrivateConstraintCount: integer(
+      "disclosed_private_constraint_count",
+    ).notNull(),
     version: integer("version").notNull().default(0),
   },
   (table) => [
@@ -407,9 +423,19 @@ export const personProfileLinkRequests = pgTable(
           AND ${table.terminalReason} IN (
             'target_membership_inactive',
             'profile_unavailable',
-            'target_membership_has_profile'
+            'target_membership_has_profile',
+            'profile_changed'
           )
         )`,
+    ),
+    check(
+      "person_profile_link_requests_disclosure_check",
+      sql`${table.disclosureVersion} = 1
+        AND ${table.profileVersionAtRequest} >= 0
+        AND length(${table.disclosedProfileName}) BETWEEN 1 AND 80
+        AND ${table.disclosedHouseholdHardCount} >= 0
+        AND ${table.disclosedHouseholdSoftCount} >= 0
+        AND ${table.disclosedPrivateConstraintCount} >= 0`,
     ),
     check(
       "person_profile_link_requests_version_check",

@@ -98,6 +98,7 @@ export type CreateLotOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 /**
@@ -186,15 +187,22 @@ export const createInventoryLot = async (
       return {
         kind: 'failed',
         message: describeApiError(outcome.error),
-        retryable: outcome.error.retryable
+        retryable: outcome.error.retryable,
+        executionUnknown: outcome.error.status >= 500
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }
@@ -243,6 +251,7 @@ export type ConsumeLotOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 /**
@@ -313,15 +322,22 @@ export const consumeInventoryLot = async (
       return {
         kind: 'failed',
         message: describeApiError(outcome.error),
-        retryable: outcome.error.retryable
+        retryable: outcome.error.retryable,
+        executionUnknown: outcome.error.status >= 500
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }

@@ -13,11 +13,11 @@
 
 ## 审计后边界
 
-最终阶段 08 在不修改既有 migration 或 checksum 的前提下增加单事务 `0002_stage_08_audit_closeout.sql` 与二次收口 `0003_stage_08_secondary_closeout.sql`，契约保持 `0.4.0`。详细架构理由见 [ADR-0004](../architecture/decisions/0004-stage-08-pre-release-audit-closeout.md)。
+最终阶段 08 在不修改既有 migration 或 checksum 的前提下依次增加单事务 `0002_stage_08_audit_closeout.sql`、`0003_stage_08_secondary_closeout.sql` 与 `0004_stage_08_final_closeout.sql`，契约保持 `0.4.0`。详细架构理由见 [ADR-0004](../architecture/decisions/0004-stage-08-pre-release-audit-closeout.md)。
 
 ### FAM-003
 
-登记与隐私范围已实现，但安全闭环仍为部分完成：
+阶段 08 冻结范围已完成：
 
 - 登录成员与 dining-only profile 的统一 list/get；
 - displayName、默认饭量、默认参与和厨艺的 unknown/null、查看和编辑；
@@ -25,7 +25,7 @@
 - 成员退出/移除时原子归档 linked profile；
 - dining-only 关联登录成员的 owner 发起 + 被关联用户确认。
 
-不按姓名自动合并，不在重新加入时自动恢复或复制私人约束。转回 dining-only 需要未来独立确认命令。
+关联请求固化发起时的 profile version 和安全披露；确认前名称或约束发生变化会提交 `profile_changed` 终态，客户端重新读取、展示并确认。不按姓名自动合并，不在重新加入时自动恢复或复制私人约束。转回 dining-only 需要未来独立确认命令，不属于 FAM-003 当前已定义的用户行为。
 
 ### FAM-004
 
@@ -54,14 +54,15 @@
 
 | 层 | 结果 |
 | --- | --- |
-| contracts | 23/23 |
+| contracts | 24/24 |
 | API unit | 12/12 |
 | API HTTP | 5/5 |
-| PostgreSQL migration/RLS/concurrency | 38/38 |
-| client unit + 页面渲染 | 95/95 |
+| PostgreSQL migration/RLS/concurrency | 41/41 |
+| client unit + 页面渲染 | 102/102 |
 | stage 07 + stage 08 E2E | 21/21 |
+| audit gate 反向单测 | 7/7 |
 | weapp build | Pass |
-| GUI | Pass，见[证据](../evidence/stage-08-gui/README.md) |
+| GUI | `c68217ed` 页面视觉范围 Pass；0004 增量未伪造新 GUI Pass，见[证据](../evidence/stage-08-gui/README.md) |
 | 依赖审计 | 原始 1 critical、1 high、8 moderate；local/weapp-only 限时例外门禁 Pass |
 
 最终命令、数据兼容、风险和 Deferred 以[审计整改记录](2026-07-stage-08-audit-closeout.md)为准。本文件保留原阶段目标和边界，不再作为独立的“可开始阶段 09”依据。

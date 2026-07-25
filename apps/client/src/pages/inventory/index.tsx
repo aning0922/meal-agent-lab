@@ -1,7 +1,6 @@
 import '../../zod-runtime-config'
 import { useEffect, useRef, useState } from 'react'
 import { Button, Input, Text, View } from '@tarojs/components'
-import type { IdempotencyKey } from '@meal-agent/contracts/api'
 import type { Confidence, HouseholdId } from '@meal-agent/contracts'
 import type {
   InventoryLot,
@@ -18,11 +17,12 @@ import {
   consumeInventoryLot,
   createInventoryLot,
   loadInventoryLots,
-  nextPendingConsume,
-  type CreateLotQuantityDraft,
-  type PendingConsume
+  type CreateLotQuantityDraft
 } from '../../core/inventory-flow'
-import { createIdempotencyKey } from '../../core/idempotency'
+import {
+  dispositionForOutcome,
+  PendingActionIdempotency
+} from '../../core/idempotency'
 import {
   HOUSEHOLDS_ROUTE,
   LOGIN_ROUTE
@@ -104,15 +104,17 @@ export default function InventoryPage() {
   const [createStatus, setCreateStatus] = useState<SubmitState>({
     kind: 'idle'
   })
-  const createKeyRef = useRef<IdempotencyKey | null>(null)
-
   const [consumeLotId, setConsumeLotId] = useState<string | null>(null)
   const [consumeAmount, setConsumeAmount] = useState('')
   const [consumeStatus, setConsumeStatus] = useState<SubmitState>({
     kind: 'idle'
   })
-  // 幂等键与 (lotId, version, amount) 绑定，见 nextPendingConsume。
-  const pendingConsumeRef = useRef<PendingConsume | null>(null)
+  const [actionKeys] = useState(
+    () =>
+      new PendingActionIdempotency(
+        getAppServices().adapter.runtime
+      )
+  )
   // 列表纪元：消耗成功会使在途的旧列表响应作废，防止旧快照覆盖新状态。
   const listEpochRef = useRef(0)
 
@@ -176,7 +178,6 @@ export default function InventoryPage() {
     setApproxOriginalText('')
     setQualOriginalText('')
     setCreateStatus({ kind: 'idle' })
-    createKeyRef.current = null
   }
 
   const buildQuantityDraft = (): CreateLotQuantityDraft => {
@@ -206,19 +207,30 @@ export default function InventoryPage() {
     }
     setCreateStatus({ kind: 'working' })
     const services = getAppServices()
-    createKeyRef.current ??= createIdempotencyKey(
-      services.adapter.runtime
-    )
-    const outcome = await createInventoryLot(
-      services,
-      householdId,
-      {
-        displayName: draftName,
-        storageLocation: draftLocation,
-        quantity: buildQuantityDraft()
-      },
-      createKeyRef.current
-    )
+    const action = 'inventory:create'
+    const payload = {
+      displayName: draftName,
+      storageLocation: draftLocation,
+      quantity: buildQuantityDraft()
+    }
+    let outcome: Awaited<ReturnType<typeof createInventoryLot>>
+    try {
+      outcome = await createInventoryLot(
+        services,
+        householdId,
+        payload,
+        actionKeys.acquire(action, payload)
+      )
+    } catch {
+      actionKeys.markUnknown(action)
+      setCreateStatus({
+        kind: 'failed',
+        message: '请求结果未知；请保持当前输入并使用同一请求重试。',
+        retryable: true
+      })
+      return
+    }
+    actionKeys.settle(action, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
         setBanner({
@@ -232,7 +244,6 @@ export default function InventoryPage() {
         await refresh(householdId)
         return
       case 'invalid':
-        createKeyRef.current = null
         setCreateStatus(outcome)
         return
       case 'householdMissing':
@@ -249,21 +260,31 @@ export default function InventoryPage() {
     }
     setConsumeStatus({ kind: 'working' })
     const services = getAppServices()
-    // 同一 (批次, 版本, 数量) 的重试复用同键；任一要素变化自动换键。
-    const pending = nextPendingConsume(
-      pendingConsumeRef.current,
-      lot,
-      consumeAmount,
-      services.adapter.runtime
-    )
-    pendingConsumeRef.current = pending
-    const outcome = await consumeInventoryLot(
-      services,
-      householdId,
-      lot,
-      consumeAmount,
-      pending.key
-    )
+    const action = `inventory:consume:${lot.id}`
+    const payload = {
+      lotId: lot.id,
+      expectedVersion: lot.version,
+      amount: consumeAmount.trim()
+    }
+    let outcome: Awaited<ReturnType<typeof consumeInventoryLot>>
+    try {
+      outcome = await consumeInventoryLot(
+        services,
+        householdId,
+        lot,
+        consumeAmount,
+        actionKeys.acquire(action, payload)
+      )
+    } catch {
+      actionKeys.markUnknown(action)
+      setConsumeStatus({
+        kind: 'failed',
+        message: '消耗结果未知；请保持数量并使用同一请求重试。',
+        retryable: true
+      })
+      return
+    }
+    actionKeys.settle(action, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'consumed': {
         const updatedLot = outcome.result.lot
@@ -276,7 +297,6 @@ export default function InventoryPage() {
         setConsumeLotId(null)
         setConsumeAmount('')
         setConsumeStatus({ kind: 'idle' })
-        pendingConsumeRef.current = null
         // 使在途的旧列表请求作废，再落最新批次投影。
         listEpochRef.current += 1
         setList((previous) =>
@@ -295,17 +315,14 @@ export default function InventoryPage() {
         // 并发冲突：不静默覆盖，刷新最新版本后由用户重新决定。
         setBanner({ tone: 'error', text: outcome.message })
         setConsumeStatus({ kind: 'idle' })
-        pendingConsumeRef.current = null
         await refresh(householdId)
         return
       case 'notFound':
         setBanner({ tone: 'error', text: outcome.message })
         setConsumeStatus({ kind: 'idle' })
-        pendingConsumeRef.current = null
         await refresh(householdId)
         return
       case 'invalid':
-        pendingConsumeRef.current = null
         setConsumeStatus(outcome)
         return
       case 'failed':
@@ -315,6 +332,9 @@ export default function InventoryPage() {
 
   const chip = (active: boolean): string =>
     active ? 'chip chip--active' : 'chip'
+  const createFieldsLocked =
+    createStatus.kind === 'working' ||
+    actionKeys.hasPending('inventory:create')
 
   return (
     <View className='page'>
@@ -347,8 +367,11 @@ export default function InventoryPage() {
         </Text>
         <Text
           className={chip(showCreate)}
+          aria-disabled={createFieldsLocked}
           onClick={() => {
-            setShowCreate((previous) => !previous)
+            if (!createFieldsLocked) {
+              setShowCreate((previous) => !previous)
+            }
           }}
         >
           {showCreate ? '收起新增' : '新增批次'}
@@ -379,10 +402,10 @@ export default function InventoryPage() {
           <Input
             className='field-input'
             value={draftName}
+            disabled={createFieldsLocked}
             placeholder='例如：鸡蛋'
             onInput={(event) => {
               setDraftName(event.detail.value)
-              createKeyRef.current = null
             }}
           />
 
@@ -392,9 +415,9 @@ export default function InventoryPage() {
               <Text
                 key={location}
                 className={chip(draftLocation === location)}
+                aria-disabled={createFieldsLocked}
                 onClick={() => {
-                  setDraftLocation(location)
-                  createKeyRef.current = null
+                  if (!createFieldsLocked) setDraftLocation(location)
                 }}
               >
                 {STORAGE_LOCATION_TEXT[location]}
@@ -414,9 +437,9 @@ export default function InventoryPage() {
               <Text
                 key={kind}
                 className={chip(quantityKind === kind)}
+                aria-disabled={createFieldsLocked}
                 onClick={() => {
-                  setQuantityKind(kind)
-                  createKeyRef.current = null
+                  if (!createFieldsLocked) setQuantityKind(kind)
                 }}
               >
                 {label}
@@ -430,20 +453,20 @@ export default function InventoryPage() {
               <Input
                 className='field-input'
                 value={exactAmount}
+                disabled={createFieldsLocked}
                 placeholder='例如：12'
                 onInput={(event) => {
                   setExactAmount(event.detail.value)
-                  createKeyRef.current = null
                 }}
               />
               <Text className='field-label'>单位</Text>
               <Input
                 className='field-input'
                 value={exactUnit}
+                disabled={createFieldsLocked}
                 placeholder='例如：个'
                 onInput={(event) => {
                   setExactUnit(event.detail.value)
-                  createKeyRef.current = null
                 }}
               />
             </View>
@@ -455,20 +478,20 @@ export default function InventoryPage() {
               <Input
                 className='field-input'
                 value={approxAmount}
+                disabled={createFieldsLocked}
                 placeholder='例如：0.5'
                 onInput={(event) => {
                   setApproxAmount(event.detail.value)
-                  createKeyRef.current = null
                 }}
               />
               <Text className='field-label'>单位</Text>
               <Input
                 className='field-input'
                 value={approxUnit}
+                disabled={createFieldsLocked}
                 placeholder='例如：袋'
                 onInput={(event) => {
                   setApproxUnit(event.detail.value)
-                  createKeyRef.current = null
                 }}
               />
               <Text className='field-label'>置信度</Text>
@@ -477,9 +500,11 @@ export default function InventoryPage() {
                   <Text
                     key={confidence}
                     className={chip(approxConfidence === confidence)}
+                    aria-disabled={createFieldsLocked}
                     onClick={() => {
-                      setApproxConfidence(confidence)
-                      createKeyRef.current = null
+                      if (!createFieldsLocked) {
+                        setApproxConfidence(confidence)
+                      }
                     }}
                   >
                     {CONFIDENCE_TEXT[confidence]}
@@ -490,10 +515,10 @@ export default function InventoryPage() {
               <Input
                 className='field-input'
                 value={approxOriginalText}
+                disabled={createFieldsLocked}
                 placeholder='例如：大概还剩半袋'
                 onInput={(event) => {
                   setApproxOriginalText(event.detail.value)
-                  createKeyRef.current = null
                 }}
               />
             </View>
@@ -507,9 +532,9 @@ export default function InventoryPage() {
                   <Text
                     key={level}
                     className={chip(qualLevel === level)}
+                    aria-disabled={createFieldsLocked}
                     onClick={() => {
-                      setQualLevel(level)
-                      createKeyRef.current = null
+                      if (!createFieldsLocked) setQualLevel(level)
                     }}
                   >
                     {QUALITATIVE_LEVEL_LABEL[level]}
@@ -520,10 +545,10 @@ export default function InventoryPage() {
               <Input
                 className='field-input'
                 value={qualOriginalText}
+                disabled={createFieldsLocked}
                 placeholder='例如：还有一些'
                 onInput={(event) => {
                   setQualOriginalText(event.detail.value)
-                  createKeyRef.current = null
                 }}
               />
             </View>
@@ -608,6 +633,12 @@ export default function InventoryPage() {
                         <Input
                           className='field-input'
                           value={consumeAmount}
+                          disabled={
+                            consumeStatus.kind === 'working' ||
+                            actionKeys.hasPending(
+                              `inventory:consume:${lot.id}`
+                            )
+                          }
                           placeholder='例如：2'
                           onInput={(event) => {
                             setConsumeAmount(event.detail.value)
@@ -630,16 +661,23 @@ export default function InventoryPage() {
                         </Button>
                         <Button
                           className={
-                            consumeStatus.kind === 'working'
+                            consumeStatus.kind === 'working' ||
+                            actionKeys.hasPending(
+                              `inventory:consume:${lot.id}`
+                            )
                               ? 'button button--secondary button--disabled'
                               : 'button button--secondary'
                           }
-                          disabled={consumeStatus.kind === 'working'}
+                          disabled={
+                            consumeStatus.kind === 'working' ||
+                            actionKeys.hasPending(
+                              `inventory:consume:${lot.id}`
+                            )
+                          }
                           onClick={() => {
                             setConsumeLotId(null)
                             setConsumeAmount('')
                             setConsumeStatus({ kind: 'idle' })
-                            pendingConsumeRef.current = null
                           }}
                         >
                           取消
@@ -657,7 +695,6 @@ export default function InventoryPage() {
                           setConsumeLotId(lot.id)
                           setConsumeAmount('')
                           setConsumeStatus({ kind: 'idle' })
-                          pendingConsumeRef.current = null
                         }}
                       >
                         消耗

@@ -18,7 +18,7 @@
 1. `@meal-agent/contracts` 升级为 `0.4.0`，在 `/api/v1` 原地修正 PersonProfile 写响应、档案生命周期、未知值和硬约束映射语义。
 2. 例外只在“没有已部署环境和外部消费者”这一事实成立时有效。若出现相反证据，必须停止发布并重新设计版本与迁移策略。
 3. 不编写虚构的双版本 reader、expand/contract 流程或兼容窗口；当前仓库只有修正后的单一事实源。
-4. 已有 migration 及 checksum 保持不变。首轮整改通过单一事务 `0002_stage_08_audit_closeout.sql` 完成；二次审计只新增单一事务 `0003_stage_08_secondary_closeout.sql`，不回改历史迁移。
+4. 已有 migration 及 checksum 保持不变。首轮整改通过单一事务 `0002_stage_08_audit_closeout.sql` 完成，二次审计新增 `0003_stage_08_secondary_closeout.sql`；最终收口在 0000—0003 已纳入 checksum 后只新增单一事务 `0004_stage_08_final_closeout.sql`，不回改历史迁移。
 
 ### 集中式幂等与敏感响应
 
@@ -57,9 +57,19 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 ### 二次收口的不变量
 
 - 自退出的幂等结果必须在事务提交前完成且 UPDATE 恰好一行；同 key 可在 active membership 消失后、household bootstrap 之前重放，不允许遗留 incomplete record。
-- linked profile 直接创建只能由其本人执行；dining-only 仍仅 owner 可建。直接创建与关联确认共享 household+membership advisory lock，并按 target membership → link request → profile 排序，竞态稳定为一方成功、另一方 409。
+- linked profile 直接创建只能由其本人执行；dining-only 仍仅 owner 可建。直接创建与关联确认共享 household advisory lock，并在其后按稳定 request/profile/membership 行锁顺序执行，竞态稳定为一方成功、另一方 409。
 - pending link request 的过期、目标退出、档案归档或目标已有档案在同一锁内物化为终态；过期后可以重新发起。
 - 页面关联确认必须披露安全名称、可见约束摘要、权限和归档/保留后果；不可恢复时禁用操作，切换档案清空档案级草稿，请求进行中冻结相关输入。
+
+### 最终收口的不变量
+
+- link request 保存发起时的 profile version、名称、家庭可见 hard/soft 数量和私密约束数量，但不保存或披露私密内容；名称或任一约束变化使确认稳定提交 `profile_changed` 终态并返回 409，客户端必须重新 GET、展示和确认。
+- lifecycle 函数先取 household advisory lock，再按稳定 request/profile/membership 顺序加行锁；创建新请求会物化同 profile 的全部旧 pending，不受旧 target 限制，直接创建 linked profile 会终态化该 target 的其他 pending。
+- repository 的事务 callback 用 tagged domain outcome 表示“终态已写入但 HTTP 应返回 409”；同一事务把安全失败回执写入幂等记录并断言 UPDATE 恰好命中一行，提交后才抛 HTTP 错误。同 key 重放同一失败，不删除完成 marker，也不会因外部状态变化重新执行。
+- `add_person_profile_constraint` 在任何 profile 更新前校验 JSONB 对象键、数组元素、UUIDv7、字符串、notes 长度与唯一性；畸形 app-role 输入返回 `invalid_constraint`，profile 内容和 version 不变。没有权威词表时允许 label-only allergy，不能迫使用户编造 code。
+- 客户端不再用单一 `busy` 代表命令状态。transport、5xx 与 malformed success 都是结果未知，必须保留不可变 payload snapshot 与原 key；确定未执行的 400/403/404/409 才释放，应用重启后通过 GET 对账。
+- rule schema binding 的 boundary 与 rule ID 在 schema/refinement 定义处写入 Zod metadata；binding 和 OpenAPI schema component 从实际 metadata 派生，不维护第二份手写 boundary map。绕过 helper 或故意错绑都使门禁失败。
+- production audit gate 严格校验例外 policy、有限可解析到期时间、完整 advisory metadata 和退出语义；仅 exit 0/1 的合法审计报告可继续，signal、exit 2、registry/network 错误及 advisory 新增、变化或消失均失败。
 
 ### 依赖审计和交付边界
 
@@ -88,6 +98,6 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 ## 影响
 
 - PersonProfile mutation 的 `0.3.0` 响应消费者必须升级到 `0.4.0` receipt + GET 语义；仓库内客户端已同步，没有仓库外消费者。
-- `0002`/`0003` 的敏感响应清理与权限收窄不提供恢复旧不安全状态的 down migration；失败时各自事务整体回滚，成功后只允许 roll-forward。
+- `0002`/`0003`/`0004` 的敏感响应清理、权限收窄与关联披露不提供恢复旧不安全状态的 down migration；失败时各自事务整体回滚，成功后只允许 roll-forward。
 - 本地 Stage 08 可以形成完整安全、契约、数据库、HTTP、客户端、E2E、weapp 和 GUI 证据，但真实微信、真机、体验版、发布、云环境和远端 CI 仍按各自门禁单独验收。
 - 阶段 09 在正式 cooking-technique 与宗教/伦理规则词表完成治理前不得把自然语言约束交给模型执行。

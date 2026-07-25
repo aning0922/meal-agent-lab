@@ -433,13 +433,26 @@ test("hard dietary constraints require explicit confirmation; soft ones forbid i
     }).success,
     false,
   );
-  // allergy 缺少结构化编码/概念被拒绝（复用契约不变量）。
+  // 尚无权威词表时，allergy 可只用自然语言 label 诚实登记；不能逼用户
+  // 编造内部 code，服务端仍将 mappingStatus 固定为阻断态。
+  const labelOnlyFields = {
+    ...hardFields,
+    allergenCodes: [],
+    foodConceptIds: [],
+  };
   assert.equal(
     addDietaryConstraintRequestSchema.safeParse({
       ...hardBody,
-      constraint: { ...hardBody.constraint, allergenCodes: [], foodConceptIds: [] },
+      constraint: {
+        ...labelOnlyFields,
+        confirmation: {
+          acknowledged: true,
+          fingerprint:
+            hardConstraintConfirmationFingerprint(labelOnlyFields),
+        },
+      },
     }).success,
-    false,
+    true,
   );
   // 请求体不接受客户端伪造的 confirmedByUserId / id。
   assert.equal(

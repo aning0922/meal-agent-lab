@@ -9,7 +9,7 @@
   "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "pnpm --filter @meal-agent/contracts build && pnpm --filter @meal-agent/api build",
-    "audit:prod:check": "node scripts/check-production-audit.mjs --target=local-weapp",
+    "audit:prod:check": "node --test scripts/tests/*.test.mjs && node scripts/check-production-audit.mjs --target=local-weapp",
     "check": "pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check && pnpm --filter @meal-agent/client check",
     "docs:links:check": "node scripts/check-markdown-links.mjs",
     "stage06:check": "pnpm --filter @meal-agent/api environment:check && pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check",

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ruleSuperRefine } from "./contract-rule-schema.js";
 import {
   requestIdSchema,
   utcDateTimeSchema,
@@ -55,8 +56,8 @@ export const fieldErrorSchema = z.strictObject({
 });
 export type FieldError = z.infer<typeof fieldErrorSchema>;
 
-export const apiErrorSchema = z
-  .strictObject({
+export const apiErrorSchema = ruleSuperRefine(
+  z.strictObject({
     ok: z.literal(false),
     type: z.url(),
     title: z.string().min(1).max(200),
@@ -67,8 +68,10 @@ export const apiErrorSchema = z
     requestId: requestIdSchema,
     retryable: z.boolean(),
     fieldErrors: z.array(fieldErrorSchema).optional(),
-  })
-  .superRefine((error, context) => {
+  }),
+  "api.problem.status-code-consistency.v1",
+  "apiErrorSchema",
+  (error, context) => {
     if (apiErrorStatus[error.code] !== error.status) {
       context.addIssue({
         code: "custom",
@@ -76,12 +79,8 @@ export const apiErrorSchema = z
         message: `status must match the stable mapping for ${error.code}`,
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "status must match the stable HTTP status mapped from code",
-    ],
-  });
+  },
+);
 export type ApiError = z.infer<typeof apiErrorSchema>;
 
 export const idempotencyKeySchema = z

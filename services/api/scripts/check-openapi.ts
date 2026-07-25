@@ -6,6 +6,7 @@ import type { OpenAPIV3 } from "openapi-types";
 import {
   contractRuleBindings,
   contractRuleManifest,
+  contractRuleSchemaBindings,
 } from "@meal-agent/contracts";
 
 import { generateOpenApiDocument } from "./openapi.js";
@@ -55,11 +56,41 @@ const boundRuleIds = contractRuleBindings.flatMap((binding) =>
   binding.ruleIds.map((id) => [id, binding.boundary] as const),
 );
 assert.deepEqual(
-  [...boundRuleIds].sort(([left], [right]) => left.localeCompare(right)),
+  [...boundRuleIds].map(([id]) => id).sort(),
   contractRuleManifest
-    .map((rule) => [rule.id, rule.boundary] as const)
-    .sort(([left], [right]) => left.localeCompare(right)),
+    .map((rule) => rule.id)
+    .sort(),
 );
+for (const binding of contractRuleSchemaBindings) {
+  const componentName =
+    `ContractRule.${binding.boundary}`.replace(
+      /[^A-Za-z0-9._-]/g,
+      "_",
+    );
+  const component = generated.components?.schemas?.[
+    componentName
+  ];
+  assert.notEqual(
+    component,
+    undefined,
+    `${binding.boundary} must have a generated OpenAPI schema node`,
+  );
+  const componentJson = JSON.stringify(component);
+  assert.equal(
+    componentJson.includes(
+      `"x-meal-agent-rule-boundary":"${binding.boundary}"`,
+    ),
+    true,
+    `${binding.boundary} schema node must retain its definition metadata`,
+  );
+  for (const id of binding.ruleIds) {
+    assert.equal(
+      componentJson.includes(`"${id}"`),
+      true,
+      `${id} must appear on ${binding.boundary}'s OpenAPI schema node`,
+    );
+  }
+}
 const generatedJson = JSON.stringify(generated);
 for (const nativeRuleId of [
   "quantity.exact.positive.v1",
@@ -213,7 +244,13 @@ const createLotResponse = JSON.stringify(
 );
 assert.equal(
   consumedResponse.includes(
-    "consumed result requires a consistent exact negative event",
+    '"x-meal-agent-runtime-rule-ids":["inventory.consume-result.consistency.v1"]',
+  ),
+  true,
+);
+assert.equal(
+  createLotResponse.includes(
+    '"x-meal-agent-runtime-rule-ids":["inventory.create-result.consistency.v1"]',
   ),
   true,
 );

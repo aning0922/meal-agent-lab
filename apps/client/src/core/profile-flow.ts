@@ -74,6 +74,7 @@ export type CreateProfileOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 export const createProfile = async (
@@ -111,7 +112,8 @@ export const createProfile = async (
         return {
           kind: 'failed',
           message: '写入已完成，但读取最新档案失败，请返回后重新进入对账。',
-          retryable: true
+          retryable: true,
+          executionUnknown: true
         }
       }
       return {
@@ -136,16 +138,23 @@ export const createProfile = async (
           return {
             kind: 'failed',
             message: describeApiError(outcome.error),
-            retryable: outcome.error.retryable
+            retryable: outcome.error.retryable,
+            executionUnknown: outcome.error.status >= 500
           }
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }
@@ -175,6 +184,7 @@ export type ProfileMutationOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 const mapProfileMutation = async (
@@ -192,7 +202,8 @@ const mapProfileMutation = async (
         return {
           kind: 'failed',
           message: '写入已完成，但读取最新档案失败，请重新进入页面对账。',
-          retryable: true
+          retryable: true,
+          executionUnknown: true
         }
       }
       return {
@@ -216,16 +227,23 @@ const mapProfileMutation = async (
           return {
             kind: 'failed',
             message: describeApiError(outcome.error),
-            retryable: outcome.error.retryable
+            retryable: outcome.error.retryable,
+            executionUnknown: outcome.error.status >= 500
           }
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }
@@ -352,6 +370,7 @@ export type AddConstraintOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 const buildConstraint = (draft: ConstraintDraft): unknown => {
@@ -420,7 +439,8 @@ export const addDietaryConstraint = async (
         return {
           kind: 'failed',
           message: '约束写入已完成，但读取最新档案失败，请重新进入页面对账。',
-          retryable: true
+          retryable: true,
+          executionUnknown: true
         }
       }
       return {
@@ -449,16 +469,23 @@ export const addDietaryConstraint = async (
           return {
             kind: 'failed',
             message: describeApiError(outcome.error),
-            retryable: outcome.error.retryable
+            retryable: outcome.error.retryable,
+            executionUnknown: outcome.error.status >= 500
           }
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }
@@ -477,6 +504,7 @@ export type RemoveConstraintOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 export const removeDietaryConstraint = async (
@@ -511,7 +539,8 @@ export const removeDietaryConstraint = async (
         return {
           kind: 'failed',
           message: '约束移除已完成，但读取最新档案失败，请重新进入页面对账。',
-          retryable: true
+          retryable: true,
+          executionUnknown: true
         }
       }
       return {
@@ -538,16 +567,23 @@ export const removeDietaryConstraint = async (
           return {
             kind: 'failed',
             message: describeApiError(outcome.error),
-            retryable: outcome.error.retryable
+            retryable: outcome.error.retryable,
+            executionUnknown: outcome.error.status >= 500
           }
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }

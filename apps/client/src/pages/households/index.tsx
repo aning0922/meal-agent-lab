@@ -1,7 +1,6 @@
 import '../../zod-runtime-config'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Input, Text, View } from '@tarojs/components'
-import type { IdempotencyKey } from '@meal-agent/contracts/api'
 import type { Household } from '@meal-agent/contracts/identity'
 
 import { getAppServices } from '../../app-runtime'
@@ -12,7 +11,7 @@ import {
   HOUSEHOLD_DEFAULTS
 } from '../../core/household-flow'
 import {
-  createIdempotencyKey,
+  dispositionForOutcome,
   PendingActionIdempotency
 } from '../../core/idempotency'
 import { joinHousehold } from '../../core/members-flow'
@@ -53,7 +52,6 @@ export default function HouseholdsPage() {
   const [signingOut, setSigningOut] = useState(false)
   const [inviteCode, setInviteCode] = useState('')
   const [joinState, setJoinState] = useState<SubmitState>({ kind: 'idle' })
-  const pendingKeyRef = useRef<IdempotencyKey | null>(null)
   const [actionKeys] = useState(
     () =>
       new PendingActionIdempotency(
@@ -106,26 +104,36 @@ export default function HouseholdsPage() {
     setJoinState({ kind: 'working' })
     const services = getAppServices()
     const joinAction = 'join-household'
-    const outcome = await joinHousehold(
-      services,
-      inviteCode,
-      actionKeys.acquire(joinAction, { inviteCode: inviteCode.trim() })
-    )
+    const payload = { inviteCode: inviteCode.trim() }
+    let outcome: Awaited<ReturnType<typeof joinHousehold>>
+    try {
+      outcome = await joinHousehold(
+        services,
+        inviteCode,
+        actionKeys.acquire(joinAction, payload)
+      )
+    } catch {
+      actionKeys.markUnknown(joinAction)
+      setJoinState({
+        kind: 'failed',
+        message: '请求结果未知；请保持当前邀请码并使用同一请求重试。',
+        retryable: true
+      })
+      return
+    }
+    actionKeys.settle(joinAction, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'joined':
-        actionKeys.complete(joinAction)
         setJoinState({ kind: 'idle' })
         setInviteCode('')
         // 成功加入后切到该家庭的成员页。
         await services.adapter.navigation.navigateTo(MEMBERS_ROUTE)
         return
       case 'invalid':
-        actionKeys.abandon(joinAction)
         setJoinState({ kind: 'invalid', messages: outcome.messages })
         return
       case 'inviteInvalid':
       case 'alreadyMember':
-        actionKeys.abandon(joinAction)
         setJoinState({
           kind: 'failed',
           message: outcome.message,
@@ -133,9 +141,6 @@ export default function HouseholdsPage() {
         })
         return
       case 'failed':
-        if (!outcome.retryable) {
-          actionKeys.abandon(joinAction)
-        }
         setJoinState({
           kind: 'failed',
           message: outcome.message,
@@ -150,29 +155,43 @@ export default function HouseholdsPage() {
     }
     setSubmit({ kind: 'working' })
     const services = getAppServices()
-    // 同一次逻辑提交（含失败重试）复用同一幂等键；表单修改后换新键。
-    pendingKeyRef.current ??= createIdempotencyKey(
-      services.adapter.runtime
-    )
-    const outcome = await createHousehold(
-      services,
-      { name, ownerDisplayName },
-      pendingKeyRef.current
-    )
+    const createAction = 'create-household'
+    const payload = { name, ownerDisplayName }
+    let outcome: Awaited<ReturnType<typeof createHousehold>>
+    try {
+      outcome = await createHousehold(
+        services,
+        payload,
+        actionKeys.acquire(createAction, payload)
+      )
+    } catch {
+      actionKeys.markUnknown(createAction)
+      setSubmit({
+        kind: 'failed',
+        message: '请求结果未知；请保持当前输入并使用同一请求重试。',
+        retryable: true
+      })
+      return
+    }
+    actionKeys.settle(createAction, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
-        pendingKeyRef.current = null
         await services.adapter.navigation.reLaunch(INVENTORY_ROUTE)
         return
       case 'invalid':
-        // 本地校验失败不算发起过写操作，允许直接换键重新提交。
-        pendingKeyRef.current = null
         setSubmit(outcome)
         return
       case 'failed':
         setSubmit(outcome)
     }
   }
+
+  const joinFieldsLocked =
+    joinState.kind === 'working' ||
+    actionKeys.hasPending('join-household')
+  const createFieldsLocked =
+    submit.kind === 'working' ||
+    actionKeys.hasPending('create-household')
 
   const handleSignOut = async (): Promise<void> => {
     if (signingOut) {
@@ -269,10 +288,10 @@ export default function HouseholdsPage() {
         <Input
           className='field-input'
           value={inviteCode}
+          disabled={joinFieldsLocked}
           placeholder='粘贴家庭所有者提供的邀请码'
           onInput={(event) => {
             setInviteCode(event.detail.value)
-            actionKeys.abandon('join-household')
           }}
         />
         <Button
@@ -313,10 +332,10 @@ export default function HouseholdsPage() {
         <Input
           className='field-input'
           value={name}
+          disabled={createFieldsLocked}
           placeholder='例如：我家'
           onInput={(event) => {
             setName(event.detail.value)
-            pendingKeyRef.current = null
           }}
         />
 
@@ -324,10 +343,10 @@ export default function HouseholdsPage() {
         <Input
           className='field-input'
           value={ownerDisplayName}
+          disabled={createFieldsLocked}
           placeholder='例如：小明'
           onInput={(event) => {
             setOwnerDisplayName(event.detail.value)
-            pendingKeyRef.current = null
           }}
         />
 
@@ -338,7 +357,7 @@ export default function HouseholdsPage() {
 
         <Button
           className={
-            submit.kind === 'working'
+              submit.kind === 'working'
               ? 'button button--disabled'
               : 'button'
           }

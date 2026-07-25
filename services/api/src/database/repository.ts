@@ -52,6 +52,7 @@ import {
   type InventoryLot,
 } from "@meal-agent/contracts/inventory";
 import {
+  apiErrorCodeSchema,
   idempotencyKeySchema,
   requestIdSchema,
   sessionTokenSchema,
@@ -184,8 +185,36 @@ interface PersonProfileLinkRequestRow {
   readonly created_at: Date | string;
   readonly expires_at: Date | string;
   readonly confirmed_at: Date | string | null;
+  readonly terminal_reason: string | null;
+  readonly disclosure_version: number;
+  readonly profile_version_at_request: number;
+  readonly disclosed_profile_name: string;
+  readonly disclosed_household_hard_count: number;
+  readonly disclosed_household_soft_count: number;
+  readonly disclosed_private_constraint_count: number;
   readonly version: number;
 }
+
+interface CommittedDomainError {
+  readonly kind: "committed-domain-error";
+  readonly error: AppError;
+}
+
+const committedDomainError = (
+  code: ConstructorParameters<typeof AppError>[0],
+  message: string,
+): CommittedDomainError => ({
+  kind: "committed-domain-error",
+  error: new AppError(code, message),
+});
+
+const isCommittedDomainError = (
+  value: unknown,
+): value is CommittedDomainError =>
+  typeof value === "object" &&
+  value !== null &&
+  "kind" in value &&
+  value.kind === "committed-domain-error";
 
 const normalizedRoutes = {
   createHousehold: "/api/v1/households",
@@ -263,6 +292,20 @@ const mapPersonProfileLinkRequest = (
     ...(row.confirmed_at === null
       ? {}
       : { confirmedAt: new Date(row.confirmed_at).toISOString() }),
+    disclosure: {
+      disclosureVersion: row.disclosure_version,
+      profileVersion: row.profile_version_at_request,
+      profileDisplayName: row.disclosed_profile_name,
+      householdVisibleHardConstraintCount:
+        row.disclosed_household_hard_count,
+      householdVisibleSoftConstraintCount:
+        row.disclosed_household_soft_count,
+      privateConstraintCount: row.disclosed_private_constraint_count,
+      subjectWillGainProfileAccess: true,
+      membershipExitArchivesProfile: true,
+      rejoinRestoresAutomatically: false,
+      privateConstraintContentsRemainPrivate: true,
+    },
     version: row.version,
   });
 
@@ -612,7 +655,41 @@ export class ApiRepository {
       readonly statusCode: number;
     },
     operation: () => Promise<T>,
-  ): Promise<IdempotentResponse<T>> {
+  ): Promise<IdempotentResponse<T>>;
+  async #runIdempotent<T>(
+    client: PoolClient,
+    input: {
+      readonly scope: "user" | "household";
+      readonly userId: string;
+      readonly householdId?: string;
+      readonly method: string;
+      readonly normalizedRoute: NormalizedRoute;
+      readonly key: string;
+      readonly resourceTarget?: unknown;
+      readonly payload: unknown;
+      readonly requestId: RequestId;
+      readonly statusCode: number;
+    },
+    operation: () => Promise<T | CommittedDomainError>,
+    commitDomainErrors: true,
+  ): Promise<IdempotentResponse<T> | CommittedDomainError>;
+  async #runIdempotent<T>(
+    client: PoolClient,
+    input: {
+      readonly scope: "user" | "household";
+      readonly userId: string;
+      readonly householdId?: string;
+      readonly method: string;
+      readonly normalizedRoute: NormalizedRoute;
+      readonly key: string;
+      readonly resourceTarget?: unknown;
+      readonly payload: unknown;
+      readonly requestId: RequestId;
+      readonly statusCode: number;
+    },
+    operation: () => Promise<T | CommittedDomainError>,
+    commitDomainErrors = false,
+  ): Promise<IdempotentResponse<T> | CommittedDomainError> {
     const key = idempotencyKeySchema.parse(input.key);
     const hash = requestHash({
       resourceTarget: input.resourceTarget ?? null,
@@ -690,9 +767,43 @@ export class ApiRepository {
         );
       }
       const stored = existing.response_body as {
-        readonly ok: true;
-        readonly data: T;
+        readonly ok: boolean;
+        readonly data?: T;
+        readonly error?: {
+          readonly code?: unknown;
+          readonly message?: unknown;
+          readonly retryable?: unknown;
+        };
       };
+      if (stored.ok === false) {
+        const code = apiErrorCodeSchema.safeParse(
+          stored.error?.code,
+        );
+        if (
+          !code.success ||
+          typeof stored.error?.message !== "string" ||
+          typeof stored.error.retryable !== "boolean"
+        ) {
+          throw new AppError(
+            "INTERNAL_ERROR",
+            "Stored idempotency failure is malformed",
+          );
+        }
+        const replayedError = committedDomainError(
+          code.data,
+          stored.error.message,
+        );
+        if (!commitDomainErrors) {
+          throw replayedError.error;
+        }
+        return replayedError;
+      }
+      if (stored.data === undefined) {
+        throw new AppError(
+          "INTERNAL_ERROR",
+          "Stored idempotency success is malformed",
+        );
+      }
       if (
         typeof stored.data === "object" &&
         stored.data !== null &&
@@ -727,6 +838,36 @@ export class ApiRepository {
     }
 
     const data = await operation();
+    if (isCommittedDomainError(data)) {
+      if (!commitDomainErrors) {
+        throw data.error;
+      }
+      const storedFailure = {
+        ok: false as const,
+        error: {
+          code: data.error.code,
+          message: data.error.message,
+          retryable: data.error.retryable,
+        },
+      };
+      const completed = await client.query(
+        `UPDATE idempotency_records
+         SET status_code = $2, response_body = $3::jsonb
+         WHERE id = $1`,
+        [
+          recordId,
+          data.error.status,
+          JSON.stringify(storedFailure),
+        ],
+      );
+      if (completed.rowCount !== 1) {
+        throw new AppError(
+          "INTERNAL_ERROR",
+          "Failed command idempotency result could not be finalized",
+        );
+      }
+      return data;
+    }
     const meta = {
       requestId: input.requestId,
       idempotency: {
@@ -1938,7 +2079,7 @@ export class ApiRepository {
     idempotencyKey: string,
     request: CreatePersonProfileLinkRequest,
   ): Promise<IdempotentResponse<PersonProfileLinkRequestResult>> {
-    return this.#withAuthenticated(
+    const result = await this.#withAuthenticated(
       accessToken,
       requestId,
       async (client, authenticatedContext) => {
@@ -1968,12 +2109,6 @@ export class ApiRepository {
           },
           async () => {
             await client.query(
-              "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-              [
-                `person-profile-link-request:${householdId}:${profileId}`,
-              ],
-            );
-            await client.query(
               `SELECT meal_agent_private.materialize_person_profile_link_requests(
                  $1::uuid, $2::uuid, $3::uuid
                )`,
@@ -2002,7 +2137,7 @@ export class ApiRepository {
               [householdId, profileId],
             );
             if ((duplicate.rowCount ?? 0) > 0) {
-              throw new AppError(
+              return committedDomainError(
                 "CONFLICT",
                 "This profile already has a pending link request",
               );
@@ -2024,7 +2159,7 @@ export class ApiRepository {
               );
             }
             if (profileRow.linked_membership_id !== null) {
-              throw new AppError(
+              return committedDomainError(
                 "CONFLICT",
                 "Only a dining-only profile can be linked",
               );
@@ -2037,20 +2172,43 @@ export class ApiRepository {
               [householdId, request.targetMembershipId],
             );
             if ((targetProfile.rowCount ?? 0) > 0) {
-              throw new AppError(
+              return committedDomainError(
                 "CONFLICT",
                 "Target membership already has a profile",
               );
             }
+            const disclosedProfile = mapPersonProfile(profileRow);
+            const householdHardCount =
+              disclosedProfile.dietaryConstraints.filter(
+                (constraint) =>
+                  constraint.visibility === "household" &&
+                  constraint.enforcement === "hard",
+              ).length;
+            const householdSoftCount =
+              disclosedProfile.dietaryConstraints.filter(
+                (constraint) =>
+                  constraint.visibility === "household" &&
+                  constraint.enforcement === "soft",
+              ).length;
+            const privateCount =
+              disclosedProfile.dietaryConstraints.filter(
+                (constraint) =>
+                  constraint.visibility === "subject_and_owner",
+              ).length;
             const now = new Date();
             const inserted =
               await client.query<PersonProfileLinkRequestRow>(
                 `INSERT INTO person_profile_link_requests (
                  id, household_id, profile_id, target_membership_id,
                    initiated_by_user_id, status, created_at, expires_at,
-                   confirmed_at, terminal_reason, version
+                   confirmed_at, terminal_reason, disclosure_version,
+                   profile_version_at_request, disclosed_profile_name,
+                   disclosed_household_hard_count,
+                   disclosed_household_soft_count,
+                   disclosed_private_constraint_count, version
                  ) VALUES (
-                   $1, $2, $3, $4, $5, 'pending', $6, $7, NULL, NULL, 0
+                   $1, $2, $3, $4, $5, 'pending', $6, $7, NULL, NULL,
+                   1, $8, $9, $10, $11, $12, 0
                  )
                  RETURNING *`,
                 [
@@ -2064,6 +2222,11 @@ export class ApiRepository {
                     now.getTime() +
                       request.expiresInHours * 3_600_000,
                   ),
+                  profileRow.version,
+                  profileRow.display_name,
+                  householdHardCount,
+                  householdSoftCount,
+                  privateCount,
                 ],
               );
             const row = inserted.rows[0];
@@ -2077,9 +2240,14 @@ export class ApiRepository {
               request: mapPersonProfileLinkRequest(row),
             });
           },
+          true,
         );
       },
     );
+    if (isCommittedDomainError(result)) {
+      throw result.error;
+    }
+    return result;
   }
 
   public async listPersonProfileLinkRequests(
@@ -2104,9 +2272,7 @@ export class ApiRepository {
         );
         const result =
           await client.query<PersonProfileLinkRequestRow>(
-            `SELECT id, household_id, profile_id, target_membership_id,
-                    initiated_by_user_id, status, created_at, expires_at,
-                    confirmed_at, version
+            `SELECT *
              FROM person_profile_link_requests
              WHERE household_id = $1
              ORDER BY id`,
@@ -2127,7 +2293,7 @@ export class ApiRepository {
     idempotencyKey: string,
     request: ConfirmPersonProfileLinkRequest,
   ): Promise<IdempotentResponse<ConfirmPersonProfileLinkResult>> {
-    return this.#withAuthenticated(
+    const result = await this.#withAuthenticated(
       accessToken,
       requestId,
       async (client, authenticatedContext) => {
@@ -2180,7 +2346,7 @@ export class ApiRepository {
               );
             }
             if (outcome.result_code !== "linked") {
-              throw new AppError(
+              return committedDomainError(
                 "CONFLICT",
                 "Profile link request changed or is no longer applicable",
               );
@@ -2213,9 +2379,14 @@ export class ApiRepository {
               },
             });
           },
+          true,
         );
       },
     );
+    if (isCommittedDomainError(result)) {
+      throw result.error;
+    }
+    return result;
   }
 
   public async createPersonProfile(
@@ -2260,9 +2431,9 @@ export class ApiRepository {
           },
           async () => {
             if (request.linkedMembershipId !== undefined) {
-              // 与关联确认共享同一个成员不变量锁。materialize 函数固定采用
-              // advisory -> target membership -> request -> profile 的顺序；
-              // 两条路径并发时只能一方成功，另一方得到显式 409。
+              // 与关联确认共享家庭级 advisory 锁；materialize 函数随后按确定性
+              // 顺序锁定 request、profile 和 membership。两条路径并发时只能一方
+              // 成功，另一方得到显式 409。
               await client.query(
                 `SELECT meal_agent_private.materialize_person_profile_link_requests(
                    $1::uuid, NULL::uuid, $2::uuid
@@ -2332,6 +2503,14 @@ export class ApiRepository {
               throw new AppError(
                 "INTERNAL_ERROR",
                 "Profile could not be created",
+              );
+            }
+            if (request.linkedMembershipId !== undefined) {
+              await client.query(
+                `SELECT meal_agent_private.materialize_person_profile_link_requests(
+                   $1::uuid, NULL::uuid, $2::uuid
+                 )`,
+                [householdId, request.linkedMembershipId],
               );
             }
             return personProfileMutationReceiptSchema.parse({

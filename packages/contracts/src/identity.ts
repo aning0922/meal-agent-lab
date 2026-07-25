@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 import {
+  ruleRefine,
+  ruleSuperRefine,
+} from "./contract-rule-schema.js";
+import {
   authIdentityIdSchema,
   dietaryConstraintIdSchema,
   foodConceptIdSchema,
@@ -42,8 +46,8 @@ export const authIdentitySchema = z.strictObject({
 });
 export type AuthIdentity = z.infer<typeof authIdentitySchema>;
 
-export const sessionSchema = z
-  .strictObject({
+export const sessionSchema = ruleSuperRefine(
+  z.strictObject({
     id: sessionIdSchema,
     userId: userIdSchema,
     authIdentityId: authIdentityIdSchema,
@@ -53,8 +57,10 @@ export const sessionSchema = z
     lastSeenAt: utcDateTimeSchema,
     revokedAt: utcDateTimeSchema.optional(),
     tokenVersion: z.int().positive(),
-  })
-  .superRefine((session, context) => {
+  }),
+  "identity.session.lifecycle.v1",
+  "sessionSchema",
+  (session, context) => {
     if (session.status === "revoked" && session.revokedAt === undefined) {
       context.addIssue({
         code: "custom",
@@ -78,13 +84,8 @@ export const sessionSchema = z
         message: "session expiry must be after issuance",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "revokedAt presence must match revoked status",
-      "expiresAt must be after issuedAt",
-    ],
-  });
+  },
+);
 export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionTokenSchema = z
@@ -95,13 +96,15 @@ export const sessionTokenSchema = z
   .brand<"SessionToken">();
 export type SessionToken = z.infer<typeof sessionTokenSchema>;
 
-export const authenticatedSessionSchema = z
-  .strictObject({
+export const authenticatedSessionSchema = ruleSuperRefine(
+  z.strictObject({
     accessToken: sessionTokenSchema,
     session: sessionSchema,
     user: userSchema,
-  })
-  .superRefine((authenticatedSession, context) => {
+  }),
+  "identity.authenticated-session.consistency.v1",
+  "authenticatedSessionSchema",
+  (authenticatedSession, context) => {
     if (authenticatedSession.user.status !== "active") {
       context.addIssue({
         code: "custom",
@@ -128,12 +131,8 @@ export const authenticatedSessionSchema = z
         message: "session user must match the authenticated user",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "authenticated user and session must be active and share the same user id",
-    ],
-  });
+  },
+);
 export type AuthenticatedSession = z.infer<
   typeof authenticatedSessionSchema
 >;
@@ -196,16 +195,14 @@ export const membershipSchema = z.strictObject({
   householdId: householdIdSchema,
   userId: userIdSchema,
   role: z.enum(["owner", "member"]),
-  capabilities: z
-    .array(membershipCapabilitySchema)
-    .refine(
+  capabilities: ruleRefine(
+    z.array(membershipCapabilitySchema),
+    "identity.membership.capabilities-unique.v1",
+    "membershipSchema.capabilities",
       (capabilities) =>
         new Set(capabilities).size === capabilities.length,
       { message: "membership capabilities must be unique" },
-    )
-    .meta({
-      "x-zod-refinements": ["membership capabilities must be unique"],
-    }),
+    ),
   status: z.enum(["active", "left", "removed"]),
   joinedAt: utcDateTimeSchema,
   updatedAt: utcDateTimeSchema,
@@ -248,30 +245,10 @@ const softDietaryConstraintSchema = z.strictObject({
   confirmedByUserId: userIdSchema,
 });
 
-export const dietaryConstraintSchema = z
-  .discriminatedUnion("enforcement", [
-    hardDietaryConstraintSchema,
-    softDietaryConstraintSchema,
-  ])
-  .superRefine((constraint, context) => {
-    if (
-      constraint.kind === "allergy" &&
-      constraint.foodConceptIds.length === 0 &&
-      constraint.allergenCodes.length === 0
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["allergenCodes"],
-        message:
-          "allergy constraints require an allergen code or food concept",
-      });
-    }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "allergy constraints require an allergen code or food concept",
-    ],
-  });
+export const dietaryConstraintSchema = z.discriminatedUnion(
+  "enforcement",
+  [hardDietaryConstraintSchema, softDietaryConstraintSchema],
+);
 export type DietaryConstraint = z.infer<typeof dietaryConstraintSchema>;
 
 export const personProfileSchema = z.strictObject({
@@ -292,18 +269,16 @@ export const personProfileSchema = z.strictObject({
 });
 export type PersonProfile = z.infer<typeof personProfileSchema>;
 
-const householdVisibleDietaryConstraintSchema =
-  dietaryConstraintSchema.refine(
+const householdVisibleDietaryConstraintSchema = ruleRefine(
+  dietaryConstraintSchema,
+  "identity.profile.household-visibility.v1",
+  "safeOwnerProfileResponseSchema",
     (constraint) => constraint.visibility === "household",
     {
       message:
         "safe profile responses cannot contain subject_and_owner constraints",
     },
-  ).meta({
-    "x-zod-refinements": [
-      "safe profile responses cannot contain subject_and_owner constraints",
-    ],
-  });
+  );
 
 export const safeOwnerProfileResponseSchema = personProfileSchema.extend({
   dietaryConstraints: z.array(householdVisibleDietaryConstraintSchema),
@@ -312,13 +287,15 @@ export type SafeOwnerProfileResponse = z.infer<
   typeof safeOwnerProfileResponseSchema
 >;
 
-export const createHouseholdResultSchema = z
-  .strictObject({
+export const createHouseholdResultSchema = ruleSuperRefine(
+  z.strictObject({
     household: householdSchema,
     membership: membershipSchema,
     ownerProfile: safeOwnerProfileResponseSchema,
-  })
-  .superRefine((result, context) => {
+  }),
+  "identity.household-create.consistency.v1",
+  "createHouseholdResultSchema",
+  (result, context) => {
     if (
       result.membership.householdId !== result.household.id ||
       result.ownerProfile.householdId !== result.household.id
@@ -355,12 +332,8 @@ export const createHouseholdResultSchema = z
           "created owner profile must be active and linked to the owner membership",
       });
     }
-  })
-  .meta({
-    "x-zod-refinements": [
-      "created household, owner membership and owner profile must be linked consistently",
-    ],
-  });
+  },
+);
 export type CreateHouseholdResult = z.infer<
   typeof createHouseholdResultSchema
 >;

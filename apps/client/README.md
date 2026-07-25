@@ -14,8 +14,9 @@ FAM-003 已覆盖。FAM-004 的页面登记、确认与隐私范围已覆盖，�
 ## 关键语义
 
 - PersonProfile/constraint mutation 只接收 receipt，成功或重放后 GET 最新资源；
-- 同一次进行中动作复用 idempotency key，并冻结相关输入；payload/version 在完成或明确放弃前不得变化；
+- Households、Join、Inventory 与 Profile 共用 pending-command 状态机；transport、5xx 或 malformed success 后保留不可变 payload + 原 idempotency key 并冻结输入，确定 400/403/404/409 才释放；
 - 应用重启通过 GET 对账，不在本地持久化邀请码、敏感约束请求体或 token；
+- link 确认使用发起时保存的安全名称、约束计数和后果披露；profile 变化 409 后重新 GET、展示并确认；
 - owner/self 依据当前 session user 判断，不根据 viewer role 猜测；
 - `subject_and_owner` 只在 owner/self 完整视图出现；
 - 未经权威映射的 hard constraint 一律为 `needs_structured_mapping` 并显示阻断状态，不能交给模型猜测；

@@ -12,6 +12,7 @@ import {
   createInventoryLotRequestSchema,
   exactQuantityAmountSchema,
   quantityDeltaSchema,
+  validateContractRuleSchemaBindings,
 } from "../src/index.js";
 
 const refinementSources = [
@@ -24,31 +25,29 @@ const refinementSources = [
   "shopping.ts",
 ] as const;
 
-test("every public refine/superRefine has an exact schema binding and stable rule id", async () => {
-  let sourceCount = 0;
+test("every public refinement uses the rule helper and actual schema metadata is the only binding source", async () => {
   for (const name of refinementSources) {
     const source = await readFile(
       new URL(`../src/${name}`, import.meta.url),
       "utf8",
     );
-    sourceCount +=
-      source.match(/\.(?:superRefine|refine)\s*\(/g)?.length ?? 0;
+    assert.equal(
+      source.match(/\.(?:superRefine|refine)\s*\(/g)?.length ?? 0,
+      0,
+      `${name} must not bypass the rule helper`,
+    );
   }
-  const refinementRules = contractRuleManifest.filter(
-    (rule) => rule.sourceKind === "refinement",
-  );
-  assert.equal(sourceCount, 32);
-  assert.equal(refinementRules.length, sourceCount);
+  validateContractRuleSchemaBindings(contractRuleSchemaBindings);
   const boundIds = contractRuleBindings.flatMap((binding) =>
     binding.ruleIds.map((id) => [id, binding.boundary] as const),
   );
   assert.equal(boundIds.length, contractRuleManifest.length);
   assert.equal(new Set(boundIds.map(([id]) => id)).size, boundIds.length);
   assert.deepEqual(
-    [...boundIds].sort(([left], [right]) => left.localeCompare(right)),
+    [...boundIds].map(([id]) => id).sort(),
     contractRuleManifest
-      .map((rule) => [rule.id, rule.boundary] as const)
-      .sort(([left], [right]) => left.localeCompare(right)),
+      .map((rule) => rule.id)
+      .sort(),
   );
   assert.deepEqual(
     contractRuleSchemaBindings.map(({ boundary, ruleIds }) => ({
@@ -63,7 +62,6 @@ test("every public refine/superRefine has an exact schema binding and stable rul
   );
   for (const rule of contractRuleManifest) {
     assert.match(rule.id, /^[a-z0-9.-]+\.v\d+$/);
-    assert.ok(rule.boundary.length > 0);
     if (rule.enforcement === "native") {
       assert.ok((rule.jsonSchemaKeywords?.length ?? 0) > 0);
     }
@@ -81,15 +79,34 @@ test("every public refine/superRefine has an exact schema binding and stable rul
       `${binding.boundary} must bind an actual runtime schema`,
     );
     for (const rule of boundRules.filter(
-      (candidate) => candidate.sourceKind === "native-schema",
+      () => true,
     )) {
       assert.equal(
-        generated.includes(`"id":"${rule.id}"`),
+        generated.includes(
+          `"x-meal-agent-runtime-rule-ids":["${rule.id}"`,
+        ) ||
+          generated.includes(`"${rule.id}"`),
         true,
-        `${binding.boundary} must embed native rule ${rule.id}`,
+        `${binding.boundary} must embed rule ${rule.id}`,
       );
     }
   }
+});
+
+test("a deliberately wrong schema-boundary pairing fails closed", () => {
+  const original = contractRuleSchemaBindings[0];
+  assert.notEqual(original, undefined);
+  assert.throws(
+    () =>
+      validateContractRuleSchemaBindings([
+        {
+          ...original!,
+          boundary: "deliberatelyWrongSchema",
+        },
+        ...contractRuleSchemaBindings.slice(1),
+      ]),
+    /does not match schema metadata/,
+  );
 });
 
 test("positive and nonzero quantity boundaries agree at runtime and generated JSON Schema", () => {

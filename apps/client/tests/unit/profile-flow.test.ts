@@ -148,8 +148,20 @@ describe('addDietaryConstraint（硬约束双确认）', () => {
     assert.equal(platform.sentRequests.length, 0)
   })
 
-  it('缺结构化编码的过敏在本地即被拒绝', async () => {
+  it('无权威词表时允许只用自然语言登记过敏并保持映射阻断', async () => {
     const { platform, services } = servicesWith()
+    platform.enqueueJson(
+      201,
+      successEnvelope(
+        personProfileMutationReceiptFixture({ operation: 'add_constraint' })
+      )
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(
+        getPersonProfileResultFixture(personProfileFixture())
+      )
+    )
     const outcome = await addDietaryConstraint(
       services,
       HOUSEHOLD_ID,
@@ -166,8 +178,10 @@ describe('addDietaryConstraint（硬约束双确认）', () => {
       0,
       KEY
     )
-    assert.equal(outcome.kind, 'invalid')
-    assert.equal(platform.sentRequests.length, 0)
+    assert.equal(outcome.kind, 'added')
+    const body = JSON.parse(platform.sentRequests[0]?.body ?? '{}')
+    assert.deepEqual(body.constraint.allergenCodes, [])
+    assert.deepEqual(body.constraint.foodConceptIds, [])
   })
 
   it('已确认的硬约束提交成功', async () => {

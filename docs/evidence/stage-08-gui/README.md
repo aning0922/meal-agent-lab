@@ -11,7 +11,7 @@
 
 首轮 7 张流程截图来自 commit `3c52a35c5b9d98eb3a156527a01b82a54daa1748`、tree `aa3e3d46719143be4daaec17fea6ea2ed1c57daa`。它们只保留阶段 08 首轮 happy path 的历史证据；其中旧 hard mapping 展示已被二次整改取代，不能作为当前 `structured` 语义的证据。
 
-二次整改 4 张截图来自本轮最终实现子树，并使用以下构建：
+二次整改 4 张截图来自 commit `c68217ed5771252f54cb62e8b8e37d5f67d57269` 的已提交实现子树，并使用以下构建：
 
 | 项 | 值 |
 | --- | --- |
@@ -22,9 +22,9 @@
 | Taro / React | `4.2.1` / `18.3.1` |
 | weapp 文件数 / 字节数 | `30` / `525770` |
 | weapp artifact SHA-256 | `f82bea53be6edb1020575029bd77eb96e2f4a6b3912b00e99bbb5506a2ead0fb` |
-| audit 产物扫描 | 0 条禁止签名；见 [机器证据](../stage-08-audit/weapp-advisory-scan.json) |
+| audit 产物扫描 | 截图构建时 0 条禁止签名；[机器证据](../stage-08-audit/weapp-advisory-scan.json) 已更新为 0004 最终构建，不能反向冒充截图构建 |
 
-这三个子树不包含本目录，避免“证据文件引用包含自身的 tree”循环；最终 commit 会直接引用它们，并在提交后由交付报告绑定。
+这三个子树不包含本目录，避免“证据文件引用包含自身的 tree”循环。本轮 0004 最终收口改变了结果未知状态机、关联披露和 TOCTOU 行为；这些增量由真实页面渲染、API 与 PostgreSQL 门禁验证，没有把上述旧截图伪装成新实现 tree 的 GUI Pass。
 
 ## 实际页面路径
 
@@ -40,9 +40,9 @@
 
 二次整改复跑：
 
-1. [owner/self 与约束计数](stage08-members-secondary.png)：当前 worktree 的实际 MembersPage，owner 行正确显示“我”，最后 owner 保护仍生效。
+1. [owner/self 与约束计数](stage08-members-secondary.png)：`c68217ed` 的实际 MembersPage，owner 行正确显示“我”，最后 owner 保护仍生效。
 2. [未经权威映射的 hard constraint](stage08-hard-secondary.png)：合成宗教硬约束固定显示“待权威结构化映射；推荐必须阻断”。
-3. [归档原档案](stage08-archive-secondary.png)：当前实现归档同一 linked profile。
+3. [归档原档案](stage08-archive-secondary.png)：`c68217ed` 实现归档同一 linked profile。
 4. [恢复原档案](stage08-restore-secondary.png)：同一档案从 version 2 恢复为 active/version 3，没有复制身份。
 
 二次复跑还从页面确认五类 hard constraint 入口、unknown 用户事实和 active/archived 切换。同动作冻结、关联安全披露、退出/移除后果、不可恢复原因、双用户确认、跨家庭隔离和数据库竞态由真实页面测试或 PostgreSQL/E2E 门禁覆盖；本记录不把单模拟器会话夸大为真实双设备 GUI。

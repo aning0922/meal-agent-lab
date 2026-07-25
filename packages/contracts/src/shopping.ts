@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { ruleSuperRefine } from "./contract-rule-schema.js";
 import {
   foodConceptIdSchema,
   householdIdSchema,
@@ -24,8 +25,8 @@ export const shoppingItemSourceSchema = z.discriminatedUnion("kind", [
 ]);
 export type ShoppingItemSource = z.infer<typeof shoppingItemSourceSchema>;
 
-export const shoppingItemSchema = z
-  .strictObject({
+export const shoppingItemSchema = ruleSuperRefine(
+  z.strictObject({
     id: shoppingItemIdSchema,
     householdId: householdIdSchema,
     foodConceptId: foodConceptIdSchema.optional(),
@@ -45,8 +46,10 @@ export const shoppingItemSchema = z
     createdAt: utcDateTimeSchema,
     updatedAt: utcDateTimeSchema,
     version: versionSchema,
-  })
-  .superRefine((item, context) => {
+  }),
+  "shopping.item.lifecycle.v1",
+  "shoppingItemSchema",
+  (item, context) => {
     if (
       item.status === "inventoried" &&
       item.inventoryLotIds.length === 0
@@ -104,5 +107,6 @@ export const shoppingItemSchema = z
         message: `${item.status} cannot contain purchase confirmation`,
       });
     }
-  });
+  },
+);
 export type ShoppingItem = z.infer<typeof shoppingItemSchema>;

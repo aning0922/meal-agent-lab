@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-阶段 08“家庭成员、用餐档案与硬约束”已完成二次本地审计整改，等待项目总控实施后评审与合并。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
+阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，等待项目总控合并前评审。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
 当前纵切覆盖：
 
@@ -12,10 +12,12 @@
 - 邀请、加入、成员目录和退出/移除；
 - linked 与 dining-only PersonProfile 的 list/get/edit/archive/restore；
 - dining-only profile 关联成员的 owner 发起 + 被关联用户确认；
+- 关联请求保存发起时的安全披露与 profile version，确认前变化稳定终态为 `profile_changed`；
 - 全部现有 hard constraint 类型、标识符输入、双确认、未映射阻断和字段级 redaction；
 - 饭量、默认参与、厨艺的明确 unknown/null 与编辑；
 - 集中式 `full` / `one-time-secret` / `receipt` 幂等策略；
-- PostgreSQL RLS、受控 `SECURITY DEFINER` 状态转换和数据库反向越权测试。
+- PostgreSQL RLS、受控 `SECURITY DEFINER` 状态转换和数据库反向越权测试；
+- 结果未知时保留不可变 payload + 原 idempotency key 的统一客户端命令状态机。
 
 FAM-003 已完成。FAM-004 的登记、确认、隐私和页面范围已实现，但当前没有权威 allergen/food concept/宗教/伦理/食品安全映射词表，所有 hard constraint 都保持 `needs_structured_mapping`，因此安全闭环仍为部分完成。FAM-005 也只完成当前阶段的厨艺等级与未知值维护。菜单推荐、菜谱、采购、完整做饭或 Agent 不在阶段 08 范围。
 

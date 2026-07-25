@@ -1,4 +1,6 @@
 import type { OpenAPIV3 } from "openapi-types";
+import { contractRuleSchemaBindings } from "@meal-agent/contracts";
+import { z } from "zod";
 
 import { buildApp } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
@@ -19,7 +21,26 @@ export const generateOpenApiDocument =
     const app = await buildApp({ config });
     try {
       await app.ready();
-      return app.swagger() as OpenAPIV3.Document;
+      const document = app.swagger() as OpenAPIV3.Document;
+      const schemas = document.components?.schemas ?? {};
+      for (const binding of contractRuleSchemaBindings) {
+        const componentName =
+          `ContractRule.${binding.boundary}`.replace(
+            /[^A-Za-z0-9._-]/g,
+            "_",
+          );
+        const {
+          $schema: _schemaDialect,
+          ...schema
+        } = z.toJSONSchema(binding.schema);
+        schemas[componentName] =
+          schema as OpenAPIV3.SchemaObject;
+      }
+      document.components = {
+        ...document.components,
+        schemas,
+      };
+      return document;
     } finally {
       await app.close();
     }
