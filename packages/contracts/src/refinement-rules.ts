@@ -152,6 +152,21 @@ export const contractRuleManifest = [
       "hard confirmation fingerprint covers every submitted field",
   },
   {
+    id: "profiles.constraint.food-concepts-unique.v1",
+    sourceKind: "refinement",
+    enforcement: "native",
+    description:
+      "food concept identifiers are lowercase UUIDv7 values with no duplicates",
+    jsonSchemaKeywords: ["maxItems", "pattern", "uniqueItems"],
+  },
+  {
+    id: "profiles.constraint.allergen-codes-unique.v1",
+    sourceKind: "refinement",
+    enforcement: "native",
+    description: "allergen codes contain no exact duplicates",
+    jsonSchemaKeywords: ["maxItems", "uniqueItems"],
+  },
+  {
     id: "quantity.information-source.consistency.v1",
     sourceKind: "refinement",
     enforcement: "runtime-only",

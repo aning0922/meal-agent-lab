@@ -13,12 +13,31 @@
       }
     },
     "schemas": {
+      "ContractRule.allergenCodesSchema": {
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "uniqueItems": true,
+        "x-meal-agent-runtime-rule-ids": [
+          "profiles.constraint.allergen-codes-unique.v1"
+        ],
+        "x-zod-refinements": [
+          "allergen codes contain no exact duplicates"
+        ],
+        "x-meal-agent-rule-boundary": "allergenCodesSchema"
+      },
       "ContractRule.apiErrorSchema": {
         "type": "object",
         "properties": {
           "ok": {
             "type": "boolean",
-            "const": false
+            "enum": [
+              false
+            ]
           },
           "type": {
             "type": "string",
@@ -138,11 +157,12 @@
         "properties": {
           "kind": {
             "type": "string",
-            "const": "approximate"
+            "enum": [
+              "approximate"
+            ]
           },
           "amount": {
             "type": "number",
-            "exclusiveMinimum": 0,
             "maximum": 999999999.999999,
             "x-meal-agent-runtime-rule-ids": [
               "quantity.approximate.scale.v1"
@@ -150,7 +170,8 @@
             "x-zod-refinements": [
               "approximate number has at most six decimal places"
             ],
-            "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+            "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+            "minimum": 0
           },
           "unit": {
             "type": "string",
@@ -187,7 +208,6 @@
       },
       "ContractRule.approximateQuantitySchema.amount": {
         "type": "number",
-        "exclusiveMinimum": 0,
         "maximum": 999999999.999999,
         "x-meal-agent-runtime-rule-ids": [
           "quantity.approximate.scale.v1"
@@ -195,7 +215,8 @@
         "x-zod-refinements": [
           "approximate number has at most six decimal places"
         ],
-        "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+        "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+        "minimum": 0
       },
       "ContractRule.authenticatedSessionSchema": {
         "type": "object",
@@ -254,8 +275,8 @@
               },
               "tokenVersion": {
                 "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "minimum": 0
               }
             },
             "required": [
@@ -362,8 +383,7 @@
               },
               "foodConceptId": {
                 "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
               "displayName": {
                 "type": "string",
@@ -394,7 +414,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "exact"
+                        "enum": [
+                          "exact"
+                        ]
                       },
                       "amount": {
                         "type": "string",
@@ -432,11 +454,12 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "approximate"
+                        "enum": [
+                          "approximate"
+                        ]
                       },
                       "amount": {
                         "type": "number",
-                        "exclusiveMinimum": 0,
                         "maximum": 999999999.999999,
                         "x-meal-agent-runtime-rule-ids": [
                           "quantity.approximate.scale.v1"
@@ -444,7 +467,8 @@
                         "x-zod-refinements": [
                           "approximate number has at most six decimal places"
                         ],
-                        "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                        "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                        "minimum": 0
                       },
                       "unit": {
                         "type": "string",
@@ -484,7 +508,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "qualitative"
+                        "enum": [
+                          "qualitative"
+                        ]
                       },
                       "level": {
                         "type": "string",
@@ -757,7 +783,9 @@
                         "properties": {
                           "kind": {
                             "type": "string",
-                            "const": "numeric"
+                            "enum": [
+                              "numeric"
+                            ]
                           },
                           "amount": {
                             "type": "string",
@@ -792,7 +820,9 @@
                           },
                           "precision": {
                             "type": "string",
-                            "const": "exact"
+                            "enum": [
+                              "exact"
+                            ]
                           },
                           "originalText": {
                             "type": "string",
@@ -813,14 +843,18 @@
                         "properties": {
                           "kind": {
                             "type": "string",
-                            "const": "numeric"
+                            "enum": [
+                              "numeric"
+                            ]
                           },
                           "amount": {
                             "type": "number",
                             "minimum": -999999999.999999,
                             "maximum": 999999999.999999,
                             "not": {
-                              "const": 0
+                              "enum": [
+                                0
+                              ]
                             },
                             "x-meal-agent-runtime-rule-ids": [
                               "quantity.delta.estimated-scale.v1",
@@ -839,7 +873,9 @@
                           },
                           "precision": {
                             "type": "string",
-                            "const": "estimated"
+                            "enum": [
+                              "estimated"
+                            ]
                           },
                           "confidence": {
                             "type": "string",
@@ -872,7 +908,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "qualitative"
+                        "enum": [
+                          "qualitative"
+                        ]
                       },
                       "fromLevel": {
                         "type": "string",
@@ -970,8 +1008,8 @@
               },
               "resultingLotVersion": {
                 "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "minimum": 0
               },
               "note": {
                 "type": "string",
@@ -1288,42 +1326,24 @@
                 ]
               },
               "defaultParticipation": {
-                "anyOf": [
-                  {
-                    "type": "boolean"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "boolean",
+                "nullable": true
               },
               "defaultPortionScale": {
-                "anyOf": [
-                  {
-                    "type": "number",
-                    "minimum": 0.25,
-                    "maximum": 4
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "number",
+                "minimum": 0.25,
+                "maximum": 4,
+                "nullable": true
               },
               "cookingSkill": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "enum": [
-                      "none",
-                      "beginner",
-                      "intermediate",
-                      "advanced"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "string",
+                "enum": [
+                  "none",
+                  "beginner",
+                  "intermediate",
+                  "advanced"
+                ],
+                "nullable": true
               },
               "dietaryConstraints": {
                 "type": "array",
@@ -1349,7 +1369,9 @@
                         },
                         "enforcement": {
                           "type": "string",
-                          "const": "hard"
+                          "enum": [
+                            "hard"
+                          ]
                         },
                         "label": {
                           "type": "string",
@@ -1358,25 +1380,44 @@
                         },
                         "foodConceptIds": {
                           "default": [],
+                          "maxItems": 100,
                           "type": "array",
                           "items": {
                             "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                          }
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "uniqueItems": true,
+                          "x-meal-agent-runtime-rule-ids": [
+                            "profiles.constraint.food-concepts-unique.v1"
+                          ],
+                          "x-zod-refinements": [
+                            "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                          ],
+                          "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                         },
                         "allergenCodes": {
                           "default": [],
+                          "maxItems": 100,
                           "type": "array",
                           "items": {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 64
-                          }
+                          },
+                          "uniqueItems": true,
+                          "x-meal-agent-runtime-rule-ids": [
+                            "profiles.constraint.allergen-codes-unique.v1"
+                          ],
+                          "x-zod-refinements": [
+                            "allergen codes contain no exact duplicates"
+                          ],
+                          "x-meal-agent-rule-boundary": "allergenCodesSchema"
                         },
                         "mappingStatus": {
                           "type": "string",
-                          "const": "needs_structured_mapping"
+                          "enum": [
+                            "needs_structured_mapping"
+                          ]
                         },
                         "notes": {
                           "type": "string",
@@ -1424,11 +1465,15 @@
                         },
                         "kind": {
                           "type": "string",
-                          "const": "preference"
+                          "enum": [
+                            "preference"
+                          ]
                         },
                         "enforcement": {
                           "type": "string",
-                          "const": "soft"
+                          "enum": [
+                            "soft"
+                          ]
                         },
                         "label": {
                           "type": "string",
@@ -1444,12 +1489,20 @@
                         },
                         "foodConceptIds": {
                           "default": [],
+                          "maxItems": 100,
                           "type": "array",
                           "items": {
                             "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                          }
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "uniqueItems": true,
+                          "x-meal-agent-runtime-rule-ids": [
+                            "profiles.constraint.food-concepts-unique.v1"
+                          ],
+                          "x-zod-refinements": [
+                            "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                          ],
+                          "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                         },
                         "notes": {
                           "type": "string",
@@ -1697,8 +1750,7 @@
               },
               "foodConceptId": {
                 "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
               "displayName": {
                 "type": "string",
@@ -1729,7 +1781,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "exact"
+                        "enum": [
+                          "exact"
+                        ]
                       },
                       "amount": {
                         "type": "string",
@@ -1767,11 +1821,12 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "approximate"
+                        "enum": [
+                          "approximate"
+                        ]
                       },
                       "amount": {
                         "type": "number",
-                        "exclusiveMinimum": 0,
                         "maximum": 999999999.999999,
                         "x-meal-agent-runtime-rule-ids": [
                           "quantity.approximate.scale.v1"
@@ -1779,7 +1834,8 @@
                         "x-zod-refinements": [
                           "approximate number has at most six decimal places"
                         ],
-                        "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                        "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                        "minimum": 0
                       },
                       "unit": {
                         "type": "string",
@@ -1819,7 +1875,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "qualitative"
+                        "enum": [
+                          "qualitative"
+                        ]
                       },
                       "level": {
                         "type": "string",
@@ -2092,7 +2150,9 @@
                         "properties": {
                           "kind": {
                             "type": "string",
-                            "const": "numeric"
+                            "enum": [
+                              "numeric"
+                            ]
                           },
                           "amount": {
                             "type": "string",
@@ -2127,7 +2187,9 @@
                           },
                           "precision": {
                             "type": "string",
-                            "const": "exact"
+                            "enum": [
+                              "exact"
+                            ]
                           },
                           "originalText": {
                             "type": "string",
@@ -2148,14 +2210,18 @@
                         "properties": {
                           "kind": {
                             "type": "string",
-                            "const": "numeric"
+                            "enum": [
+                              "numeric"
+                            ]
                           },
                           "amount": {
                             "type": "number",
                             "minimum": -999999999.999999,
                             "maximum": 999999999.999999,
                             "not": {
-                              "const": 0
+                              "enum": [
+                                0
+                              ]
                             },
                             "x-meal-agent-runtime-rule-ids": [
                               "quantity.delta.estimated-scale.v1",
@@ -2174,7 +2240,9 @@
                           },
                           "precision": {
                             "type": "string",
-                            "const": "estimated"
+                            "enum": [
+                              "estimated"
+                            ]
                           },
                           "confidence": {
                             "type": "string",
@@ -2207,7 +2275,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "qualitative"
+                        "enum": [
+                          "qualitative"
+                        ]
                       },
                       "fromLevel": {
                         "type": "string",
@@ -2305,8 +2375,8 @@
               },
               "resultingLotVersion": {
                 "type": "integer",
-                "exclusiveMinimum": 0,
-                "maximum": 9007199254740991
+                "maximum": 9007199254740991,
+                "minimum": 0
               },
               "note": {
                 "type": "string",
@@ -2364,7 +2434,9 @@
           },
           "enforcement": {
             "type": "string",
-            "const": "hard"
+            "enum": [
+              "hard"
+            ]
           },
           "label": {
             "type": "string",
@@ -2373,21 +2445,38 @@
           },
           "foodConceptIds": {
             "default": [],
+            "maxItems": 100,
             "type": "array",
             "items": {
               "type": "string",
-              "format": "uuid",
-              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-            }
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "uniqueItems": true,
+            "x-meal-agent-runtime-rule-ids": [
+              "profiles.constraint.food-concepts-unique.v1"
+            ],
+            "x-zod-refinements": [
+              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+            ],
+            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
           },
           "allergenCodes": {
             "default": [],
+            "maxItems": 100,
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1,
               "maxLength": 64
-            }
+            },
+            "uniqueItems": true,
+            "x-meal-agent-runtime-rule-ids": [
+              "profiles.constraint.allergen-codes-unique.v1"
+            ],
+            "x-zod-refinements": [
+              "allergen codes contain no exact duplicates"
+            ],
+            "x-meal-agent-rule-boundary": "allergenCodesSchema"
           },
           "notes": {
             "type": "string",
@@ -2405,7 +2494,9 @@
             "properties": {
               "acknowledged": {
                 "type": "boolean",
-                "const": true
+                "enum": [
+                  true
+                ]
               },
               "fingerprint": {
                 "type": "string",
@@ -2436,6 +2527,22 @@
           "hard confirmation fingerprint covers every submitted field"
         ],
         "x-meal-agent-rule-boundary": "dietaryConstraintInputSchema"
+      },
+      "ContractRule.foodConceptIdsSchema": {
+        "maxItems": 100,
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "uniqueItems": true,
+        "x-meal-agent-runtime-rule-ids": [
+          "profiles.constraint.food-concepts-unique.v1"
+        ],
+        "x-zod-refinements": [
+          "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+        ],
+        "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
       },
       "ContractRule.foodDateSchema": {
         "type": "object",
@@ -2710,7 +2817,9 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "numeric"
+                        "enum": [
+                          "numeric"
+                        ]
                       },
                       "amount": {
                         "type": "string",
@@ -2745,7 +2854,9 @@
                       },
                       "precision": {
                         "type": "string",
-                        "const": "exact"
+                        "enum": [
+                          "exact"
+                        ]
                       },
                       "originalText": {
                         "type": "string",
@@ -2766,14 +2877,18 @@
                     "properties": {
                       "kind": {
                         "type": "string",
-                        "const": "numeric"
+                        "enum": [
+                          "numeric"
+                        ]
                       },
                       "amount": {
                         "type": "number",
                         "minimum": -999999999.999999,
                         "maximum": 999999999.999999,
                         "not": {
-                          "const": 0
+                          "enum": [
+                            0
+                          ]
                         },
                         "x-meal-agent-runtime-rule-ids": [
                           "quantity.delta.estimated-scale.v1",
@@ -2792,7 +2907,9 @@
                       },
                       "precision": {
                         "type": "string",
-                        "const": "estimated"
+                        "enum": [
+                          "estimated"
+                        ]
                       },
                       "confidence": {
                         "type": "string",
@@ -2825,7 +2942,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "qualitative"
+                    "enum": [
+                      "qualitative"
+                    ]
                   },
                   "fromLevel": {
                     "type": "string",
@@ -2923,8 +3042,8 @@
           },
           "resultingLotVersion": {
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "minimum": 0
           },
           "note": {
             "type": "string",
@@ -2968,8 +3087,7 @@
           },
           "foodConceptId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
           },
           "displayName": {
             "type": "string",
@@ -3000,7 +3118,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "exact"
+                    "enum": [
+                      "exact"
+                    ]
                   },
                   "amount": {
                     "type": "string",
@@ -3038,11 +3158,12 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "approximate"
+                    "enum": [
+                      "approximate"
+                    ]
                   },
                   "amount": {
                     "type": "number",
-                    "exclusiveMinimum": 0,
                     "maximum": 999999999.999999,
                     "x-meal-agent-runtime-rule-ids": [
                       "quantity.approximate.scale.v1"
@@ -3050,7 +3171,8 @@
                     "x-zod-refinements": [
                       "approximate number has at most six decimal places"
                     ],
-                    "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                    "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                    "minimum": 0
                   },
                   "unit": {
                     "type": "string",
@@ -3090,7 +3212,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "qualitative"
+                    "enum": [
+                      "qualitative"
+                    ]
                   },
                   "level": {
                     "type": "string",
@@ -3642,12 +3766,12 @@
                 },
                 "recipeVersion": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "maximum": 9007199254740991,
+                  "minimum": 0
                 },
                 "servings": {
                   "type": "number",
-                  "exclusiveMinimum": 0
+                  "minimum": 0
                 }
               },
               "required": [
@@ -3737,7 +3861,9 @@
             "properties": {
               "kind": {
                 "type": "string",
-                "const": "exact"
+                "enum": [
+                  "exact"
+                ]
               },
               "amount": {
                 "type": "string",
@@ -3775,11 +3901,12 @@
             "properties": {
               "kind": {
                 "type": "string",
-                "const": "approximate"
+                "enum": [
+                  "approximate"
+                ]
               },
               "amount": {
                 "type": "number",
-                "exclusiveMinimum": 0,
                 "maximum": 999999999.999999,
                 "x-meal-agent-runtime-rule-ids": [
                   "quantity.approximate.scale.v1"
@@ -3787,7 +3914,8 @@
                 "x-zod-refinements": [
                   "approximate number has at most six decimal places"
                 ],
-                "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                "minimum": 0
               },
               "unit": {
                 "type": "string",
@@ -3827,7 +3955,9 @@
             "properties": {
               "kind": {
                 "type": "string",
-                "const": "qualitative"
+                "enum": [
+                  "qualitative"
+                ]
               },
               "level": {
                 "type": "string",
@@ -3889,7 +4019,9 @@
         "minimum": -999999999.999999,
         "maximum": 999999999.999999,
         "not": {
-          "const": 0
+          "enum": [
+            0
+          ]
         },
         "x-meal-agent-runtime-rule-ids": [
           "quantity.delta.estimated-scale.v1",
@@ -3937,8 +4069,8 @@
           },
           "version": {
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "minimum": 0
           },
           "status": {
             "type": "string",
@@ -3959,7 +4091,7 @@
           },
           "servings": {
             "type": "number",
-            "exclusiveMinimum": 0
+            "minimum": 0
           },
           "dishRole": {
             "type": "string",
@@ -3979,8 +4111,7 @@
               "properties": {
                 "foodConceptId": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                 },
                 "displayName": {
                   "type": "string",
@@ -3994,7 +4125,9 @@
                       "properties": {
                         "kind": {
                           "type": "string",
-                          "const": "exact"
+                          "enum": [
+                            "exact"
+                          ]
                         },
                         "amount": {
                           "type": "string",
@@ -4032,11 +4165,12 @@
                       "properties": {
                         "kind": {
                           "type": "string",
-                          "const": "approximate"
+                          "enum": [
+                            "approximate"
+                          ]
                         },
                         "amount": {
                           "type": "number",
-                          "exclusiveMinimum": 0,
                           "maximum": 999999999.999999,
                           "x-meal-agent-runtime-rule-ids": [
                             "quantity.approximate.scale.v1"
@@ -4044,7 +4178,8 @@
                           "x-zod-refinements": [
                             "approximate number has at most six decimal places"
                           ],
-                          "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                          "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                          "minimum": 0
                         },
                         "unit": {
                           "type": "string",
@@ -4084,7 +4219,9 @@
                       "properties": {
                         "kind": {
                           "type": "string",
-                          "const": "qualitative"
+                          "enum": [
+                            "qualitative"
+                          ]
                         },
                         "level": {
                           "type": "string",
@@ -4156,8 +4293,8 @@
               "properties": {
                 "order": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "maximum": 9007199254740991,
+                  "minimum": 0
                 },
                 "instruction": {
                   "type": "string",
@@ -4191,8 +4328,8 @@
           },
           "totalMinutes": {
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "minimum": 0
           },
           "difficulty": {
             "type": "string",
@@ -4307,8 +4444,8 @@
           },
           "maximumTotalMinutes": {
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "minimum": 0
           },
           "purchaseTolerance": {
             "type": "string",
@@ -4340,12 +4477,12 @@
                 },
                 "recipeVersion": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "maximum": 9007199254740991,
+                  "minimum": 0
                 },
                 "servings": {
                   "type": "number",
-                  "exclusiveMinimum": 0
+                  "minimum": 0
                 },
                 "dishRole": {
                   "type": "string",
@@ -4364,15 +4501,14 @@
                 },
                 "totalMinutes": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "maximum": 9007199254740991,
+                  "minimum": 0
                 },
                 "missingFoodConceptIds": {
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                   }
                 },
                 "plannedInventoryLotIds": {
@@ -4405,7 +4541,9 @@
                   "properties": {
                     "status": {
                       "type": "string",
-                      "const": "passed"
+                      "enum": [
+                        "passed"
+                      ]
                     },
                     "policyVersion": {
                       "type": "string",
@@ -4729,7 +4867,9 @@
               },
               "enforcement": {
                 "type": "string",
-                "const": "hard"
+                "enum": [
+                  "hard"
+                ]
               },
               "label": {
                 "type": "string",
@@ -4738,25 +4878,44 @@
               },
               "foodConceptIds": {
                 "default": [],
+                "maxItems": 100,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                }
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "uniqueItems": true,
+                "x-meal-agent-runtime-rule-ids": [
+                  "profiles.constraint.food-concepts-unique.v1"
+                ],
+                "x-zod-refinements": [
+                  "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                ],
+                "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
               },
               "allergenCodes": {
                 "default": [],
+                "maxItems": 100,
                 "type": "array",
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 64
-                }
+                },
+                "uniqueItems": true,
+                "x-meal-agent-runtime-rule-ids": [
+                  "profiles.constraint.allergen-codes-unique.v1"
+                ],
+                "x-zod-refinements": [
+                  "allergen codes contain no exact duplicates"
+                ],
+                "x-meal-agent-rule-boundary": "allergenCodesSchema"
               },
               "mappingStatus": {
                 "type": "string",
-                "const": "needs_structured_mapping"
+                "enum": [
+                  "needs_structured_mapping"
+                ]
               },
               "notes": {
                 "type": "string",
@@ -4804,11 +4963,15 @@
               },
               "kind": {
                 "type": "string",
-                "const": "preference"
+                "enum": [
+                  "preference"
+                ]
               },
               "enforcement": {
                 "type": "string",
-                "const": "soft"
+                "enum": [
+                  "soft"
+                ]
               },
               "label": {
                 "type": "string",
@@ -4824,12 +4987,20 @@
               },
               "foodConceptIds": {
                 "default": [],
+                "maxItems": 100,
                 "type": "array",
                 "items": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                }
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "uniqueItems": true,
+                "x-meal-agent-runtime-rule-ids": [
+                  "profiles.constraint.food-concepts-unique.v1"
+                ],
+                "x-zod-refinements": [
+                  "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                ],
+                "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
               },
               "notes": {
                 "type": "string",
@@ -4923,8 +5094,8 @@
           },
           "tokenVersion": {
             "type": "integer",
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991
+            "maximum": 9007199254740991,
+            "minimum": 0
           }
         },
         "required": [
@@ -4961,8 +5132,7 @@
           },
           "foodConceptId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
           },
           "displayName": {
             "type": "string",
@@ -4976,7 +5146,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "exact"
+                    "enum": [
+                      "exact"
+                    ]
                   },
                   "amount": {
                     "type": "string",
@@ -5014,11 +5186,12 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "approximate"
+                    "enum": [
+                      "approximate"
+                    ]
                   },
                   "amount": {
                     "type": "number",
-                    "exclusiveMinimum": 0,
                     "maximum": 999999999.999999,
                     "x-meal-agent-runtime-rule-ids": [
                       "quantity.approximate.scale.v1"
@@ -5026,7 +5199,8 @@
                     "x-zod-refinements": [
                       "approximate number has at most six decimal places"
                     ],
-                    "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                    "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                    "minimum": 0
                   },
                   "unit": {
                     "type": "string",
@@ -5066,7 +5240,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "qualitative"
+                    "enum": [
+                      "qualitative"
+                    ]
                   },
                   "level": {
                     "type": "string",
@@ -5106,7 +5282,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "exact"
+                    "enum": [
+                      "exact"
+                    ]
                   },
                   "amount": {
                     "type": "string",
@@ -5144,11 +5322,12 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "approximate"
+                    "enum": [
+                      "approximate"
+                    ]
                   },
                   "amount": {
                     "type": "number",
-                    "exclusiveMinimum": 0,
                     "maximum": 999999999.999999,
                     "x-meal-agent-runtime-rule-ids": [
                       "quantity.approximate.scale.v1"
@@ -5156,7 +5335,8 @@
                     "x-zod-refinements": [
                       "approximate number has at most six decimal places"
                     ],
-                    "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount"
+                    "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
+                    "minimum": 0
                   },
                   "unit": {
                     "type": "string",
@@ -5196,7 +5376,9 @@
                 "properties": {
                   "kind": {
                     "type": "string",
-                    "const": "qualitative"
+                    "enum": [
+                      "qualitative"
+                    ]
                   },
                   "level": {
                     "type": "string",
@@ -5248,7 +5430,9 @@
                   "properties": {
                     "kind": {
                       "type": "string",
-                      "const": "manual"
+                      "enum": [
+                        "manual"
+                      ]
                     },
                     "addedByUserId": {
                       "type": "string",
@@ -5267,7 +5451,9 @@
                   "properties": {
                     "kind": {
                       "type": "string",
-                      "const": "meal"
+                      "enum": [
+                        "meal"
+                      ]
                     },
                     "mealId": {
                       "type": "string",
@@ -5345,7 +5531,9 @@
         "properties": {
           "operation": {
             "type": "string",
-            "const": "update"
+            "enum": [
+              "update"
+            ]
           },
           "expectedVersion": {
             "type": "integer",
@@ -5358,42 +5546,24 @@
             "maxLength": 80
           },
           "defaultParticipation": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "boolean",
+            "nullable": true
           },
           "defaultPortionScale": {
-            "anyOf": [
-              {
-                "type": "number",
-                "minimum": 0.25,
-                "maximum": 4
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "number",
+            "minimum": 0.25,
+            "maximum": 4,
+            "nullable": true
           },
           "cookingSkill": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "none",
-                  "beginner",
-                  "intermediate",
-                  "advanced"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "string",
+            "enum": [
+              "none",
+              "beginner",
+              "intermediate",
+              "advanced"
+            ],
+            "nullable": true
           }
         },
         "required": [
@@ -6890,7 +7060,6 @@
                             "tokenVersion": {
                               "type": "integer",
                               "minimum": 0,
-                              "exclusiveMinimum": true,
                               "maximum": 9007199254740991
                             }
                           },
@@ -11201,21 +11370,38 @@
                                       },
                                       "foodConceptIds": {
                                         "default": [],
+                                        "maxItems": 100,
                                         "type": "array",
                                         "items": {
                                           "type": "string",
-                                          "format": "uuid",
-                                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                        }
+                                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                        },
+                                        "uniqueItems": true,
+                                        "x-meal-agent-runtime-rule-ids": [
+                                          "profiles.constraint.food-concepts-unique.v1"
+                                        ],
+                                        "x-zod-refinements": [
+                                          "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                        ],
+                                        "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                       },
                                       "allergenCodes": {
                                         "default": [],
+                                        "maxItems": 100,
                                         "type": "array",
                                         "items": {
                                           "type": "string",
                                           "minLength": 1,
                                           "maxLength": 64
-                                        }
+                                        },
+                                        "uniqueItems": true,
+                                        "x-meal-agent-runtime-rule-ids": [
+                                          "profiles.constraint.allergen-codes-unique.v1"
+                                        ],
+                                        "x-zod-refinements": [
+                                          "allergen codes contain no exact duplicates"
+                                        ],
+                                        "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                       },
                                       "mappingStatus": {
                                         "type": "string",
@@ -11293,12 +11479,20 @@
                                       },
                                       "foodConceptIds": {
                                         "default": [],
+                                        "maxItems": 100,
                                         "type": "array",
                                         "items": {
                                           "type": "string",
-                                          "format": "uuid",
-                                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                        }
+                                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                        },
+                                        "uniqueItems": true,
+                                        "x-meal-agent-runtime-rule-ids": [
+                                          "profiles.constraint.food-concepts-unique.v1"
+                                        ],
+                                        "x-zod-refinements": [
+                                          "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                        ],
+                                        "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                       },
                                       "notes": {
                                         "type": "string",
@@ -14358,8 +14552,7 @@
                               },
                               "foodConceptId": {
                                 "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                               },
                               "displayName": {
                                 "type": "string",
@@ -14437,7 +14630,6 @@
                                       "amount": {
                                         "type": "number",
                                         "minimum": 0,
-                                        "exclusiveMinimum": true,
                                         "maximum": 999999999.999999,
                                         "x-meal-agent-runtime-rule-ids": [
                                           "quantity.approximate.scale.v1"
@@ -16145,8 +16337,7 @@
                 "properties": {
                   "foodConceptId": {
                     "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                   },
                   "displayName": {
                     "type": "string",
@@ -16227,7 +16418,6 @@
                           "amount": {
                             "type": "number",
                             "minimum": 0,
-                            "exclusiveMinimum": true,
                             "maximum": 999999999.999999,
                             "x-meal-agent-runtime-rule-ids": [
                               "quantity.approximate.scale.v1"
@@ -16443,8 +16633,7 @@
                             },
                             "foodConceptId": {
                               "type": "string",
-                              "format": "uuid",
-                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
                             "displayName": {
                               "type": "string",
@@ -16522,7 +16711,6 @@
                                     "amount": {
                                       "type": "number",
                                       "minimum": 0,
-                                      "exclusiveMinimum": true,
                                       "maximum": 999999999.999999,
                                       "x-meal-agent-runtime-rule-ids": [
                                         "quantity.approximate.scale.v1"
@@ -17071,7 +17259,6 @@
                             "resultingLotVersion": {
                               "type": "integer",
                               "minimum": 0,
-                              "exclusiveMinimum": true,
                               "maximum": 9007199254740991
                             },
                             "note": {
@@ -18625,8 +18812,7 @@
                             },
                             "foodConceptId": {
                               "type": "string",
-                              "format": "uuid",
-                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
                             "displayName": {
                               "type": "string",
@@ -18704,7 +18890,6 @@
                                     "amount": {
                                       "type": "number",
                                       "minimum": 0,
-                                      "exclusiveMinimum": true,
                                       "maximum": 999999999.999999,
                                       "x-meal-agent-runtime-rule-ids": [
                                         "quantity.approximate.scale.v1"
@@ -19253,7 +19438,6 @@
                             "resultingLotVersion": {
                               "type": "integer",
                               "minimum": 0,
-                              "exclusiveMinimum": true,
                               "maximum": 9007199254740991
                             },
                             "note": {
@@ -27030,21 +27214,38 @@
                                                 },
                                                 "foodConceptIds": {
                                                   "default": [],
+                                                  "maxItems": 100,
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
-                                                    "format": "uuid",
-                                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                                  }
+                                                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                                  },
+                                                  "uniqueItems": true,
+                                                  "x-meal-agent-runtime-rule-ids": [
+                                                    "profiles.constraint.food-concepts-unique.v1"
+                                                  ],
+                                                  "x-zod-refinements": [
+                                                    "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                                  ],
+                                                  "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                                 },
                                                 "allergenCodes": {
                                                   "default": [],
+                                                  "maxItems": 100,
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
                                                     "minLength": 1,
                                                     "maxLength": 64
-                                                  }
+                                                  },
+                                                  "uniqueItems": true,
+                                                  "x-meal-agent-runtime-rule-ids": [
+                                                    "profiles.constraint.allergen-codes-unique.v1"
+                                                  ],
+                                                  "x-zod-refinements": [
+                                                    "allergen codes contain no exact duplicates"
+                                                  ],
+                                                  "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                                 },
                                                 "mappingStatus": {
                                                   "type": "string",
@@ -27122,12 +27323,20 @@
                                                 },
                                                 "foodConceptIds": {
                                                   "default": [],
+                                                  "maxItems": 100,
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
-                                                    "format": "uuid",
-                                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                                  }
+                                                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                                  },
+                                                  "uniqueItems": true,
+                                                  "x-meal-agent-runtime-rule-ids": [
+                                                    "profiles.constraint.food-concepts-unique.v1"
+                                                  ],
+                                                  "x-zod-refinements": [
+                                                    "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                                  ],
+                                                  "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                                 },
                                                 "notes": {
                                                   "type": "string",
@@ -27391,21 +27600,38 @@
                                               },
                                               "foodConceptIds": {
                                                 "default": [],
+                                                "maxItems": 100,
                                                 "type": "array",
                                                 "items": {
                                                   "type": "string",
-                                                  "format": "uuid",
-                                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                                }
+                                                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                                },
+                                                "uniqueItems": true,
+                                                "x-meal-agent-runtime-rule-ids": [
+                                                  "profiles.constraint.food-concepts-unique.v1"
+                                                ],
+                                                "x-zod-refinements": [
+                                                  "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                                ],
+                                                "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                               },
                                               "allergenCodes": {
                                                 "default": [],
+                                                "maxItems": 100,
                                                 "type": "array",
                                                 "items": {
                                                   "type": "string",
                                                   "minLength": 1,
                                                   "maxLength": 64
-                                                }
+                                                },
+                                                "uniqueItems": true,
+                                                "x-meal-agent-runtime-rule-ids": [
+                                                  "profiles.constraint.allergen-codes-unique.v1"
+                                                ],
+                                                "x-zod-refinements": [
+                                                  "allergen codes contain no exact duplicates"
+                                                ],
+                                                "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                               },
                                               "mappingStatus": {
                                                 "type": "string",
@@ -27483,12 +27709,20 @@
                                               },
                                               "foodConceptIds": {
                                                 "default": [],
+                                                "maxItems": 100,
                                                 "type": "array",
                                                 "items": {
                                                   "type": "string",
-                                                  "format": "uuid",
-                                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                                }
+                                                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                                },
+                                                "uniqueItems": true,
+                                                "x-meal-agent-runtime-rule-ids": [
+                                                  "profiles.constraint.food-concepts-unique.v1"
+                                                ],
+                                                "x-zod-refinements": [
+                                                  "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                                ],
+                                                "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                               },
                                               "notes": {
                                                 "type": "string",
@@ -27737,21 +27971,38 @@
                                                 },
                                                 "foodConceptIds": {
                                                   "default": [],
+                                                  "maxItems": 100,
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
-                                                    "format": "uuid",
-                                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                                  }
+                                                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                                  },
+                                                  "uniqueItems": true,
+                                                  "x-meal-agent-runtime-rule-ids": [
+                                                    "profiles.constraint.food-concepts-unique.v1"
+                                                  ],
+                                                  "x-zod-refinements": [
+                                                    "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                                  ],
+                                                  "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                                 },
                                                 "allergenCodes": {
                                                   "default": [],
+                                                  "maxItems": 100,
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
                                                     "minLength": 1,
                                                     "maxLength": 64
-                                                  }
+                                                  },
+                                                  "uniqueItems": true,
+                                                  "x-meal-agent-runtime-rule-ids": [
+                                                    "profiles.constraint.allergen-codes-unique.v1"
+                                                  ],
+                                                  "x-zod-refinements": [
+                                                    "allergen codes contain no exact duplicates"
+                                                  ],
+                                                  "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                                 },
                                                 "mappingStatus": {
                                                   "type": "string",
@@ -27829,12 +28080,20 @@
                                                 },
                                                 "foodConceptIds": {
                                                   "default": [],
+                                                  "maxItems": 100,
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
-                                                    "format": "uuid",
-                                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                                  }
+                                                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                                  },
+                                                  "uniqueItems": true,
+                                                  "x-meal-agent-runtime-rule-ids": [
+                                                    "profiles.constraint.food-concepts-unique.v1"
+                                                  ],
+                                                  "x-zod-refinements": [
+                                                    "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                                  ],
+                                                  "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                                 },
                                                 "notes": {
                                                   "type": "string",
@@ -30947,21 +31206,38 @@
                                             },
                                             "foodConceptIds": {
                                               "default": [],
+                                              "maxItems": 100,
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
-                                                "format": "uuid",
-                                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                              }
+                                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                              },
+                                              "uniqueItems": true,
+                                              "x-meal-agent-runtime-rule-ids": [
+                                                "profiles.constraint.food-concepts-unique.v1"
+                                              ],
+                                              "x-zod-refinements": [
+                                                "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                              ],
+                                              "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                             },
                                             "allergenCodes": {
                                               "default": [],
+                                              "maxItems": 100,
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
                                                 "minLength": 1,
                                                 "maxLength": 64
-                                              }
+                                              },
+                                              "uniqueItems": true,
+                                              "x-meal-agent-runtime-rule-ids": [
+                                                "profiles.constraint.allergen-codes-unique.v1"
+                                              ],
+                                              "x-zod-refinements": [
+                                                "allergen codes contain no exact duplicates"
+                                              ],
+                                              "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                             },
                                             "mappingStatus": {
                                               "type": "string",
@@ -31039,12 +31315,20 @@
                                             },
                                             "foodConceptIds": {
                                               "default": [],
+                                              "maxItems": 100,
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
-                                                "format": "uuid",
-                                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                              }
+                                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                              },
+                                              "uniqueItems": true,
+                                              "x-meal-agent-runtime-rule-ids": [
+                                                "profiles.constraint.food-concepts-unique.v1"
+                                              ],
+                                              "x-zod-refinements": [
+                                                "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                              ],
+                                              "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                             },
                                             "notes": {
                                               "type": "string",
@@ -31218,21 +31502,38 @@
                                           },
                                           "foodConceptIds": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
-                                              "format": "uuid",
-                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                            }
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.food-concepts-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                           },
                                           "allergenCodes": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
                                               "minLength": 1,
                                               "maxLength": 64
-                                            }
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.allergen-codes-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "allergen codes contain no exact duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                           },
                                           "mappingStatus": {
                                             "type": "string",
@@ -31310,12 +31611,20 @@
                                           },
                                           "foodConceptIds": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
-                                              "format": "uuid",
-                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                            }
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.food-concepts-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                           },
                                           "notes": {
                                             "type": "string",
@@ -31473,21 +31782,38 @@
                                             },
                                             "foodConceptIds": {
                                               "default": [],
+                                              "maxItems": 100,
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
-                                                "format": "uuid",
-                                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                              }
+                                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                              },
+                                              "uniqueItems": true,
+                                              "x-meal-agent-runtime-rule-ids": [
+                                                "profiles.constraint.food-concepts-unique.v1"
+                                              ],
+                                              "x-zod-refinements": [
+                                                "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                              ],
+                                              "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                             },
                                             "allergenCodes": {
                                               "default": [],
+                                              "maxItems": 100,
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
                                                 "minLength": 1,
                                                 "maxLength": 64
-                                              }
+                                              },
+                                              "uniqueItems": true,
+                                              "x-meal-agent-runtime-rule-ids": [
+                                                "profiles.constraint.allergen-codes-unique.v1"
+                                              ],
+                                              "x-zod-refinements": [
+                                                "allergen codes contain no exact duplicates"
+                                              ],
+                                              "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                             },
                                             "mappingStatus": {
                                               "type": "string",
@@ -31565,12 +31891,20 @@
                                             },
                                             "foodConceptIds": {
                                               "default": [],
+                                              "maxItems": 100,
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
-                                                "format": "uuid",
-                                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                              }
+                                                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                              },
+                                              "uniqueItems": true,
+                                              "x-meal-agent-runtime-rule-ids": [
+                                                "profiles.constraint.food-concepts-unique.v1"
+                                              ],
+                                              "x-zod-refinements": [
+                                                "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                              ],
+                                              "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                             },
                                             "notes": {
                                               "type": "string",
@@ -34663,21 +34997,38 @@
                                           },
                                           "foodConceptIds": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
-                                              "format": "uuid",
-                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                            }
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.food-concepts-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                           },
                                           "allergenCodes": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
                                               "minLength": 1,
                                               "maxLength": 64
-                                            }
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.allergen-codes-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "allergen codes contain no exact duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                           },
                                           "mappingStatus": {
                                             "type": "string",
@@ -34755,12 +35106,20 @@
                                           },
                                           "foodConceptIds": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
-                                              "format": "uuid",
-                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                            }
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.food-concepts-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                           },
                                           "notes": {
                                             "type": "string",
@@ -34932,21 +35291,38 @@
                                           },
                                           "foodConceptIds": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
-                                              "format": "uuid",
-                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                            }
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.food-concepts-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                           },
                                           "allergenCodes": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
                                               "minLength": 1,
                                               "maxLength": 64
-                                            }
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.allergen-codes-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "allergen codes contain no exact duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "allergenCodesSchema"
                                           },
                                           "mappingStatus": {
                                             "type": "string",
@@ -35024,12 +35400,20 @@
                                           },
                                           "foodConceptIds": {
                                             "default": [],
+                                            "maxItems": 100,
                                             "type": "array",
                                             "items": {
                                               "type": "string",
-                                              "format": "uuid",
-                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                                            }
+                                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "uniqueItems": true,
+                                            "x-meal-agent-runtime-rule-ids": [
+                                              "profiles.constraint.food-concepts-unique.v1"
+                                            ],
+                                            "x-zod-refinements": [
+                                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                                            ],
+                                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                                           },
                                           "notes": {
                                             "type": "string",
@@ -38139,77 +38523,103 @@
                                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
                               },
                               "disclosure": {
-                                "type": "object",
-                                "properties": {
-                                  "disclosureVersion": {
-                                    "type": "number",
-                                    "enum": [
-                                      1
-                                    ]
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "availability": {
+                                        "type": "string",
+                                        "enum": [
+                                          "available"
+                                        ]
+                                      },
+                                      "disclosureVersion": {
+                                        "type": "number",
+                                        "enum": [
+                                          1
+                                        ]
+                                      },
+                                      "profileVersion": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "profileDisplayName": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 80
+                                      },
+                                      "householdVisibleHardConstraintCount": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "householdVisibleSoftConstraintCount": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "privateConstraintCount": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "subjectWillGainProfileAccess": {
+                                        "type": "boolean",
+                                        "enum": [
+                                          true
+                                        ]
+                                      },
+                                      "membershipExitArchivesProfile": {
+                                        "type": "boolean",
+                                        "enum": [
+                                          true
+                                        ]
+                                      },
+                                      "rejoinRestoresAutomatically": {
+                                        "type": "boolean",
+                                        "enum": [
+                                          false
+                                        ]
+                                      },
+                                      "privateConstraintContentsRemainPrivate": {
+                                        "type": "boolean",
+                                        "enum": [
+                                          true
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "availability",
+                                      "disclosureVersion",
+                                      "profileVersion",
+                                      "profileDisplayName",
+                                      "householdVisibleHardConstraintCount",
+                                      "householdVisibleSoftConstraintCount",
+                                      "privateConstraintCount",
+                                      "subjectWillGainProfileAccess",
+                                      "membershipExitArchivesProfile",
+                                      "rejoinRestoresAutomatically",
+                                      "privateConstraintContentsRemainPrivate"
+                                    ],
+                                    "additionalProperties": false
                                   },
-                                  "profileVersion": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  "profileDisplayName": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                    "maxLength": 80
-                                  },
-                                  "householdVisibleHardConstraintCount": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  "householdVisibleSoftConstraintCount": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  "privateConstraintCount": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  "subjectWillGainProfileAccess": {
-                                    "type": "boolean",
-                                    "enum": [
-                                      true
-                                    ]
-                                  },
-                                  "membershipExitArchivesProfile": {
-                                    "type": "boolean",
-                                    "enum": [
-                                      true
-                                    ]
-                                  },
-                                  "rejoinRestoresAutomatically": {
-                                    "type": "boolean",
-                                    "enum": [
-                                      false
-                                    ]
-                                  },
-                                  "privateConstraintContentsRemainPrivate": {
-                                    "type": "boolean",
-                                    "enum": [
-                                      true
-                                    ]
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "availability": {
+                                        "type": "string",
+                                        "enum": [
+                                          "legacy_unavailable"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "availability"
+                                    ],
+                                    "additionalProperties": false
                                   }
-                                },
-                                "required": [
-                                  "disclosureVersion",
-                                  "profileVersion",
-                                  "profileDisplayName",
-                                  "householdVisibleHardConstraintCount",
-                                  "householdVisibleSoftConstraintCount",
-                                  "privateConstraintCount",
-                                  "subjectWillGainProfileAccess",
-                                  "membershipExitArchivesProfile",
-                                  "rejoinRestoresAutomatically",
-                                  "privateConstraintContentsRemainPrivate"
-                                ],
-                                "additionalProperties": false
+                                ]
                               },
                               "version": {
                                 "type": "integer",
@@ -39641,21 +40051,38 @@
                           },
                           "foodConceptIds": {
                             "default": [],
+                            "maxItems": 100,
                             "type": "array",
                             "items": {
                               "type": "string",
-                              "format": "uuid",
-                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                            }
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "uniqueItems": true,
+                            "x-meal-agent-runtime-rule-ids": [
+                              "profiles.constraint.food-concepts-unique.v1"
+                            ],
+                            "x-zod-refinements": [
+                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                            ],
+                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                           },
                           "allergenCodes": {
                             "default": [],
+                            "maxItems": 100,
                             "type": "array",
                             "items": {
                               "type": "string",
                               "minLength": 1,
                               "maxLength": 64
-                            }
+                            },
+                            "uniqueItems": true,
+                            "x-meal-agent-runtime-rule-ids": [
+                              "profiles.constraint.allergen-codes-unique.v1"
+                            ],
+                            "x-zod-refinements": [
+                              "allergen codes contain no exact duplicates"
+                            ],
+                            "x-meal-agent-rule-boundary": "allergenCodesSchema"
                           },
                           "notes": {
                             "type": "string",
@@ -39734,12 +40161,20 @@
                           },
                           "foodConceptIds": {
                             "default": [],
+                            "maxItems": 100,
                             "type": "array",
                             "items": {
                               "type": "string",
-                              "format": "uuid",
-                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
-                            }
+                              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "uniqueItems": true,
+                            "x-meal-agent-runtime-rule-ids": [
+                              "profiles.constraint.food-concepts-unique.v1"
+                            ],
+                            "x-zod-refinements": [
+                              "food concept identifiers are lowercase UUIDv7 values with no duplicates"
+                            ],
+                            "x-meal-agent-rule-boundary": "foodConceptIdsSchema"
                           },
                           "notes": {
                             "type": "string",
@@ -42884,77 +43319,103 @@
                               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
                             },
                             "disclosure": {
-                              "type": "object",
-                              "properties": {
-                                "disclosureVersion": {
-                                  "type": "number",
-                                  "enum": [
-                                    1
-                                  ]
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "availability": {
+                                      "type": "string",
+                                      "enum": [
+                                        "available"
+                                      ]
+                                    },
+                                    "disclosureVersion": {
+                                      "type": "number",
+                                      "enum": [
+                                        1
+                                      ]
+                                    },
+                                    "profileVersion": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "profileDisplayName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 80
+                                    },
+                                    "householdVisibleHardConstraintCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "householdVisibleSoftConstraintCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "privateConstraintCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "subjectWillGainProfileAccess": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    },
+                                    "membershipExitArchivesProfile": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    },
+                                    "rejoinRestoresAutomatically": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        false
+                                      ]
+                                    },
+                                    "privateConstraintContentsRemainPrivate": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "availability",
+                                    "disclosureVersion",
+                                    "profileVersion",
+                                    "profileDisplayName",
+                                    "householdVisibleHardConstraintCount",
+                                    "householdVisibleSoftConstraintCount",
+                                    "privateConstraintCount",
+                                    "subjectWillGainProfileAccess",
+                                    "membershipExitArchivesProfile",
+                                    "rejoinRestoresAutomatically",
+                                    "privateConstraintContentsRemainPrivate"
+                                  ],
+                                  "additionalProperties": false
                                 },
-                                "profileVersion": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "profileDisplayName": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 80
-                                },
-                                "householdVisibleHardConstraintCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "householdVisibleSoftConstraintCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "privateConstraintCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "subjectWillGainProfileAccess": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    true
-                                  ]
-                                },
-                                "membershipExitArchivesProfile": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    true
-                                  ]
-                                },
-                                "rejoinRestoresAutomatically": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    false
-                                  ]
-                                },
-                                "privateConstraintContentsRemainPrivate": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    true
-                                  ]
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "availability": {
+                                      "type": "string",
+                                      "enum": [
+                                        "legacy_unavailable"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "availability"
+                                  ],
+                                  "additionalProperties": false
                                 }
-                              },
-                              "required": [
-                                "disclosureVersion",
-                                "profileVersion",
-                                "profileDisplayName",
-                                "householdVisibleHardConstraintCount",
-                                "householdVisibleSoftConstraintCount",
-                                "privateConstraintCount",
-                                "subjectWillGainProfileAccess",
-                                "membershipExitArchivesProfile",
-                                "rejoinRestoresAutomatically",
-                                "privateConstraintContentsRemainPrivate"
-                              ],
-                              "additionalProperties": false
+                              ]
                             },
                             "version": {
                               "type": "integer",
@@ -44490,77 +44951,103 @@
                               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
                             },
                             "disclosure": {
-                              "type": "object",
-                              "properties": {
-                                "disclosureVersion": {
-                                  "type": "number",
-                                  "enum": [
-                                    1
-                                  ]
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "availability": {
+                                      "type": "string",
+                                      "enum": [
+                                        "available"
+                                      ]
+                                    },
+                                    "disclosureVersion": {
+                                      "type": "number",
+                                      "enum": [
+                                        1
+                                      ]
+                                    },
+                                    "profileVersion": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "profileDisplayName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 80
+                                    },
+                                    "householdVisibleHardConstraintCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "householdVisibleSoftConstraintCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "privateConstraintCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "subjectWillGainProfileAccess": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    },
+                                    "membershipExitArchivesProfile": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    },
+                                    "rejoinRestoresAutomatically": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        false
+                                      ]
+                                    },
+                                    "privateConstraintContentsRemainPrivate": {
+                                      "type": "boolean",
+                                      "enum": [
+                                        true
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "availability",
+                                    "disclosureVersion",
+                                    "profileVersion",
+                                    "profileDisplayName",
+                                    "householdVisibleHardConstraintCount",
+                                    "householdVisibleSoftConstraintCount",
+                                    "privateConstraintCount",
+                                    "subjectWillGainProfileAccess",
+                                    "membershipExitArchivesProfile",
+                                    "rejoinRestoresAutomatically",
+                                    "privateConstraintContentsRemainPrivate"
+                                  ],
+                                  "additionalProperties": false
                                 },
-                                "profileVersion": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "profileDisplayName": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 80
-                                },
-                                "householdVisibleHardConstraintCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "householdVisibleSoftConstraintCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "privateConstraintCount": {
-                                  "type": "integer",
-                                  "minimum": 0,
-                                  "maximum": 9007199254740991
-                                },
-                                "subjectWillGainProfileAccess": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    true
-                                  ]
-                                },
-                                "membershipExitArchivesProfile": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    true
-                                  ]
-                                },
-                                "rejoinRestoresAutomatically": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    false
-                                  ]
-                                },
-                                "privateConstraintContentsRemainPrivate": {
-                                  "type": "boolean",
-                                  "enum": [
-                                    true
-                                  ]
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "availability": {
+                                      "type": "string",
+                                      "enum": [
+                                        "legacy_unavailable"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "availability"
+                                  ],
+                                  "additionalProperties": false
                                 }
-                              },
-                              "required": [
-                                "disclosureVersion",
-                                "profileVersion",
-                                "profileDisplayName",
-                                "householdVisibleHardConstraintCount",
-                                "householdVisibleSoftConstraintCount",
-                                "privateConstraintCount",
-                                "subjectWillGainProfileAccess",
-                                "membershipExitArchivesProfile",
-                                "rejoinRestoresAutomatically",
-                                "privateConstraintContentsRemainPrivate"
-                              ],
-                              "additionalProperties": false
+                              ]
                             },
                             "version": {
                               "type": "integer",
@@ -46140,6 +46627,27 @@
       "description": "hard confirmation fingerprint covers every submitted field"
     },
     {
+      "id": "profiles.constraint.food-concepts-unique.v1",
+      "sourceKind": "refinement",
+      "enforcement": "native",
+      "description": "food concept identifiers are lowercase UUIDv7 values with no duplicates",
+      "jsonSchemaKeywords": [
+        "maxItems",
+        "pattern",
+        "uniqueItems"
+      ]
+    },
+    {
+      "id": "profiles.constraint.allergen-codes-unique.v1",
+      "sourceKind": "refinement",
+      "enforcement": "native",
+      "description": "allergen codes contain no exact duplicates",
+      "jsonSchemaKeywords": [
+        "maxItems",
+        "uniqueItems"
+      ]
+    },
+    {
       "id": "quantity.information-source.consistency.v1",
       "sourceKind": "refinement",
       "enforcement": "runtime-only",
@@ -46211,6 +46719,12 @@
   ],
   "x-meal-agent-contract-rule-bindings": [
     {
+      "boundary": "allergenCodesSchema",
+      "ruleIds": [
+        "profiles.constraint.allergen-codes-unique.v1"
+      ]
+    },
+    {
       "boundary": "apiErrorSchema",
       "ruleIds": [
         "api.problem.status-code-consistency.v1"
@@ -46274,6 +46788,12 @@
       "boundary": "dietaryConstraintInputSchema",
       "ruleIds": [
         "profiles.constraint.confirmation-fingerprint.v1"
+      ]
+    },
+    {
+      "boundary": "foodConceptIdsSchema",
+      "ruleIds": [
+        "profiles.constraint.food-concepts-unique.v1"
       ]
     },
     {

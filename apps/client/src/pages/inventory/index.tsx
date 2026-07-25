@@ -56,6 +56,12 @@ interface Banner {
   readonly text: string
 }
 
+interface ConsumeCommandSnapshot {
+  readonly householdId: HouseholdId
+  readonly lot: InventoryLot
+  readonly amount: string
+}
+
 type QuantityKind = CreateLotQuantityDraft['kind']
 
 const STORAGE_LOCATIONS: readonly StorageLocation[] = [
@@ -109,6 +115,7 @@ export default function InventoryPage() {
   const [consumeStatus, setConsumeStatus] = useState<SubmitState>({
     kind: 'idle'
   })
+  const [consumeReconciled, setConsumeReconciled] = useState(false)
   const [actionKeys] = useState(
     () =>
       new PendingActionIdempotency(
@@ -208,6 +215,14 @@ export default function InventoryPage() {
     setCreateStatus({ kind: 'working' })
     const services = getAppServices()
     const action = 'inventory:create'
+    if (actionKeys.hasOtherPending(action)) {
+      setCreateStatus({
+        kind: 'failed',
+        message: '请先完成或对账当前未决库存命令。',
+        retryable: false
+      })
+      return
+    }
     const payload = {
       displayName: draftName,
       storageLocation: draftLocation,
@@ -215,11 +230,12 @@ export default function InventoryPage() {
     }
     let outcome: Awaited<ReturnType<typeof createInventoryLot>>
     try {
+      const command = actionKeys.acquireSnapshot(action, payload)
       outcome = await createInventoryLot(
         services,
         householdId,
-        payload,
-        actionKeys.acquire(action, payload)
+        command.payload,
+        command.key
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -259,21 +275,31 @@ export default function InventoryPage() {
       return
     }
     setConsumeStatus({ kind: 'working' })
+    setConsumeReconciled(false)
     const services = getAppServices()
     const action = `inventory:consume:${lot.id}`
-    const payload = {
-      lotId: lot.id,
-      expectedVersion: lot.version,
-      amount: consumeAmount.trim()
+    if (actionKeys.hasOtherPending(action)) {
+      setConsumeStatus({
+        kind: 'failed',
+        message: '请先完成或对账当前未决库存命令。',
+        retryable: false
+      })
+      return
+    }
+    const payload: ConsumeCommandSnapshot = {
+      householdId,
+      lot,
+      amount: consumeAmount
     }
     let outcome: Awaited<ReturnType<typeof consumeInventoryLot>>
     try {
+      const command = actionKeys.acquireSnapshot(action, payload)
       outcome = await consumeInventoryLot(
         services,
-        householdId,
-        lot,
-        consumeAmount,
-        actionKeys.acquire(action, payload)
+        command.payload.householdId,
+        command.payload.lot,
+        command.payload.amount,
+        command.key
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -297,6 +323,7 @@ export default function InventoryPage() {
         setConsumeLotId(null)
         setConsumeAmount('')
         setConsumeStatus({ kind: 'idle' })
+        setConsumeReconciled(false)
         // 使在途的旧列表请求作废，再落最新批次投影。
         listEpochRef.current += 1
         setList((previous) =>
@@ -334,7 +361,11 @@ export default function InventoryPage() {
     active ? 'chip chip--active' : 'chip'
   const createFieldsLocked =
     createStatus.kind === 'working' ||
-    actionKeys.hasPending('inventory:create')
+    actionKeys.hasAnyPending()
+  const pendingConsume =
+    actionKeys.activeSnapshot<ConsumeCommandSnapshot>()
+  const hasPendingConsume =
+    pendingConsume?.action.startsWith('inventory:consume:') === true
 
   return (
     <View className='page'>
@@ -344,6 +375,62 @@ export default function InventoryPage() {
         <Text className={`notice notice--${banner.tone}`}>
           {banner.text}
         </Text>
+      )}
+
+      {hasPendingConsume && pendingConsume !== null && (
+        <View className='notice notice--error'>
+          <Text>
+            上一次消耗结果未知。刷新不会改变原命令；只能使用保存的批次、
+            版本、数量和幂等键重试，或完成 GET 对账后结束它。
+          </Text>
+          <Button
+            className='button'
+            disabled={consumeStatus.kind === 'working'}
+            onClick={() => {
+              void handleConsume(pendingConsume.payload.lot)
+            }}
+          >
+            重试原消耗
+          </Button>
+          <Button
+            className='button button--secondary'
+            disabled={consumeStatus.kind === 'working'}
+            onClick={() => {
+              void (async () => {
+                await refresh(pendingConsume.payload.householdId)
+                setConsumeReconciled(true)
+              })()
+            }}
+          >
+            刷新库存对账
+          </Button>
+          {consumeReconciled && (
+            <>
+              <Button
+                className='button button--secondary'
+                onClick={() => {
+                  actionKeys.complete(pendingConsume.action)
+                  setConsumeLotId(null)
+                  setConsumeAmount('')
+                  setConsumeStatus({ kind: 'idle' })
+                  setConsumeReconciled(false)
+                }}
+              >
+                对账确认已完成
+              </Button>
+              <Button
+                className='button button--secondary'
+                onClick={() => {
+                  actionKeys.abandon(pendingConsume.action)
+                  setConsumeStatus({ kind: 'idle' })
+                  setConsumeReconciled(false)
+                }}
+              >
+                确认未执行并放弃旧动作
+              </Button>
+            </>
+          )}
+        </View>
       )}
 
       <View className='chip-row'>
@@ -690,7 +777,10 @@ export default function InventoryPage() {
                             ? 'button button--secondary button--disabled'
                             : 'button button--secondary'
                         }
-                        disabled={consumeStatus.kind === 'working'}
+                        disabled={
+                          consumeStatus.kind === 'working' ||
+                          hasPendingConsume
+                        }
                         onClick={() => {
                           setConsumeLotId(lot.id)
                           setConsumeAmount('')

@@ -6,8 +6,9 @@ import {
 } from "./contract-rule-schema.js";
 import {
   authIdentityIdSchema,
+  allergenCodesSchema,
   dietaryConstraintIdSchema,
-  foodConceptIdSchema,
+  foodConceptIdsSchema,
   householdIdSchema,
   membershipIdSchema,
   personProfileIdSchema,
@@ -221,8 +222,8 @@ const hardDietaryConstraintSchema = z.strictObject({
   ]),
   enforcement: z.literal("hard"),
   label: z.string().min(1).max(120),
-  foodConceptIds: z.array(foodConceptIdSchema).default([]),
-  allergenCodes: z.array(z.string().min(1).max(64)).default([]),
+  foodConceptIds: foodConceptIdsSchema.default([]),
+  allergenCodes: allergenCodesSchema.default([]),
   // Stage 08 尚无权威 allergen / food concept / 宗教 / 伦理规则词表。
   // 形状正确的字符串或 UUID 不能被当成机器可执行映射。
   mappingStatus: z.literal("needs_structured_mapping"),
@@ -238,7 +239,7 @@ const softDietaryConstraintSchema = z.strictObject({
   enforcement: z.literal("soft"),
   label: z.string().min(1).max(120),
   preference: z.enum(["prefer", "dislike"]),
-  foodConceptIds: z.array(foodConceptIdSchema).default([]),
+  foodConceptIds: foodConceptIdsSchema.default([]),
   notes: z.string().max(500).optional(),
   visibility: z.enum(["household", "subject_and_owner"]),
   confirmedAt: utcDateTimeSchema,

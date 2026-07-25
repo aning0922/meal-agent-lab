@@ -32,9 +32,10 @@ export type CommandDisposition =
   | 'definite-failure'
   | 'unknown'
 
-export interface PendingActionSnapshot {
+export interface PendingActionSnapshot<T = unknown> {
+  readonly action: string
   readonly key: IdempotencyKey
-  readonly payload: unknown
+  readonly payload: T
   readonly phase: 'in-flight' | 'unknown'
 }
 
@@ -60,17 +61,28 @@ export class PendingActionIdempotency {
   }
 
   public acquire(action: string, payload: unknown): IdempotencyKey {
+    return this.acquireSnapshot(action, payload).key
+  }
+
+  /**
+   * 首次调用保存完整规范化命令；同 action 重试永远返回原快照，即使 GET
+   * 刷新改变了页面中的 lot/profile。调用方必须从返回的 payload 执行请求。
+   */
+  public acquireSnapshot<T>(
+    action: string,
+    payload: T
+  ): PendingActionSnapshot<T> {
     const snapshot = canonicalize(payload)
     const fingerprint = JSON.stringify(snapshot)
     const existing = this.#pending.get(action)
-    if (existing?.fingerprint === fingerprint) {
-      existing.phase = 'in-flight'
-      return existing.key
-    }
     if (existing !== undefined) {
-      throw new Error(
-        `pending idempotent action payload changed: ${action}`
-      )
+      existing.phase = 'in-flight'
+      return {
+        action,
+        key: existing.key,
+        payload: existing.payload as T,
+        phase: existing.phase
+      }
     }
     const key = createIdempotencyKey(this.#runtime)
     this.#pending.set(action, {
@@ -79,7 +91,12 @@ export class PendingActionIdempotency {
       payload: snapshot,
       phase: 'in-flight'
     })
-    return key
+    return {
+      action,
+      key,
+      payload: snapshot as T,
+      phase: 'in-flight'
+    }
   }
 
   public settle(action: string, disposition: CommandDisposition): void {
@@ -105,15 +122,34 @@ export class PendingActionIdempotency {
     return this.#pending.size > 0
   }
 
-  public snapshot(action: string): PendingActionSnapshot | null {
+  public snapshot<T = unknown>(
+    action: string
+  ): PendingActionSnapshot<T> | null {
     const pending = this.#pending.get(action)
     return pending === undefined
       ? null
       : {
+          action,
           key: pending.key,
-          payload: pending.payload,
+          payload: pending.payload as T,
           phase: pending.phase
         }
+  }
+
+  public activeSnapshot<T = unknown>(): PendingActionSnapshot<T> | null {
+    const entry = this.#pending.entries().next()
+    if (entry.done) return null
+    const [action, pending] = entry.value
+    return {
+      action,
+      key: pending.key,
+      payload: pending.payload as T,
+      phase: pending.phase
+    }
+  }
+
+  public hasOtherPending(action: string): boolean {
+    return [...this.#pending.keys()].some((key) => key !== action)
   }
 
   public complete(action: string): void {

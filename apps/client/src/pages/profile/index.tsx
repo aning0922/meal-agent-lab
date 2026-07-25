@@ -135,6 +135,8 @@ export default function ProfilePage() {
     useState<ConstraintForm>(EMPTY_CONSTRAINT)
   const [confirmingHard, setConfirmingHard] = useState(false)
   const [linkTarget, setLinkTarget] = useState<MembershipId | null>(null)
+  const [pendingRevision, setPendingRevision] = useState(0)
+  const [pendingReconciled, setPendingReconciled] = useState(false)
   const [actionKeys] = useState(
     () =>
       new PendingActionIdempotency(
@@ -218,6 +220,7 @@ export default function ProfilePage() {
     for (const request of linksResult.data.requests) {
       if (request.status !== 'pending') continue
       const disclosure = request.disclosure
+      if (disclosure.availability !== 'available') continue
       linkDisclosures[request.id] = {
         displayName: disclosure.profileDisplayName,
         hardConstraintCount:
@@ -274,18 +277,33 @@ export default function ProfilePage() {
     return <View className='page'><Text>未选择家庭，正在返回…</Text></View>
   }
 
-  const executeCommand = async <T extends { readonly kind: string }>(
+  const executeCommand = async <
+    P,
+    T extends { readonly kind: string }
+  >(
     action: string,
-    payload: unknown,
-    operation: (key: IdempotencyKey) => Promise<T>
+    payload: P,
+    operation: (saved: P, key: IdempotencyKey) => Promise<T>
   ): Promise<T | null> => {
+    if (actionKeys.hasOtherPending(action)) {
+      setNotice({
+        kind: 'error',
+        message: '已有未决档案命令；只能重试原动作，或先完成 GET 对账后结束它。'
+      })
+      return null
+    }
     setBusy(true)
     try {
-      const outcome = await operation(actionKeys.acquire(action, payload))
+      const command = actionKeys.acquireSnapshot(action, payload)
+      setPendingRevision((value) => value + 1)
+      const outcome = await operation(command.payload, command.key)
       actionKeys.settle(action, dispositionForOutcome(outcome))
+      setPendingRevision((value) => value + 1)
       return outcome
     } catch {
       actionKeys.markUnknown(action)
+      setPendingReconciled(false)
+      setPendingRevision((value) => value + 1)
       setNotice({
         kind: 'error',
         message: '请求结果未知；相关输入已冻结，请使用同一请求重试或刷新对账。'
@@ -316,10 +334,10 @@ export default function ProfilePage() {
     const outcome = await executeCommand(
       action,
       payload,
-      (key) => createProfile(
+      (saved, key) => createProfile(
         getAppServices(),
         householdId,
-        payload,
+        saved,
         key
       )
     )
@@ -346,16 +364,20 @@ export default function ProfilePage() {
       cookingSkill
     }
     const action = `profile:update:${profile.id}`
-    const payload = { ...draft, version: profile.version }
+    const payload = {
+      profileId: profile.id,
+      draft,
+      expectedVersion: profile.version
+    }
     const outcome = await executeCommand(
       action,
       payload,
-      (key) => updateProfile(
+      (saved, key) => updateProfile(
         getAppServices(),
         householdId,
-        profile.id,
-        draft,
-        profile.version,
+        saved.profileId,
+        saved.draft,
+        saved.expectedVersion,
         key
       )
     )
@@ -377,21 +399,25 @@ export default function ProfilePage() {
   ): Promise<void> => {
     if (busy) return
     const action = `profile:${operation}:${profile.id}`
-    const payload = { profileId: profile.id, version: profile.version }
-    const outcome = await executeCommand(action, payload, (key) =>
-      operation === 'archive'
+    const payload = {
+      profileId: profile.id,
+      expectedVersion: profile.version,
+      operation
+    }
+    const outcome = await executeCommand(action, payload, (saved, key) =>
+      saved.operation === 'archive'
         ? archiveProfile(
           getAppServices(),
           householdId,
-          profile.id,
-          profile.version,
+          saved.profileId,
+          saved.expectedVersion,
           key
         )
         : restoreProfile(
           getAppServices(),
           householdId,
-          profile.id,
-          profile.version,
+          saved.profileId,
+          saved.expectedVersion,
           key
         )
     )
@@ -441,16 +467,20 @@ export default function ProfilePage() {
             visibility: constraint.visibility
           }
     const action = `constraint:add:${profile.id}`
-    const payload = { draft, version: profile.version }
+    const payload = {
+      profileId: profile.id,
+      draft,
+      expectedVersion: profile.version
+    }
     const outcome = await executeCommand(
       action,
       payload,
-      (key) => addDietaryConstraint(
+      (saved, key) => addDietaryConstraint(
         getAppServices(),
         householdId,
-        profile.id,
-        draft,
-        profile.version,
+        saved.profileId,
+        saved.draft,
+        saved.expectedVersion,
         key
       )
     )
@@ -474,16 +504,20 @@ export default function ProfilePage() {
   ): Promise<void> => {
     if (busy) return
     const action = `constraint:remove:${constraintId}`
-    const payload = { constraintId, version: profile.version }
+    const payload = {
+      profileId: profile.id,
+      constraintId,
+      expectedVersion: profile.version
+    }
     const outcome = await executeCommand(
       action,
       payload,
-      (key) => removeDietaryConstraint(
+      (saved, key) => removeDietaryConstraint(
         getAppServices(),
         householdId,
-        profile.id,
-        constraintId,
-        profile.version,
+        saved.profileId,
+        saved.constraintId,
+        saved.expectedVersion,
         key
       )
     )
@@ -501,17 +535,20 @@ export default function ProfilePage() {
     if (linkTarget === null || busy) return
     const action = `profile:link-request:${profile.id}`
     const payload = {
-      targetMembershipId: linkTarget,
-      expiresInHours: 168,
-      ownerConfirmation: { acknowledged: true as const }
+      profileId: profile.id,
+      request: {
+        targetMembershipId: linkTarget,
+        expiresInHours: 168,
+        ownerConfirmation: { acknowledged: true as const }
+      }
     }
     const outcome = await executeCommand(
       action,
       payload,
-      (key) => getAppServices().api.createPersonProfileLinkRequest(
+      (saved, key) => getAppServices().api.createPersonProfileLinkRequest(
         householdId,
-        profile.id,
-        payload,
+        saved.profileId,
+        saved.request,
         key
       )
     )
@@ -533,16 +570,19 @@ export default function ProfilePage() {
     if (busy) return
     const action = `profile:link-confirm:${request.id}`
     const payload = {
-      expectedVersion: request.version,
-      subjectConfirmation: { acknowledged: true as const }
+      requestId: request.id,
+      request: {
+        expectedVersion: request.version,
+        subjectConfirmation: { acknowledged: true as const }
+      }
     }
     const outcome = await executeCommand(
       action,
       payload,
-      (key) => getAppServices().api.confirmPersonProfileLinkRequest(
+      (saved, key) => getAppServices().api.confirmPersonProfileLinkRequest(
         householdId,
-        request.id,
-        payload,
+        saved.requestId,
+        saved.request,
         key
       )
     )
@@ -553,7 +593,8 @@ export default function ProfilePage() {
     } else {
       setNotice({
         kind: 'error',
-        message: '档案或约束已变化；已刷新披露，请重新阅读并再次确认。'
+        message:
+          '旧关联请求已终止。所有者必须重新发起；你重新 GET 并阅读新披露后才能再次确认。'
       })
       await refresh(householdId)
     }
@@ -579,7 +620,10 @@ export default function ProfilePage() {
     )
       ? '关联成员当前不在家庭中，无法恢复；重新加入后仍须显式恢复原档案。'
       : null
-  const fieldsLocked = busy || actionKeys.hasAnyPending()
+  const pendingCommand =
+    pendingRevision >= 0 ? actionKeys.activeSnapshot() : null
+  const pendingAction = pendingCommand?.action ?? null
+  const fieldsLocked = busy || pendingAction !== null
 
   return (
     <View className='page'>
@@ -587,6 +631,58 @@ export default function ProfilePage() {
       {notice.kind !== 'none' && (
         <View className={notice.kind === 'error' ? 'notice notice--error' : 'notice'}>
           <Text>{notice.message}</Text>
+        </View>
+      )}
+      {pendingCommand !== null && (
+        <View className='notice notice--error'>
+          <Text>
+            存在未决档案命令“{pendingCommand.action}”。所有其他写操作已禁用；
+            请使用原动作按钮重试，重试会发送保存的完整请求和原幂等键。
+          </Text>
+          <Button
+            className='button button--secondary'
+            disabled={busy}
+            onClick={() => {
+              void (async () => {
+                await refresh(householdId)
+                setPendingReconciled(true)
+              })()
+            }}
+          >
+            重新 GET 对账
+          </Button>
+          {pendingReconciled && (
+            <>
+              <Button
+                className='button button--secondary'
+                onClick={() => {
+                  actionKeys.complete(pendingCommand.action)
+                  setPendingReconciled(false)
+                  setPendingRevision((value) => value + 1)
+                  setNotice({
+                    kind: 'info',
+                    message: '已根据 GET 对账确认旧动作完成。'
+                  })
+                }}
+              >
+                对账确认已完成
+              </Button>
+              <Button
+                className='button button--secondary'
+                onClick={() => {
+                  actionKeys.abandon(pendingCommand.action)
+                  setPendingReconciled(false)
+                  setPendingRevision((value) => value + 1)
+                  setNotice({
+                    kind: 'info',
+                    message: '已确认旧动作未执行并放弃；现在可以开始新动作。'
+                  })
+                }}
+              >
+                确认未执行并放弃
+              </Button>
+            </>
+          )}
         </View>
       )}
       {state.kind === 'loading' && <Text>正在加载档案…</Text>}
@@ -628,6 +724,10 @@ export default function ProfilePage() {
               setName={setCreateName}
               busy={busy}
               fieldsLocked={fieldsLocked}
+              pendingAction={pendingAction}
+              action={
+                `profile:create:self:${state.selfMembershipId}`
+              }
               onCreate={() => void createNewProfile(state.selfMembershipId)}
             />
           )}
@@ -638,6 +738,8 @@ export default function ProfilePage() {
               setName={setCreateName}
               busy={busy}
               fieldsLocked={fieldsLocked}
+              pendingAction={pendingAction}
+              action='profile:create:dining'
               onCreate={() => void createNewProfile()}
             />
           )}
@@ -663,6 +765,7 @@ export default function ProfilePage() {
               setConfirmingHard={setConfirmingHard}
               busy={busy}
               fieldsLocked={fieldsLocked}
+              pendingAction={pendingAction}
               restoreBlockedReason={restoreBlockedReason}
               onSave={() => void saveProfile(selected)}
               onArchive={() => void changeArchiveState(selected, 'archive')}
@@ -710,7 +813,12 @@ export default function ProfilePage() {
                         className='button'
                         disabled={
                           busy ||
-                          state.linkDisclosures[request.id] === undefined
+                          state.linkDisclosures[request.id] === undefined ||
+                          (
+                            pendingAction !== null &&
+                            pendingAction !==
+                              `profile:link-confirm:${request.id}`
+                          )
                         }
                         onClick={() => void confirmLink(request)}
                       >
@@ -740,6 +848,8 @@ const CreateSection = (props: {
   readonly setName: (value: string) => void
   readonly busy: boolean
   readonly fieldsLocked: boolean
+  readonly pendingAction: string | null
+  readonly action: string
   readonly onCreate: () => void
 }) => (
   <View className='section'>
@@ -754,7 +864,17 @@ const CreateSection = (props: {
     <Text className='list-item-detail'>
       新建时饭量、默认参与和厨艺均为“未知”，不会替用户猜测。
     </Text>
-    <Button className='button' disabled={props.busy} onClick={props.onCreate}>
+    <Button
+      className='button'
+      disabled={
+        props.busy ||
+        (
+          props.pendingAction !== null &&
+          props.pendingAction !== props.action
+        )
+      }
+      onClick={props.onCreate}
+    >
       创建档案
     </Button>
   </View>
@@ -780,6 +900,7 @@ const ProfileEditor = (props: {
   readonly setConfirmingHard: (value: boolean) => void
   readonly busy: boolean
   readonly fieldsLocked: boolean
+  readonly pendingAction: string | null
   readonly restoreBlockedReason: string | null
   readonly onSave: () => void
   readonly onArchive: () => void
@@ -787,7 +908,14 @@ const ProfileEditor = (props: {
   readonly onAddConstraint: () => void
   readonly onRemoveConstraint: (id: DietaryConstraintId) => void
   readonly onRequestLink: () => void
-}) => (
+}) => {
+  const actionBlocked = (action: string): boolean =>
+    props.busy ||
+    (
+      props.pendingAction !== null &&
+      props.pendingAction !== action
+    )
+  return (
   <View>
     <View className='section'>
       <Text className='section-title'>{props.profile.displayName}</Text>
@@ -798,7 +926,10 @@ const ProfileEditor = (props: {
         <>
           <Button
             className='button'
-            disabled={props.busy || props.restoreBlockedReason !== null}
+            disabled={
+              actionBlocked(`profile:restore:${props.profile.id}`) ||
+              props.restoreBlockedReason !== null
+            }
             onClick={props.onRestore}
           >
             恢复原档案
@@ -863,10 +994,18 @@ const ProfileEditor = (props: {
               </Button>
             ))}
           </View>
-          <Button className='button' disabled={props.busy} onClick={props.onSave}>
+          <Button
+            className='button'
+            disabled={actionBlocked(`profile:update:${props.profile.id}`)}
+            onClick={props.onSave}
+          >
             保存档案事实
           </Button>
-          <Button className='button button--secondary' disabled={props.busy} onClick={props.onArchive}>
+          <Button
+            className='button button--secondary'
+            disabled={actionBlocked(`profile:archive:${props.profile.id}`)}
+            onClick={props.onArchive}
+          >
             归档
           </Button>
         </>
@@ -890,7 +1029,11 @@ const ProfileEditor = (props: {
           ))}
           <Button
             className='button'
-            disabled={props.busy || props.linkTarget === null}
+            disabled={
+              actionBlocked(
+                `profile:link-request:${props.profile.id}`
+              ) || props.linkTarget === null
+            }
             onClick={props.onRequestLink}
           >
             所有者确认并发起
@@ -920,7 +1063,7 @@ const ProfileEditor = (props: {
               </Text>
               <Button
                 className='button button--secondary'
-                disabled={props.busy}
+                disabled={actionBlocked(`constraint:remove:${item.id}`)}
                 onClick={() => props.onRemoveConstraint(item.id)}
               >
                 移除
@@ -1062,12 +1205,20 @@ const ProfileEditor = (props: {
                 {props.constraint.allergenCode || '（无）'}、映射状态
                 needs_structured_mapping。五类硬约束均将阻断推荐，模型不得猜测。
               </Text>
-              <Button className='button' disabled={props.busy} onClick={props.onAddConstraint}>
+              <Button
+                className='button'
+                disabled={actionBlocked(`constraint:add:${props.profile.id}`)}
+                onClick={props.onAddConstraint}
+              >
                 确认全部字段并登记
               </Button>
             </View>
           ) : (
-            <Button className='button' disabled={props.busy} onClick={props.onAddConstraint}>
+            <Button
+              className='button'
+              disabled={actionBlocked(`constraint:add:${props.profile.id}`)}
+              onClick={props.onAddConstraint}
+            >
               添加偏好
             </Button>
           )}
@@ -1075,4 +1226,5 @@ const ProfileEditor = (props: {
       </>
     )}
   </View>
-)
+  )
+}

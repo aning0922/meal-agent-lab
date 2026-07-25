@@ -224,20 +224,17 @@ describe('真实页面渲染回归', () => {
 
   it('InventoryPage 消耗结果未知时冻结数量并用原 key 重试，避免重复扣减', async () => {
     const lot = inventoryLotFixture({ amount: '12', version: 1 })
+    const otherLot = inventoryLotFixture({ sequence: 31, amount: '8' })
     const { Page, platform } = renderWithServices(InventoryPage, [
       {
         status: 200,
         body: successEnvelope({
-          items: [lot],
+          items: [lot, otherLot],
           pageInfo: { nextCursor: null, hasMore: false }
         })
       }
     ])
     platform.enqueueResponse(new Error('lost consume response'))
-    platform.enqueueJson(
-      201,
-      successEnvelope(consumeInventoryLotResultFixture())
-    )
     await act(async () => {
       renderer = create(<Page />)
       await settleEffects()
@@ -263,8 +260,36 @@ describe('真实页面渲染回归', () => {
       await settleEffects()
     })
     assert.equal(amountInput()?.props['disabled'], true)
+    const switchLot = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '消耗')
+    assert.equal(switchLot?.props['disabled'], true)
+
+    platform.enqueueJson(
+      200,
+      successEnvelope({
+        items: [{ ...lot, version: 9 }, otherLot],
+        pageInfo: { nextCursor: null, hasMore: false }
+      })
+    )
+    const reconcile = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '刷新库存对账')
+    assert.ok(reconcile)
     await act(async () => {
-      submit()?.props['onClick']()
+      reconcile.props['onClick']()
+      await settleEffects()
+    })
+    platform.enqueueJson(
+      201,
+      successEnvelope(consumeInventoryLotResultFixture())
+    )
+    const retryOriginal = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原消耗')
+    assert.ok(retryOriginal)
+    await act(async () => {
+      retryOriginal.props['onClick']()
       await settleEffects()
     })
     const requests = platform.sentRequests.filter((request) =>
@@ -276,6 +301,8 @@ describe('真实页面渲染回归', () => {
       requests[1]?.headers['idempotency-key']
     )
     assert.equal(requests[0]?.body, requests[1]?.body)
+    assert.match(requests[0]?.body ?? '', /"expectedVersion":1/)
+    assert.doesNotMatch(requests[1]?.body ?? '', /"expectedVersion":9/)
   })
 
   it('MembersPage 在 owner 视图正确标记本人，且保护最后一位 owner', async () => {
@@ -539,6 +566,7 @@ describe('真实页面渲染回归', () => {
       createdAt: '2026-07-24T08:00:00.000Z',
       expiresAt: '2026-07-25T08:00:00.000Z',
       disclosure: {
+        availability: 'available' as const,
         disclosureVersion: 1 as const,
         profileVersion: 0,
         profileDisplayName: '安全披露访客',
@@ -772,6 +800,62 @@ describe('真实页面渲染回归', () => {
       { status: 200, body: successEnvelope({ requests: [] }) }
     ])
     platform.enqueueResponse(new Error('lost profile response'))
+    await act(async () => {
+      renderer = create(<Page />)
+      await settleEffects()
+    })
+    const editInput = () =>
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-input')
+        .find((input) => input.props['value'] === '不可变档案草稿')
+    const save = () =>
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((button) => buttonText(button) === '保存档案事实')
+    await act(async () => {
+      save()?.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(editInput()?.props['disabled'], true)
+    const archive = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '归档')
+    const createProfileButton = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '创建档案')
+    assert.equal(save()?.props['disabled'], false)
+    assert.equal(archive?.props['disabled'], true)
+    assert.equal(createProfileButton?.props['disabled'], true)
+    assert.match(
+      textContent(renderer?.toJSON() ?? null),
+      /所有其他写操作已禁用/
+    )
+    const refreshedProfile = { ...profile, version: 7 }
+    const refreshedView = ownerMembersViewFixture([
+      { membership: ownerMembership, profile: refreshedProfile }
+    ])
+    platform.enqueueJson(200, successEnvelope(refreshedView))
+    platform.enqueueJson(
+      200,
+      successEnvelope({
+        viewerRole: 'owner',
+        profiles: [refreshedProfile]
+      })
+    )
+    platform.enqueueJson(200, successEnvelope({ requests: [] }))
+    const reconcile = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重新 GET 对账')
+    assert.ok(reconcile)
+    await act(async () => {
+      reconcile.props['onClick']()
+      await settleEffects()
+    })
+    assert.ok(
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((button) => buttonText(button) === '对账确认已完成')
+    )
     platform.enqueueJson(
       200,
       successEnvelope({
@@ -798,23 +882,6 @@ describe('真实页面渲染回归', () => {
     )
     platform.enqueueJson(200, successEnvelope({ requests: [] }))
     await act(async () => {
-      renderer = create(<Page />)
-      await settleEffects()
-    })
-    const editInput = () =>
-      renderer?.root
-        .findAll((node) => String(node.type) === 'taro-input')
-        .find((input) => input.props['value'] === '不可变档案草稿')
-    const save = () =>
-      renderer?.root
-        .findAll((node) => String(node.type) === 'taro-button')
-        .find((button) => buttonText(button) === '保存档案事实')
-    await act(async () => {
-      save()?.props['onClick']()
-      await settleEffects()
-    })
-    assert.equal(editInput()?.props['disabled'], true)
-    await act(async () => {
       save()?.props['onClick']()
       await settleEffects()
     })
@@ -827,9 +894,11 @@ describe('真实页面渲染回归', () => {
       patches[1]?.headers['idempotency-key']
     )
     assert.equal(patches[0]?.body, patches[1]?.body)
+    assert.match(patches[0]?.body ?? '', /"expectedVersion":0/)
+    assert.doesNotMatch(patches[1]?.body ?? '', /"expectedVersion":7/)
   })
 
-  it('ProfilePage 在关联确认 409 后重新 GET 并展示更新后的披露', async () => {
+  it('ProfilePage 在关联确认 409 后终止旧请求并要求 owner 重新发起', async () => {
     const selfMembership = membershipFixture({
       role: 'member',
       sequence: 22,
@@ -858,6 +927,7 @@ describe('真实页面渲染回归', () => {
       createdAt: '2026-07-24T08:00:00.000Z',
       expiresAt: '2026-07-25T08:00:00.000Z',
       disclosure: {
+        availability: 'available' as const,
         disclosureVersion: 1 as const,
         profileVersion: idSequence - 71,
         profileDisplayName: name,
@@ -872,7 +942,6 @@ describe('真实页面渲染回归', () => {
       version: 0
     })
     const before = disclosure(71, '披露前名称', 0)
-    const after = disclosure(72, '所有者修改后名称', 1)
     const { Page } = renderWithServices(ProfilePage, [
       { status: 200, body: successEnvelope(membersView) },
       {
@@ -894,7 +963,7 @@ describe('真实页面渲染回归', () => {
           others: []
         })
       },
-      { status: 200, body: successEnvelope({ requests: [after] }) }
+      { status: 200, body: successEnvelope({ requests: [] }) }
     ])
     await act(async () => {
       renderer = create(<Page />)
@@ -910,9 +979,14 @@ describe('真实页面渲染回归', () => {
       await settleEffects()
     })
     const refreshedText = textContent(renderer?.toJSON() ?? null)
-    assert.match(refreshedText, /所有者修改后名称/)
-    assert.match(refreshedText, /另有私密约束1条/)
-    assert.match(refreshedText, /重新阅读并再次确认/)
+    assert.match(refreshedText, /旧关联请求已终止/)
+    assert.match(refreshedText, /所有者必须重新发起/)
     assert.doesNotMatch(refreshedText, /披露前名称/)
+    assert.equal(
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .some((button) => buttonText(button) === '我确认关联'),
+      false
+    )
   })
 })

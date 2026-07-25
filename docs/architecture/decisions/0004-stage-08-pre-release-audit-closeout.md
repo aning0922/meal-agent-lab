@@ -63,12 +63,14 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 
 ### 最终收口的不变量
 
-- link request 保存发起时的 profile version、名称、家庭可见 hard/soft 数量和私密约束数量，但不保存或披露私密内容；名称或任一约束变化使确认稳定提交 `profile_changed` 终态并返回 409，客户端必须重新 GET、展示和确认。
-- lifecycle 函数先取 household advisory lock，再按稳定 request/profile/membership 顺序加行锁；创建新请求会物化同 profile 的全部旧 pending，不受旧 target 限制，直接创建 linked profile 会终态化该 target 的其他 pending。
+- link request 保存发起时的 profile version、名称、家庭可见 hard/soft 数量和私密约束数量，但不保存或披露私密内容；名称或任一约束变化使确认稳定提交 `profile_changed` 终态并返回 409，客户端必须重新 GET、展示和确认。旧请求没有发起时证据，`0004` 只标记为 `legacy_unavailable` 并终态化，绝不拿迁移时的当前值冒充历史快照。
+- `meal_agent_app` 不再直接 `INSERT person_profile_link_requests`。owner 只能调用受控 `SECURITY DEFINER` 创建函数，由数据库在锁内读取 profile、重新验证 active target 并计算安全披露；confirm 也必须重新验证 target active，调用方不能提交自制快照。
+- create/list/confirm、linked self-create、membership remove 和 profile archive/restore 使用同一 household link advisory 作为生命周期写路径的第一把锁，再按稳定 request/profile/membership 顺序加行锁；创建新请求会物化同 profile 的全部旧 pending，不受旧 target 限制，直接创建 linked profile 会终态化该 target 的其他 pending。
 - repository 的事务 callback 用 tagged domain outcome 表示“终态已写入但 HTTP 应返回 409”；同一事务把安全失败回执写入幂等记录并断言 UPDATE 恰好命中一行，提交后才抛 HTTP 错误。同 key 重放同一失败，不删除完成 marker，也不会因外部状态变化重新执行。
-- `add_person_profile_constraint` 在任何 profile 更新前校验 JSONB 对象键、数组元素、UUIDv7、字符串、notes 长度与唯一性；畸形 app-role 输入返回 `invalid_constraint`，profile 内容和 version 不变。没有权威词表时允许 label-only allergy，不能迫使用户编造 code。
-- 客户端不再用单一 `busy` 代表命令状态。transport、5xx 与 malformed success 都是结果未知，必须保留不可变 payload snapshot 与原 key；确定未执行的 400/403/404/409 才释放，应用重启后通过 GET 对账。
+- `add_person_profile_constraint` 在任何 profile 更新前校验 constraint ID 为小写 UUIDv7，并校验 JSONB 对象键、数组元素、字符串、notes 长度与唯一性；nil、UUIDv4 或其他畸形 app-role 输入返回 `invalid_constraint`，profile 内容和 version 不变。公共 `foodConceptIds`、`allergenCodes` 均最多 100 项且不得重复，food concept ID 统一为小写 UUIDv7；没有权威词表时允许 label-only allergy，不能迫使用户编造 code。
+- 客户端不再用单一 `busy` 代表命令状态。transport、5xx 与 malformed success 都是结果未知，必须保留包括资源版本在内的完整不可变 command snapshot 与原 key，重试不得从刷新后的 lot/profile 重建；确定未执行的 400/403/404/409 才释放，应用重启后通过 GET 对账。Profile 有 pending 时只开放原动作重试及完成/放弃对账，其他写操作全部冻结。
 - rule schema binding 的 boundary 与 rule ID 在 schema/refinement 定义处写入 Zod metadata；binding 和 OpenAPI schema component 从实际 metadata 派生，不维护第二份手写 boundary map。绕过 helper 或故意错绑都使门禁失败。
+- OpenAPI 3.0.3 由生成器把 Zod JSON Schema 方言确定性降级：`const`、数值型 `exclusiveMinimum`/`exclusiveMaximum` 和 `type: null` 不得进入产物；标准 OpenAPI validator、方言扫描和 committed/generated 深比较共同 fail closed。contracts 包显式声明会注册 schema metadata 的模块具有 side effects，避免构建优化静默丢失 binding。
 - production audit gate 严格校验例外 policy、有限可解析到期时间、完整 advisory metadata 和退出语义；仅 exit 0/1 的合法审计报告可继续，signal、exit 2、registry/network 错误及 advisory 新增、变化或消失均失败。
 
 ### 依赖审计和交付边界

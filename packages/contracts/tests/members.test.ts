@@ -16,6 +16,7 @@ import {
   joinHouseholdResultSchema,
   listHouseholdMembersResultSchema,
   patchPersonProfileRequestSchema,
+  personProfileLinkDisclosureSchema,
   personProfileSchema,
   removeDietaryConstraintRequestSchema,
   safeOwnerProfileResponseSchema,
@@ -497,6 +498,95 @@ test("hard dietary constraints require explicit confirmation; soft ones forbid i
   assert.equal(
     removeDietaryConstraintRequestSchema.safeParse({
       expectedVersion: 2,
+    }).success,
+    false,
+  );
+});
+
+test("constraint identifier arrays share bounded, unique, lowercase semantics", () => {
+  const validFoodConcept = "018f0000-0000-7000-8000-00000000000b";
+  const requestFor = (
+    foodConceptIds: readonly string[],
+    allergenCodes: readonly string[],
+  ) => {
+    const fields = {
+      kind: "allergy" as const,
+      enforcement: "hard" as const,
+      label: "结构化标识边界",
+      foodConceptIds,
+      allergenCodes,
+      visibility: "household" as const,
+    };
+    return {
+      expectedVersion: 0,
+      constraint: {
+        ...fields,
+        confirmation: {
+          acknowledged: true as const,
+          fingerprint: hardConstraintConfirmationFingerprint(fields),
+        },
+      },
+    };
+  };
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      requestFor([validFoodConcept], ["CODE-A"]),
+    ).success,
+    true,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      requestFor(
+        [validFoodConcept.toUpperCase()],
+        [],
+      ),
+    ).success,
+    false,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      requestFor([validFoodConcept, validFoodConcept], []),
+    ).success,
+    false,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      requestFor([], ["CODE-A", "CODE-A"]),
+    ).success,
+    false,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      requestFor(
+        Array.from({ length: 101 }, () => validFoodConcept),
+        [],
+      ),
+    ).success,
+    false,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      requestFor(
+        [],
+        Array.from({ length: 101 }, (_, index) => `CODE-${index}`),
+      ),
+    ).success,
+    false,
+  );
+});
+
+test("legacy link disclosure is explicit and cannot impersonate a snapshot", () => {
+  assert.deepEqual(
+    personProfileLinkDisclosureSchema.parse({
+      availability: "legacy_unavailable",
+    }),
+    { availability: "legacy_unavailable" },
+  );
+  assert.equal(
+    personProfileLinkDisclosureSchema.safeParse({
+      availability: "legacy_unavailable",
+      profileDisplayName: "迁移时名称",
+      privateConstraintCount: 1,
     }).success,
     false,
   );

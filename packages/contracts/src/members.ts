@@ -4,8 +4,9 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
 import { ruleSuperRefine } from "./contract-rule-schema.js";
 import {
+  allergenCodesSchema,
   dietaryConstraintIdSchema,
-  foodConceptIdSchema,
+  foodConceptIdsSchema,
   householdIdSchema,
   householdInviteIdSchema,
   membershipIdSchema,
@@ -388,18 +389,27 @@ export const personProfileLinkRequestStatusSchema = z.enum([
  * 关联确认只披露完成知情确认所需的稳定摘要。私密约束只给出数量，不返回
  * label、notes、结构化 ID 或其他内容。
  */
-export const personProfileLinkDisclosureSchema = z.strictObject({
-  disclosureVersion: z.literal(1),
-  profileVersion: versionSchema,
-  profileDisplayName: z.string().min(1).max(80),
-  householdVisibleHardConstraintCount: z.int().min(0),
-  householdVisibleSoftConstraintCount: z.int().min(0),
-  privateConstraintCount: z.int().min(0),
-  subjectWillGainProfileAccess: z.literal(true),
-  membershipExitArchivesProfile: z.literal(true),
-  rejoinRestoresAutomatically: z.literal(false),
-  privateConstraintContentsRemainPrivate: z.literal(true),
-});
+export const personProfileLinkDisclosureSchema = z.discriminatedUnion(
+  "availability",
+  [
+    z.strictObject({
+      availability: z.literal("available"),
+      disclosureVersion: z.literal(1),
+      profileVersion: versionSchema,
+      profileDisplayName: z.string().min(1).max(80),
+      householdVisibleHardConstraintCount: z.int().min(0),
+      householdVisibleSoftConstraintCount: z.int().min(0),
+      privateConstraintCount: z.int().min(0),
+      subjectWillGainProfileAccess: z.literal(true),
+      membershipExitArchivesProfile: z.literal(true),
+      rejoinRestoresAutomatically: z.literal(false),
+      privateConstraintContentsRemainPrivate: z.literal(true),
+    }),
+    z.strictObject({
+      availability: z.literal("legacy_unavailable"),
+    }),
+  ],
+);
 export type PersonProfileLinkDisclosure = z.infer<
   typeof personProfileLinkDisclosureSchema
 >;
@@ -599,8 +609,8 @@ const hardConstraintInputSchema = ruleSuperRefine(
     ]),
     enforcement: z.literal("hard"),
     label: z.string().min(1).max(120),
-    foodConceptIds: z.array(foodConceptIdSchema).default([]),
-    allergenCodes: z.array(z.string().min(1).max(64)).default([]),
+    foodConceptIds: foodConceptIdsSchema.default([]),
+    allergenCodes: allergenCodesSchema.default([]),
     notes: z.string().max(500).optional(),
     visibility: constraintVisibilitySchema,
     /** 硬约束必须携带显式确认；acknowledged 只接受字面 true。 */
@@ -632,7 +642,7 @@ const softConstraintInputSchema = z.strictObject({
   enforcement: z.literal("soft"),
   label: z.string().min(1).max(120),
   preference: z.enum(["prefer", "dislike"]),
-  foodConceptIds: z.array(foodConceptIdSchema).default([]),
+  foodConceptIds: foodConceptIdsSchema.default([]),
   notes: z.string().max(500).optional(),
   visibility: constraintVisibilitySchema,
 });

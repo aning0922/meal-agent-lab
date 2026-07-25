@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import SwaggerParser from "@apidevtools/swagger-parser";
 import type { OpenAPIV3 } from "openapi-types";
 
 import {
@@ -34,6 +35,43 @@ const requiredPaths = [
 ] as const;
 
 const generated = await generateOpenApiDocument();
+await SwaggerParser.validate(generated);
+
+const dialectViolations: string[] = [];
+const inspectDialect = (value: unknown, path = "$"): void => {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) =>
+      inspectDialect(item, `${path}[${index}]`)
+    );
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const [key, item] of Object.entries(value)) {
+    const itemPath = `${path}.${key}`;
+    if (key === "const") dialectViolations.push(`${itemPath}: const`);
+    if (
+      (key === "exclusiveMinimum" ||
+        key === "exclusiveMaximum") &&
+      typeof item === "number"
+    ) {
+      dialectViolations.push(`${itemPath}: numeric exclusive bound`);
+    }
+    if (
+      key === "type" &&
+      (item === "null" ||
+        (Array.isArray(item) && item.includes("null")))
+    ) {
+      dialectViolations.push(`${itemPath}: null type`);
+    }
+    inspectDialect(item, itemPath);
+  }
+};
+inspectDialect(generated);
+assert.deepEqual(
+  dialectViolations,
+  [],
+  "generated OpenAPI must use only OpenAPI 3.0 schema keywords",
+);
 assert.equal(generated.info.version, "0.4.0");
 assert.deepEqual(
   (
@@ -144,6 +182,66 @@ const createLotRequest = JSON.stringify(
     "/api/v1/households/{id}/inventory-lots"
   ]?.post?.requestBody,
 );
+const addConstraintRequestObject =
+  generated.paths[
+    "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints"
+  ]?.post?.requestBody;
+const collectPropertySchemas = (
+  value: unknown,
+  propertyName: string,
+): Record<string, unknown>[] => {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) =>
+      collectPropertySchemas(item, propertyName)
+    );
+  }
+  if (value === null || typeof value !== "object") return [];
+  const object = value as Record<string, unknown>;
+  const properties =
+    object["properties"] !== null &&
+    typeof object["properties"] === "object" &&
+    !Array.isArray(object["properties"])
+      ? object["properties"] as Record<string, unknown>
+      : {};
+  const direct =
+    properties[propertyName] !== null &&
+    typeof properties[propertyName] === "object" &&
+    !Array.isArray(properties[propertyName])
+      ? [properties[propertyName] as Record<string, unknown>]
+      : [];
+  return [
+    ...direct,
+    ...Object.values(object).flatMap((item) =>
+      collectPropertySchemas(item, propertyName)
+    ),
+  ];
+};
+for (const propertyName of ["foodConceptIds", "allergenCodes"]) {
+  const schemas = collectPropertySchemas(
+    addConstraintRequestObject,
+    propertyName,
+  );
+  assert.ok(
+    schemas.length > 0,
+    `${propertyName} must appear in the public request schema`,
+  );
+  for (const schema of schemas) {
+    assert.equal(schema["maxItems"], 100);
+    assert.equal(schema["uniqueItems"], true);
+  }
+}
+for (const schema of collectPropertySchemas(
+  addConstraintRequestObject,
+  "foodConceptIds",
+)) {
+  assert.equal(
+    JSON.stringify(schema).includes(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-7",
+    ),
+    true,
+    "food concept UUIDv7 must use the lowercase public pattern",
+  );
+}
 assert.equal(consumedRequest.includes('"exact"'), true);
 assert.equal(consumedRequest.includes('"approximate"'), false);
 assert.equal(consumedRequest.includes('"type":"string"'), true);

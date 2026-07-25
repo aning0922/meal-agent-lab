@@ -15,13 +15,13 @@
 - 所有通用幂等写 route 由规范化路由注册表穷尽选择 `full`、`one-time-secret` 或 `receipt`，endpoint 不再传临时 redact 回调。
 - PersonProfile 与 constraint 写操作首次和重放都只返回 receipt；完整资源只能通过授权 GET 获取。邀请码只在首次响应出现，缓存和重放使用安全投影。
 - `0002_stage_08_audit_closeout.sql` 把历史敏感 profile 响应转为 receipt 或 `nonReplayable` tombstone；`0003_stage_08_secondary_closeout.sql` 保留并加固相同完成标识，成员自退出在 active membership 消失后仍可先于 bootstrap 重放，最终写入必须命中一行。
-- `0004_stage_08_final_closeout.sql` 不回改 0000—0003：它增加关联披露快照、提交后映射 409 的终态事务语义、统一 household 关联锁和完整 constraint JSONB 数据库校验。
+- `0004_stage_08_final_closeout.sql` 不回改 0000—0003：它先删除不认识新终态的旧 CHECK，再把历史 pending 终态化为明确的 `legacy_unavailable`，最后建立新约束；同时增加提交后映射 409 的事务语义、统一 household 关联锁和完整 constraint JSONB/UUIDv7 数据库校验。
 - `inviteCode` 的 camelCase、snake_case、大小写与嵌套日志键都进入脱敏边界。
 
 ### 数据库权限与并发
 
 - `meal_agent_app` 不再拥有 `memberships UPDATE` 或 `person_profiles UPDATE`；档案身份字段不能由应用角色直接更改，初始 status/version/constraints 和 linked/dining-only 创建者均受 RLS 约束。
-- 成员退出/移除、邀请赎回、profile 字段/状态/约束和关联确认通过窄参数 `SECURITY DEFINER` 函数执行，固定 `search_path`、完整限定对象、内部时钟、安全默认 capabilities、NULL version 拒绝并撤销 PUBLIC EXECUTE。
+- 成员退出/移除、邀请赎回、profile 字段/状态/约束、link request 创建和关联确认通过窄参数 `SECURITY DEFINER` 函数执行，固定 `search_path`、完整限定对象、内部时钟、安全默认 capabilities、NULL version 拒绝并撤销 PUBLIC EXECUTE。应用角色不能直接 INSERT link request 或伪造 disclosure。
 - HTTP capability 与跨家庭 404 仍是第一层授权，数据库函数和 FORCE RLS 是 defense-in-depth。
 - 两个不同邀请码并发加入同一家庭按 household+user 串行化：一个成功，另一个稳定返回 already-member，不泄漏唯一约束为 500。
 
@@ -29,10 +29,10 @@
 
 - 独立 profile list/get 覆盖 linked 与 dining-only profile，并支持 `active`、`archived`、`all`。
 - archive 与 restore 始终复用原 profile ID；退出或移除成员时原子归档 linked profile，重新加入不自动恢复，也不复制私人约束。
-- dining-only profile 关联成员由 owner 创建请求、目标用户确认；不按姓名合并。直接创建 linked profile 只能由其本人执行，并与关联确认共享锁和锁顺序；并发结果只能一方成功、另一方 409。
+- dining-only profile 关联成员由 owner 调用受控函数创建请求，数据库在锁内计算披露；目标用户确认时再次验证 membership active。不按姓名合并。直接创建 linked profile 只能由其本人执行，并与 create/list/confirm、remove/archive/restore 共享 household link advisory 和行锁总序；并发无死锁、无 500。
 - pending link request 在同一 household 锁内把过期、目标成员退出、档案归档、profile 变化和目标已有档案物化为终态，过期后可对不同目标重新发起；HTTP 409 只在事务提交终态后映射。
 - link 409 的安全失败回执也在同一事务完成幂等记录并断言命中一行；同 key 重放同一失败，不删除完成 marker 或重新执行。
-- link request 固化发起时的 profile version、名称、家庭可见 hard/soft 数量和私密约束数量；确认不披露私密内容，披露后 profile 任一版本变化均要求重新 GET、展示和确认。
+- link request 固化发起时的 profile version、名称、家庭可见 hard/soft 数量和私密约束数量；确认不披露私密内容，披露后 profile 任一版本变化均要求重新 GET、展示和确认。历史请求没有快照证据时只返回 `legacy_unavailable`，不会用迁移时当前数据冒充。
 - owner/self 能读取完整字段；其他家庭成员只读安全投影，结构上排除 `subject_and_owner`。
 - owner 行的 `isSelf` 已按实际登录用户计算并有页面级回归。
 
@@ -42,19 +42,20 @@
 - 客户端支持 allergy、religious、ethical、explicit avoid 和 food safety exclusion；在没有权威词表时，label-only allergy 也能诚实登记，不要求用户编造内部 code。
 - 当前没有权威映射词表；字符串或 UUID 形状校验不构成 structured mapping。迁移、运行时、契约和客户端统一把全部 hard constraint 标为 `needs_structured_mapping`，后续推荐必须阻断。
 - hard confirmation fingerprint 包含全部字段和 visibility，任一字段变化都会使旧确认失效。
+- `foodConceptIds` 和 `allergenCodes` 的公共/数据库边界统一为最多 100 项且不得重复；food concept ID 只接受小写 UUIDv7。非法 HTTP 输入为 400，nil/v4 或畸形 app-role 输入不会改变 profile/version。
 - FAM-003 已完成。FAM-004 的登记、双确认、隐私和五类页面能力已实现，但在权威映射与推荐安全闭环完成前仍为部分完成。FAM-005 当前只完成厨艺等级与未知值的查看/编辑，仍为部分完成。
 
 ### 契约与 OpenAPI
 
 - `@meal-agent/contracts` 为 `0.4.0`，客户端、API、测试和 OpenAPI 共用同一事实源。
-- 当前公共边界的 31 条 refine/superRefine 与 2 条原生数值规则在 schema 定义处通过统一 helper 绑定；binding 及 OpenAPI component 从实际 Zod metadata 派生，故意错绑会使门禁失败。
+- 当前公共边界的 33 条 refine/superRefine 与 2 条原生 schema 规则在 schema 定义处通过统一 helper 绑定；binding 及 OpenAPI component 从实际 Zod metadata 派生，contracts 构建显式保留注册模块的 side effects，故意错绑会使门禁失败。
 - 创建库存 initial amount、消耗 amount 必须为正数；inventory event delta 必须非零，lot `currentQuantity` 可以为零。运行时、生成 schema、OpenAPI 和关键 HTTP 行为有一致性测试。
-- 生成产物为 [`services/api/openapi/stage-08.openapi.json`](../services/api/openapi/stage-08.openapi.json)，覆盖 19 个 path、25 个 method operation；禁止手工维护第二份 OpenAPI。
+- 生成产物为 [`services/api/openapi/stage-08.openapi.json`](../services/api/openapi/stage-08.openapi.json)，覆盖 19 个 path、25 个 method operation；生成器确定性转换 JSON Schema/OpenAPI 3.0 方言差异，标准 validator 和关键字扫描禁止 `const`、数值型 exclusive bound 与 `type: null`；禁止手工维护第二份 OpenAPI。
 
 ### 客户端与 GUI
 
 - MembersPage、ProfilePage 和 HouseholdsPage 均有真实 React 页面渲染测试，不以 core/API 调用冒充页面测试。
-- Households、Join、Inventory 与 Profile 使用同一命令状态机。同一次动作在 transport、5xx 或 malformed success 后保留不可变 payload 与原 idempotency key，只能同请求重试或 GET 对账后放弃；确定的 400/403/404/409 释放旧动作。应用重启不持久化敏感请求体。
+- Households、Join、Inventory 与 Profile 使用同一命令状态机。同一次动作在 transport、5xx 或 malformed success 后保留包括资源/version 在内的完整不可变 command snapshot 与原 idempotency key；刷新库存或档案后仍执行保存的原命令，不从新 lot/profile 重建。Profile pending 时其他写入口全部冻结，只能重试原动作或 GET 对账后明确完成/放弃；确定的 400/403/404/409 释放旧动作。应用重启不持久化敏感请求体。
 - 关联确认显示安全档案名称、可见约束摘要、权限和归档/保留后果，不只显示 UUID；不可恢复档案禁用恢复按钮并解释原因，切换档案会清除档案级草稿。
 - weapp 生产构建已通过。微信开发者工具 RC `2.02.2607171` 的二次复跑绑定前一轮已提交的页面实现子树，覆盖 fake 登录、合成家庭、owner/self、五类 hard constraint 入口、未经权威映射的阻断态和 archive/restore 同 ID；本轮新增的结果未知状态机与关联 TOCTOU 由实际页面渲染、API 和 PostgreSQL 测试验证，未伪造新的 GUI Pass。截图仅保留模拟器区域并清理敏感元数据，证据边界见 [GUI 记录](evidence/stage-08-gui/README.md)。
 
@@ -64,10 +65,10 @@
 
 | 层 | 通过数量/结果 |
 | --- | --- |
-| contracts | 24/24 |
+| contracts | 26/26 |
 | API unit | 12/12 |
 | API HTTP | 5/5 |
-| PostgreSQL migration/RLS/concurrency | 41/41 |
+| PostgreSQL migration/RLS/concurrency | 43/43 |
 | client unit + page rendering | 102/102 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
 | audit gate 反向单测 | 7/7 |

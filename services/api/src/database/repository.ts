@@ -186,12 +186,13 @@ interface PersonProfileLinkRequestRow {
   readonly expires_at: Date | string;
   readonly confirmed_at: Date | string | null;
   readonly terminal_reason: string | null;
-  readonly disclosure_version: number;
-  readonly profile_version_at_request: number;
-  readonly disclosed_profile_name: string;
-  readonly disclosed_household_hard_count: number;
-  readonly disclosed_household_soft_count: number;
-  readonly disclosed_private_constraint_count: number;
+  readonly disclosure_status: "available" | "legacy_unavailable";
+  readonly disclosure_version: number | null;
+  readonly profile_version_at_request: number | null;
+  readonly disclosed_profile_name: string | null;
+  readonly disclosed_household_hard_count: number | null;
+  readonly disclosed_household_soft_count: number | null;
+  readonly disclosed_private_constraint_count: number | null;
   readonly version: number;
 }
 
@@ -292,20 +293,25 @@ const mapPersonProfileLinkRequest = (
     ...(row.confirmed_at === null
       ? {}
       : { confirmedAt: new Date(row.confirmed_at).toISOString() }),
-    disclosure: {
-      disclosureVersion: row.disclosure_version,
-      profileVersion: row.profile_version_at_request,
-      profileDisplayName: row.disclosed_profile_name,
-      householdVisibleHardConstraintCount:
-        row.disclosed_household_hard_count,
-      householdVisibleSoftConstraintCount:
-        row.disclosed_household_soft_count,
-      privateConstraintCount: row.disclosed_private_constraint_count,
-      subjectWillGainProfileAccess: true,
-      membershipExitArchivesProfile: true,
-      rejoinRestoresAutomatically: false,
-      privateConstraintContentsRemainPrivate: true,
-    },
+    disclosure:
+      row.disclosure_status === "legacy_unavailable"
+        ? { availability: "legacy_unavailable" }
+        : {
+            availability: "available",
+            disclosureVersion: row.disclosure_version,
+            profileVersion: row.profile_version_at_request,
+            profileDisplayName: row.disclosed_profile_name,
+            householdVisibleHardConstraintCount:
+              row.disclosed_household_hard_count,
+            householdVisibleSoftConstraintCount:
+              row.disclosed_household_soft_count,
+            privateConstraintCount:
+              row.disclosed_private_constraint_count,
+            subjectWillGainProfileAccess: true,
+            membershipExitArchivesProfile: true,
+            rejoinRestoresAutomatically: false,
+            privateConstraintContentsRemainPrivate: true,
+          },
     version: row.version,
   });
 
@@ -2108,126 +2114,62 @@ export class ApiRepository {
             statusCode: 201,
           },
           async () => {
-            await client.query(
-              `SELECT meal_agent_private.materialize_person_profile_link_requests(
-                 $1::uuid, $2::uuid, $3::uuid
+            const requestEntityId = newEntityId();
+            const creation = await client.query<{
+              result_code: string;
+              out_request_id: string | null;
+            }>(
+              `SELECT result_code, out_request_id
+               FROM meal_agent_private.create_person_profile_link_request(
+                 $1::uuid, $2::uuid, $3::uuid, $4::integer
                )`,
-              [householdId, profileId, request.targetMembershipId],
+              [
+                requestEntityId,
+                profileId,
+                request.targetMembershipId,
+                request.expiresInHours,
+              ],
             );
-            const target = await client.query(
-              `SELECT 1
-               FROM memberships
-               WHERE household_id = $1
-                 AND id = $2
-                 AND status = 'active'`,
-              [householdId, request.targetMembershipId],
-            );
-            if (target.rowCount === 0) {
-              throw new AppError(
-                "RESOURCE_NOT_FOUND",
-                "Target membership was not found",
-              );
-            }
-            const duplicate = await client.query(
-              `SELECT 1
-               FROM person_profile_link_requests
-               WHERE household_id = $1
-                 AND profile_id = $2
-                 AND status = 'pending'`,
-              [householdId, profileId],
-            );
-            if ((duplicate.rowCount ?? 0) > 0) {
-              return committedDomainError(
-                "CONFLICT",
-                "This profile already has a pending link request",
-              );
-            }
-            const profile = await client.query<PersonProfileRow>(
-              `SELECT *
-               FROM person_profiles
-               WHERE household_id = $1 AND id = $2`,
-              [householdId, profileId],
-            );
-            const profileRow = profile.rows[0];
+            const outcome = creation.rows[0];
             if (
-              profileRow === undefined ||
-              profileRow.status !== "active"
+              outcome === undefined ||
+              outcome.result_code === "invalid_request"
+            ) {
+              throw new AppError(
+                "VALIDATION_FAILED",
+                "Profile link request was invalid",
+              );
+            }
+            if (outcome.result_code === "forbidden") {
+              throw new AppError(
+                "FORBIDDEN",
+                "Only an owner may initiate a profile link",
+              );
+            }
+            if (
+              outcome.result_code === "target_not_found" ||
+              outcome.result_code === "profile_not_found"
             ) {
               throw new AppError(
                 "RESOURCE_NOT_FOUND",
-                "Active profile was not found",
+                "Profile link resource was not found",
               );
             }
-            if (profileRow.linked_membership_id !== null) {
+            if (
+              outcome.result_code !== "created" ||
+              outcome.out_request_id === null
+            ) {
               return committedDomainError(
                 "CONFLICT",
-                "Only a dining-only profile can be linked",
+                "Profile link request conflicts with current lifecycle state",
               );
             }
-            const targetProfile = await client.query(
-              `SELECT 1
-               FROM person_profiles
-               WHERE household_id = $1
-                 AND linked_membership_id = $2`,
-              [householdId, request.targetMembershipId],
-            );
-            if ((targetProfile.rowCount ?? 0) > 0) {
-              return committedDomainError(
-                "CONFLICT",
-                "Target membership already has a profile",
-              );
-            }
-            const disclosedProfile = mapPersonProfile(profileRow);
-            const householdHardCount =
-              disclosedProfile.dietaryConstraints.filter(
-                (constraint) =>
-                  constraint.visibility === "household" &&
-                  constraint.enforcement === "hard",
-              ).length;
-            const householdSoftCount =
-              disclosedProfile.dietaryConstraints.filter(
-                (constraint) =>
-                  constraint.visibility === "household" &&
-                  constraint.enforcement === "soft",
-              ).length;
-            const privateCount =
-              disclosedProfile.dietaryConstraints.filter(
-                (constraint) =>
-                  constraint.visibility === "subject_and_owner",
-              ).length;
-            const now = new Date();
             const inserted =
               await client.query<PersonProfileLinkRequestRow>(
-                `INSERT INTO person_profile_link_requests (
-                 id, household_id, profile_id, target_membership_id,
-                   initiated_by_user_id, status, created_at, expires_at,
-                   confirmed_at, terminal_reason, disclosure_version,
-                   profile_version_at_request, disclosed_profile_name,
-                   disclosed_household_hard_count,
-                   disclosed_household_soft_count,
-                   disclosed_private_constraint_count, version
-                 ) VALUES (
-                   $1, $2, $3, $4, $5, 'pending', $6, $7, NULL, NULL,
-                   1, $8, $9, $10, $11, $12, 0
-                 )
-                 RETURNING *`,
-                [
-                  newEntityId(),
-                  householdId,
-                  profileId,
-                  request.targetMembershipId,
-                  context.userId,
-                  now,
-                  new Date(
-                    now.getTime() +
-                      request.expiresInHours * 3_600_000,
-                  ),
-                  profileRow.version,
-                  profileRow.display_name,
-                  householdHardCount,
-                  householdSoftCount,
-                  privateCount,
-                ],
+                `SELECT *
+                 FROM person_profile_link_requests
+                 WHERE household_id = $1 AND id = $2`,
+                [householdId, outcome.out_request_id],
               );
             const row = inserted.rows[0];
             if (row === undefined) {
@@ -2622,6 +2564,12 @@ export class ApiRepository {
               throw new AppError(
                 "FORBIDDEN",
                 "This profile may only be changed by its subject or an owner",
+              );
+            }
+            if (outcome.result_code === "invalid_constraint") {
+              throw new AppError(
+                "VALIDATION_FAILED",
+                "Dietary constraint payload is invalid",
               );
             }
             if (

@@ -107,10 +107,11 @@ export default function HouseholdsPage() {
     const payload = { inviteCode: inviteCode.trim() }
     let outcome: Awaited<ReturnType<typeof joinHousehold>>
     try {
+      const command = actionKeys.acquireSnapshot(joinAction, payload)
       outcome = await joinHousehold(
         services,
-        inviteCode,
-        actionKeys.acquire(joinAction, payload)
+        command.payload.inviteCode,
+        command.key
       )
     } catch {
       actionKeys.markUnknown(joinAction)
@@ -159,10 +160,11 @@ export default function HouseholdsPage() {
     const payload = { name, ownerDisplayName }
     let outcome: Awaited<ReturnType<typeof createHousehold>>
     try {
+      const command = actionKeys.acquireSnapshot(createAction, payload)
       outcome = await createHousehold(
         services,
-        payload,
-        actionKeys.acquire(createAction, payload)
+        command.payload,
+        command.key
       )
     } catch {
       actionKeys.markUnknown(createAction)

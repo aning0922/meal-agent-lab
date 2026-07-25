@@ -22,6 +22,7 @@ import {
   type AuthenticatedSession,
 } from "@meal-agent/contracts";
 import type { LightMyRequestResponse } from "fastify";
+import { v7 as uuidv7 } from "uuid";
 
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
@@ -546,7 +547,7 @@ test("hard dietary constraints demand confirmation and record who confirmed; sof
   );
   assert.equal(missingConfirmation.statusCode, 400);
 
-  // allergy 无结构化编码 → 400。
+  // confirmation 缺少全字段指纹 → 400；这不否定 label-only allergy。
   const noCode = await addConstraint(
     owner,
     householdId,
@@ -564,6 +565,52 @@ test("hard dietary constraints demand confirmation and record who confirmed; sof
     },
   );
   assert.equal(noCode.statusCode, 400);
+
+  const invalidIdentifierFields = [
+    {
+      foodConceptIds: [
+        "018f0000-0000-7000-8000-00000000000A",
+      ],
+      allergenCodes: [],
+    },
+    {
+      foodConceptIds: [],
+      allergenCodes: ["DUPLICATE", "DUPLICATE"],
+    },
+    {
+      foodConceptIds: Array.from(
+        { length: 101 },
+        () => "018f0000-0000-7000-8000-00000000000a",
+      ),
+      allergenCodes: [],
+    },
+  ];
+  for (const [index, identifiers] of invalidIdentifierFields.entries()) {
+    const fields = {
+      kind: "allergy" as const,
+      enforcement: "hard" as const,
+      label: `非法标识-${index}`,
+      ...identifiers,
+      visibility: "household" as const,
+    };
+    const response = await addConstraint(
+      owner,
+      householdId,
+      profileId,
+      `hard-invalid-identifiers-${index}`,
+      {
+        expectedVersion: 0,
+        constraint: {
+          ...fields,
+          confirmation: {
+            acknowledged: true,
+            fingerprint: hardConstraintConfirmationFingerprint(fields),
+          },
+        },
+      },
+    );
+    assert.equal(response.statusCode, 400, response.body);
+  }
 
   // 合法硬约束 → 201，服务端写入 confirmedAt + confirmedByUserId=操作者。
   const hardFields = {
@@ -1087,6 +1134,8 @@ test("membership privilege boundary blocks direct escalation and exposes only co
     app_transition_execute: boolean;
     app_confirm_execute: boolean;
     app_materialize_execute: boolean;
+    app_link_create_execute: boolean;
+    app_profile_transition_execute: boolean;
     app_constraint_execute: boolean;
     public_execute_count: number;
   }>(
@@ -1122,6 +1171,16 @@ test("membership privilege boundary blocks direct escalation and exposes only co
        ) AS app_materialize_execute,
        has_function_privilege(
          'meal_agent_app',
+         'meal_agent_private.create_person_profile_link_request(uuid,uuid,uuid,integer)',
+         'EXECUTE'
+       ) AS app_link_create_execute,
+       has_function_privilege(
+         'meal_agent_app',
+         'meal_agent_private.transition_person_profile_status(uuid,integer,text)',
+         'EXECUTE'
+       ) AS app_profile_transition_execute,
+       has_function_privilege(
+         'meal_agent_app',
          'meal_agent_private.add_person_profile_constraint(uuid,integer,uuid,jsonb,boolean)',
          'EXECUTE'
        ) AS app_constraint_execute,
@@ -1139,6 +1198,8 @@ test("membership privilege boundary blocks direct escalation and exposes only co
              'transition_membership_status',
              'confirm_person_profile_link',
              'materialize_person_profile_link_requests',
+             'create_person_profile_link_request',
+             'transition_person_profile_status',
              'add_person_profile_constraint'
            )
            AND privilege.grantee = 0
@@ -1153,6 +1214,8 @@ test("membership privilege boundary blocks direct escalation and exposes only co
     app_transition_execute: true,
     app_confirm_execute: true,
     app_materialize_execute: true,
+    app_link_create_execute: true,
+    app_profile_transition_execute: true,
     app_constraint_execute: true,
     public_execute_count: 0,
   });
@@ -1292,7 +1355,7 @@ test("app-role PersonProfile SQL cannot bypass ownership, initial-state, identit
          )`,
         [
           profileId,
-          randomUUID(),
+          uuidv7(),
           JSON.stringify({
             kind: "religious",
             enforcement: "hard",
@@ -1307,40 +1370,93 @@ test("app-role PersonProfile SQL cannot bypass ownership, initial-state, identit
   );
   assert.equal(unconfirmed.rows[0]?.result_code, "confirmation_required");
 
+  const validConstraintShape = {
+    kind: "allergy",
+    enforcement: "hard",
+    label: "反向测试约束",
+    foodConceptIds: [],
+    allergenCodes: [],
+    visibility: "household",
+  };
+  const duplicateFoodConceptId = uuidv7();
   const malformedConstraints = [
     {
-      kind: "allergy",
-      enforcement: "hard",
-      label: "错误 foodConcept",
-      foodConceptIds: [123],
-      allergenCodes: [],
-      visibility: "household",
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        label: "错误 foodConcept",
+        foodConceptIds: [123],
+      },
     },
     {
-      kind: "allergy",
-      enforcement: "hard",
-      label: "错误 allergen",
-      foodConceptIds: [],
-      allergenCodes: [{}],
-      visibility: "household",
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        label: "错误 allergen",
+        allergenCodes: [{}],
+      },
     },
     {
-      kind: "allergy",
-      enforcement: "hard",
-      label: "错误 notes null",
-      foodConceptIds: [],
-      allergenCodes: [],
-      notes: null,
-      visibility: "household",
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        label: "错误 notes null",
+        notes: null,
+      },
     },
     {
-      kind: "allergy",
-      enforcement: "hard",
-      label: "错误 notes 超长",
-      foodConceptIds: [],
-      allergenCodes: [],
-      notes: "x".repeat(501),
-      visibility: "household",
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        label: "错误 notes 超长",
+        notes: "x".repeat(501),
+      },
+    },
+    { id: randomUUID(), input: validConstraintShape },
+    {
+      id: "00000000-0000-0000-0000-000000000000",
+      input: validConstraintShape,
+    },
+    {
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        foodConceptIds: [
+          duplicateFoodConceptId,
+          duplicateFoodConceptId,
+        ],
+      },
+    },
+    {
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        foodConceptIds: [uuidv7().toUpperCase()],
+      },
+    },
+    {
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        foodConceptIds: Array.from({ length: 101 }, () => uuidv7()),
+      },
+    },
+    {
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        allergenCodes: ["X-CODE", "X-CODE"],
+      },
+    },
+    {
+      id: uuidv7(),
+      input: {
+        ...validConstraintShape,
+        allergenCodes: Array.from(
+          { length: 101 },
+          (_, item) => `CODE-${item}`,
+        ),
+      },
     },
   ];
   for (const [index, malformed] of malformedConstraints.entries()) {
@@ -1354,7 +1470,7 @@ test("app-role PersonProfile SQL cannot bypass ownership, initial-state, identit
            FROM meal_agent_private.add_person_profile_constraint(
              $1::uuid, 0, $2::uuid, $3::jsonb, true
            )`,
-          [profileId, randomUUID(), JSON.stringify(malformed)],
+          [profileId, malformed.id, JSON.stringify(malformed.input)],
         );
       },
     );
@@ -1398,14 +1514,15 @@ test("app-role PersonProfile SQL cannot bypass ownership, initial-state, identit
         `INSERT INTO person_profile_link_requests (
            id, household_id, profile_id, target_membership_id,
            initiated_by_user_id, status, created_at, expires_at,
-           confirmed_at, terminal_reason, disclosure_version,
+           confirmed_at, terminal_reason, disclosure_status,
+           disclosure_version,
            profile_version_at_request, disclosed_profile_name,
            disclosed_household_hard_count, disclosed_household_soft_count,
            disclosed_private_constraint_count, version
          ) VALUES (
            $1, $2, $3, $4, $5, 'pending', clock_timestamp(),
            clock_timestamp() + interval '1 hour', NULL, NULL,
-           1, 0, '越权关联', 0, 0, 0, 0
+           'available', 1, 0, '越权关联', 0, 0, 0, 0
          )`,
         [
           randomUUID(),
@@ -1416,12 +1533,13 @@ test("app-role PersonProfile SQL cannot bypass ownership, initial-state, identit
         ],
       );
     }),
-    /row-level security policy/,
+    /permission denied for table person_profile_link_requests/,
   );
 
   const privileges = await persistence.pool.query<{
     app_update: boolean;
     app_insert: boolean;
+    app_link_insert: boolean;
   }>(
     `SELECT
        has_table_privilege(
@@ -1429,11 +1547,15 @@ test("app-role PersonProfile SQL cannot bypass ownership, initial-state, identit
        ) AS app_update,
        has_table_privilege(
          'meal_agent_app', 'public.person_profiles', 'INSERT'
-       ) AS app_insert`,
+       ) AS app_insert,
+       has_table_privilege(
+         'meal_agent_app', 'public.person_profile_link_requests', 'INSERT'
+       ) AS app_link_insert`,
   );
   assert.deepEqual(privileges.rows[0], {
     app_update: false,
     app_insert: true,
+    app_link_insert: false,
   });
 });
 
@@ -1774,6 +1896,7 @@ test("link disclosure is snapshotted and profile changes commit profile_changed 
   const linkRequest =
     personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
   assert.deepEqual(linkRequest.disclosure, {
+    availability: "available",
     disclosureVersion: 1,
     profileVersion: 0,
     profileDisplayName: "披露时名称",
@@ -2274,6 +2397,237 @@ test("an expired T1 request is materialized before the same profile is reissued 
     status: "expired",
     terminal_reason: "expired",
   });
+});
+
+test("controlled link creation rejects inactive targets and confirm revalidates activity", async () => {
+  const owner = await login("link-inactive-owner");
+  const household = await createHousehold(owner, "link-inactive-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(
+    owner,
+    householdId,
+    "link-inactive-invite",
+  );
+  const member = await login("link-inactive-member");
+  const membership = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "link-inactive-join")).json(),
+  ).data.membership;
+  const dining = await createProfile(
+    owner,
+    householdId,
+    "link-inactive-profile",
+    {
+      displayName: "失效目标档案",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  const profileId =
+    personProfileMutationSuccessSchema.parse(dining.json()).data.profileId;
+  const requested = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${profileId}/link-requests`,
+    headers: idempotent(owner, "link-inactive-request"),
+    payload: {
+      targetMembershipId: membership.id,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+  assert.equal(requested.statusCode, 201, requested.body);
+  const linkRequest =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+
+  // 模拟 bootstrap 与 confirm 之间目标失效；函数必须在同一锁内再次验证。
+  await persistence.pool.query(
+    `UPDATE memberships
+     SET status = 'removed', version = version + 1
+     WHERE id = $1`,
+    [membership.id],
+  );
+  const confirm = await withAppTransaction(
+    persistence,
+    async (client) => {
+      await setUserContext(client, member.user.id);
+      await setHouseholdContext(client, householdId);
+      return client.query<{ result_code: string }>(
+        `SELECT result_code
+         FROM meal_agent_private.confirm_person_profile_link(
+           $1::uuid, $2::integer
+         )`,
+        [linkRequest.id, linkRequest.version],
+      );
+    },
+  );
+  assert.equal(
+    confirm.rows[0]?.result_code,
+    "target_membership_inactive",
+  );
+  const terminal = await persistence.pool.query<{
+    status: string;
+    terminal_reason: string | null;
+  }>(
+    `SELECT status, terminal_reason
+     FROM person_profile_link_requests WHERE id = $1`,
+    [linkRequest.id],
+  );
+  assert.deepEqual(terminal.rows[0], {
+    status: "cancelled",
+    terminal_reason: "target_membership_inactive",
+  });
+
+  const rejectedCreate = await withAppTransaction(
+    persistence,
+    async (client) => {
+      await setUserContext(client, owner.user.id);
+      await setHouseholdContext(client, householdId);
+      return client.query<{ result_code: string }>(
+        `SELECT result_code
+         FROM meal_agent_private.create_person_profile_link_request(
+           $1::uuid, $2::uuid, $3::uuid, 24
+         )`,
+        [uuidv7(), profileId, membership.id],
+      );
+    },
+  );
+  assert.equal(rejectedCreate.rows[0]?.result_code, "target_not_found");
+});
+
+test("link create/list/confirm serialize with archive/remove without deadlock or 500", { timeout: 10_000 }, async () => {
+  const owner = await login("link-lock-owner");
+  const household = await createHousehold(owner, "link-lock-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "link-lock-invite");
+  const member = await login("link-lock-member");
+  const membership = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "link-lock-join")).json(),
+  ).data.membership;
+  const createDining = async (key: string, displayName: string) => {
+    const response = await createProfile(owner, householdId, key, {
+      displayName,
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    });
+    return personProfileMutationSuccessSchema.parse(response.json()).data;
+  };
+  const requestLink = (
+    profileId: string,
+    key: string,
+    targetMembershipId = membership.id,
+  ) => app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${profileId}/link-requests`,
+    headers: idempotent(owner, key),
+    payload: {
+      targetMembershipId,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+
+  const confirmProfile = await createDining(
+    "link-lock-confirm-profile",
+    "确认竞态档案",
+  );
+  const requested = await requestLink(
+    confirmProfile.profileId,
+    "link-lock-confirm-request",
+  );
+  const linkRequest =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+  const [confirmed, removed] = await Promise.all([
+    app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${householdId}/person-profile-link-requests/` +
+        `${linkRequest.id}/confirm`,
+      headers: idempotent(member, "link-lock-confirm"),
+      payload: {
+        expectedVersion: linkRequest.version,
+        subjectConfirmation: { acknowledged: true },
+      },
+    }),
+    app.inject({
+      method: "DELETE",
+      url:
+        `/api/v1/households/${householdId}/memberships/${membership.id}`,
+      headers: idempotent(owner, "link-lock-remove"),
+    }),
+  ]);
+  assert.notEqual(confirmed.statusCode, 500, confirmed.body);
+  assert.notEqual(removed.statusCode, 500, removed.body);
+
+  const secondInvite = await issueInvite(
+    owner,
+    householdId,
+    "link-lock-second-invite",
+  );
+  const secondMember = await login("link-lock-second-member");
+  const secondMembership = joinHouseholdSuccessSchema.parse(
+    (await join(
+      secondMember,
+      secondInvite.inviteCode,
+      "link-lock-second-join",
+    )).json(),
+  ).data.membership;
+
+  const listProfile = await createDining(
+    "link-lock-list-profile",
+    "列表归档竞态",
+  );
+  const listRequested = await requestLink(
+    listProfile.profileId,
+    "link-lock-list-request",
+    secondMembership.id,
+  );
+  assert.equal(listRequested.statusCode, 201, listRequested.body);
+  const [listed, archived] = await Promise.all([
+    app.inject({
+      method: "GET",
+      url:
+        `/api/v1/households/${householdId}` +
+        "/person-profile-link-requests",
+      headers: authHeaders(owner),
+    }),
+    app.inject({
+      method: "PATCH",
+      url:
+        `/api/v1/households/${householdId}/person-profiles/` +
+        `${listProfile.profileId}`,
+      headers: idempotent(owner, "link-lock-list-archive"),
+      payload: { operation: "archive", expectedVersion: 0 },
+    }),
+  ]);
+  assert.notEqual(listed.statusCode, 500, listed.body);
+  assert.equal(archived.statusCode, 200, archived.body);
+
+  const createProfileRace = await createDining(
+    "link-lock-create-profile",
+    "创建归档竞态",
+  );
+  const [created, createArchived] = await Promise.all([
+    requestLink(
+      createProfileRace.profileId,
+      "link-lock-create-request",
+      secondMembership.id,
+    ),
+    app.inject({
+      method: "PATCH",
+      url:
+        `/api/v1/households/${householdId}/person-profiles/` +
+        `${createProfileRace.profileId}`,
+      headers: idempotent(owner, "link-lock-create-archive"),
+      payload: { operation: "archive", expectedVersion: 0 },
+    }),
+  ]);
+  assert.notEqual(created.statusCode, 500, created.body);
+  assert.equal(createArchived.statusCode, 200, createArchived.body);
 });
 
 test("two different invites concurrently joining the same household yield one join and one conflict, never 500", async () => {

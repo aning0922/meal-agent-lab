@@ -23,7 +23,31 @@ export const personProfileLinkRequestIdSchema = z
 export const dietaryConstraintIdSchema = z
   .uuidv7()
   .brand<"DietaryConstraintId">();
-export const foodConceptIdSchema = z.uuidv7().brand<"FoodConceptId">();
+const lowercaseUuidV7Pattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const foodConceptIdSchema = z
+  .string()
+  .regex(lowercaseUuidV7Pattern, {
+    message: "food concept id must be a lowercase UUIDv7",
+  })
+  .brand<"FoodConceptId">();
+export const foodConceptIdsSchema = ruleRefine(
+  z.array(foodConceptIdSchema).max(100).meta({ uniqueItems: true }),
+  "profiles.constraint.food-concepts-unique.v1",
+  "foodConceptIdsSchema",
+  (ids) => new Set(ids).size === ids.length,
+  { message: "food concept ids must be unique" },
+);
+export const allergenCodesSchema = ruleRefine(
+  z
+    .array(z.string().min(1).max(64))
+    .max(100)
+    .meta({ uniqueItems: true }),
+  "profiles.constraint.allergen-codes-unique.v1",
+  "allergenCodesSchema",
+  (codes) => new Set(codes).size === codes.length,
+  { message: "allergen codes must be unique" },
+);
 export const inventoryLotIdSchema = z.uuidv7().brand<"InventoryLotId">();
 export const inventoryEventIdSchema = z.uuidv7().brand<"InventoryEventId">();
 export const recipeIdSchema = z.uuidv7().brand<"RecipeId">();

@@ -321,6 +321,34 @@ try {
       await legacyPool.end();
     }
 
+    // 先真实升级到 0003，并保留一条合法 pending，再单独应用 0004。
+    // 这覆盖 0003 的 terminal_reason CHECK 仍存在时的增量顺序。
+    await applyMigrations(incrementalUrl, {
+      onlyThrough: "0003_stage_08_secondary_closeout.sql",
+    });
+    const preFinalPool = new Pool({ connectionString: incrementalUrl });
+    const legacyPendingId = "018f0000-0000-7000-8000-000000000040";
+    try {
+      await preFinalPool.query(
+        `INSERT INTO person_profile_link_requests (
+           id, household_id, profile_id, target_membership_id,
+           initiated_by_user_id, status, created_at, expires_at,
+           confirmed_at, terminal_reason, version
+         ) VALUES (
+           $1,
+           '00000000-0000-4000-8000-000000000002',
+           '00000000-0000-4000-8000-000000000004',
+           '00000000-0000-4000-8000-000000000003',
+           '00000000-0000-4000-8000-000000000001',
+           'pending', '2026-07-25T01:00:00Z',
+           '2026-07-26T01:00:00Z', NULL, NULL, 0
+         )`,
+        [legacyPendingId],
+      );
+    } finally {
+      await preFinalPool.end();
+    }
+
     await applyMigrations(incrementalUrl);
     const incrementalPool = new Pool({ connectionString: incrementalUrl });
     try {
@@ -391,6 +419,31 @@ try {
         ),
         false,
       );
+      const migratedPending = await incrementalPool.query<{
+        status: string;
+        terminal_reason: string | null;
+        disclosure_status: string;
+        disclosure_version: number | null;
+        profile_version_at_request: number | null;
+        disclosed_profile_name: string | null;
+        disclosed_private_constraint_count: number | null;
+      }>(
+        `SELECT status, terminal_reason, disclosure_status,
+                disclosure_version, profile_version_at_request,
+                disclosed_profile_name, disclosed_private_constraint_count
+         FROM person_profile_link_requests
+         WHERE id = $1`,
+        [legacyPendingId],
+      );
+      assert.deepEqual(migratedPending.rows[0], {
+        status: "cancelled",
+        terminal_reason: "profile_changed",
+        disclosure_status: "legacy_unavailable",
+        disclosure_version: null,
+        profile_version_at_request: null,
+        disclosed_profile_name: null,
+        disclosed_private_constraint_count: null,
+      });
       const migratedProfile = await incrementalPool.query<{
         default_participation: number | null;
         default_portion_scale: string | null;

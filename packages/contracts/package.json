@@ -5,7 +5,17 @@
   "description": "Runtime-validatable shared contracts for Meal Agent clients and services",
   "license": "UNLICENSED",
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/api.js",
+    "./dist/contract-rule-schema.js",
+    "./dist/identity.js",
+    "./dist/inventory.js",
+    "./dist/meals.js",
+    "./dist/members.js",
+    "./dist/primitives.js",
+    "./dist/refinement-bindings.js",
+    "./dist/shopping.js"
+  ],
   "files": [
     "dist"
   ],

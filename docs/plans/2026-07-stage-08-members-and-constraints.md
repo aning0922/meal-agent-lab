@@ -25,7 +25,7 @@
 - 成员退出/移除时原子归档 linked profile；
 - dining-only 关联登录成员的 owner 发起 + 被关联用户确认。
 
-关联请求固化发起时的 profile version 和安全披露；确认前名称或约束发生变化会提交 `profile_changed` 终态，客户端重新读取、展示并确认。不按姓名自动合并，不在重新加入时自动恢复或复制私人约束。转回 dining-only 需要未来独立确认命令，不属于 FAM-003 当前已定义的用户行为。
+关联请求只能由 owner 通过受控数据库函数创建，披露快照在统一 household 锁内计算；确认前会重新验证 target active。请求固化发起时的 profile version 和安全披露，名称或约束发生变化会提交 `profile_changed` 终态，客户端重新读取、展示并确认。历史请求没有快照证据时只标记 `legacy_unavailable`。不按姓名自动合并，不在重新加入时自动恢复或复制私人约束。转回 dining-only 需要未来独立确认命令，不属于 FAM-003 当前已定义的用户行为。
 
 ### FAM-004
 
@@ -54,10 +54,10 @@
 
 | 层 | 结果 |
 | --- | --- |
-| contracts | 24/24 |
+| contracts | 26/26 |
 | API unit | 12/12 |
 | API HTTP | 5/5 |
-| PostgreSQL migration/RLS/concurrency | 41/41 |
+| PostgreSQL migration/RLS/concurrency | 43/43 |
 | client unit + 页面渲染 | 102/102 |
 | stage 07 + stage 08 E2E | 21/21 |
 | audit gate 反向单测 | 7/7 |

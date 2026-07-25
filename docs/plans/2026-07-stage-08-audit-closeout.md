@@ -6,6 +6,7 @@
 - 审核基线：`main@6e4fc11607d34f4c30f8bfccf449bf5dfbbddabd`
 - 基线差异：无；本地 main 未前进
 - 最终收口基线：`c68217ed5771252f54cb62e8b8e37d5f67d57269`
+- 本轮增量整改基线：`17f50ddb0efd5acc01b94f41d121b0532558810b`
 - 远端状态：未配置 remote/upstream，没有远端 CI 证据
 - 状态：**Implemented — 最终整改本地验收完成，等待项目总控合并前评审；未合并 main**
 
@@ -62,6 +63,22 @@
 | S3-06 | label-only allergy 与隐藏字段清理、五类阻断确认 | contracts/client 五类矩阵与实际页面确认展示 | Closed；FAM-004 仍 Partial |
 | S3-07 | schema 定义处 metadata binding，OpenAPI 对应节点携带 rule ID | 无直接 refine 扫描、故意错绑失败、逐 component 检查 | Closed |
 | S3-08 | production audit policy/退出语义 fail-closed | invalid expiry、signal、exit 2、registry、metadata、新增/消失 advisory 7/7 | Closed |
+
+0004 未部署前的增量整改关闭项：
+
+| ID | 整改 | 关键证据 | 状态 |
+| --- | --- | --- | --- |
+| S4-01 | 先删除旧 terminal reason CHECK，再转换 0003 pending，最后建立新约束 | 仅迁移到 0003、插入 pending、再升级 0004 的真实 PostgreSQL 增量测试 | Closed |
+| S4-02 | 替换 membership/profile transition，统一 household link advisory 和 request/profile/membership 行锁总序 | confirm/list/create 与 remove/archive 并发无死锁、无 500 | Closed |
+| S4-03 | 撤销 link request 直接 INSERT，以受控函数锁内计算 disclosure 并重验 target active | 伪造披露 SQL 被拒、inactive target create/confirm 反向测试 | Closed |
+| S4-04 | constraint ID 在任何 UPDATE 前严格校验小写 UUIDv7 | v4/nil 返回 `invalid_constraint`，profile/version 不变 | Closed |
+| S4-05 | 生成合法 OpenAPI 3.0.3 而非类型强转 | 标准 validator + const/exclusive/null 方言反向扫描 + 生成产物深比较 | Closed |
+| S4-06 | food concept/allergen 数组统一 max 100、去重与小写 UUID 语义 | runtime/OpenAPI/DB/HTTP 矩阵；非法 HTTP 为 400 | Closed |
+| S4-07 | Inventory 重试执行保存的完整 snapshot | 刷新、切批次和原 key 重试页面测试证明未采用新 lot/version | Closed |
+| S4-08 | Profile pending 仅允许原动作重试或 GET 对账后的完成/放弃 | 实际 ProfilePage 输入冻结与多写入口反向测试 | Closed |
+| S4-09 | link 409 遵循“旧请求终态、owner 重新发起”真实生命周期 | 页面测试不注入虚构新请求 | Closed |
+| S4-10 | 历史 link disclosure 明确 `legacy_unavailable` | 增量 migration、contract 与 repository 映射测试 | Closed |
+| S4-11 | Drizzle、rule side effects、ADR/计划/状态同步 | schema/checksum、contracts build、Markdown link gate | Closed |
 
 ## 3. A — 幂等与敏感数据
 
@@ -135,7 +152,7 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 - 生成器校验源码扫描、manifest 覆盖、ID 唯一性和 native/runtime-only 分类；
 - OpenAPI 只由脚本生成，不手工编辑 JSON。
 
-当前 manifest 覆盖 31 条 refine/superRefine 和 2 条原生规则。rule ID 与 boundary 在 schema 定义处写入 metadata，binding 和 OpenAPI schema component 从该 metadata 派生；不存在平行手写 boundary map。等价性矩阵至少覆盖：
+当前 manifest 覆盖 33 条 refine/superRefine 和 2 条原生 schema 规则。rule ID 与 boundary 在 schema 定义处写入 metadata，binding 和 OpenAPI schema component 从该 metadata 派生；contracts 包显式保留注册模块的 side effects，不存在平行手写 boundary map。等价性矩阵至少覆盖：
 
 | 边界 | `"0"` | 正数 | 负数/指数/超精度 |
 | --- | --- | --- | --- |
@@ -180,10 +197,10 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 | 门禁 | 结果 |
 | --- | --- |
-| contracts | 24/24 |
+| contracts | 26/26 |
 | API unit | 12/12 |
 | API HTTP | 5/5 |
-| PostgreSQL/RLS/concurrency | 41/41 |
+| PostgreSQL/RLS/concurrency | 43/43 |
 | client unit/page | 102/102 |
 | E2E | 21/21 |
 | audit gate 反向单测 | 7/7 |
@@ -212,7 +229,7 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 | 层 | 已修改 |
 | --- | --- |
 | contracts | 0.4.0；receipt、profile collection/lifecycle/link、nullable facts、hard mapping 阻断、逐 schema rule binding、decimal parity |
-| migration | 单事务 `0002` + `0003` + `0004`；link 披露/终态、nullable facts、受控函数、严格 JSONB 边界、旧数据转换、PersonProfile/成员权限撤销 |
+| migration | 单事务 `0002` + `0003` + `0004`；link 披露/终态、nullable facts、受控函数、严格 JSONB/UUIDv7 边界、旧数据转换、PersonProfile/成员/link request 权限撤销 |
 | API | 幂等 registry、profile routes/redaction、member/invite 并发和状态、日志脱敏、OpenAPI |
 | client | endpoint/flow/page、同动作 key、完整 hard kind、unknown facts、archive/restore、page tests |
 | tests | contracts、runtime/OpenAPI、DB/RLS/concurrency、HTTP、页面、双用户 E2E |
@@ -233,7 +250,7 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
   → 0004_stage_08_final_closeout
 ```
 
-`0002`、`0003` 与 `0004` 都是单一事务。`0003` 严格按“新增终态/函数与约束 → 转换历史 hard mapping → 撤销表级权限和旧函数签名”执行；`0004` 按“新增披露结构与约束 → 转换旧 pending → 替换 lifecycle/constraint 函数 → 收紧函数权限”执行。失败时整笔回滚；成功后只允许 roll-forward：
+`0002`、`0003` 与 `0004` 都是单一事务。`0003` 严格按“新增终态/函数与约束 → 转换历史 hard mapping → 撤销表级权限和旧函数签名”执行；`0004` 按“新增 nullable 披露列 → 删除不认识新终态的旧 CHECK → 把旧 pending 终态化并标记 `legacy_unavailable` → 建立新 CHECK → 替换 lifecycle/constraint 函数与权限”执行。空库路径和“仅应用到 0003、存在 pending、再升级 0004”的增量路径都在临时 PostgreSQL 中验证。失败时整笔回滚；成功后只允许 roll-forward：
 
 - 不恢复含私密 profile 的幂等响应；
 - 不删除命令标识，也不允许同 key 重新执行；

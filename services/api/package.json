@@ -37,6 +37,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "12.1.0",
     "@types/node": "24.13.3",
     "@types/pg": "8.20.0",
     "drizzle-kit": "0.31.10",

@@ -45,27 +45,26 @@ describe('PendingActionIdempotency', () => {
     )
   })
 
-  it('同一进行中动作字段变化被拒绝，显式放弃后才可开启新命令', () => {
+  it('同一进行中动作忽略刷新后的候选值，显式放弃后才可开启新命令', () => {
     const pending = new PendingActionIdempotency(new FakePlatform().runtime)
-    const first = pending.acquire('constraint:add:1', {
+    const original = {
       label: '虚构过敏',
       visibility: 'household'
+    }
+    const first = pending.acquireSnapshot('constraint:add:1', original)
+    const retry = pending.acquireSnapshot('constraint:add:1', {
+      label: '刷新后名称',
+      visibility: 'subject_and_owner'
     })
-    assert.throws(
-      () =>
-        pending.acquire('constraint:add:1', {
-          label: '虚构过敏',
-          visibility: 'subject_and_owner'
-        }),
-      /payload changed/
-    )
+    assert.equal(retry.key, first.key)
+    assert.deepEqual(retry.payload, original)
     pending.abandon('constraint:add:1')
     assert.notEqual(
       pending.acquire('constraint:add:1', {
         label: '虚构过敏',
         visibility: 'subject_and_owner'
       }),
-      first
+      first.key
     )
   })
 
@@ -78,27 +77,18 @@ describe('PendingActionIdempotency', () => {
     assert.deepEqual(
       pending.snapshot('inventory:consume:lot-1'),
       {
+        action: 'inventory:consume:lot-1',
         key: first,
         payload,
         phase: 'unknown'
       }
     )
-    assert.throws(
-      () =>
-        pending.acquire('inventory:consume:lot-1', {
-          ...payload,
-          amount: '3'
-        }),
-      /payload changed/
+    const retry = pending.acquireSnapshot(
+      'inventory:consume:lot-1',
+      { ...payload, amount: '3', expectedVersion: 4 }
     )
-    assert.equal(
-      pending.acquire('inventory:consume:lot-1', {
-        amount: '2',
-        expectedVersion: 3,
-        lotId: 'lot-1'
-      }),
-      first
-    )
+    assert.equal(retry.key, first)
+    assert.deepEqual(retry.payload, payload)
   })
 
   it('明确 409 释放旧动作，刷新版本后的新命令使用新 key', () => {
