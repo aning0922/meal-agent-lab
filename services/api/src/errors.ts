@@ -40,6 +40,7 @@ const titleByCode = {
   SESSION_EXPIRED: "Session expired",
   FORBIDDEN: "Forbidden",
   RESOURCE_NOT_FOUND: "Resource not found",
+  PERSON_PROFILE_ARCHIVED: "Person profile archived",
   CONFLICT: "Conflict",
   PRECONDITION_FAILED: "Precondition failed",
   IDEMPOTENCY_KEY_REUSED: "Idempotency key reused",

@@ -10,22 +10,34 @@ import {
   type User,
 } from "@meal-agent/contracts/identity";
 import {
+  confirmPersonProfileLinkResultSchema,
   createHouseholdInviteResultSchema,
+  getPersonProfileResultSchema,
   joinHouseholdResultSchema,
   listHouseholdMembersResultSchema,
-  personProfileResultSchema,
+  listPersonProfilesResultSchema,
+  personProfileLinkRequestListResultSchema,
+  personProfileLinkRequestResultSchema,
+  personProfileMutationReceiptSchema,
   removeMembershipResultSchema,
   revokeHouseholdInviteResultSchema,
   type AddDietaryConstraintRequest,
+  type ConfirmPersonProfileLinkRequest,
+  type ConfirmPersonProfileLinkResult,
   type CreateHouseholdInviteRequest,
   type CreateHouseholdInviteResult,
+  type CreatePersonProfileLinkRequest,
   type CreatePersonProfileRequest,
+  type GetPersonProfileResult,
   type HouseholdInvite,
   type JoinHouseholdRequest,
   type JoinHouseholdResult,
   type ListHouseholdMembersResult,
+  type ListPersonProfilesResult,
   type PatchPersonProfileRequest,
-  type PersonProfileResult,
+  type PersonProfileLinkRequestListResult,
+  type PersonProfileLinkRequestResult,
+  type PersonProfileMutationReceipt,
   type RemoveDietaryConstraintRequest,
   type RemoveMembershipResult,
   type RevokeHouseholdInviteResult,
@@ -163,6 +175,19 @@ interface IdempotencyRow {
   readonly first_processed_at: Date;
 }
 
+interface PersonProfileLinkRequestRow {
+  readonly id: string;
+  readonly household_id: string;
+  readonly profile_id: string;
+  readonly target_membership_id: string;
+  readonly initiated_by_user_id: string;
+  readonly status: string;
+  readonly created_at: Date | string;
+  readonly expires_at: Date | string;
+  readonly confirmed_at: Date | string | null;
+  readonly version: number;
+}
+
 const normalizedRoutes = {
   createHousehold: "/api/v1/households",
   createInventoryLot: "/api/v1/households/{id}/inventory-lots",
@@ -179,10 +204,68 @@ const normalizedRoutes = {
     "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints",
   removeDietaryConstraint:
     "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints",
+  createPersonProfileLinkRequest:
+    "/api/v1/households/{id}/person-profiles/{profileId}/link-requests",
+  confirmPersonProfileLinkRequest:
+    "/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm",
 } as const;
+
+type NormalizedRoute =
+  (typeof normalizedRoutes)[keyof typeof normalizedRoutes];
+
+type IdempotencyPolicy =
+  | { readonly kind: "full" }
+  | {
+      readonly kind: "one-time-secret";
+      readonly safeReplayProjection: (data: unknown) => unknown;
+    }
+  | { readonly kind: "receipt" };
+
+/**
+ * 所有幂等写路由必须在此注册。新增路由无法再通过 endpoint 局部传
+ * redact 回调绕过安全复核；profile/constraint 写入统一限制为 receipt。
+ */
+const idempotencyPolicies: Record<NormalizedRoute, IdempotencyPolicy> = {
+  [normalizedRoutes.createHousehold]: { kind: "full" },
+  [normalizedRoutes.createInventoryLot]: { kind: "full" },
+  [normalizedRoutes.consumeInventoryLot]: { kind: "full" },
+  [normalizedRoutes.createHouseholdInvite]: {
+    kind: "one-time-secret",
+    safeReplayProjection: (data) => {
+      const parsed = createHouseholdInviteResultSchema.parse(data);
+      return { invite: parsed.invite };
+    },
+  },
+  [normalizedRoutes.revokeHouseholdInvite]: { kind: "full" },
+  [normalizedRoutes.joinHousehold]: { kind: "full" },
+  [normalizedRoutes.removeMembership]: { kind: "full" },
+  [normalizedRoutes.createPersonProfile]: { kind: "receipt" },
+  [normalizedRoutes.patchPersonProfile]: { kind: "receipt" },
+  [normalizedRoutes.addDietaryConstraint]: { kind: "receipt" },
+  [normalizedRoutes.createPersonProfileLinkRequest]: { kind: "full" },
+  [normalizedRoutes.confirmPersonProfileLinkRequest]: { kind: "full" },
+};
 
 const plusDays = (date: Date, days: number): Date =>
   new Date(date.getTime() + days * 24 * 60 * 60 * 1_000);
+
+const mapPersonProfileLinkRequest = (
+  row: PersonProfileLinkRequestRow,
+) =>
+  personProfileLinkRequestResultSchema.shape.request.parse({
+    id: row.id,
+    householdId: row.household_id,
+    profileId: row.profile_id,
+    targetMembershipId: row.target_membership_id,
+    initiatedByUserId: row.initiated_by_user_id,
+    status: row.status,
+    createdAt: new Date(row.created_at).toISOString(),
+    expiresAt: new Date(row.expires_at).toISOString(),
+    ...(row.confirmed_at === null
+      ? {}
+      : { confirmedAt: new Date(row.confirmed_at).toISOString() }),
+    version: row.version,
+  });
 
 const sessionRowFromAuthenticated = (
   row: AuthenticatedRows,
@@ -522,18 +605,12 @@ export class ApiRepository {
       readonly userId: string;
       readonly householdId?: string;
       readonly method: string;
-      readonly normalizedRoute: string;
+      readonly normalizedRoute: NormalizedRoute;
       readonly key: string;
       readonly resourceTarget?: unknown;
       readonly payload: unknown;
       readonly requestId: RequestId;
       readonly statusCode: number;
-      /**
-       * 可选：写入幂等记录前对返回数据做投影，剔除只应出现一次的敏感
-       * 字段（如明文邀请码）。首次响应仍返回完整数据；持久化与重放使用
-       * 投影后的数据，保证秘密永不落库、重放不再泄露。
-       */
-      readonly redactStoredData?: (data: T) => T;
     },
     operation: () => Promise<T>,
   ): Promise<IdempotentResponse<T>> {
@@ -617,6 +694,17 @@ export class ApiRepository {
         readonly ok: true;
         readonly data: T;
       };
+      if (
+        typeof stored.data === "object" &&
+        stored.data !== null &&
+        "nonReplayable" in stored.data &&
+        stored.data.nonReplayable === true
+      ) {
+        throw new AppError(
+          "CONFLICT",
+          "The original command completed, but its legacy sensitive response cannot be replayed; fetch current state",
+        );
+      }
       return {
         statusCode: existing.status_code,
         body: {
@@ -651,11 +739,13 @@ export class ApiRepository {
       },
     };
     const body = { ok: true as const, data, meta };
-    // 持久化用投影后的数据：明文邀请码等一次性秘密剔除后再落库，重放时
-    // 也只能读到投影版本。首次响应仍返回完整 body（含明文码）。
-    const storedData = input.redactStoredData
-      ? input.redactStoredData(data)
-      : data;
+    const policy = idempotencyPolicies[input.normalizedRoute];
+    const storedData =
+      policy.kind === "one-time-secret"
+        ? policy.safeReplayProjection(data)
+        : policy.kind === "receipt"
+          ? personProfileMutationReceiptSchema.parse(data)
+          : data;
     const storedBody = { ok: true as const, data: storedData, meta };
     await client.query(
       `UPDATE idempotency_records
@@ -827,8 +917,8 @@ export class ApiRepository {
                  cooking_skill, dietary_constraints, created_at, updated_at,
                  version
                ) VALUES (
-                 $1, $2, $3, $4, 'active', 1, $5, $6, '[]'::jsonb,
-                 $7, $7, 0
+                 $1, $2, $3, $4, 'active', $5, $6, $7, '[]'::jsonb,
+                 $8, $8, 0
                )
                RETURNING *`,
               [
@@ -836,6 +926,11 @@ export class ApiRepository {
                 householdId,
                 membershipId,
                 request.ownerProfile.displayName,
+                request.ownerProfile.defaultParticipation === null
+                  ? null
+                  : request.ownerProfile.defaultParticipation
+                    ? 1
+                    : 0,
                 request.ownerProfile.defaultPortionScale,
                 request.ownerProfile.cookingSkill,
                 now,
@@ -1272,8 +1367,6 @@ export class ApiRepository {
             payload: request,
             requestId,
             statusCode: 201,
-            // 明文邀请码永不落库：写幂等记录前剔除，重放响应不含码。
-            redactStoredData: (data) => ({ invite: data.invite }),
           },
           async () => {
             // 每家庭串行化邀请签发，让活跃邀请上限检查免于竞态。
@@ -1353,7 +1446,13 @@ export class ApiRepository {
         );
         this.#requireOwner(context, "Only an owner may list invites");
         const result = await client.query<HouseholdInviteRow>(
-          `SELECT *
+          `SELECT id, household_id, created_by_user_id,
+                  CASE
+                    WHEN status = 'active'
+                      AND expires_at <= clock_timestamp() THEN 'expired'
+                    ELSE status
+                  END AS status,
+                  max_uses, used_count, expires_at, created_at, version
            FROM household_invites
            WHERE household_id = $1
              AND ($2::uuid IS NULL OR id > $2::uuid)
@@ -1659,13 +1758,10 @@ export class ApiRepository {
             statusCode: 200,
           },
           async () => {
-            // 每家庭串行化成员变更，让最后一位 owner 的保护免于竞态。
-            await client.query(
-              "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-              [`household-memberships:${householdId}`],
-            );
             const targetResult = await client.query<MembershipRow>(
-              "SELECT * FROM memberships WHERE household_id = $1 AND id = $2",
+              `SELECT *
+               FROM memberships
+               WHERE household_id = $1 AND id = $2`,
               [householdId, membershipId],
             );
             const target = targetResult.rows[0];
@@ -1675,53 +1771,421 @@ export class ApiRepository {
                 "Membership was not found",
               );
             }
-            const isSelf = target.user_id === context.userId;
-            if (context.role !== "owner" && !isSelf) {
-              throw new AppError(
-                "FORBIDDEN",
-                "Only an owner may remove other members",
-              );
-            }
-            if (target.status !== "active") {
+            const transitionTime = new Date();
+            const transition = await client.query<{
+              result_code: string;
+              out_membership_id: string | null;
+              out_status: string | null;
+              out_version: number | null;
+            }>(
+              `SELECT *
+               FROM meal_agent_private.transition_membership_status(
+                 $1::uuid, $2::integer, $3::timestamptz
+               )`,
+              [membershipId, target.version, transitionTime],
+            );
+            const outcome = transition.rows[0];
+            if (
+              outcome === undefined ||
+              outcome.result_code === "not_found"
+            ) {
               throw new AppError(
                 "RESOURCE_NOT_FOUND",
                 "Membership is not active",
               );
             }
-            if (target.role === "owner") {
-              const owners = await client.query<{ count: number }>(
-                `SELECT count(*)::int AS count
-                 FROM memberships
-                 WHERE household_id = $1
-                   AND role = 'owner'
-                   AND status = 'active'`,
-                [householdId],
+            if (outcome.result_code === "forbidden") {
+              throw new AppError(
+                "FORBIDDEN",
+                "Only an owner may remove other members",
               );
-              if ((owners.rows[0]?.count ?? 0) <= 1) {
-                throw new AppError(
-                  "CONFLICT",
-                  "The last owner cannot leave or be removed",
-                );
-              }
             }
-            const nextStatus = isSelf ? "left" : "removed";
-            const updated = await client.query<MembershipRow>(
-              `UPDATE memberships
-               SET status = $3, updated_at = clock_timestamp(),
-                   version = version + 1
-               WHERE household_id = $1 AND id = $2 AND status = 'active'
-               RETURNING *`,
-              [householdId, membershipId, nextStatus],
-            );
-            const row = updated.rows[0];
-            if (row === undefined) {
+            if (outcome.result_code === "last_owner") {
+              throw new AppError(
+                "CONFLICT",
+                "The last owner cannot leave or be removed",
+              );
+            }
+            if (
+              outcome.result_code !== "changed" ||
+              outcome.out_membership_id === null ||
+              outcome.out_status === null ||
+              outcome.out_version === null
+            ) {
               throw new AppError(
                 "CONFLICT",
                 "Membership changed concurrently",
               );
             }
+            // 自退出后当前用户已不再通过 memberships RLS，不能再次 SELECT
+            // 本行。受控函数返回唯一可变字段；其余字段沿用加锁前读取的目标行。
+            const row: MembershipRow = {
+              ...target,
+              status: outcome.out_status,
+              updated_at: transitionTime,
+              version: outcome.out_version,
+            };
             return removeMembershipResultSchema.parse({
               membership: mapMembership(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async listPersonProfiles(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    status: "active" | "archived" | "all",
+  ): Promise<ListPersonProfilesResult> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        const result = await client.query<PersonProfileRow>(
+          `SELECT *
+           FROM person_profiles
+           WHERE household_id = $1
+             AND ($2::text = 'all' OR status = $2::text)
+           ORDER BY id`,
+          [householdId, status],
+        );
+        if (context.role === "owner") {
+          return listPersonProfilesResultSchema.parse({
+            viewerRole: "owner",
+            profiles: result.rows.map(mapPersonProfile),
+          });
+        }
+
+        let self: ReturnType<typeof mapPersonProfile> | null = null;
+        const others = [];
+        for (const row of result.rows) {
+          if (row.linked_membership_id === context.membershipId) {
+            self = mapPersonProfile(row);
+          } else if (row.status === "active") {
+            others.push(mapRedactedPersonProfile(row));
+          }
+        }
+        return listPersonProfilesResultSchema.parse({
+          viewerRole: "member",
+          self,
+          others,
+        });
+      },
+    );
+  }
+
+  public async getPersonProfile(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    profileId: string,
+  ): Promise<GetPersonProfileResult> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        const result = await client.query<PersonProfileRow>(
+          `SELECT *
+           FROM person_profiles
+           WHERE household_id = $1 AND id = $2`,
+          [householdId, profileId],
+        );
+        const row = result.rows[0];
+        if (row === undefined) {
+          throw new AppError("RESOURCE_NOT_FOUND", "Profile was not found");
+        }
+        const isSelf =
+          row.linked_membership_id !== null &&
+          row.linked_membership_id === context.membershipId;
+        if (context.role === "owner" || isSelf) {
+          return getPersonProfileResultSchema.parse({
+            access: "owner_or_self",
+            profile: mapPersonProfile(row),
+          });
+        }
+        if (row.status !== "active") {
+          throw new AppError("RESOURCE_NOT_FOUND", "Profile was not found");
+        }
+        return getPersonProfileResultSchema.parse({
+          access: "household",
+          profile: mapRedactedPersonProfile(row),
+        });
+      },
+    );
+  }
+
+  public async createPersonProfileLinkRequest(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    profileId: string,
+    idempotencyKey: string,
+    request: CreatePersonProfileLinkRequest,
+  ): Promise<IdempotentResponse<PersonProfileLinkRequestResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        this.#requireOwner(
+          context,
+          "Only an owner may initiate a profile link",
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute:
+              normalizedRoutes.createPersonProfileLinkRequest,
+            key: idempotencyKey,
+            resourceTarget: { profileId },
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            await client.query(
+              "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+              [`person-profile-link:${householdId}:${profileId}`],
+            );
+            const profile = await client.query<PersonProfileRow>(
+              `SELECT *
+               FROM person_profiles
+               WHERE household_id = $1 AND id = $2
+               FOR UPDATE`,
+              [householdId, profileId],
+            );
+            const profileRow = profile.rows[0];
+            if (
+              profileRow === undefined ||
+              profileRow.status !== "active"
+            ) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Active profile was not found",
+              );
+            }
+            if (profileRow.linked_membership_id !== null) {
+              throw new AppError(
+                "CONFLICT",
+                "Only a dining-only profile can be linked",
+              );
+            }
+            const target = await client.query(
+              `SELECT 1
+               FROM memberships
+               WHERE household_id = $1
+                 AND id = $2
+                 AND status = 'active'`,
+              [householdId, request.targetMembershipId],
+            );
+            if (target.rowCount === 0) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Target membership was not found",
+              );
+            }
+            const targetProfile = await client.query(
+              `SELECT 1
+               FROM person_profiles
+               WHERE household_id = $1
+                 AND linked_membership_id = $2`,
+              [householdId, request.targetMembershipId],
+            );
+            if ((targetProfile.rowCount ?? 0) > 0) {
+              throw new AppError(
+                "CONFLICT",
+                "Target membership already has a profile",
+              );
+            }
+            const now = new Date();
+            const inserted =
+              await client.query<PersonProfileLinkRequestRow>(
+                `INSERT INTO person_profile_link_requests (
+                   id, household_id, profile_id, target_membership_id,
+                   initiated_by_user_id, status, created_at, expires_at,
+                   confirmed_at, version
+                 ) VALUES (
+                   $1, $2, $3, $4, $5, 'pending', $6, $7, NULL, 0
+                 )
+                 RETURNING *`,
+                [
+                  newEntityId(),
+                  householdId,
+                  profileId,
+                  request.targetMembershipId,
+                  context.userId,
+                  now,
+                  new Date(
+                    now.getTime() +
+                      request.expiresInHours * 3_600_000,
+                  ),
+                ],
+              );
+            const row = inserted.rows[0];
+            if (row === undefined) {
+              throw new AppError(
+                "INTERNAL_ERROR",
+                "Profile link request could not be created",
+              );
+            }
+            return personProfileLinkRequestResultSchema.parse({
+              request: mapPersonProfileLinkRequest(row),
+            });
+          },
+        );
+      },
+    );
+  }
+
+  public async listPersonProfileLinkRequests(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+  ): Promise<PersonProfileLinkRequestListResult> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        const result =
+          await client.query<PersonProfileLinkRequestRow>(
+            `SELECT id, household_id, profile_id, target_membership_id,
+                    initiated_by_user_id,
+                    CASE
+                      WHEN status = 'pending'
+                        AND expires_at <= clock_timestamp() THEN 'expired'
+                      ELSE status
+                    END AS status,
+                    created_at, expires_at, confirmed_at, version
+             FROM person_profile_link_requests
+             WHERE household_id = $1
+             ORDER BY id`,
+            [householdId],
+          );
+        return personProfileLinkRequestListResultSchema.parse({
+          requests: result.rows.map(mapPersonProfileLinkRequest),
+        });
+      },
+    );
+  }
+
+  public async confirmPersonProfileLinkRequest(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    linkRequestId: string,
+    idempotencyKey: string,
+    request: ConfirmPersonProfileLinkRequest,
+  ): Promise<IdempotentResponse<ConfirmPersonProfileLinkResult>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute:
+              normalizedRoutes.confirmPersonProfileLinkRequest,
+            key: idempotencyKey,
+            resourceTarget: { linkRequestId },
+            payload: request,
+            requestId,
+            statusCode: 200,
+          },
+          async () => {
+            const confirmation = await client.query<{
+              result_code: string;
+              out_profile_id: string | null;
+              out_profile_version: number | null;
+            }>(
+              `SELECT *
+               FROM meal_agent_private.confirm_person_profile_link(
+                 $1::uuid, $2::integer, $3::timestamptz
+               )`,
+              [linkRequestId, request.expectedVersion, new Date()],
+            );
+            const outcome = confirmation.rows[0];
+            if (
+              outcome === undefined ||
+              outcome.result_code === "not_found"
+            ) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Pending link request was not found",
+              );
+            }
+            if (outcome.result_code === "forbidden") {
+              throw new AppError(
+                "FORBIDDEN",
+                "Only the target member may confirm this link",
+              );
+            }
+            if (outcome.result_code !== "linked") {
+              throw new AppError(
+                "CONFLICT",
+                "Profile link request changed or is no longer applicable",
+              );
+            }
+            const linked = await client.query<PersonProfileLinkRequestRow>(
+              `SELECT *
+               FROM person_profile_link_requests
+               WHERE household_id = $1 AND id = $2`,
+              [householdId, linkRequestId],
+            );
+            const row = linked.rows[0];
+            if (
+              row === undefined ||
+              outcome.out_profile_id === null ||
+              outcome.out_profile_version === null
+            ) {
+              throw new AppError(
+                "INTERNAL_ERROR",
+                "Confirmed profile link could not be loaded",
+              );
+            }
+            return confirmPersonProfileLinkResultSchema.parse({
+              request: mapPersonProfileLinkRequest(row),
+              receipt: {
+                householdId,
+                profileId: outcome.out_profile_id,
+                operation: "link",
+                status: "active",
+                resultingVersion: outcome.out_profile_version,
+              },
             });
           },
         );
@@ -1735,7 +2199,7 @@ export class ApiRepository {
     householdId: string,
     idempotencyKey: string,
     request: CreatePersonProfileRequest,
-  ): Promise<IdempotentResponse<PersonProfileResult>> {
+  ): Promise<IdempotentResponse<PersonProfileMutationReceipt>> {
     return this.#withAuthenticated(
       accessToken,
       requestId,
@@ -1781,6 +2245,25 @@ export class ApiRepository {
                 "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
                 [`person-profiles:${householdId}:${request.linkedMembershipId}`],
               );
+              const existing = await client.query<{ status: string }>(
+                `SELECT status
+                 FROM person_profiles
+                 WHERE household_id = $1 AND linked_membership_id = $2`,
+                [householdId, request.linkedMembershipId],
+              );
+              const existingProfile = existing.rows[0];
+              if (existingProfile !== undefined) {
+                if (existingProfile.status === "archived") {
+                  throw new AppError(
+                    "PERSON_PROFILE_ARCHIVED",
+                    "This member has an archived profile that must be restored",
+                  );
+                }
+                throw new AppError(
+                  "CONFLICT",
+                  "This member already has a profile",
+                );
+              }
               const membership = await client.query(
                 `SELECT 1
                  FROM memberships
@@ -1791,18 +2274,6 @@ export class ApiRepository {
                 throw new AppError(
                   "RESOURCE_NOT_FOUND",
                   "The linked membership was not found",
-                );
-              }
-              const existing = await client.query(
-                `SELECT 1
-                 FROM person_profiles
-                 WHERE household_id = $1 AND linked_membership_id = $2`,
-                [householdId, request.linkedMembershipId],
-              );
-              if ((existing.rowCount ?? 0) > 0) {
-                throw new AppError(
-                  "CONFLICT",
-                  "This member already has a profile",
                 );
               }
             }
@@ -1822,7 +2293,11 @@ export class ApiRepository {
                 householdId,
                 request.linkedMembershipId ?? null,
                 request.displayName,
-                request.defaultParticipation ? 1 : 0,
+                request.defaultParticipation === null
+                  ? null
+                  : request.defaultParticipation
+                    ? 1
+                    : 0,
                 request.defaultPortionScale,
                 request.cookingSkill,
                 now,
@@ -1835,8 +2310,12 @@ export class ApiRepository {
                 "Profile could not be created",
               );
             }
-            return personProfileResultSchema.parse({
-              profile: mapPersonProfile(row),
+            return personProfileMutationReceiptSchema.parse({
+              householdId,
+              profileId: row.id,
+              operation: "create",
+              status: row.status,
+              resultingVersion: row.version,
             });
           },
         );
@@ -1851,7 +2330,7 @@ export class ApiRepository {
     profileId: string,
     idempotencyKey: string,
     request: PatchPersonProfileRequest,
-  ): Promise<IdempotentResponse<PersonProfileResult>> {
+  ): Promise<IdempotentResponse<PersonProfileMutationReceipt>> {
     return this.#withAuthenticated(
       accessToken,
       requestId,
@@ -1905,6 +2384,12 @@ export class ApiRepository {
             const now = new Date();
             let row: PersonProfileRow | undefined;
             if (request.operation === "archive") {
+              if (before.status !== "active") {
+                throw new AppError(
+                  "CONFLICT",
+                  "Only an active profile can be archived",
+                );
+              }
               const updated = await client.query<PersonProfileRow>(
                 `UPDATE person_profiles
                  SET status = 'archived', updated_at = $3,
@@ -1914,28 +2399,74 @@ export class ApiRepository {
                 [householdId, profileId, now, request.expectedVersion],
               );
               row = updated.rows[0];
-            } else {
+            } else if (request.operation === "restore") {
+              if (before.status !== "archived") {
+                throw new AppError(
+                  "CONFLICT",
+                  "Only an archived profile can be restored",
+                );
+              }
+              if (before.linked_membership_id !== null) {
+                const membership = await client.query(
+                  `SELECT 1
+                   FROM memberships
+                   WHERE household_id = $1
+                     AND id = $2
+                     AND status = 'active'`,
+                  [householdId, before.linked_membership_id],
+                );
+                if (membership.rowCount === 0) {
+                  throw new AppError(
+                    "CONFLICT",
+                    "The linked membership must rejoin before this profile can be restored",
+                  );
+                }
+              }
               const updated = await client.query<PersonProfileRow>(
                 `UPDATE person_profiles
-                 SET display_name = COALESCE($3, display_name),
+                 SET status = 'active', updated_at = $3,
+                     version = version + 1
+                 WHERE household_id = $1 AND id = $2 AND version = $4
+                 RETURNING *`,
+                [householdId, profileId, now, request.expectedVersion],
+              );
+              row = updated.rows[0];
+            } else {
+              if (before.status !== "active") {
+                throw new AppError(
+                  "CONFLICT",
+                  "Archived profiles must be restored before editing",
+                );
+              }
+              const updated = await client.query<PersonProfileRow>(
+                `UPDATE person_profiles
+                 SET display_name =
+                       CASE WHEN $3::boolean THEN $4 ELSE display_name END,
                      default_participation =
-                       COALESCE($4, default_participation),
+                       CASE WHEN $5::boolean THEN $6 ELSE default_participation END,
                      default_portion_scale =
-                       COALESCE($5, default_portion_scale),
-                     cooking_skill = COALESCE($6, cooking_skill),
-                     updated_at = $7, version = version + 1
-                 WHERE household_id = $1 AND id = $2 AND version = $8
+                       CASE WHEN $7::boolean THEN $8 ELSE default_portion_scale END,
+                     cooking_skill =
+                       CASE WHEN $9::boolean THEN $10 ELSE cooking_skill END,
+                     updated_at = $11, version = version + 1
+                 WHERE household_id = $1 AND id = $2 AND version = $12
                  RETURNING *`,
                 [
                   householdId,
                   profileId,
+                  request.displayName !== undefined,
                   request.displayName ?? null,
+                  request.defaultParticipation !== undefined,
                   request.defaultParticipation === undefined
                     ? null
-                    : request.defaultParticipation
+                    : request.defaultParticipation === null
+                      ? null
+                      : request.defaultParticipation
                       ? 1
                       : 0,
+                  request.defaultPortionScale !== undefined,
                   request.defaultPortionScale ?? null,
+                  request.cookingSkill !== undefined,
                   request.cookingSkill ?? null,
                   now,
                   request.expectedVersion,
@@ -1949,8 +2480,12 @@ export class ApiRepository {
                 "Profile changed concurrently",
               );
             }
-            return personProfileResultSchema.parse({
-              profile: mapPersonProfile(row),
+            return personProfileMutationReceiptSchema.parse({
+              householdId,
+              profileId: row.id,
+              operation: request.operation,
+              status: row.status,
+              resultingVersion: row.version,
             });
           },
         );
@@ -1965,7 +2500,7 @@ export class ApiRepository {
     profileId: string,
     idempotencyKey: string,
     request: AddDietaryConstraintRequest,
-  ): Promise<IdempotentResponse<PersonProfileResult>> {
+  ): Promise<IdempotentResponse<PersonProfileMutationReceipt>> {
     return this.#withAuthenticated(
       accessToken,
       requestId,
@@ -2016,6 +2551,12 @@ export class ApiRepository {
                 `Profile is at version ${before.version}`,
               );
             }
+            if (before.status !== "active") {
+              throw new AppError(
+                "CONFLICT",
+                "Archived profiles must be restored before adding constraints",
+              );
+            }
             const input = request.constraint;
             // confirmedAt / confirmedByUserId 由服务端写入，操作者即确认人；
             // 硬约束的 confirmation 已在契约层强制（缺失 → 400）。
@@ -2033,7 +2574,16 @@ export class ApiRepository {
             };
             const constraint =
               input.enforcement === "hard"
-                ? { ...base, allergenCodes: input.allergenCodes }
+                ? {
+                    ...base,
+                    allergenCodes: input.allergenCodes,
+                    mappingStatus:
+                      input.kind === "allergy" ||
+                      (input.kind === "explicit_avoid" &&
+                        input.foodConceptIds.length > 0)
+                        ? "structured"
+                        : "needs_structured_mapping",
+                  }
                 : { ...base, preference: input.preference };
             // 防御性再校验：落库前必须满足既有 dietaryConstraintSchema。
             const validated = dietaryConstraintSchema.parse(constraint);
@@ -2062,8 +2612,13 @@ export class ApiRepository {
                 "Profile changed concurrently",
               );
             }
-            return personProfileResultSchema.parse({
-              profile: mapPersonProfile(row),
+            return personProfileMutationReceiptSchema.parse({
+              householdId,
+              profileId: row.id,
+              operation: "add_constraint",
+              status: row.status,
+              resultingVersion: row.version,
+              constraintId: validated.id,
             });
           },
         );
@@ -2078,7 +2633,7 @@ export class ApiRepository {
     profileId: string,
     idempotencyKey: string,
     request: RemoveDietaryConstraintRequest,
-  ): Promise<IdempotentResponse<PersonProfileResult>> {
+  ): Promise<IdempotentResponse<PersonProfileMutationReceipt>> {
     return this.#withAuthenticated(
       accessToken,
       requestId,
@@ -2129,6 +2684,12 @@ export class ApiRepository {
                 `Profile is at version ${before.version}`,
               );
             }
+            if (before.status !== "active") {
+              throw new AppError(
+                "CONFLICT",
+                "Archived profiles must be restored before removing constraints",
+              );
+            }
             const existing = Array.isArray(before.dietary_constraints)
               ? before.dietary_constraints
               : [];
@@ -2166,8 +2727,13 @@ export class ApiRepository {
                 "Profile changed concurrently",
               );
             }
-            return personProfileResultSchema.parse({
-              profile: mapPersonProfile(row),
+            return personProfileMutationReceiptSchema.parse({
+              householdId,
+              profileId: row.id,
+              operation: "remove_constraint",
+              status: row.status,
+              resultingVersion: row.version,
+              constraintId: request.constraintId,
             });
           },
         );

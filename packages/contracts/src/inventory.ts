@@ -7,6 +7,7 @@ import {
   inventoryEventIdSchema,
   inventoryLotIdSchema,
   exactQuantityAmountSchema,
+  positiveExactQuantityAmountSchema,
   persistableInitialQuantitySchema,
   quantityChangeSchema,
   quantitySchema,
@@ -592,10 +593,7 @@ export type CreateInventoryLotResult = z.infer<
 export const consumeInventoryLotRequestSchema = z.strictObject({
   consumedQuantity: z.strictObject({
     kind: z.literal("exact"),
-    amount: exactQuantityAmountSchema.refine(
-      (amount) => amount !== "0",
-      { message: "consumed quantity amount must be positive" },
-    ),
+    amount: positiveExactQuantityAmountSchema,
     unit: z.string().min(1).max(32),
     originalText: z.string().min(1).max(200).optional(),
   }),

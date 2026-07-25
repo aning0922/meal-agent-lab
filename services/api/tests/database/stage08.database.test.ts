@@ -7,10 +7,15 @@ import {
   authenticatedSessionSchema,
   createHouseholdInviteSuccessSchema,
   createHouseholdSuccessSchema,
+  getPersonProfileSuccessSchema,
+  hardConstraintConfirmationFingerprint,
   householdInvitePageSuccessSchema,
   joinHouseholdSuccessSchema,
   listHouseholdMembersSuccessSchema,
-  personProfileSuccessSchema,
+  listPersonProfilesSuccessSchema,
+  personProfileLinkRequestSuccessSchema,
+  confirmPersonProfileLinkSuccessSchema,
+  personProfileMutationSuccessSchema,
   removeMembershipSuccessSchema,
   revokeHouseholdInviteSuccessSchema,
   wechatLoginExchangeSuccessSchema,
@@ -202,6 +207,22 @@ const createProfile = (
     payload: body,
   });
 
+const getProfile = async (
+  session: AuthenticatedSession,
+  householdId: string,
+  profileId: string,
+) => {
+  const response = await app.inject({
+    method: "GET",
+    url: `/api/v1/households/${householdId}/person-profiles/${profileId}`,
+    headers: authHeaders(session),
+  });
+  assert.equal(response.statusCode, 200, response.body);
+  const data = getPersonProfileSuccessSchema.parse(response.json()).data;
+  assert.equal(data.access, "owner_or_self");
+  return data.profile;
+};
+
 const addConstraint = (
   session: AuthenticatedSession,
   householdId: string,
@@ -220,17 +241,26 @@ const sha256Hex = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
 
 // 虚构的敏感样例，供 redaction 测试使用（非真实个人数据）。
-const privateHardConstraint = (label: string) => ({
-  expectedVersion: 0,
-  constraint: {
+const privateHardConstraint = (label: string) => {
+  const fields = {
     kind: "allergy" as const,
     enforcement: "hard" as const,
     label,
+    foodConceptIds: [],
     allergenCodes: ["FICTION_TREE_NUT"],
     visibility: "subject_and_owner" as const,
-    confirmation: { acknowledged: true as const },
-  },
-});
+  };
+  return {
+    expectedVersion: 0,
+    constraint: {
+      ...fields,
+      confirmation: {
+        acknowledged: true as const,
+        fingerprint: hardConstraintConfirmationFingerprint(fields),
+      },
+    },
+  };
+};
 
 test("invite stores only a digest, returns plaintext once, and lists without secrets", async () => {
   const owner = await login("invite-owner");
@@ -536,6 +566,14 @@ test("hard dietary constraints demand confirmation and record who confirmed; sof
   assert.equal(noCode.statusCode, 400);
 
   // 合法硬约束 → 201，服务端写入 confirmedAt + confirmedByUserId=操作者。
+  const hardFields = {
+    kind: "allergy" as const,
+    enforcement: "hard" as const,
+    label: "虚构花生过敏",
+    foodConceptIds: [],
+    allergenCodes: ["FICTION_PEANUT"],
+    visibility: "household" as const,
+  };
   const added = await addConstraint(
     owner,
     householdId,
@@ -544,17 +582,17 @@ test("hard dietary constraints demand confirmation and record who confirmed; sof
     {
       expectedVersion: 0,
       constraint: {
-        kind: "allergy",
-        enforcement: "hard",
-        label: "虚构花生过敏",
-        allergenCodes: ["FICTION_PEANUT"],
-        visibility: "household",
-        confirmation: { acknowledged: true },
+        ...hardFields,
+        confirmation: {
+          acknowledged: true,
+          fingerprint: hardConstraintConfirmationFingerprint(hardFields),
+        },
       },
     },
   );
   assert.equal(added.statusCode, 201, added.body);
-  const profile = personProfileSuccessSchema.parse(added.json()).data.profile;
+  const receipt = personProfileMutationSuccessSchema.parse(added.json()).data;
+  const profile = await getProfile(owner, householdId, receipt.profileId);
   assert.equal(profile.dietaryConstraints.length, 1);
   const constraint = profile.dietaryConstraints[0];
   assert.equal(constraint?.confirmedByUserId, owner.user.id);
@@ -588,9 +626,14 @@ test("household view is structurally free of subject_and_owner constraints; owne
     },
   );
   assert.equal(profileResponse.statusCode, 201, profileResponse.body);
-  const profileB = personProfileSuccessSchema.parse(
+  const profileReceipt = personProfileMutationSuccessSchema.parse(
     profileResponse.json(),
-  ).data.profile;
+  ).data;
+  const profileB = await getProfile(
+    memberB,
+    householdId,
+    profileReceipt.profileId,
+  );
   const privateAdd = await addConstraint(
     memberB,
     householdId,
@@ -599,6 +642,15 @@ test("household view is structurally free of subject_and_owner constraints; owne
     privateHardConstraint("虚构坚果忌口"),
   );
   assert.equal(privateAdd.statusCode, 201, privateAdd.body);
+  const cached = await persistence.pool.query<{ response_body: unknown }>(
+    `SELECT response_body
+     FROM idempotency_records
+     WHERE idempotency_key = $1`,
+    [normalizeKey("redact-b-constraint")],
+  );
+  const cachedJson = JSON.stringify(cached.rows[0]?.response_body);
+  assert.equal(cachedJson.includes("虚构坚果忌口"), false);
+  assert.equal(cachedJson.includes("dietaryConstraints"), false);
 
   // 第三成员 C 加入。
   const memberC = await login("redact-member-c");
@@ -670,9 +722,14 @@ test("profile edits enforce optimistic concurrency and idempotent replay", async
     payload: { operation: "update", expectedVersion: 0, displayName: "新户主名" },
   });
   assert.equal(updated.statusCode, 200, updated.body);
-  const updatedProfile = personProfileSuccessSchema.parse(
+  const updatedReceipt = personProfileMutationSuccessSchema.parse(
     updated.json(),
-  ).data.profile;
+  ).data;
+  const updatedProfile = await getProfile(
+    owner,
+    householdId,
+    updatedReceipt.profileId,
+  );
   assert.equal(updatedProfile.displayName, "新户主名");
   assert.equal(updatedProfile.version, 1);
 
@@ -696,8 +753,13 @@ test("profile edits enforce optimistic concurrency and idempotent replay", async
     addBody,
   );
   assert.equal(firstAdd.statusCode, 201, firstAdd.body);
-  const afterFirst = personProfileSuccessSchema.parse(firstAdd.json()).data
-    .profile;
+  const firstReceipt =
+    personProfileMutationSuccessSchema.parse(firstAdd.json()).data;
+  const afterFirst = await getProfile(
+    owner,
+    householdId,
+    firstReceipt.profileId,
+  );
   assert.equal(afterFirst.dietaryConstraints.length, 1);
   assert.equal(afterFirst.version, 2);
 
@@ -709,8 +771,14 @@ test("profile edits enforce optimistic concurrency and idempotent replay", async
     addBody,
   );
   assert.equal(replayAdd.statusCode, 201, replayAdd.body);
-  const afterReplay = personProfileSuccessSchema.parse(replayAdd.json()).data
-    .profile;
+  const replayReceipt =
+    personProfileMutationSuccessSchema.parse(replayAdd.json()).data;
+  const afterReplay = await getProfile(
+    owner,
+    householdId,
+    replayReceipt.profileId,
+  );
+  assert.deepEqual(replayReceipt, firstReceipt);
   assert.equal(afterReplay.dietaryConstraints.length, 1);
   assert.equal(afterReplay.version, 2);
 });
@@ -849,4 +917,318 @@ test("concurrent profile creation for the same member returns 409, not 500", asy
     [householdId, membershipId],
   );
   assert.equal(count.rows[0]?.count, 1);
+});
+
+test("membership privilege boundary blocks direct escalation and exposes only controlled transitions", async () => {
+  const owner = await login("privilege-owner");
+  const household = await createHousehold(owner, "privilege-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "privilege-invite");
+  const member = await login("privilege-member");
+  const joined = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "privilege-join")).json(),
+  ).data.membership;
+
+  await assert.rejects(
+    withAppTransaction(persistence, async (client) => {
+      await setUserContext(client, member.user.id);
+      await setHouseholdContext(client, householdId);
+      await client.query(
+        "UPDATE memberships SET role = 'owner' WHERE id = $1",
+        [joined.id],
+      );
+    }),
+    /permission denied for table memberships/,
+  );
+
+  const forbidden = await withAppTransaction(
+    persistence,
+    async (client) => {
+      await setUserContext(client, member.user.id);
+      await setHouseholdContext(client, householdId);
+      return client.query<{ result_code: string }>(
+        `SELECT result_code
+         FROM meal_agent_private.transition_membership_status(
+           $1::uuid, $2::integer, clock_timestamp()
+         )`,
+        [household.membership.id, household.membership.version],
+      );
+    },
+  );
+  assert.equal(forbidden.rows[0]?.result_code, "forbidden");
+
+  const privileges = await persistence.pool.query<{
+    app_table_update: boolean;
+    app_function_execute: boolean;
+    public_function_execute: boolean;
+    app_schema_create: boolean;
+    public_schema_create: boolean;
+  }>(
+    `SELECT
+       has_table_privilege(
+         'meal_agent_app', 'public.memberships', 'UPDATE'
+       ) AS app_table_update,
+       has_function_privilege(
+         'meal_agent_app',
+         'meal_agent_private.transition_membership_status(uuid,integer,timestamptz)',
+         'EXECUTE'
+       ) AS app_function_execute,
+       EXISTS (
+         SELECT 1
+         FROM pg_proc AS procedure
+         CROSS JOIN LATERAL aclexplode(
+           COALESCE(procedure.proacl, acldefault('f', procedure.proowner))
+         ) AS privilege
+         WHERE procedure.oid =
+           'meal_agent_private.transition_membership_status(uuid,integer,timestamptz)'::regprocedure
+           AND privilege.grantee = 0
+           AND privilege.privilege_type = 'EXECUTE'
+       ) AS public_function_execute,
+       has_schema_privilege(
+         'meal_agent_app', 'public', 'CREATE'
+       ) AS app_schema_create,
+       EXISTS (
+         SELECT 1
+         FROM pg_namespace AS namespace
+         CROSS JOIN LATERAL aclexplode(
+           COALESCE(namespace.nspacl, acldefault('n', namespace.nspowner))
+         ) AS privilege
+         WHERE namespace.oid = 'public'::regnamespace
+           AND privilege.grantee = 0
+           AND privilege.privilege_type = 'CREATE'
+       ) AS public_schema_create`,
+  );
+  assert.deepEqual(privileges.rows[0], {
+    app_table_update: false,
+    app_function_execute: true,
+    public_function_execute: false,
+    app_schema_create: false,
+    public_schema_create: false,
+  });
+
+  const functionSecurity = await persistence.pool.query<{
+    prosecdef: boolean;
+    owner: string;
+    proconfig: string[];
+  }>(
+    `SELECT p.prosecdef,
+            pg_get_userbyid(p.proowner) AS owner,
+            p.proconfig
+     FROM pg_proc p
+     JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = 'meal_agent_private'
+       AND p.proname = 'transition_membership_status'`,
+  );
+  assert.equal(functionSecurity.rows[0]?.prosecdef, true);
+  assert.equal(functionSecurity.rows[0]?.owner, "meal_agent_migrator");
+  assert.deepEqual(
+    new Set(functionSecurity.rows[0]?.proconfig),
+    new Set(["search_path=pg_catalog, public", "row_security=off"]),
+  );
+});
+
+test("membership removal archives the linked profile; rejoin requires explicit restore of the same id", async () => {
+  const owner = await login("lifecycle-owner");
+  const household = await createHousehold(owner, "lifecycle-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(owner, householdId, "lifecycle-invite");
+  const member = await login("lifecycle-member");
+  const joined = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "lifecycle-join")).json(),
+  ).data.membership;
+  const created = await createProfile(
+    member,
+    householdId,
+    "lifecycle-profile",
+    {
+      linkedMembershipId: joined.id,
+      displayName: "生命周期成员",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  const profileReceipt =
+    personProfileMutationSuccessSchema.parse(created.json()).data;
+  const privateAdd = await addConstraint(
+    member,
+    householdId,
+    profileReceipt.profileId,
+    "lifecycle-constraint",
+    privateHardConstraint("虚构私密忌口"),
+  );
+  assert.equal(privateAdd.statusCode, 201, privateAdd.body);
+
+  const removed = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/households/${householdId}/memberships/${joined.id}`,
+    headers: idempotent(owner, "lifecycle-remove"),
+  });
+  assert.equal(removed.statusCode, 200, removed.body);
+
+  const archived = await persistence.pool.query<{
+    id: string;
+    status: string;
+    linked_membership_id: string | null;
+    version: number;
+  }>(
+    `SELECT id, status, linked_membership_id, version
+     FROM person_profiles WHERE id = $1`,
+    [profileReceipt.profileId],
+  );
+  assert.deepEqual(archived.rows[0], {
+    id: profileReceipt.profileId,
+    status: "archived",
+    linked_membership_id: joined.id,
+    version: 2,
+  });
+
+  const duplicate = await createProfile(
+    owner,
+    householdId,
+    "lifecycle-duplicate",
+    {
+      linkedMembershipId: joined.id,
+      displayName: "错误复制",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  assert.equal(duplicate.statusCode, 409);
+
+  const secondInvite = await issueInvite(
+    owner,
+    householdId,
+    "lifecycle-rejoin-invite",
+  );
+  const rejoined = await join(
+    member,
+    secondInvite.inviteCode,
+    "lifecycle-rejoin",
+  );
+  assert.equal(rejoined.statusCode, 201, rejoined.body);
+
+  const listArchived = listPersonProfilesSuccessSchema.parse(
+    (
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/households/${householdId}/person-profiles?status=archived`,
+        headers: authHeaders(member),
+      })
+    ).json(),
+  ).data;
+  assert.equal(listArchived.viewerRole, "member");
+  if (listArchived.viewerRole !== "member") return;
+  assert.equal(listArchived.self?.id, profileReceipt.profileId);
+
+  const restored = await app.inject({
+    method: "PATCH",
+    url:
+      `/api/v1/households/${householdId}` +
+      `/person-profiles/${profileReceipt.profileId}`,
+    headers: idempotent(member, "lifecycle-restore"),
+    payload: { operation: "restore", expectedVersion: 2 },
+  });
+  assert.equal(restored.statusCode, 200, restored.body);
+  const restoredProfile = await getProfile(
+    member,
+    householdId,
+    profileReceipt.profileId,
+  );
+  assert.equal(restoredProfile.id, profileReceipt.profileId);
+  assert.equal(restoredProfile.status, "active");
+  assert.equal(restoredProfile.dietaryConstraints.length, 1);
+});
+
+test("dining-only profile link requires owner initiation and target-member confirmation", async () => {
+  const owner = await login("link-owner");
+  const household = await createHousehold(owner, "link-hh");
+  const householdId = household.household.id;
+  const dining = await createProfile(owner, householdId, "link-dining", {
+    displayName: "仅用餐成员",
+    defaultParticipation: null,
+    defaultPortionScale: null,
+    cookingSkill: null,
+  });
+  const diningReceipt =
+    personProfileMutationSuccessSchema.parse(dining.json()).data;
+  const invite = await issueInvite(owner, householdId, "link-invite");
+  const member = await login("link-member");
+  const joined = joinHouseholdSuccessSchema.parse(
+    (await join(member, invite.inviteCode, "link-join")).json(),
+  ).data.membership;
+
+  const requested = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${diningReceipt.profileId}/link-requests`,
+    headers: idempotent(owner, "link-request"),
+    payload: {
+      targetMembershipId: joined.id,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+  assert.equal(requested.statusCode, 201, requested.body);
+  const linkRequest =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+
+  const ownerCannotConfirm = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profile-link-requests/` +
+      `${linkRequest.id}/confirm`,
+    headers: idempotent(owner, "link-owner-confirm"),
+    payload: {
+      expectedVersion: linkRequest.version,
+      subjectConfirmation: { acknowledged: true },
+    },
+  });
+  assert.equal(ownerCannotConfirm.statusCode, 403);
+
+  const confirmed = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profile-link-requests/` +
+      `${linkRequest.id}/confirm`,
+    headers: idempotent(member, "link-member-confirm"),
+    payload: {
+      expectedVersion: linkRequest.version,
+      subjectConfirmation: { acknowledged: true },
+    },
+  });
+  assert.equal(confirmed.statusCode, 200, confirmed.body);
+  const linkResult =
+    confirmPersonProfileLinkSuccessSchema.parse(confirmed.json()).data;
+  assert.equal(linkResult.receipt.profileId, diningReceipt.profileId);
+  const linked = await getProfile(member, householdId, diningReceipt.profileId);
+  assert.equal(linked.linkedMembershipId, joined.id);
+});
+
+test("two different invites concurrently joining the same household yield one join and one conflict, never 500", async () => {
+  const owner = await login("two-code-owner");
+  const household = await createHousehold(owner, "two-code-hh");
+  const householdId = household.household.id;
+  const first = await issueInvite(owner, householdId, "two-code-first");
+  const second = await issueInvite(owner, householdId, "two-code-second");
+  const member = await login("two-code-member");
+
+  const [left, right] = await Promise.all([
+    join(member, first.inviteCode, "two-code-join-left"),
+    join(member, second.inviteCode, "two-code-join-right"),
+  ]);
+  assert.deepEqual(
+    [left.statusCode, right.statusCode].sort((a, b) => a - b),
+    [201, 409],
+  );
+  assert.equal(left.statusCode === 500 || right.statusCode === 500, false);
+  const membershipCount = await persistence.pool.query<{ count: number }>(
+    `SELECT count(*)::int AS count
+     FROM memberships
+     WHERE household_id = $1 AND user_id = $2`,
+    [householdId, member.user.id],
+  );
+  assert.equal(membershipCount.rows[0]?.count, 1);
 });

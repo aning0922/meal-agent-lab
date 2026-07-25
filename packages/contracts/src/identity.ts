@@ -164,8 +164,18 @@ export const createHouseholdRequestSchema = z.strictObject({
   locale: z.string().min(2).max(35),
   ownerProfile: z.strictObject({
     displayName: z.string().min(1).max(80),
-    defaultPortionScale: z.number().finite().min(0.25).max(4),
-    cookingSkill: z.enum(["none", "beginner", "intermediate", "advanced"]),
+    defaultParticipation: z.boolean().nullable().default(null),
+    defaultPortionScale: z
+      .number()
+      .finite()
+      .min(0.25)
+      .max(4)
+      .nullable()
+      .default(null),
+    cookingSkill: z
+      .enum(["none", "beginner", "intermediate", "advanced"])
+      .nullable()
+      .default(null),
   }),
 });
 export type CreateHouseholdRequest = z.infer<
@@ -216,6 +226,7 @@ const hardDietaryConstraintSchema = z.strictObject({
   label: z.string().min(1).max(120),
   foodConceptIds: z.array(foodConceptIdSchema).default([]),
   allergenCodes: z.array(z.string().min(1).max(64)).default([]),
+  mappingStatus: z.enum(["structured", "needs_structured_mapping"]),
   notes: z.string().max(500).optional(),
   visibility: z.enum(["household", "subject_and_owner"]),
   confirmedAt: utcDateTimeSchema,
@@ -267,9 +278,11 @@ export const personProfileSchema = z.strictObject({
   linkedMembershipId: membershipIdSchema.optional(),
   displayName: z.string().min(1).max(80),
   status: z.enum(["active", "archived"]),
-  defaultParticipation: z.boolean(),
-  defaultPortionScale: z.number().finite().min(0.25).max(4),
-  cookingSkill: z.enum(["none", "beginner", "intermediate", "advanced"]),
+  defaultParticipation: z.boolean().nullable(),
+  defaultPortionScale: z.number().finite().min(0.25).max(4).nullable(),
+  cookingSkill: z
+    .enum(["none", "beginner", "intermediate", "advanced"])
+    .nullable(),
   dietaryConstraints: z.array(dietaryConstraintSchema),
   createdAt: utcDateTimeSchema,
   updatedAt: utcDateTimeSchema,

@@ -1,4 +1,8 @@
-import { contractVersion, requestIdSchema } from "@meal-agent/contracts";
+import {
+  contractRuleManifest,
+  contractVersion,
+  requestIdSchema,
+} from "@meal-agent/contracts";
 import fastifySwagger from "@fastify/swagger";
 import Fastify, {
   type FastifyError,
@@ -12,6 +16,7 @@ import {
   validatorCompiler,
 } from "fastify-type-provider-zod";
 import type { Logger } from "pino";
+import type { OpenAPIV3 } from "openapi-types";
 
 import type { AppConfig } from "./config.js";
 import { ApiRepository } from "./database/repository.js";
@@ -32,18 +37,23 @@ import {
 type ApiOperations = Pick<
   ApiRepository,
   | "addDietaryConstraint"
+  | "confirmPersonProfileLinkRequest"
   | "consumeInventoryLot"
   | "createHousehold"
   | "createHouseholdInvite"
   | "createInventoryLot"
+  | "createPersonProfileLinkRequest"
   | "createPersonProfile"
   | "exchangeWechatCode"
   | "getMe"
+  | "getPersonProfile"
   | "joinHousehold"
   | "listHouseholdInvites"
   | "listHouseholdMembers"
   | "listHouseholds"
   | "listInventoryLots"
+  | "listPersonProfileLinkRequests"
+  | "listPersonProfiles"
   | "patchPersonProfile"
   | "removeDietaryConstraint"
   | "removeMembership"
@@ -145,9 +155,10 @@ export const buildApp = async (
     openapi: {
       info: {
         title: "Meal Agent API",
-        description: "Stage 06 minimum backend vertical slice",
+        description: "Stage 08 audited modular-monolith API",
         version: contractVersion,
       },
+      "x-meal-agent-contract-rules": contractRuleManifest,
       servers: [],
       components: {
         securitySchemes: {
@@ -157,7 +168,7 @@ export const buildApp = async (
           },
         },
       },
-    },
+    } as Partial<OpenAPIV3.Document>,
     transform: jsonSchemaTransform,
     transformObject: jsonSchemaTransformObject,
   });

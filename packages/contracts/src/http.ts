@@ -17,10 +17,16 @@ import {
   inventoryLotSchema,
 } from "./inventory.js";
 import {
+  confirmPersonProfileLinkResultSchema,
   createHouseholdInviteResultSchema,
+  getPersonProfileResultSchema,
   householdInviteSchema,
   joinHouseholdResultSchema,
+  listPersonProfilesResultSchema,
   listHouseholdMembersResultSchema,
+  personProfileMutationReceiptSchema,
+  personProfileLinkRequestListResultSchema,
+  personProfileLinkRequestResultSchema,
   personProfileResultSchema,
   removeMembershipResultSchema,
   revokeHouseholdInviteResultSchema,
@@ -106,6 +112,23 @@ export const removeMembershipSuccessSchema = createApiSuccessSchema(
 );
 export const personProfileSuccessSchema = createApiSuccessSchema(
   personProfileResultSchema,
+);
+export const personProfileMutationSuccessSchema = createApiSuccessSchema(
+  personProfileMutationReceiptSchema,
+);
+export const listPersonProfilesSuccessSchema = createApiSuccessSchema(
+  listPersonProfilesResultSchema,
+);
+export const getPersonProfileSuccessSchema = createApiSuccessSchema(
+  getPersonProfileResultSchema,
+);
+export const personProfileLinkRequestSuccessSchema = createApiSuccessSchema(
+  personProfileLinkRequestResultSchema,
+);
+export const personProfileLinkRequestListSuccessSchema =
+  createApiSuccessSchema(personProfileLinkRequestListResultSchema);
+export const confirmPersonProfileLinkSuccessSchema = createApiSuccessSchema(
+  confirmPersonProfileLinkResultSchema,
 );
 
 export const stage06ErrorResponseSchema = apiErrorSchema;

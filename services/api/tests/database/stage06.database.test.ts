@@ -122,6 +122,7 @@ const householdRequest = (
   locale: "zh-CN",
   ownerProfile: {
     displayName: `${name}创建者`,
+    defaultParticipation: null,
     defaultPortionScale: 1,
     cookingSkill: "beginner",
   },
@@ -218,7 +219,7 @@ const consume = async (
     },
   });
 
-test("PostgreSQL 18 migration creates ten tables, separated roles, FORCE RLS and composite foreign keys", async () => {
+test("PostgreSQL 18 migration creates eleven tables, separated roles, FORCE RLS and composite foreign keys", async () => {
   const version = await persistence.pool.query<{ server_version: string }>(
     "SHOW server_version",
   );
@@ -233,7 +234,7 @@ test("PostgreSQL 18 migration creates ten tables, separated roles, FORCE RLS and
      WHERE schemaname = 'public'
      ORDER BY tablename`,
   );
-  assert.equal(tables.rows.length, 10);
+  assert.equal(tables.rows.length, 11);
   assert.equal(
     tables.rows.some((row) => row.tablename === "household_invites"),
     true,
@@ -298,12 +299,13 @@ test("PostgreSQL 18 migration creates ten tables, separated roles, FORCE RLS and
      FROM pg_class
      WHERE relname IN (
        'households', 'memberships', 'household_invites',
-       'person_profiles', 'inventory_lots', 'inventory_events',
+       'person_profiles', 'person_profile_link_requests',
+       'inventory_lots', 'inventory_events',
        'idempotency_records'
      )
      ORDER BY relname`,
   );
-  assert.equal(forced.rows.length, 7);
+  assert.equal(forced.rows.length, 8);
   assert.equal(forced.rows.every((row) => row.relforcerowsecurity), true);
 
   // 邀请表：digest 唯一约束存在、明文/绑定成员的复合外键成立。

@@ -80,9 +80,9 @@ export interface PersonProfileRow {
   readonly linked_membership_id: string | null;
   readonly display_name: string;
   readonly status: string;
-  readonly default_participation: number;
-  readonly default_portion_scale: string | number;
-  readonly cooking_skill: string;
+  readonly default_participation: number | null;
+  readonly default_portion_scale: string | number | null;
+  readonly cooking_skill: string | null;
   readonly dietary_constraints: unknown;
   readonly created_at: TimestampValue;
   readonly updated_at: TimestampValue;
@@ -215,8 +215,14 @@ const personProfileFields = (
     : { linkedMembershipId: row.linked_membership_id }),
   displayName: row.display_name,
   status: row.status,
-  defaultParticipation: row.default_participation === 1,
-  defaultPortionScale: Number(row.default_portion_scale),
+  defaultParticipation:
+    row.default_participation === null
+      ? null
+      : row.default_participation === 1,
+  defaultPortionScale:
+    row.default_portion_scale === null
+      ? null
+      : Number(row.default_portion_scale),
   cookingSkill: row.cooking_skill,
   dietaryConstraints,
   createdAt: toIsoString(row.created_at),

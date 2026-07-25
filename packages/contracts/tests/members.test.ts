@@ -12,6 +12,7 @@ import {
   householdInviteCodeSchema,
   householdInviteSchema,
   householdMemberRedactedViewSchema,
+  hardConstraintConfirmationFingerprint,
   joinHouseholdResultSchema,
   listHouseholdMembersResultSchema,
   patchPersonProfileRequestSchema,
@@ -38,8 +39,8 @@ const now = "2026-07-24T12:00:00Z";
 const later = "2026-07-31T12:00:00Z";
 const inviteCode = "A".repeat(32);
 
-test("contract version tracks the 0.3.0 package bump", () => {
-  assert.equal(contractVersion, "0.3.0");
+test("contract version tracks the pre-release 0.4.0 audit closeout", () => {
+  assert.equal(contractVersion, "0.4.0");
 });
 
 test("household invite entity hides secrets and bounds its counters", () => {
@@ -213,6 +214,7 @@ const privateConstraint = {
   label: "虚构宗教忌口",
   foodConceptIds: [],
   allergenCodes: [],
+  mappingStatus: "needs_structured_mapping" as const,
   visibility: "subject_and_owner" as const,
   confirmedAt: now,
   confirmedByUserId: ids.user,
@@ -379,15 +381,22 @@ test("person profile create/update/archive commands enforce their shapes", () =>
 });
 
 test("hard dietary constraints require explicit confirmation; soft ones forbid it", () => {
+  const hardFields = {
+    kind: "allergy" as const,
+    enforcement: "hard" as const,
+    label: "虚构花生过敏",
+    foodConceptIds: [],
+    allergenCodes: ["FICTION_PEANUT"],
+    visibility: "subject_and_owner" as const,
+  };
   const hardBody = {
     expectedVersion: 0,
     constraint: {
-      kind: "allergy" as const,
-      enforcement: "hard" as const,
-      label: "虚构花生过敏",
-      allergenCodes: ["FICTION_PEANUT"],
-      visibility: "subject_and_owner" as const,
-      confirmation: { acknowledged: true as const },
+      ...hardFields,
+      confirmation: {
+        acknowledged: true as const,
+        fingerprint: hardConstraintConfirmationFingerprint(hardFields),
+      },
     },
   };
   assert.equal(
@@ -413,6 +422,14 @@ test("hard dietary constraints require explicit confirmation; soft ones forbid i
     addDietaryConstraintRequestSchema.safeParse({
       ...hardBody,
       constraint: { ...hardBody.constraint, confirmation: { acknowledged: false } },
+    }).success,
+    false,
+  );
+  // visibility 等任一字段变化都会使旧确认指纹失效。
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse({
+      ...hardBody,
+      constraint: { ...hardBody.constraint, visibility: "household" },
     }).success,
     false,
   );
@@ -472,10 +489,15 @@ test("hard dietary constraints require explicit confirmation; soft ones forbid i
   );
 });
 
-test("0.2.0 dietary constraint consumers keep working (additive change)", () => {
-  // 既有 dietaryConstraintSchema 未被破坏：完整硬约束仍然解析通过。
+test("0.4.0 hard constraints require an explicit executable mapping state", () => {
   assert.equal(
     dietaryConstraintSchema.safeParse(privateConstraint).success,
     true,
+  );
+  const { mappingStatus: _mapping, ...legacyConstraint } = privateConstraint;
+  void _mapping;
+  assert.equal(
+    dietaryConstraintSchema.safeParse(legacyConstraint).success,
+    false,
   );
 });

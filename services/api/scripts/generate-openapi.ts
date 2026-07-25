@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { generateOpenApiDocument } from "./openapi.js";
 
 const output = fileURLToPath(
-  new URL("../openapi/stage-06.openapi.json", import.meta.url),
+  new URL("../openapi/stage-08.openapi.json", import.meta.url),
 );
 await mkdir(dirname(output), { recursive: true });
 await writeFile(

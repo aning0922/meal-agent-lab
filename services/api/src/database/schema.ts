@@ -279,13 +279,13 @@ export const personProfiles = pgTable(
     linkedMembershipId: uuid("linked_membership_id"),
     displayName: varchar("display_name", { length: 80 }).notNull(),
     status: varchar("status", { length: 32 }).notNull(),
-    defaultParticipation: integer("default_participation").notNull(),
+    defaultParticipation: integer("default_participation"),
     defaultPortionScale: numeric("default_portion_scale", {
       precision: 6,
       scale: 3,
       mode: "number",
-    }).notNull(),
-    cookingSkill: varchar("cooking_skill", { length: 32 }).notNull(),
+    }),
+    cookingSkill: varchar("cooking_skill", { length: 32 }),
     dietaryConstraints: jsonb("dietary_constraints")
       .$type<readonly unknown[]>()
       .notNull(),
@@ -311,21 +311,91 @@ export const personProfiles = pgTable(
     ),
     check(
       "person_profiles_default_participation_check",
-      sql`${table.defaultParticipation} IN (0, 1)`,
+      sql`${table.defaultParticipation} IS NULL OR ${table.defaultParticipation} IN (0, 1)`,
     ),
     check(
       "person_profiles_default_portion_scale_check",
-      sql`${table.defaultPortionScale} BETWEEN 0.25 AND 4`,
+      sql`${table.defaultPortionScale} IS NULL OR ${table.defaultPortionScale} BETWEEN 0.25 AND 4`,
     ),
     check(
       "person_profiles_cooking_skill_check",
-      sql`${table.cookingSkill} IN ('none', 'beginner', 'intermediate', 'advanced')`,
+      sql`${table.cookingSkill} IS NULL OR ${table.cookingSkill} IN ('none', 'beginner', 'intermediate', 'advanced')`,
     ),
     check(
       "person_profiles_dietary_constraints_check",
       sql`jsonb_typeof(${table.dietaryConstraints}) = 'array'`,
     ),
     check("person_profiles_version_check", sql`${table.version} >= 0`),
+  ],
+);
+
+export const personProfileLinkRequests = pgTable(
+  "person_profile_link_requests",
+  {
+    id: uuid("id").primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id),
+    profileId: uuid("profile_id").notNull(),
+    targetMembershipId: uuid("target_membership_id").notNull(),
+    initiatedByUserId: uuid("initiated_by_user_id").notNull(),
+    status: varchar("status", { length: 32 }).notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    confirmedAt: timestamp("confirmed_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    version: integer("version").notNull().default(0),
+  },
+  (table) => [
+    foreignKey({
+      name: "person_profile_link_requests_profile_foreign",
+      columns: [table.householdId, table.profileId],
+      foreignColumns: [personProfiles.householdId, personProfiles.id],
+    }),
+    foreignKey({
+      name: "person_profile_link_requests_membership_foreign",
+      columns: [table.householdId, table.targetMembershipId],
+      foreignColumns: [memberships.householdId, memberships.id],
+    }),
+    foreignKey({
+      name: "person_profile_link_requests_initiator_foreign",
+      columns: [table.householdId, table.initiatedByUserId],
+      foreignColumns: [memberships.householdId, memberships.userId],
+    }),
+    check(
+      "person_profile_link_requests_status_check",
+      sql`${table.status} IN ('pending', 'accepted', 'cancelled', 'expired')`,
+    ),
+    check(
+      "person_profile_link_requests_time_check",
+      sql`${table.expiresAt} > ${table.createdAt}
+        AND ${table.expiresAt} <= ${table.createdAt} + interval '7 days'`,
+    ),
+    check(
+      "person_profile_link_requests_confirmation_check",
+      sql`(${table.status} = 'accepted' AND ${table.confirmedAt} IS NOT NULL)
+        OR (${table.status} <> 'accepted' AND ${table.confirmedAt} IS NULL)`,
+    ),
+    check(
+      "person_profile_link_requests_version_check",
+      sql`${table.version} >= 0`,
+    ),
+    uniqueIndex("person_profile_link_requests_pending_profile_unique")
+      .on(table.householdId, table.profileId)
+      .where(sql`${table.status} = 'pending'`),
+    index("person_profile_link_requests_target_status_index").on(
+      table.householdId,
+      table.targetMembershipId,
+      table.status,
+    ),
   ],
 );
 
@@ -635,6 +705,7 @@ export const stage06Tables = {
   memberships,
   householdInvites,
   personProfiles,
+  personProfileLinkRequests,
   inventoryLots,
   inventoryEvents,
   idempotencyRecords,

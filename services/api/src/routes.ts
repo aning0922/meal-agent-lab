@@ -9,6 +9,7 @@ import {
   inventoryLotIdSchema,
   membershipIdSchema,
   personProfileIdSchema,
+  personProfileLinkRequestIdSchema,
   requestIdSchema,
   type RequestId,
 } from "@meal-agent/contracts";
@@ -22,24 +23,32 @@ import {
 } from "@meal-agent/contracts/inventory";
 import {
   addDietaryConstraintRequestSchema,
+  confirmPersonProfileLinkRequestSchema,
   createHouseholdInviteRequestSchema,
+  createPersonProfileLinkRequestSchema,
   createPersonProfileRequestSchema,
   joinHouseholdRequestSchema,
   patchPersonProfileRequestSchema,
+  personProfileQuerySchema,
   removeDietaryConstraintRequestSchema,
 } from "@meal-agent/contracts/members";
 import {
+  confirmPersonProfileLinkSuccessSchema,
   consumeInventoryLotSuccessSchema,
   createHouseholdInviteSuccessSchema,
   createHouseholdSuccessSchema,
   createInventoryLotSuccessSchema,
+  getPersonProfileSuccessSchema,
   householdInvitePageSuccessSchema,
   householdPageSuccessSchema,
   inventoryLotPageSuccessSchema,
   joinHouseholdSuccessSchema,
   listHouseholdMembersSuccessSchema,
+  listPersonProfilesSuccessSchema,
   meSuccessSchema,
-  personProfileSuccessSchema,
+  personProfileLinkRequestListSuccessSchema,
+  personProfileLinkRequestSuccessSchema,
+  personProfileMutationSuccessSchema,
   removeMembershipSuccessSchema,
   revokeHouseholdInviteSuccessSchema,
   serviceLivenessSuccessSchema,
@@ -58,18 +67,23 @@ import type { ApiRepository } from "./database/repository.js";
 type ApiOperations = Pick<
   ApiRepository,
   | "addDietaryConstraint"
+  | "confirmPersonProfileLinkRequest"
   | "consumeInventoryLot"
   | "createHousehold"
   | "createHouseholdInvite"
   | "createInventoryLot"
+  | "createPersonProfileLinkRequest"
   | "createPersonProfile"
   | "exchangeWechatCode"
   | "getMe"
+  | "getPersonProfile"
   | "joinHousehold"
   | "listHouseholdInvites"
   | "listHouseholdMembers"
   | "listHouseholds"
   | "listInventoryLots"
+  | "listPersonProfileLinkRequests"
+  | "listPersonProfiles"
   | "patchPersonProfile"
   | "removeDietaryConstraint"
   | "removeMembership"
@@ -99,6 +113,11 @@ const membershipParamsSchema = z.strictObject({
 const personProfileParamsSchema = z.strictObject({
   id: householdIdSchema,
   profileId: personProfileIdSchema,
+});
+
+const personProfileLinkRequestParamsSchema = z.strictObject({
+  id: householdIdSchema,
+  requestId: personProfileLinkRequestIdSchema,
 });
 
 const paginationQuerySchema = z.object({
@@ -589,6 +608,84 @@ export const registerRoutes = async (
     },
   );
 
+  app.get(
+    "/api/v1/households/:id/person-profiles",
+    {
+      schema: {
+        operationId: "listPersonProfiles",
+        tags: ["profiles"],
+        ...protectedRoute,
+        params: householdParamsSchema,
+        querystring: personProfileQuerySchema,
+        response: {
+          200: listPersonProfilesSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request) =>
+      success(
+        requestIdOf(request),
+        await operations.listPersonProfiles(
+          bearerToken(request),
+          requestIdOf(request),
+          request.params["id"],
+          request.query.status,
+        ),
+      ),
+  );
+
+  app.get(
+    "/api/v1/households/:id/person-profiles/:profileId",
+    {
+      schema: {
+        operationId: "getPersonProfile",
+        tags: ["profiles"],
+        ...protectedRoute,
+        params: personProfileParamsSchema,
+        response: {
+          200: getPersonProfileSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request) =>
+      success(
+        requestIdOf(request),
+        await operations.getPersonProfile(
+          bearerToken(request),
+          requestIdOf(request),
+          request.params["id"],
+          request.params["profileId"],
+        ),
+      ),
+  );
+
+  app.get(
+    "/api/v1/households/:id/person-profile-link-requests",
+    {
+      schema: {
+        operationId: "listPersonProfileLinkRequests",
+        tags: ["profiles"],
+        ...protectedRoute,
+        params: householdParamsSchema,
+        response: {
+          200: personProfileLinkRequestListSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request) =>
+      success(
+        requestIdOf(request),
+        await operations.listPersonProfileLinkRequests(
+          bearerToken(request),
+          requestIdOf(request),
+          request.params["id"],
+        ),
+      ),
+  );
+
   app.post(
     "/api/v1/households/:id/person-profiles",
     {
@@ -600,7 +697,7 @@ export const registerRoutes = async (
         headers: idempotencyHeadersSchema,
         body: createPersonProfileRequestSchema,
         response: {
-          201: personProfileSuccessSchema,
+          201: personProfileMutationSuccessSchema,
           ...commonErrorResponses,
         },
       },
@@ -628,7 +725,7 @@ export const registerRoutes = async (
         headers: idempotencyHeadersSchema,
         body: patchPersonProfileRequestSchema,
         response: {
-          200: personProfileSuccessSchema,
+          200: personProfileMutationSuccessSchema,
           ...commonErrorResponses,
         },
       },
@@ -657,7 +754,7 @@ export const registerRoutes = async (
         headers: idempotencyHeadersSchema,
         body: addDietaryConstraintRequestSchema,
         response: {
-          201: personProfileSuccessSchema,
+          201: personProfileMutationSuccessSchema,
           ...commonErrorResponses,
         },
       },
@@ -686,7 +783,7 @@ export const registerRoutes = async (
         headers: idempotencyHeadersSchema,
         body: removeDietaryConstraintRequestSchema,
         response: {
-          200: personProfileSuccessSchema,
+          200: personProfileMutationSuccessSchema,
           ...commonErrorResponses,
         },
       },
@@ -697,6 +794,64 @@ export const registerRoutes = async (
         requestIdOf(request),
         request.params["id"],
         request.params["profileId"],
+        request.headers["idempotency-key"],
+        request.body,
+      );
+      return reply.code(result.statusCode as 200).send(result.body);
+    },
+  );
+
+  app.post(
+    "/api/v1/households/:id/person-profiles/:profileId/link-requests",
+    {
+      schema: {
+        operationId: "createPersonProfileLinkRequest",
+        tags: ["profiles"],
+        ...protectedRoute,
+        params: personProfileParamsSchema,
+        headers: idempotencyHeadersSchema,
+        body: createPersonProfileLinkRequestSchema,
+        response: {
+          201: personProfileLinkRequestSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await operations.createPersonProfileLinkRequest(
+        bearerToken(request),
+        requestIdOf(request),
+        request.params["id"],
+        request.params["profileId"],
+        request.headers["idempotency-key"],
+        request.body,
+      );
+      return reply.code(result.statusCode as 201).send(result.body);
+    },
+  );
+
+  app.post(
+    "/api/v1/households/:id/person-profile-link-requests/:requestId/confirm",
+    {
+      schema: {
+        operationId: "confirmPersonProfileLinkRequest",
+        tags: ["profiles"],
+        ...protectedRoute,
+        params: personProfileLinkRequestParamsSchema,
+        headers: idempotencyHeadersSchema,
+        body: confirmPersonProfileLinkRequestSchema,
+        response: {
+          200: confirmPersonProfileLinkSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await operations.confirmPersonProfileLinkRequest(
+        bearerToken(request),
+        requestIdOf(request),
+        request.params["id"],
+        request.params["requestId"],
         request.headers["idempotency-key"],
         request.body,
       );

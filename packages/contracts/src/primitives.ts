@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const contractVersion = "0.3.0" as const;
+export const contractVersion = "0.4.0" as const;
 
 export const userIdSchema = z.uuidv7().brand<"UserId">();
 export const authIdentityIdSchema = z.uuidv7().brand<"AuthIdentityId">();
@@ -11,6 +11,9 @@ export const householdInviteIdSchema = z
   .brand<"HouseholdInviteId">();
 export const membershipIdSchema = z.uuidv7().brand<"MembershipId">();
 export const personProfileIdSchema = z.uuidv7().brand<"PersonProfileId">();
+export const personProfileLinkRequestIdSchema = z
+  .uuidv7()
+  .brand<"PersonProfileLinkRequestId">();
 export const dietaryConstraintIdSchema = z
   .uuidv7()
   .brand<"DietaryConstraintId">();
@@ -35,6 +38,9 @@ export type HouseholdId = z.infer<typeof householdIdSchema>;
 export type HouseholdInviteId = z.infer<typeof householdInviteIdSchema>;
 export type MembershipId = z.infer<typeof membershipIdSchema>;
 export type PersonProfileId = z.infer<typeof personProfileIdSchema>;
+export type PersonProfileLinkRequestId = z.infer<
+  typeof personProfileLinkRequestIdSchema
+>;
 export type DietaryConstraintId = z.infer<
   typeof dietaryConstraintIdSchema
 >;
@@ -227,6 +233,10 @@ const unsignedQuantityDecimalPattern =
   /^(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/;
 const signedQuantityDecimalPattern =
   /^-?(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/;
+const positiveQuantityDecimalPattern =
+  /^(?!0(?:\.0{1,6})?$)(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/;
+const nonZeroSignedQuantityDecimalPattern =
+  /^(?!-?0(?:\.0{1,6})?$)-?(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/;
 
 export const normalizeQuantityDecimal = (value: string): string => {
   const negative = value.startsWith("-");
@@ -259,9 +269,29 @@ export const exactQuantityAmountSchema = z
     ],
   });
 
-const positiveExactQuantityAmountSchema =
-  exactQuantityAmountSchema.refine((amount) => amount !== "0", {
-    message: "quantity amount must be positive",
+export const positiveExactQuantityAmountSchema = z
+  .string()
+  .min(1)
+  .max(quantityDecimalPrecision + 1)
+  .regex(positiveQuantityDecimalPattern, {
+    message:
+      "quantity amount must be a plain positive decimal string with at most 9 integer and 6 fractional digits",
+  })
+  .overwrite(normalizeQuantityDecimal)
+  .meta({
+    format: "decimal",
+    "x-decimal-minimum-exclusive": "0",
+    "x-decimal-maximum": quantityDecimalMax,
+    "x-decimal-scale": quantityDecimalScale,
+    "x-meal-agent-rules": [
+      {
+        id: "quantity.exact.positive",
+        version: 1,
+        enforcement: "native",
+        description:
+          "exact quantity must be positive, including before alias normalization",
+      },
+    ],
   });
 
 const positiveApproximateQuantityAmountSchema = z
@@ -370,6 +400,7 @@ const nonZeroEstimatedQuantityDeltaAmountSchema = z
     message: "quantity delta cannot be zero",
   })
   .meta({
+    not: { const: 0 },
     "x-zod-refinements": [
       `estimated quantity delta supports at most ${quantityDecimalScale} decimal places`,
       "quantity delta cannot be zero",
@@ -380,14 +411,11 @@ const nonZeroExactQuantityDeltaAmountSchema = z
   .string()
   .min(1)
   .max(quantityDecimalPrecision + 2)
-  .regex(signedQuantityDecimalPattern, {
+  .regex(nonZeroSignedQuantityDecimalPattern, {
     message:
       "exact quantity delta must be a plain signed decimal string with at most 9 integer and 6 fractional digits",
   })
   .overwrite(normalizeQuantityDecimal)
-  .refine((amount) => amount !== "0", {
-    message: "quantity delta cannot be zero",
-  })
   .meta({
     format: "decimal",
     "x-decimal-minimum": `-${quantityDecimalMax}`,
@@ -396,6 +424,14 @@ const nonZeroExactQuantityDeltaAmountSchema = z
     "x-zod-refinements": [
       "exact quantity delta rejects JSON numbers and exponent notation before any IEEE-754 conversion",
       "quantity delta cannot be zero",
+    ],
+    "x-meal-agent-rules": [
+      {
+        id: "quantity.delta.exact.nonzero",
+        version: 1,
+        enforcement: "native",
+        description: "exact quantity delta cannot be mathematical zero",
+      },
     ],
   });
 

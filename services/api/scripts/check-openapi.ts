@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { OpenAPIV3 } from "openapi-types";
 
+import { contractRuleManifest } from "@meal-agent/contracts";
+
 import { generateOpenApiDocument } from "./openapi.js";
 
 const requiredPaths = [
@@ -22,9 +24,21 @@ const requiredPaths = [
   "/api/v1/households/{id}/person-profiles",
   "/api/v1/households/{id}/person-profiles/{profileId}",
   "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints",
+  "/api/v1/households/{id}/person-profiles/{profileId}/link-requests",
+  "/api/v1/households/{id}/person-profile-link-requests",
+  "/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm",
 ] as const;
 
 const generated = await generateOpenApiDocument();
+assert.equal(generated.info.version, "0.4.0");
+assert.deepEqual(
+  (
+    generated as OpenAPIV3.Document & {
+      readonly "x-meal-agent-contract-rules": unknown;
+    }
+  )["x-meal-agent-contract-rules"],
+  contractRuleManifest,
+);
 for (const path of requiredPaths) {
   assert.ok(generated.paths[path] !== undefined, `missing OpenAPI path ${path}`);
 }
@@ -47,14 +61,36 @@ const consumedRequest = JSON.stringify(
     "/api/v1/households/{id}/inventory-lots/{lotId}/events/consumed"
   ]?.post?.requestBody,
 );
+const createLotRequest = JSON.stringify(
+  generated.paths[
+    "/api/v1/households/{id}/inventory-lots"
+  ]?.post?.requestBody,
+);
 assert.equal(consumedRequest.includes('"exact"'), true);
 assert.equal(consumedRequest.includes('"approximate"'), false);
 assert.equal(consumedRequest.includes('"type":"string"'), true);
 assert.equal(consumedRequest.includes('"multipleOf"'), false);
 assert.equal(
-  consumedRequest.includes("before any IEEE-754 conversion"),
+  consumedRequest.includes('"id":"quantity.exact.positive"'),
   true,
 );
+for (const requestSchema of [createLotRequest, consumedRequest]) {
+  const patterns = [
+    ...requestSchema.matchAll(/"pattern":"((?:\\.|[^"])*)"/g),
+  ].map((match) =>
+    JSON.parse(`"${match[1] ?? ""}"`) as string
+  );
+  const positivePattern = patterns.find(
+    (pattern) =>
+      new RegExp(pattern).test("0.000001") &&
+      !new RegExp(pattern).test("0"),
+  );
+  assert.notEqual(
+    positivePattern,
+    undefined,
+    "exact positive quantity pattern must reject mathematical zero",
+  );
+}
 assert.equal(
   consumedRequest.includes(
     '"x-decimal-maximum":"999999999.999999"',
@@ -123,15 +159,42 @@ const consumedResponse = JSON.stringify(
     "/api/v1/households/{id}/inventory-lots/{lotId}/events/consumed"
   ]?.post?.responses["201"],
 );
+const createLotResponse = JSON.stringify(
+  generated.paths[
+    "/api/v1/households/{id}/inventory-lots"
+  ]?.post?.responses["201"],
+);
 assert.equal(
   consumedResponse.includes(
     "consumed result requires a consistent exact negative event",
   ),
   true,
 );
+for (const responseSchema of [createLotResponse, consumedResponse]) {
+  const patterns = [
+    ...responseSchema.matchAll(/"pattern":"((?:\\.|[^"])*)"/g),
+  ].map((match) =>
+    JSON.parse(`"${match[1] ?? ""}"`) as string
+  );
+  assert.equal(
+    patterns.some(
+      (pattern) =>
+        new RegExp(pattern).test("-0.000001") &&
+        !new RegExp(pattern).test("0") &&
+        !new RegExp(pattern).test("-0.0"),
+    ),
+    true,
+    "inventory event exact delta OpenAPI pattern must reject mathematical zero",
+  );
+  assert.equal(
+    responseSchema.includes('"not":{"enum":[0]}'),
+    true,
+    "inventory event estimated delta OpenAPI schema must reject numeric zero",
+  );
+}
 
 const output = fileURLToPath(
-  new URL("../openapi/stage-06.openapi.json", import.meta.url),
+  new URL("../openapi/stage-08.openapi.json", import.meta.url),
 );
 const committed: unknown = JSON.parse(await readFile(output, "utf8"));
 assert.deepEqual(committed, generated);

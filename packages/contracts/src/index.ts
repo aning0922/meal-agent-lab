@@ -5,4 +5,5 @@ export * from "./inventory.js";
 export * from "./members.js";
 export * from "./meals.js";
 export * from "./primitives.js";
+export * from "./refinement-rules.js";
 export * from "./shopping.js";

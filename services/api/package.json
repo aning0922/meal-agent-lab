@@ -2,7 +2,7 @@
   "name": "@meal-agent/api",
   "version": "0.1.0",
   "private": true,
-  "description": "Stage 06 modular-monolith API vertical slice",
+  "description": "Stage 08 audited modular-monolith API vertical slice",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
