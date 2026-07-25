@@ -1,7 +1,7 @@
 {
   "miniprogramRoot": "dist/",
   "projectname": "meal-agent-client",
-  "description": "Meal Agent WeChat mini-program client (stage 07 vertical slice)",
+  "description": "Meal Agent WeChat mini-program client (stage 08 audit closeout)",
   "appid": "touristappid",
   "compileType": "miniprogram",
   "setting": {

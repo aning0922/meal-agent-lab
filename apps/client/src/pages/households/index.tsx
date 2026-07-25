@@ -11,7 +11,10 @@ import {
   loadHouseholds,
   HOUSEHOLD_DEFAULTS
 } from '../../core/household-flow'
-import { createIdempotencyKey } from '../../core/idempotency'
+import {
+  createIdempotencyKey,
+  PendingActionIdempotency
+} from '../../core/idempotency'
 import { joinHousehold } from '../../core/members-flow'
 import {
   INVENTORY_ROUTE,
@@ -51,6 +54,12 @@ export default function HouseholdsPage() {
   const [inviteCode, setInviteCode] = useState('')
   const [joinState, setJoinState] = useState<SubmitState>({ kind: 'idle' })
   const pendingKeyRef = useRef<IdempotencyKey | null>(null)
+  const [actionKeys] = useState(
+    () =>
+      new PendingActionIdempotency(
+        getAppServices().adapter.runtime
+      )
+  )
   const currentHouseholdId =
     getAppServices().session.restoreCurrentHouseholdId()
 
@@ -96,24 +105,27 @@ export default function HouseholdsPage() {
     }
     setJoinState({ kind: 'working' })
     const services = getAppServices()
-    // 每次加入是一次逻辑写操作；成功或失败后都换新键。
+    const joinAction = 'join-household'
     const outcome = await joinHousehold(
       services,
       inviteCode,
-      createIdempotencyKey(services.adapter.runtime)
+      actionKeys.acquire(joinAction, { inviteCode: inviteCode.trim() })
     )
     switch (outcome.kind) {
       case 'joined':
+        actionKeys.complete(joinAction)
         setJoinState({ kind: 'idle' })
         setInviteCode('')
         // 成功加入后切到该家庭的成员页。
         await services.adapter.navigation.navigateTo(MEMBERS_ROUTE)
         return
       case 'invalid':
+        actionKeys.abandon(joinAction)
         setJoinState({ kind: 'invalid', messages: outcome.messages })
         return
       case 'inviteInvalid':
       case 'alreadyMember':
+        actionKeys.abandon(joinAction)
         setJoinState({
           kind: 'failed',
           message: outcome.message,
@@ -121,6 +133,9 @@ export default function HouseholdsPage() {
         })
         return
       case 'failed':
+        if (!outcome.retryable) {
+          actionKeys.abandon(joinAction)
+        }
         setJoinState({
           kind: 'failed',
           message: outcome.message,
@@ -257,6 +272,7 @@ export default function HouseholdsPage() {
           placeholder='粘贴家庭所有者提供的邀请码'
           onInput={(event) => {
             setInviteCode(event.detail.value)
+            actionKeys.abandon('join-household')
           }}
         />
         <Button
@@ -317,8 +333,7 @@ export default function HouseholdsPage() {
 
         <Text className='list-item-detail'>
           时区 {HOUSEHOLD_DEFAULTS.timezone} · 语言{' '}
-          {HOUSEHOLD_DEFAULTS.locale} · 厨艺默认
-          {' beginner'}（本阶段固定默认值）
+          {HOUSEHOLD_DEFAULTS.locale} · 饭量、默认参与和厨艺默认未知
         </Text>
 
         <Button

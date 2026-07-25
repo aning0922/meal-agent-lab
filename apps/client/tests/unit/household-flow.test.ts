@@ -91,6 +91,17 @@ describe('createHousehold', () => {
     }
     assert.equal(outcome.replayed, false)
     assert.equal(platform.lastRequest.headers['idempotency-key'], KEY)
+    assert.deepEqual(JSON.parse(platform.lastRequest.body ?? '{}'), {
+      name: '我家',
+      timezone: 'Asia/Shanghai',
+      locale: 'zh-CN',
+      ownerProfile: {
+        displayName: '小明',
+        defaultParticipation: null,
+        defaultPortionScale: null,
+        cookingSkill: null
+      }
+    })
     assert.equal(
       services.session.restoreCurrentHouseholdId(),
       result.household.id

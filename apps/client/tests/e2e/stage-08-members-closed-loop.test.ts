@@ -24,7 +24,6 @@ import {
 } from '../../src/core/members-flow'
 import {
   addDietaryConstraint,
-  archiveProfile,
   createProfile
 } from '../../src/core/profile-flow'
 import { NodePlatform } from './support/node-platform'
@@ -34,7 +33,7 @@ import { startE2eStack, type E2eStack } from './support/stack'
  * 阶段 08 端到端闭环：真实 services/api + 一次性 PostgreSQL 18 + fake 微信。
  * 双用户双 session 全流程——A 建家 → 签码 → B 加入 → B 建档案并录入
  * subject_and_owner 硬约束（双确认）→ A（owner）可见、第三成员 C 结构性
- * 不可见 → A 撤销邀请码、B 退出、A 归档档案 → 被移除者即时 404。
+ * 不可见 → A 撤销邀请码、B 退出且关联档案原子归档 → 被移除者即时 404。
  * fake 适配器结果不得记为真实微信链路 Pass。
  */
 describe('stage 08 members closed loop (real API + PostgreSQL 18)', () => {
@@ -241,7 +240,7 @@ describe('stage 08 members closed loop (real API + PostgreSQL 18)', () => {
     assert.equal(lateJoin.kind, 'inviteInvalid')
   })
 
-  it('B 退出后即时失去访问（404），A 归档 B 的档案', async () => {
+  it('B 退出后即时失去访问（404），关联档案在同一事务自动归档', async () => {
     const left = await removeMembership(
       servicesB,
       householdId,
@@ -254,19 +253,18 @@ describe('stage 08 members closed loop (real API + PostgreSQL 18)', () => {
     const afterLeave = await loadMembers(servicesB, householdId)
     assert.equal(afterLeave.kind, 'householdMissing')
 
-    // A（owner）归档 B 现已脱离的档案。
-    const archived = await archiveProfile(
-      servicesA,
-      householdId,
-      bProfileId,
-      bProfileVersion,
-      keyA()
-    )
-    assert.equal(archived.kind, 'updated')
-    if (archived.kind !== 'updated') {
+    // A（owner）读取 archived 集合，确认退出命令已原子归档原 ID；
+    // 不把它静默改成 dining-only，也不需要第二个归档命令。
+    const profiles = await servicesA.api.listPersonProfiles(householdId, 'archived')
+    assert.equal(profiles.kind, 'success')
+    if (profiles.kind !== 'success' || profiles.data.viewerRole !== 'owner') {
       return
     }
-    assert.equal(archived.profile.status, 'archived')
+    const archived = profiles.data.profiles.find(
+      (profile) => profile.id === bProfileId
+    )
+    assert.equal(archived?.status, 'archived')
+    assert.equal(archived?.linkedMembershipId, bMembershipId)
   })
 
   it('最后一位 owner 不可退出（保护）', async () => {

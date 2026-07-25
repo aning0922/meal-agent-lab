@@ -21,9 +21,10 @@ import {
 import { FakePlatform } from '../support/fake-platform'
 import {
   apiErrorBody,
+  getPersonProfileResultFixture,
   hardConstraintFixture,
   personProfileFixture,
-  personProfileResultFixture,
+  personProfileMutationReceiptFixture,
   successEnvelope,
   uuidV7
 } from '../support/fixtures'
@@ -72,7 +73,13 @@ describe('createProfile', () => {
     const { platform, services } = servicesWith()
     platform.enqueueJson(
       201,
-      successEnvelope(personProfileResultFixture(personProfileFixture()))
+      successEnvelope(
+        personProfileMutationReceiptFixture({ operation: 'create' })
+      )
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(getPersonProfileResultFixture(personProfileFixture()))
     )
     const outcome = await createProfile(
       services,
@@ -168,13 +175,19 @@ describe('addDietaryConstraint（硬约束双确认）', () => {
     platform.enqueueJson(
       201,
       successEnvelope(
-        personProfileResultFixture(
+        personProfileMutationReceiptFixture({ operation: 'add_constraint' })
+      )
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(
+        getPersonProfileResultFixture(
           personProfileFixture({
-            version: 1,
-            dietaryConstraints: [
-              hardConstraintFixture({ visibility: 'subject_and_owner' })
-            ]
-          })
+              version: 1,
+              dietaryConstraints: [
+                hardConstraintFixture({ visibility: 'subject_and_owner' })
+              ]
+            })
         )
       )
     )
@@ -191,7 +204,7 @@ describe('addDietaryConstraint（硬约束双确认）', () => {
       return
     }
     // 请求体携带 confirmation.acknowledged=true。
-    const body = JSON.parse(platform.lastRequest.body ?? '{}')
+    const body = JSON.parse(platform.sentRequests[0]?.body ?? '{}')
     assert.equal(body.constraint.confirmation.acknowledged, true)
   })
 
@@ -199,7 +212,13 @@ describe('addDietaryConstraint（硬约束双确认）', () => {
     const { platform, services } = servicesWith()
     platform.enqueueJson(
       201,
-      successEnvelope(personProfileResultFixture(personProfileFixture()))
+      successEnvelope(
+        personProfileMutationReceiptFixture({ operation: 'add_constraint' })
+      )
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(getPersonProfileResultFixture(personProfileFixture()))
     )
     const outcome = await addDietaryConstraint(
       services,
@@ -237,7 +256,18 @@ describe('removeDietaryConstraint / updateProfile / archiveProfile', () => {
     const { platform, services } = servicesWith()
     platform.enqueueJson(
       200,
-      successEnvelope(personProfileResultFixture(personProfileFixture({ version: 2 })))
+      successEnvelope(
+        personProfileMutationReceiptFixture({
+          operation: 'remove_constraint',
+          resultingVersion: 2
+        })
+      )
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(
+        getPersonProfileResultFixture(personProfileFixture({ version: 2 }))
+      )
     )
     const outcome = await removeDietaryConstraint(
       services,
@@ -283,13 +313,24 @@ describe('removeDietaryConstraint / updateProfile / archiveProfile', () => {
     platform.enqueueJson(
       200,
       successEnvelope(
-        personProfileResultFixture(personProfileFixture({ version: 1 }))
+        personProfileMutationReceiptFixture({
+          operation: 'archive',
+          status: 'archived'
+        })
+      )
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(
+        getPersonProfileResultFixture(
+          personProfileFixture({ status: 'archived', version: 1 })
+        )
       )
     )
     const outcome = await archiveProfile(services, HOUSEHOLD_ID, PROFILE_ID, 0, KEY)
     assert.equal(outcome.kind, 'updated')
     assert.equal(
-      JSON.parse(platform.lastRequest.body ?? '{}').operation,
+      JSON.parse(platform.sentRequests[0]?.body ?? '{}').operation,
       'archive'
     )
   })

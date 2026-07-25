@@ -1,7 +1,6 @@
 import '../../zod-runtime-config'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Text, View } from '@tarojs/components'
-import type { IdempotencyKey } from '@meal-agent/contracts/api'
 import type {
   HouseholdId,
   HouseholdInviteId,
@@ -13,7 +12,7 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
-import { createIdempotencyKey } from '../../core/idempotency'
+import { PendingActionIdempotency } from '../../core/idempotency'
 import {
   createInvite,
   loadMembers,
@@ -58,7 +57,12 @@ export default function MembersPage() {
   const [reveal, setReveal] = useState<InviteReveal>({ kind: 'none' })
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const inviteKeyRef = useRef<IdempotencyKey | null>(null)
+  const [actionKeys] = useState(
+    () =>
+      new PendingActionIdempotency(
+        getAppServices().adapter.runtime
+      )
+  )
 
   const householdId =
     getAppServices().session.restoreCurrentHouseholdId()
@@ -102,17 +106,21 @@ export default function MembersPage() {
     setBusy(true)
     setNotice({ kind: 'none' })
     const services = getAppServices()
-    inviteKeyRef.current ??= createIdempotencyKey(services.adapter.runtime)
+    const action = 'invite:create'
+    const key = actionKeys.acquire(action, {
+      maxUses: 1,
+      expiresInHours: 168
+    })
     const outcome = await createInvite(
       services,
       householdId,
       { maxUses: 1, expiresInHours: 168 },
-      inviteKeyRef.current
+      key
     )
     setBusy(false)
     switch (outcome.kind) {
       case 'created':
-        inviteKeyRef.current = null
+        actionKeys.complete(action)
         setReveal({ kind: 'revealed', result: outcome.result })
         setNotice({
           kind: 'info',
@@ -122,7 +130,7 @@ export default function MembersPage() {
         })
         return
       case 'forbidden':
-        inviteKeyRef.current = null
+        actionKeys.complete(action)
         setNotice({ kind: 'error', message: outcome.message })
         return
       case 'failed':
@@ -142,12 +150,14 @@ export default function MembersPage() {
       services,
       householdId,
       inviteId,
-      createIdempotencyKey(services.adapter.runtime)
+      actionKeys.acquire(`invite:revoke:${inviteId}`, { inviteId })
     )
     setBusy(false)
     if (outcome.kind === 'revoked') {
+      actionKeys.complete(`invite:revoke:${inviteId}`)
       setNotice({ kind: 'info', message: '邀请已撤销。' })
     } else if (outcome.kind === 'alreadyInactive') {
+      actionKeys.complete(`invite:revoke:${inviteId}`)
       setNotice({ kind: 'info', message: outcome.message })
     } else {
       setNotice({ kind: 'error', message: outcome.message })
@@ -168,12 +178,15 @@ export default function MembersPage() {
       services,
       householdId,
       membershipId,
-      createIdempotencyKey(services.adapter.runtime)
+      actionKeys.acquire(`membership:remove:${membershipId}`, {
+        membershipId
+      })
     )
     setBusy(false)
     setPendingRemoval(null)
     switch (outcome.kind) {
       case 'removed':
+        actionKeys.complete(`membership:remove:${membershipId}`)
         if (isSelf) {
           // 退出自己后已失去该家庭访问权：直接离开到家庭列表，
           // 不能再 refresh 当前家庭（否则成员列表请求必然 404）。
@@ -249,7 +262,8 @@ export default function MembersPage() {
           pendingRemoval,
           setPendingRemoval,
           handleRemove,
-          busy
+          busy,
+          getAppServices().session.restore()?.user.id
         )}
 
       {state.kind === 'loaded' && state.view.viewerRole === 'owner' && (
@@ -328,14 +342,18 @@ type MemberEntry = {
 }
 
 const collectEntries = (
-  view: ListHouseholdMembersResult
+  view: ListHouseholdMembersResult,
+  currentUserId: string | undefined
 ): {
   readonly entries: readonly MemberEntry[]
   readonly ownerCount: number
 } => {
   const rows =
     view.viewerRole === 'owner'
-      ? view.members.map((entry) => ({ entry, isSelf: false }))
+      ? view.members.map((entry) => ({
+          entry,
+          isSelf: entry.membership.userId === currentUserId
+        }))
       : [
           { entry: view.self, isSelf: true },
           ...view.others.map((entry) => ({ entry, isSelf: false }))
@@ -356,9 +374,10 @@ const renderLoaded = (
   pendingRemoval: string | null,
   setPendingRemoval: (value: string | null) => void,
   handleRemove: (membershipId: MembershipId, isSelf: boolean) => Promise<void>,
-  busy: boolean
+  busy: boolean,
+  currentUserId: string | undefined
 ) => {
-  const { entries, ownerCount } = collectEntries(view)
+  const { entries, ownerCount } = collectEntries(view, currentUserId)
   const isOwnerViewer = view.viewerRole === 'owner'
   return (
     <View className='section'>
@@ -367,7 +386,9 @@ const renderLoaded = (
       </Text>
       {entries.map((entry) => {
         // owner 可移除他人；成员只能退出自己。最后一位 owner 受保护。
-        const canRemove = isOwnerViewer ? !entry.isSelf : entry.isSelf
+        // owner 可移除他人，也可在至少还有另一位 owner 时退出自己；
+        // 普通成员只能退出自己。
+        const canRemove = isOwnerViewer || entry.isSelf
         const lastOwnerProtected =
           entry.role === 'owner' && ownerCount <= 1
         return (

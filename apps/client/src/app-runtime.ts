@@ -14,3 +14,17 @@ export const getAppServices = (): AppServices => {
   )
   return services
 }
+
+/**
+ * 页面级测试的显式依赖注入边界。仅测试使用；生产入口不会调用。
+ * 返回清理函数，防止测试服务跨用例泄漏。
+ */
+export const installAppServicesForPageTest = (
+  testServices: AppServices
+): (() => void) => {
+  const previous = services
+  services = testServices
+  return () => {
+    services = previous
+  }
+}

@@ -16,24 +16,32 @@ import type {
 } from '@meal-agent/contracts/inventory'
 import type {
   AddDietaryConstraintRequest,
+  ConfirmPersonProfileLinkRequest,
   CreateHouseholdInviteRequest,
+  CreatePersonProfileLinkRequest,
   CreatePersonProfileRequest,
   JoinHouseholdRequest,
   PatchPersonProfileRequest,
+  PersonProfileStatusFilter,
   RemoveDietaryConstraintRequest
 } from '@meal-agent/contracts/members'
 import {
+  confirmPersonProfileLinkSuccessSchema,
   consumeInventoryLotSuccessSchema,
   createHouseholdInviteSuccessSchema,
   createHouseholdSuccessSchema,
   createInventoryLotSuccessSchema,
+  getPersonProfileSuccessSchema,
   householdInvitePageSuccessSchema,
   householdPageSuccessSchema,
   inventoryLotPageSuccessSchema,
   joinHouseholdSuccessSchema,
   listHouseholdMembersSuccessSchema,
+  listPersonProfilesSuccessSchema,
   meSuccessSchema,
-  personProfileSuccessSchema,
+  personProfileLinkRequestListSuccessSchema,
+  personProfileLinkRequestSuccessSchema,
+  personProfileMutationSuccessSchema,
   removeMembershipSuccessSchema,
   revokeHouseholdInviteSuccessSchema,
   sessionRevokedSuccessSchema,
@@ -44,7 +52,8 @@ import type {
   HouseholdInviteId,
   InventoryLotId,
   MembershipId,
-  PersonProfileId
+  PersonProfileId,
+  PersonProfileLinkRequestId
 } from '@meal-agent/contracts'
 
 import type { ApiClient } from './api-client'
@@ -209,9 +218,30 @@ export const createApiEndpoints = (client: ApiClient) => ({
     client.call({
       method: 'POST',
       path: `/api/v1/households/${householdId}/person-profiles`,
-      envelope: personProfileSuccessSchema,
+      envelope: personProfileMutationSuccessSchema,
       body,
       idempotencyKey
+    }),
+
+  listPersonProfiles: (
+    householdId: HouseholdId,
+    status: PersonProfileStatusFilter = 'active'
+  ) =>
+    client.call({
+      method: 'GET',
+      path: `/api/v1/households/${householdId}/person-profiles`,
+      envelope: listPersonProfilesSuccessSchema,
+      query: { status }
+    }),
+
+  getPersonProfile: (
+    householdId: HouseholdId,
+    profileId: PersonProfileId
+  ) =>
+    client.call({
+      method: 'GET',
+      path: `/api/v1/households/${householdId}/person-profiles/${profileId}`,
+      envelope: getPersonProfileSuccessSchema
     }),
 
   patchPersonProfile: (
@@ -223,7 +253,7 @@ export const createApiEndpoints = (client: ApiClient) => ({
     client.call({
       method: 'PATCH',
       path: `/api/v1/households/${householdId}/person-profiles/${profileId}`,
-      envelope: personProfileSuccessSchema,
+      envelope: personProfileMutationSuccessSchema,
       body,
       idempotencyKey
     }),
@@ -237,7 +267,7 @@ export const createApiEndpoints = (client: ApiClient) => ({
     client.call({
       method: 'POST',
       path: `/api/v1/households/${householdId}/person-profiles/${profileId}/dietary-constraints`,
-      envelope: personProfileSuccessSchema,
+      envelope: personProfileMutationSuccessSchema,
       body,
       idempotencyKey
     }),
@@ -251,7 +281,42 @@ export const createApiEndpoints = (client: ApiClient) => ({
     client.call({
       method: 'DELETE',
       path: `/api/v1/households/${householdId}/person-profiles/${profileId}/dietary-constraints`,
-      envelope: personProfileSuccessSchema,
+      envelope: personProfileMutationSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  createPersonProfileLinkRequest: (
+    householdId: HouseholdId,
+    profileId: PersonProfileId,
+    body: CreatePersonProfileLinkRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/person-profiles/${profileId}/link-requests`,
+      envelope: personProfileLinkRequestSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  listPersonProfileLinkRequests: (householdId: HouseholdId) =>
+    client.call({
+      method: 'GET',
+      path: `/api/v1/households/${householdId}/person-profile-link-requests`,
+      envelope: personProfileLinkRequestListSuccessSchema
+    }),
+
+  confirmPersonProfileLinkRequest: (
+    householdId: HouseholdId,
+    requestId: PersonProfileLinkRequestId,
+    body: ConfirmPersonProfileLinkRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/person-profile-link-requests/${requestId}/confirm`,
+      envelope: confirmPersonProfileLinkSuccessSchema,
       body,
       idempotencyKey
     })

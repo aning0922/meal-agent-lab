@@ -282,14 +282,24 @@ export const hardConstraintFixture = (
     sequence?: number
     visibility?: 'household' | 'subject_and_owner'
     label?: string
+    kind?:
+      | 'allergy'
+      | 'religious'
+      | 'ethical'
+      | 'explicit_avoid'
+      | 'food_safety_exclusion'
+    mappingStatus?: 'structured' | 'needs_structured_mapping'
+    allergenCodes?: readonly string[]
+    foodConceptIds?: readonly string[]
   } = {}
 ) => ({
   id: uuidV7(overrides.sequence ?? 60),
-  kind: 'allergy' as const,
+  kind: overrides.kind ?? ('allergy' as const),
   enforcement: 'hard' as const,
   label: overrides.label ?? '虚构花生过敏',
-  foodConceptIds: [],
-  allergenCodes: ['FICTION_PEANUT'],
+  foodConceptIds: overrides.foodConceptIds ?? [],
+  allergenCodes: overrides.allergenCodes ?? ['FICTION_PEANUT'],
+  mappingStatus: overrides.mappingStatus ?? ('structured' as const),
   visibility: overrides.visibility ?? ('household' as const),
   confirmedAt: T0,
   confirmedByUserId: uuidV7(1)
@@ -300,6 +310,7 @@ export const personProfileFixture = (
     sequence?: number
     membershipSeq?: number
     displayName?: string
+    status?: 'active' | 'archived'
     version?: number
     dietaryConstraints?: readonly unknown[]
   } = {}
@@ -308,7 +319,7 @@ export const personProfileFixture = (
   householdId: uuidV7(10),
   linkedMembershipId: uuidV7(overrides.membershipSeq ?? 20),
   displayName: overrides.displayName ?? '成员甲',
-  status: 'active' as const,
+  status: overrides.status ?? ('active' as const),
   defaultParticipation: true,
   defaultPortionScale: 1,
   cookingSkill: 'beginner' as const,
@@ -321,6 +332,34 @@ export const personProfileFixture = (
 export const personProfileResultFixture = (
   profile: unknown = personProfileFixture()
 ) => ({ profile })
+
+export const personProfileMutationReceiptFixture = (
+  overrides: {
+    operation?:
+      | 'create'
+      | 'update'
+      | 'archive'
+      | 'restore'
+      | 'add_constraint'
+      | 'remove_constraint'
+      | 'link'
+    status?: 'active' | 'archived'
+    resultingVersion?: number
+  } = {}
+) => ({
+  householdId: uuidV7(10),
+  profileId: uuidV7(21),
+  operation: overrides.operation ?? ('update' as const),
+  status: overrides.status ?? ('active' as const),
+  resultingVersion: overrides.resultingVersion ?? 1
+})
+
+export const getPersonProfileResultFixture = (
+  profile: unknown = personProfileFixture()
+) => ({
+  access: 'owner_or_self' as const,
+  profile
+})
 
 export const ownerMembersViewFixture = (members: readonly unknown[]) => ({
   viewerRole: 'owner' as const,

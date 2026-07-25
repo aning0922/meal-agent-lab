@@ -13,6 +13,7 @@ import type { PersonProfile } from '@meal-agent/contracts/identity'
 import {
   addDietaryConstraintRequestSchema,
   createPersonProfileRequestSchema,
+  hardConstraintConfirmationFingerprint,
   patchPersonProfileRequestSchema,
   removeDietaryConstraintRequestSchema
 } from '@meal-agent/contracts/members'
@@ -54,9 +55,9 @@ export interface CreateProfileDraft {
   /** 关联登录成员的 membership；缺省表示仅用餐档案（仅所有者可建）。 */
   readonly linkedMembershipId?: MembershipId
   readonly displayName: string
-  readonly defaultParticipation: boolean
-  readonly defaultPortionScale: number
-  readonly cookingSkill: CookingSkill
+  readonly defaultParticipation: boolean | null
+  readonly defaultPortionScale: number | null
+  readonly cookingSkill: CookingSkill | null
 }
 
 export type CreateProfileOutcome =
@@ -101,17 +102,30 @@ export const createProfile = async (
     idempotencyKey
   )
   switch (outcome.kind) {
-    case 'success':
+    case 'success': {
+      const loaded = await services.api.getPersonProfile(
+        householdId,
+        outcome.data.profileId
+      )
+      if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
+        return {
+          kind: 'failed',
+          message: '写入已完成，但读取最新档案失败，请返回后重新进入对账。',
+          retryable: true
+        }
+      }
       return {
         kind: 'created',
-        profile: outcome.data.profile,
+        profile: loaded.data.profile,
         replayed: outcome.meta.idempotency?.replayed === true
       }
+    }
     case 'apiError':
       switch (outcome.error.code) {
         case 'FORBIDDEN':
           return { kind: 'forbidden', message: FORBIDDEN_TEXT }
         case 'CONFLICT':
+        case 'PERSON_PROFILE_ARCHIVED':
           return {
             kind: 'conflict',
             message: '该成员已有档案，或提交与当前状态冲突。'
@@ -142,9 +156,9 @@ export const createProfile = async (
 
 export interface UpdateProfileDraft {
   readonly displayName?: string
-  readonly defaultParticipation?: boolean
-  readonly defaultPortionScale?: number
-  readonly cookingSkill?: CookingSkill
+  readonly defaultParticipation?: boolean | null
+  readonly defaultPortionScale?: number | null
+  readonly cookingSkill?: CookingSkill | null
 }
 
 export type ProfileMutationOutcome =
@@ -163,16 +177,30 @@ export type ProfileMutationOutcome =
       readonly retryable: boolean
     }
 
-const mapProfileMutation = (
+const mapProfileMutation = async (
+  services: AppServices,
+  householdId: HouseholdId,
   outcome: Awaited<ReturnType<AppServices['api']['patchPersonProfile']>>
-): ProfileMutationOutcome => {
+): Promise<ProfileMutationOutcome> => {
   switch (outcome.kind) {
-    case 'success':
+    case 'success': {
+      const loaded = await services.api.getPersonProfile(
+        householdId,
+        outcome.data.profileId
+      )
+      if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
+        return {
+          kind: 'failed',
+          message: '写入已完成，但读取最新档案失败，请重新进入页面对账。',
+          retryable: true
+        }
+      }
       return {
         kind: 'updated',
-        profile: outcome.data.profile,
+        profile: loaded.data.profile,
         replayed: outcome.meta.idempotency?.replayed === true
       }
+    }
     case 'apiError':
       switch (outcome.error.code) {
         case 'FORBIDDEN':
@@ -231,6 +259,8 @@ export const updateProfile = async (
     return { kind: 'invalid', messages: issuesToMessages(parsed.error.issues) }
   }
   return mapProfileMutation(
+    services,
+    householdId,
     await services.api.patchPersonProfile(
       householdId,
       profileId,
@@ -249,10 +279,31 @@ export const archiveProfile = async (
   idempotencyKey: IdempotencyKey
 ): Promise<ProfileMutationOutcome> =>
   mapProfileMutation(
+    services,
+    householdId,
     await services.api.patchPersonProfile(
       householdId,
       profileId,
       { operation: 'archive', expectedVersion },
+      idempotencyKey
+    )
+  )
+
+/** 恢复原 ID 的 archived profile；不复制档案或私人约束。 */
+export const restoreProfile = async (
+  services: AppServices,
+  householdId: HouseholdId,
+  profileId: PersonProfileId,
+  expectedVersion: number,
+  idempotencyKey: IdempotencyKey
+): Promise<ProfileMutationOutcome> =>
+  mapProfileMutation(
+    services,
+    householdId,
+    await services.api.patchPersonProfile(
+      householdId,
+      profileId,
+      { operation: 'restore', expectedVersion },
       idempotencyKey
     )
   )
@@ -313,13 +364,20 @@ const buildConstraint = (draft: ConstraintDraft): unknown => {
       : { notes: draft.notes.trim() })
   }
   if (draft.enforcement === 'hard') {
-    return {
+    const fingerprintFields = {
       ...shared,
       kind: draft.kind,
-      enforcement: 'hard',
-      allergenCodes: draft.allergenCodes ?? [],
-      // 双确认：acknowledged 为 false 时契约层的 literal(true) 会拒绝。
-      confirmation: { acknowledged: draft.acknowledged }
+      enforcement: 'hard' as const,
+      allergenCodes: draft.allergenCodes ?? []
+    }
+    return {
+      ...fingerprintFields,
+      // 确认绑定全部字段；visibility/notes/结构化 ID 任一变化都会失效。
+      confirmation: {
+        acknowledged: draft.acknowledged,
+        fingerprint:
+          hardConstraintConfirmationFingerprint(fingerprintFields)
+      }
     }
   }
   return {
@@ -353,12 +411,24 @@ export const addDietaryConstraint = async (
     idempotencyKey
   )
   switch (outcome.kind) {
-    case 'success':
+    case 'success': {
+      const loaded = await services.api.getPersonProfile(
+        householdId,
+        outcome.data.profileId
+      )
+      if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
+        return {
+          kind: 'failed',
+          message: '约束写入已完成，但读取最新档案失败，请重新进入页面对账。',
+          retryable: true
+        }
+      }
       return {
         kind: 'added',
-        profile: outcome.data.profile,
+        profile: loaded.data.profile,
         replayed: outcome.meta.idempotency?.replayed === true
       }
+    }
     case 'apiError':
       switch (outcome.error.code) {
         case 'FORBIDDEN':
@@ -432,12 +502,24 @@ export const removeDietaryConstraint = async (
     idempotencyKey
   )
   switch (outcome.kind) {
-    case 'success':
+    case 'success': {
+      const loaded = await services.api.getPersonProfile(
+        householdId,
+        outcome.data.profileId
+      )
+      if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
+        return {
+          kind: 'failed',
+          message: '约束移除已完成，但读取最新档案失败，请重新进入页面对账。',
+          retryable: true
+        }
+      }
       return {
         kind: 'removed',
-        profile: outcome.data.profile,
+        profile: loaded.data.profile,
         replayed: outcome.meta.idempotency?.replayed === true
       }
+    }
     case 'apiError':
       switch (outcome.error.code) {
         case 'FORBIDDEN':

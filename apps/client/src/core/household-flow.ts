@@ -49,12 +49,10 @@ export interface CreateHouseholdDraft {
   readonly ownerDisplayName: string
 }
 
-/** 阶段 07 表单未暴露的字段使用固定默认值（低保真原型 O-01 范围）。 */
+/** 家庭级平台默认；成员事实必须由用户明确填写，未知值保持 null。 */
 export const HOUSEHOLD_DEFAULTS = {
   timezone: 'Asia/Shanghai',
-  locale: 'zh-CN',
-  defaultPortionScale: 1,
-  cookingSkill: 'beginner'
+  locale: 'zh-CN'
 } as const
 
 export type CreateHouseholdOutcome =
@@ -85,8 +83,9 @@ export const createHousehold = async (
     locale: HOUSEHOLD_DEFAULTS.locale,
     ownerProfile: {
       displayName: draft.ownerDisplayName.trim(),
-      defaultPortionScale: HOUSEHOLD_DEFAULTS.defaultPortionScale,
-      cookingSkill: HOUSEHOLD_DEFAULTS.cookingSkill
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null
     }
   }
 
