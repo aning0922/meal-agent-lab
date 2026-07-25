@@ -8,3 +8,10 @@
 ```
 
 长期有效的结论应移入产品、架构或领域文档；重大技术选择另建 ADR，不把临时计划当成最终事实源。
+
+## 当前记录
+
+- [阶段 06：最小服务端纵切](2026-07-stage-06-backend-vertical-slice.md)
+- [阶段 07：正式客户端纵切](2026-07-stage-07-client-vertical-slice.md)
+- [阶段 08：家庭成员与硬约束原始实施记录](2026-07-stage-08-members-and-constraints.md)
+- [阶段 08：审计整改与架构收口实施记录](2026-07-stage-08-audit-closeout.md)

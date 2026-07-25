@@ -1,49 +1,46 @@
 # Meal Agent Lab
 
-面向家庭的餐食决策与厨房库存 Agent。项目目标不是单纯生成菜谱，而是围绕家庭成员、食材批次、保质状态、菜单推荐、采购协作和烹饪反馈形成闭环。
+面向家庭场景的膳食规划与执行实验仓库。当前技术路线为 Node.js/Fastify 模块化单体、PostgreSQL、共享 Zod contracts 和 Taro/React 微信小程序；不拆微服务、不引入向量数据库，也没有第二份客户端 DTO。
 
 ## 当前阶段
 
-项目已完成阶段 08“家庭成员与硬约束纵切”。客户端由 [ADR-0001](docs/architecture/decisions/0001-client-platform-and-cross-platform-framework.md) 确定微信小程序优先，采用 Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3；后端由 [ADR-0002](docs/architecture/decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](docs/architecture/decisions/0003-identity-tenancy-and-api-semantics.md) 确定 Node.js 24/Fastify 模块化单体、PostgreSQL 18/Drizzle、内部身份与家庭租户边界。
+阶段 08“家庭成员、用餐档案与硬约束”已完成本地审计整改，等待项目总控实施后评审与合并。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI、依赖审计和本地模拟器证据已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口。
 
-仓库已有正式 [`@meal-agent/contracts`](packages/contracts/) 契约基线（0.3.0）、[`services/api`](services/api/) 业务服务与 [`apps/client`](apps/client/) 正式客户端：在阶段 06/07 的登录/家庭/库存纵切之上，阶段 08 补齐“凭邀请加入家庭 → 成员与用餐档案 → 饮食硬/软约束（硬约束双确认）→ 成员列表字段级 redaction”，把推荐引擎依赖的按参与者硬约束数据面建立起来；production 配置禁止 fake adapter。阶段 06 遗留的通用成员/档案读取字段级 response redaction 已在阶段 08 转正为 Pass（`GET /members` 以 owner/self 与 household 两种响应形状固定，`subject_and_owner` 约束结构性排除）。尚未实现菜单推荐、Agent、采购/完整做饭流程或正式发布。真实微信登录/分享、合法域名、真机、体验版/发布、生产云和原生平台项仍保持 `Deferred — 外部依赖`。
+当前纵切覆盖：
 
-优先验证的核心闭环：
+- fake 微信登录、家庭与 exact-only 最小库存流；
+- 邀请、加入、成员目录和退出/移除；
+- linked 与 dining-only PersonProfile 的 list/get/edit/archive/restore；
+- dining-only profile 关联成员的 owner 发起 + 被关联用户确认；
+- 全部现有 hard constraint 类型、确定性结构化标识、双确认和字段级 redaction；
+- 饭量、默认参与、厨艺的明确 unknown/null 与编辑；
+- 集中式 `full` / `one-time-secret` / `receipt` 幂等策略；
+- PostgreSQL RLS、受控 `SECURITY DEFINER` 状态转换和数据库反向越权测试。
 
-1. 创建家庭并录入必要的成员约束。
-2. 快速记录 5–10 个当前食材。
-3. 根据人数、时间、厨艺和临期状态给出可执行菜单。
-4. 把缺少的食材加入共享采购清单。
-5. 做完后确认消耗并更新库存。
+FAM-003、FAM-004 已完成；FAM-005 只完成当前阶段的厨艺等级与未知值维护。正式 cooking-technique 词表是阶段 09 数据治理前置项，所以 FAM-005 仍是部分完成。菜单推荐、菜谱、采购、完整做饭或 Agent 不在阶段 08 范围。
+
+## 本地门禁
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm stage08:check
+```
+
+`stage08:check` 串联环境检查、迁移、contracts、API 单元/HTTP/PostgreSQL/OpenAPI、客户端页面单测、weapp 构建、双用户 E2E、依赖审计策略和 Markdown 本地链接检查。依赖审计的限时 local/weapp-only 例外见 [`security/audit-exceptions.json`](security/audit-exceptions.json)；例外期间 H5、外部测试、体验版和发布均被阻断。
 
 ## 仓库结构
 
-```text
-apps/        面向用户或运营人员的客户端
-services/    API、Agent 编排和异步任务服务
-packages/    跨应用共享的领域、契约、配置与 UI 包
-ai/          可版本化的提示词、策略、评测和合成样本
-docs/        产品、架构、领域、安全、设计和运维文档
-assets/      品牌、图标、图片与原型等非代码资源
-data/        食材、菜谱、保质期等可追溯数据资产
-infra/       本地开发、部署和环境基础设施
-scripts/     可重复执行的开发与数据脚本
-tests/       跨模块、端到端、安全与固定测试数据
-```
+- [`apps/client`](apps/client/)：Taro/React 正式客户端；
+- [`services/api`](services/api/)：Fastify 模块化单体 API；
+- [`packages/contracts`](packages/contracts/)：跨端唯一契约与规则 manifest；
+- [`docs`](docs/)：产品、架构、安全、计划和状态事实源；
+- [`tests`](tests/)：跨模块和安全回归；
+- [`security`](security/)：机器可读安全例外；
+- [`ai`](ai/)：后续 Agent 运行时资产，本阶段不使用。
 
-详细导航见 [docs/README.md](docs/README.md)，协作规则见 [AGENTS.md](AGENTS.md) 和 [CONTRIBUTING.md](CONTRIBUTING.md)。
+## 外部依赖边界
 
-## 开发原则
+真实 AppID/AppSecret、真实 `wx.login`/code2Session、合法 HTTPS 域名、真机、体验版、审核/发布、云平台和原生三端仍是 `Deferred — 外部依赖`。本地 fake adapter、PostgreSQL 测试和开发者工具模拟器结果不能替代这些证据。
 
-- 先验证产品闭环，再扩大平台和功能范围。
-- 共享业务规则，不强求所有平台 100% 共用 UI 代码。
-- 大模型负责理解和解释；库存、权限、过敏与日期判断由确定性系统负责。
-- 提示词、模型策略和评测用例与代码一样进行版本管理和审查。
-- 食材日期和推荐结果必须保存来源、假设和置信度。
-- 不提交个人数据、密钥、未确认授权或来源不明的数据集。
-
-## 阶段 06 结果
-
-已实施“登录 → 创建/读取家庭 → 手工新增库存批次 → 幂等重放 → exact-only 最小 consumed 事件”，并用 PostgreSQL 18 空库 migration 与数据库 integration 验证 session、两层 context、RLS bootstrap、目标资源绑定的用户级/家庭级幂等、使用 plain decimal string 的六位 exact 库存、负库存、并发冲突和日志脱敏。exact amount 不接收 JSON number 或指数形式，避免先经过 IEEE-754 折叠；等值字符串别名在幂等哈希前规范化。malformed JSON、404、登录 401、413、超长 URL 与 415 也进入统一 problem 边界。consumed command 不接受 estimated 数量，也没有扩展为完整做饭流程；实施与门禁结果见[阶段 06 记录](docs/plans/2026-07-stage-06-backend-vertical-slice.md)。
-
-后续产品范围尚未在本阶段决定。账号、域名和设备条件具备时补证真实微信登录与 HTTPS 合法域名；家庭内测前验证体验版，发布候选阶段验证审核和发布链。Android、iOS、HarmonyOS 在各自开发开始前单独实验。
+继续工作前阅读 [`AGENTS.md`](AGENTS.md)、[文档导航](docs/README.md)和[当前项目状态](docs/project-status.md)。

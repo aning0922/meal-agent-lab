@@ -1,7 +1,8 @@
 # Changelog
 
 ## Unreleased
-- 实现阶段 08 家庭成员与硬约束纵切：契约升级 0.3.0（additive）新增家庭邀请（实体不含明文/digest）、加入、成员 redacted 视图、用餐档案 CRUD 与硬/软约束增删 schema；`services/api` 迁移 `0001_stage_08` 新增 `household_invites`（digest 唯一、复合外键、FORCE RLS、join 路径用 SECURITY DEFINER 赎回函数 bootstrap membership），新增 8 条路由（邀请签发/列表/撤销、凭码加入、成员列表、成员移除/退出、档案 CRUD、约束增删），补齐 member 角色 RLS 反向测试与硬约束双确认；`apps/client` 新增成员页、档案与约束页（硬约束独立确认屏）与加入入口，页面零直接 `wx.*`。字段级 response redaction 以两种响应形状结构性排除私密约束，把阶段 06 遗留项转正。双用户 E2E（真实 api + 一次性 PostgreSQL 18）与迁移增量/checksum 证明纳入 `stage08:check`，CI 切换至该门禁。
+- 完成阶段 08 审计整改：contracts 升级 `0.4.0`，建立集中式 `full`/`one-time-secret`/`receipt` 幂等策略、PersonProfile list/get/archive/restore/双确认关联、nullable 用户事实、完整 hard constraint mapping 与 runtime/OpenAPI rule manifest；新增单事务 `0002_stage_08_audit_closeout.sql`，清理历史敏感幂等响应、撤销 memberships 表级 UPDATE、通过受控 SECURITY DEFINER 函数保护成员状态、邀请并发与 profile 关联；客户端补齐 FAM-003/004 和阶段 08 内 FAM-005、同动作 idempotency key 与真实页面渲染测试。依赖 advisory 使用截至 2026-08-08 的 local/weapp-only 可执行例外，H5/外测/体验版/发布阻断；微信开发者工具完成修复后实际入口复跑并保存非敏感证据。
+- 阶段 08 首版纵切历史基线：contracts `0.3.0`、`0001_stage_08`、邀请/成员/档案/约束路由与客户端页面；最终验收结论已由上述审计整改取代。
 - 模拟器走查发现并修复真实运行时缺陷：Zod v4 对象校验 JIT 依赖动态代码执行、被微信小程序沙箱禁用，客户端全局关闭 jitless（须先于契约 schema 构造），并加固 api-client 让 safeParse 异常降级为 malformedResponse。该缺陷 Node 单测/E2E 全过、仅真机运行时暴露。
 
 - 实现阶段 07 正式客户端纵切：`apps/client`（Taro 4.2.1 + React 18.3.1）进入根 workspace，平台端口 + 唯一 Taro 触点分层，登录/家庭/库存三页打通“登录 → 创建家庭 → 新增三态数量批次 → exact-only 消耗”闭环，幂等重放、版本冲突、401 引导与跨家庭 404 语义全部经真实 API + PostgreSQL 18 端到端验证；删除一次性 Taro spike，CI 升级为 stage07 全量门禁。

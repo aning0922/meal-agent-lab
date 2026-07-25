@@ -2,104 +2,67 @@
 
 ## 状态
 
-客户端平台决策已由 [ADR-0001](decisions/0001-client-platform-and-cross-platform-framework.md) 接受：微信小程序首发，使用 Taro 4.2.1、React 18.3.1 和 TypeScript 5.9.3。Android、iOS、HarmonyOS 仍需逐端 spike。
-
-后端基线已由 [ADR-0002](decisions/0002-backend-runtime-framework-and-persistence.md) 和 [ADR-0003](decisions/0003-identity-tenancy-and-api-semantics.md) 接受：Node.js 24 LTS + Fastify 5 模块化单体，PostgreSQL 18 + Drizzle/`pg`，使用 opaque session、显式家庭上下文、复合外键与 RLS。
-
-当前已有 [`packages/contracts`](../../packages/contracts/) 共享契约基线、[`services/api`](../../services/api/) 阶段 06 最小业务服务和 [`apps/client`](../../apps/client/) 阶段 07 正式客户端纵切（登录、家庭、库存批次与 exact-only 消耗）；一次性阶段 04 实验 `apps/meal-agent-client-spike` 已在阶段 07 删除。尚无完整菜单/Agent/采购/做饭业务。
+阶段 08 审计整改已在独立分支完成本地实现，尚未合并 main。系统当前只有家庭、成员/用餐档案、硬约束和最小 exact 库存纵切；没有菜单推荐、菜谱、采购、完整做饭或 Agent。
 
 ## 逻辑边界
 
 ```text
-客户端页面 / view-model ── 上下文 Agent 入口
+Taro / React 微信小程序
+  ├─ pages：登录、家庭、库存、成员、PersonProfile
+  ├─ core flows：状态机、同动作幂等、GET 对账
+  └─ platform adapter：wx 能力隔离
           │
-    语义化平台端口
+          │ @meal-agent/contracts 0.4.0
+          ▼
+Fastify 5 模块化单体
+  ├─ route/runtime Zod validation
+  ├─ HTTP authorization + field-level redaction
+  ├─ normalized idempotency policy registry
+  └─ repository transaction boundary
           │
-微信 Taro Runtime / 后续原生 Runtime
-          │
-   HTTPS REST /api/v1
-          │
-services/api（模块化单体）
-├─ 身份与会话
-├─ 家庭、成员与权限
-├─ 库存批次与事件
-├─ 餐食、菜谱与推荐
-├─ 采购清单
-└─ 受限 Agent 工具
-          │
- PostgreSQL 18（唯一事实库）
+          ▼
+PostgreSQL 18
+  ├─ FORCE RLS + transaction-local user/household context
+  ├─ restricted application role
+  ├─ SECURITY DEFINER state transitions
+  └─ migrations 0000 → 0001 → 0002
 ```
 
-## 工程边界
+服务端保持一个部署单元，领域模块共享契约和事务边界。当前规模不支持拆微服务，也没有检索需求需要向量数据库。
 
-```text
-apps/*                  客户端与运营界面
-    │
-    ├── consume ──> packages/contracts <── consume ──┐
-    │                                                │
-    └── platform ports                        services/api
-                                             ├─ transport
-                                             ├─ application modules
-                                             ├─ deterministic domain rules
-                                             └─ persistence adapters
-```
+## 身份、租户与 PersonProfile
 
-- `packages/contracts` 导出运行时 schema 和推导类型，不依赖 Taro、Fastify、Drizzle 或 Node 内建模块。
-- 服务端数据库 row、内部领域聚合和 API contract 分开，通过显式 mapper 转换。
-- 业务模块不依赖 Fastify request/reply；route handler 不直接写 SQL。
-- Agent 不直接连接数据库，只能调用复用同一鉴权、权限、幂等与安全校验的应用服务。
-- `services/agent` 和 `services/worker` 当前不是独立部署单元。
+内部身份保持 AuthIdentity → User → Session → Membership 四层，PersonProfile 表示实际用餐者，可以关联 Membership，也可以是 dining-only。Session 不携带家庭权限快照；每个家庭请求都以数据库当前 active membership 重新授权。
 
-## 核心数据与安全原则
+`/members` 是登录成员目录。独立 profile list/get 是 PersonProfile 的统一读取资源：
 
-- `AuthIdentity → User → Session/Membership → PersonProfile` 分层；微信 `openid` 不是内部 User ID。
-- 已认证但未绑定家庭的路由使用 `AuthenticatedUserContext`；家庭资源只能在事务内通过 active Membership bootstrap 为 `HouseholdContext`。
-- Household 是数据隔离边界，每个家庭资源同时使用应用授权、`household_id`、复合外键和 PostgreSQL RLS。
-- 成员私有饮食约束必须另做字段级 response redaction，不能只依赖家庭 RLS；阶段 06 只有安全 owner 创建响应和日志脱敏证据，通用成员/档案读取 redaction 仍为 `Deferred — 后续范围`。
-- 创建家庭结果使用安全 owner profile 契约，`subject_and_owner` 约束不得进入响应或幂等缓存。
-- InventoryLot 是批次与当前投影，InventoryEvent 是不可变库存事实；纠错追加事件。
-- 初始 `acquired` 事件按 canonical quantity mapping 保存 kind、amount/unit 与置信信息，必须能重建批次当前数量。
-- 日期保留类型、来源、置信度和规则版本；购买日期不能替代生产日期。
-- 创建家庭使用用户级幂等，家庭资源使用家庭级幂等；幂等 request fingerprint 同时绑定规范化 body 与目标资源 ID，不能把一个 lot 的结果回放给另一个 lot。
-- exact 数量在 API 中使用 plain fixed-point decimal string，并统一到 PostgreSQL `numeric(15, 6)` 可表达范围；JSON number、指数形式和超过六位小数在 IEEE-754 转换前拒绝，等值字符串别名在幂等哈希前规范化。数据库参数只补零不舍入，库存加减由数据库 decimal 表达式执行，不用 JavaScript 浮点数更新投影。
-- 过敏、权限、食品安全和库存一致性由确定性规则、应用服务和数据库约束执行。
+- owner 或 linked profile 本人得到完整视图；
+- 其他 active 成员得到安全投影；
+- `subject_and_owner` 约束在安全投影 schema 中结构性不存在；
+- active/archived 明确过滤，archive/restore 复用同一 ID；
+- 成员退出/移除与 linked profile 归档在同一事务；
+- dining-only 关联成员必须 owner 发起、目标用户确认，不按姓名推断。
 
-## 环境
+## 写入安全
 
-local、test、staging 和 production 使用独立数据库、Secret、微信配置、域名和数据集。`WECHAT_ADAPTER` 必须显式设置（无默认值）；local/test 显式使用 fake 外部适配器和合成数据，production 配置校验强制 `WECHAT_ADAPTER=real`、运行时凭据和 HTTPS code2Session URL，real adapter 自身也拒绝非 HTTPS endpoint。staging/production 禁止共享凭据或复制真实用户数据到低环境。
+HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 FORCE RLS、复合外键、撤销表级 UPDATE 和窄参数 `SECURITY DEFINER` 函数阻断反向越权。普通成员无法把本人 role 更新为 owner，应用角色也不能直接更新 membership 行。
 
-云厂商、托管数据库、域名、Secret 管理和可观测产品仍**待验证**。具体矩阵见[阶段 05 后端架构与共享契约](backend-architecture-and-contracts.md#8-环境边界)。
+通用幂等注册表只有三类：
 
-## 当前验证证据
+- `full`：家庭、库存、无敏感字段的成员命令；
+- `one-time-secret`：邀请码首次可见，缓存/重放仅安全投影；
+- `receipt`：PersonProfile/constraint 首次与重放只返回安全 receipt。
 
-### 已验证
+完整 PersonProfile 必须再走 GET 并执行当前授权/redaction。历史不安全缓存被 `0002` 转为 receipt 或 non-replayable tombstone，但保留命令完成标识。
 
-- 阶段 04：Taro 4.2.1 微信小程序构建、开发者工具模拟器页面/导航、本地写入和本机 Mock API；
-- 阶段 04：`AuthPort`、`StoragePort`、`NetworkPort` 自动测试与 Mock 登录；
-- 阶段 05：`@meal-agent/contracts` 类型检查、10 个运行时契约测试和声明/JavaScript 构建；
-- 阶段 05：User、Household、Membership、PersonProfile、InventoryLot/Event、Meal/Recipe/Recommendation、ShoppingItem 和通用 API 契约已形成同一事实源。
-- 阶段 06：Node.js 24 + Fastify 5 + Drizzle/`pg` 最小服务、PostgreSQL 18 空库 migration、九张表、角色分离、复合外键、`FORCE RLS` 和三类 bootstrap；
-- 阶段 06：session 失效、禁用 identity/user 不得重新登录、双用户/双家庭隔离、幂等并发与 decimal alias、跨 lot key 冲突、exact decimal 库存运算、负库存和 version conflict；
-- 阶段 06：malformed JSON、404、登录 401、413、超长 URL 与 415 统一 `application/problem+json`；OpenAPI 从共享 Zod schema 生成，错误媒体类型、可表达的 `oneOf`/decimal string 约束及跨字段 refinement 元数据均有检查。
+## 契约与确定性规则
 
-### 待验证
+`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须出现在稳定 rule manifest：JSON Schema 能表达的生成原生约束，不能表达的生成带 rule ID 的 runtime-only 扩展。生成器、runtime 与 OpenAPI parity 测试阻止规则静默丢失。
 
-- 四环境实际基础设施、migration、备份恢复和监控。
-- staging/production 连接角色、Secret 注入、限流、WAF、负载和慢查询阈值。
+硬约束由确定性代码和结构化标识处理。尚无正式宗教、伦理或食品安全规则映射时使用 `needs_structured_mapping`，推荐边界必须阻断，模型不得补造规则。未知饭量、参与和厨艺保持 `null`，不由客户端、迁移或模型猜测。
 
-### Deferred — 后续范围
+## 当前验证与边界
 
-- 通用成员/PersonProfile 读取端点的字段级 response redaction 与角色矩阵。阶段 06 没有这些读取端点，安全 owner 创建响应和日志脱敏不能替代该验证，因此不得记为 Pass。
+本地 `stage08:check` 覆盖 contracts、API unit/HTTP、PostgreSQL migration/RLS/concurrency、客户端页面测试、双用户 E2E、OpenAPI、weapp build、依赖例外和文档链接。开发者工具 GUI 证据见[阶段 08 走查记录](../evidence/stage-08-gui/README.md)。
 
-### Deferred — 外部依赖
-
-- 微信测试号真机、真实登录、合法域名、邀请分享；
-- 体验版、审核、发布和 CI 上传凭据；
-- Android、iOS、HarmonyOS 构建与实机；
-- 生产云资源、正式 AppID/AppSecret 和生产域名。
-
-上述 Deferred 项没有因阶段 06 的 fake adapter、契约或本地数据库结果而转为 Pass。
-
-## 当前纵切边界
-
-阶段 06 已实施：登录 → 创建/读取家庭 → 手工新增一个库存批次 → 相同幂等请求返回同一结果 → 追加一个 exact-only 最小 consumed 事件。最后一步只用于验证乐观锁、decimal 运算与负库存阻断，不接受 estimated 数量，也不是完整做饭扣减流程。明确 endpoint、migration、测试门禁和非范围见[阶段 06 最小服务端纵切](backend-architecture-and-contracts.md#10-阶段-06最小服务端纵切)。
+依赖审计当前有一个截至 2026-08-08 的 local/weapp-only 例外；H5、外部测试、体验版和发布被阻断。真实微信、合法域名、真机、云平台、原生三端和远端 CI 均没有本轮 Pass 证据，详见[项目状态](../project-status.md)。

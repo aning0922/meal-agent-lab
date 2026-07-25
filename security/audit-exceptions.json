@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "decision": "temporary-local-weapp-only",
+  "acceptedAt": "2026-07-25",
+  "expiresAt": "2026-08-08T23:59:59+08:00",
+  "allowedTarget": "local-weapp",
+  "blockedTargets": [
+    "h5",
+    "external-test",
+    "experience",
+    "release"
+  ],
+  "artifactRoot": "apps/client/dist",
+  "advisories": [
+    {
+      "id": "GHSA-67mh-4wv8-2f99",
+      "module": "esbuild",
+      "severity": "moderate",
+      "version": "0.21.5",
+      "pathCount": 18,
+      "pathSetSha256": "4675c84b116687ebdc82de6ef0057be54a9b6303e70ecfc82bcc0047aad333b3"
+    },
+    {
+      "id": "GHSA-9jgg-88mc-972h",
+      "module": "webpack-dev-server",
+      "severity": "moderate",
+      "version": "4.15.2",
+      "pathCount": 3,
+      "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
+    },
+    {
+      "id": "GHSA-4v9v-hfq4-rm2v",
+      "module": "webpack-dev-server",
+      "severity": "moderate",
+      "version": "4.15.2",
+      "pathCount": 3,
+      "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
+    },
+    {
+      "id": "GHSA-hmx5-qpq5-p643",
+      "module": "swiper",
+      "severity": "critical",
+      "version": "11.1.15",
+      "pathCount": 2,
+      "pathSetSha256": "82052811228bf36a8e8d31d5b95c0a7f5826086fd48529119ef4a8c954191f5c"
+    },
+    {
+      "id": "GHSA-79cf-xcqc-c78w",
+      "module": "webpack-dev-server",
+      "severity": "moderate",
+      "version": "4.15.2",
+      "pathCount": 3,
+      "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
+    },
+    {
+      "id": "GHSA-w5hq-g745-h8pq",
+      "module": "uuid",
+      "severity": "moderate",
+      "version": "8.3.2",
+      "pathCount": 3,
+      "pathSetSha256": "70712c62872180ef513bad8a855e0db607eafed5c1a09270ada5b62df7a8b8f0"
+    },
+    {
+      "id": "GHSA-mx8g-39q3-5c79",
+      "module": "webpack-dev-server",
+      "severity": "moderate",
+      "version": "4.15.2",
+      "pathCount": 3,
+      "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
+    },
+    {
+      "id": "GHSA-f5vj-f2hx-8m93",
+      "module": "webpack-dev-server",
+      "severity": "moderate",
+      "version": "4.15.2",
+      "pathCount": 3,
+      "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
+    },
+    {
+      "id": "GHSA-m28w-2pqf-7qgj",
+      "module": "webpack-dev-server",
+      "severity": "moderate",
+      "version": "4.15.2",
+      "pathCount": 3,
+      "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
+    },
+    {
+      "id": "GHSA-mh99-v99m-4gvg",
+      "module": "brace-expansion",
+      "severity": "high",
+      "version": "1.1.16",
+      "pathCount": 4,
+      "pathSetSha256": "e358a9eea5b8b12ba72fcf6c3addd73b2080916e73791fc83328cc5ad74512c3"
+    }
+  ],
+  "forbiddenArtifactSignatures": [
+    "node_modules/swiper",
+    "swiper-bundle",
+    "swiper/modules",
+    "Swiper.prototype",
+    "webpack-dev-server",
+    "sockjs-node",
+    "ESBUILD_BINARY_PATH",
+    "brace-expansion",
+    "bytesToUuid",
+    "unsafeStringify"
+  ]
+}

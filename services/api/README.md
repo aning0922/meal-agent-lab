@@ -1,80 +1,81 @@
 # `@meal-agent/api`
 
-阶段 06 的最小服务端纵切。它是 Node.js 24 + Fastify 5 模块化单体的第一个部署单元，使用 PostgreSQL 18、Drizzle schema/迁移映射和 `pg` 事务。
+Node.js 24 + Fastify 5 模块化单体，使用 PostgreSQL 18、Drizzle schema 映射和 `pg` 事务。当前实现阶段 06 的登录/家庭/最小库存与阶段 08 的邀请、成员、PersonProfile、硬约束审计收口。
 
-## 已实施范围
+## 安全边界
 
-- deterministic fake WeChat 登录交换，以及真实 code2Session adapter 边界；
-- opaque session 签发、digest 持久化、绝对/不活跃过期和撤销；
-- 家庭创建/列表、库存批次创建/列表、exact-only consumed command；
-- user-scope 与 household-scope 幂等、目标资源指纹、expected version、负库存阻断；
-- 九张业务表、复合外键、migration/app role 分离、`FORCE RLS`；
-- creator、user-list、household-resource 三类 transaction-local bootstrap；
-- exact quantity 的 plain decimal string 网络契约、`numeric(15, 6)` 存储和数据库 decimal 扣减；JSON number/指数形式在 IEEE-754 转换前被拒绝，等值字符串别名在幂等哈希前规范化，数据库参数只补零、不舍入；
-- request ID、日志脱敏、malformed JSON/404/登录 401/413/超长 URL/415 的统一 problem response、就绪检查和 graceful shutdown；
-- 从 `@meal-agent/contracts` Zod schema 生成的 OpenAPI，包括 `application/problem+json` 和 refinement 元数据。
+- 业务 request/response 只复用 `@meal-agent/contracts` `0.4.0`；
+- opaque session、transaction-local user/household context、FORCE RLS 和复合外键共同隔离家庭；
+- `meal_agent_app` 无 `memberships UPDATE`，成员状态变更只走受控 `SECURITY DEFINER` 函数；
+- PersonProfile/constraint 写入只缓存 receipt，邀请码重放不含明文；
+- owner/self 与 household 视图使用不同 allowlist schema，后者结构性排除 `subject_and_owner`；
+- 日志脱敏 token、微信 code/provider 标识、inviteCode 及常见命名变体；
+- production 配置拒绝 fake WeChat adapter。
 
-不包含菜单推荐、Agent、OCR、通知、采购、完整做饭流程、Redis、消息队列、向量数据库、微服务、正式 App 或生产部署。
+## 迁移
 
-## 运行要求
-
-- Node.js `>=24.14.0 <25`
-- pnpm `11.9.0`
-- PostgreSQL 18
-
-Docker 不是本阶段测试前提。`test:db` 会创建并清理一次性 PostgreSQL 18 cluster；若二进制不在 `PATH`，设置 `PG_BIN` 指向 PostgreSQL 18 的 `bin` 目录。
-
-```bash
-export PATH="/path/to/node-v24/bin:$PATH"
-export PG_BIN="/path/to/postgresql-18/bin"
-pnpm install --frozen-lockfile
-pnpm stage06:check
-```
-
-`stage06:check` 先验证 Node.js `>=24.14.0 <25` 和完整 PostgreSQL 18 工具链，再运行 contracts/API 类型检查、单元测试、HTTP integration、PostgreSQL integration、OpenAPI 一致性检查和构建。数据库测试不以 SQLite 或 mock 代替 PostgreSQL；Apple Silicon/Intel Homebrew 的 PostgreSQL 18 会自动发现，其他位置显式设置 `PG_BIN`。
-
-## 本地启动
-
-复制 `.env.example` 的键到本地 `.env` 或运行环境；不要提交填入凭据的文件。先用 migration owner 权限执行：
-
-```bash
-DATABASE_URL=postgresql://... pnpm --filter @meal-agent/api db:migrate
-```
-
-运行时连接角色必须能 `SET ROLE meal_agent_app`，且不能拥有 `BYPASSRLS`。服务端只在事务内设置 `app.user_id` / `app.household_id`，事务结束后由 PostgreSQL 清除。
-
-`WECHAT_ADAPTER` 没有默认值，必须显式设置；本地与测试使用：
+顺序固定为：
 
 ```text
-WECHAT_ADAPTER=fake
+0000_stage_06.sql
+  → 0001_stage_08.sql
+  → 0002_stage_08_audit_closeout.sql
 ```
 
-fake adapter 把 login code 单向散列为 deterministic provider subject，只用于验证内部身份、session 和 API。缺失该变量时配置校验直接拒绝启动，杜绝部署遗漏时静默回落到 fake。`NODE_ENV=production` 强制 `WECHAT_ADAPTER=real`；real adapter 必须同时从运行环境提供 `WECHAT_APP_ID`、`WECHAT_APP_SECRET` 与 HTTPS code2Session URL，配置层和 adapter 构造边界都会拒绝明文 HTTP。没有真实凭据、合法域名和真机证据时，真实微信链保持 `Deferred — 外部依赖`。
+不得修改 `0000`/`0001` 或 checksum。`0002` 在单一事务内依次新增结构/函数、转换旧数据，再撤销旧权限；历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
 
-## OpenAPI
+## 本地运行
 
-路由 request/response 直接引用 `@meal-agent/contracts` schema，再由 Fastify Zod adapter 生成：
+复制 `.env.example` 到本机未提交配置并提供 `DATABASE_URL`。开发环境可以显式使用 fake adapter；不得写入真实密钥。
 
 ```bash
-pnpm --filter @meal-agent/api openapi:generate
+pnpm --filter @meal-agent/api environment:check
+pnpm --filter @meal-agent/api db:migrate
+pnpm --filter @meal-agent/api dev
+```
+
+测试与构建：
+
+```bash
+pnpm --filter @meal-agent/api test:unit
+pnpm --filter @meal-agent/api test:http
+pnpm --filter @meal-agent/api test:db
 pnpm --filter @meal-agent/api openapi:check
+pnpm --filter @meal-agent/api build
 ```
 
-审查产物为 [`openapi/stage-06.openapi.json`](openapi/stage-06.openapi.json)。不得手工编辑该文件或维护第二套 DTO。
+数据库测试使用临时 PostgreSQL 18 cluster，覆盖空库/增量 migration、checksum、RLS、权限、函数边界、并发 join、成员状态并发和敏感幂等历史转换。
 
-## 路由
+## OpenAPI 与路由
+
+[`openapi/stage-08.openapi.json`](openapi/stage-08.openapi.json) 由 route schema 和共享 contracts 生成，覆盖 19 个 path、25 个 method operation。不得手工编辑生成 JSON。
+
+业务路由：
 
 ```text
-GET    /healthz
-GET    /readyz
 POST   /api/v1/auth/wechat/exchange
 DELETE /api/v1/session
 GET    /api/v1/me
-POST   /api/v1/households
 GET    /api/v1/households
+POST   /api/v1/households
 GET    /api/v1/households/{id}/inventory-lots
 POST   /api/v1/households/{id}/inventory-lots
 POST   /api/v1/households/{id}/inventory-lots/{lotId}/events/consumed
+GET    /api/v1/households/{id}/invites
+POST   /api/v1/households/{id}/invites
+DELETE /api/v1/households/{id}/invites/{inviteId}
+POST   /api/v1/households/join
+GET    /api/v1/households/{id}/members
+DELETE /api/v1/households/{id}/memberships/{membershipId}
+GET    /api/v1/households/{id}/person-profiles
+POST   /api/v1/households/{id}/person-profiles
+GET    /api/v1/households/{id}/person-profiles/{profileId}
+PATCH  /api/v1/households/{id}/person-profiles/{profileId}
+GET    /api/v1/households/{id}/person-profile-link-requests
+POST   /api/v1/households/{id}/person-profiles/{profileId}/link-requests
+POST   /api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm
+POST   /api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints
+DELETE /api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints
 ```
 
-业务写 command 必须带 `Idempotency-Key`。request fingerprint 绑定目标资源与 schema 规范化后的 body：相同作用域/key/目标/body 重放第一次结果；exact decimal 的等值 fixed-point alias 视为同一 body；同 key 改变目标 lot 或其他语义字段返回 `409 IDEMPOTENCY_KEY_REUSED`，不会跨 lot 回放结果。
+另有 `GET /healthz` 和 `GET /readyz`。这些路由只证明本地实现；真实微信和云部署仍见[项目状态](../../docs/project-status.md)。

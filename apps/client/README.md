@@ -1,47 +1,44 @@
-# @meal-agent/client
+# `@meal-agent/client`
 
-阶段 07 正式微信小程序客户端纵切（Taro 4.2.1 + React 18.3.1 + TypeScript 5.9.3，见 [ADR-0001](../../docs/architecture/decisions/0001-client-platform-and-cross-platform-framework.md)）。覆盖第一条端到端真实闭环：
+正式 Taro 4 + React 19 客户端，当前目标为微信小程序。页面只编排状态与视图，HTTP/契约映射、幂等动作和平台能力分别位于 core 与 adapter；核心 DTO 全部来自 `@meal-agent/contracts` `0.4.0`。
 
-```text
-登录（后端 fake 微信适配器）→ 创建/选择家庭 → 库存批次列表
-    → 手工新增批次（exact/approximate/qualitative）→ exact-only 消耗
-    （幂等重放、版本冲突刷新、401 重新登录引导、跨家庭 404）
-```
+## 阶段 08 页面能力
 
-## 结构与边界
+- HouseholdsPage：fake 登录后的家庭列表、创建、邀请码加入；新建 owner profile 的饭量、默认参与和厨艺保持 unknown/null；
+- MembersPage：成员目录、owner/self 标识、邀请、退出/移除、active/archived dining-only profile 管理；
+- ProfilePage：linked/dining-only profile 查看编辑、archive/restore、全部现有 hard constraint kind、结构化 allergen/food concept、双确认与 mapping status；
+- InventoryPage：批次新增和 exact-only 最小消耗。
 
-| 目录 | 职责 |
-| --- | --- |
-| `src/platform/` | 平台端口定义与唯一的 Taro/wx 触点（`taro-adapter.ts`） |
-| `src/core/` | 业务流程（登录、家庭、库存）、API 客户端与会话存储；不依赖 Taro，可在 Node 直接测试 |
-| `src/pages/` | 薄 UI 层；只依赖 `@tarojs/components`、React 与 `core`/`app-runtime`，禁止直接调用 `wx.*`/Taro API |
-| `tests/unit/` | Node 单元测试（fake 平台适配器脚本化应答） |
-| `tests/e2e/` | 端到端闭环：临时 PostgreSQL 18 + 真实 `services/api`（fake 微信适配器） |
-
-所有 DTO 一律来自 [`@meal-agent/contracts`](../../packages/contracts/)：请求经契约模式本地预校验，响应（含 `application/problem+json`）经契约模式验证后才交给页面，客户端不定义第二份核心 DTO。
+FAM-003、FAM-004 已覆盖。FAM-005 当前支持已有 cooking skill 的 unknown/查看/编辑；尚未发明 cooking-technique 正式词表，仍是部分完成并作为阶段 09 数据治理前置。
 
 ## 关键语义
 
-- **幂等**：每个逻辑写操作生成一次 `Idempotency-Key`（`c07-` 前缀），失败重试复用同一键；表单内容修改后换新键；`meta.idempotency.replayed === true` 时页面明示“重复提交返回第一次结果”。
-- **并发冲突**：consumed 携带 `expectedVersion`；收到 `INVENTORY_VERSION_CONFLICT` 时刷新批次列表并提示基于最新版本重试，绝不静默覆盖。
-- **会话**：`AuthenticatedSession` 持久化在小程序存储，恢复时经契约校验并按 `expiresAt` 预判；服务端 401（`AUTHENTICATION_REQUIRED`/`SESSION_EXPIRED`）统一清会话、跳登录页并展示原因。
-- **404 语义**：跨家庭资源访问返回 404 时按“不可访问”处理，不推断资源是否存在。
-- **数量三态**：exact 金额始终是十进制字符串；approximate 保留数值/单位/置信度/原始描述；qualitative 只保留等级与原始描述——展示层不把估算量伪装成精确量。
+- PersonProfile/constraint mutation 只接收 receipt，成功或重放后 GET 最新资源；
+- 同一次进行中动作复用 idempotency key，payload/version 变化或明确取消后才换 key；
+- 应用重启通过 GET 对账，不在本地持久化邀请码、敏感约束请求体或 token；
+- owner/self 依据当前 session user 判断，不根据 viewer role 猜测；
+- `subject_and_owner` 只在 owner/self 完整视图出现；
+- `needs_structured_mapping` hard constraint 显示阻断状态，不能交给模型猜测；
+- 页面源码不直接调用 `wx.*`，微信能力由 platform adapter 隔离。
 
-## 常用命令
+## 命令
 
 ```bash
-pnpm --filter @meal-agent/client check        # typecheck + 单元测试 + weapp 生产构建
-pnpm --filter @meal-agent/client test:e2e     # 端到端闭环（需 PostgreSQL 18，PG_BIN 可指定）
-pnpm --filter @meal-agent/client dev:stack    # 本地联调栈：临时 PG18 + services/api(fake)
-pnpm --filter @meal-agent/client dev:weapp    # Taro watch 构建
+pnpm --filter @meal-agent/client typecheck
+pnpm --filter @meal-agent/client test
+pnpm --filter @meal-agent/client build:weapp
+pnpm --filter @meal-agent/client test:e2e
 ```
 
-## 微信开发者工具手工验证
+单测会实际渲染 HouseholdsPage、MembersPage 和 ProfilePage，并覆盖 unknown 默认、owner/self、完整 hard kind、confirmation fingerprint、archive/restore 和同动作重试。E2E 使用本机 fake adapter 与临时 PostgreSQL，不是实时微信链。
 
-1. `MEAL_AGENT_DEV_API_PORT=3000 pnpm --filter @meal-agent/client dev:stack`
-2. `pnpm --filter @meal-agent/client build:weapp`（构建默认 API 基址 `http://127.0.0.1:3000`，可用 `MEAL_AGENT_API_BASE_URL` 覆盖）
-3. 用微信开发者工具导入 `apps/client`（或直接导入 `apps/client/dist`）。新版工具会校验 AppID 真实性、不再接受 `touristappid`：在导入对话框选择/注册**测试号**（游客与测试号仅 GUI 可选，CLI 导入会报"不存在此 AppID"）。确认"不校验合法域名"已开启（`project.config.json` 已声明 urlCheck false，新版工具也读 `project.private.config.json` 私有设置）。
-4. 依次验证：登录 → 创建家庭 → 新增三种数量批次 → 消耗 → 重复点击（应显示重放而非重复扣减）→ 双开模拟并发消耗（应提示版本冲突并刷新）。
+本地联调：
 
-注意：开发者工具 CLI/自动化需要在 IDE“设置 → 安全设置”中开启服务端口，且需要真实测试号 AppID，均属本机/账号侧配置，由使用者自行决定。真机、真实微信登录与合法域名仍为 `Deferred — 外部依赖`；fake 适配器的通过结果不得记为真实微信链路 Pass。
+```bash
+MEAL_AGENT_DEV_API_PORT=3000 pnpm --filter @meal-agent/client dev:stack
+pnpm --filter @meal-agent/client build:weapp
+```
+
+开发者工具导入 `apps/client/dist`。仓库 `project.config.json` 固定为 `touristappid`；真实 AppID/AppSecret 只能存在本机 gitignored 配置或密钥服务。完整走查证据见[阶段 08 GUI 记录](../../docs/evidence/stage-08-gui/README.md)。
+
+依赖例外仅允许本地 weapp 构建；截至例外关闭前，H5、外部测试、体验版与发布全部阻断。真实登录、合法域名、真机和发布仍为 Deferred。
