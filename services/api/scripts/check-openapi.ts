@@ -5,12 +5,18 @@ import SwaggerParser from "@apidevtools/swagger-parser";
 import type { OpenAPIV3 } from "openapi-types";
 
 import {
+  approximateQuantitySchema,
   contractRuleBindings,
   contractRuleManifest,
   contractRuleSchemaBindings,
+  inventoryEventSchema,
+  sessionSchema,
 } from "@meal-agent/contracts";
 
-import { generateOpenApiDocument } from "./openapi.js";
+import {
+  generateOpenApiDocument,
+  toOpenApi30,
+} from "./openapi.js";
 
 const requiredPaths = [
   "/healthz",
@@ -36,6 +42,26 @@ const requiredPaths = [
 
 const generated = await generateOpenApiDocument();
 await SwaggerParser.validate(generated);
+
+const booleanExclusiveSchema = {
+  type: "number",
+  minimum: 0,
+  exclusiveMinimum: true,
+};
+assert.deepEqual(
+  toOpenApi30(booleanExclusiveSchema),
+  booleanExclusiveSchema,
+  "existing OpenAPI 3.0 boolean exclusive bounds must be preserved",
+);
+const numericExclusiveSchema = {
+  type: "number",
+  exclusiveMinimum: 0,
+};
+assert.deepEqual(
+  toOpenApi30(toOpenApi30(numericExclusiveSchema)),
+  toOpenApi30(numericExclusiveSchema),
+  "OpenAPI conversion must be idempotent",
+);
 
 const dialectViolations: string[] = [];
 const inspectDialect = (value: unknown, path = "$"): void => {
@@ -216,6 +242,109 @@ const collectPropertySchemas = (
     ),
   ];
 };
+const openApiNumberAccepts = (
+  schema: Record<string, unknown>,
+  value: number,
+): boolean => {
+  if (
+    schema["type"] === "integer" &&
+    !Number.isInteger(value)
+  ) {
+    return false;
+  }
+  if (
+    typeof schema["minimum"] === "number" &&
+    (
+      schema["exclusiveMinimum"] === true
+        ? value <= schema["minimum"]
+        : value < schema["minimum"]
+    )
+  ) {
+    return false;
+  }
+  if (
+    typeof schema["maximum"] === "number" &&
+    (
+      schema["exclusiveMaximum"] === true
+        ? value >= schema["maximum"]
+        : value > schema["maximum"]
+    )
+  ) {
+    return false;
+  }
+  return true;
+};
+const componentSchema = (
+  name: string,
+): Record<string, unknown> => {
+  const component = generated.components?.schemas?.[name];
+  assert.notEqual(component, undefined, `missing component ${name}`);
+  assert.equal("$ref" in component!, false, `${name} must be inline`);
+  return component as Record<string, unknown>;
+};
+const componentProperty = (
+  componentName: string,
+  propertyName: string,
+): Record<string, unknown> => {
+  const component = componentSchema(componentName);
+  const properties = component["properties"];
+  assert.equal(
+    properties !== null &&
+      typeof properties === "object" &&
+      !Array.isArray(properties),
+    true,
+    `${componentName} must expose properties`,
+  );
+  const property = (properties as Record<string, unknown>)[propertyName];
+  assert.equal(
+    property !== null &&
+      typeof property === "object" &&
+      !Array.isArray(property),
+    true,
+    `${componentName}.${propertyName} must be a schema`,
+  );
+  return property as Record<string, unknown>;
+};
+const zeroBoundaries = [
+  {
+    name: "approximate amount",
+    runtimeAccepts:
+      approximateQuantitySchema.shape.amount.safeParse(0).success,
+    openApi: componentSchema(
+      "ContractRule.approximateQuantitySchema.amount",
+    ),
+  },
+  {
+    name: "session tokenVersion",
+    runtimeAccepts:
+      sessionSchema.shape.tokenVersion.safeParse(0).success,
+    openApi: componentProperty(
+      "ContractRule.sessionSchema",
+      "tokenVersion",
+    ),
+  },
+  {
+    name: "inventory event resultingLotVersion",
+    runtimeAccepts:
+      inventoryEventSchema.shape.resultingLotVersion.safeParse(0).success,
+    openApi: componentProperty(
+      "ContractRule.inventoryEventSchema",
+      "resultingLotVersion",
+    ),
+  },
+] as const;
+for (const boundary of zeroBoundaries) {
+  assert.equal(
+    boundary.runtimeAccepts,
+    false,
+    `${boundary.name} runtime must reject zero`,
+  );
+  assert.equal(
+    openApiNumberAccepts(boundary.openApi, 0),
+    false,
+    `${boundary.name} OpenAPI semantics must reject zero`,
+  );
+}
 for (const propertyName of ["foodConceptIds", "allergenCodes"]) {
   const schemas = collectPropertySchemas(
     addConstraintRequestObject,

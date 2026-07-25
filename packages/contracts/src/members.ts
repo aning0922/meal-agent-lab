@@ -12,6 +12,7 @@ import {
   membershipIdSchema,
   personProfileIdSchema,
   personProfileLinkRequestIdSchema,
+  postgresTextSchema,
   userIdSchema,
   utcDateTimeSchema,
   versionSchema,
@@ -281,7 +282,7 @@ const cookingSkillSchema = z.enum([
 export const createPersonProfileRequestSchema = z.strictObject({
   /** 关联到某登录成员的 membership；缺省表示仅用餐档案（非登录）。 */
   linkedMembershipId: membershipIdSchema.optional(),
-  displayName: z.string().min(1).max(80),
+  displayName: postgresTextSchema(1, 80),
   defaultParticipation: z.boolean().nullable(),
   defaultPortionScale: z.number().finite().min(0.25).max(4).nullable(),
   cookingSkill: cookingSkillSchema.nullable(),
@@ -396,7 +397,7 @@ export const personProfileLinkDisclosureSchema = z.discriminatedUnion(
       availability: z.literal("available"),
       disclosureVersion: z.literal(1),
       profileVersion: versionSchema,
-      profileDisplayName: z.string().min(1).max(80),
+      profileDisplayName: postgresTextSchema(1, 80),
       householdVisibleHardConstraintCount: z.int().min(0),
       householdVisibleSoftConstraintCount: z.int().min(0),
       privateConstraintCount: z.int().min(0),
@@ -479,7 +480,7 @@ export const updatePersonProfileRequestSchema = ruleSuperRefine(
   z.strictObject({
     operation: z.literal("update"),
     expectedVersion: versionSchema,
-    displayName: z.string().min(1).max(80).optional(),
+    displayName: postgresTextSchema(1, 80).optional(),
     defaultParticipation: z.boolean().nullable().optional(),
     defaultPortionScale: z
       .number()
@@ -608,10 +609,10 @@ const hardConstraintInputSchema = ruleSuperRefine(
       "food_safety_exclusion",
     ]),
     enforcement: z.literal("hard"),
-    label: z.string().min(1).max(120),
+    label: postgresTextSchema(1, 120),
     foodConceptIds: foodConceptIdsSchema.default([]),
     allergenCodes: allergenCodesSchema.default([]),
-    notes: z.string().max(500).optional(),
+    notes: postgresTextSchema(0, 500).optional(),
     visibility: constraintVisibilitySchema,
     /** 硬约束必须携带显式确认；acknowledged 只接受字面 true。 */
     confirmation: z.strictObject({
@@ -640,10 +641,10 @@ const hardConstraintInputSchema = ruleSuperRefine(
 const softConstraintInputSchema = z.strictObject({
   kind: z.literal("preference"),
   enforcement: z.literal("soft"),
-  label: z.string().min(1).max(120),
+  label: postgresTextSchema(1, 120),
   preference: z.enum(["prefer", "dislike"]),
   foodConceptIds: foodConceptIdsSchema.default([]),
-  notes: z.string().max(500).optional(),
+  notes: postgresTextSchema(0, 500).optional(),
   visibility: constraintVisibilitySchema,
 });
 

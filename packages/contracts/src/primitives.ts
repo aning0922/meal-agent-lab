@@ -25,6 +25,39 @@ export const dietaryConstraintIdSchema = z
   .brand<"DietaryConstraintId">();
 const lowercaseUuidV7Pattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/**
+ * PostgreSQL text/varchar/jsonb reject U+0000 and character_length counts
+ * Unicode code points, while JavaScript String.length counts UTF-16 code
+ * units. Keep public persisted-string validation aligned with PostgreSQL.
+ */
+export const postgresTextSchema = (
+  minimum: number,
+  maximum: number,
+) => {
+  if (
+    !Number.isInteger(minimum) ||
+    !Number.isInteger(maximum) ||
+    minimum < 0 ||
+    maximum < minimum
+  ) {
+    throw new Error("invalid PostgreSQL text length boundary");
+  }
+  const pattern = new RegExp(
+    `^(?![\\s\\S]*\\u0000)[\\s\\S]{${minimum},${maximum}}$`,
+    "u",
+  );
+  return z.string().regex(pattern, {
+    message:
+      `text must contain ${minimum}-${maximum} PostgreSQL characters and no U+0000`,
+  }).meta({
+    minLength: minimum,
+    maxLength: maximum,
+    "x-postgresql-length-unit": "unicode-code-point",
+    "x-postgresql-forbidden-code-points": ["U+0000"],
+  });
+};
+
 export const foodConceptIdSchema = z
   .string()
   .regex(lowercaseUuidV7Pattern, {
@@ -40,7 +73,7 @@ export const foodConceptIdsSchema = ruleRefine(
 );
 export const allergenCodesSchema = ruleRefine(
   z
-    .array(z.string().min(1).max(64))
+    .array(postgresTextSchema(1, 64))
     .max(100)
     .meta({ uniqueItems: true }),
   "profiles.constraint.allergen-codes-unique.v1",
@@ -103,8 +136,8 @@ export const informationSourceSchema = ruleSuperRefine(
       "system_event",
     ]),
     confidence: confidenceSchema,
-    reference: z.string().min(1).max(500).optional(),
-    ruleVersion: z.string().min(1).max(100).optional(),
+    reference: postgresTextSchema(1, 500).optional(),
+    ruleVersion: postgresTextSchema(1, 100).optional(),
     capturedAt: utcDateTimeSchema,
     confirmedByUserId: userIdSchema.optional(),
   }),
@@ -230,8 +263,8 @@ export const foodDateSchema = ruleSuperRefine(
 );
 export type FoodDate = z.infer<typeof foodDateSchema>;
 
-const quantityUnitSchema = z.string().min(1).max(32);
-const quantityOriginalTextSchema = z.string().min(1).max(200);
+const quantityUnitSchema = postgresTextSchema(1, 32);
+const quantityOriginalTextSchema = postgresTextSchema(1, 200);
 
 export const quantityDecimalPrecision = 15;
 export const quantityDecimalScale = 6;

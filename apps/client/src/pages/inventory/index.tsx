@@ -20,8 +20,7 @@ import {
   type CreateLotQuantityDraft
 } from '../../core/inventory-flow'
 import {
-  dispositionForOutcome,
-  PendingActionIdempotency
+  dispositionForOutcome
 } from '../../core/idempotency'
 import {
   HOUSEHOLDS_ROUTE,
@@ -115,25 +114,19 @@ export default function InventoryPage() {
   const [consumeStatus, setConsumeStatus] = useState<SubmitState>({
     kind: 'idle'
   })
-  const [consumeReconciled, setConsumeReconciled] = useState(false)
-  const [actionKeys] = useState(
-    () =>
-      new PendingActionIdempotency(
-        getAppServices().adapter.runtime
-      )
-  )
+  const actionKeys = getAppServices().pendingCommands
   // 列表纪元：消耗成功会使在途的旧列表响应作废，防止旧快照覆盖新状态。
   const listEpochRef = useRef(0)
 
   const leaveToHouseholds = async (): Promise<void> => {
     const services = getAppServices()
     services.session.clearCurrentHouseholdId()
-    await services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+    await services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
   }
 
   const refresh = async (
     activeHouseholdId: HouseholdId
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     const epoch = ++listEpochRef.current
     setList({ kind: 'loading' })
     const result = await loadInventoryLots(
@@ -142,7 +135,7 @@ export default function InventoryPage() {
     )
     if (listEpochRef.current !== epoch) {
       // 期间发生了更新（新刷新或消耗成功），本次结果已过期，丢弃。
-      return
+      return false
     }
     switch (result.kind) {
       case 'loaded':
@@ -151,24 +144,25 @@ export default function InventoryPage() {
           lots: result.page.items,
           hasMore: result.page.pageInfo.hasMore
         })
-        return
+        return true
       case 'householdMissing':
         await leaveToHouseholds()
-        return
+        return false
       case 'failed':
         setList(result)
+        return false
     }
   }
 
   useEffect(() => {
     const services = getAppServices()
     if (services.session.restore() === null) {
-      void services.adapter.navigation.reLaunch(LOGIN_ROUTE)
+      void services.navigation.reLaunch(LOGIN_ROUTE)
       return
     }
     const currentId = services.session.restoreCurrentHouseholdId()
     if (currentId === null) {
-      void services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+      void services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
       return
     }
     setHouseholdId(currentId)
@@ -218,7 +212,7 @@ export default function InventoryPage() {
     if (actionKeys.hasOtherPending(action)) {
       setCreateStatus({
         kind: 'failed',
-        message: '请先完成或对账当前未决库存命令。',
+        message: '当前有未决库存命令，只能使用原请求重试。',
         retryable: false
       })
       return
@@ -275,13 +269,12 @@ export default function InventoryPage() {
       return
     }
     setConsumeStatus({ kind: 'working' })
-    setConsumeReconciled(false)
     const services = getAppServices()
     const action = `inventory:consume:${lot.id}`
     if (actionKeys.hasOtherPending(action)) {
       setConsumeStatus({
         kind: 'failed',
-        message: '请先完成或对账当前未决库存命令。',
+        message: '当前有未决库存命令，只能使用原请求重试。',
         retryable: false
       })
       return
@@ -323,7 +316,6 @@ export default function InventoryPage() {
         setConsumeLotId(null)
         setConsumeAmount('')
         setConsumeStatus({ kind: 'idle' })
-        setConsumeReconciled(false)
         // 使在途的旧列表请求作废，再落最新批次投影。
         listEpochRef.current += 1
         setList((previous) =>
@@ -381,7 +373,7 @@ export default function InventoryPage() {
         <View className='notice notice--error'>
           <Text>
             上一次消耗结果未知。刷新不会改变原命令；只能使用保存的批次、
-            版本、数量和幂等键重试，或完成 GET 对账后结束它。
+            版本、数量和幂等键重试。普通 GET 仅供观察，不能证明命令是否执行。
           </Text>
           <Button
             className='button'
@@ -397,39 +389,41 @@ export default function InventoryPage() {
             disabled={consumeStatus.kind === 'working'}
             onClick={() => {
               void (async () => {
-                await refresh(pendingConsume.payload.householdId)
-                setConsumeReconciled(true)
+                setConsumeStatus({ kind: 'working' })
+                try {
+                  const loaded = await refresh(
+                    pendingConsume.payload.householdId
+                  )
+                  if (loaded) {
+                    actionKeys.recordObservation(
+                      pendingConsume.action,
+                      pendingConsume.key,
+                      {
+                        kind: 'resource-get',
+                        observedAt: new Date(
+                          getAppServices().adapter.runtime.nowMs()
+                        ).toISOString(),
+                        summary: 'inventory lots refreshed'
+                      }
+                    )
+                    setBanner({
+                      tone: 'info',
+                      text: '已刷新库存；这只是资源观察，仍需用原命令和原幂等键重试。'
+                    })
+                  }
+                } finally {
+                  setConsumeStatus({
+                    kind: 'failed',
+                    message:
+                      '消耗结果仍未知；只能用原请求和原幂等键重试。',
+                    retryable: true
+                  })
+                }
               })()
             }}
           >
-            刷新库存对账
+            刷新库存（仅观察）
           </Button>
-          {consumeReconciled && (
-            <>
-              <Button
-                className='button button--secondary'
-                onClick={() => {
-                  actionKeys.complete(pendingConsume.action)
-                  setConsumeLotId(null)
-                  setConsumeAmount('')
-                  setConsumeStatus({ kind: 'idle' })
-                  setConsumeReconciled(false)
-                }}
-              >
-                对账确认已完成
-              </Button>
-              <Button
-                className='button button--secondary'
-                onClick={() => {
-                  actionKeys.abandon(pendingConsume.action)
-                  setConsumeStatus({ kind: 'idle' })
-                  setConsumeReconciled(false)
-                }}
-              >
-                确认未执行并放弃旧动作
-              </Button>
-            </>
-          )}
         </View>
       )}
 
@@ -647,7 +641,10 @@ export default function InventoryPage() {
                 ? 'button button--disabled'
                 : 'button'
             }
-            disabled={createStatus.kind === 'working'}
+            disabled={
+              createStatus.kind === 'working' ||
+              actionKeys.hasOtherPending('inventory:create')
+            }
             onClick={() => {
               void handleCreate()
             }}
@@ -722,9 +719,7 @@ export default function InventoryPage() {
                           value={consumeAmount}
                           disabled={
                             consumeStatus.kind === 'working' ||
-                            actionKeys.hasPending(
-                              `inventory:consume:${lot.id}`
-                            )
+                            actionKeys.hasAnyPending()
                           }
                           placeholder='例如：2'
                           onInput={(event) => {
@@ -737,7 +732,12 @@ export default function InventoryPage() {
                               ? 'button button--disabled'
                               : 'button'
                           }
-                          disabled={consumeStatus.kind === 'working'}
+                          disabled={
+                            consumeStatus.kind === 'working' ||
+                            actionKeys.hasOtherPending(
+                              `inventory:consume:${lot.id}`
+                            )
+                          }
                           onClick={() => {
                             void handleConsume(lot)
                           }}
@@ -779,7 +779,7 @@ export default function InventoryPage() {
                         }
                         disabled={
                           consumeStatus.kind === 'working' ||
-                          hasPendingConsume
+                          actionKeys.hasAnyPending()
                         }
                         onClick={() => {
                           setConsumeLotId(lot.id)

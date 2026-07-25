@@ -44,6 +44,95 @@ test("contract version tracks the pre-release 0.4.0 audit closeout", () => {
   assert.equal(contractVersion, "0.4.0");
 });
 
+test("persisted profile and constraint strings reject U+0000 and count emoji like PostgreSQL", () => {
+  const profileRequest = (displayName: string) => ({
+    displayName,
+    defaultParticipation: null,
+    defaultPortionScale: null,
+    cookingSkill: null,
+  });
+  assert.equal(
+    createPersonProfileRequestSchema.safeParse(
+      profileRequest("档案\u0000名称"),
+    ).success,
+    false,
+  );
+  assert.equal(
+    createPersonProfileRequestSchema.safeParse(
+      profileRequest("😀".repeat(80)),
+    ).success,
+    true,
+  );
+  assert.equal(
+    createPersonProfileRequestSchema.safeParse(
+      profileRequest("😀".repeat(81)),
+    ).success,
+    false,
+  );
+
+  const hardConstraint = (fields: {
+    readonly label: string;
+    readonly notes?: string;
+    readonly allergenCodes?: readonly string[];
+  }) => {
+    const fingerprintFields = {
+      kind: "allergy" as const,
+      enforcement: "hard" as const,
+      label: fields.label,
+      foodConceptIds: [],
+      allergenCodes: [...(fields.allergenCodes ?? [])],
+      ...(fields.notes === undefined ? {} : { notes: fields.notes }),
+      visibility: "subject_and_owner" as const,
+    };
+    return {
+      expectedVersion: 0,
+      constraint: {
+        ...fingerprintFields,
+        confirmation: {
+          acknowledged: true as const,
+          fingerprint:
+            hardConstraintConfirmationFingerprint(fingerprintFields),
+        },
+      },
+    };
+  };
+  for (const request of [
+    hardConstraint({ label: "过敏\u0000" }),
+    hardConstraint({ label: "过敏", notes: "说明\u0000" }),
+    hardConstraint({
+      label: "过敏",
+      allergenCodes: ["code\u0000"],
+    }),
+  ]) {
+    assert.equal(
+      addDietaryConstraintRequestSchema.safeParse(request).success,
+      false,
+    );
+  }
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      hardConstraint({ label: "😀".repeat(120) }),
+    ).success,
+    true,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      hardConstraint({ label: "😀".repeat(121) }),
+    ).success,
+    false,
+  );
+  assert.equal(
+    addDietaryConstraintRequestSchema.safeParse(
+      hardConstraint({
+        label: "过敏",
+        notes: "😀".repeat(500),
+        allergenCodes: ["😀".repeat(64)],
+      }),
+    ).success,
+    true,
+  );
+});
+
 test("household invite entity hides secrets and bounds its counters", () => {
   const invite = {
     id: ids.invite,

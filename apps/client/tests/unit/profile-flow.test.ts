@@ -96,6 +96,33 @@ describe('createProfile', () => {
     assert.equal(outcome.kind, 'created')
   })
 
+  it('mutation receipt 已成功时，后续 GET 失败不把已执行命令标成未知', async () => {
+    const { platform, services } = servicesWith()
+    platform.enqueueJson(
+      201,
+      successEnvelope(
+        personProfileMutationReceiptFixture({ operation: 'create' })
+      )
+    )
+    platform.enqueueResponse(new Error('profile refresh failed'))
+    const outcome = await createProfile(
+      services,
+      HOUSEHOLD_ID,
+      {
+        linkedMembershipId: MEMBERSHIP_ID,
+        displayName: '成员甲',
+        defaultParticipation: null,
+        defaultPortionScale: null,
+        cookingSkill: null
+      },
+      KEY
+    )
+    assert.equal(outcome.kind, 'failed')
+    if (outcome.kind === 'failed') {
+      assert.equal(outcome.executionUnknown, false)
+    }
+  })
+
   it('非本人档案 403', async () => {
     const { platform, services } = servicesWith()
     platform.enqueueJson(403, apiErrorBody('FORBIDDEN'))

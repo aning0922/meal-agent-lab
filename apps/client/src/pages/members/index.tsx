@@ -12,7 +12,7 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
-import { PendingActionIdempotency } from '../../core/idempotency'
+import { dispositionForOutcome } from '../../core/idempotency'
 import {
   createInvite,
   loadMembers,
@@ -57,12 +57,7 @@ export default function MembersPage() {
   const [reveal, setReveal] = useState<InviteReveal>({ kind: 'none' })
   const [pendingRemoval, setPendingRemoval] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [actionKeys] = useState(
-    () =>
-      new PendingActionIdempotency(
-        getAppServices().adapter.runtime
-      )
-  )
+  const actionKeys = getAppServices().pendingCommands
 
   const householdId =
     getAppServices().session.restoreCurrentHouseholdId()
@@ -80,11 +75,11 @@ export default function MembersPage() {
   useEffect(() => {
     const services = getAppServices()
     if (services.session.restore() === null) {
-      void services.adapter.navigation.reLaunch(LOGIN_ROUTE)
+      void services.navigation.reLaunch(LOGIN_ROUTE)
       return
     }
     if (householdId === null) {
-      void services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+      void services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
       return
     }
     void refresh(householdId)
@@ -107,20 +102,40 @@ export default function MembersPage() {
     setNotice({ kind: 'none' })
     const services = getAppServices()
     const action = 'invite:create'
-    const key = actionKeys.acquire(action, {
+    if (actionKeys.hasOtherPending(action)) {
+      setBusy(false)
+      setNotice({
+        kind: 'error',
+        message: '当前有未决命令，只能重试原动作。'
+      })
+      return
+    }
+    const payload = {
       maxUses: 1,
       expiresInHours: 168
-    })
-    const outcome = await createInvite(
-      services,
-      householdId,
-      { maxUses: 1, expiresInHours: 168 },
-      key
-    )
-    setBusy(false)
+    }
+    let outcome: Awaited<ReturnType<typeof createInvite>>
+    try {
+      const command = actionKeys.acquireSnapshot(action, payload)
+      outcome = await createInvite(
+        services,
+        householdId,
+        command.payload,
+        command.key
+      )
+    } catch {
+      actionKeys.markUnknown(action)
+      setNotice({
+        kind: 'error',
+        message: '邀请创建结果未知；只能用原请求和原幂等键重试。'
+      })
+      return
+    } finally {
+      setBusy(false)
+    }
+    actionKeys.settle(action, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
-        actionKeys.complete(action)
         setReveal({ kind: 'revealed', result: outcome.result })
         setNotice({
           kind: 'info',
@@ -130,7 +145,6 @@ export default function MembersPage() {
         })
         return
       case 'forbidden':
-        actionKeys.complete(action)
         setNotice({ kind: 'error', message: outcome.message })
         return
       case 'failed':
@@ -146,18 +160,38 @@ export default function MembersPage() {
     }
     setBusy(true)
     const services = getAppServices()
-    const outcome = await revokeInvite(
-      services,
-      householdId,
-      inviteId,
-      actionKeys.acquire(`invite:revoke:${inviteId}`, { inviteId })
-    )
-    setBusy(false)
+    const action = `invite:revoke:${inviteId}`
+    if (actionKeys.hasOtherPending(action)) {
+      setBusy(false)
+      setNotice({
+        kind: 'error',
+        message: '当前有未决命令，只能重试原动作。'
+      })
+      return
+    }
+    let outcome: Awaited<ReturnType<typeof revokeInvite>>
+    try {
+      const command = actionKeys.acquireSnapshot(action, { inviteId })
+      outcome = await revokeInvite(
+        services,
+        householdId,
+        command.payload.inviteId,
+        command.key
+      )
+    } catch {
+      actionKeys.markUnknown(action)
+      setNotice({
+        kind: 'error',
+        message: '撤销结果未知；只能用原请求和原幂等键重试。'
+      })
+      return
+    } finally {
+      setBusy(false)
+    }
+    actionKeys.settle(action, dispositionForOutcome(outcome))
     if (outcome.kind === 'revoked') {
-      actionKeys.complete(`invite:revoke:${inviteId}`)
       setNotice({ kind: 'info', message: '邀请已撤销。' })
     } else if (outcome.kind === 'alreadyInactive') {
-      actionKeys.complete(`invite:revoke:${inviteId}`)
       setNotice({ kind: 'info', message: outcome.message })
     } else {
       setNotice({ kind: 'error', message: outcome.message })
@@ -174,24 +208,48 @@ export default function MembersPage() {
     }
     setBusy(true)
     const services = getAppServices()
-    const outcome = await removeMembership(
-      services,
-      householdId,
-      membershipId,
-      actionKeys.acquire(`membership:remove:${membershipId}`, {
-        membershipId
+    const action = `membership:remove:${membershipId}`
+    if (actionKeys.hasOtherPending(action)) {
+      setBusy(false)
+      setNotice({
+        kind: 'error',
+        message: '当前有未决命令，只能重试原动作。'
       })
-    )
-    setBusy(false)
-    setPendingRemoval(null)
+      return
+    }
+    let outcome: Awaited<ReturnType<typeof removeMembership>>
+    try {
+      const command = actionKeys.acquireSnapshot(action, {
+        membershipId,
+        isSelf
+      })
+      outcome = await removeMembership(
+        services,
+        householdId,
+        command.payload.membershipId,
+        command.key
+      )
+    } catch {
+      actionKeys.markUnknown(action)
+      setNotice({
+        kind: 'error',
+        message: '退出或移除结果未知；只能用原请求和原幂等键重试。'
+      })
+      return
+    } finally {
+      setBusy(false)
+    }
+    actionKeys.settle(action, dispositionForOutcome(outcome))
+    if (!actionKeys.hasPending(action)) {
+      setPendingRemoval(null)
+    }
     switch (outcome.kind) {
       case 'removed':
-        actionKeys.complete(`membership:remove:${membershipId}`)
         if (isSelf) {
           // 退出自己后已失去该家庭访问权：直接离开到家庭列表，
           // 不能再 refresh 当前家庭（否则成员列表请求必然 404）。
           services.session.clearCurrentHouseholdId()
-          void services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+          void services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
           return
         }
         setNotice({ kind: 'info', message: '已移除该成员。' })
@@ -230,7 +288,7 @@ export default function MembersPage() {
           <Button
             className='button button--secondary'
             onClick={() => {
-              void getAppServices().adapter.navigation.reLaunch(
+              void getAppServices().navigation.reLaunch(
                 HOUSEHOLDS_ROUTE
               )
             }}
@@ -263,7 +321,15 @@ export default function MembersPage() {
           setPendingRemoval,
           handleRemove,
           busy,
-          getAppServices().session.restore()?.user.id
+          getAppServices().session.restore()?.user.id,
+          (membershipId) =>
+            actionKeys.hasOtherPending(
+              `membership:remove:${membershipId}`
+            ),
+          (membershipId) =>
+            actionKeys.hasPending(
+              `membership:remove:${membershipId}`
+            )
         )}
 
       {state.kind === 'loaded' && state.view.viewerRole === 'owner' && (
@@ -275,7 +341,9 @@ export default function MembersPage() {
           </Text>
           <Button
             className={busy ? 'button button--disabled' : 'button'}
-            disabled={busy}
+            disabled={
+              busy || actionKeys.hasOtherPending('invite:create')
+            }
             onClick={() => {
               void handleGenerateInvite()
             }}
@@ -302,6 +370,12 @@ export default function MembersPage() {
               )}
               <Button
                 className='button button--secondary'
+                disabled={
+                  busy ||
+                  actionKeys.hasOtherPending(
+                    `invite:revoke:${reveal.result.invite.id}`
+                  )
+                }
                 onClick={() => {
                   void handleRevoke(reveal.result.invite.id)
                 }}
@@ -315,16 +389,18 @@ export default function MembersPage() {
 
       <Button
         className='button button--secondary'
+        disabled={actionKeys.hasAnyPending()}
         onClick={() => {
-          void getAppServices().adapter.navigation.navigateTo(PROFILE_ROUTE)
+          void getAppServices().navigation.navigateTo(PROFILE_ROUTE)
         }}
       >
         我的用餐档案与约束
       </Button>
       <Button
         className='button button--secondary'
+        disabled={actionKeys.hasAnyPending()}
         onClick={() => {
-          void getAppServices().adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+          void getAppServices().navigation.reLaunch(HOUSEHOLDS_ROUTE)
         }}
       >
         返回家庭列表
@@ -375,7 +451,9 @@ const renderLoaded = (
   setPendingRemoval: (value: string | null) => void,
   handleRemove: (membershipId: MembershipId, isSelf: boolean) => Promise<void>,
   busy: boolean,
-  currentUserId: string | undefined
+  currentUserId: string | undefined,
+  hasOtherPendingRemoval: (membershipId: MembershipId) => boolean,
+  isPendingRemoval: (membershipId: MembershipId) => boolean
 ) => {
   const { entries, ownerCount } = collectEntries(view, currentUserId)
   const isOwnerViewer = view.viewerRole === 'owner'
@@ -416,7 +494,10 @@ const renderLoaded = (
                     </Text>
                     <Button
                       className={busy ? 'button button--disabled' : 'button'}
-                      disabled={busy}
+                      disabled={
+                        busy ||
+                        hasOtherPendingRemoval(entry.membershipId)
+                      }
                       onClick={() => {
                         void handleRemove(entry.membershipId, entry.isSelf)
                       }}
@@ -425,7 +506,11 @@ const renderLoaded = (
                     </Button>
                     <Button
                       className='button button--secondary'
-                      disabled={busy}
+                      disabled={
+                        busy ||
+                        hasOtherPendingRemoval(entry.membershipId) ||
+                        isPendingRemoval(entry.membershipId)
+                      }
                       onClick={() => {
                         setPendingRemoval(null)
                       }}
@@ -436,7 +521,11 @@ const renderLoaded = (
                 ) : (
                   <Button
                     className='button button--secondary'
-                    disabled={busy}
+                    disabled={
+                      busy ||
+                      hasOtherPendingRemoval(entry.membershipId) ||
+                      isPendingRemoval(entry.membershipId)
+                    }
                     onClick={() => {
                       setPendingRemoval(entry.membershipId)
                     }}

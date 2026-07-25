@@ -114,6 +114,21 @@ const authHeaders = (session: AuthenticatedSession) => ({
 const normalizeKey = (key: string): string =>
   `s08-${key}`.padEnd(16, "0").slice(0, 128);
 
+const waitForAdvisoryWaiters = async (
+  minimum: number,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const result = await persistence.pool.query<{ count: number }>(
+      `SELECT count(*)::integer AS count
+       FROM pg_catalog.pg_locks
+       WHERE locktype = 'advisory' AND NOT granted`,
+    );
+    if ((result.rows[0]?.count ?? 0) >= minimum) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`expected at least ${minimum} advisory lock waiters`);
+};
+
 const idempotent = (session: AuthenticatedSession, key: string) => ({
   ...authHeaders(session),
   "idempotency-key": normalizeKey(key),
@@ -520,6 +535,23 @@ test("authorization matrix: members cannot manage invites, other members, or for
     headers: idempotent(owner, "owner-remove-self"),
   });
   assert.equal(lastOwner.statusCode, 409);
+});
+
+test("foreign membership DELETE returns 404 before a household idempotency insert", async () => {
+  const owner = await login("foreign-delete-owner");
+  const household = await createHousehold(
+    owner,
+    "foreign-delete-household",
+  );
+  const outsider = await login("foreign-delete-outsider");
+  const response = await app.inject({
+    method: "DELETE",
+    url:
+      `/api/v1/households/${household.household.id}/memberships/` +
+      `${household.membership.id}`,
+    headers: idempotent(outsider, "foreign-delete-key"),
+  });
+  assert.equal(response.statusCode, 404, response.body);
 });
 
 test("hard dietary constraints demand confirmation and record who confirmed; soft ones do not", async () => {
@@ -2399,6 +2431,113 @@ test("an expired T1 request is materialized before the same profile is reissued 
   });
 });
 
+test("link confirmation crossing expires_at while waiting on the household advisory can only expire", { timeout: 10_000 }, async () => {
+  const owner = await login("link-expiry-barrier-owner");
+  const household = await createHousehold(
+    owner,
+    "link-expiry-barrier-household",
+  );
+  const householdId = household.household.id;
+  const invite = await issueInvite(
+    owner,
+    householdId,
+    "link-expiry-barrier-invite",
+  );
+  const member = await login("link-expiry-barrier-member");
+  const membership = joinHouseholdSuccessSchema.parse(
+    (
+      await join(
+        member,
+        invite.inviteCode,
+        "link-expiry-barrier-join",
+      )
+    ).json(),
+  ).data.membership;
+  const profile = await createProfile(
+    owner,
+    householdId,
+    "link-expiry-barrier-profile",
+    {
+      displayName: "过期屏障档案",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  const profileId =
+    personProfileMutationSuccessSchema.parse(profile.json()).data.profileId;
+  const requested = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${profileId}/link-requests`,
+    headers: idempotent(owner, "link-expiry-barrier-request"),
+    payload: {
+      targetMembershipId: membership.id,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+  const request =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+
+  const blocker = await persistence.pool.connect();
+  try {
+    await blocker.query("BEGIN");
+    await blocker.query(
+      `SELECT pg_catalog.pg_advisory_xact_lock(
+         pg_catalog.hashtextextended(
+           'person-profile-links:' || $1::text,
+           0
+         )
+       )`,
+      [householdId],
+    );
+    await blocker.query(
+      `UPDATE person_profile_link_requests
+       SET expires_at = clock_timestamp() + interval '250 milliseconds'
+       WHERE id = $1`,
+      [request.id],
+    );
+    const confirmation = app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${householdId}` +
+        `/person-profile-link-requests/${request.id}/confirm`,
+      headers: idempotent(member, "link-expiry-barrier-confirm"),
+      payload: {
+        expectedVersion: request.version,
+        subjectConfirmation: { acknowledged: true },
+      },
+    });
+    await waitForAdvisoryWaiters(1);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await blocker.query("COMMIT");
+    const response = await confirmation;
+    assert.equal(response.statusCode, 409, response.body);
+  } finally {
+    await blocker.query("ROLLBACK").catch(() => undefined);
+    blocker.release();
+  }
+
+  const raw = await persistence.pool.query<{
+    status: string;
+    terminal_reason: string | null;
+    expired: boolean;
+  }>(
+    `SELECT status, terminal_reason,
+            expires_at <= clock_timestamp() AS expired
+     FROM person_profile_link_requests
+     WHERE id = $1`,
+    [request.id],
+  );
+  assert.deepEqual(raw.rows[0], {
+    status: "expired",
+    terminal_reason: "expired",
+    expired: true,
+  });
+});
+
 test("controlled link creation rejects inactive targets and confirm revalidates activity", async () => {
   const owner = await login("link-inactive-owner");
   const household = await createHousehold(owner, "link-inactive-hh");
@@ -2498,6 +2637,8 @@ test("controlled link creation rejects inactive targets and confirm revalidates 
 
 test("link create/list/confirm serialize with archive/remove without deadlock or 500", { timeout: 10_000 }, async () => {
   const owner = await login("link-lock-owner");
+  const ownerSecondSession = await login("link-lock-owner");
+  assert.equal(ownerSecondSession.user.id, owner.user.id);
   const household = await createHousehold(owner, "link-lock-hh");
   const householdId = household.household.id;
   const invite = await issueInvite(owner, householdId, "link-lock-invite");
@@ -2600,7 +2741,7 @@ test("link create/list/confirm serialize with archive/remove without deadlock or
       url:
         `/api/v1/households/${householdId}/person-profiles/` +
         `${listProfile.profileId}`,
-      headers: idempotent(owner, "link-lock-list-archive"),
+      headers: idempotent(ownerSecondSession, "link-lock-list-archive"),
       payload: { operation: "archive", expectedVersion: 0 },
     }),
   ]);
@@ -2622,12 +2763,166 @@ test("link create/list/confirm serialize with archive/remove without deadlock or
       url:
         `/api/v1/households/${householdId}/person-profiles/` +
         `${createProfileRace.profileId}`,
-      headers: idempotent(owner, "link-lock-create-archive"),
+      headers: idempotent(ownerSecondSession, "link-lock-create-archive"),
       payload: { operation: "archive", expectedVersion: 0 },
     }),
   ]);
   assert.notEqual(created.statusCode, 500, created.body);
   assert.equal(createArchived.statusCode, 200, createArchived.body);
+});
+
+test("confirm/remove 409 replays with the same key after the target becomes inactive", { timeout: 10_000 }, async () => {
+  const owner = await login("link-replay-race-owner");
+  const household = await createHousehold(
+    owner,
+    "link-replay-race-household",
+  );
+  const householdId = household.household.id;
+  const invite = await issueInvite(
+    owner,
+    householdId,
+    "link-replay-race-invite",
+  );
+  const member = await login("link-replay-race-member");
+  const membership = joinHouseholdSuccessSchema.parse(
+    (
+      await join(
+        member,
+        invite.inviteCode,
+        "link-replay-race-join",
+      )
+    ).json(),
+  ).data.membership;
+  const profile = await createProfile(
+    owner,
+    householdId,
+    "link-replay-race-profile",
+    {
+      displayName: "重放竞态档案",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  const profileId =
+    personProfileMutationSuccessSchema.parse(profile.json()).data.profileId;
+  const requested = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${profileId}/link-requests`,
+    headers: idempotent(owner, "link-replay-race-request"),
+    payload: {
+      targetMembershipId: membership.id,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+  const request =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+  const confirmKey = "link-replay-race-confirm";
+
+  const blocker = await persistence.pool.connect();
+  try {
+    await blocker.query("BEGIN");
+    await blocker.query(
+      `SELECT pg_catalog.pg_advisory_xact_lock(
+         pg_catalog.hashtextextended(
+           'person-profile-links:' || $1::text,
+           0
+         )
+       )`,
+      [householdId],
+    );
+    const removal = app.inject({
+      method: "DELETE",
+      url:
+        `/api/v1/households/${householdId}/memberships/` +
+        `${membership.id}`,
+      headers: idempotent(owner, "link-replay-race-remove"),
+    });
+    await waitForAdvisoryWaiters(1);
+    const confirmation = app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${householdId}` +
+        `/person-profile-link-requests/${request.id}/confirm`,
+      headers: idempotent(member, confirmKey),
+      payload: {
+        expectedVersion: request.version,
+        subjectConfirmation: { acknowledged: true },
+      },
+    });
+    await waitForAdvisoryWaiters(2);
+    await blocker.query("COMMIT");
+    const [removed, conflicted] = await Promise.all([
+      removal,
+      confirmation,
+    ]);
+    assert.equal(removed.statusCode, 200, removed.body);
+    assert.equal(conflicted.statusCode, 409, conflicted.body);
+  } finally {
+    await blocker.query("ROLLBACK").catch(() => undefined);
+    blocker.release();
+  }
+
+  const replay = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}` +
+      `/person-profile-link-requests/${request.id}/confirm`,
+    headers: idempotent(member, confirmKey),
+    payload: {
+      expectedVersion: request.version,
+      subjectConfirmation: { acknowledged: true },
+    },
+  });
+  assert.equal(replay.statusCode, 409, replay.body);
+  assert.equal(replay.json().code, "CONFLICT");
+});
+
+test("malformed safe-409 idempotency bodies are rejected by the database", async () => {
+  const owner = await login("malformed-409-owner");
+  const household = await createHousehold(
+    owner,
+    "malformed-409-household",
+  );
+  for (const [index, body] of [
+    {},
+    null,
+    { ok: false },
+    { ok: false, error: {} },
+  ].entries()) {
+    await assert.rejects(
+      persistence.pool.query(
+        `INSERT INTO idempotency_records (
+           id, scope_kind, user_id, household_id, method,
+           normalized_route, idempotency_key, request_hash,
+           status_code, response_body, original_request_id,
+           first_processed_at, expires_at
+         ) VALUES (
+           $1, 'household', $2, $3, 'POST',
+           '/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm',
+           $4, $5, 409, $6::jsonb, $7, clock_timestamp(),
+           clock_timestamp() + interval '30 days'
+         )`,
+        [
+          uuidv7(),
+          owner.user.id,
+          household.household.id,
+          normalizeKey(`malformed-409-${index}`),
+          "0".repeat(64),
+          JSON.stringify(body),
+          uuidv7(),
+        ],
+      ),
+      (error: unknown) =>
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "23514",
+    );
+  }
 });
 
 test("two different invites concurrently joining the same household yield one join and one conflict, never 500", async () => {

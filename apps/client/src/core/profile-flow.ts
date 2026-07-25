@@ -111,9 +111,9 @@ export const createProfile = async (
       if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
         return {
           kind: 'failed',
-          message: '写入已完成，但读取最新档案失败，请返回后重新进入对账。',
+          message: '写入已完成，但读取最新档案失败，请返回后重新刷新。',
           retryable: true,
-          executionUnknown: true
+          executionUnknown: false
         }
       }
       return {
@@ -201,9 +201,9 @@ const mapProfileMutation = async (
       if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
         return {
           kind: 'failed',
-          message: '写入已完成，但读取最新档案失败，请重新进入页面对账。',
+          message: '写入已完成，但读取最新档案失败，请重新进入页面刷新。',
           retryable: true,
-          executionUnknown: true
+          executionUnknown: false
         }
       }
       return {
@@ -438,9 +438,9 @@ export const addDietaryConstraint = async (
       if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
         return {
           kind: 'failed',
-          message: '约束写入已完成，但读取最新档案失败，请重新进入页面对账。',
+          message: '约束写入已完成，但读取最新档案失败，请重新进入页面刷新。',
           retryable: true,
-          executionUnknown: true
+          executionUnknown: false
         }
       }
       return {
@@ -538,9 +538,9 @@ export const removeDietaryConstraint = async (
       if (loaded.kind !== 'success' || loaded.data.access !== 'owner_or_self') {
         return {
           kind: 'failed',
-          message: '约束移除已完成，但读取最新档案失败，请重新进入页面对账。',
+          message: '约束移除已完成，但读取最新档案失败，请重新进入页面刷新。',
           retryable: true,
-          executionUnknown: true
+          executionUnknown: false
         }
       }
       return {

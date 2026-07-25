@@ -209,6 +209,65 @@ test("HTTP contract rejects non-string, over-precision and exponent exact amount
   }
 });
 
+test("HTTP contract rejects PostgreSQL-unsafe persisted strings before a handler can write", async () => {
+  const app = await buildApp({
+    config,
+    operations,
+    readiness: async () => true,
+  });
+  try {
+    const profile = await app.inject({
+      method: "POST",
+      url: `/api/v1/households/${ids.household}/person-profiles`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "idempotency-key": "profile-http-nul-0001",
+      },
+      payload: {
+        displayName: "档案\u0000名称",
+        defaultParticipation: null,
+        defaultPortionScale: null,
+        cookingSkill: null,
+      },
+    });
+    assert.equal(profile.statusCode, 400);
+    assert.equal(
+      apiErrorSchema.parse(profile.json()).code,
+      "VALIDATION_FAILED",
+    );
+
+    const constraint = await app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${ids.household}` +
+        `/person-profiles/${ids.lot}/dietary-constraints`,
+      headers: {
+        authorization: `Bearer ${token}`,
+        "idempotency-key": "constraint-http-nul-0001",
+      },
+      payload: {
+        expectedVersion: 0,
+        constraint: {
+          kind: "preference",
+          enforcement: "soft",
+          label: "偏好",
+          preference: "dislike",
+          foodConceptIds: [],
+          notes: "说明\u0000",
+          visibility: "subject_and_owner",
+        },
+      },
+    });
+    assert.equal(constraint.statusCode, 400);
+    assert.equal(
+      apiErrorSchema.parse(constraint.json()).code,
+      "VALIDATION_FAILED",
+    );
+  } finally {
+    await app.close();
+  }
+});
+
 test("malformed JSON, missing routes and overlong request targets share the problem boundary", async () => {
   const app = await buildApp({
     config,

@@ -45,7 +45,7 @@ describe('PendingActionIdempotency', () => {
     )
   })
 
-  it('同一进行中动作忽略刷新后的候选值，显式放弃后才可开启新命令', () => {
+  it('同一进行中动作忽略刷新后的候选值，普通 GET 不能放弃未知命令', () => {
     const pending = new PendingActionIdempotency(new FakePlatform().runtime)
     const original = {
       label: '虚构过敏',
@@ -58,13 +58,27 @@ describe('PendingActionIdempotency', () => {
     })
     assert.equal(retry.key, first.key)
     assert.deepEqual(retry.payload, original)
-    pending.abandon('constraint:add:1')
-    assert.notEqual(
-      pending.acquire('constraint:add:1', {
-        label: '虚构过敏',
-        visibility: 'subject_and_owner'
-      }),
-      first.key
+    assert.equal(
+      typeof (
+        pending as unknown as {
+          readonly abandon?: unknown
+        }
+      ).abandon,
+      'undefined',
+      'ordinary resource GET cannot authorize abandoning an unknown command'
+    )
+  })
+
+  it('一个 app 级未知命令阻止任何其他写 action', () => {
+    const pending = new PendingActionIdempotency(new FakePlatform().runtime)
+    pending.acquire('household:create', { name: '家庭甲' })
+    pending.markUnknown('household:create')
+    assert.throws(
+      () =>
+        pending.acquire('household:join', {
+          inviteCode: 'sensitive-invite-code'
+        }),
+      /pending command/i
     )
   })
 
@@ -103,6 +117,53 @@ describe('PendingActionIdempotency', () => {
       displayName: '新名称'
     })
     assert.notEqual(next, first)
+  })
+
+  it('GET 观察绑定 action/key，retry 再次 unknown 时不继承旧观察', () => {
+    const pending = new PendingActionIdempotency(new FakePlatform().runtime)
+    const action = 'inventory:consume:lot-1'
+    const first = pending.acquireSnapshot(action, {
+      lotId: 'lot-1',
+      expectedVersion: 1,
+      amount: '2'
+    })
+    pending.markUnknown(action)
+    pending.recordObservation(action, first.key, {
+      kind: 'resource-get',
+      observedAt: '2026-07-25T12:00:00.000Z',
+      summary: 'inventory refreshed'
+    })
+    assert.equal(pending.snapshot(action)?.observation?.key, first.key)
+
+    const retry = pending.acquireSnapshot(action, {
+      lotId: 'lot-1',
+      expectedVersion: 9,
+      amount: '3'
+    })
+    assert.equal(retry.key, first.key)
+    assert.equal(retry.observation, undefined)
+    pending.markUnknown(action)
+    assert.equal(pending.snapshot(action)?.observation, undefined)
+  })
+
+  it('成功或确定失败清除观察，下一动作不会继承旧对账状态', () => {
+    const pending = new PendingActionIdempotency(new FakePlatform().runtime)
+    const first = pending.acquireSnapshot('profile:update:1', {
+      expectedVersion: 1
+    })
+    pending.markUnknown(first.action)
+    pending.recordObservation(first.action, first.key, {
+      kind: 'resource-get',
+      observedAt: '2026-07-25T12:00:00.000Z',
+      summary: 'profile refreshed'
+    })
+    pending.complete(first.action)
+
+    const next = pending.acquireSnapshot('profile:archive:1', {
+      expectedVersion: 2
+    })
+    assert.notEqual(next.key, first.key)
+    assert.equal(next.observation, undefined)
   })
 
   it('只把 transport、5xx 和 malformed success 视为结果未知', () => {

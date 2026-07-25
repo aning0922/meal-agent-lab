@@ -4,7 +4,10 @@ import { describe, it } from 'node:test'
 import { authenticatedSessionSchema } from '@meal-agent/contracts/identity'
 
 import { createAppServices } from '../../src/core/app-services'
-import { LOGIN_ROUTE } from '../../src/platform/ports'
+import {
+  INVENTORY_ROUTE,
+  LOGIN_ROUTE
+} from '../../src/platform/ports'
 import { FakePlatform } from '../support/fake-platform'
 import {
   apiErrorBody,
@@ -50,6 +53,33 @@ describe('createAppServices', () => {
     assert.equal(
       platform.lastRequest.headers['authorization'],
       `Bearer ${session.accessToken}`
+    )
+  })
+
+  it('app 级 pending coordinator 跨页面存活并阻止离页，且不持久化敏感 payload', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    const coordinated = services as unknown as {
+      readonly pendingCommands: {
+        acquire(action: string, payload: unknown): string
+        markUnknown(action: string): void
+      }
+      readonly navigation: {
+        navigateTo(route: typeof INVENTORY_ROUTE): Promise<void>
+      }
+    }
+    assert.ok(coordinated.pendingCommands)
+    coordinated.pendingCommands.acquire('household:join', {
+      inviteCode: 'never-persist-this-invite'
+    })
+    coordinated.pendingCommands.markUnknown('household:join')
+    await coordinated.navigation.navigateTo(INVENTORY_ROUTE)
+    assert.deepEqual(platform.navigations, [])
+    assert.equal(
+      JSON.stringify([...platform.storageMap.entries()]).includes(
+        'never-persist-this-invite'
+      ),
+      false
     )
   })
 })

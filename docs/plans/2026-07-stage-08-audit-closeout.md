@@ -7,6 +7,7 @@
 - 基线差异：无；本地 main 未前进
 - 最终收口基线：`c68217ed5771252f54cb62e8b8e37d5f67d57269`
 - 本轮增量整改基线：`17f50ddb0efd5acc01b94f41d121b0532558810b`
+- 合并前复审整改基线：`85cc5b664254ceeb3d49be8b4ed4460b2f8b266c`
 - 远端状态：未配置 remote/upstream，没有远端 CI 证据
 - 状态：**Implemented — 最终整改本地验收完成，等待项目总控合并前评审；未合并 main**
 
@@ -30,7 +31,7 @@
 | P2-01 | 双邀请码并发加入可能 500 | household+user advisory transaction lock；已成员稳定业务结果 | DB 并发测试无 500、计数正确 | Closed |
 | P2-02 | 日志未识别 inviteCode | camel/snake/case/nested 键统一脱敏 | 单元与日志 sentinel | Closed |
 | P2-03 | 过期邀请仍显示 active | migration 物化既有过期邀请；读取统一 effective status | mapper/DB/HTTP 反例 | Closed |
-| P2-04 | 同动作重试换 idempotency key | `PendingActionIdempotency` 绑定 payload fingerprint；进行中字段漂移被拒、输入冻结、重试复用 | 页面与 core 测试；重启 GET 对账语义 | Closed |
+| P2-04 | 同动作重试换 idempotency key | app 级协调器保存完整不可变 snapshot + 原 key；普通 GET 不释放未知命令，跨动作/离页被阻断 | Households/Inventory/Members/Profile 页面与 core 测试；进程重启恢复未冒充 Pass | Closed；重启恢复 Deferred |
 | P2-05 | owner 视图 `isSelf=false` | 按 session user ID 判断 self | 多 owner/实际 MembersPage 测试与 GUI | Closed |
 | P2-06 | audit 1 critical、1 high、8 moderate，无门禁 | 精确 advisory/path/version allowlist + 到期日 + weapp 产物扫描 | 新增、变化、消失未清理、过期或受禁 target 均失败 | Time-boxed |
 | P2-07 | 文档、路由和测试数量漂移 | 同步 README、状态、架构、API/client、ADR、两份阶段 08 记录 | Markdown link gate；OpenAPI 生成 route count | Closed |
@@ -75,10 +76,21 @@
 | S4-05 | 生成合法 OpenAPI 3.0.3 而非类型强转 | 标准 validator + const/exclusive/null 方言反向扫描 + 生成产物深比较 | Closed |
 | S4-06 | food concept/allergen 数组统一 max 100、去重与小写 UUID 语义 | runtime/OpenAPI/DB/HTTP 矩阵；非法 HTTP 为 400 | Closed |
 | S4-07 | Inventory 重试执行保存的完整 snapshot | 刷新、切批次和原 key 重试页面测试证明未采用新 lot/version | Closed |
-| S4-08 | Profile pending 仅允许原动作重试或 GET 对账后的完成/放弃 | 实际 ProfilePage 输入冻结与多写入口反向测试 | Closed |
+| S4-08 | Profile pending 仅允许原动作重试；普通 GET 不得开放完成/放弃 | 实际 ProfilePage 输入冻结、GET 观察与多写入口反向测试 | Closed；原 GET 放弃方案已撤销 |
 | S4-09 | link 409 遵循“旧请求终态、owner 重新发起”真实生命周期 | 页面测试不注入虚构新请求 | Closed |
 | S4-10 | 历史 link disclosure 明确 `legacy_unavailable` | 增量 migration、contract 与 repository 映射测试 | Closed |
 | S4-11 | Drizzle、rule side effects、ADR/计划/状态同步 | schema/checksum、contracts build、Markdown link gate | Closed |
+
+合并前复审关闭项：
+
+| ID | 整改 | 关键证据 | 状态 |
+| --- | --- | --- | --- |
+| S5-01 | `toOpenApi30` 只转换 numeric exclusive bound、保留 boolean 且二次转换幂等 | boolean/numeric/idempotence 反向测试；approximate amount、tokenVersion、resultingLotVersion zero runtime ↔ OpenAPI parity | Closed |
+| S5-02 | 持久化公共字符串统一 PostgreSQL-safe primitive | profile/constraint/household/inventory 的 U+0000 拒绝与 emoji code-point 边界；HTTP 400 不触达 handler | Closed |
+| S5-03 | link confirm 在 household advisory 后重取时钟并在 accepted 前重验 expiry | 两个真实 session 的 barrier 跨越 expires_at，只能提交 raw `expired` + HTTP 409 | Closed |
+| S5-04 | membership DELETE 与 link 409 在 bootstrap 前只读同 key 完成记录 | foreign DELETE 404；自退出与 inactive target 同 key 重放原结果 | Closed |
+| S5-05 | 安全 409 migration/Drizzle CHECK 封闭 SQL UNKNOWN | object + `ok=false` + `error.code=CONFLICT`；`{}`、JSON null、缺字段均 23514 | Closed |
+| S5-06 | Households create/join、Inventory、Members、Profile 统一 app 级 pending coordinator | GET 失败不开放 abandon、GET→retry→unknown 清观察、下一动作不继承、跨动作/离页与邀请丢响应页面测试 | Closed；进程重启恢复 Deferred |
 
 ## 3. A — 幂等与敏感数据
 
@@ -102,6 +114,8 @@
 2. 无法安全识别的转换为 `nonReplayable: true` tombstone；
 3. 邀请响应只移除 `inviteCode`；
 4. 不删除幂等 key、请求哈希或完成标识，不延长 expiry，也不导出原始敏感内容。
+
+membership DELETE 和 link confirm 在 household bootstrap 前只做精确 user/household/method/route/key/hash 的完成记录查询：命中才重放，未命中必须继续当前授权。这样自退出和已提交安全 409 可在 membership 变 inactive 后重放，而从未属于目标家庭的用户不会先插入带 membership 外键的 marker，最终稳定得到 404。
 
 ## 4. B — 授权与 RLS
 
@@ -152,7 +166,7 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 - 生成器校验源码扫描、manifest 覆盖、ID 唯一性和 native/runtime-only 分类；
 - OpenAPI 只由脚本生成，不手工编辑 JSON。
 
-当前 manifest 覆盖 33 条 refine/superRefine 和 2 条原生 schema 规则。rule ID 与 boundary 在 schema 定义处写入 metadata，binding 和 OpenAPI schema component 从该 metadata 派生；contracts 包显式保留注册模块的 side effects，不存在平行手写 boundary map。等价性矩阵至少覆盖：
+当前 manifest 覆盖 33 条 refine/superRefine 和 2 条原生 schema 规则。rule ID 与 boundary 在 schema 定义处写入 metadata，binding 和 OpenAPI schema component 从该 metadata 派生；contracts 包显式保留注册模块的 side effects，不存在平行手写 boundary map。`toOpenApi30` 只转换 numeric exclusive bound、保留既有 boolean 形式，二次转换必须与一次完全相同。等价性矩阵至少覆盖：
 
 | 边界 | `"0"` | 正数 | 负数/指数/超精度 |
 | --- | --- | --- | --- |
@@ -163,6 +177,8 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 
 runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩展元数据存在等同为 runtime 行为通过。
 
+另有三个显式 zero 语义反例：approximate amount、session tokenVersion 与 inventory event resultingLotVersion 在 runtime 和 OpenAPI 中都拒绝 0。所有会持久化到 PostgreSQL text/varchar/jsonb 的公共字符串使用共享 primitive，在 HTTP 前拒绝 U+0000，并以 Unicode code point 计算长度；emoji 边界与 PostgreSQL `character_length` 对齐。
+
 ## 7. E — 客户端范围
 
 ### 阶段 08 必须完成
@@ -171,8 +187,9 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 - FAM-004 当前实现范围：全部 hard kinds、allergen/food concept 标识符、visibility、全字段指纹双确认和未映射阻断；权威映射与推荐闭环未完成；
 - FAM-005 当前范围：cooking skill unknown/查看/编辑；
 - MembersPage owner/self 正确；
-- 同动作 transport/5xx 重试复用 key，进行中 payload/version 不得变化，相关输入冻结；完成或明确放弃后才换 key；
-- 应用重启后 GET 对账，不持久化敏感请求体。
+- Households create/join、Inventory、Members、Profile 共用 app 级协调器；同动作 transport/5xx/malformed 重试复用 key，进行中 payload/version 不得变化，相关输入冻结，其他写入与离页被阻断；
+- 普通 GET 只能记录绑定 action/key 的 observation，不能证明命令执行与否；GET 失败不产生证据，retry、新动作、成功或确定失败清除旧 observation；
+- 不持久化邀请码、私密约束或其他敏感请求体。应用进程重启后的命令恢复当前不支持；未来需要非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不得代替。
 
 ### 明确后续
 
@@ -197,11 +214,11 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 | 门禁 | 结果 |
 | --- | --- |
-| contracts | 26/26 |
+| contracts | 28/28 |
 | API unit | 12/12 |
-| API HTTP | 5/5 |
-| PostgreSQL/RLS/concurrency | 43/43 |
-| client unit/page | 102/102 |
+| API HTTP | 6/6 |
+| PostgreSQL/RLS/concurrency | 47/47 |
+| client unit/page | 111/111 |
 | E2E | 21/21 |
 | audit gate 反向单测 | 7/7 |
 | OpenAPI | 19 paths / 25 operations |
@@ -313,6 +330,7 @@ git status --short
 - 真机、真实多设备会话、微信分享、体验版、审核、发布和 CI 上传；
 - 云 API、托管数据库、正式 Secret 管理、WAF、备份恢复和可观测平台；
 - Android、iOS、HarmonyOS 构建、签名、实机和发布；
+- 应用进程重启后的未知命令恢复协议（非敏感 locator + 服务端 command-status/receipt 或原子 fence）；
 - H5 和外部测试（依赖例外期间明确阻断）；
 - 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票；
 - cooking-technique 与宗教/伦理/食品安全正式规则词表；

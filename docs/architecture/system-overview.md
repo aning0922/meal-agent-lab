@@ -9,7 +9,7 @@
 ```text
 Taro / React 微信小程序
   ├─ pages：登录、家庭、库存、成员、PersonProfile
-  ├─ core flows：状态机、同动作幂等、GET 对账
+  ├─ core flows：app 级 pending-command、不可变同 key 重试
   └─ platform adapter：wx 能力隔离
           │
           │ @meal-agent/contracts 0.4.0
@@ -57,9 +57,11 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 完整 PersonProfile 必须再走 GET 并执行当前授权/redaction。历史不安全缓存被 `0002` 转为 receipt 或 non-replayable tombstone，但保留命令完成标识。成员自退出的完成记录可在 active membership 消失后、household bootstrap 之前重放，最终落库必须影响且仅影响一条幂等记录。
 
+客户端普通资源 GET 不是 command-status：它不能证明一个 idempotency key 的命令已执行或未执行。结果未知时，app 级协调器跨页面保留原 payload snapshot 与原 key，冻结其他写入和离页；GET 成功只能记录与 action/key 绑定的观察，GET 失败不产生证据。协调器不持久化邀请码或私密约束；进程重启后的安全恢复要等非敏感 locator + 服务端 receipt/status 或原子 fence，当前不把普通 GET 冒充恢复机制。
+
 ## 契约与确定性规则
 
-`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须在 schema 定义处通过统一 helper 绑定稳定 rule ID 与 boundary；binding 与 OpenAPI schema components 从实际 Zod metadata 派生，构建配置显式保留注册模块的 side effects，不维护第二份手写 schema 映射。JSON Schema 能表达的生成原生约束，不能表达的在对应 schema 节点生成带 rule ID 的 runtime-only 扩展。OpenAPI 生成器确定性转换 3.0 方言差异，标准 validator、关键字扫描、runtime parity 及故意错绑反向测试阻止非法 schema 或规则静默丢失。
+`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须在 schema 定义处通过统一 helper 绑定稳定 rule ID 与 boundary；binding 与 OpenAPI schema components 从实际 Zod metadata 派生，构建配置显式保留注册模块的 side effects，不维护第二份手写 schema 映射。JSON Schema 能表达的生成原生约束，不能表达的在对应 schema 节点生成带 rule ID 的 runtime-only 扩展。OpenAPI 生成器只转换数值型 exclusive bound、保留已有 boolean 形式且转换幂等；标准 validator、关键字扫描、三个 zero boundary 的 runtime parity 及故意错绑反向测试阻止非法 schema 或规则静默丢失。持久化公共字符串统一拒绝 U+0000，并按 Unicode code point 与 PostgreSQL 计算同一长度。
 
 硬约束由确定性代码处理。当前没有权威 allergen、food concept、宗教、伦理或食品安全映射词表，字符串/UUID 形状校验不构成 structured mapping；所有 hard constraint 使用 `needs_structured_mapping`，推荐边界必须阻断，模型不得补造规则。`foodConceptIds`/`allergenCodes` 最多 100 项且不得重复，food concept ID 使用小写 UUIDv7；未知饭量、参与和厨艺保持 `null`。
 

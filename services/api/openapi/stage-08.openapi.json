@@ -18,8 +18,13 @@
         "type": "array",
         "items": {
           "type": "string",
+          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
           "minLength": 1,
-          "maxLength": 64
+          "maxLength": 64,
+          "x-postgresql-length-unit": "unicode-code-point",
+          "x-postgresql-forbidden-code-points": [
+            "U+0000"
+          ]
         },
         "uniqueItems": true,
         "x-meal-agent-runtime-rule-ids": [
@@ -171,17 +176,28 @@
               "approximate number has at most six decimal places"
             ],
             "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           },
           "unit": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
             "minLength": 1,
-            "maxLength": 32
+            "maxLength": 32,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "originalText": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
             "minLength": 1,
-            "maxLength": 200
+            "maxLength": 200,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "confidence": {
             "type": "string",
@@ -216,7 +232,8 @@
           "approximate number has at most six decimal places"
         ],
         "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-        "minimum": 0
+        "minimum": 0,
+        "exclusiveMinimum": true
       },
       "ContractRule.authenticatedSessionSchema": {
         "type": "object",
@@ -276,7 +293,8 @@
               "tokenVersion": {
                 "type": "integer",
                 "maximum": 9007199254740991,
-                "minimum": 0
+                "minimum": 0,
+                "exclusiveMinimum": true
               }
             },
             "required": [
@@ -316,13 +334,23 @@
               },
               "displayName": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                 "minLength": 1,
-                "maxLength": 80
+                "maxLength": 80,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "locale": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                 "minLength": 2,
-                "maxLength": 35
+                "maxLength": 35,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "createdAt": {
                 "type": "string",
@@ -387,8 +415,13 @@
               },
               "displayName": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                 "minLength": 1,
-                "maxLength": 120
+                "maxLength": 120,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "state": {
                 "type": "string",
@@ -433,13 +466,23 @@
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -468,17 +511,28 @@
                           "approximate number has at most six decimal places"
                         ],
                         "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                        "minimum": 0
+                        "minimum": 0,
+                        "exclusiveMinimum": true
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "confidence": {
                         "type": "string",
@@ -524,8 +578,13 @@
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -593,13 +652,23 @@
                         },
                         "reference": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                           "minLength": 1,
-                          "maxLength": 500
+                          "maxLength": 500,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "ruleVersion": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                           "minLength": 1,
-                          "maxLength": 100
+                          "maxLength": 100,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "capturedAt": {
                           "type": "string",
@@ -664,14 +733,24 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                       "minLength": 1,
-                      "maxLength": 80
+                      "maxLength": 80,
+                      "x-postgresql-length-unit": "unicode-code-point",
+                      "x-postgresql-forbidden-code-points": [
+                        "U+0000"
+                      ]
                     }
                   },
                   "policyVersion": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                     "minLength": 1,
-                    "maxLength": 100
+                    "maxLength": 100,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "evaluatedAt": {
                     "type": "string",
@@ -815,8 +894,13 @@
                           },
                           "unit": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                             "minLength": 1,
-                            "maxLength": 32
+                            "maxLength": 32,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "precision": {
                             "type": "string",
@@ -826,8 +910,13 @@
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -868,8 +957,13 @@
                           },
                           "unit": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                             "minLength": 1,
-                            "maxLength": 32
+                            "maxLength": 32,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "precision": {
                             "type": "string",
@@ -887,8 +981,13 @@
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -934,8 +1033,13 @@
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -1009,11 +1113,18 @@
               "resultingLotVersion": {
                 "type": "integer",
                 "maximum": 9007199254740991,
-                "minimum": 0
+                "minimum": 0,
+                "exclusiveMinimum": true
               },
               "note": {
                 "type": "string",
-                "maxLength": 500
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                "minLength": 0,
+                "maxLength": 500,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               }
             },
             "required": [
@@ -1160,18 +1271,33 @@
               },
               "name": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                 "minLength": 1,
-                "maxLength": 80
+                "maxLength": 80,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "timezone": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                 "minLength": 1,
-                "maxLength": 64
+                "maxLength": 64,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "locale": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                 "minLength": 2,
-                "maxLength": 35
+                "maxLength": 35,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "status": {
                 "type": "string",
@@ -1315,8 +1441,13 @@
               },
               "displayName": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                 "minLength": 1,
-                "maxLength": 80
+                "maxLength": 80,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "status": {
                 "type": "string",
@@ -1375,8 +1506,13 @@
                         },
                         "label": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                           "minLength": 1,
-                          "maxLength": 120
+                          "maxLength": 120,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "foodConceptIds": {
                           "default": [],
@@ -1401,8 +1537,13 @@
                           "type": "array",
                           "items": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                             "minLength": 1,
-                            "maxLength": 64
+                            "maxLength": 64,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "uniqueItems": true,
                           "x-meal-agent-runtime-rule-ids": [
@@ -1421,7 +1562,13 @@
                         },
                         "notes": {
                           "type": "string",
-                          "maxLength": 500
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                          "minLength": 0,
+                          "maxLength": 500,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "visibility": {
                           "type": "string",
@@ -1477,8 +1624,13 @@
                         },
                         "label": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                           "minLength": 1,
-                          "maxLength": 120
+                          "maxLength": 120,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "preference": {
                           "type": "string",
@@ -1506,7 +1658,13 @@
                         },
                         "notes": {
                           "type": "string",
-                          "maxLength": 500
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                          "minLength": 0,
+                          "maxLength": 500,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "visibility": {
                           "type": "string",
@@ -1633,8 +1791,13 @@
               },
               "reference": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                 "minLength": 1,
-                "maxLength": 500
+                "maxLength": 500,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               }
             },
             "required": [
@@ -1699,8 +1862,13 @@
                 },
                 "reference": {
                   "type": "string",
+                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                   "minLength": 1,
-                  "maxLength": 500
+                  "maxLength": 500,
+                  "x-postgresql-length-unit": "unicode-code-point",
+                  "x-postgresql-forbidden-code-points": [
+                    "U+0000"
+                  ]
                 }
               },
               "required": [
@@ -1754,8 +1922,13 @@
               },
               "displayName": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                 "minLength": 1,
-                "maxLength": 120
+                "maxLength": 120,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "state": {
                 "type": "string",
@@ -1800,13 +1973,23 @@
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -1835,17 +2018,28 @@
                           "approximate number has at most six decimal places"
                         ],
                         "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                        "minimum": 0
+                        "minimum": 0,
+                        "exclusiveMinimum": true
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "confidence": {
                         "type": "string",
@@ -1891,8 +2085,13 @@
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -1960,13 +2159,23 @@
                         },
                         "reference": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                           "minLength": 1,
-                          "maxLength": 500
+                          "maxLength": 500,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "ruleVersion": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                           "minLength": 1,
-                          "maxLength": 100
+                          "maxLength": 100,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "capturedAt": {
                           "type": "string",
@@ -2031,14 +2240,24 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                       "minLength": 1,
-                      "maxLength": 80
+                      "maxLength": 80,
+                      "x-postgresql-length-unit": "unicode-code-point",
+                      "x-postgresql-forbidden-code-points": [
+                        "U+0000"
+                      ]
                     }
                   },
                   "policyVersion": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                     "minLength": 1,
-                    "maxLength": 100
+                    "maxLength": 100,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "evaluatedAt": {
                     "type": "string",
@@ -2182,8 +2401,13 @@
                           },
                           "unit": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                             "minLength": 1,
-                            "maxLength": 32
+                            "maxLength": 32,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "precision": {
                             "type": "string",
@@ -2193,8 +2417,13 @@
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -2235,8 +2464,13 @@
                           },
                           "unit": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                             "minLength": 1,
-                            "maxLength": 32
+                            "maxLength": 32,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "precision": {
                             "type": "string",
@@ -2254,8 +2488,13 @@
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -2301,8 +2540,13 @@
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -2376,11 +2620,18 @@
               "resultingLotVersion": {
                 "type": "integer",
                 "maximum": 9007199254740991,
-                "minimum": 0
+                "minimum": 0,
+                "exclusiveMinimum": true
               },
               "note": {
                 "type": "string",
-                "maxLength": 500
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                "minLength": 0,
+                "maxLength": 500,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               }
             },
             "required": [
@@ -2440,8 +2691,13 @@
           },
           "label": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
             "minLength": 1,
-            "maxLength": 120
+            "maxLength": 120,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "foodConceptIds": {
             "default": [],
@@ -2466,8 +2722,13 @@
             "type": "array",
             "items": {
               "type": "string",
+              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
               "minLength": 1,
-              "maxLength": 64
+              "maxLength": 64,
+              "x-postgresql-length-unit": "unicode-code-point",
+              "x-postgresql-forbidden-code-points": [
+                "U+0000"
+              ]
             },
             "uniqueItems": true,
             "x-meal-agent-runtime-rule-ids": [
@@ -2480,7 +2741,13 @@
           },
           "notes": {
             "type": "string",
-            "maxLength": 500
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+            "minLength": 0,
+            "maxLength": 500,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "visibility": {
             "type": "string",
@@ -2598,13 +2865,23 @@
               },
               "reference": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                 "minLength": 1,
-                "maxLength": 500
+                "maxLength": 500,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "ruleVersion": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                 "minLength": 1,
-                "maxLength": 100
+                "maxLength": 100,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "capturedAt": {
                 "type": "string",
@@ -2742,13 +3019,23 @@
           },
           "reference": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
             "minLength": 1,
-            "maxLength": 500
+            "maxLength": 500,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "ruleVersion": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
             "minLength": 1,
-            "maxLength": 100
+            "maxLength": 100,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "capturedAt": {
             "type": "string",
@@ -2849,8 +3136,13 @@
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "precision": {
                         "type": "string",
@@ -2860,8 +3152,13 @@
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -2902,8 +3199,13 @@
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "precision": {
                         "type": "string",
@@ -2921,8 +3223,13 @@
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -2968,8 +3275,13 @@
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -3043,11 +3355,18 @@
           "resultingLotVersion": {
             "type": "integer",
             "maximum": 9007199254740991,
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           },
           "note": {
             "type": "string",
-            "maxLength": 500
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+            "minLength": 0,
+            "maxLength": 500,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           }
         },
         "required": [
@@ -3091,8 +3410,13 @@
           },
           "displayName": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
             "minLength": 1,
-            "maxLength": 120
+            "maxLength": 120,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "state": {
             "type": "string",
@@ -3137,13 +3461,23 @@
                   },
                   "unit": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                     "minLength": 1,
-                    "maxLength": 32
+                    "maxLength": 32,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -3172,17 +3506,28 @@
                       "approximate number has at most six decimal places"
                     ],
                     "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                    "minimum": 0
+                    "minimum": 0,
+                    "exclusiveMinimum": true
                   },
                   "unit": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                     "minLength": 1,
-                    "maxLength": 32
+                    "maxLength": 32,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "confidence": {
                     "type": "string",
@@ -3228,8 +3573,13 @@
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -3297,13 +3647,23 @@
                     },
                     "reference": {
                       "type": "string",
+                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                       "minLength": 1,
-                      "maxLength": 500
+                      "maxLength": 500,
+                      "x-postgresql-length-unit": "unicode-code-point",
+                      "x-postgresql-forbidden-code-points": [
+                        "U+0000"
+                      ]
                     },
                     "ruleVersion": {
                       "type": "string",
+                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                       "minLength": 1,
-                      "maxLength": 100
+                      "maxLength": 100,
+                      "x-postgresql-length-unit": "unicode-code-point",
+                      "x-postgresql-forbidden-code-points": [
+                        "U+0000"
+                      ]
                     },
                     "capturedAt": {
                       "type": "string",
@@ -3368,14 +3728,24 @@
                 "type": "array",
                 "items": {
                   "type": "string",
+                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                   "minLength": 1,
-                  "maxLength": 80
+                  "maxLength": 80,
+                  "x-postgresql-length-unit": "unicode-code-point",
+                  "x-postgresql-forbidden-code-points": [
+                    "U+0000"
+                  ]
                 }
               },
               "policyVersion": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                 "minLength": 1,
-                "maxLength": 100
+                "maxLength": 100,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "evaluatedAt": {
                 "type": "string",
@@ -3502,13 +3872,23 @@
                 },
                 "reference": {
                   "type": "string",
+                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                   "minLength": 1,
-                  "maxLength": 500
+                  "maxLength": 500,
+                  "x-postgresql-length-unit": "unicode-code-point",
+                  "x-postgresql-forbidden-code-points": [
+                    "U+0000"
+                  ]
                 },
                 "ruleVersion": {
                   "type": "string",
+                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                   "minLength": 1,
-                  "maxLength": 100
+                  "maxLength": 100,
+                  "x-postgresql-length-unit": "unicode-code-point",
+                  "x-postgresql-forbidden-code-points": [
+                    "U+0000"
+                  ]
                 },
                 "capturedAt": {
                   "type": "string",
@@ -3651,18 +4031,33 @@
               },
               "name": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                 "minLength": 1,
-                "maxLength": 80
+                "maxLength": 80,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "timezone": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                 "minLength": 1,
-                "maxLength": 64
+                "maxLength": 64,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "locale": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                 "minLength": 2,
-                "maxLength": 35
+                "maxLength": 35,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "status": {
                 "type": "string",
@@ -3767,11 +4162,13 @@
                 "recipeVersion": {
                   "type": "integer",
                   "maximum": 9007199254740991,
-                  "minimum": 0
+                  "minimum": 0,
+                  "exclusiveMinimum": true
                 },
                 "servings": {
                   "type": "number",
-                  "minimum": 0
+                  "minimum": 0,
+                  "exclusiveMinimum": true
                 }
               },
               "required": [
@@ -3880,13 +4277,23 @@
               },
               "unit": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                 "minLength": 1,
-                "maxLength": 32
+                "maxLength": 32,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "originalText": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               }
             },
             "required": [
@@ -3915,17 +4322,28 @@
                   "approximate number has at most six decimal places"
                 ],
                 "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                "minimum": 0
+                "minimum": 0,
+                "exclusiveMinimum": true
               },
               "unit": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                 "minLength": 1,
-                "maxLength": 32
+                "maxLength": 32,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "originalText": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "confidence": {
                 "type": "string",
@@ -3971,8 +4389,13 @@
               },
               "originalText": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                 "minLength": 1,
-                "maxLength": 200
+                "maxLength": 200,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               }
             },
             "required": [
@@ -4070,7 +4493,8 @@
           "version": {
             "type": "integer",
             "maximum": 9007199254740991,
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           },
           "status": {
             "type": "string",
@@ -4091,7 +4515,8 @@
           },
           "servings": {
             "type": "number",
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           },
           "dishRole": {
             "type": "string",
@@ -4144,13 +4569,23 @@
                         },
                         "unit": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                           "minLength": 1,
-                          "maxLength": 32
+                          "maxLength": 32,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "originalText": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                           "minLength": 1,
-                          "maxLength": 200
+                          "maxLength": 200,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         }
                       },
                       "required": [
@@ -4179,17 +4614,28 @@
                             "approximate number has at most six decimal places"
                           ],
                           "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                          "minimum": 0
+                          "minimum": 0,
+                          "exclusiveMinimum": true
                         },
                         "unit": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                           "minLength": 1,
-                          "maxLength": 32
+                          "maxLength": 32,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "originalText": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                           "minLength": 1,
-                          "maxLength": 200
+                          "maxLength": 200,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         },
                         "confidence": {
                           "type": "string",
@@ -4235,8 +4681,13 @@
                         },
                         "originalText": {
                           "type": "string",
+                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                           "minLength": 1,
-                          "maxLength": 200
+                          "maxLength": 200,
+                          "x-postgresql-length-unit": "unicode-code-point",
+                          "x-postgresql-forbidden-code-points": [
+                            "U+0000"
+                          ]
                         }
                       },
                       "required": [
@@ -4294,7 +4745,8 @@
                 "order": {
                   "type": "integer",
                   "maximum": 9007199254740991,
-                  "minimum": 0
+                  "minimum": 0,
+                  "exclusiveMinimum": true
                 },
                 "instruction": {
                   "type": "string",
@@ -4329,7 +4781,8 @@
           "totalMinutes": {
             "type": "integer",
             "maximum": 9007199254740991,
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           },
           "difficulty": {
             "type": "string",
@@ -4445,7 +4898,8 @@
           "maximumTotalMinutes": {
             "type": "integer",
             "maximum": 9007199254740991,
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           },
           "purchaseTolerance": {
             "type": "string",
@@ -4478,11 +4932,13 @@
                 "recipeVersion": {
                   "type": "integer",
                   "maximum": 9007199254740991,
-                  "minimum": 0
+                  "minimum": 0,
+                  "exclusiveMinimum": true
                 },
                 "servings": {
                   "type": "number",
-                  "minimum": 0
+                  "minimum": 0,
+                  "exclusiveMinimum": true
                 },
                 "dishRole": {
                   "type": "string",
@@ -4502,7 +4958,8 @@
                 "totalMinutes": {
                   "type": "integer",
                   "maximum": 9007199254740991,
-                  "minimum": 0
+                  "minimum": 0,
+                  "exclusiveMinimum": true
                 },
                 "missingFoodConceptIds": {
                   "type": "array",
@@ -4873,8 +5330,13 @@
               },
               "label": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                 "minLength": 1,
-                "maxLength": 120
+                "maxLength": 120,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "foodConceptIds": {
                 "default": [],
@@ -4899,8 +5361,13 @@
                 "type": "array",
                 "items": {
                   "type": "string",
+                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                   "minLength": 1,
-                  "maxLength": 64
+                  "maxLength": 64,
+                  "x-postgresql-length-unit": "unicode-code-point",
+                  "x-postgresql-forbidden-code-points": [
+                    "U+0000"
+                  ]
                 },
                 "uniqueItems": true,
                 "x-meal-agent-runtime-rule-ids": [
@@ -4919,7 +5386,13 @@
               },
               "notes": {
                 "type": "string",
-                "maxLength": 500
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                "minLength": 0,
+                "maxLength": 500,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "visibility": {
                 "type": "string",
@@ -4975,8 +5448,13 @@
               },
               "label": {
                 "type": "string",
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                 "minLength": 1,
-                "maxLength": 120
+                "maxLength": 120,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "preference": {
                 "type": "string",
@@ -5004,7 +5482,13 @@
               },
               "notes": {
                 "type": "string",
-                "maxLength": 500
+                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                "minLength": 0,
+                "maxLength": 500,
+                "x-postgresql-length-unit": "unicode-code-point",
+                "x-postgresql-forbidden-code-points": [
+                  "U+0000"
+                ]
               },
               "visibility": {
                 "type": "string",
@@ -5095,7 +5579,8 @@
           "tokenVersion": {
             "type": "integer",
             "maximum": 9007199254740991,
-            "minimum": 0
+            "minimum": 0,
+            "exclusiveMinimum": true
           }
         },
         "required": [
@@ -5165,13 +5650,23 @@
                   },
                   "unit": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                     "minLength": 1,
-                    "maxLength": 32
+                    "maxLength": 32,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -5200,17 +5695,28 @@
                       "approximate number has at most six decimal places"
                     ],
                     "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                    "minimum": 0
+                    "minimum": 0,
+                    "exclusiveMinimum": true
                   },
                   "unit": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                     "minLength": 1,
-                    "maxLength": 32
+                    "maxLength": 32,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "confidence": {
                     "type": "string",
@@ -5256,8 +5762,13 @@
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -5301,13 +5812,23 @@
                   },
                   "unit": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                     "minLength": 1,
-                    "maxLength": 32
+                    "maxLength": 32,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -5336,17 +5857,28 @@
                       "approximate number has at most six decimal places"
                     ],
                     "x-meal-agent-rule-boundary": "approximateQuantitySchema.amount",
-                    "minimum": 0
+                    "minimum": 0,
+                    "exclusiveMinimum": true
                   },
                   "unit": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                     "minLength": 1,
-                    "maxLength": 32
+                    "maxLength": 32,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "confidence": {
                     "type": "string",
@@ -5392,8 +5924,13 @@
                   },
                   "originalText": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                     "minLength": 1,
-                    "maxLength": 200
+                    "maxLength": 200,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -5542,8 +6079,13 @@
           },
           "displayName": {
             "type": "string",
+            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
             "minLength": 1,
-            "maxLength": 80
+            "maxLength": 80,
+            "x-postgresql-length-unit": "unicode-code-point",
+            "x-postgresql-forbidden-code-points": [
+              "U+0000"
+            ]
           },
           "defaultParticipation": {
             "type": "boolean",
@@ -7060,6 +7602,7 @@
                             "tokenVersion": {
                               "type": "integer",
                               "minimum": 0,
+                              "exclusiveMinimum": true,
                               "maximum": 9007199254740991
                             }
                           },
@@ -7100,13 +7643,23 @@
                             },
                             "displayName": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                               "minLength": 1,
-                              "maxLength": 80
+                              "maxLength": 80,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "locale": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                               "minLength": 2,
-                              "maxLength": 35
+                              "maxLength": 35,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "createdAt": {
                               "type": "string",
@@ -9562,13 +10115,23 @@
                             },
                             "displayName": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                               "minLength": 1,
-                              "maxLength": 80
+                              "maxLength": 80,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "locale": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                               "minLength": 2,
-                              "maxLength": 35
+                              "maxLength": 35,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "createdAt": {
                               "type": "string",
@@ -9608,18 +10171,33 @@
                               },
                               "name": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                 "minLength": 1,
-                                "maxLength": 80
+                                "maxLength": 80,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "timezone": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                 "minLength": 1,
-                                "maxLength": 64
+                                "maxLength": 64,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "locale": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                                 "minLength": 2,
-                                "maxLength": 35
+                                "maxLength": 35,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "status": {
                                 "type": "string",
@@ -11043,26 +11621,46 @@
                 "properties": {
                   "name": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                     "minLength": 1,
-                    "maxLength": 80
+                    "maxLength": 80,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "timezone": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                     "minLength": 1,
-                    "maxLength": 64
+                    "maxLength": 64,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "locale": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                     "minLength": 2,
-                    "maxLength": 35
+                    "maxLength": 35,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "ownerProfile": {
                     "type": "object",
                     "properties": {
                       "displayName": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                         "minLength": 1,
-                        "maxLength": 80
+                        "maxLength": 80,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "defaultParticipation": {
                         "default": null,
@@ -11150,18 +11748,33 @@
                             },
                             "name": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                               "minLength": 1,
-                              "maxLength": 80
+                              "maxLength": 80,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "timezone": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                               "minLength": 1,
-                              "maxLength": 64
+                              "maxLength": 64,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "locale": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                               "minLength": 2,
-                              "maxLength": 35
+                              "maxLength": 35,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "status": {
                               "type": "string",
@@ -11305,8 +11918,13 @@
                             },
                             "displayName": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                               "minLength": 1,
-                              "maxLength": 80
+                              "maxLength": 80,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "status": {
                               "type": "string",
@@ -11365,8 +11983,13 @@
                                       },
                                       "label": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                         "minLength": 1,
-                                        "maxLength": 120
+                                        "maxLength": 120,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "foodConceptIds": {
                                         "default": [],
@@ -11391,8 +12014,13 @@
                                         "type": "array",
                                         "items": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                           "minLength": 1,
-                                          "maxLength": 64
+                                          "maxLength": 64,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "uniqueItems": true,
                                         "x-meal-agent-runtime-rule-ids": [
@@ -11411,7 +12039,13 @@
                                       },
                                       "notes": {
                                         "type": "string",
-                                        "maxLength": 500
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                        "minLength": 0,
+                                        "maxLength": 500,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "visibility": {
                                         "type": "string",
@@ -11467,8 +12101,13 @@
                                       },
                                       "label": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                         "minLength": 1,
-                                        "maxLength": 120
+                                        "maxLength": 120,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "preference": {
                                         "type": "string",
@@ -11496,7 +12135,13 @@
                                       },
                                       "notes": {
                                         "type": "string",
-                                        "maxLength": 500
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                        "minLength": 0,
+                                        "maxLength": 500,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "visibility": {
                                         "type": "string",
@@ -13004,18 +13649,33 @@
                               },
                               "name": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                 "minLength": 1,
-                                "maxLength": 80
+                                "maxLength": 80,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "timezone": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                 "minLength": 1,
-                                "maxLength": 64
+                                "maxLength": 64,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "locale": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                                 "minLength": 2,
-                                "maxLength": 35
+                                "maxLength": 35,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "status": {
                                 "type": "string",
@@ -14556,8 +15216,13 @@
                               },
                               "displayName": {
                                 "type": "string",
+                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                 "minLength": 1,
-                                "maxLength": 120
+                                "maxLength": 120,
+                                "x-postgresql-length-unit": "unicode-code-point",
+                                "x-postgresql-forbidden-code-points": [
+                                  "U+0000"
+                                ]
                               },
                               "state": {
                                 "type": "string",
@@ -14602,13 +15267,23 @@
                                       },
                                       "unit": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                         "minLength": 1,
-                                        "maxLength": 32
+                                        "maxLength": 32,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "originalText": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                         "minLength": 1,
-                                        "maxLength": 200
+                                        "maxLength": 200,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       }
                                     },
                                     "required": [
@@ -14630,6 +15305,7 @@
                                       "amount": {
                                         "type": "number",
                                         "minimum": 0,
+                                        "exclusiveMinimum": true,
                                         "maximum": 999999999.999999,
                                         "x-meal-agent-runtime-rule-ids": [
                                           "quantity.approximate.scale.v1"
@@ -14641,13 +15317,23 @@
                                       },
                                       "unit": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                         "minLength": 1,
-                                        "maxLength": 32
+                                        "maxLength": 32,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "originalText": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                         "minLength": 1,
-                                        "maxLength": 200
+                                        "maxLength": 200,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "confidence": {
                                         "type": "string",
@@ -14693,8 +15379,13 @@
                                       },
                                       "originalText": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                         "minLength": 1,
-                                        "maxLength": 200
+                                        "maxLength": 200,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       }
                                     },
                                     "required": [
@@ -14762,13 +15453,23 @@
                                         },
                                         "reference": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                                           "minLength": 1,
-                                          "maxLength": 500
+                                          "maxLength": 500,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "ruleVersion": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                                           "minLength": 1,
-                                          "maxLength": 100
+                                          "maxLength": 100,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "capturedAt": {
                                           "type": "string",
@@ -14833,14 +15534,24 @@
                                     "type": "array",
                                     "items": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                       "minLength": 1,
-                                      "maxLength": 80
+                                      "maxLength": 80,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "policyVersion": {
                                     "type": "string",
+                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                                     "minLength": 1,
-                                    "maxLength": 100
+                                    "maxLength": 100,
+                                    "x-postgresql-length-unit": "unicode-code-point",
+                                    "x-postgresql-forbidden-code-points": [
+                                      "U+0000"
+                                    ]
                                   },
                                   "evaluatedAt": {
                                     "type": "string",
@@ -16341,8 +17052,13 @@
                   },
                   "displayName": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                     "minLength": 1,
-                    "maxLength": 120
+                    "maxLength": 120,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "storageLocation": {
                     "type": "string",
@@ -16390,13 +17106,23 @@
                           },
                           "unit": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                             "minLength": 1,
-                            "maxLength": 32
+                            "maxLength": 32,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -16418,6 +17144,7 @@
                           "amount": {
                             "type": "number",
                             "minimum": 0,
+                            "exclusiveMinimum": true,
                             "maximum": 999999999.999999,
                             "x-meal-agent-runtime-rule-ids": [
                               "quantity.approximate.scale.v1"
@@ -16429,8 +17156,13 @@
                           },
                           "unit": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                             "minLength": 1,
-                            "maxLength": 32
+                            "maxLength": 32,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "confidence": {
                             "type": "string",
@@ -16442,8 +17174,13 @@
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -16475,8 +17212,13 @@
                           },
                           "originalText": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                             "minLength": 1,
-                            "maxLength": 200
+                            "maxLength": 200,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           }
                         },
                         "required": [
@@ -16528,8 +17270,13 @@
                             },
                             "reference": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                               "minLength": 1,
-                              "maxLength": 500
+                              "maxLength": 500,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             }
                           },
                           "required": [
@@ -16637,8 +17384,13 @@
                             },
                             "displayName": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                               "minLength": 1,
-                              "maxLength": 120
+                              "maxLength": 120,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "state": {
                               "type": "string",
@@ -16683,13 +17435,23 @@
                                     },
                                     "unit": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                       "minLength": 1,
-                                      "maxLength": 32
+                                      "maxLength": 32,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -16711,6 +17473,7 @@
                                     "amount": {
                                       "type": "number",
                                       "minimum": 0,
+                                      "exclusiveMinimum": true,
                                       "maximum": 999999999.999999,
                                       "x-meal-agent-runtime-rule-ids": [
                                         "quantity.approximate.scale.v1"
@@ -16722,13 +17485,23 @@
                                     },
                                     "unit": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                       "minLength": 1,
-                                      "maxLength": 32
+                                      "maxLength": 32,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "confidence": {
                                       "type": "string",
@@ -16774,8 +17547,13 @@
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -16843,13 +17621,23 @@
                                       },
                                       "reference": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                                         "minLength": 1,
-                                        "maxLength": 500
+                                        "maxLength": 500,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "ruleVersion": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                                         "minLength": 1,
-                                        "maxLength": 100
+                                        "maxLength": 100,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "capturedAt": {
                                         "type": "string",
@@ -16914,14 +17702,24 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
+                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                     "minLength": 1,
-                                    "maxLength": 80
+                                    "maxLength": 80,
+                                    "x-postgresql-length-unit": "unicode-code-point",
+                                    "x-postgresql-forbidden-code-points": [
+                                      "U+0000"
+                                    ]
                                   }
                                 },
                                 "policyVersion": {
                                   "type": "string",
+                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                                   "minLength": 1,
-                                  "maxLength": 100
+                                  "maxLength": 100,
+                                  "x-postgresql-length-unit": "unicode-code-point",
+                                  "x-postgresql-forbidden-code-points": [
+                                    "U+0000"
+                                  ]
                                 },
                                 "evaluatedAt": {
                                   "type": "string",
@@ -17065,8 +17863,13 @@
                                         },
                                         "unit": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                           "minLength": 1,
-                                          "maxLength": 32
+                                          "maxLength": 32,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "precision": {
                                           "type": "string",
@@ -17076,8 +17879,13 @@
                                         },
                                         "originalText": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                           "minLength": 1,
-                                          "maxLength": 200
+                                          "maxLength": 200,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         }
                                       },
                                       "required": [
@@ -17118,8 +17926,13 @@
                                         },
                                         "unit": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                           "minLength": 1,
-                                          "maxLength": 32
+                                          "maxLength": 32,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "precision": {
                                           "type": "string",
@@ -17137,8 +17950,13 @@
                                         },
                                         "originalText": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                           "minLength": 1,
-                                          "maxLength": 200
+                                          "maxLength": 200,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         }
                                       },
                                       "required": [
@@ -17184,8 +18002,13 @@
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -17259,11 +18082,18 @@
                             "resultingLotVersion": {
                               "type": "integer",
                               "minimum": 0,
+                              "exclusiveMinimum": true,
                               "maximum": 9007199254740991
                             },
                             "note": {
                               "type": "string",
-                              "maxLength": 500
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                              "minLength": 0,
+                              "maxLength": 500,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             }
                           },
                           "required": [
@@ -18707,13 +19537,23 @@
                       },
                       "unit": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                         "minLength": 1,
-                        "maxLength": 32
+                        "maxLength": 32,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "originalText": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                         "minLength": 1,
-                        "maxLength": 200
+                        "maxLength": 200,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       }
                     },
                     "required": [
@@ -18730,7 +19570,13 @@
                   },
                   "note": {
                     "type": "string",
-                    "maxLength": 500
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                    "minLength": 0,
+                    "maxLength": 500,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   }
                 },
                 "required": [
@@ -18816,8 +19662,13 @@
                             },
                             "displayName": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                               "minLength": 1,
-                              "maxLength": 120
+                              "maxLength": 120,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "state": {
                               "type": "string",
@@ -18862,13 +19713,23 @@
                                     },
                                     "unit": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                       "minLength": 1,
-                                      "maxLength": 32
+                                      "maxLength": 32,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -18890,6 +19751,7 @@
                                     "amount": {
                                       "type": "number",
                                       "minimum": 0,
+                                      "exclusiveMinimum": true,
                                       "maximum": 999999999.999999,
                                       "x-meal-agent-runtime-rule-ids": [
                                         "quantity.approximate.scale.v1"
@@ -18901,13 +19763,23 @@
                                     },
                                     "unit": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                       "minLength": 1,
-                                      "maxLength": 32
+                                      "maxLength": 32,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "confidence": {
                                       "type": "string",
@@ -18953,8 +19825,13 @@
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -19022,13 +19899,23 @@
                                       },
                                       "reference": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,500}$",
                                         "minLength": 1,
-                                        "maxLength": 500
+                                        "maxLength": 500,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "ruleVersion": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                                         "minLength": 1,
-                                        "maxLength": 100
+                                        "maxLength": 100,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "capturedAt": {
                                         "type": "string",
@@ -19093,14 +19980,24 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
+                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                     "minLength": 1,
-                                    "maxLength": 80
+                                    "maxLength": 80,
+                                    "x-postgresql-length-unit": "unicode-code-point",
+                                    "x-postgresql-forbidden-code-points": [
+                                      "U+0000"
+                                    ]
                                   }
                                 },
                                 "policyVersion": {
                                   "type": "string",
+                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,100}$",
                                   "minLength": 1,
-                                  "maxLength": 100
+                                  "maxLength": 100,
+                                  "x-postgresql-length-unit": "unicode-code-point",
+                                  "x-postgresql-forbidden-code-points": [
+                                    "U+0000"
+                                  ]
                                 },
                                 "evaluatedAt": {
                                   "type": "string",
@@ -19244,8 +20141,13 @@
                                         },
                                         "unit": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                           "minLength": 1,
-                                          "maxLength": 32
+                                          "maxLength": 32,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "precision": {
                                           "type": "string",
@@ -19255,8 +20157,13 @@
                                         },
                                         "originalText": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                           "minLength": 1,
-                                          "maxLength": 200
+                                          "maxLength": 200,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         }
                                       },
                                       "required": [
@@ -19297,8 +20204,13 @@
                                         },
                                         "unit": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,32}$",
                                           "minLength": 1,
-                                          "maxLength": 32
+                                          "maxLength": 32,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         },
                                         "precision": {
                                           "type": "string",
@@ -19316,8 +20228,13 @@
                                         },
                                         "originalText": {
                                           "type": "string",
+                                          "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                           "minLength": 1,
-                                          "maxLength": 200
+                                          "maxLength": 200,
+                                          "x-postgresql-length-unit": "unicode-code-point",
+                                          "x-postgresql-forbidden-code-points": [
+                                            "U+0000"
+                                          ]
                                         }
                                       },
                                       "required": [
@@ -19363,8 +20280,13 @@
                                     },
                                     "originalText": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,200}$",
                                       "minLength": 1,
-                                      "maxLength": 200
+                                      "maxLength": 200,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     }
                                   },
                                   "required": [
@@ -19438,11 +20360,18 @@
                             "resultingLotVersion": {
                               "type": "integer",
                               "minimum": 0,
+                              "exclusiveMinimum": true,
                               "maximum": 9007199254740991
                             },
                             "note": {
                               "type": "string",
-                              "maxLength": 500
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                              "minLength": 0,
+                              "maxLength": 500,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             }
                           },
                           "required": [
@@ -25569,18 +26498,33 @@
                             },
                             "name": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                               "minLength": 1,
-                              "maxLength": 80
+                              "maxLength": 80,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "timezone": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                               "minLength": 1,
-                              "maxLength": 64
+                              "maxLength": 64,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "locale": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{2,35}$",
                               "minLength": 2,
-                              "maxLength": 35
+                              "maxLength": 35,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "status": {
                               "type": "string",
@@ -27149,8 +28093,13 @@
                                       },
                                       "displayName": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                         "minLength": 1,
-                                        "maxLength": 80
+                                        "maxLength": 80,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "status": {
                                         "type": "string",
@@ -27209,8 +28158,13 @@
                                                 },
                                                 "label": {
                                                   "type": "string",
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                                   "minLength": 1,
-                                                  "maxLength": 120
+                                                  "maxLength": 120,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "foodConceptIds": {
                                                   "default": [],
@@ -27235,8 +28189,13 @@
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
+                                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                                     "minLength": 1,
-                                                    "maxLength": 64
+                                                    "maxLength": 64,
+                                                    "x-postgresql-length-unit": "unicode-code-point",
+                                                    "x-postgresql-forbidden-code-points": [
+                                                      "U+0000"
+                                                    ]
                                                   },
                                                   "uniqueItems": true,
                                                   "x-meal-agent-runtime-rule-ids": [
@@ -27255,7 +28214,13 @@
                                                 },
                                                 "notes": {
                                                   "type": "string",
-                                                  "maxLength": 500
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                                  "minLength": 0,
+                                                  "maxLength": 500,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "visibility": {
                                                   "type": "string",
@@ -27311,8 +28276,13 @@
                                                 },
                                                 "label": {
                                                   "type": "string",
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                                   "minLength": 1,
-                                                  "maxLength": 120
+                                                  "maxLength": 120,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "preference": {
                                                   "type": "string",
@@ -27340,7 +28310,13 @@
                                                 },
                                                 "notes": {
                                                   "type": "string",
-                                                  "maxLength": 500
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                                  "minLength": 0,
+                                                  "maxLength": 500,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "visibility": {
                                                   "type": "string",
@@ -27535,8 +28511,13 @@
                                     },
                                     "displayName": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                       "minLength": 1,
-                                      "maxLength": 80
+                                      "maxLength": 80,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "status": {
                                       "type": "string",
@@ -27595,8 +28576,13 @@
                                               },
                                               "label": {
                                                 "type": "string",
+                                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                                 "minLength": 1,
-                                                "maxLength": 120
+                                                "maxLength": 120,
+                                                "x-postgresql-length-unit": "unicode-code-point",
+                                                "x-postgresql-forbidden-code-points": [
+                                                  "U+0000"
+                                                ]
                                               },
                                               "foodConceptIds": {
                                                 "default": [],
@@ -27621,8 +28607,13 @@
                                                 "type": "array",
                                                 "items": {
                                                   "type": "string",
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                                   "minLength": 1,
-                                                  "maxLength": 64
+                                                  "maxLength": 64,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "uniqueItems": true,
                                                 "x-meal-agent-runtime-rule-ids": [
@@ -27641,7 +28632,13 @@
                                               },
                                               "notes": {
                                                 "type": "string",
-                                                "maxLength": 500
+                                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                                "minLength": 0,
+                                                "maxLength": 500,
+                                                "x-postgresql-length-unit": "unicode-code-point",
+                                                "x-postgresql-forbidden-code-points": [
+                                                  "U+0000"
+                                                ]
                                               },
                                               "visibility": {
                                                 "type": "string",
@@ -27697,8 +28694,13 @@
                                               },
                                               "label": {
                                                 "type": "string",
+                                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                                 "minLength": 1,
-                                                "maxLength": 120
+                                                "maxLength": 120,
+                                                "x-postgresql-length-unit": "unicode-code-point",
+                                                "x-postgresql-forbidden-code-points": [
+                                                  "U+0000"
+                                                ]
                                               },
                                               "preference": {
                                                 "type": "string",
@@ -27726,7 +28728,13 @@
                                               },
                                               "notes": {
                                                 "type": "string",
-                                                "maxLength": 500
+                                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                                "minLength": 0,
+                                                "maxLength": 500,
+                                                "x-postgresql-length-unit": "unicode-code-point",
+                                                "x-postgresql-forbidden-code-points": [
+                                                  "U+0000"
+                                                ]
                                               },
                                               "visibility": {
                                                 "type": "string",
@@ -27906,8 +28914,13 @@
                                       },
                                       "displayName": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                         "minLength": 1,
-                                        "maxLength": 80
+                                        "maxLength": 80,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "status": {
                                         "type": "string",
@@ -27966,8 +28979,13 @@
                                                 },
                                                 "label": {
                                                   "type": "string",
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                                   "minLength": 1,
-                                                  "maxLength": 120
+                                                  "maxLength": 120,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "foodConceptIds": {
                                                   "default": [],
@@ -27992,8 +29010,13 @@
                                                   "type": "array",
                                                   "items": {
                                                     "type": "string",
+                                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                                     "minLength": 1,
-                                                    "maxLength": 64
+                                                    "maxLength": 64,
+                                                    "x-postgresql-length-unit": "unicode-code-point",
+                                                    "x-postgresql-forbidden-code-points": [
+                                                      "U+0000"
+                                                    ]
                                                   },
                                                   "uniqueItems": true,
                                                   "x-meal-agent-runtime-rule-ids": [
@@ -28012,7 +29035,13 @@
                                                 },
                                                 "notes": {
                                                   "type": "string",
-                                                  "maxLength": 500
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                                  "minLength": 0,
+                                                  "maxLength": 500,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "visibility": {
                                                   "type": "string",
@@ -28068,8 +29097,13 @@
                                                 },
                                                 "label": {
                                                   "type": "string",
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                                   "minLength": 1,
-                                                  "maxLength": 120
+                                                  "maxLength": 120,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "preference": {
                                                   "type": "string",
@@ -28097,7 +29131,13 @@
                                                 },
                                                 "notes": {
                                                   "type": "string",
-                                                  "maxLength": 500
+                                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                                  "minLength": 0,
+                                                  "maxLength": 500,
+                                                  "x-postgresql-length-unit": "unicode-code-point",
+                                                  "x-postgresql-forbidden-code-points": [
+                                                    "U+0000"
+                                                  ]
                                                 },
                                                 "visibility": {
                                                   "type": "string",
@@ -31141,8 +32181,13 @@
                                   },
                                   "displayName": {
                                     "type": "string",
+                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                     "minLength": 1,
-                                    "maxLength": 80
+                                    "maxLength": 80,
+                                    "x-postgresql-length-unit": "unicode-code-point",
+                                    "x-postgresql-forbidden-code-points": [
+                                      "U+0000"
+                                    ]
                                   },
                                   "status": {
                                     "type": "string",
@@ -31201,8 +32246,13 @@
                                             },
                                             "label": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                               "minLength": 1,
-                                              "maxLength": 120
+                                              "maxLength": 120,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "foodConceptIds": {
                                               "default": [],
@@ -31227,8 +32277,13 @@
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
+                                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                                 "minLength": 1,
-                                                "maxLength": 64
+                                                "maxLength": 64,
+                                                "x-postgresql-length-unit": "unicode-code-point",
+                                                "x-postgresql-forbidden-code-points": [
+                                                  "U+0000"
+                                                ]
                                               },
                                               "uniqueItems": true,
                                               "x-meal-agent-runtime-rule-ids": [
@@ -31247,7 +32302,13 @@
                                             },
                                             "notes": {
                                               "type": "string",
-                                              "maxLength": 500
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                              "minLength": 0,
+                                              "maxLength": 500,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "visibility": {
                                               "type": "string",
@@ -31303,8 +32364,13 @@
                                             },
                                             "label": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                               "minLength": 1,
-                                              "maxLength": 120
+                                              "maxLength": 120,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "preference": {
                                               "type": "string",
@@ -31332,7 +32398,13 @@
                                             },
                                             "notes": {
                                               "type": "string",
-                                              "maxLength": 500
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                              "minLength": 0,
+                                              "maxLength": 500,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "visibility": {
                                               "type": "string",
@@ -31437,8 +32509,13 @@
                                 },
                                 "displayName": {
                                   "type": "string",
+                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                   "minLength": 1,
-                                  "maxLength": 80
+                                  "maxLength": 80,
+                                  "x-postgresql-length-unit": "unicode-code-point",
+                                  "x-postgresql-forbidden-code-points": [
+                                    "U+0000"
+                                  ]
                                 },
                                 "status": {
                                   "type": "string",
@@ -31497,8 +32574,13 @@
                                           },
                                           "label": {
                                             "type": "string",
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                             "minLength": 1,
-                                            "maxLength": 120
+                                            "maxLength": 120,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "foodConceptIds": {
                                             "default": [],
@@ -31523,8 +32605,13 @@
                                             "type": "array",
                                             "items": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                               "minLength": 1,
-                                              "maxLength": 64
+                                              "maxLength": 64,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "uniqueItems": true,
                                             "x-meal-agent-runtime-rule-ids": [
@@ -31543,7 +32630,13 @@
                                           },
                                           "notes": {
                                             "type": "string",
-                                            "maxLength": 500
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                            "minLength": 0,
+                                            "maxLength": 500,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "visibility": {
                                             "type": "string",
@@ -31599,8 +32692,13 @@
                                           },
                                           "label": {
                                             "type": "string",
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                             "minLength": 1,
-                                            "maxLength": 120
+                                            "maxLength": 120,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "preference": {
                                             "type": "string",
@@ -31628,7 +32726,13 @@
                                           },
                                           "notes": {
                                             "type": "string",
-                                            "maxLength": 500
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                            "minLength": 0,
+                                            "maxLength": 500,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "visibility": {
                                             "type": "string",
@@ -31717,8 +32821,13 @@
                                   },
                                   "displayName": {
                                     "type": "string",
+                                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                     "minLength": 1,
-                                    "maxLength": 80
+                                    "maxLength": 80,
+                                    "x-postgresql-length-unit": "unicode-code-point",
+                                    "x-postgresql-forbidden-code-points": [
+                                      "U+0000"
+                                    ]
                                   },
                                   "status": {
                                     "type": "string",
@@ -31777,8 +32886,13 @@
                                             },
                                             "label": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                               "minLength": 1,
-                                              "maxLength": 120
+                                              "maxLength": 120,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "foodConceptIds": {
                                               "default": [],
@@ -31803,8 +32917,13 @@
                                               "type": "array",
                                               "items": {
                                                 "type": "string",
+                                                "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                                 "minLength": 1,
-                                                "maxLength": 64
+                                                "maxLength": 64,
+                                                "x-postgresql-length-unit": "unicode-code-point",
+                                                "x-postgresql-forbidden-code-points": [
+                                                  "U+0000"
+                                                ]
                                               },
                                               "uniqueItems": true,
                                               "x-meal-agent-runtime-rule-ids": [
@@ -31823,7 +32942,13 @@
                                             },
                                             "notes": {
                                               "type": "string",
-                                              "maxLength": 500
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                              "minLength": 0,
+                                              "maxLength": 500,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "visibility": {
                                               "type": "string",
@@ -31879,8 +33004,13 @@
                                             },
                                             "label": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                               "minLength": 1,
-                                              "maxLength": 120
+                                              "maxLength": 120,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "preference": {
                                               "type": "string",
@@ -31908,7 +33038,13 @@
                                             },
                                             "notes": {
                                               "type": "string",
-                                              "maxLength": 500
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                              "minLength": 0,
+                                              "maxLength": 500,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "visibility": {
                                               "type": "string",
@@ -33368,8 +34504,13 @@
                   },
                   "displayName": {
                     "type": "string",
+                    "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                     "minLength": 1,
-                    "maxLength": 80
+                    "maxLength": 80,
+                    "x-postgresql-length-unit": "unicode-code-point",
+                    "x-postgresql-forbidden-code-points": [
+                      "U+0000"
+                    ]
                   },
                   "defaultParticipation": {
                     "nullable": true,
@@ -34932,8 +36073,13 @@
                                 },
                                 "displayName": {
                                   "type": "string",
+                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                   "minLength": 1,
-                                  "maxLength": 80
+                                  "maxLength": 80,
+                                  "x-postgresql-length-unit": "unicode-code-point",
+                                  "x-postgresql-forbidden-code-points": [
+                                    "U+0000"
+                                  ]
                                 },
                                 "status": {
                                   "type": "string",
@@ -34992,8 +36138,13 @@
                                           },
                                           "label": {
                                             "type": "string",
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                             "minLength": 1,
-                                            "maxLength": 120
+                                            "maxLength": 120,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "foodConceptIds": {
                                             "default": [],
@@ -35018,8 +36169,13 @@
                                             "type": "array",
                                             "items": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                               "minLength": 1,
-                                              "maxLength": 64
+                                              "maxLength": 64,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "uniqueItems": true,
                                             "x-meal-agent-runtime-rule-ids": [
@@ -35038,7 +36194,13 @@
                                           },
                                           "notes": {
                                             "type": "string",
-                                            "maxLength": 500
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                            "minLength": 0,
+                                            "maxLength": 500,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "visibility": {
                                             "type": "string",
@@ -35094,8 +36256,13 @@
                                           },
                                           "label": {
                                             "type": "string",
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                             "minLength": 1,
-                                            "maxLength": 120
+                                            "maxLength": 120,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "preference": {
                                             "type": "string",
@@ -35123,7 +36290,13 @@
                                           },
                                           "notes": {
                                             "type": "string",
-                                            "maxLength": 500
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                            "minLength": 0,
+                                            "maxLength": 500,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "visibility": {
                                             "type": "string",
@@ -35226,8 +36399,13 @@
                                 },
                                 "displayName": {
                                   "type": "string",
+                                  "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                   "minLength": 1,
-                                  "maxLength": 80
+                                  "maxLength": 80,
+                                  "x-postgresql-length-unit": "unicode-code-point",
+                                  "x-postgresql-forbidden-code-points": [
+                                    "U+0000"
+                                  ]
                                 },
                                 "status": {
                                   "type": "string",
@@ -35286,8 +36464,13 @@
                                           },
                                           "label": {
                                             "type": "string",
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                             "minLength": 1,
-                                            "maxLength": 120
+                                            "maxLength": 120,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "foodConceptIds": {
                                             "default": [],
@@ -35312,8 +36495,13 @@
                                             "type": "array",
                                             "items": {
                                               "type": "string",
+                                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                                               "minLength": 1,
-                                              "maxLength": 64
+                                              "maxLength": 64,
+                                              "x-postgresql-length-unit": "unicode-code-point",
+                                              "x-postgresql-forbidden-code-points": [
+                                                "U+0000"
+                                              ]
                                             },
                                             "uniqueItems": true,
                                             "x-meal-agent-runtime-rule-ids": [
@@ -35332,7 +36520,13 @@
                                           },
                                           "notes": {
                                             "type": "string",
-                                            "maxLength": 500
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                            "minLength": 0,
+                                            "maxLength": 500,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "visibility": {
                                             "type": "string",
@@ -35388,8 +36582,13 @@
                                           },
                                           "label": {
                                             "type": "string",
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                                             "minLength": 1,
-                                            "maxLength": 120
+                                            "maxLength": 120,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "preference": {
                                             "type": "string",
@@ -35417,7 +36616,13 @@
                                           },
                                           "notes": {
                                             "type": "string",
-                                            "maxLength": 500
+                                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                                            "minLength": 0,
+                                            "maxLength": 500,
+                                            "x-postgresql-length-unit": "unicode-code-point",
+                                            "x-postgresql-forbidden-code-points": [
+                                              "U+0000"
+                                            ]
                                           },
                                           "visibility": {
                                             "type": "string",
@@ -36883,8 +38088,13 @@
                       },
                       "displayName": {
                         "type": "string",
+                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                         "minLength": 1,
-                        "maxLength": 80
+                        "maxLength": 80,
+                        "x-postgresql-length-unit": "unicode-code-point",
+                        "x-postgresql-forbidden-code-points": [
+                          "U+0000"
+                        ]
                       },
                       "defaultParticipation": {
                         "nullable": true,
@@ -38546,8 +39756,13 @@
                                       },
                                       "profileDisplayName": {
                                         "type": "string",
+                                        "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                         "minLength": 1,
-                                        "maxLength": 80
+                                        "maxLength": 80,
+                                        "x-postgresql-length-unit": "unicode-code-point",
+                                        "x-postgresql-forbidden-code-points": [
+                                          "U+0000"
+                                        ]
                                       },
                                       "householdVisibleHardConstraintCount": {
                                         "type": "integer",
@@ -40046,8 +41261,13 @@
                           },
                           "label": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                             "minLength": 1,
-                            "maxLength": 120
+                            "maxLength": 120,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "foodConceptIds": {
                             "default": [],
@@ -40072,8 +41292,13 @@
                             "type": "array",
                             "items": {
                               "type": "string",
+                              "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,64}$",
                               "minLength": 1,
-                              "maxLength": 64
+                              "maxLength": 64,
+                              "x-postgresql-length-unit": "unicode-code-point",
+                              "x-postgresql-forbidden-code-points": [
+                                "U+0000"
+                              ]
                             },
                             "uniqueItems": true,
                             "x-meal-agent-runtime-rule-ids": [
@@ -40086,7 +41311,13 @@
                           },
                           "notes": {
                             "type": "string",
-                            "maxLength": 500
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                            "minLength": 0,
+                            "maxLength": 500,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "visibility": {
                             "type": "string",
@@ -40149,8 +41380,13 @@
                           },
                           "label": {
                             "type": "string",
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,120}$",
                             "minLength": 1,
-                            "maxLength": 120
+                            "maxLength": 120,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "preference": {
                             "type": "string",
@@ -40178,7 +41414,13 @@
                           },
                           "notes": {
                             "type": "string",
-                            "maxLength": 500
+                            "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{0,500}$",
+                            "minLength": 0,
+                            "maxLength": 500,
+                            "x-postgresql-length-unit": "unicode-code-point",
+                            "x-postgresql-forbidden-code-points": [
+                              "U+0000"
+                            ]
                           },
                           "visibility": {
                             "type": "string",
@@ -43342,8 +44584,13 @@
                                     },
                                     "profileDisplayName": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                       "minLength": 1,
-                                      "maxLength": 80
+                                      "maxLength": 80,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "householdVisibleHardConstraintCount": {
                                       "type": "integer",
@@ -44974,8 +46221,13 @@
                                     },
                                     "profileDisplayName": {
                                       "type": "string",
+                                      "pattern": "^(?![\\s\\S]*\\u0000)[\\s\\S]{1,80}$",
                                       "minLength": 1,
-                                      "maxLength": 80
+                                      "maxLength": 80,
+                                      "x-postgresql-length-unit": "unicode-code-point",
+                                      "x-postgresql-forbidden-code-points": [
+                                        "U+0000"
+                                      ]
                                     },
                                     "householdVisibleHardConstraintCount": {
                                       "type": "integer",

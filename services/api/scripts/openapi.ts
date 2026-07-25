@@ -15,7 +15,7 @@ const isObject = (value: unknown): value is JsonObject =>
  * Convert the small set of dialect differences instead of asserting the
  * incompatible output into an OpenAPIV3 type.
  */
-const toOpenApi30 = (value: unknown): unknown => {
+export const toOpenApi30 = (value: unknown): unknown => {
   if (Array.isArray(value)) {
     return value.map(toOpenApi30);
   }
@@ -29,8 +29,8 @@ const toOpenApi30 = (value: unknown): unknown => {
   for (const [key, item] of Object.entries(source)) {
     if (
       key === "const" ||
-      key === "exclusiveMinimum" ||
-      key === "exclusiveMaximum" ||
+      ((key === "exclusiveMinimum" || key === "exclusiveMaximum") &&
+        typeof item === "number") ||
       key === "anyOf"
     ) {
       continue;

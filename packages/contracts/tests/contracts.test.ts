@@ -200,6 +200,69 @@ test("identity, household, membership and profile contracts compose without usin
   );
 });
 
+test("persisted household and inventory strings use PostgreSQL Unicode boundaries", () => {
+  const household = (name: string, displayName: string) => ({
+    name,
+    timezone: "Asia/Shanghai",
+    locale: "zh-CN",
+    ownerProfile: {
+      displayName,
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  });
+  assert.equal(
+    createHouseholdRequestSchema.safeParse(
+      household("家庭\u0000", "成员"),
+    ).success,
+    false,
+  );
+  assert.equal(
+    createHouseholdRequestSchema.safeParse(
+      household("😀".repeat(80), "😀".repeat(80)),
+    ).success,
+    true,
+  );
+  assert.equal(
+    createHouseholdRequestSchema.safeParse(
+      household("😀".repeat(81), "成员"),
+    ).success,
+    false,
+  );
+
+  const inventory = (displayName: string, originalText: string) => ({
+    displayName,
+    storageLocation: "refrigerated" as const,
+    initialQuantity: {
+      kind: "approximate" as const,
+      amount: 1,
+      unit: "kg" as const,
+      confidence: "high" as const,
+      originalText,
+    },
+    dates: [],
+  });
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse(
+      inventory("食材\u0000", "约一份"),
+    ).success,
+    false,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse(
+      inventory("😀".repeat(120), "😀".repeat(200)),
+    ).success,
+    true,
+  );
+  assert.equal(
+    createInventoryLotRequestSchema.safeParse(
+      inventory("食材", "😀".repeat(201)),
+    ).success,
+    false,
+  );
+});
+
 test("authenticated sessions require matching active session and user records", () => {
   const user = {
     id: ids.user,

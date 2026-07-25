@@ -14,10 +14,7 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
-import {
-  dispositionForOutcome,
-  PendingActionIdempotency
-} from '../../core/idempotency'
+import { dispositionForOutcome } from '../../core/idempotency'
 import { loadMembers } from '../../core/members-flow'
 import {
   addDietaryConstraint,
@@ -136,13 +133,7 @@ export default function ProfilePage() {
   const [confirmingHard, setConfirmingHard] = useState(false)
   const [linkTarget, setLinkTarget] = useState<MembershipId | null>(null)
   const [pendingRevision, setPendingRevision] = useState(0)
-  const [pendingReconciled, setPendingReconciled] = useState(false)
-  const [actionKeys] = useState(
-    () =>
-      new PendingActionIdempotency(
-        getAppServices().adapter.runtime
-      )
-  )
+  const actionKeys = getAppServices().pendingCommands
 
   const householdId =
     getAppServices().session.restoreCurrentHouseholdId()
@@ -162,7 +153,7 @@ export default function ProfilePage() {
     setLinkTarget(null)
   }
 
-  const refresh = async (id: HouseholdId): Promise<void> => {
+  const refresh = async (id: HouseholdId): Promise<boolean> => {
     setState({ kind: 'loading' })
     const services = getAppServices()
     const membersResult = await loadMembers(services, id)
@@ -176,7 +167,7 @@ export default function ProfilePage() {
               retryable: membersResult.retryable
             }
       )
-      return
+      return false
     }
 
     const profilesResult = await services.api.listPersonProfiles(id, 'all')
@@ -187,7 +178,7 @@ export default function ProfilePage() {
         message: '档案读取失败，请稍后重试。',
         retryable: true
       })
-      return
+      return false
     }
 
     const currentUserId = services.session.restore()?.user.id
@@ -207,7 +198,7 @@ export default function ProfilePage() {
         message: '未能在成员列表中定位本人。',
         retryable: true
       })
-      return
+      return false
     }
 
     const profiles =
@@ -256,16 +247,17 @@ export default function ProfilePage() {
     } else {
       setSelectedId(null)
     }
+    return true
   }
 
   useEffect(() => {
     const services = getAppServices()
     if (services.session.restore() === null) {
-      void services.adapter.navigation.reLaunch(LOGIN_ROUTE)
+      void services.navigation.reLaunch(LOGIN_ROUTE)
       return
     }
     if (householdId === null) {
-      void services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+      void services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
       return
     }
     // 应用重启后不恢复请求体/幂等 key；先 GET 完整状态再允许新命令。
@@ -288,7 +280,7 @@ export default function ProfilePage() {
     if (actionKeys.hasOtherPending(action)) {
       setNotice({
         kind: 'error',
-        message: '已有未决档案命令；只能重试原动作，或先完成 GET 对账后结束它。'
+        message: '已有未决命令；只能使用保存的原请求和原幂等键重试。'
       })
       return null
     }
@@ -302,11 +294,10 @@ export default function ProfilePage() {
       return outcome
     } catch {
       actionKeys.markUnknown(action)
-      setPendingReconciled(false)
       setPendingRevision((value) => value + 1)
       setNotice({
         kind: 'error',
-        message: '请求结果未知；相关输入已冻结，请使用同一请求重试或刷新对账。'
+        message: '请求结果未知；相关输入已冻结，只能使用同一请求和原幂等键重试。'
       })
       return null
     } finally {
@@ -485,7 +476,9 @@ export default function ProfilePage() {
       )
     )
     if (outcome === null) return
-    setConfirmingHard(false)
+    if (!actionKeys.hasPending(action)) {
+      setConfirmingHard(false)
+    }
     if (outcome.kind === 'added') {
       setConstraint(EMPTY_CONSTRAINT)
       setNotice({ kind: 'info', message: '约束已登记。' })
@@ -590,13 +583,39 @@ export default function ProfilePage() {
     if (outcome.kind === 'success') {
       setNotice({ kind: 'info', message: '关联已确认。' })
       await refresh(householdId)
-    } else {
+    } else if (
+      outcome.kind === 'apiError' &&
+      outcome.error.status === 409 &&
+      outcome.error.code === 'CONFLICT'
+    ) {
       setNotice({
         kind: 'error',
         message:
           '旧关联请求已终止。所有者必须重新发起；你重新 GET 并阅读新披露后才能再次确认。'
       })
       await refresh(householdId)
+    } else if (
+      outcome.kind === 'apiError' &&
+      outcome.error.status === 403
+    ) {
+      setNotice({
+        kind: 'error',
+        message: '你无权确认此关联请求；不会提示所有者重新发起。'
+      })
+    } else if (
+      outcome.kind === 'apiError' &&
+      outcome.error.status === 404
+    ) {
+      setNotice({
+        kind: 'error',
+        message: '关联请求不存在或当前不可访问，请返回后重新加载。'
+      })
+    } else {
+      setNotice({
+        kind: 'error',
+        message:
+          '确认结果未知；关联请求可能已处理，只能用保存的原请求和原幂等键重试。'
+      })
     }
   }
 
@@ -644,45 +663,37 @@ export default function ProfilePage() {
             disabled={busy}
             onClick={() => {
               void (async () => {
-                await refresh(householdId)
-                setPendingReconciled(true)
+                setBusy(true)
+                try {
+                  const loaded = await refresh(householdId)
+                  if (loaded) {
+                    actionKeys.recordObservation(
+                      pendingCommand.action,
+                      pendingCommand.key,
+                      {
+                        kind: 'resource-get',
+                        observedAt: new Date(
+                          getAppServices().adapter.runtime.nowMs()
+                        ).toISOString(),
+                        summary:
+                          'members, profiles and link requests refreshed'
+                      }
+                    )
+                    setNotice({
+                      kind: 'info',
+                      message:
+                        '已刷新资源；普通 GET 不能证明命令是否执行，仍只能重试原命令。'
+                    })
+                    setPendingRevision((value) => value + 1)
+                  }
+                } finally {
+                  setBusy(false)
+                }
               })()
             }}
           >
-            重新 GET 对账
+            刷新资源（仅观察）
           </Button>
-          {pendingReconciled && (
-            <>
-              <Button
-                className='button button--secondary'
-                onClick={() => {
-                  actionKeys.complete(pendingCommand.action)
-                  setPendingReconciled(false)
-                  setPendingRevision((value) => value + 1)
-                  setNotice({
-                    kind: 'info',
-                    message: '已根据 GET 对账确认旧动作完成。'
-                  })
-                }}
-              >
-                对账确认已完成
-              </Button>
-              <Button
-                className='button button--secondary'
-                onClick={() => {
-                  actionKeys.abandon(pendingCommand.action)
-                  setPendingReconciled(false)
-                  setPendingRevision((value) => value + 1)
-                  setNotice({
-                    kind: 'info',
-                    message: '已确认旧动作未执行并放弃；现在可以开始新动作。'
-                  })
-                }}
-              >
-                确认未执行并放弃
-              </Button>
-            </>
-          )}
         </View>
       )}
       {state.kind === 'loading' && <Text>正在加载档案…</Text>}
@@ -834,7 +845,8 @@ export default function ProfilePage() {
 
       <Button
         className='button button--secondary'
-        onClick={() => void getAppServices().adapter.navigation.reLaunch(MEMBERS_ROUTE)}
+        disabled={actionKeys.hasAnyPending()}
+        onClick={() => void getAppServices().navigation.reLaunch(MEMBERS_ROUTE)}
       >
         返回成员页
       </Button>

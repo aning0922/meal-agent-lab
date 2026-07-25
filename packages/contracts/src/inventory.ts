@@ -8,6 +8,7 @@ import {
   inventoryLotIdSchema,
   exactQuantityAmountSchema,
   positiveExactQuantityAmountSchema,
+  postgresTextSchema,
   persistableInitialQuantitySchema,
   quantityChangeSchema,
   quantitySchema,
@@ -49,7 +50,7 @@ export const inventoryLotSchema = ruleSuperRefine(
     id: inventoryLotIdSchema,
     householdId: householdIdSchema,
     foodConceptId: foodConceptIdSchema.optional(),
-    displayName: z.string().min(1).max(120),
+    displayName: postgresTextSchema(1, 120),
     state: z.enum(["active", "depleted", "discarded"]),
     storageLocation: storageLocationSchema,
     currentQuantity: quantitySchema,
@@ -61,8 +62,8 @@ export const inventoryLotSchema = ruleSuperRefine(
     ),
     safetyAssessment: z.strictObject({
       status: z.enum(["eligible", "blocked", "unknown"]),
-      reasonCodes: z.array(z.string().min(1).max(80)),
-      policyVersion: z.string().min(1).max(100),
+      reasonCodes: z.array(postgresTextSchema(1, 80)),
+      policyVersion: postgresTextSchema(1, 100),
       evaluatedAt: utcDateTimeSchema,
     }),
     origin: z.enum([
@@ -131,7 +132,7 @@ export const createInventoryLotDateInputSchema = ruleSuperRefine(
         "confirmed_recognition",
       ]),
       confidence: z.enum(["high", "medium", "low"]),
-      reference: z.string().min(1).max(500).optional(),
+      reference: postgresTextSchema(1, 500).optional(),
     }),
   }),
   "inventory.create-date.provenance.v1",
@@ -152,7 +153,7 @@ export const createInventoryLotDateInputSchema = ruleSuperRefine(
 
 export const createInventoryLotRequestSchema = z.strictObject({
   foodConceptId: foodConceptIdSchema.optional(),
-  displayName: z.string().min(1).max(120),
+  displayName: postgresTextSchema(1, 120),
   storageLocation: storageLocationSchema,
   initialQuantity: persistableInitialQuantitySchema,
   dates: ruleSuperRefine(
@@ -203,7 +204,7 @@ export const inventoryEventSchema = ruleSuperRefine(
     idempotencyKey: idempotencyKeySchema,
     expectedLotVersion: versionSchema,
     resultingLotVersion: z.int().positive(),
-    note: z.string().max(500).optional(),
+    note: postgresTextSchema(0, 500).optional(),
   }),
   "inventory.event.consistency.v1",
   "inventoryEventSchema",
@@ -579,11 +580,11 @@ export const consumeInventoryLotRequestSchema = z.strictObject({
   consumedQuantity: z.strictObject({
     kind: z.literal("exact"),
     amount: positiveExactQuantityAmountSchema,
-    unit: z.string().min(1).max(32),
-    originalText: z.string().min(1).max(200).optional(),
+    unit: postgresTextSchema(1, 32),
+    originalText: postgresTextSchema(1, 200).optional(),
   }),
   expectedVersion: versionSchema,
-  note: z.string().max(500).optional(),
+  note: postgresTextSchema(0, 500).optional(),
 });
 export type ConsumeInventoryLotRequest = z.infer<
   typeof consumeInventoryLotRequestSchema

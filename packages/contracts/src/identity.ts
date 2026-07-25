@@ -12,6 +12,7 @@ import {
   householdIdSchema,
   membershipIdSchema,
   personProfileIdSchema,
+  postgresTextSchema,
   sessionIdSchema,
   userIdSchema,
   utcDateTimeSchema,
@@ -21,8 +22,8 @@ import {
 export const userSchema = z.strictObject({
   id: userIdSchema,
   status: z.enum(["active", "disabled", "deletion_pending"]),
-  displayName: z.string().min(1).max(80).optional(),
-  locale: z.string().min(2).max(35),
+  displayName: postgresTextSchema(1, 80).optional(),
+  locale: postgresTextSchema(2, 35),
   createdAt: utcDateTimeSchema,
   updatedAt: utcDateTimeSchema,
   version: versionSchema,
@@ -38,9 +39,9 @@ export const authIdentitySchema = z.strictObject({
     "apple",
     "huawei",
   ]),
-  providerTenantKey: z.string().min(1).max(128),
-  providerSubject: z.string().min(1).max(255),
-  providerUnionSubject: z.string().min(1).max(255).optional(),
+  providerTenantKey: postgresTextSchema(1, 128),
+  providerSubject: postgresTextSchema(1, 255),
+  providerUnionSubject: postgresTextSchema(1, 255).optional(),
   status: z.enum(["active", "disabled"]),
   createdAt: utcDateTimeSchema,
   lastAuthenticatedAt: utcDateTimeSchema,
@@ -147,9 +148,9 @@ export type WechatLoginExchangeRequest = z.infer<
 
 export const householdSchema = z.strictObject({
   id: householdIdSchema,
-  name: z.string().min(1).max(80),
-  timezone: z.string().min(1).max(64),
-  locale: z.string().min(2).max(35),
+  name: postgresTextSchema(1, 80),
+  timezone: postgresTextSchema(1, 64),
+  locale: postgresTextSchema(2, 35),
   status: z.enum(["active", "deletion_pending", "deleted"]),
   createdByUserId: userIdSchema,
   createdAt: utcDateTimeSchema,
@@ -159,11 +160,11 @@ export const householdSchema = z.strictObject({
 export type Household = z.infer<typeof householdSchema>;
 
 export const createHouseholdRequestSchema = z.strictObject({
-  name: z.string().min(1).max(80),
-  timezone: z.string().min(1).max(64),
-  locale: z.string().min(2).max(35),
+  name: postgresTextSchema(1, 80),
+  timezone: postgresTextSchema(1, 64),
+  locale: postgresTextSchema(2, 35),
   ownerProfile: z.strictObject({
-    displayName: z.string().min(1).max(80),
+    displayName: postgresTextSchema(1, 80),
     defaultParticipation: z.boolean().nullable().default(null),
     defaultPortionScale: z
       .number()
@@ -221,13 +222,13 @@ const hardDietaryConstraintSchema = z.strictObject({
     "food_safety_exclusion",
   ]),
   enforcement: z.literal("hard"),
-  label: z.string().min(1).max(120),
+  label: postgresTextSchema(1, 120),
   foodConceptIds: foodConceptIdsSchema.default([]),
   allergenCodes: allergenCodesSchema.default([]),
   // Stage 08 尚无权威 allergen / food concept / 宗教 / 伦理规则词表。
   // 形状正确的字符串或 UUID 不能被当成机器可执行映射。
   mappingStatus: z.literal("needs_structured_mapping"),
-  notes: z.string().max(500).optional(),
+  notes: postgresTextSchema(0, 500).optional(),
   visibility: z.enum(["household", "subject_and_owner"]),
   confirmedAt: utcDateTimeSchema,
   confirmedByUserId: userIdSchema,
@@ -237,10 +238,10 @@ const softDietaryConstraintSchema = z.strictObject({
   id: dietaryConstraintIdSchema,
   kind: z.literal("preference"),
   enforcement: z.literal("soft"),
-  label: z.string().min(1).max(120),
+  label: postgresTextSchema(1, 120),
   preference: z.enum(["prefer", "dislike"]),
   foodConceptIds: foodConceptIdsSchema.default([]),
-  notes: z.string().max(500).optional(),
+  notes: postgresTextSchema(0, 500).optional(),
   visibility: z.enum(["household", "subject_and_owner"]),
   confirmedAt: utcDateTimeSchema,
   confirmedByUserId: userIdSchema,
@@ -256,7 +257,7 @@ export const personProfileSchema = z.strictObject({
   id: personProfileIdSchema,
   householdId: householdIdSchema,
   linkedMembershipId: membershipIdSchema.optional(),
-  displayName: z.string().min(1).max(80),
+  displayName: postgresTextSchema(1, 80),
   status: z.enum(["active", "archived"]),
   defaultParticipation: z.boolean().nullable(),
   defaultPortionScale: z.number().finite().min(0.25).max(4).nullable(),

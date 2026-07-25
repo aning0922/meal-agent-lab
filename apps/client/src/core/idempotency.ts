@@ -7,7 +7,7 @@ import type { RuntimePort } from '../platform/ports'
 
 /**
  * 每个"逻辑写操作"生成一次幂等键；同一操作的自动或手动重试必须复用
- * 同一个键（由页面状态持有，成功或用户放弃后才丢弃）。
+ * 同一个键（由 app 级内存协调器持有，成功或确定失败后才丢弃）。
  */
 export const createIdempotencyKey = (
   runtime: RuntimePort
@@ -37,22 +37,32 @@ export interface PendingActionSnapshot<T = unknown> {
   readonly key: IdempotencyKey
   readonly payload: T
   readonly phase: 'in-flight' | 'unknown'
+  readonly observation?: PendingCommandObservation
+}
+
+export interface PendingCommandObservation {
+  readonly action: string
+  readonly key: IdempotencyKey
+  readonly kind: 'resource-get'
+  readonly observedAt: string
+  readonly summary: string
 }
 
 /**
  * 仅驻留内存的“同一次进行中动作”键仓库。同 action + 同 payload 的重试
- * 复用 key；进行中动作的字段不得漂移，必须先完成或显式放弃。应用重启
- * 后仓库自然清空，页面先 GET 对账，不持久化请求体或敏感字段。
+ * 复用 key；进行中动作的字段不得漂移。普通资源 GET 只可记录观察证据，
+ * 不能证明命令已执行或未执行，也不能释放未知命令。应用重启后仓库自然
+ * 清空，不持久化请求体、邀请码或私密约束。
  */
 export class PendingActionIdempotency {
   readonly #runtime: RuntimePort
   readonly #pending = new Map<
     string,
     {
-      readonly fingerprint: string
       readonly key: IdempotencyKey
       readonly payload: unknown
       phase: 'in-flight' | 'unknown'
+      observation?: PendingCommandObservation
     }
   >()
 
@@ -73,10 +83,10 @@ export class PendingActionIdempotency {
     payload: T
   ): PendingActionSnapshot<T> {
     const snapshot = canonicalize(payload)
-    const fingerprint = JSON.stringify(snapshot)
     const existing = this.#pending.get(action)
     if (existing !== undefined) {
       existing.phase = 'in-flight'
+      delete existing.observation
       return {
         action,
         key: existing.key,
@@ -84,9 +94,13 @@ export class PendingActionIdempotency {
         phase: existing.phase
       }
     }
+    if (this.#pending.size > 0) {
+      throw new Error(
+        'another pending command must be retried before starting a new action'
+      )
+    }
     const key = createIdempotencyKey(this.#runtime)
     this.#pending.set(action, {
-      fingerprint,
       key,
       payload: snapshot,
       phase: 'in-flight'
@@ -132,7 +146,10 @@ export class PendingActionIdempotency {
           action,
           key: pending.key,
           payload: pending.payload as T,
-          phase: pending.phase
+          phase: pending.phase,
+          ...(pending.observation === undefined
+            ? {}
+            : { observation: pending.observation })
         }
   }
 
@@ -144,7 +161,10 @@ export class PendingActionIdempotency {
       action,
       key: pending.key,
       payload: pending.payload as T,
-      phase: pending.phase
+      phase: pending.phase,
+      ...(pending.observation === undefined
+        ? {}
+        : { observation: pending.observation })
     }
   }
 
@@ -157,11 +177,26 @@ export class PendingActionIdempotency {
   }
 
   /**
-   * 只可在 GET 对账或服务端明确给出“未执行”后调用。它不应由 onInput
-   * 隐式触发，否则结果未知的命令会换 key 重复执行。
+   * 普通 GET 观察严格绑定当前 action + key，但它不是 command-status，
+   * 不开放 complete/abandon。下一次 retry 会先清除此观察。
    */
-  public abandon(action: string): void {
-    this.settle(action, 'definite-failure')
+  public recordObservation(
+    action: string,
+    key: IdempotencyKey,
+    observation: Omit<
+      PendingCommandObservation,
+      'action' | 'key'
+    >
+  ): void {
+    const pending = this.#pending.get(action)
+    if (
+      pending === undefined ||
+      pending.key !== key ||
+      pending.phase !== 'unknown'
+    ) {
+      throw new Error('observation does not match the pending command')
+    }
+    pending.observation = { action, key, ...observation }
   }
 }
 

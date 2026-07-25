@@ -750,7 +750,25 @@ export const idempotencyRecords = pgTable(
     ),
     check(
       "idempotency_records_status_check",
-      sql`${table.statusCode} IS NULL OR ${table.statusCode} BETWEEN 200 AND 299`,
+      sql`${table.statusCode} IS NULL
+        OR (${table.statusCode} BETWEEN 200 AND 299) IS TRUE
+        OR (
+          (${table.statusCode} = 409) IS TRUE
+          AND (
+            ${table.normalizedRoute} IN (
+              '/api/v1/households/{id}/person-profiles/{profileId}/link-requests',
+              '/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm'
+            )
+          ) IS TRUE
+          AND (jsonb_typeof(${table.responseBody}) = 'object') IS TRUE
+          AND (${table.responseBody}->'ok' = 'false'::jsonb) IS TRUE
+          AND (
+            jsonb_typeof(${table.responseBody}->'error') = 'object'
+          ) IS TRUE
+          AND (
+            ${table.responseBody}->'error'->>'code' = 'CONFLICT'
+          ) IS TRUE
+        )`,
     ),
     unique("idempotency_records_scope_unique")
       .on(

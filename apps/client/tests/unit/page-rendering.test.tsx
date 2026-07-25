@@ -20,8 +20,9 @@ import {
   hardConstraintFixture,
   INVITE_CODE,
   joinHouseholdResultFixture,
-  consumeInventoryLotResultFixture,
   createHouseholdResultFixture,
+  householdFixture,
+  householdInviteFixture,
   inventoryLotFixture,
   memberMembersViewFixture,
   membershipFixture,
@@ -222,6 +223,62 @@ describe('真实页面渲染回归', () => {
     assert.equal(requests[0]?.body, requests[1]?.body)
   })
 
+  it('HouseholdsPage create/join 共享 app 级 pending，未知时阻止交叉动作和离页', async () => {
+    const existing = householdFixture()
+    const { Page, platform } = renderWithServices(HouseholdsPage, [
+      {
+        status: 200,
+        body: successEnvelope({
+          items: [existing],
+          pageInfo: { nextCursor: null, hasMore: false }
+        })
+      }
+    ])
+    platform.enqueueResponse(new Error('lost household create response'))
+    await act(async () => {
+      renderer = create(<Page />)
+      await settleEffects()
+    })
+    const inputs = renderer?.root.findAll(
+      (node) => String(node.type) === 'taro-input'
+    ) ?? []
+    const inputFor = (placeholder: string) =>
+      inputs.find((input) => input.props['placeholder'] === placeholder)
+    await act(async () => {
+      inputFor('例如：我家')?.props['onInput']({
+        detail: { value: '未知结果家庭' }
+      })
+      inputFor('例如：小明')?.props['onInput']({
+        detail: { value: '测试成员' }
+      })
+    })
+    const button = (text: string) =>
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((candidate) => buttonText(candidate) === text)
+    await act(async () => {
+      button('创建家庭')?.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(
+      inputFor('粘贴家庭所有者提供的邀请码')?.props['disabled'],
+      true
+    )
+    assert.equal(button('加入家庭')?.props['disabled'], true)
+    await act(async () => {
+      button('加入家庭')?.props['onClick']()
+      button('库存')?.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(
+      platform.sentRequests.filter((request) =>
+        request.url.endsWith('/households/join')
+      ).length,
+      0
+    )
+    assert.deepEqual(platform.navigations, [])
+  })
+
   it('InventoryPage 消耗结果未知时冻结数量并用原 key 重试，避免重复扣减', async () => {
     const lot = inventoryLotFixture({ amount: '12', version: 1 })
     const otherLot = inventoryLotFixture({ sequence: 31, amount: '8' })
@@ -274,16 +331,13 @@ describe('真实页面渲染回归', () => {
     )
     const reconcile = renderer?.root
       .findAll((node) => String(node.type) === 'taro-button')
-      .find((button) => buttonText(button) === '刷新库存对账')
+      .find((button) => buttonText(button) === '刷新库存（仅观察）')
     assert.ok(reconcile)
     await act(async () => {
       reconcile.props['onClick']()
       await settleEffects()
     })
-    platform.enqueueJson(
-      201,
-      successEnvelope(consumeInventoryLotResultFixture())
-    )
+    platform.enqueueResponse(new Error('retry response also lost'))
     const retryOriginal = renderer?.root
       .findAll((node) => String(node.type) === 'taro-button')
       .find((button) => buttonText(button) === '重试原消耗')
@@ -303,6 +357,53 @@ describe('真实页面渲染回归', () => {
     assert.equal(requests[0]?.body, requests[1]?.body)
     assert.match(requests[0]?.body ?? '', /"expectedVersion":1/)
     assert.doesNotMatch(requests[1]?.body ?? '', /"expectedVersion":9/)
+    assert.match(
+      textContent(renderer?.toJSON() ?? null),
+      /消耗结果未知/
+    )
+  })
+
+  it('InventoryPage GET 失败不开放完成或放弃未知命令', async () => {
+    const lot = inventoryLotFixture({ amount: '12', version: 1 })
+    const { Page, platform } = renderWithServices(InventoryPage, [
+      {
+        status: 200,
+        body: successEnvelope({
+          items: [lot],
+          pageInfo: { nextCursor: null, hasMore: false }
+        })
+      }
+    ])
+    platform.enqueueResponse(new Error('lost consume response'))
+    await act(async () => {
+      renderer = create(<Page />)
+      await settleEffects()
+    })
+    const button = (text: string) =>
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((candidate) => buttonText(candidate) === text)
+    await act(async () => button('消耗')?.props['onClick']())
+    const amount = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-input')
+      .find((input) => input.props['placeholder'] === '例如：2')
+    await act(async () => {
+      amount?.props['onInput']({ detail: { value: '2' } })
+      button('确认消耗')?.props['onClick']()
+      await settleEffects()
+    })
+    platform.enqueueResponse(new Error('GET inventory failed'))
+    await act(async () => {
+      button('刷新库存对账')?.props['onClick']()
+      await settleEffects()
+    })
+    const allButtonText = (
+      renderer?.root.findAll(
+        (node) => String(node.type) === 'taro-button'
+      ) ?? []
+    ).map(buttonText)
+    assert.equal(allButtonText.includes('对账确认已完成'), false)
+    assert.equal(allButtonText.includes('确认未执行并放弃旧动作'), false)
   })
 
   it('MembersPage 在 owner 视图正确标记本人，且保护最后一位 owner', async () => {
@@ -330,6 +431,75 @@ describe('真实页面渲染回归', () => {
     assert.match(pageText, /成员甲（我） · owner/)
     assert.match(pageText, /最后一位所有者不可退出/)
     assert.match(pageText, /邀请管理/)
+  })
+
+  it('MembersPage 邀请创建响应丢失后用原 key 识别已创建邀请并引导撤销重建', async () => {
+    const ownerMembership = membershipFixture({
+      role: 'owner',
+      sequence: 20,
+      userSeq: 1
+    })
+    const { Page, platform } = renderWithServices(MembersPage, [
+      {
+        status: 200,
+        body: successEnvelope(
+          ownerMembersViewFixture([
+            {
+              membership: ownerMembership,
+              profile: personProfileFixture({ membershipSeq: 20 })
+            }
+          ])
+        )
+      }
+    ])
+    platform.enqueueResponse(new Error('lost invite response'))
+    platform.enqueueJson(
+      201,
+      successEnvelope(
+        { invite: householdInviteFixture() },
+        {
+          idempotency: {
+            key: 'placeholder-replaced-by-client',
+            scope: 'household',
+            replayed: true,
+            firstProcessedAt: '2026-07-24T00:00:00.000Z',
+            originalRequestId: '3f2b8c1d-9e4a-4c6b-8d7e-5a1b2c3d4e5f'
+          }
+        }
+      )
+    )
+    await act(async () => {
+      renderer = create(<Page />)
+      await settleEffects()
+    })
+    const generate = () =>
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((candidate) => buttonText(candidate) === '生成邀请码')
+    await act(async () => {
+      generate()?.props['onClick']()
+      await settleEffects()
+      generate()?.props['onClick']()
+      await settleEffects()
+    })
+    const requests = platform.sentRequests.filter((request) =>
+      request.url.endsWith('/invites') &&
+      request.method === 'POST'
+    )
+    assert.equal(requests.length, 2)
+    assert.equal(
+      requests[0]?.headers['idempotency-key'],
+      requests[1]?.headers['idempotency-key']
+    )
+    assert.match(
+      textContent(renderer?.toJSON() ?? null),
+      /请撤销此邀请后重新生成/
+    )
+    assert.ok(
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((candidate) => buttonText(candidate) === '撤销此邀请')
+    )
   })
 
   it('ProfilePage 渲染 FAM003/004/005 范围，并让字段变化使硬约束确认失效', async () => {
@@ -845,16 +1015,17 @@ describe('真实页面渲染回归', () => {
     platform.enqueueJson(200, successEnvelope({ requests: [] }))
     const reconcile = renderer?.root
       .findAll((node) => String(node.type) === 'taro-button')
-      .find((button) => buttonText(button) === '重新 GET 对账')
+      .find((button) => buttonText(button) === '刷新资源（仅观察）')
     assert.ok(reconcile)
     await act(async () => {
       reconcile.props['onClick']()
       await settleEffects()
     })
-    assert.ok(
+    assert.equal(
       renderer?.root
         .findAll((node) => String(node.type) === 'taro-button')
-        .find((button) => buttonText(button) === '对账确认已完成')
+        .some((button) => buttonText(button) === '对账确认已完成'),
+      false
     )
     platform.enqueueJson(
       200,
@@ -988,5 +1159,77 @@ describe('真实页面渲染回归', () => {
         .some((button) => buttonText(button) === '我确认关联'),
       false
     )
+  })
+
+  it('ProfilePage link confirm 403 不冒充已提交终态 409', async () => {
+    const selfMembership = membershipFixture({
+      role: 'member',
+      sequence: 22,
+      userSeq: 1
+    })
+    const ownerMembership = membershipFixture({
+      role: 'owner',
+      sequence: 20,
+      userSeq: 2
+    })
+    const request = {
+      id: uuidV7(81),
+      householdId: uuidV7(10),
+      profileId: uuidV7(31),
+      targetMembershipId: selfMembership.id,
+      initiatedByUserId: ownerMembership.userId,
+      status: 'pending' as const,
+      createdAt: '2026-07-24T08:00:00.000Z',
+      expiresAt: '2026-07-25T08:00:00.000Z',
+      disclosure: {
+        availability: 'available' as const,
+        disclosureVersion: 1 as const,
+        profileVersion: 0,
+        profileDisplayName: '权限测试档案',
+        householdVisibleHardConstraintCount: 0,
+        householdVisibleSoftConstraintCount: 0,
+        privateConstraintCount: 0,
+        subjectWillGainProfileAccess: true as const,
+        membershipExitArchivesProfile: true as const,
+        rejoinRestoresAutomatically: false as const,
+        privateConstraintContentsRemainPrivate: true as const
+      },
+      version: 0
+    }
+    const { Page } = renderWithServices(ProfilePage, [
+      {
+        status: 200,
+        body: successEnvelope(
+          memberMembersViewFixture(
+            { membership: selfMembership, profile: null },
+            [{ membership: ownerMembership, profile: null }]
+          )
+        )
+      },
+      {
+        status: 200,
+        body: successEnvelope({
+          viewerRole: 'member',
+          self: null,
+          others: []
+        })
+      },
+      { status: 200, body: successEnvelope({ requests: [request] }) },
+      { status: 403, body: apiErrorBody('FORBIDDEN') }
+    ])
+    await act(async () => {
+      renderer = create(<Page />)
+      await settleEffects()
+    })
+    const confirm = renderer?.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((candidate) => buttonText(candidate) === '我确认关联')
+    await act(async () => {
+      confirm?.props['onClick']()
+      await settleEffects()
+    })
+    const text = textContent(renderer?.toJSON() ?? null)
+    assert.match(text, /无权确认|权限/)
+    assert.doesNotMatch(text, /所有者必须重新发起/)
   })
 })

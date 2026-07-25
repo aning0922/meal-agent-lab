@@ -97,15 +97,21 @@ ALTER TABLE public.idempotency_records
 ALTER TABLE public.idempotency_records
   ADD CONSTRAINT idempotency_records_status_check CHECK (
     status_code IS NULL
-    OR status_code BETWEEN 200 AND 299
+    OR (status_code BETWEEN 200 AND 299) IS TRUE
     OR (
-      status_code = 409
-      AND normalized_route IN (
-        '/api/v1/households/{id}/person-profiles/{profileId}/link-requests',
-        '/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm'
-      )
-      AND response_body->>'ok' = 'false'
-      AND response_body->'error'->>'code' = 'CONFLICT'
+      (status_code = 409) IS TRUE
+      AND (
+        normalized_route IN (
+          '/api/v1/households/{id}/person-profiles/{profileId}/link-requests',
+          '/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm'
+        )
+      ) IS TRUE
+      AND (pg_catalog.jsonb_typeof(response_body) = 'object') IS TRUE
+      AND (response_body->'ok' = 'false'::jsonb) IS TRUE
+      AND (
+        pg_catalog.jsonb_typeof(response_body->'error') = 'object'
+      ) IS TRUE
+      AND (response_body->'error'->>'code' = 'CONFLICT') IS TRUE
     )
   );
 
@@ -257,7 +263,7 @@ DECLARE
     pg_catalog.current_setting('app.household_id', true),
     ''
   )::uuid;
-  v_now timestamptz := pg_catalog.clock_timestamp();
+  v_now timestamptz;
   v_request public.person_profile_link_requests%ROWTYPE;
   v_target public.memberships%ROWTYPE;
   v_profile public.person_profiles%ROWTYPE;
@@ -283,6 +289,8 @@ BEGIN
       0
     )
   );
+  -- 等待 household lock 的时间属于竞态窗口；过期判断必须使用锁后时钟。
+  v_now := pg_catalog.clock_timestamp();
 
   FOR v_request IN
     SELECT *
@@ -401,7 +409,7 @@ DECLARE
     pg_catalog.current_setting('app.household_id', true),
     ''
   )::uuid;
-  v_now timestamptz := pg_catalog.clock_timestamp();
+  v_now timestamptz;
   v_profile public.person_profiles%ROWTYPE;
   v_target public.memberships%ROWTYPE;
   v_household_hard_count integer;
@@ -426,6 +434,7 @@ BEGIN
     p_profile_id,
     p_target_membership_id
   );
+  v_now := pg_catalog.clock_timestamp();
 
   IF NOT meal_agent_private.is_active_owner(v_household_id) THEN
     RETURN QUERY SELECT 'forbidden'::text, NULL::uuid;
@@ -543,7 +552,7 @@ DECLARE
     pg_catalog.current_setting('app.household_id', true),
     ''
   )::uuid;
-  v_now timestamptz := pg_catalog.clock_timestamp();
+  v_now timestamptz;
   v_actor public.memberships%ROWTYPE;
   v_target public.memberships%ROWTYPE;
   v_next_status text;
@@ -626,6 +635,7 @@ BEGIN
     WHEN v_actor.id = v_target.id THEN 'left'
     ELSE 'removed'
   END;
+  v_now := pg_catalog.clock_timestamp();
 
   UPDATE public.memberships
   SET status = v_next_status,
@@ -691,7 +701,7 @@ DECLARE
     pg_catalog.current_setting('app.household_id', true),
     ''
   )::uuid;
-  v_now timestamptz := pg_catalog.clock_timestamp();
+  v_now timestamptz;
   v_request public.person_profile_link_requests%ROWTYPE;
   v_target public.memberships%ROWTYPE;
   v_profile public.person_profiles%ROWTYPE;
@@ -776,6 +786,20 @@ BEGIN
   WHERE household_id = v_household_id
     AND id = v_request.profile_id
   FOR UPDATE;
+  -- materialize 后仍在同一 household lock 内重验真实时间。即使调用方
+  -- 在 advisory lock 上等待期间跨过 expires_at，也绝不能接受请求。
+  v_now := pg_catalog.clock_timestamp();
+  IF v_request.expires_at <= v_now THEN
+    UPDATE public.person_profile_link_requests
+    SET status = 'expired',
+        terminal_reason = 'expired',
+        version = version + 1
+    WHERE id = v_request.id;
+    RETURN QUERY SELECT
+      'expired'::text, v_request.profile_id, NULL::integer,
+      v_request.version + 1;
+    RETURN;
+  END IF;
   -- materialize 已在相同 household lock 下验证；这里的防御分支仍将终态
   -- 持久化，且 repository 会在事务提交后才映射为 409。
   IF v_profile.id IS NULL

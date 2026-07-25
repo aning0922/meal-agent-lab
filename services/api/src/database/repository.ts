@@ -175,6 +175,19 @@ interface IdempotencyRow {
   readonly first_processed_at: Date;
 }
 
+interface IdempotencyInput {
+  readonly scope: "user" | "household";
+  readonly userId: string;
+  readonly householdId?: string;
+  readonly method: string;
+  readonly normalizedRoute: NormalizedRoute;
+  readonly key: string;
+  readonly resourceTarget?: unknown;
+  readonly payload: unknown;
+  readonly requestId: RequestId;
+  readonly statusCode: number;
+}
+
 interface PersonProfileLinkRequestRow {
   readonly id: string;
   readonly household_id: string;
@@ -646,53 +659,139 @@ export class ApiRepository {
     };
   }
 
+  async #loadIdempotentReplay<T>(
+    client: PoolClient,
+    input: IdempotencyInput,
+    commitDomainErrors: boolean,
+  ): Promise<
+    IdempotentResponse<T> | CommittedDomainError | null
+  > {
+    const key = idempotencyKeySchema.parse(input.key);
+    const hash = requestHash({
+      resourceTarget: input.resourceTarget ?? null,
+      payload: input.payload,
+    });
+    const existingResult = await client.query<IdempotencyRow>(
+      `SELECT request_hash, status_code, response_body,
+              original_request_id, first_processed_at
+       FROM idempotency_records
+       WHERE user_id = $1
+         AND household_id IS NOT DISTINCT FROM $2
+         AND method = $3
+         AND normalized_route = $4
+         AND idempotency_key = $5
+       FOR UPDATE`,
+      [
+        input.userId,
+        input.householdId ?? null,
+        input.method,
+        input.normalizedRoute,
+        key,
+      ],
+    );
+    const existing = existingResult.rows[0];
+    if (existing === undefined) {
+      return null;
+    }
+    if (existing.request_hash !== hash) {
+      throw new AppError(
+        "IDEMPOTENCY_KEY_REUSED",
+        "Idempotency key was already used with a different request",
+      );
+    }
+    if (
+      existing.status_code === null ||
+      existing.response_body === null ||
+      typeof existing.response_body !== "object" ||
+      Array.isArray(existing.response_body)
+    ) {
+      throw new AppError(
+        "INTERNAL_ERROR",
+        "Idempotency record is incomplete",
+      );
+    }
+    const stored = existing.response_body as {
+      readonly ok: boolean;
+      readonly data?: T;
+      readonly error?: {
+        readonly code?: unknown;
+        readonly message?: unknown;
+        readonly retryable?: unknown;
+      };
+    };
+    if (stored.ok === false) {
+      const code = apiErrorCodeSchema.safeParse(stored.error?.code);
+      if (
+        !code.success ||
+        typeof stored.error?.message !== "string" ||
+        typeof stored.error.retryable !== "boolean"
+      ) {
+        throw new AppError(
+          "INTERNAL_ERROR",
+          "Stored idempotency failure is malformed",
+        );
+      }
+      const replayedError = committedDomainError(
+        code.data,
+        stored.error.message,
+      );
+      if (!commitDomainErrors) {
+        throw replayedError.error;
+      }
+      return replayedError;
+    }
+    if (stored.ok !== true || stored.data === undefined) {
+      throw new AppError(
+        "INTERNAL_ERROR",
+        "Stored idempotency success is malformed",
+      );
+    }
+    if (
+      typeof stored.data === "object" &&
+      stored.data !== null &&
+      "nonReplayable" in stored.data &&
+      stored.data.nonReplayable === true
+    ) {
+      throw new AppError(
+        "CONFLICT",
+        "The original command completed, but its legacy sensitive response cannot be replayed; fetch current state",
+      );
+    }
+    return {
+      statusCode: existing.status_code,
+      body: {
+        ok: true,
+        data: stored.data,
+        meta: {
+          requestId: input.requestId,
+          idempotency: {
+            key,
+            scope: input.scope,
+            replayed: true,
+            firstProcessedAt: existing.first_processed_at.toISOString(),
+            originalRequestId: requestIdSchema.parse(
+              existing.original_request_id,
+            ),
+          },
+        },
+      },
+    };
+  }
+
   async #runIdempotent<T>(
     client: PoolClient,
-    input: {
-      readonly scope: "user" | "household";
-      readonly userId: string;
-      readonly householdId?: string;
-      readonly method: string;
-      readonly normalizedRoute: NormalizedRoute;
-      readonly key: string;
-      readonly resourceTarget?: unknown;
-      readonly payload: unknown;
-      readonly requestId: RequestId;
-      readonly statusCode: number;
-    },
+    input: IdempotencyInput,
     operation: () => Promise<T>,
   ): Promise<IdempotentResponse<T>>;
   async #runIdempotent<T>(
     client: PoolClient,
-    input: {
-      readonly scope: "user" | "household";
-      readonly userId: string;
-      readonly householdId?: string;
-      readonly method: string;
-      readonly normalizedRoute: NormalizedRoute;
-      readonly key: string;
-      readonly resourceTarget?: unknown;
-      readonly payload: unknown;
-      readonly requestId: RequestId;
-      readonly statusCode: number;
-    },
+    input: IdempotencyInput,
     operation: () => Promise<T | CommittedDomainError>,
     commitDomainErrors: true,
   ): Promise<IdempotentResponse<T> | CommittedDomainError>;
   async #runIdempotent<T>(
     client: PoolClient,
-    input: {
-      readonly scope: "user" | "household";
-      readonly userId: string;
-      readonly householdId?: string;
-      readonly method: string;
-      readonly normalizedRoute: NormalizedRoute;
-      readonly key: string;
-      readonly resourceTarget?: unknown;
-      readonly payload: unknown;
-      readonly requestId: RequestId;
-      readonly statusCode: number;
-    },
+    input: IdempotencyInput,
     operation: () => Promise<T | CommittedDomainError>,
     commitDomainErrors = false,
   ): Promise<IdempotentResponse<T> | CommittedDomainError> {
@@ -731,116 +830,18 @@ export class ApiRepository {
     );
 
     if (insert.rowCount === 0) {
-      const existingResult = await client.query<IdempotencyRow>(
-        `SELECT request_hash, status_code, response_body,
-                original_request_id, first_processed_at
-         FROM idempotency_records
-         WHERE user_id = $1
-           AND household_id IS NOT DISTINCT FROM $2
-           AND method = $3
-           AND normalized_route = $4
-           AND idempotency_key = $5
-         FOR UPDATE`,
-        [
-          input.userId,
-          input.householdId ?? null,
-          input.method,
-          input.normalizedRoute,
-          key,
-        ],
+      const replay = await this.#loadIdempotentReplay<T>(
+        client,
+        input,
+        commitDomainErrors,
       );
-      const existing = existingResult.rows[0];
-      if (existing === undefined) {
+      if (replay === null) {
         throw new AppError(
           "INTERNAL_ERROR",
           "Idempotency record could not be loaded",
         );
       }
-      if (existing.request_hash !== hash) {
-        throw new AppError(
-          "IDEMPOTENCY_KEY_REUSED",
-          "Idempotency key was already used with a different request",
-        );
-      }
-      if (
-        existing.status_code === null ||
-        existing.response_body === null ||
-        typeof existing.response_body !== "object"
-      ) {
-        throw new AppError(
-          "INTERNAL_ERROR",
-          "Idempotency record is incomplete",
-        );
-      }
-      const stored = existing.response_body as {
-        readonly ok: boolean;
-        readonly data?: T;
-        readonly error?: {
-          readonly code?: unknown;
-          readonly message?: unknown;
-          readonly retryable?: unknown;
-        };
-      };
-      if (stored.ok === false) {
-        const code = apiErrorCodeSchema.safeParse(
-          stored.error?.code,
-        );
-        if (
-          !code.success ||
-          typeof stored.error?.message !== "string" ||
-          typeof stored.error.retryable !== "boolean"
-        ) {
-          throw new AppError(
-            "INTERNAL_ERROR",
-            "Stored idempotency failure is malformed",
-          );
-        }
-        const replayedError = committedDomainError(
-          code.data,
-          stored.error.message,
-        );
-        if (!commitDomainErrors) {
-          throw replayedError.error;
-        }
-        return replayedError;
-      }
-      if (stored.data === undefined) {
-        throw new AppError(
-          "INTERNAL_ERROR",
-          "Stored idempotency success is malformed",
-        );
-      }
-      if (
-        typeof stored.data === "object" &&
-        stored.data !== null &&
-        "nonReplayable" in stored.data &&
-        stored.data.nonReplayable === true
-      ) {
-        throw new AppError(
-          "CONFLICT",
-          "The original command completed, but its legacy sensitive response cannot be replayed; fetch current state",
-        );
-      }
-      return {
-        statusCode: existing.status_code,
-        body: {
-          ok: true,
-          data: stored.data,
-          meta: {
-            requestId: input.requestId,
-            idempotency: {
-              key,
-              scope: input.scope,
-              replayed: true,
-              firstProcessedAt:
-                existing.first_processed_at.toISOString(),
-              originalRequestId: requestIdSchema.parse(
-                existing.original_request_id,
-              ),
-            },
-          },
-        },
-      };
+      return replay;
     }
 
     const data = await operation();
@@ -1887,26 +1888,39 @@ export class ApiRepository {
         // 幂等 replay 必须先于 household bootstrap：自退出提交成功后，
         // 当前用户已不再是 active member，但同 key 仍必须读取已完成结果。
         await setHouseholdContext(client, householdId);
+        const idempotencyInput: IdempotencyInput = {
+          scope: "household",
+          userId: authenticatedContext.userId,
+          householdId,
+          method: "DELETE",
+          normalizedRoute: normalizedRoutes.removeMembership,
+          key: idempotencyKey,
+          resourceTarget: { membershipId },
+          payload: {},
+          requestId,
+          statusCode: 200,
+        };
+        const replay =
+          await this.#loadIdempotentReplay<RemoveMembershipResult>(
+            client,
+            idempotencyInput,
+            false,
+          );
+        if (replay !== null) {
+          if (isCommittedDomainError(replay)) {
+            throw replay.error;
+          }
+          return replay;
+        }
+        await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+        );
         return this.#runIdempotent(
           client,
-          {
-            scope: "household",
-            userId: authenticatedContext.userId,
-            householdId,
-            method: "DELETE",
-            normalizedRoute: normalizedRoutes.removeMembership,
-            key: idempotencyKey,
-            resourceTarget: { membershipId },
-            payload: {},
-            requestId,
-            statusCode: 200,
-          },
+          idempotencyInput,
           async () => {
-            await this.#bootstrapHousehold(
-              client,
-              authenticatedContext,
-              householdId,
-            );
             const targetResult = await client.query<MembershipRow>(
               `SELECT *
                FROM memberships
@@ -2239,25 +2253,51 @@ export class ApiRepository {
       accessToken,
       requestId,
       async (client, authenticatedContext) => {
+        await setHouseholdContext(client, householdId);
+        const idempotencyInput: IdempotencyInput = {
+          scope: "household",
+          userId: authenticatedContext.userId,
+          householdId,
+          method: "POST",
+          normalizedRoute:
+            normalizedRoutes.confirmPersonProfileLinkRequest,
+          key: idempotencyKey,
+          resourceTarget: { linkRequestId },
+          payload: request,
+          requestId,
+          statusCode: 200,
+        };
+        const replay =
+          await this.#loadIdempotentReplay<ConfirmPersonProfileLinkResult>(
+            client,
+            idempotencyInput,
+            true,
+          );
+        if (replay !== null) {
+          return replay;
+        }
         const context = await this.#bootstrapHousehold(
           client,
           authenticatedContext,
           householdId,
         );
+        // confirm 的 idempotency marker 具有 target membership 外键。
+        // 必须先取得 link household 锁，避免 remove 已持有 advisory lock
+        // 时形成 “marker FK key-share ↔ membership update” 锁环。
+        await client.query(
+          `SELECT pg_catalog.pg_advisory_xact_lock(
+             pg_catalog.hashtextextended(
+               'person-profile-links:' || $1::text,
+               0
+             )
+           )`,
+          [householdId],
+        );
         return this.#runIdempotent(
           client,
           {
-            scope: "household",
+            ...idempotencyInput,
             userId: context.userId,
-            householdId,
-            method: "POST",
-            normalizedRoute:
-              normalizedRoutes.confirmPersonProfileLinkRequest,
-            key: idempotencyKey,
-            resourceTarget: { linkRequestId },
-            payload: request,
-            requestId,
-            statusCode: 200,
           },
           async () => {
             const confirmation = await client.query<{

@@ -11,8 +11,7 @@ import {
   HOUSEHOLD_DEFAULTS
 } from '../../core/household-flow'
 import {
-  dispositionForOutcome,
-  PendingActionIdempotency
+  dispositionForOutcome
 } from '../../core/idempotency'
 import { joinHousehold } from '../../core/members-flow'
 import {
@@ -52,12 +51,7 @@ export default function HouseholdsPage() {
   const [signingOut, setSigningOut] = useState(false)
   const [inviteCode, setInviteCode] = useState('')
   const [joinState, setJoinState] = useState<SubmitState>({ kind: 'idle' })
-  const [actionKeys] = useState(
-    () =>
-      new PendingActionIdempotency(
-        getAppServices().adapter.runtime
-      )
-  )
+  const actionKeys = getAppServices().pendingCommands
   const currentHouseholdId =
     getAppServices().session.restoreCurrentHouseholdId()
 
@@ -78,7 +72,7 @@ export default function HouseholdsPage() {
   useEffect(() => {
     const services = getAppServices()
     if (services.session.restore() === null) {
-      void services.adapter.navigation.reLaunch(LOGIN_ROUTE)
+      void services.navigation.reLaunch(LOGIN_ROUTE)
       return
     }
     void refreshList()
@@ -87,14 +81,16 @@ export default function HouseholdsPage() {
 
   const openHousehold = async (household: Household): Promise<void> => {
     const services = getAppServices()
+    if (services.pendingCommands.hasAnyPending()) return
     services.session.saveCurrentHouseholdId(household.id)
-    await services.adapter.navigation.reLaunch(INVENTORY_ROUTE)
+    await services.navigation.reLaunch(INVENTORY_ROUTE)
   }
 
   const openMembers = async (household: Household): Promise<void> => {
     const services = getAppServices()
+    if (services.pendingCommands.hasAnyPending()) return
     services.session.saveCurrentHouseholdId(household.id)
-    await services.adapter.navigation.navigateTo(MEMBERS_ROUTE)
+    await services.navigation.navigateTo(MEMBERS_ROUTE)
   }
 
   const handleJoin = async (): Promise<void> => {
@@ -104,6 +100,14 @@ export default function HouseholdsPage() {
     setJoinState({ kind: 'working' })
     const services = getAppServices()
     const joinAction = 'join-household'
+    if (actionKeys.hasOtherPending(joinAction)) {
+      setJoinState({
+        kind: 'failed',
+        message: '当前有未决命令，只能重试原动作。',
+        retryable: false
+      })
+      return
+    }
     const payload = { inviteCode: inviteCode.trim() }
     let outcome: Awaited<ReturnType<typeof joinHousehold>>
     try {
@@ -128,7 +132,7 @@ export default function HouseholdsPage() {
         setJoinState({ kind: 'idle' })
         setInviteCode('')
         // 成功加入后切到该家庭的成员页。
-        await services.adapter.navigation.navigateTo(MEMBERS_ROUTE)
+        await services.navigation.navigateTo(MEMBERS_ROUTE)
         return
       case 'invalid':
         setJoinState({ kind: 'invalid', messages: outcome.messages })
@@ -157,6 +161,14 @@ export default function HouseholdsPage() {
     setSubmit({ kind: 'working' })
     const services = getAppServices()
     const createAction = 'create-household'
+    if (actionKeys.hasOtherPending(createAction)) {
+      setSubmit({
+        kind: 'failed',
+        message: '当前有未决命令，只能重试原动作。',
+        retryable: false
+      })
+      return
+    }
     const payload = { name, ownerDisplayName }
     let outcome: Awaited<ReturnType<typeof createHousehold>>
     try {
@@ -178,7 +190,7 @@ export default function HouseholdsPage() {
     actionKeys.settle(createAction, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
-        await services.adapter.navigation.reLaunch(INVENTORY_ROUTE)
+        await services.navigation.reLaunch(INVENTORY_ROUTE)
         return
       case 'invalid':
         setSubmit(outcome)
@@ -190,10 +202,10 @@ export default function HouseholdsPage() {
 
   const joinFieldsLocked =
     joinState.kind === 'working' ||
-    actionKeys.hasPending('join-household')
+    actionKeys.hasAnyPending()
   const createFieldsLocked =
     submit.kind === 'working' ||
-    actionKeys.hasPending('create-household')
+    actionKeys.hasAnyPending()
 
   const handleSignOut = async (): Promise<void> => {
     if (signingOut) {
@@ -202,7 +214,7 @@ export default function HouseholdsPage() {
     setSigningOut(true)
     const services = getAppServices()
     await signOut(services)
-    await services.adapter.navigation.reLaunch(LOGIN_ROUTE)
+    await services.navigation.reLaunch(LOGIN_ROUTE)
   }
 
   return (
@@ -302,7 +314,10 @@ export default function HouseholdsPage() {
               ? 'button button--disabled'
               : 'button'
           }
-          disabled={joinState.kind === 'working'}
+          disabled={
+            joinState.kind === 'working' ||
+            actionKeys.hasOtherPending('join-household')
+          }
           onClick={() => {
             void handleJoin()
           }}
@@ -363,7 +378,10 @@ export default function HouseholdsPage() {
               ? 'button button--disabled'
               : 'button'
           }
-          disabled={submit.kind === 'working'}
+          disabled={
+            submit.kind === 'working' ||
+            actionKeys.hasOtherPending('create-household')
+          }
           onClick={() => {
             void handleCreate()
           }}
@@ -378,7 +396,7 @@ export default function HouseholdsPage() {
             ? 'button button--secondary button--disabled'
             : 'button button--secondary'
         }
-        disabled={signingOut}
+        disabled={signingOut || actionKeys.hasAnyPending()}
         onClick={() => {
           void handleSignOut()
         }}
