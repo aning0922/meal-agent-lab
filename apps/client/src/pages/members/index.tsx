@@ -1,3 +1,4 @@
+import '../../zod-runtime-config'
 import { useEffect, useRef, useState } from 'react'
 import { Button, Text, View } from '@tarojs/components'
 import type { IdempotencyKey } from '@meal-agent/contracts/api'
@@ -155,7 +156,8 @@ export default function MembersPage() {
   }
 
   const handleRemove = async (
-    membershipId: MembershipId
+    membershipId: MembershipId,
+    isSelf: boolean
   ): Promise<void> => {
     if (busy) {
       return
@@ -172,7 +174,14 @@ export default function MembersPage() {
     setPendingRemoval(null)
     switch (outcome.kind) {
       case 'removed':
-        setNotice({ kind: 'info', message: '已完成移除/退出。' })
+        if (isSelf) {
+          // 退出自己后已失去该家庭访问权：直接离开到家庭列表，
+          // 不能再 refresh 当前家庭（否则成员列表请求必然 404）。
+          services.session.clearCurrentHouseholdId()
+          void services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+          return
+        }
+        setNotice({ kind: 'info', message: '已移除该成员。' })
         break
       case 'conflict':
       case 'forbidden':
@@ -346,7 +355,7 @@ const renderLoaded = (
   view: ListHouseholdMembersResult,
   pendingRemoval: string | null,
   setPendingRemoval: (value: string | null) => void,
-  handleRemove: (membershipId: MembershipId) => Promise<void>,
+  handleRemove: (membershipId: MembershipId, isSelf: boolean) => Promise<void>,
   busy: boolean
 ) => {
   const { entries, ownerCount } = collectEntries(view)
@@ -388,7 +397,7 @@ const renderLoaded = (
                       className={busy ? 'button button--disabled' : 'button'}
                       disabled={busy}
                       onClick={() => {
-                        void handleRemove(entry.membershipId)
+                        void handleRemove(entry.membershipId, entry.isSelf)
                       }}
                     >
                       确认{entry.isSelf ? '退出' : '移除'}

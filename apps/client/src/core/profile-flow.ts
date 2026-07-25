@@ -1,3 +1,7 @@
+// 必须先于任何 @meal-agent/contracts schema 构造（见 zod-runtime-config）：
+// 关闭 Zod JIT，否则对象 schema 的 safeParse 在小程序沙箱里会崩。
+import '../zod-runtime-config'
+
 import type { IdempotencyKey } from '@meal-agent/contracts/api'
 import type {
   DietaryConstraintId,

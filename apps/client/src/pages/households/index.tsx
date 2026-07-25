@@ -1,3 +1,4 @@
+import '../../zod-runtime-config'
 import { useEffect, useRef, useState } from 'react'
 import { Button, Input, Text, View } from '@tarojs/components'
 import type { IdempotencyKey } from '@meal-agent/contracts/api'

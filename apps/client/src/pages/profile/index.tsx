@@ -1,3 +1,4 @@
+import '../../zod-runtime-config'
 import { useEffect, useState } from 'react'
 import { Button, Input, Text, View } from '@tarojs/components'
 import type {
