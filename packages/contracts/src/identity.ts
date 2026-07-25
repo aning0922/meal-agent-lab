@@ -226,7 +226,9 @@ const hardDietaryConstraintSchema = z.strictObject({
   label: z.string().min(1).max(120),
   foodConceptIds: z.array(foodConceptIdSchema).default([]),
   allergenCodes: z.array(z.string().min(1).max(64)).default([]),
-  mappingStatus: z.enum(["structured", "needs_structured_mapping"]),
+  // Stage 08 尚无权威 allergen / food concept / 宗教 / 伦理规则词表。
+  // 形状正确的字符串或 UUID 不能被当成机器可执行映射。
+  mappingStatus: z.literal("needs_structured_mapping"),
   notes: z.string().max(500).optional(),
   visibility: z.enum(["household", "subject_and_owner"]),
   confirmedAt: utcDateTimeSchema,

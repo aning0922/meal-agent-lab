@@ -6,8 +6,11 @@ import { z } from "zod";
 
 import {
   consumeInventoryLotRequestSchema,
+  contractRuleBindings,
   contractRuleManifest,
+  contractRuleSchemaBindings,
   createInventoryLotRequestSchema,
+  exactQuantityAmountSchema,
   quantityDeltaSchema,
 } from "../src/index.js";
 
@@ -21,7 +24,7 @@ const refinementSources = [
   "shopping.ts",
 ] as const;
 
-test("every public refine/superRefine is classified by a stable rule id", async () => {
+test("every public refine/superRefine has an exact schema binding and stable rule id", async () => {
   let sourceCount = 0;
   for (const name of refinementSources) {
     const source = await readFile(
@@ -36,6 +39,24 @@ test("every public refine/superRefine is classified by a stable rule id", async 
   );
   assert.equal(sourceCount, 32);
   assert.equal(refinementRules.length, sourceCount);
+  const boundIds = contractRuleBindings.flatMap((binding) =>
+    binding.ruleIds.map((id) => [id, binding.boundary] as const),
+  );
+  assert.equal(boundIds.length, contractRuleManifest.length);
+  assert.equal(new Set(boundIds.map(([id]) => id)).size, boundIds.length);
+  assert.deepEqual(
+    [...boundIds].sort(([left], [right]) => left.localeCompare(right)),
+    contractRuleManifest
+      .map((rule) => [rule.id, rule.boundary] as const)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+  assert.deepEqual(
+    contractRuleSchemaBindings.map(({ boundary, ruleIds }) => ({
+      boundary,
+      ruleIds,
+    })),
+    contractRuleBindings,
+  );
   assert.equal(
     new Set(contractRuleManifest.map((rule) => rule.id)).size,
     contractRuleManifest.length,
@@ -45,6 +66,28 @@ test("every public refine/superRefine is classified by a stable rule id", async 
     assert.ok(rule.boundary.length > 0);
     if (rule.enforcement === "native") {
       assert.ok((rule.jsonSchemaKeywords?.length ?? 0) > 0);
+    }
+  }
+  for (const binding of contractRuleSchemaBindings) {
+    const generated = JSON.stringify(z.toJSONSchema(binding.schema));
+    const boundRules = binding.ruleIds.map((id) => {
+      const rule = contractRuleManifest.find((candidate) => candidate.id === id);
+      assert.notEqual(rule, undefined, `${id} must exist in the manifest`);
+      return rule!;
+    });
+    assert.equal(
+      typeof binding.schema.safeParse,
+      "function",
+      `${binding.boundary} must bind an actual runtime schema`,
+    );
+    for (const rule of boundRules.filter(
+      (candidate) => candidate.sourceKind === "native-schema",
+    )) {
+      assert.equal(
+        generated.includes(`"id":"${rule.id}"`),
+        true,
+        `${binding.boundary} must embed native rule ${rule.id}`,
+      );
     }
   }
 });
@@ -63,6 +106,11 @@ test("positive and nonzero quantity boundaries agree at runtime and generated JS
       expectedVersion: 1,
     }).success;
   for (const zero of ["0", "0.0", "0.000000"]) {
+    assert.equal(
+      exactQuantityAmountSchema.safeParse(zero).success,
+      true,
+      "lot currentQuantity may be zero",
+    );
     assert.equal(initial(zero), false);
     assert.equal(consumed(zero), false);
     assert.equal(

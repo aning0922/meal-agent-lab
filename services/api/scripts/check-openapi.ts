@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import type { OpenAPIV3 } from "openapi-types";
 
-import { contractRuleManifest } from "@meal-agent/contracts";
+import {
+  contractRuleBindings,
+  contractRuleManifest,
+} from "@meal-agent/contracts";
 
 import { generateOpenApiDocument } from "./openapi.js";
 
@@ -35,9 +38,53 @@ assert.deepEqual(
   (
     generated as OpenAPIV3.Document & {
       readonly "x-meal-agent-contract-rules": unknown;
+      readonly "x-meal-agent-contract-rule-bindings": unknown;
     }
   )["x-meal-agent-contract-rules"],
   contractRuleManifest,
+);
+assert.deepEqual(
+  (
+    generated as OpenAPIV3.Document & {
+      readonly "x-meal-agent-contract-rule-bindings": unknown;
+    }
+  )["x-meal-agent-contract-rule-bindings"],
+  contractRuleBindings,
+);
+const boundRuleIds = contractRuleBindings.flatMap((binding) =>
+  binding.ruleIds.map((id) => [id, binding.boundary] as const),
+);
+assert.deepEqual(
+  [...boundRuleIds].sort(([left], [right]) => left.localeCompare(right)),
+  contractRuleManifest
+    .map((rule) => [rule.id, rule.boundary] as const)
+    .sort(([left], [right]) => left.localeCompare(right)),
+);
+const generatedJson = JSON.stringify(generated);
+for (const nativeRuleId of [
+  "quantity.exact.positive.v1",
+  "quantity.delta.exact-nonzero.v1",
+]) {
+  assert.equal(
+    generatedJson.includes(`"id":"${nativeRuleId}"`),
+    true,
+    `OpenAPI must retain native rule ${nativeRuleId}`,
+  );
+}
+assert.equal(
+  generatedJson.includes('"id":"quantity.exact.positive"'),
+  false,
+);
+assert.equal(
+  generatedJson.includes('"id":"quantity.delta.exact.nonzero"'),
+  false,
+);
+assert.equal(
+  generatedJson.includes(
+    '"mappingStatus":{"type":"string","enum":["needs_structured_mapping"]',
+  ),
+  true,
+  "hard constraint mappings must remain blocked until authoritative mapping",
 );
 for (const path of requiredPaths) {
   assert.ok(generated.paths[path] !== undefined, `missing OpenAPI path ${path}`);
@@ -71,7 +118,7 @@ assert.equal(consumedRequest.includes('"approximate"'), false);
 assert.equal(consumedRequest.includes('"type":"string"'), true);
 assert.equal(consumedRequest.includes('"multipleOf"'), false);
 assert.equal(
-  consumedRequest.includes('"id":"quantity.exact.positive"'),
+  consumedRequest.includes('"id":"quantity.exact.positive.v1"'),
   true,
 );
 for (const requestSchema of [createLotRequest, consumedRequest]) {

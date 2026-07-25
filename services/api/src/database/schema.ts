@@ -325,6 +325,10 @@ export const personProfiles = pgTable(
       "person_profiles_dietary_constraints_check",
       sql`jsonb_typeof(${table.dietaryConstraints}) = 'array'`,
     ),
+    check(
+      "person_profiles_hard_mapping_status_check",
+      sql`meal_agent_private.stage08_constraints_are_safe(${table.dietaryConstraints})`,
+    ),
     check("person_profiles_version_check", sql`${table.version} >= 0`),
   ],
 );
@@ -352,6 +356,7 @@ export const personProfileLinkRequests = pgTable(
       withTimezone: true,
       mode: "date",
     }),
+    terminalReason: varchar("terminal_reason", { length: 64 }),
     version: integer("version").notNull().default(0),
   },
   (table) => [
@@ -380,9 +385,31 @@ export const personProfileLinkRequests = pgTable(
         AND ${table.expiresAt} <= ${table.createdAt} + interval '7 days'`,
     ),
     check(
-      "person_profile_link_requests_confirmation_check",
-      sql`(${table.status} = 'accepted' AND ${table.confirmedAt} IS NOT NULL)
-        OR (${table.status} <> 'accepted' AND ${table.confirmedAt} IS NULL)`,
+      "person_profile_link_requests_terminal_reason_check",
+      sql`(
+          ${table.status} = 'pending'
+          AND ${table.confirmedAt} IS NULL
+          AND ${table.terminalReason} IS NULL
+        )
+        OR (
+          ${table.status} = 'accepted'
+          AND ${table.confirmedAt} IS NOT NULL
+          AND ${table.terminalReason} IS NULL
+        )
+        OR (
+          ${table.status} = 'expired'
+          AND ${table.confirmedAt} IS NULL
+          AND ${table.terminalReason} = 'expired'
+        )
+        OR (
+          ${table.status} = 'cancelled'
+          AND ${table.confirmedAt} IS NULL
+          AND ${table.terminalReason} IN (
+            'target_membership_inactive',
+            'profile_unavailable',
+            'target_membership_has_profile'
+          )
+        )`,
     ),
     check(
       "person_profile_link_requests_version_check",

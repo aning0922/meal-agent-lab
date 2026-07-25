@@ -5668,7 +5668,6 @@
                                       "mappingStatus": {
                                         "type": "string",
                                         "enum": [
-                                          "structured",
                                           "needs_structured_mapping"
                                         ]
                                       },
@@ -8799,7 +8798,10 @@
                                         "type": "number",
                                         "minimum": 0,
                                         "exclusiveMinimum": true,
-                                        "maximum": 999999999.999999
+                                        "maximum": 999999999.999999,
+                                        "x-zod-refinements": [
+                                          "approximate quantity amount supports at most 6 decimal places"
+                                        ]
                                       },
                                       "unit": {
                                         "type": "string",
@@ -10481,8 +10483,7 @@
                             "x-decimal-scale": 6,
                             "x-meal-agent-rules": [
                               {
-                                "id": "quantity.exact.positive",
-                                "version": 1,
+                                "id": "quantity.exact.positive.v1",
                                 "enforcement": "native",
                                 "description": "exact quantity must be positive, including before alias normalization"
                               }
@@ -10519,7 +10520,10 @@
                             "type": "number",
                             "minimum": 0,
                             "exclusiveMinimum": true,
-                            "maximum": 999999999.999999
+                            "maximum": 999999999.999999,
+                            "x-zod-refinements": [
+                              "approximate quantity amount supports at most 6 decimal places"
+                            ]
                           },
                           "unit": {
                             "type": "string",
@@ -10799,7 +10803,10 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "exclusiveMinimum": true,
-                                      "maximum": 999999999.999999
+                                      "maximum": 999999999.999999,
+                                      "x-zod-refinements": [
+                                        "approximate quantity amount supports at most 6 decimal places"
+                                      ]
                                     },
                                     "unit": {
                                       "type": "string",
@@ -11116,8 +11123,7 @@
                                           ],
                                           "x-meal-agent-rules": [
                                             {
-                                              "id": "quantity.delta.exact.nonzero",
-                                              "version": 1,
+                                              "id": "quantity.delta.exact-nonzero.v1",
                                               "enforcement": "native",
                                               "description": "exact quantity delta cannot be mathematical zero"
                                             }
@@ -12701,8 +12707,7 @@
                         "x-decimal-scale": 6,
                         "x-meal-agent-rules": [
                           {
-                            "id": "quantity.exact.positive",
-                            "version": 1,
+                            "id": "quantity.exact.positive.v1",
                             "enforcement": "native",
                             "description": "exact quantity must be positive, including before alias normalization"
                           }
@@ -12895,7 +12900,10 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "exclusiveMinimum": true,
-                                      "maximum": 999999999.999999
+                                      "maximum": 999999999.999999,
+                                      "x-zod-refinements": [
+                                        "approximate quantity amount supports at most 6 decimal places"
+                                      ]
                                     },
                                     "unit": {
                                       "type": "string",
@@ -13212,8 +13220,7 @@
                                           ],
                                           "x-meal-agent-rules": [
                                             {
-                                              "id": "quantity.delta.exact.nonzero",
-                                              "version": 1,
+                                              "id": "quantity.delta.exact-nonzero.v1",
                                               "enforcement": "native",
                                               "description": "exact quantity delta cannot be mathematical zero"
                                             }
@@ -20970,7 +20977,6 @@
                                                 "mappingStatus": {
                                                   "type": "string",
                                                   "enum": [
-                                                    "structured",
                                                     "needs_structured_mapping"
                                                   ]
                                                 },
@@ -21331,7 +21337,6 @@
                                               "mappingStatus": {
                                                 "type": "string",
                                                 "enum": [
-                                                  "structured",
                                                   "needs_structured_mapping"
                                                 ]
                                               },
@@ -21677,7 +21682,6 @@
                                                 "mappingStatus": {
                                                   "type": "string",
                                                   "enum": [
-                                                    "structured",
                                                     "needs_structured_mapping"
                                                   ]
                                                 },
@@ -24796,7 +24800,6 @@
                                             "mappingStatus": {
                                               "type": "string",
                                               "enum": [
-                                                "structured",
                                                 "needs_structured_mapping"
                                               ]
                                             },
@@ -25071,7 +25074,6 @@
                                           "mappingStatus": {
                                             "type": "string",
                                             "enum": [
-                                              "structured",
                                               "needs_structured_mapping"
                                             ]
                                           },
@@ -25330,7 +25332,6 @@
                                             "mappingStatus": {
                                               "type": "string",
                                               "enum": [
-                                                "structured",
                                                 "needs_structured_mapping"
                                               ]
                                             },
@@ -28437,7 +28438,6 @@
                                           "mappingStatus": {
                                             "type": "string",
                                             "enum": [
-                                              "structured",
                                               "needs_structured_mapping"
                                             ]
                                           },
@@ -28710,7 +28710,6 @@
                                           "mappingStatus": {
                                             "type": "string",
                                             "enum": [
-                                              "structured",
                                               "needs_structured_mapping"
                                             ]
                                           },
@@ -39278,11 +39277,11 @@
       "description": "membership capability values are unique"
     },
     {
-      "id": "identity.constraint.allergy-structured-id.v1",
+      "id": "identity.constraint.allergy-identifier.v1",
       "sourceKind": "refinement",
       "enforcement": "runtime-only",
       "boundary": "dietaryConstraintSchema",
-      "description": "allergy requires an allergen code or food concept id"
+      "description": "allergy requires an identifier-shaped allergen or food concept input while mapping remains blocked"
     },
     {
       "id": "identity.profile.household-visibility.v1",
@@ -39494,6 +39493,207 @@
       "description": "exact quantity delta cannot be mathematical zero",
       "jsonSchemaKeywords": [
         "pattern"
+      ]
+    }
+  ],
+  "x-meal-agent-contract-rule-bindings": [
+    {
+      "boundary": "apiErrorSchema",
+      "ruleIds": [
+        "api.problem.status-code-consistency.v1"
+      ]
+    },
+    {
+      "boundary": "sessionSchema",
+      "ruleIds": [
+        "identity.session.lifecycle.v1"
+      ]
+    },
+    {
+      "boundary": "authenticatedSessionSchema",
+      "ruleIds": [
+        "identity.authenticated-session.consistency.v1"
+      ]
+    },
+    {
+      "boundary": "membershipSchema.capabilities",
+      "ruleIds": [
+        "identity.membership.capabilities-unique.v1"
+      ]
+    },
+    {
+      "boundary": "dietaryConstraintSchema",
+      "ruleIds": [
+        "identity.constraint.allergy-identifier.v1"
+      ]
+    },
+    {
+      "boundary": "safeOwnerProfileResponseSchema",
+      "ruleIds": [
+        "identity.profile.household-visibility.v1"
+      ]
+    },
+    {
+      "boundary": "createHouseholdResultSchema",
+      "ruleIds": [
+        "identity.household-create.consistency.v1"
+      ]
+    },
+    {
+      "boundary": "inventoryLotSchema.dates",
+      "ruleIds": [
+        "inventory.lot.dates-unique.v1"
+      ]
+    },
+    {
+      "boundary": "inventoryLotSchema",
+      "ruleIds": [
+        "inventory.lot.state-quantity-safety.v1"
+      ]
+    },
+    {
+      "boundary": "createInventoryLotDateInputSchema",
+      "ruleIds": [
+        "inventory.create-date.provenance.v1"
+      ]
+    },
+    {
+      "boundary": "createInventoryLotRequestSchema.dates",
+      "ruleIds": [
+        "inventory.create.dates-unique.v1"
+      ]
+    },
+    {
+      "boundary": "inventoryEventSchema",
+      "ruleIds": [
+        "inventory.event.consistency.v1"
+      ]
+    },
+    {
+      "boundary": "createInventoryLotResultSchema",
+      "ruleIds": [
+        "inventory.create-result.consistency.v1"
+      ]
+    },
+    {
+      "boundary": "consumeInventoryLotResultSchema",
+      "ruleIds": [
+        "inventory.consume-result.consistency.v1"
+      ]
+    },
+    {
+      "boundary": "recipeSchema",
+      "ruleIds": [
+        "meal.recipe.review-and-steps.v1"
+      ]
+    },
+    {
+      "boundary": "mealSchema",
+      "ruleIds": [
+        "meal.instance.unique-participants-recipes.v1"
+      ]
+    },
+    {
+      "boundary": "recommendationSchema",
+      "ruleIds": [
+        "meal.recommendation.outcome-consistency.v1"
+      ]
+    },
+    {
+      "boundary": "householdInviteSchema",
+      "ruleIds": [
+        "members.invite.entity-consistency.v1"
+      ]
+    },
+    {
+      "boundary": "createHouseholdInviteResultSchema",
+      "ruleIds": [
+        "members.invite.create-result.v1"
+      ]
+    },
+    {
+      "boundary": "revokeHouseholdInviteResultSchema",
+      "ruleIds": [
+        "members.invite.revoke-result.v1"
+      ]
+    },
+    {
+      "boundary": "joinHouseholdResultSchema",
+      "ruleIds": [
+        "members.join.result-consistency.v1"
+      ]
+    },
+    {
+      "boundary": "removeMembershipResultSchema",
+      "ruleIds": [
+        "members.remove.result-consistency.v1"
+      ]
+    },
+    {
+      "boundary": "updatePersonProfileRequestSchema",
+      "ruleIds": [
+        "profiles.update.non-empty.v1"
+      ]
+    },
+    {
+      "boundary": "dietaryConstraintInputSchema",
+      "ruleIds": [
+        "profiles.constraint.confirmation-and-allergy.v1"
+      ]
+    },
+    {
+      "boundary": "informationSourceSchema",
+      "ruleIds": [
+        "quantity.information-source.consistency.v1"
+      ]
+    },
+    {
+      "boundary": "foodDateSchema",
+      "ruleIds": [
+        "quantity.food-date.kind-source.v1"
+      ]
+    },
+    {
+      "boundary": "approximateQuantitySchema.amount",
+      "ruleIds": [
+        "quantity.approximate.scale.v1"
+      ]
+    },
+    {
+      "boundary": "approximateQuantitySchema",
+      "ruleIds": [
+        "quantity.approximate.amount-unit-pair.v1"
+      ]
+    },
+    {
+      "boundary": "nonEmptyQuantitySchema",
+      "ruleIds": [
+        "quantity.non-empty.v1"
+      ]
+    },
+    {
+      "boundary": "quantityDeltaSchema.estimated.amount",
+      "ruleIds": [
+        "quantity.delta.estimated-scale.v1",
+        "quantity.delta.estimated-nonzero.v1"
+      ]
+    },
+    {
+      "boundary": "shoppingItemSchema",
+      "ruleIds": [
+        "shopping.item.lifecycle.v1"
+      ]
+    },
+    {
+      "boundary": "persistableInitialQuantitySchema.exact.amount",
+      "ruleIds": [
+        "quantity.exact.positive.v1"
+      ]
+    },
+    {
+      "boundary": "quantityDeltaSchema.exact.amount",
+      "ruleIds": [
+        "quantity.delta.exact-nonzero.v1"
       ]
     }
   ]

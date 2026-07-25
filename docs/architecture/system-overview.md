@@ -25,7 +25,7 @@ PostgreSQL 18
   ├─ FORCE RLS + transaction-local user/household context
   ├─ restricted application role
   ├─ SECURITY DEFINER state transitions
-  └─ migrations 0000 → 0001 → 0002
+  └─ migrations 0000 → 0001 → 0002 → 0003
 ```
 
 服务端保持一个部署单元，领域模块共享契约和事务边界。当前规模不支持拆微服务，也没有检索需求需要向量数据库。
@@ -45,7 +45,7 @@ PostgreSQL 18
 
 ## 写入安全
 
-HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 FORCE RLS、复合外键、撤销表级 UPDATE 和窄参数 `SECURITY DEFINER` 函数阻断反向越权。普通成员无法把本人 role 更新为 owner，应用角色也不能直接更新 membership 行。
+HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 FORCE RLS、复合外键、撤销 `memberships`/`person_profiles` 表级 UPDATE 和窄参数 `SECURITY DEFINER` 函数阻断反向越权。函数内部取 `clock_timestamp()`，邀请赎回固定安全 capabilities，expectedVersion 不接受 NULL；应用角色不能直接改 role、profile 身份字段或绕过双确认。
 
 通用幂等注册表只有三类：
 
@@ -53,13 +53,13 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 - `one-time-secret`：邀请码首次可见，缓存/重放仅安全投影；
 - `receipt`：PersonProfile/constraint 首次与重放只返回安全 receipt。
 
-完整 PersonProfile 必须再走 GET 并执行当前授权/redaction。历史不安全缓存被 `0002` 转为 receipt 或 non-replayable tombstone，但保留命令完成标识。
+完整 PersonProfile 必须再走 GET 并执行当前授权/redaction。历史不安全缓存被 `0002` 转为 receipt 或 non-replayable tombstone，但保留命令完成标识。成员自退出的完成记录可在 active membership 消失后、household bootstrap 之前重放，最终落库必须影响且仅影响一条幂等记录。
 
 ## 契约与确定性规则
 
-`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须出现在稳定 rule manifest：JSON Schema 能表达的生成原生约束，不能表达的生成带 rule ID 的 runtime-only 扩展。生成器、runtime 与 OpenAPI parity 测试阻止规则静默丢失。
+`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须出现在稳定 rule manifest，并逐 schema 绑定：JSON Schema 能表达的生成原生约束，不能表达的生成带 rule ID 的 runtime-only 扩展。生成器、runtime 与 OpenAPI parity 测试阻止规则静默丢失。
 
-硬约束由确定性代码和结构化标识处理。尚无正式宗教、伦理或食品安全规则映射时使用 `needs_structured_mapping`，推荐边界必须阻断，模型不得补造规则。未知饭量、参与和厨艺保持 `null`，不由客户端、迁移或模型猜测。
+硬约束由确定性代码处理。当前没有权威 allergen、food concept、宗教、伦理或食品安全映射词表，字符串/UUID 形状校验不构成 structured mapping；所有 hard constraint 使用 `needs_structured_mapping`，推荐边界必须阻断，模型不得补造规则。未知饭量、参与和厨艺保持 `null`。
 
 ## 当前验证与边界
 

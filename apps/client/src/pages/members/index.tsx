@@ -411,8 +411,8 @@ const renderLoaded = (
                   <View>
                     <Text className='notice'>
                       {entry.isSelf
-                        ? '确认退出该家庭？此后将无法访问该家庭数据。'
-                        : '确认移除该成员？其对家庭的访问将立即失效。'}
+                        ? '确认退出该家庭？关联档案将立即归档，数据按既定保留策略保留；重新加入不会自动恢复，须显式恢复原档案。'
+                        : '确认移除该成员？访问将立即失效，关联档案会归档且数据继续保留；重新加入不会自动恢复。'}
                     </Text>
                     <Button
                       className={busy ? 'button button--disabled' : 'button'}
@@ -425,6 +425,7 @@ const renderLoaded = (
                     </Button>
                     <Button
                       className='button button--secondary'
+                      disabled={busy}
                       onClick={() => {
                         setPendingRemoval(null)
                       }}
@@ -435,6 +436,7 @@ const renderLoaded = (
                 ) : (
                   <Button
                     className='button button--secondary'
+                    disabled={busy}
                     onClick={() => {
                       setPendingRemoval(entry.membershipId)
                     }}

@@ -1,7 +1,8 @@
 # Changelog
 
 ## Unreleased
-- 完成阶段 08 审计整改：contracts 升级 `0.4.0`，建立集中式 `full`/`one-time-secret`/`receipt` 幂等策略、PersonProfile list/get/archive/restore/双确认关联、nullable 用户事实、完整 hard constraint mapping 与 runtime/OpenAPI rule manifest；新增单事务 `0002_stage_08_audit_closeout.sql`，清理历史敏感幂等响应、撤销 memberships 表级 UPDATE、通过受控 SECURITY DEFINER 函数保护成员状态、邀请并发与 profile 关联；客户端补齐 FAM-003/004 和阶段 08 内 FAM-005、同动作 idempotency key 与真实页面渲染测试。依赖 advisory 使用截至 2026-08-08 的 local/weapp-only 可执行例外，H5/外测/体验版/发布阻断；微信开发者工具完成修复后实际入口复跑并保存非敏感证据。
+- 完成阶段 08 二次审计整改：新增 `0003_stage_08_secondary_closeout.sql`，修复自退出丢响应重放和幂等完成行数断言，撤销 PersonProfile 表级 UPDATE，收紧初始 INSERT/RLS 与受控函数签名，统一 profile 创建/关联确认锁顺序并物化关联请求终态；未经权威词表映射的五类 hard constraint 全部降为阻断状态；客户端补安全关联披露、归档/保留提示、不可恢复原因、档案草稿隔离和请求期间输入冻结；refinement 使用逐 schema binding；Markdown/audit 门禁和 GUI 证据绑定规则同步加固。FAM-004 在权威映射和推荐安全闭环前仍为部分完成。
+- 完成阶段 08 首轮审计整改：contracts 升级 `0.4.0`，建立集中式 `full`/`one-time-secret`/`receipt` 幂等策略、PersonProfile list/get/archive/restore/双确认关联、nullable 用户事实、五类 hard constraint 登记与 runtime/OpenAPI rule manifest；新增单事务 `0002_stage_08_audit_closeout.sql`，清理历史敏感幂等响应、撤销 memberships 表级 UPDATE、通过受控 SECURITY DEFINER 函数保护成员状态、邀请并发与 profile 关联；客户端补齐 FAM-003、FAM-004 当前登记/确认范围和阶段 08 内 FAM-005、同动作 idempotency key 与真实页面渲染测试。权威映射与推荐闭环未完成，FAM-004 仍为部分完成；依赖 advisory 使用截至 2026-08-08 的 local/weapp-only 可执行例外，H5/外测/体验版/发布阻断。
 - 阶段 08 首版纵切历史基线：contracts `0.3.0`、`0001_stage_08`、邀请/成员/档案/约束路由与客户端页面；最终验收结论已由上述审计整改取代。
 - 模拟器走查发现并修复真实运行时缺陷：Zod v4 对象校验 JIT 依赖动态代码执行、被微信小程序沙箱禁用，客户端全局关闭 jitless（须先于契约 schema 构造），并加固 api-client 让 safeParse 异常降级为 malformedResponse。该缺陷 Node 单测/E2E 全过、仅真机运行时暴露。
 

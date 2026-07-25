@@ -288,7 +288,7 @@ export const hardConstraintFixture = (
       | 'ethical'
       | 'explicit_avoid'
       | 'food_safety_exclusion'
-    mappingStatus?: 'structured' | 'needs_structured_mapping'
+    mappingStatus?: 'needs_structured_mapping'
     allergenCodes?: readonly string[]
     foodConceptIds?: readonly string[]
   } = {}
@@ -299,7 +299,8 @@ export const hardConstraintFixture = (
   label: overrides.label ?? '虚构花生过敏',
   foodConceptIds: overrides.foodConceptIds ?? [],
   allergenCodes: overrides.allergenCodes ?? ['FICTION_PEANUT'],
-  mappingStatus: overrides.mappingStatus ?? ('structured' as const),
+  mappingStatus:
+    overrides.mappingStatus ?? ('needs_structured_mapping' as const),
   visibility: overrides.visibility ?? ('household' as const),
   confirmedAt: T0,
   confirmedByUserId: uuidV7(1)

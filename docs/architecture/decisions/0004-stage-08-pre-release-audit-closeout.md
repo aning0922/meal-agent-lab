@@ -18,7 +18,7 @@
 1. `@meal-agent/contracts` 升级为 `0.4.0`，在 `/api/v1` 原地修正 PersonProfile 写响应、档案生命周期、未知值和硬约束映射语义。
 2. 例外只在“没有已部署环境和外部消费者”这一事实成立时有效。若出现相反证据，必须停止发布并重新设计版本与迁移策略。
 3. 不编写虚构的双版本 reader、expand/contract 流程或兼容窗口；当前仓库只有修正后的单一事实源。
-4. 已有 `0000`、`0001` 及 checksum 保持不变。整改只通过单一事务迁移 `0002_stage_08_audit_closeout.sql` 完成。
+4. 已有 migration 及 checksum 保持不变。首轮整改通过单一事务 `0002_stage_08_audit_closeout.sql` 完成；二次审计只新增单一事务 `0003_stage_08_secondary_closeout.sql`，不回改历史迁移。
 
 ### 集中式幂等与敏感响应
 
@@ -34,9 +34,9 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 
 ### 最小数据库权限
 
-撤销 `meal_agent_app` 对 `memberships` 的直接 `UPDATE`，删除宽 UPDATE RLS policy。成员退出/移除只通过 `meal_agent_private.transition_membership_status` 执行；邀请赎回和 dining-only profile 关联也只通过窄参数的 `SECURITY DEFINER` 函数执行。
+撤销 `meal_agent_app` 对 `memberships` 和 `person_profiles` 的直接 `UPDATE`，删除宽 UPDATE RLS policy。成员退出/移除、档案字段/状态/约束、邀请赎回和 dining-only profile 关联只通过窄参数的 `SECURITY DEFINER` 函数执行。
 
-这些函数固定 `search_path`、完整限定对象、关闭函数内 RLS、归 migration role 所有，并撤销 `PUBLIC` 的执行权限后仅授予应用角色。另执行 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`。HTTP capability 检查继续存在，数据库函数作为 defense-in-depth，不替代 HTTP 授权。
+这些函数固定 `search_path`、完整限定对象、关闭函数内 RLS、归 migration role 所有，并撤销 `PUBLIC` 的执行权限后仅授予应用角色。时间只由函数内 `clock_timestamp()` 取得，redeem 不接收调用方 capabilities，加入和重新加入固定安全默认值，expectedVersion 的 NULL 明确拒绝。另执行 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`。HTTP capability 检查继续存在，数据库函数作为 defense-in-depth，不替代 HTTP 授权。
 
 ### PersonProfile 资源与生命周期
 
@@ -50,9 +50,16 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 
 `defaultParticipation`、`defaultPortionScale`、`cookingSkill` 支持 `null`，新建和旧数据迁移都不得猜测默认值。阶段 08 提供这些已有字段的查看和编辑；正式 cooking-technique 词表留作阶段 09 数据治理前置，因此 FAM-005 仍为部分完成。
 
-客户端覆盖全部现有 hard constraint kind。allergy/food concept 使用结构化标识；没有确定性规则映射的 hard constraint 标记 `needs_structured_mapping`，推荐边界必须阻断，模型不得猜测。确认指纹包含 kind、enforcement、label、food concept、allergen、notes 和 visibility，任一字段变化都会使旧确认失效。
+客户端覆盖全部现有 hard constraint kind并采集 allergen/food concept 标识符。当前没有权威映射词表，字符串或 UUID 形状校验不构成 structured mapping；所有 hard constraint 固定为 `needs_structured_mapping`，推荐边界必须阻断，模型不得猜测。确认指纹包含 kind、enforcement、label、food concept、allergen、notes 和 visibility，任一字段变化都会使旧确认失效。因此 FAM-004 的登记、确认和隐私范围已实现，但在权威映射和推荐安全闭环前仍为部分完成。
 
-公共 Zod 边界上的所有 refine/superRefine 进入稳定 rule manifest：可表达规则生成原生 JSON Schema，其他规则以稳定 rule ID 的 runtime-only 扩展公开，并有运行时、生成 schema 与 OpenAPI 一致性门禁。生成 OpenAPI 是唯一产物，不手工维护第二份 JSON。
+公共 Zod 边界上的所有 refine/superRefine 进入稳定 rule manifest，并逐 schema 绑定：可表达规则生成原生 JSON Schema，其他规则以稳定 rule ID 的 runtime-only 扩展公开，并有运行时、生成 schema 与 OpenAPI 一致性门禁。生成 OpenAPI 是唯一产物，不手工维护第二份 JSON。
+
+### 二次收口的不变量
+
+- 自退出的幂等结果必须在事务提交前完成且 UPDATE 恰好一行；同 key 可在 active membership 消失后、household bootstrap 之前重放，不允许遗留 incomplete record。
+- linked profile 直接创建只能由其本人执行；dining-only 仍仅 owner 可建。直接创建与关联确认共享 household+membership advisory lock，并按 target membership → link request → profile 排序，竞态稳定为一方成功、另一方 409。
+- pending link request 的过期、目标退出、档案归档或目标已有档案在同一锁内物化为终态；过期后可以重新发起。
+- 页面关联确认必须披露安全名称、可见约束摘要、权限和归档/保留后果；不可恢复时禁用操作，切换档案清空档案级草稿，请求进行中冻结相关输入。
 
 ### 依赖审计和交付边界
 
@@ -81,6 +88,6 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 ## 影响
 
 - PersonProfile mutation 的 `0.3.0` 响应消费者必须升级到 `0.4.0` receipt + GET 语义；仓库内客户端已同步，没有仓库外消费者。
-- `0002` 的敏感响应清理与权限收窄不提供恢复旧不安全状态的 down migration；失败时事务整体回滚，成功后只允许 roll-forward。
+- `0002`/`0003` 的敏感响应清理与权限收窄不提供恢复旧不安全状态的 down migration；失败时各自事务整体回滚，成功后只允许 roll-forward。
 - 本地 Stage 08 可以形成完整安全、契约、数据库、HTTP、客户端、E2E、weapp 和 GUI 证据，但真实微信、真机、体验版、发布、云环境和远端 CI 仍按各自门禁单独验收。
 - 阶段 09 在正式 cooking-technique 与宗教/伦理规则词表完成治理前不得把自然语言约束交给模型执行。

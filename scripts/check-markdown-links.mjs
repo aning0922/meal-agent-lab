@@ -1,19 +1,30 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
+import { dirname, resolve, sep } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
-const listed = spawnSync('rg', ['--files', '-g', '*.md'], {
+const listed = spawnSync('git', ['ls-files', '-z', '--', '*.md'], {
   cwd: root,
-  encoding: 'utf8'
+  encoding: 'utf8',
+  maxBuffer: 16 * 1024 * 1024
 })
-if (listed.error !== undefined || listed.status !== 0) {
-  process.stderr.write(`markdown link check failed: ${listed.stderr}\n`)
+if (listed.error !== undefined) {
+  process.stderr.write(
+    `markdown link check failed to start git: ${listed.error.message}\n`
+  )
+  process.exit(1)
+}
+if (listed.status !== 0) {
+  process.stderr.write(
+    `markdown link check git subprocess failed ` +
+      `(exit=${String(listed.status)}, signal=${listed.signal ?? 'none'}): ` +
+      `${listed.stderr.trim() || '(no stderr)'}\n`
+  )
   process.exit(1)
 }
 
-const files = listed.stdout.trim().split('\n').filter(Boolean).sort()
+const files = listed.stdout.split('\0').filter(Boolean).sort()
 const failures = []
 let checkedLinks = 0
 const inlineLink = /!?\[[^\]]*]\((<[^>]+>|[^)\s]+)(?:\s+["'][^)]*)?\)/g
@@ -37,7 +48,7 @@ for (const file of files) {
     const target = pathOnly.startsWith('/')
       ? resolve(root, `.${pathOnly}`)
       : resolve(dirname(absoluteFile), pathOnly)
-    if (!target.startsWith(`${root}/`) && target !== root) {
+    if (!target.startsWith(`${root}${sep}`) && target !== root) {
       failures.push(`${file}: link escapes repository: ${rawTarget}`)
       continue
     }

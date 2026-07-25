@@ -44,16 +44,27 @@ describe('PendingActionIdempotency', () => {
     )
   })
 
-  it('同一动作字段变化表示新命令并换 key', () => {
+  it('同一进行中动作字段变化被拒绝，显式放弃后才可开启新命令', () => {
     const pending = new PendingActionIdempotency(new FakePlatform().runtime)
     const first = pending.acquire('constraint:add:1', {
       label: '虚构过敏',
       visibility: 'household'
     })
-    const changed = pending.acquire('constraint:add:1', {
-      label: '虚构过敏',
-      visibility: 'subject_and_owner'
-    })
-    assert.notEqual(changed, first)
+    assert.throws(
+      () =>
+        pending.acquire('constraint:add:1', {
+          label: '虚构过敏',
+          visibility: 'subject_and_owner'
+        }),
+      /payload changed/
+    )
+    pending.abandon('constraint:add:1')
+    assert.notEqual(
+      pending.acquire('constraint:add:1', {
+        label: '虚构过敏',
+        visibility: 'subject_and_owner'
+      }),
+      first
+    )
   })
 })

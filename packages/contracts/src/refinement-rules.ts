@@ -42,11 +42,12 @@ export const contractRuleManifest = [
     description: "membership capability values are unique",
   },
   {
-    id: "identity.constraint.allergy-structured-id.v1",
+    id: "identity.constraint.allergy-identifier.v1",
     sourceKind: "refinement",
     enforcement: "runtime-only",
     boundary: "dietaryConstraintSchema",
-    description: "allergy requires an allergen code or food concept id",
+    description:
+      "allergy requires an identifier-shaped allergen or food concept input while mapping remains blocked",
   },
   {
     id: "identity.profile.household-visibility.v1",

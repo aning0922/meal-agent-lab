@@ -44,6 +44,12 @@ type MemberChoice = {
   readonly label: string
 }
 
+type LinkDisclosure = {
+  readonly displayName: string
+  readonly hardConstraintCount: number
+  readonly softConstraintCount: number
+}
+
 type LoadedState = {
   readonly kind: 'loaded'
   readonly viewerRole: 'owner' | 'member'
@@ -51,6 +57,7 @@ type LoadedState = {
   readonly profiles: readonly PersonProfile[]
   readonly linkRequests: readonly PersonProfileLinkRequest[]
   readonly members: readonly MemberChoice[]
+  readonly linkDisclosures: Readonly<Record<string, LinkDisclosure>>
 }
 
 type PageState =
@@ -143,7 +150,9 @@ export default function ProfilePage() {
         : String(profile.defaultPortionScale)
     )
     setCookingSkill(profile.cookingSkill)
+    setConstraint(EMPTY_CONSTRAINT)
     setConfirmingHard(false)
+    setLinkTarget(null)
   }
 
   const refresh = async (id: HouseholdId): Promise<void> => {
@@ -200,12 +209,41 @@ export default function ProfilePage() {
         : profilesResult.data.self === null
           ? []
           : [profilesResult.data.self]
+    const profileById = new Map(
+      profiles.map((profile) => [profile.id, profile] as const)
+    )
+    const linkDisclosures: Record<string, LinkDisclosure> = {}
+    for (const request of linksResult.data.requests) {
+      if (request.status !== 'pending') continue
+      let profile = profileById.get(request.profileId)
+      if (
+        profile === undefined &&
+        request.targetMembershipId === selfEntry.membership.id
+      ) {
+        const loaded = await services.api.getPersonProfile(id, request.profileId)
+        if (loaded.kind === 'success') {
+          profile = loaded.data.profile
+        }
+      }
+      if (profile !== undefined) {
+        linkDisclosures[request.id] = {
+          displayName: profile.displayName,
+          hardConstraintCount: profile.dietaryConstraints.filter(
+            (item) => item.enforcement === 'hard'
+          ).length,
+          softConstraintCount: profile.dietaryConstraints.filter(
+            (item) => item.enforcement === 'soft'
+          ).length
+        }
+      }
+    }
     const nextState: LoadedState = {
       kind: 'loaded',
       viewerRole: profilesResult.data.viewerRole,
       selfMembershipId: selfEntry.membership.id,
       profiles,
       linkRequests: linksResult.data.requests,
+      linkDisclosures,
       members: memberEntries.map((entry) => ({
         id: entry.membership.id,
         label: entry.profile?.displayName ?? '未建档成员'
@@ -506,6 +544,15 @@ export default function ProfilePage() {
             profile.linkedMembershipId === state.selfMembershipId
         )
       : undefined
+  const restoreBlockedReason =
+    state.kind === 'loaded' &&
+    selected?.status === 'archived' &&
+    selected.linkedMembershipId !== undefined &&
+    !state.members.some(
+      (member) => member.id === selected.linkedMembershipId
+    )
+      ? '关联成员当前不在家庭中，无法恢复；重新加入后仍须显式恢复原档案。'
+      : null
 
   return (
     <View className='page'>
@@ -538,6 +585,7 @@ export default function ProfilePage() {
               <Button
                 key={profile.id}
                 className={profile.id === selectedId ? 'button' : 'button button--secondary'}
+                disabled={busy}
                 onClick={() => chooseProfile(profile)}
               >
                 {profile.displayName} · {profile.status === 'active' ? '使用中' : '已归档'}
@@ -585,6 +633,7 @@ export default function ProfilePage() {
               confirmingHard={confirmingHard}
               setConfirmingHard={setConfirmingHard}
               busy={busy}
+              restoreBlockedReason={restoreBlockedReason}
               onSave={() => void saveProfile(selected)}
               onArchive={() => void changeArchiveState(selected, 'archive')}
               onRestore={() => void changeArchiveState(selected, 'restore')}
@@ -601,11 +650,36 @@ export default function ProfilePage() {
                 .filter((request) => request.status === 'pending')
                 .map((request) => (
                   <View key={request.id} className='list-item'>
-                    <Text>档案 {request.profileId} → 成员 {request.targetMembershipId}</Text>
+                    {state.linkDisclosures[request.id] === undefined ? (
+                      <Text>
+                        档案详情暂不可安全读取，请刷新后再确认；当前不会仅凭标识符授权关联。
+                      </Text>
+                    ) : (
+                      <>
+                        <Text className='list-item-title'>
+                          档案“{state.linkDisclosures[request.id]?.displayName}”
+                        </Text>
+                        <Text className='list-item-detail'>
+                          可见约束摘要：硬约束
+                          {state.linkDisclosures[request.id]?.hardConstraintCount}
+                          条，偏好
+                          {state.linkDisclosures[request.id]?.softConstraintCount}
+                          条。
+                        </Text>
+                        <Text className='list-item-detail'>
+                          确认后，该档案将关联到你的登录成员；本人和家庭所有者可管理完整档案，
+                          其他成员仅能读取家庭可见字段。退出或被移除会归档档案并保留数据，
+                          重新加入不会自动恢复。
+                        </Text>
+                      </>
+                    )}
                     {request.targetMembershipId === state.selfMembershipId && (
                       <Button
                         className='button'
-                        disabled={busy}
+                        disabled={
+                          busy ||
+                          state.linkDisclosures[request.id] === undefined
+                        }
                         onClick={() => void confirmLink(request)}
                       >
                         我确认关联
@@ -640,6 +714,7 @@ const CreateSection = (props: {
     <Input
       className='field-input'
       value={props.name}
+      disabled={props.busy}
       placeholder='称呼'
       onInput={(event) => props.setName(event.detail.value)}
     />
@@ -671,6 +746,7 @@ const ProfileEditor = (props: {
   readonly confirmingHard: boolean
   readonly setConfirmingHard: (value: boolean) => void
   readonly busy: boolean
+  readonly restoreBlockedReason: string | null
   readonly onSave: () => void
   readonly onArchive: () => void
   readonly onRestore: () => void
@@ -685,15 +761,27 @@ const ProfileEditor = (props: {
         状态 {props.profile.status} · 版本 {props.profile.version}
       </Text>
       {props.profile.status === 'archived' ? (
-        <Button className='button' disabled={props.busy} onClick={props.onRestore}>
-          恢复原档案
-        </Button>
+        <>
+          <Button
+            className='button'
+            disabled={props.busy || props.restoreBlockedReason !== null}
+            onClick={props.onRestore}
+          >
+            恢复原档案
+          </Button>
+          {props.restoreBlockedReason !== null && (
+            <Text className='list-item-detail'>
+              {props.restoreBlockedReason}
+            </Text>
+          )}
+        </>
       ) : (
         <>
           <Text className='field-label'>称呼</Text>
           <Input
             className='field-input'
             value={props.editName}
+            disabled={props.busy}
             onInput={(event) => props.setEditName(event.detail.value)}
           />
           <Text className='field-label'>默认参与</Text>
@@ -706,6 +794,7 @@ const ProfileEditor = (props: {
               <Button
                 key={label}
                 className={props.participation === value ? 'button' : 'button button--secondary'}
+                disabled={props.busy}
                 onClick={() => props.setParticipation(value)}
               >
                 {label}
@@ -717,6 +806,7 @@ const ProfileEditor = (props: {
             className='field-input'
             type='digit'
             value={props.portionText}
+            disabled={props.busy}
             placeholder='0.25–4'
             onInput={(event) => props.setPortionText(event.detail.value)}
           />
@@ -732,6 +822,7 @@ const ProfileEditor = (props: {
               <Button
                 key={label}
                 className={props.cookingSkill === value ? 'button' : 'button button--secondary'}
+                disabled={props.busy}
                 onClick={() => props.setCookingSkill(value)}
               >
                 {label}
@@ -757,6 +848,7 @@ const ProfileEditor = (props: {
             <Button
               key={member.id}
               className={props.linkTarget === member.id ? 'button' : 'button button--secondary'}
+              disabled={props.busy}
               onClick={() => props.setLinkTarget(member.id)}
             >
               {member.label}
@@ -784,10 +876,7 @@ const ProfileEditor = (props: {
               </Text>
               {item.enforcement === 'hard' && (
                 <Text className='list-item-detail'>
-                  映射状态：
-                  {item.mappingStatus === 'structured'
-                    ? '已结构化'
-                    : '待结构化；推荐必须阻断'}
+                  映射状态：待权威结构化映射；推荐必须阻断
                 </Text>
               )}
               <Text className='list-item-detail'>
@@ -811,6 +900,7 @@ const ProfileEditor = (props: {
           <View className='row'>
             <Button
               className={props.constraint.enforcement === 'hard' ? 'button' : 'button button--secondary'}
+              disabled={props.busy}
               onClick={() => {
                 props.setConfirmingHard(false)
                 props.setConstraint({ ...props.constraint, enforcement: 'hard' })
@@ -820,6 +910,7 @@ const ProfileEditor = (props: {
             </Button>
             <Button
               className={props.constraint.enforcement === 'soft' ? 'button' : 'button button--secondary'}
+              disabled={props.busy}
               onClick={() => {
                 props.setConfirmingHard(false)
                 props.setConstraint({ ...props.constraint, enforcement: 'soft' })
@@ -834,6 +925,7 @@ const ProfileEditor = (props: {
                 <Button
                   key={kind}
                   className={props.constraint.hardKind === kind ? 'button' : 'button button--secondary'}
+                  disabled={props.busy}
                   onClick={() => {
                     props.setConfirmingHard(false)
                     props.setConstraint({ ...props.constraint, hardKind: kind })
@@ -847,6 +939,7 @@ const ProfileEditor = (props: {
           <Input
             className='field-input'
             value={props.constraint.label}
+            disabled={props.busy}
             placeholder='约束名称'
             onInput={(event) => {
               props.setConfirmingHard(false)
@@ -856,7 +949,8 @@ const ProfileEditor = (props: {
           <Input
             className='field-input'
             value={props.constraint.foodConceptId}
-            placeholder='FoodConcept UUID（可选）'
+            disabled={props.busy}
+            placeholder='FoodConcept 标识（尚未权威映射，可选）'
             onInput={(event) => {
               props.setConfirmingHard(false)
               props.setConstraint({ ...props.constraint, foodConceptId: event.detail.value })
@@ -867,7 +961,8 @@ const ProfileEditor = (props: {
               <Input
                 className='field-input'
                 value={props.constraint.allergenCode}
-                placeholder='结构化 allergen code'
+                disabled={props.busy}
+                placeholder='allergen 标识（尚未权威映射）'
                 onInput={(event) => {
                   props.setConfirmingHard(false)
                   props.setConstraint({ ...props.constraint, allergenCode: event.detail.value })
@@ -876,6 +971,7 @@ const ProfileEditor = (props: {
             )}
           <Button
             className='button button--secondary'
+            disabled={props.busy}
             onClick={() => {
               props.setConfirmingHard(false)
               props.setConstraint({
@@ -893,7 +989,11 @@ const ProfileEditor = (props: {
               : '仅本人与所有者'}
           </Button>
           {props.constraint.enforcement === 'hard' && !props.confirmingHard ? (
-            <Button className='button' onClick={() => props.setConfirmingHard(true)}>
+            <Button
+              className='button'
+              disabled={props.busy}
+              onClick={() => props.setConfirmingHard(true)}
+            >
               进入硬约束确认
             </Button>
           ) : props.constraint.enforcement === 'hard' ? (

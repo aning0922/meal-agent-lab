@@ -1,4 +1,5 @@
 import {
+  contractRuleBindings,
   contractRuleManifest,
   contractVersion,
   requestIdSchema,
@@ -159,6 +160,7 @@ export const buildApp = async (
         version: contractVersion,
       },
       "x-meal-agent-contract-rules": contractRuleManifest,
+      "x-meal-agent-contract-rule-bindings": contractRuleBindings,
       servers: [],
       components: {
         securitySchemes: {

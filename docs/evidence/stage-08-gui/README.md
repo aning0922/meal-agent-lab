@@ -5,32 +5,66 @@
 - 构建目录：`apps/client/dist`
 - 微信开发者工具：RC `2.02.2607171`
 - 后端：本机 fake WeChat adapter + 临时 PostgreSQL 18，仅使用合成家庭、成员和约束数据
-- 结论：本地模拟器 happy path 通过；不代表真实微信登录、合法域名、真机、体验版或发布通过
+- 结论：本地模拟器入口与二次整改页面复跑通过；不代表真实微信登录、合法域名、真机、体验版、外部测试或发布通过
+
+## 实现与构建绑定
+
+首轮 7 张流程截图来自 commit `3c52a35c5b9d98eb3a156527a01b82a54daa1748`、tree `aa3e3d46719143be4daaec17fea6ea2ed1c57daa`。它们只保留阶段 08 首轮 happy path 的历史证据；其中旧 hard mapping 展示已被二次整改取代，不能作为当前 `structured` 语义的证据。
+
+二次整改 4 张截图来自本轮最终实现子树，并使用以下构建：
+
+| 项 | 值 |
+| --- | --- |
+| `apps/client` tree | `ddc358742332e73cdbe1ed9347d6246f69b1c865` |
+| `packages/contracts` tree | `f88fc137f6576277712d5c875df0225324e336a5` |
+| `services/api` tree | `ea611cc7446e2cf73bbfed3caccf801b982618e0` |
+| Node.js / pnpm | `24.14.0` / `11.9.0` |
+| Taro / React | `4.2.1` / `18.3.1` |
+| weapp 文件数 / 字节数 | `30` / `525770` |
+| weapp artifact SHA-256 | `f82bea53be6edb1020575029bd77eb96e2f4a6b3912b00e99bbb5506a2ead0fb` |
+| audit 产物扫描 | 0 条禁止签名；见 [机器证据](../stage-08-audit/weapp-advisory-scan.json) |
+
+这三个子树不包含本目录，避免“证据文件引用包含自身的 tree”循环；最终 commit 会直接引用它们，并在提交后由交付报告绑定。
 
 ## 实际页面路径
 
-1. [登录页](01-login.jpg)：从实际小程序入口执行 fake 登录。
-2. [创建家庭](02-household-created.jpg)：创建并进入合成家庭。
-3. [成员页 owner/self](03-members-owner-self.jpg)：实际渲染 MembersPage，owner 行正确显示“我”，没有落入移除他人的错误路径。
-4. [完整硬约束和映射状态](04-hard-constraint-mapping.jpg)：创建 structured allergy/peanut，并创建尚无正式词表的 religious hard constraint；页面显示“待结构化；推荐必须阻断”。
-5. [归档](05-archive.jpg)：从实际 ProfilePage 归档 dining-only profile。
-6. [同 ID 恢复](06-restore-same-profile.jpg)：从 archived 列表恢复同一 profile，不复制创建。
-7. [未知事实修复后复跑](07-household-unknown-defaults-fixed.jpg)：走查发现家庭创建仍猜测饭量、默认参与和厨艺后，修正为 `unknown/null`，重新构建并从实际家庭页确认。
+首轮流程：
 
-走查还覆盖 profile 编辑入口、active/archived 过滤和恢复后的详情读取。同动作重试、双用户关联确认、跨家庭隔离与数据库并发由自动化门禁覆盖；本记录不把单模拟器会话夸大为真实双设备 GUI。
+1. [登录页](01-login.png)：从实际小程序入口执行 fake 登录。
+2. [创建家庭](02-household-created.png)：创建并进入合成家庭。
+3. [成员页 owner/self](03-members-owner-self.png)：owner 行正确显示“我”。
+4. [首轮 hard constraint 行为](04-hard-constraint-mapping.png)：历史截图；二次整改已禁止把仅有形状校验的标识写为 `structured`。
+5. [归档](05-archive.png)：从实际 ProfilePage 归档 profile。
+6. [同 ID 恢复](06-restore-same-profile.png)：恢复原 profile，不复制创建。
+7. [未知事实修复后复跑](07-household-unknown-defaults-fixed.png)：家庭创建显示饭量、默认参与和厨艺为 unknown/null。
 
-## 数据与密钥边界
+二次整改复跑：
 
-导入开发者工具时只使用本机 gitignored 的临时 private config；仓库配置保持 `touristappid`。证据文件不包含真实 AppID、AppSecret、token、邀请码、真实用户或健康数据。走查完成后临时 private config 从源码工作区移除；后续构建产物也不得提交该文件。
+1. [owner/self 与约束计数](stage08-members-secondary.png)：当前 worktree 的实际 MembersPage，owner 行正确显示“我”，最后 owner 保护仍生效。
+2. [未经权威映射的 hard constraint](stage08-hard-secondary.png)：合成宗教硬约束固定显示“待权威结构化映射；推荐必须阻断”。
+3. [归档原档案](stage08-archive-secondary.png)：当前实现归档同一 linked profile。
+4. [恢复原档案](stage08-restore-secondary.png)：同一档案从 version 2 恢复为 active/version 3，没有复制身份。
+
+二次复跑还从页面确认五类 hard constraint 入口、unknown 用户事实和 active/archived 切换。同动作冻结、关联安全披露、退出/移除后果、不可恢复原因、双用户确认、跨家庭隔离和数据库竞态由真实页面测试或 PostgreSQL/E2E 门禁覆盖；本记录不把单模拟器会话夸大为真实双设备 GUI。
+
+## 隐私与元数据
+
+所有证据都裁剪为 `282×610` 的模拟器区域，不包含开发者工具账号头像、编辑器、源码树或桌面。文件统一转为 PNG；嵌入式 creation、camera make/model 和 GPS latitude/longitude 均为空。证据不包含真实 AppID、AppSecret、token、邀请码、真实用户或健康数据。
+
+导入开发者工具时使用仓库 `touristappid` 配置；本地生成的 `project.private.config.json` 保持 gitignored。没有执行预览、真机调试或上传。
 
 ## 文件校验
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `01-login.jpg` | `97735bbc48c8696766786a49059a1b518f9674afb9db6a447037f456d5f8ba06` |
-| `02-household-created.jpg` | `90e5aa91f77346aaa2f186565db2ad7c516905c5ac7ed572d8fc26e712e4f407` |
-| `03-members-owner-self.jpg` | `779a353d40d40233928686563c51c21b6a60bb9a6c57ab4cefdabf8797d14ef4` |
-| `04-hard-constraint-mapping.jpg` | `69950b7d67abeb3d9a0fe8f88624d71ceb5df4141be58721b4e067f02baaa431` |
-| `05-archive.jpg` | `8cd2c486e22e6b7fd9bce1f8862db92abddd739e8a0b8269e0e8eebfbcbe6abb` |
-| `06-restore-same-profile.jpg` | `11c59b95a8a78b4629fc03512378a97f16394486c3537b00aa7da3c97c7a6571` |
-| `07-household-unknown-defaults-fixed.jpg` | `fabc68fecc417adb80a4bc15acf862faf35be7deaa5543bda870a69c68096cc7` |
+| `01-login.png` | `ce38ed40e9eec200a84a7198e6bf8b08c1a0956280d8d8c6cd62084c093ab2c9` |
+| `02-household-created.png` | `7e48b0da134cc74d4b6eefe86af6319c09ceaf19b43ebd3f2f505ed05230a055` |
+| `03-members-owner-self.png` | `1228b25411358161cfdccde3c5877c785f45db47ae2873e22db686ac276d59d6` |
+| `04-hard-constraint-mapping.png` | `e9ee412df933cd98ef8acb120ea98cd2e19c3594b90a5bd45ce33395eba746af` |
+| `05-archive.png` | `1624f9e39af7510cfaa076f7ed91122adc47798898f38d6e571320674e14a89c` |
+| `06-restore-same-profile.png` | `10020e7119a1b5077806088d0090c618cb948d3671c917f2dbc79a59f0e8411b` |
+| `07-household-unknown-defaults-fixed.png` | `afad2ece73b66c2c66c21ac29ef43a3d4840deb1384eb2042a929df2a9f5c0ce` |
+| `stage08-members-secondary.png` | `b1b652e95ef7c9686be9e6d6703848d25ba1885b1c8aea8c5fa19bb88f4f5e9d` |
+| `stage08-hard-secondary.png` | `b7fe40a05f52e4fa3970ff717aa21c0358b139999dab7cbcf841825367609a84` |
+| `stage08-archive-secondary.png` | `cc1d1c544a3e81bee39499e9c9445c73d599fc5da7558aebcda0cce2d9a69762` |
+| `stage08-restore-secondary.png` | `63a65bfab8f3d131d406128b57fb7c6aa943187f20a6d51b0e8ff39a295a10ef` |

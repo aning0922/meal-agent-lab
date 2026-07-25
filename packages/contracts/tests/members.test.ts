@@ -489,10 +489,17 @@ test("hard dietary constraints require explicit confirmation; soft ones forbid i
   );
 });
 
-test("0.4.0 hard constraints require an explicit executable mapping state", () => {
+test("0.4.0 hard constraints remain blocked until an authoritative mapping exists", () => {
   assert.equal(
     dietaryConstraintSchema.safeParse(privateConstraint).success,
     true,
+  );
+  assert.equal(
+    dietaryConstraintSchema.safeParse({
+      ...privateConstraint,
+      mappingStatus: "structured",
+    }).success,
+    false,
   );
   const { mappingStatus: _mapping, ...legacyConstraint } = privateConstraint;
   void _mapping;
@@ -500,4 +507,50 @@ test("0.4.0 hard constraints require an explicit executable mapping state", () =
     dietaryConstraintSchema.safeParse(legacyConstraint).success,
     false,
   );
+});
+
+test("all five hard constraint inputs require a full confirmation fingerprint", () => {
+  const kinds = [
+    "allergy",
+    "religious",
+    "ethical",
+    "explicit_avoid",
+    "food_safety_exclusion",
+  ] as const;
+  for (const kind of kinds) {
+    const fields = {
+      kind,
+      enforcement: "hard" as const,
+      label: `矩阵-${kind}`,
+      foodConceptIds: [],
+      allergenCodes: kind === "allergy" ? ["SHAPE_ONLY"] : [],
+      visibility: "household" as const,
+    };
+    const request = {
+      expectedVersion: 0,
+      constraint: {
+        ...fields,
+        confirmation: {
+          acknowledged: true,
+          fingerprint: hardConstraintConfirmationFingerprint(fields),
+        },
+      },
+    };
+    assert.equal(
+      addDietaryConstraintRequestSchema.safeParse(request).success,
+      true,
+      kind,
+    );
+    assert.equal(
+      addDietaryConstraintRequestSchema.safeParse({
+        ...request,
+        constraint: {
+          ...request.constraint,
+          visibility: "subject_and_owner",
+        },
+      }).success,
+      false,
+      `${kind} visibility changes must invalidate confirmation`,
+    );
+  }
 });

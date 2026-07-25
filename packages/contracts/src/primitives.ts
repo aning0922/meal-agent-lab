@@ -285,8 +285,7 @@ export const positiveExactQuantityAmountSchema = z
     "x-decimal-scale": quantityDecimalScale,
     "x-meal-agent-rules": [
       {
-        id: "quantity.exact.positive",
-        version: 1,
+        id: "quantity.exact.positive.v1",
         enforcement: "native",
         description:
           "exact quantity must be positive, including before alias normalization",
@@ -294,13 +293,18 @@ export const positiveExactQuantityAmountSchema = z
     ],
   });
 
-const positiveApproximateQuantityAmountSchema = z
+export const positiveApproximateQuantityAmountSchema = z
   .number()
   .finite()
   .positive()
   .max(quantityDecimalNumberMax)
   .refine(hasAtMostQuantityDecimalScale, {
     message: `approximate quantity amount supports at most ${quantityDecimalScale} decimal places`,
+  })
+  .meta({
+    "x-zod-refinements": [
+      `approximate quantity amount supports at most ${quantityDecimalScale} decimal places`,
+    ],
   });
 
 export const exactQuantitySchema = z.strictObject({
@@ -388,7 +392,7 @@ export type PersistableInitialQuantity = z.infer<
   typeof persistableInitialQuantitySchema
 >;
 
-const nonZeroEstimatedQuantityDeltaAmountSchema = z
+export const nonZeroEstimatedQuantityDeltaAmountSchema = z
   .number()
   .finite()
   .min(-quantityDecimalNumberMax)
@@ -427,8 +431,7 @@ const nonZeroExactQuantityDeltaAmountSchema = z
     ],
     "x-meal-agent-rules": [
       {
-        id: "quantity.delta.exact.nonzero",
-        version: 1,
+        id: "quantity.delta.exact-nonzero.v1",
         enforcement: "native",
         description: "exact quantity delta cannot be mathematical zero",
       },

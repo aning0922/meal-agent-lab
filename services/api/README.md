@@ -6,7 +6,7 @@ Node.js 24 + Fastify 5 模块化单体，使用 PostgreSQL 18、Drizzle schema �
 
 - 业务 request/response 只复用 `@meal-agent/contracts` `0.4.0`；
 - opaque session、transaction-local user/household context、FORCE RLS 和复合外键共同隔离家庭；
-- `meal_agent_app` 无 `memberships UPDATE`，成员状态变更只走受控 `SECURITY DEFINER` 函数；
+- `meal_agent_app` 无 `memberships UPDATE` 或 `person_profiles UPDATE`，成员与档案状态/字段变更只走受控 `SECURITY DEFINER` 函数；
 - PersonProfile/constraint 写入只缓存 receipt，邀请码重放不含明文；
 - owner/self 与 household 视图使用不同 allowlist schema，后者结构性排除 `subject_and_owner`；
 - 日志脱敏 token、微信 code/provider 标识、inviteCode 及常见命名变体；
@@ -20,9 +20,10 @@ Node.js 24 + Fastify 5 模块化单体，使用 PostgreSQL 18、Drizzle schema �
 0000_stage_06.sql
   → 0001_stage_08.sql
   → 0002_stage_08_audit_closeout.sql
+  → 0003_stage_08_secondary_closeout.sql
 ```
 
-不得修改 `0000`/`0001` 或 checksum。`0002` 在单一事务内依次新增结构/函数、转换旧数据，再撤销旧权限；历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
+不得修改既有 migration 或 checksum。`0002` 完成首轮安全收口；`0003` 在单一事务内收紧 PersonProfile 表权限、移除调用方时间/能力参数、物化关联请求终态并统一成员不变量锁。历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
 
 ## 本地运行
 
@@ -44,7 +45,7 @@ pnpm --filter @meal-agent/api openapi:check
 pnpm --filter @meal-agent/api build
 ```
 
-数据库测试使用临时 PostgreSQL 18 cluster，覆盖空库/增量 migration、checksum、RLS、权限、函数边界、并发 join、成员状态并发和敏感幂等历史转换。
+数据库测试使用临时 PostgreSQL 18 cluster，覆盖空库/增量 migration、checksum、RLS、应用角色直接 SQL、函数签名/权限、丢响应自退出重放、并发 join、profile 创建/确认竞态、关联请求终态和敏感幂等历史转换。
 
 ## OpenAPI 与路由
 

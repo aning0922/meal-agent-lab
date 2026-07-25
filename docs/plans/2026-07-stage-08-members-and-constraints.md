@@ -13,11 +13,11 @@
 
 ## 审计后边界
 
-最终阶段 08 在不修改 `0000`/`0001` 或 checksum 的前提下增加单事务 `0002_stage_08_audit_closeout.sql`，并将契约升级至 `0.4.0`。详细架构理由见 [ADR-0004](../architecture/decisions/0004-stage-08-pre-release-audit-closeout.md)。
+最终阶段 08 在不修改既有 migration 或 checksum 的前提下增加单事务 `0002_stage_08_audit_closeout.sql` 与二次收口 `0003_stage_08_secondary_closeout.sql`，契约保持 `0.4.0`。详细架构理由见 [ADR-0004](../architecture/decisions/0004-stage-08-pre-release-audit-closeout.md)。
 
 ### FAM-003
 
-已完成：
+登记与隐私范围已实现，但安全闭环仍为部分完成：
 
 - 登录成员与 dining-only profile 的统一 list/get；
 - displayName、默认饭量、默认参与和厨艺的 unknown/null、查看和编辑；
@@ -32,12 +32,12 @@
 已完成：
 
 - allergy、religious、ethical、explicit avoid、food safety exclusion 与 soft preference；
-- allergen/food concept 结构化标识；
+- allergen/food concept 标识符输入；
 - hard constraint 二次确认，指纹覆盖包括 visibility 在内的全部字段；
 - owner/self 完整视图与 household 安全投影；
-- 无正式确定性映射时标记 `needs_structured_mapping`，推荐必须阻断。
+- 当前无权威映射词表，形状校验不能标为 structured；全部 hard constraint 标记 `needs_structured_mapping`，推荐必须阻断。
 
-阶段 08 不发明宗教、伦理或食品安全正式规则词表。
+阶段 08 不发明 allergen、food concept、宗教、伦理或食品安全正式规则词表；在权威映射和推荐安全闭环完成前不得声称 FAM-004 全部完成。
 
 ### FAM-005
 
@@ -54,11 +54,11 @@
 
 | 层 | 结果 |
 | --- | --- |
-| contracts | 22/22 |
+| contracts | 23/23 |
 | API unit | 12/12 |
 | API HTTP | 5/5 |
-| PostgreSQL migration/RLS/concurrency | 33/33 |
-| client unit + 页面渲染 | 91/91 |
+| PostgreSQL migration/RLS/concurrency | 38/38 |
+| client unit + 页面渲染 | 95/95 |
 | stage 07 + stage 08 E2E | 21/21 |
 | weapp build | Pass |
 | GUI | Pass，见[证据](../evidence/stage-08-gui/README.md) |

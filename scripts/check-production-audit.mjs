@@ -51,12 +51,41 @@ const command =
 if (command.error !== undefined) {
   fail(`could not run pnpm audit: ${command.error.message}`)
 }
+if (command.status === null) {
+  fail(
+    `pnpm audit terminated without an exit code ` +
+      `(signal=${command.signal ?? 'unknown'}): ${command.stderr.trim()}`
+  )
+}
 
 let audit
 try {
   audit = JSON.parse(command.stdout)
 } catch {
-  fail(`pnpm audit did not return JSON: ${command.stderr.trim()}`)
+  fail(
+    `pnpm audit subprocess failed without parseable JSON ` +
+      `(exit=${command.status}): ${command.stderr.trim() || '(no stderr)'}`
+  )
+}
+if (
+  audit === null ||
+  typeof audit !== 'object' ||
+  audit.error !== undefined
+) {
+  fail(
+    `pnpm audit registry/network failure ` +
+      `(exit=${command.status}): ${JSON.stringify(audit?.error ?? audit)}`
+  )
+}
+if (
+  audit.advisories === undefined ||
+  audit.metadata?.vulnerabilities === undefined
+) {
+  fail(
+    `pnpm audit returned no vulnerability report ` +
+      `(exit=${command.status}); treat as registry/network failure: ` +
+      `${command.stderr.trim() || JSON.stringify(audit)}`
+  )
 }
 
 const sha256 = (value) =>
@@ -77,6 +106,12 @@ const actual = Object.values(audit.advisories ?? {}).map((advisory) => {
     pathSetSha256: sha256(JSON.stringify(paths))
   }
 })
+if (command.status !== 0 && actual.length === 0) {
+  fail(
+    `pnpm audit exited ${command.status} without advisories; ` +
+      `this is an infrastructure failure, not an accepted vulnerability result`
+  )
+}
 const expectedById = new Map(
   policy.advisories.map((advisory) => [advisory.id, advisory])
 )
@@ -136,6 +171,7 @@ for (const path of files) {
 
 const result = {
   decision: policy.decision,
+  auditExitCode: command.status,
   target,
   expiresAt: policy.expiresAt,
   advisories: actual.length,

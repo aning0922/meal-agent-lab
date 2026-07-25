@@ -10,7 +10,7 @@ export interface RecordedNavigation {
   readonly route?: AppRoute
 }
 
-type ResponseScript = HttpResponse | Error
+type ResponseScript = HttpResponse | Error | Promise<HttpResponse>
 
 /** Node 测试用的确定性平台适配器：请求按脚本应答并全程留痕。 */
 export class FakePlatform implements PlatformAdapter {
@@ -68,7 +68,7 @@ export class FakePlatform implements PlatformAdapter {
       if (scripted instanceof Error) {
         throw scripted
       }
-      return scripted
+      return await scripted
     }
   }
 

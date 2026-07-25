@@ -124,7 +124,7 @@ test("identity, household, membership and profile contracts compose without usin
         label: "花生过敏",
         foodConceptIds: [],
         allergenCodes: ["PEANUT"],
-        mappingStatus: "structured",
+        mappingStatus: "needs_structured_mapping",
         visibility: "subject_and_owner",
         confirmedAt: now,
         confirmedByUserId: user.id,

@@ -155,7 +155,7 @@ try {
     }
 
     // 增量应用 + checksum 校验：新建第二个库，先只上 0000（断言此时没有
-    // household_invites），再增量上 0001/0002（断言新表出现、0000 未重跑），
+    // household_invites），再增量上 0001/0002/0003（断言新表出现、0000 未重跑），
     // 最后篡改存储 hash 证明 checksum 守卫会拒绝漂移。
     const incrementalDatabase = "meal_agent_incremental_test";
     await run(
@@ -351,6 +351,7 @@ try {
           "0000_stage_06.sql",
           "0001_stage_08.sql",
           "0002_stage_08_audit_closeout.sql",
+          "0003_stage_08_secondary_closeout.sql",
         ],
       );
       const converted = await incrementalPool.query<{
@@ -417,7 +418,7 @@ try {
       );
       assert.match(
         JSON.stringify(migratedProfile.rows[0]?.dietary_constraints),
-        /"mappingStatus":"structured"/,
+        /"mappingStatus":"needs_structured_mapping"/,
       );
       // 重复应用是幂等 no-op：全部 checksum 匹配，不抛错、不重跑。
       await applyMigrations(incrementalUrl);

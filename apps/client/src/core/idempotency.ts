@@ -29,8 +29,8 @@ const canonicalize = (value: unknown): unknown => {
 
 /**
  * 仅驻留内存的“同一次进行中动作”键仓库。同 action + 同 payload 的重试
- * 复用 key；字段变化会开启新命令。应用重启后仓库自然清空，页面先 GET
- * 对账，不持久化请求体或敏感字段。
+ * 复用 key；进行中动作的字段不得漂移，必须先完成或显式放弃。应用重启
+ * 后仓库自然清空，页面先 GET 对账，不持久化请求体或敏感字段。
  */
 export class PendingActionIdempotency {
   readonly #runtime: RuntimePort
@@ -48,6 +48,11 @@ export class PendingActionIdempotency {
     const existing = this.#pending.get(action)
     if (existing?.fingerprint === fingerprint) {
       return existing.key
+    }
+    if (existing !== undefined) {
+      throw new Error(
+        `pending idempotent action payload changed: ${action}`
+      )
     }
     const key = createIdempotencyKey(this.#runtime)
     this.#pending.set(action, { fingerprint, key })

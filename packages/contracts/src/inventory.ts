@@ -120,7 +120,7 @@ export const inventoryLotSchema = z
   });
 export type InventoryLot = z.infer<typeof inventoryLotSchema>;
 
-const createInventoryLotDateInputSchema = z
+export const createInventoryLotDateInputSchema = z
   .strictObject({
     kind: z.enum([
       "purchase_date",
