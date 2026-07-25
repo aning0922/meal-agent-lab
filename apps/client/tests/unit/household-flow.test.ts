@@ -73,7 +73,7 @@ describe('createHousehold', () => {
     assert.equal(platform.sentRequests.length, 0)
   })
 
-  it('创建成功：携带幂等键、设为当前家庭', async () => {
+  it('创建成功携带幂等键，但由获准导航统一切换家庭上下文', async () => {
     const platform = new FakePlatform()
     const services = createAppServices(platform, BASE_URL)
     const result = createHouseholdResultFixture()
@@ -102,10 +102,7 @@ describe('createHousehold', () => {
         cookingSkill: null
       }
     })
-    assert.equal(
-      services.session.restoreCurrentHouseholdId(),
-      result.household.id
-    )
+    assert.equal(services.session.restoreCurrentHouseholdId(), null)
   })
 
   it('幂等重放（replayed=true）被识别', async () => {

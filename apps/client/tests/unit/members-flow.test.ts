@@ -53,7 +53,7 @@ describe('joinHousehold', () => {
     assert.equal(platform.sentRequests.length, 0)
   })
 
-  it('加入成功后切换当前家庭上下文', async () => {
+  it('加入成功返回家庭，但由获准导航统一切换上下文', async () => {
     const { platform, services } = servicesWith()
     const result = joinHouseholdResultFixture()
     platform.enqueueJson(201, successEnvelope(result))
@@ -65,10 +65,7 @@ describe('joinHousehold', () => {
       return
     }
     assert.equal(outcome.replayed, false)
-    assert.equal(
-      services.session.restoreCurrentHouseholdId(),
-      result.household.id
-    )
+    assert.equal(services.session.restoreCurrentHouseholdId(), null)
     assert.equal(platform.lastRequest.headers['idempotency-key'], KEY)
   })
 

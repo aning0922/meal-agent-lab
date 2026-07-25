@@ -69,6 +69,14 @@ test("persisted profile and constraint strings reject U+0000 and count emoji lik
     ).success,
     false,
   );
+  for (const isolatedSurrogate of ["\ud800", "\udfff"]) {
+    assert.equal(
+      createPersonProfileRequestSchema.safeParse(
+        profileRequest(`档案${isolatedSurrogate}`),
+      ).success,
+      false,
+    );
+  }
 
   const hardConstraint = (fields: {
     readonly label: string;

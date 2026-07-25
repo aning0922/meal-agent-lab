@@ -659,6 +659,34 @@ export class ApiRepository {
     };
   }
 
+  /**
+   * PersonProfile/link 生命周期写路径的统一第二层锁。
+   *
+   * 固定总序为：
+   * completed replay / household bootstrap
+   *   → household link advisory
+   *   → idempotency marker
+   *   → request/profile/membership domain row locks。
+   *
+   * 0004 中的 SECURITY DEFINER 函数会重入同一 advisory（同事务安全），
+   * 但 repository 必须在创建 marker 前先取锁，避免 FK/key-share 与状态
+   * UPDATE 形成反向锁环。
+   */
+  async #lockPersonProfileLinks(
+    client: PoolClient,
+    householdId: string,
+  ): Promise<void> {
+    await client.query(
+      `SELECT pg_catalog.pg_advisory_xact_lock(
+         pg_catalog.hashtextextended(
+           'person-profile-links:' || $1::text,
+           0
+         )
+       )`,
+      [householdId],
+    );
+  }
+
   async #loadIdempotentReplay<T>(
     client: PoolClient,
     input: IdempotencyInput,
@@ -1917,6 +1945,7 @@ export class ApiRepository {
           authenticatedContext,
           householdId,
         );
+        await this.#lockPersonProfileLinks(client, householdId);
         return this.#runIdempotent(
           client,
           idempotencyInput,
@@ -2103,6 +2132,27 @@ export class ApiRepository {
       accessToken,
       requestId,
       async (client, authenticatedContext) => {
+        await setHouseholdContext(client, householdId);
+        const idempotencyInput: IdempotencyInput = {
+          scope: "household",
+          userId: authenticatedContext.userId,
+          householdId,
+          method: "POST",
+          normalizedRoute:
+            normalizedRoutes.createPersonProfileLinkRequest,
+          key: idempotencyKey,
+          resourceTarget: { profileId },
+          payload: request,
+          requestId,
+          statusCode: 201,
+        };
+        const replay =
+          await this.#loadIdempotentReplay<PersonProfileLinkRequestResult>(
+            client,
+            idempotencyInput,
+            true,
+          );
+        if (replay !== null) return replay;
         const context = await this.#bootstrapHousehold(
           client,
           authenticatedContext,
@@ -2112,21 +2162,10 @@ export class ApiRepository {
           context,
           "Only an owner may initiate a profile link",
         );
+        await this.#lockPersonProfileLinks(client, householdId);
         return this.#runIdempotent(
           client,
-          {
-            scope: "household",
-            userId: context.userId,
-            householdId,
-            method: "POST",
-            normalizedRoute:
-              normalizedRoutes.createPersonProfileLinkRequest,
-            key: idempotencyKey,
-            resourceTarget: { profileId },
-            payload: request,
-            requestId,
-            statusCode: 201,
-          },
+          { ...idempotencyInput, userId: context.userId },
           async () => {
             const requestEntityId = newEntityId();
             const creation = await client.query<{
@@ -2220,6 +2259,7 @@ export class ApiRepository {
           authenticatedContext,
           householdId,
         );
+        await this.#lockPersonProfileLinks(client, householdId);
         await client.query(
           `SELECT meal_agent_private.materialize_person_profile_link_requests(
              $1::uuid, NULL::uuid, NULL::uuid
@@ -2284,15 +2324,7 @@ export class ApiRepository {
         // confirm 的 idempotency marker 具有 target membership 外键。
         // 必须先取得 link household 锁，避免 remove 已持有 advisory lock
         // 时形成 “marker FK key-share ↔ membership update” 锁环。
-        await client.query(
-          `SELECT pg_catalog.pg_advisory_xact_lock(
-             pg_catalog.hashtextextended(
-               'person-profile-links:' || $1::text,
-               0
-             )
-           )`,
-          [householdId],
-        );
+        await this.#lockPersonProfileLinks(client, householdId);
         return this.#runIdempotent(
           client,
           {
@@ -2382,6 +2414,28 @@ export class ApiRepository {
       accessToken,
       requestId,
       async (client, authenticatedContext) => {
+        await setHouseholdContext(client, householdId);
+        const idempotencyInput: IdempotencyInput = {
+          scope: "household",
+          userId: authenticatedContext.userId,
+          householdId,
+          method: "POST",
+          normalizedRoute: normalizedRoutes.createPersonProfile,
+          key: idempotencyKey,
+          payload: request,
+          requestId,
+          statusCode: 201,
+        };
+        const replay =
+          await this.#loadIdempotentReplay<PersonProfileMutationReceipt>(
+            client,
+            idempotencyInput,
+            false,
+          );
+        if (replay !== null) {
+          if (isCommittedDomainError(replay)) throw replay.error;
+          return replay;
+        }
         const context = await this.#bootstrapHousehold(
           client,
           authenticatedContext,
@@ -2398,19 +2452,10 @@ export class ApiRepository {
             "A linked profile may only be created by its subject member",
           );
         }
+        await this.#lockPersonProfileLinks(client, householdId);
         return this.#runIdempotent(
           client,
-          {
-            scope: "household",
-            userId: context.userId,
-            householdId,
-            method: "POST",
-            normalizedRoute: normalizedRoutes.createPersonProfile,
-            key: idempotencyKey,
-            payload: request,
-            requestId,
-            statusCode: 201,
-          },
+          { ...idempotencyInput, userId: context.userId },
           async () => {
             if (request.linkedMembershipId !== undefined) {
               // 与关联确认共享家庭级 advisory 锁；materialize 函数随后按确定性
@@ -2520,11 +2565,35 @@ export class ApiRepository {
       accessToken,
       requestId,
       async (client, authenticatedContext) => {
+        await setHouseholdContext(client, householdId);
+        const idempotencyInput: IdempotencyInput = {
+          scope: "household",
+          userId: authenticatedContext.userId,
+          householdId,
+          method: "PATCH",
+          normalizedRoute: normalizedRoutes.patchPersonProfile,
+          key: idempotencyKey,
+          resourceTarget: { profileId },
+          payload: request,
+          requestId,
+          statusCode: 200,
+        };
+        const replay =
+          await this.#loadIdempotentReplay<PersonProfileMutationReceipt>(
+            client,
+            idempotencyInput,
+            false,
+          );
+        if (replay !== null) {
+          if (isCommittedDomainError(replay)) throw replay.error;
+          return replay;
+        }
         const context = await this.#bootstrapHousehold(
           client,
           authenticatedContext,
           householdId,
         );
+        await this.#lockPersonProfileLinks(client, householdId);
         await this.#loadAuthorizedProfile(
           client,
           context,
@@ -2533,18 +2602,7 @@ export class ApiRepository {
         );
         return this.#runIdempotent(
           client,
-          {
-            scope: "household",
-            userId: context.userId,
-            householdId,
-            method: "PATCH",
-            normalizedRoute: normalizedRoutes.patchPersonProfile,
-            key: idempotencyKey,
-            resourceTarget: { profileId },
-            payload: request,
-            requestId,
-            statusCode: 200,
-          },
+          { ...idempotencyInput, userId: context.userId },
           async () => {
             const mutation =
               request.operation === "update"

@@ -1,22 +1,27 @@
+import type { HouseholdId, UserId } from '@meal-agent/contracts'
 import {
   idempotencyKeySchema,
   type IdempotencyKey
 } from '@meal-agent/contracts/api'
 
-import type { RuntimePort } from '../platform/ports'
+import type { AppRoute, RuntimePort } from '../platform/ports'
+import {
+  householdIdForCommand,
+  type AnyRegisteredCommand,
+  type ClientCommandKind,
+  type RegisteredCommand
+} from './command-registry'
 
 /**
- * 每个"逻辑写操作"生成一次幂等键；同一操作的自动或手动重试必须复用
- * 同一个键（由 app 级内存协调器持有，成功或确定失败后才丢弃）。
+ * 每个逻辑写操作只生成一次幂等键。同一次自动或手动重试必须复用
+ * envelope 中的不可变 command snapshot 与 key。
  */
 export const createIdempotencyKey = (
   runtime: RuntimePort
 ): IdempotencyKey => idempotencyKeySchema.parse(`c07-${runtime.randomToken()}`)
 
 const canonicalize = (value: unknown): unknown => {
-  if (Array.isArray(value)) {
-    return value.map(canonicalize)
-  }
+  if (Array.isArray(value)) return value.map(canonicalize)
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value)
@@ -32,12 +37,9 @@ export type CommandDisposition =
   | 'definite-failure'
   | 'unknown'
 
-export interface PendingActionSnapshot<T = unknown> {
-  readonly action: string
-  readonly key: IdempotencyKey
-  readonly payload: T
-  readonly phase: 'in-flight' | 'unknown'
-  readonly observation?: PendingCommandObservation
+export interface PendingAuthenticationContext {
+  readonly principalId: UserId
+  readonly generation: number
 }
 
 export interface PendingCommandObservation {
@@ -48,119 +50,148 @@ export interface PendingCommandObservation {
   readonly summary: string
 }
 
+export interface PendingCommandEnvelope<
+  C = AnyRegisteredCommand
+> {
+  readonly action: string
+  readonly key: IdempotencyKey
+  readonly command: C
+  readonly principalId: UserId
+  readonly householdId: HouseholdId | null
+  readonly ownerRoute: AppRoute
+  readonly authGeneration: number
+  readonly phase: 'in-flight' | 'unknown'
+  readonly observation?: PendingCommandObservation
+}
+
+export type PendingCommandStatus =
+  | { readonly phase: 'idle' }
+  | {
+      readonly phase: 'in-flight' | 'unknown' | 'auth-suspended'
+      readonly action: string
+      readonly commandKind: ClientCommandKind
+      readonly ownerRoute: AppRoute
+      readonly householdId: HouseholdId | null
+    }
+
+type StoredPending = {
+  readonly action: string
+  readonly key: IdempotencyKey
+  readonly command: AnyRegisteredCommand
+  readonly principalId: UserId
+  readonly householdId: HouseholdId | null
+  readonly ownerRoute: AppRoute
+  authGeneration: number
+  phase: 'in-flight' | 'unknown' | 'auth-suspended'
+  resumePhase: 'in-flight' | 'unknown'
+  observation?: PendingCommandObservation
+}
+
 /**
- * 仅驻留内存的“同一次进行中动作”键仓库。同 action + 同 payload 的重试
- * 复用 key；进行中动作的字段不得漂移。普通资源 GET 只可记录观察证据，
- * 不能证明命令已执行或未执行，也不能释放未知命令。应用重启后仓库自然
- * 清空，不持久化请求体、邀请码或私密约束。
+ * 全应用唯一、仅驻内存的 pending command coordinator。
+ *
+ * - envelope 同时绑定 principal、household、owner route 与认证 generation；
+ * - 401 只 suspend，不删除未知命令；
+ * - 同 principal 重登更新 generation 后恢复；不同 principal 登录销毁旧
+ *   envelope，且新用户从未获得旧 payload/key 的读取或执行能力；
+ * - 对外 status 是脱敏视图，payload 只在当前认证上下文严格匹配时可取。
  */
 export class PendingActionIdempotency {
-  readonly #runtime: RuntimePort
-  readonly #pending = new Map<
-    string,
-    {
-      readonly key: IdempotencyKey
-      readonly payload: unknown
-      phase: 'in-flight' | 'unknown'
-      observation?: PendingCommandObservation
-    }
-  >()
+  readonly #listeners = new Set<() => void>()
+  #pending: StoredPending | null = null
 
-  public constructor(runtime: RuntimePort) {
-    this.#runtime = runtime
+  public constructor(
+    private readonly runtime: RuntimePort,
+    private readonly authenticationContext: () =>
+      PendingAuthenticationContext | null
+  ) {}
+
+  public subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener)
+    return () => this.#listeners.delete(listener)
   }
 
-  public acquire(action: string, payload: unknown): IdempotencyKey {
-    return this.acquireSnapshot(action, payload).key
+  #emit(): void {
+    for (const listener of this.#listeners) listener()
   }
 
-  /**
-   * 首次调用保存完整规范化命令；同 action 重试永远返回原快照，即使 GET
-   * 刷新改变了页面中的 lot/profile。调用方必须从返回的 payload 执行请求。
-   */
-  public acquireSnapshot<T>(
-    action: string,
-    payload: T
-  ): PendingActionSnapshot<T> {
-    const snapshot = canonicalize(payload)
-    const existing = this.#pending.get(action)
-    if (existing !== undefined) {
-      existing.phase = 'in-flight'
-      delete existing.observation
-      return {
-        action,
-        key: existing.key,
-        payload: existing.payload as T,
-        phase: existing.phase
-      }
-    }
-    if (this.#pending.size > 0) {
-      throw new Error(
-        'another pending command must be retried before starting a new action'
-      )
-    }
-    const key = createIdempotencyKey(this.#runtime)
-    this.#pending.set(action, {
-      key,
-      payload: snapshot,
-      phase: 'in-flight'
-    })
-    return {
-      action,
-      key,
-      payload: snapshot as T,
-      phase: 'in-flight'
-    }
-  }
-
-  public settle(action: string, disposition: CommandDisposition): void {
-    if (disposition === 'unknown') {
-      const pending = this.#pending.get(action)
-      if (pending !== undefined) {
-        pending.phase = 'unknown'
-      }
-      return
-    }
-    this.#pending.delete(action)
-  }
-
-  public markUnknown(action: string): void {
-    this.settle(action, 'unknown')
-  }
-
-  public hasPending(action: string): boolean {
-    return this.#pending.has(action)
-  }
-
-  public hasAnyPending(): boolean {
-    return this.#pending.size > 0
-  }
-
-  public snapshot<T = unknown>(
-    action: string
-  ): PendingActionSnapshot<T> | null {
-    const pending = this.#pending.get(action)
-    return pending === undefined
-      ? null
+  public status(): PendingCommandStatus {
+    const pending = this.#pending
+    return pending === null
+      ? { phase: 'idle' }
       : {
-          action,
-          key: pending.key,
-          payload: pending.payload as T,
           phase: pending.phase,
-          ...(pending.observation === undefined
-            ? {}
-            : { observation: pending.observation })
+          action: pending.action,
+          commandKind: pending.command.kind,
+          ownerRoute: pending.ownerRoute,
+          householdId: pending.householdId
         }
   }
 
-  public activeSnapshot<T = unknown>(): PendingActionSnapshot<T> | null {
-    const entry = this.#pending.entries().next()
-    if (entry.done) return null
-    const [action, pending] = entry.value
-    return {
+  public acquireCommand<K extends ClientCommandKind>(
+    action: string,
+    ownerRoute: AppRoute,
+    command: RegisteredCommand<K>
+  ): PendingCommandEnvelope<RegisteredCommand<K>> {
+    const context = this.authenticationContext()
+    if (context === null) {
+      throw new Error('an authenticated principal is required')
+    }
+    const canonicalCommand = canonicalize(command) as RegisteredCommand<K>
+    const householdId = householdIdForCommand(
+      canonicalCommand as AnyRegisteredCommand
+    )
+    const existing = this.#pending
+    if (existing !== null) {
+      if (
+        existing.action !== action ||
+        existing.principalId !== context.principalId ||
+        existing.authGeneration !== context.generation ||
+        existing.phase === 'auth-suspended'
+      ) {
+        throw new Error(
+          'another pending command must be resumed before starting a new action'
+        )
+      }
+      existing.phase = 'in-flight'
+      existing.resumePhase = 'in-flight'
+      delete existing.observation
+      this.#emit()
+      return this.#visibleEnvelope(
+        existing
+      ) as PendingCommandEnvelope<RegisteredCommand<K>>
+    }
+
+    const pending: StoredPending = {
       action,
+      key: createIdempotencyKey(this.runtime),
+      command: canonicalCommand as AnyRegisteredCommand,
+      principalId: context.principalId,
+      householdId,
+      ownerRoute,
+      authGeneration: context.generation,
+      phase: 'in-flight',
+      resumePhase: 'in-flight'
+    }
+    this.#pending = pending
+    this.#emit()
+    return this.#visibleEnvelope(
+      pending
+    ) as PendingCommandEnvelope<RegisteredCommand<K>>
+  }
+
+  #visibleEnvelope(pending: StoredPending): PendingCommandEnvelope {
+    if (pending.phase === 'auth-suspended') {
+      throw new Error('authentication must resume before reading command')
+    }
+    return {
+      action: pending.action,
       key: pending.key,
-      payload: pending.payload as T,
+      command: pending.command,
+      principalId: pending.principalId,
+      householdId: pending.householdId,
+      ownerRoute: pending.ownerRoute,
+      authGeneration: pending.authGeneration,
       phase: pending.phase,
       ...(pending.observation === undefined
         ? {}
@@ -168,35 +199,124 @@ export class PendingActionIdempotency {
     }
   }
 
-  public hasOtherPending(action: string): boolean {
-    return [...this.#pending.keys()].some((key) => key !== action)
+  #isCurrent(pending: StoredPending): boolean {
+    const context = this.authenticationContext()
+    return (
+      context !== null &&
+      pending.phase !== 'auth-suspended' &&
+      context.principalId === pending.principalId &&
+      context.generation === pending.authGeneration
+    )
+  }
+
+  public activeSnapshot(): PendingCommandEnvelope | null {
+    const pending = this.#pending
+    return pending !== null && this.#isCurrent(pending)
+      ? this.#visibleEnvelope(pending)
+      : null
+  }
+
+  public snapshot(action: string): PendingCommandEnvelope | null {
+    const pending = this.#pending
+    return pending !== null &&
+      pending.action === action &&
+      this.#isCurrent(pending)
+      ? this.#visibleEnvelope(pending)
+      : null
+  }
+
+  public settle(action: string, disposition: CommandDisposition): void {
+    const pending = this.#pending
+    if (pending === null || pending.action !== action) return
+    // 401 handler may suspend while the request is unwinding. Never let the
+    // later page/dispatcher disposition erase that unknown command.
+    if (pending.phase === 'auth-suspended') return
+    if (disposition === 'unknown') {
+      pending.phase = 'unknown'
+      pending.resumePhase = 'unknown'
+      this.#emit()
+      return
+    }
+    this.#pending = null
+    this.#emit()
+  }
+
+  public markUnknown(action: string): void {
+    this.settle(action, 'unknown')
   }
 
   public complete(action: string): void {
     this.settle(action, 'completed')
   }
 
+  public hasPending(action: string): boolean {
+    return this.#pending?.action === action
+  }
+
+  public hasAnyPending(): boolean {
+    return this.#pending !== null
+  }
+
+  public hasOtherPending(action: string): boolean {
+    return this.#pending !== null && this.#pending.action !== action
+  }
+
+  public suspendForAuthentication(): void {
+    const pending = this.#pending
+    if (pending === null || pending.phase === 'auth-suspended') return
+    pending.resumePhase =
+      pending.phase === 'in-flight' ? 'unknown' : pending.phase
+    pending.phase = 'auth-suspended'
+    delete pending.observation
+    this.#emit()
+  }
+
+  public resumeAuthentication(
+    context: PendingAuthenticationContext
+  ): 'fresh' | 'resumed' | 'replaced' {
+    const pending = this.#pending
+    if (pending === null) return 'fresh'
+    if (pending.principalId !== context.principalId) {
+      // Fail closed: do not retain a sensitive payload/key in a process now
+      // controlled by another authenticated principal.
+      this.#pending = null
+      this.#emit()
+      return 'replaced'
+    }
+    if (pending.phase !== 'auth-suspended') {
+      if (pending.authGeneration !== context.generation) {
+        this.#pending = null
+        this.#emit()
+        return 'replaced'
+      }
+      return 'resumed'
+    }
+    pending.authGeneration = context.generation
+    pending.phase = pending.resumePhase
+    this.#emit()
+    return 'resumed'
+  }
+
   /**
-   * 普通 GET 观察严格绑定当前 action + key，但它不是 command-status，
-   * 不开放 complete/abandon。下一次 retry 会先清除此观察。
+   * 普通 GET 只记录观察，不能释放未知命令；观察严格绑定 action+key。
    */
   public recordObservation(
     action: string,
     key: IdempotencyKey,
-    observation: Omit<
-      PendingCommandObservation,
-      'action' | 'key'
-    >
+    observation: Omit<PendingCommandObservation, 'action' | 'key'>
   ): void {
-    const pending = this.#pending.get(action)
+    const pending = this.#pending
     if (
-      pending === undefined ||
+      pending === null ||
+      !this.#isCurrent(pending) ||
+      pending.action !== action ||
       pending.key !== key ||
       pending.phase !== 'unknown'
     ) {
       throw new Error('observation does not match the pending command')
     }
     pending.observation = { action, key, ...observation }
+    this.#emit()
   }
 }
 
@@ -233,10 +353,10 @@ export const dispositionForOutcome = (
     outcome.kind === 'linked' ||
     outcome.kind === 'archived' ||
     outcome.kind === 'restored' ||
-    outcome.kind === 'removed'
+    outcome.kind === 'removed' ||
+    outcome.kind === 'revoked'
   ) {
     return 'completed'
   }
-  // 本地 invalid 以及服务端 400/403/404/409 都是确定结果。
   return 'definite-failure'
 }

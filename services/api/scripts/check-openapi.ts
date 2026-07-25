@@ -9,6 +9,7 @@ import {
   contractRuleBindings,
   contractRuleManifest,
   contractRuleSchemaBindings,
+  createPersonProfileRequestSchema,
   inventoryEventSchema,
   sessionSchema,
 } from "@meal-agent/contracts";
@@ -212,6 +213,10 @@ const addConstraintRequestObject =
   generated.paths[
     "/api/v1/households/{id}/person-profiles/{profileId}/dietary-constraints"
   ]?.post?.requestBody;
+const createProfileRequestObject =
+  generated.paths[
+    "/api/v1/households/{id}/person-profiles"
+  ]?.post?.requestBody;
 const collectPropertySchemas = (
   value: unknown,
   propertyName: string,
@@ -269,6 +274,18 @@ const openApiNumberAccepts = (
         ? value >= schema["maximum"]
         : value > schema["maximum"]
     )
+  ) {
+    return false;
+  }
+  return true;
+};
+const openApiStringAccepts = (
+  schema: Record<string, unknown>,
+  value: string,
+): boolean => {
+  if (
+    typeof schema["pattern"] === "string" &&
+    !new RegExp(schema["pattern"]).test(value)
   ) {
     return false;
   }
@@ -343,6 +360,38 @@ for (const boundary of zeroBoundaries) {
     openApiNumberAccepts(boundary.openApi, 0),
     false,
     `${boundary.name} OpenAPI semantics must reject zero`,
+  );
+}
+const profileDisplayNameSchemas = collectPropertySchemas(
+  createProfileRequestObject,
+  "displayName",
+);
+assert.ok(
+  profileDisplayNameSchemas.length > 0,
+  "profile displayName must appear in OpenAPI",
+);
+for (const [value, accepted] of [
+  ["😀".repeat(80), true],
+  ["😀".repeat(81), false],
+  [`档案${"\ud800"}`, false],
+  [`档案${"\udfff"}`, false],
+] as const) {
+  assert.equal(
+    createPersonProfileRequestSchema.safeParse({
+      displayName: value,
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    }).success,
+    accepted,
+    "runtime profile displayName scalar boundary mismatch",
+  );
+  assert.equal(
+    profileDisplayNameSchemas.some((schema) =>
+      openApiStringAccepts(schema, value)
+    ),
+    accepted,
+    "OpenAPI profile displayName scalar boundary mismatch",
   );
 }
 for (const propertyName of ["foodConceptIds", "allergenCodes"]) {

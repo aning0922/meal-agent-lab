@@ -2196,6 +2196,238 @@ test("linked profile creation racing link confirmation yields one success and on
   );
 });
 
+test("same principal in two real sessions: self-exit vs confirm obeys the shared advisory order without deadlock or 500", { timeout: 10_000 }, async () => {
+  const owner = await login("same-user-exit-owner");
+  const household = await createHousehold(owner, "same-user-exit-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(
+    owner,
+    householdId,
+    "same-user-exit-invite",
+  );
+  const memberSessionOne = await login("same-user-exit-member");
+  const membership = joinHouseholdSuccessSchema.parse(
+    (
+      await join(
+        memberSessionOne,
+        invite.inviteCode,
+        "same-user-exit-join",
+      )
+    ).json(),
+  ).data.membership;
+  const memberSessionTwo = await login("same-user-exit-member");
+  assert.equal(memberSessionTwo.user.id, memberSessionOne.user.id);
+  assert.notEqual(
+    memberSessionTwo.session.id,
+    memberSessionOne.session.id,
+  );
+  const dining = await createProfile(
+    owner,
+    householdId,
+    "same-user-exit-dining",
+    {
+      displayName: "退出确认竞态档案",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  const profileId =
+    personProfileMutationSuccessSchema.parse(dining.json()).data.profileId;
+  const requested = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${profileId}/link-requests`,
+    headers: idempotent(owner, "same-user-exit-request"),
+    payload: {
+      targetMembershipId: membership.id,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+  const request =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+
+  const blocker = await persistence.pool.connect();
+  let blockerTransactionOpen = false;
+  try {
+    await blocker.query("BEGIN");
+    blockerTransactionOpen = true;
+    await blocker.query(
+      `SELECT pg_catalog.pg_advisory_xact_lock(
+         pg_catalog.hashtextextended(
+           'person-profile-links:' || $1::text,
+           0
+         )
+       )`,
+      [householdId],
+    );
+    const exiting = app.inject({
+      method: "DELETE",
+      url:
+        `/api/v1/households/${householdId}/memberships/` +
+        `${membership.id}`,
+      headers: idempotent(memberSessionOne, "same-user-exit-self"),
+    });
+    const confirming = app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${householdId}` +
+        `/person-profile-link-requests/${request.id}/confirm`,
+      headers: idempotent(memberSessionTwo, "same-user-exit-confirm"),
+      payload: {
+        expectedVersion: request.version,
+        subjectConfirmation: { acknowledged: true },
+      },
+    });
+    await waitForAdvisoryWaiters(2);
+    await blocker.query("COMMIT");
+    blockerTransactionOpen = false;
+    const [exitResponse, confirmResponse] = await Promise.all([
+      exiting,
+      confirming,
+    ]);
+    assert.equal(exitResponse.statusCode, 200, exitResponse.body);
+    assert.equal(
+      [200, 409].includes(confirmResponse.statusCode),
+      true,
+      confirmResponse.body,
+    );
+    assert.notEqual(confirmResponse.statusCode, 500, confirmResponse.body);
+    assert.equal(
+      `${exitResponse.body}${confirmResponse.body}`.includes("40P01"),
+      false,
+    );
+  } finally {
+    if (blockerTransactionOpen) {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+    }
+    blocker.release();
+  }
+});
+
+test("same principal in two real sessions: linked self-create vs confirm is success plus 409 behind a database barrier", { timeout: 10_000 }, async () => {
+  const owner = await login("same-user-create-owner");
+  const household = await createHousehold(owner, "same-user-create-hh");
+  const householdId = household.household.id;
+  const invite = await issueInvite(
+    owner,
+    householdId,
+    "same-user-create-invite",
+  );
+  const memberSessionOne = await login("same-user-create-member");
+  const membership = joinHouseholdSuccessSchema.parse(
+    (
+      await join(
+        memberSessionOne,
+        invite.inviteCode,
+        "same-user-create-join",
+      )
+    ).json(),
+  ).data.membership;
+  const memberSessionTwo = await login("same-user-create-member");
+  assert.equal(memberSessionTwo.user.id, memberSessionOne.user.id);
+  assert.notEqual(
+    memberSessionTwo.session.id,
+    memberSessionOne.session.id,
+  );
+  const dining = await createProfile(
+    owner,
+    householdId,
+    "same-user-create-dining",
+    {
+      displayName: "自建确认竞态档案",
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    },
+  );
+  const profileId =
+    personProfileMutationSuccessSchema.parse(dining.json()).data.profileId;
+  const requested = await app.inject({
+    method: "POST",
+    url:
+      `/api/v1/households/${householdId}/person-profiles/` +
+      `${profileId}/link-requests`,
+    headers: idempotent(owner, "same-user-create-request"),
+    payload: {
+      targetMembershipId: membership.id,
+      expiresInHours: 24,
+      ownerConfirmation: { acknowledged: true },
+    },
+  });
+  const request =
+    personProfileLinkRequestSuccessSchema.parse(requested.json()).data.request;
+
+  const blocker = await persistence.pool.connect();
+  let blockerTransactionOpen = false;
+  try {
+    await blocker.query("BEGIN");
+    blockerTransactionOpen = true;
+    await blocker.query(
+      `SELECT pg_catalog.pg_advisory_xact_lock(
+         pg_catalog.hashtextextended(
+           'person-profile-links:' || $1::text,
+           0
+         )
+       )`,
+      [householdId],
+    );
+    const creating = createProfile(
+      memberSessionOne,
+      householdId,
+      "same-user-create-linked",
+      {
+        linkedMembershipId: membership.id,
+        displayName: "成员自建档案",
+        defaultParticipation: null,
+        defaultPortionScale: null,
+        cookingSkill: null,
+      },
+    );
+    const confirming = app.inject({
+      method: "POST",
+      url:
+        `/api/v1/households/${householdId}` +
+        `/person-profile-link-requests/${request.id}/confirm`,
+      headers: idempotent(memberSessionTwo, "same-user-create-confirm"),
+      payload: {
+        expectedVersion: request.version,
+        subjectConfirmation: { acknowledged: true },
+      },
+    });
+    await waitForAdvisoryWaiters(2);
+    await blocker.query("COMMIT");
+    blockerTransactionOpen = false;
+    const [createResponse, confirmResponse] = await Promise.all([
+      creating,
+      confirming,
+    ]);
+    const statuses = [
+      createResponse.statusCode,
+      confirmResponse.statusCode,
+    ];
+    assert.equal(
+      statuses.filter((status) => status >= 200 && status < 300).length,
+      1,
+    );
+    assert.equal(
+      statuses.filter((status) => status === 409).length,
+      1,
+    );
+    assert.equal(
+      `${createResponse.body}${confirmResponse.body}`.includes("40P01"),
+      false,
+    );
+  } finally {
+    if (blockerTransactionOpen) {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+    }
+    blocker.release();
+  }
+});
+
 test("profile link requests materialize duplicate, expiry, member-exit, and profile-archive terminal states", async () => {
   const owner = await login("link-life-owner");
   const household = await createHousehold(owner, "link-life-hh");
@@ -2921,6 +3153,29 @@ test("malformed safe-409 idempotency bodies are rejected by the database", async
         error !== null &&
         "code" in error &&
         error.code === "23514",
+    );
+  }
+});
+
+test("PostgreSQL JSONB rejects isolated UTF-16 surrogates while accepting legal emoji", async () => {
+  const legal = await persistence.pool.query<{ value: string }>(
+    `SELECT ($1::jsonb #>> '{}')::text AS value`,
+    [JSON.stringify("😀".repeat(80))],
+  );
+  assert.equal(legal.rows[0]?.value, "😀".repeat(80));
+
+  for (const rawJson of ['"\\ud800"', '"\\udfff"']) {
+    await assert.rejects(
+      persistence.pool.query(`SELECT $1::jsonb`, [rawJson]),
+      (error: unknown) =>
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (
+          error.code === "22P02" ||
+          error.code === "22P05" ||
+          error.code === "22023"
+        ),
     );
   }
 });

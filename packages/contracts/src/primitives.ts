@@ -27,9 +27,21 @@ const lowercaseUuidV7Pattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
- * PostgreSQL text/varchar/jsonb reject U+0000 and character_length counts
- * Unicode code points, while JavaScript String.length counts UTF-16 code
- * units. Keep public persisted-string validation aligned with PostgreSQL.
+ * 一个 PostgreSQL 可持久化的 Unicode scalar：
+ * - BMP 中排除 U+0000 与 surrogate 区间；
+ * - supplementary code point 必须由完整 high+low surrogate pair 表示。
+ *
+ * 该片段刻意不依赖 RegExp `u` flag。这样同一 pattern 可直接进入
+ * OpenAPI 3.0，并由一次重复匹配代表一个 PostgreSQL character_length
+ * 字符；合法 emoji 算一个，孤立 high/low surrogate 不匹配。
+ */
+const postgresUnicodeScalarPattern =
+  "(?:[\\u0001-\\uD7FF\\uE000-\\uFFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])";
+
+/**
+ * PostgreSQL text/varchar/jsonb reject U+0000 and non-scalar surrogate
+ * sequences；character_length 按 Unicode scalar 计数。公共持久化字符串
+ * 必须在 HTTP contract 层先与该边界对齐，不能把数据库编码错误变成 500。
  */
 export const postgresTextSchema = (
   minimum: number,
@@ -44,17 +56,20 @@ export const postgresTextSchema = (
     throw new Error("invalid PostgreSQL text length boundary");
   }
   const pattern = new RegExp(
-    `^(?![\\s\\S]*\\u0000)[\\s\\S]{${minimum},${maximum}}$`,
-    "u",
+    `^(?:${postgresUnicodeScalarPattern}){${minimum},${maximum}}$`,
   );
   return z.string().regex(pattern, {
     message:
-      `text must contain ${minimum}-${maximum} PostgreSQL characters and no U+0000`,
+      `text must contain ${minimum}-${maximum} PostgreSQL Unicode scalar values`,
   }).meta({
     minLength: minimum,
     maxLength: maximum,
     "x-postgresql-length-unit": "unicode-code-point",
-    "x-postgresql-forbidden-code-points": ["U+0000"],
+    "x-postgresql-forbidden-code-points": [
+      "U+0000",
+      "isolated-high-surrogate",
+      "isolated-low-surrogate",
+    ],
   });
 };
 

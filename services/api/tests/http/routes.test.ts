@@ -210,9 +210,17 @@ test("HTTP contract rejects non-string, over-precision and exponent exact amount
 });
 
 test("HTTP contract rejects PostgreSQL-unsafe persisted strings before a handler can write", async () => {
+  let profileHandlerCalls = 0;
+  const guardedOperations = {
+    ...operations,
+    createPersonProfile: async (): Promise<never> => {
+      profileHandlerCalls += 1;
+      throw new Error("profile handler must not be called");
+    },
+  } satisfies NonNullable<BuildAppOptions["operations"]>;
   const app = await buildApp({
     config,
-    operations,
+    operations: guardedOperations,
     readiness: async () => true,
   });
   try {
@@ -235,6 +243,34 @@ test("HTTP contract rejects PostgreSQL-unsafe persisted strings before a handler
       apiErrorSchema.parse(profile.json()).code,
       "VALIDATION_FAILED",
     );
+
+    for (const [index, displayName] of [
+      `档案${"\ud800"}`,
+      `档案${"\udfff"}`,
+      "😀".repeat(81),
+    ].entries()) {
+      const unsafe = await app.inject({
+        method: "POST",
+        url: `/api/v1/households/${ids.household}/person-profiles`,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "idempotency-key": `profile-http-unicode-${index}`,
+        },
+        payload: JSON.stringify({
+          displayName,
+          defaultParticipation: null,
+          defaultPortionScale: null,
+          cookingSkill: null,
+        }),
+      });
+      assert.equal(unsafe.statusCode, 400, unsafe.body);
+      assert.equal(
+        apiErrorSchema.parse(unsafe.json()).code,
+        "VALIDATION_FAILED",
+      );
+    }
+    assert.equal(profileHandlerCalls, 0);
 
     const constraint = await app.inject({
       method: "POST",

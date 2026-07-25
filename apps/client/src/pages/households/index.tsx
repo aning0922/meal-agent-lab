@@ -6,15 +6,13 @@ import type { Household } from '@meal-agent/contracts/identity'
 import { getAppServices } from '../../app-runtime'
 import { signOut } from '../../core/auth-flow'
 import {
-  createHousehold,
   loadHouseholds,
   HOUSEHOLD_DEFAULTS
 } from '../../core/household-flow'
+import type { createHousehold } from '../../core/household-flow'
+import type { joinHousehold } from '../../core/members-flow'
 import {
-  dispositionForOutcome
-} from '../../core/idempotency'
-import { joinHousehold } from '../../core/members-flow'
-import {
+  HOUSEHOLDS_ROUTE,
   INVENTORY_ROUTE,
   LOGIN_ROUTE,
   MEMBERS_ROUTE
@@ -81,16 +79,18 @@ export default function HouseholdsPage() {
 
   const openHousehold = async (household: Household): Promise<void> => {
     const services = getAppServices()
-    if (services.pendingCommands.hasAnyPending()) return
-    services.session.saveCurrentHouseholdId(household.id)
-    await services.navigation.reLaunch(INVENTORY_ROUTE)
+    await services.navigation.reLaunch(
+      INVENTORY_ROUTE,
+      () => services.session.saveCurrentHouseholdId(household.id)
+    )
   }
 
   const openMembers = async (household: Household): Promise<void> => {
     const services = getAppServices()
-    if (services.pendingCommands.hasAnyPending()) return
-    services.session.saveCurrentHouseholdId(household.id)
-    await services.navigation.navigateTo(MEMBERS_ROUTE)
+    await services.navigation.navigateTo(
+      MEMBERS_ROUTE,
+      () => services.session.saveCurrentHouseholdId(household.id)
+    )
   }
 
   const handleJoin = async (): Promise<void> => {
@@ -111,11 +111,10 @@ export default function HouseholdsPage() {
     const payload = { inviteCode: inviteCode.trim() }
     let outcome: Awaited<ReturnType<typeof joinHousehold>>
     try {
-      const command = actionKeys.acquireSnapshot(joinAction, payload)
-      outcome = await joinHousehold(
-        services,
-        command.payload.inviteCode,
-        command.key
+      outcome = await services.commands.execute(
+        joinAction,
+        HOUSEHOLDS_ROUTE,
+        { kind: 'household.join', payload }
       )
     } catch {
       actionKeys.markUnknown(joinAction)
@@ -126,13 +125,18 @@ export default function HouseholdsPage() {
       })
       return
     }
-    actionKeys.settle(joinAction, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'joined':
         setJoinState({ kind: 'idle' })
         setInviteCode('')
         // 成功加入后切到该家庭的成员页。
-        await services.navigation.navigateTo(MEMBERS_ROUTE)
+        await services.navigation.navigateTo(
+          MEMBERS_ROUTE,
+          () =>
+            services.session.saveCurrentHouseholdId(
+              outcome.result.household.id
+            )
+        )
         return
       case 'invalid':
         setJoinState({ kind: 'invalid', messages: outcome.messages })
@@ -172,11 +176,13 @@ export default function HouseholdsPage() {
     const payload = { name, ownerDisplayName }
     let outcome: Awaited<ReturnType<typeof createHousehold>>
     try {
-      const command = actionKeys.acquireSnapshot(createAction, payload)
-      outcome = await createHousehold(
-        services,
-        command.payload,
-        command.key
+      outcome = await services.commands.execute(
+        createAction,
+        HOUSEHOLDS_ROUTE,
+        {
+          kind: 'household.create',
+          payload
+        }
       )
     } catch {
       actionKeys.markUnknown(createAction)
@@ -187,10 +193,15 @@ export default function HouseholdsPage() {
       })
       return
     }
-    actionKeys.settle(createAction, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
-        await services.navigation.reLaunch(INVENTORY_ROUTE)
+        await services.navigation.reLaunch(
+          INVENTORY_ROUTE,
+          () =>
+            services.session.saveCurrentHouseholdId(
+              outcome.result.household.id
+            )
+        )
         return
       case 'invalid':
         setSubmit(outcome)
@@ -213,7 +224,16 @@ export default function HouseholdsPage() {
     }
     setSigningOut(true)
     const services = getAppServices()
-    await signOut(services)
+    const result = await signOut(services)
+    if (result.kind === 'blocked') {
+      setSubmit({
+        kind: 'failed',
+        message: '存在未决命令，不能退出登录；请先重试原命令。',
+        retryable: false
+      })
+      setSigningOut(false)
+      return
+    }
     await services.navigation.reLaunch(LOGIN_ROUTE)
   }
 

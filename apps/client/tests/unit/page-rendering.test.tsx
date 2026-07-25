@@ -7,7 +7,9 @@ import { householdIdSchema } from '@meal-agent/contracts'
 import { authenticatedSessionSchema } from '@meal-agent/contracts/identity'
 
 import { installAppServicesForPageTest } from '../../src/app-runtime'
+import { PendingCommandRecovery } from '../../src/components/pending-command-recovery'
 import { createAppServices } from '../../src/core/app-services'
+import { HOUSEHOLDS_ROUTE } from '../../src/platform/ports'
 import HouseholdsPage from '../../src/pages/households'
 import InventoryPage from '../../src/pages/inventory'
 import MembersPage from '../../src/pages/members'
@@ -88,6 +90,57 @@ const buttonText = (instance: {
     .join('')
 
 describe('真实页面渲染回归', () => {
+  it('全局恢复入口在原生 Back 后仍从 registry snapshot 重试原命令', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, 'http://127.0.0.1:3000')
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueResponse(new Error('lost create response'))
+    await services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '原始家庭', ownerDisplayName: '原始成员' }
+      }
+    )
+    // 模拟宿主原生 Back 绕过程序化 navigation port；coordinator 仍在 app
+    // service 中持有 envelope，恢复入口不依赖原页面闭包。
+    await platform.navigation.navigateBack()
+    platform.enqueueJson(
+      201,
+      successEnvelope(createHouseholdResultFixture())
+    )
+    cleanupServices = installAppServicesForPageTest(services)
+
+    await act(async () => {
+      renderer = create(<PendingCommandRecovery />)
+    })
+    assert.ok(renderer)
+    const retry = renderer.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原命令')
+    assert.ok(retry)
+    const beforeRetry = platform.sentRequests.length
+    await act(async () => {
+      retry.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(platform.sentRequests.length, beforeRetry + 1)
+    const writes = platform.sentRequests.filter(
+      (request) =>
+        request.method === 'POST' && request.url.endsWith('/households')
+    )
+    assert.equal(writes.length, 2)
+    assert.equal(
+      writes[0]?.headers['idempotency-key'],
+      writes[1]?.headers['idempotency-key']
+    )
+    assert.equal(writes[0]?.body, writes[1]?.body)
+    assert.equal(renderer.toJSON(), null)
+  })
+
   it('HouseholdsPage 明示新成员事实为未知且不再展示推测默认值', async () => {
     const { Page } = renderWithServices(HouseholdsPage, [
       {
@@ -476,11 +529,17 @@ describe('真实页面渲染回归', () => {
       renderer?.root
         .findAll((node) => String(node.type) === 'taro-button')
         .find((candidate) => buttonText(candidate) === '生成邀请码')
+    const firstGenerate = generate()
+    assert.ok(firstGenerate)
     await act(async () => {
-      generate()?.props['onClick']()
+      firstGenerate.props['onClick']()
       await settleEffects()
-      generate()?.props['onClick']()
+      const retryGenerate = generate()
+      assert.ok(retryGenerate)
+      const beforeRetry = platform.sentRequests.length
+      retryGenerate.props['onClick']()
       await settleEffects()
+      assert.equal(platform.sentRequests.length, beforeRetry + 1)
     })
     const requests = platform.sentRequests.filter((request) =>
       request.url.endsWith('/invites') &&
@@ -499,6 +558,71 @@ describe('真实页面渲染回归', () => {
       renderer?.root
         .findAll((node) => String(node.type) === 'taro-button')
         .find((candidate) => buttonText(candidate) === '撤销此邀请')
+    )
+  })
+
+  it('MembersPage 明确 403 会释放旧命令，按钮真实存在且下一次点击确实发出新请求', async () => {
+    const ownerMembership = membershipFixture({
+      role: 'owner',
+      sequence: 20,
+      userSeq: 1
+    })
+    const { Page, platform, services } = renderWithServices(MembersPage, [
+      {
+        status: 200,
+        body: successEnvelope(
+          ownerMembersViewFixture([
+            {
+              membership: ownerMembership,
+              profile: personProfileFixture({ membershipSeq: 20 })
+            }
+          ])
+        )
+      },
+      { status: 403, body: apiErrorBody('FORBIDDEN') },
+      {
+        status: 201,
+        body: successEnvelope({
+          invite: householdInviteFixture(),
+          inviteCode: INVITE_CODE
+        })
+      }
+    ])
+    await act(async () => {
+      renderer = create(<Page />)
+      await settleEffects()
+    })
+    const findGenerate = () =>
+      renderer?.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((button) => buttonText(button) === '生成邀请码')
+
+    const first = findGenerate()
+    assert.ok(first)
+    const beforeFirst = platform.sentRequests.length
+    await act(async () => {
+      first.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(platform.sentRequests.length, beforeFirst + 1)
+    assert.equal(services.pendingCommands.status().phase, 'idle')
+
+    const second = findGenerate()
+    assert.ok(second)
+    const beforeSecond = platform.sentRequests.length
+    await act(async () => {
+      second.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(platform.sentRequests.length, beforeSecond + 1)
+    const inviteRequests = platform.sentRequests.filter(
+      (request) =>
+        request.method === 'POST' && request.url.endsWith('/invites')
+    )
+    assert.equal(inviteRequests.length, 2)
+    assert.notEqual(
+      inviteRequests[0]?.headers['idempotency-key'],
+      inviteRequests[1]?.headers['idempotency-key']
     )
   })
 
@@ -1196,7 +1320,7 @@ describe('真实页面渲染回归', () => {
       },
       version: 0
     }
-    const { Page } = renderWithServices(ProfilePage, [
+    const { Page, platform } = renderWithServices(ProfilePage, [
       {
         status: 200,
         body: successEnvelope(
@@ -1224,10 +1348,13 @@ describe('真实页面渲染回归', () => {
     const confirm = renderer?.root
       .findAll((node) => String(node.type) === 'taro-button')
       .find((candidate) => buttonText(candidate) === '我确认关联')
+    assert.ok(confirm)
+    const beforeConfirm = platform.sentRequests.length
     await act(async () => {
-      confirm?.props['onClick']()
+      confirm.props['onClick']()
       await settleEffects()
     })
+    assert.equal(platform.sentRequests.length, beforeConfirm + 1)
     const text = textContent(renderer?.toJSON() ?? null)
     assert.match(text, /无权确认|权限/)
     assert.doesNotMatch(text, /所有者必须重新发起/)

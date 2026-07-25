@@ -92,6 +92,16 @@
 | S5-05 | 安全 409 migration/Drizzle CHECK 封闭 SQL UNKNOWN | object + `ok=false` + `error.code=CONFLICT`；`{}`、JSON null、缺字段均 23514 | Closed |
 | S5-06 | Households create/join、Inventory、Members、Profile 统一 app 级 pending coordinator | GET 失败不开放 abandon、GET→retry→unknown 清观察、下一动作不继承、跨动作/离页与邀请丢响应页面测试 | Closed；进程重启恢复 Deferred |
 
+合并前根因整改关闭项：
+
+| ID | 整改 | 关键证据 | 状态 |
+| --- | --- | --- | --- |
+| S6-01 | pending envelope 绑定 principal/household/owner route/auth generation；401 suspend | 同用户重登复用原 snapshot/key；换用户不可读/不可执行；主动登出 service fail-closed | Closed |
+| S6-02 | 集中 typed command registry、retry dispatcher、订阅与全局恢复入口 | GET/资源消失/页面卸载/宿主 Back 后从原 snapshot 重试；导航显式 allowed/denied 后才改家庭上下文 | Closed；进程重启恢复仍 Deferred |
+| S6-03 | repository 统一 link 生命周期锁总序 | 同一 principal 两个真实 session + DB barrier 覆盖 self-exit vs confirm、linked self-create vs confirm，无 `40P01`/500 | Closed |
+| S6-04 | PostgreSQL-safe primitive 拒绝孤立 surrogate 且允许合法 emoji | contracts、raw JSON HTTP 400 不触达 handler、OpenAPI 和 JSONB 的 80/81 emoji parity | Closed |
+| S6-05 | Members 4xx disposition 与真实页面交互断言 | 403 释放旧 action；按钮存在且两次点击均使请求数增加，新动作使用新 key | Closed |
+
 ## 3. A — 幂等与敏感数据
 
 ### 集中式策略
@@ -177,7 +187,7 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 
 runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩展元数据存在等同为 runtime 行为通过。
 
-另有三个显式 zero 语义反例：approximate amount、session tokenVersion 与 inventory event resultingLotVersion 在 runtime 和 OpenAPI 中都拒绝 0。所有会持久化到 PostgreSQL text/varchar/jsonb 的公共字符串使用共享 primitive，在 HTTP 前拒绝 U+0000，并以 Unicode code point 计算长度；emoji 边界与 PostgreSQL `character_length` 对齐。
+另有三个显式 zero 语义反例：approximate amount、session tokenVersion 与 inventory event resultingLotVersion 在 runtime 和 OpenAPI 中都拒绝 0。所有会持久化到 PostgreSQL text/varchar/jsonb 的公共字符串使用共享 primitive，在 HTTP 前拒绝 U+0000 与孤立 high/low surrogate，并以 Unicode scalar value 计算长度；合法 emoji 的 80/81 边界与 PostgreSQL `character_length`、OpenAPI 对齐，pattern 不依赖 JavaScript `u` flag。
 
 ## 7. E — 客户端范围
 
@@ -187,7 +197,9 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 - FAM-004 当前实现范围：全部 hard kinds、allergen/food concept 标识符、visibility、全字段指纹双确认和未映射阻断；权威映射与推荐闭环未完成；
 - FAM-005 当前范围：cooking skill unknown/查看/编辑；
 - MembersPage owner/self 正确；
-- Households create/join、Inventory、Members、Profile 共用 app 级协调器；同动作 transport/5xx/malformed 重试复用 key，进行中 payload/version 不得变化，相关输入冻结，其他写入与离页被阻断；
+- Households create/join、Inventory、Members、Profile 的全部写操作使用集中 typed command registry、retry dispatcher 和 app 级协调器；同动作 transport/5xx/malformed 重试复用 key，进行中 payload/version 不得变化，相关输入冻结，其他写入与带上下文变更的离页被阻断；
+- envelope 绑定 principal、household、owner route 与认证 generation；401 进入 `auth-suspended`，同用户重登恢复，换用户不可读/不可执行。coordinator 订阅驱动全局恢复入口，页面卸载和宿主原生 Back 后仍从 snapshot 重试；
+- 程序化导航显式返回 `allowed`/`denied`，`currentHousehold` 只在导航获准后写入；主动登出由 service/coordinator fail-closed；
 - 普通 GET 只能记录绑定 action/key 的 observation，不能证明命令执行与否；GET 失败不产生证据，retry、新动作、成功或确定失败清除旧 observation；
 - 不持久化邀请码、私密约束或其他敏感请求体。应用进程重启后的命令恢复当前不支持；未来需要非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不得代替。
 
@@ -217,8 +229,8 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 | contracts | 28/28 |
 | API unit | 12/12 |
 | API HTTP | 6/6 |
-| PostgreSQL/RLS/concurrency | 47/47 |
-| client unit/page | 111/111 |
+| PostgreSQL/RLS/concurrency | 50/50 |
+| client unit/page | 115/115 |
 | E2E | 21/21 |
 | audit gate 反向单测 | 7/7 |
 | OpenAPI | 19 paths / 25 operations |

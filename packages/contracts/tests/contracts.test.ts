@@ -230,6 +230,14 @@ test("persisted household and inventory strings use PostgreSQL Unicode boundarie
     ).success,
     false,
   );
+  for (const isolatedSurrogate of ["\ud800", "\udfff"]) {
+    assert.equal(
+      createHouseholdRequestSchema.safeParse(
+        household(`家庭${isolatedSurrogate}`, "成员"),
+      ).success,
+      false,
+    );
+  }
 
   const inventory = (displayName: string, originalText: string) => ({
     displayName,

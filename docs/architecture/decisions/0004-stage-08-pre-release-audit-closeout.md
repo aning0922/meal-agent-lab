@@ -77,6 +77,15 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 - 可缓存的 link 409 只有两个规范化 route，数据库 CHECK 要求 `response_body` 为 JSON object、`ok` 为 JSON boolean false、`error` 为 object 且 `error.code=CONFLICT`；缺字段、`{}` 与 JSON null 都必须失败，不能利用 PostgreSQL CHECK 的 UNKNOWN 放行。
 - production audit gate 严格校验例外 policy、有限可解析到期时间、完整 advisory metadata 和退出语义；仅 exit 0/1 的合法审计报告可继续，signal、exit 2、registry/network 错误及 advisory 新增、变化或消失均失败。
 
+### 合并前根因复审的不变量
+
+- 客户端未决命令 envelope 必须绑定 `principalId`、`householdId`、`ownerRoute` 与认证 generation，并保存 typed registry command 的完整不可变 snapshot。401 只把命令转为 `auth-suspended`，不得删除未知结果；只有同一 principal 的新认证 generation 可以恢复，换用户必须 fail-closed 销毁且永远不能读取或执行旧 payload/key。
+- 所有写操作通过集中 typed command registry 和 retry dispatcher 执行，coordinator 提供订阅和全局恢复入口。普通 GET、资源消失、页面卸载或宿主原生 Back 都不能释放 envelope；恢复只重放 snapshot 与原 key。主动登出在 service/coordinator 边界拒绝，不能依赖页面按钮。
+- 程序化导航返回显式 `allowed`/`denied`；`session.currentHousehold` 等上下文变更只能作为获准导航的回调执行。存在 pending 时，除返回 `ownerRoute` 展示恢复入口外，不允许跨动作或带上下文变更的导航。
+- PersonProfile/link 生命周期写路径固定锁序为：已完成 replay / household bootstrap → household link advisory → idempotency marker → request/profile/membership domain row locks。remove、linked self-create、create-link、confirm、archive/restore 复用同一 repository helper；同一 principal 的两个真实数据库 session 与 barrier 验证 self-exit vs confirm、linked self-create vs confirm 不出现 `40P01` 或 HTTP 500。
+- PostgreSQL-safe string primitive 接受的单位是 Unicode scalar value：拒绝 U+0000、孤立 high surrogate 和孤立 low surrogate，允许合法 surrogate pair/emoji。正则不依赖 JavaScript `u` flag，以便 OpenAPI 3.0 使用同一 pattern；runtime、OpenAPI、raw JSON HTTP 与 PostgreSQL JSONB 共同验证 80/81 emoji 边界。
+- Members 写操作的 400/403/404/409 都是确定失败并释放旧命令，5xx/transport/malformed success 才保留未知状态。页面测试必须断言真实按钮存在，并以请求计数增加证明交互实际触发网络调用，不能用 optional chaining 形成假通过。
+
 ### 依赖审计和交付边界
 
 截至 2026-07-25，`pnpm audit --prod` 报告 1 critical、1 high、8 moderate，均来自 Taro 传递依赖路径。接受一个截至 2026-08-08 的机器可读 `local-weapp` 限时例外；门禁精确匹配 advisory、版本和依赖路径，并扫描 weapp 产物。新增、变化、消失但未清理或过期的 advisory 都会失败。例外期间禁止 H5、外部测试、体验版和发布。

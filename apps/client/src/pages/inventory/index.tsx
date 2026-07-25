@@ -20,10 +20,8 @@ import {
   type CreateLotQuantityDraft
 } from '../../core/inventory-flow'
 import {
-  dispositionForOutcome
-} from '../../core/idempotency'
-import {
   HOUSEHOLDS_ROUTE,
+  INVENTORY_ROUTE,
   LOGIN_ROUTE
 } from '../../platform/ports'
 
@@ -120,8 +118,10 @@ export default function InventoryPage() {
 
   const leaveToHouseholds = async (): Promise<void> => {
     const services = getAppServices()
-    services.session.clearCurrentHouseholdId()
-    await services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+    await services.navigation.reLaunch(
+      HOUSEHOLDS_ROUTE,
+      () => services.session.clearCurrentHouseholdId()
+    )
   }
 
   const refresh = async (
@@ -224,12 +224,13 @@ export default function InventoryPage() {
     }
     let outcome: Awaited<ReturnType<typeof createInventoryLot>>
     try {
-      const command = actionKeys.acquireSnapshot(action, payload)
-      outcome = await createInventoryLot(
-        services,
-        householdId,
-        command.payload,
-        command.key
+      outcome = await services.commands.execute(
+        action,
+        INVENTORY_ROUTE,
+        {
+          kind: 'inventory.create',
+          payload: { householdId, draft: payload }
+        }
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -240,7 +241,6 @@ export default function InventoryPage() {
       })
       return
     }
-    actionKeys.settle(action, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
         setBanner({
@@ -286,13 +286,13 @@ export default function InventoryPage() {
     }
     let outcome: Awaited<ReturnType<typeof consumeInventoryLot>>
     try {
-      const command = actionKeys.acquireSnapshot(action, payload)
-      outcome = await consumeInventoryLot(
-        services,
-        command.payload.householdId,
-        command.payload.lot,
-        command.payload.amount,
-        command.key
+      outcome = await services.commands.execute(
+        action,
+        INVENTORY_ROUTE,
+        {
+          kind: 'inventory.consume',
+          payload
+        }
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -303,7 +303,6 @@ export default function InventoryPage() {
       })
       return
     }
-    actionKeys.settle(action, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'consumed': {
         const updatedLot = outcome.result.lot
@@ -354,10 +353,13 @@ export default function InventoryPage() {
   const createFieldsLocked =
     createStatus.kind === 'working' ||
     actionKeys.hasAnyPending()
-  const pendingConsume =
-    actionKeys.activeSnapshot<ConsumeCommandSnapshot>()
+  const pendingEnvelope = actionKeys.activeSnapshot()
   const hasPendingConsume =
-    pendingConsume?.action.startsWith('inventory:consume:') === true
+    pendingEnvelope?.command.kind === 'inventory.consume'
+  const pendingConsume =
+    hasPendingConsume && pendingEnvelope !== null
+      ? pendingEnvelope
+      : null
 
   return (
     <View className='page'>
@@ -379,7 +381,9 @@ export default function InventoryPage() {
             className='button'
             disabled={consumeStatus.kind === 'working'}
             onClick={() => {
-              void handleConsume(pendingConsume.payload.lot)
+              if (pendingConsume.command.kind === 'inventory.consume') {
+                void handleConsume(pendingConsume.command.payload.lot)
+              }
             }}
           >
             重试原消耗
@@ -391,8 +395,13 @@ export default function InventoryPage() {
               void (async () => {
                 setConsumeStatus({ kind: 'working' })
                 try {
+                  if (
+                    pendingConsume.command.kind !== 'inventory.consume'
+                  ) {
+                    return
+                  }
                   const loaded = await refresh(
-                    pendingConsume.payload.householdId
+                    pendingConsume.command.payload.householdId
                   )
                   if (loaded) {
                     actionKeys.recordObservation(

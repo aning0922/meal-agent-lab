@@ -31,7 +31,7 @@ export const signIn = async (
   const outcome = await services.api.exchangeWechatLogin({ loginCode })
   switch (outcome.kind) {
     case 'success':
-      services.session.save(outcome.data)
+      services.authenticate(outcome.data)
       return { kind: 'success' }
     case 'apiError':
       return {
@@ -60,11 +60,23 @@ export const signIn = async (
  * 失效产生 401 提示，也一并吞掉——用户是主动退出，不该看到
  * "会话已过期"的误导文案。
  */
-export const signOut = async (services: AppServices): Promise<void> => {
+export type SignOutResult =
+  | { readonly kind: 'signed-out' }
+  | { readonly kind: 'blocked' }
+
+export const signOut = async (
+  services: AppServices
+): Promise<SignOutResult> => {
+  // 页面 disabled 不是安全边界；即使被直接调用，service/coordinator
+  // 也必须拒绝丢弃带未知结果的 payload/key。
+  if (!services.canSignOut()) {
+    return { kind: 'blocked' }
+  }
   try {
     await services.api.revokeSession()
   } finally {
     services.session.clear()
     services.consumeUnauthorizedNotice()
   }
+  return { kind: 'signed-out' }
 }

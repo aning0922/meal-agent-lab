@@ -61,7 +61,7 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 ## 契约与确定性规则
 
-`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须在 schema 定义处通过统一 helper 绑定稳定 rule ID 与 boundary；binding 与 OpenAPI schema components 从实际 Zod metadata 派生，构建配置显式保留注册模块的 side effects，不维护第二份手写 schema 映射。JSON Schema 能表达的生成原生约束，不能表达的在对应 schema 节点生成带 rule ID 的 runtime-only 扩展。OpenAPI 生成器只转换数值型 exclusive bound、保留已有 boolean 形式且转换幂等；标准 validator、关键字扫描、三个 zero boundary 的 runtime parity 及故意错绑反向测试阻止非法 schema 或规则静默丢失。持久化公共字符串统一拒绝 U+0000，并按 Unicode code point 与 PostgreSQL 计算同一长度。
+`packages/contracts` 是客户端、API、测试和 OpenAPI 的唯一 DTO/规则事实源。公共 refine/superRefine 必须在 schema 定义处通过统一 helper 绑定稳定 rule ID 与 boundary；binding 与 OpenAPI schema components 从实际 Zod metadata 派生，构建配置显式保留注册模块的 side effects，不维护第二份手写 schema 映射。JSON Schema 能表达的生成原生约束，不能表达的在对应 schema 节点生成带 rule ID 的 runtime-only 扩展。OpenAPI 生成器只转换数值型 exclusive bound、保留已有 boolean 形式且转换幂等；标准 validator、关键字扫描、三个 zero boundary 的 runtime parity 及故意错绑反向测试阻止非法 schema 或规则静默丢失。持久化公共字符串统一拒绝 U+0000 与孤立 surrogate，按 Unicode scalar value 与 PostgreSQL 计算同一长度；合法 emoji 作为一个字符，OpenAPI pattern 不依赖 `u` flag。
 
 硬约束由确定性代码处理。当前没有权威 allergen、food concept、宗教、伦理或食品安全映射词表，字符串/UUID 形状校验不构成 structured mapping；所有 hard constraint 使用 `needs_structured_mapping`，推荐边界必须阻断，模型不得补造规则。`foodConceptIds`/`allergenCodes` 最多 100 项且不得重复，food concept ID 使用小写 UUIDv7；未知饭量、参与和厨艺保持 `null`。
 

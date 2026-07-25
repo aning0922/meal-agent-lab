@@ -67,8 +67,6 @@ export const joinHousehold = async (
   const outcome = await services.api.joinHousehold(parsed.data, idempotencyKey)
   switch (outcome.kind) {
     case 'success':
-      // 成功后切换当前家庭上下文。
-      services.session.saveCurrentHouseholdId(outcome.data.household.id)
       return {
         kind: 'joined',
         result: outcome.data,
@@ -118,6 +116,7 @@ export type LoadMembersResult =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 export const loadMembers = async (
@@ -135,15 +134,22 @@ export const loadMembers = async (
       return {
         kind: 'failed',
         message: describeApiError(outcome.error),
-        retryable: outcome.error.retryable
+        retryable: outcome.error.retryable,
+        executionUnknown: outcome.error.status >= 500
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }
@@ -163,6 +169,7 @@ export type CreateInviteOutcome =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 export interface CreateInviteDraft {
@@ -198,15 +205,22 @@ export const createInvite = async (
       return {
         kind: 'failed',
         message: describeApiError(outcome.error),
-        retryable: outcome.error.retryable
+        retryable: outcome.error.retryable,
+        executionUnknown: outcome.error.status >= 500
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }
@@ -218,6 +232,7 @@ export type LoadInvitesResult =
       readonly kind: 'failed'
       readonly message: string
       readonly retryable: boolean
+      readonly executionUnknown: boolean
     }
 
 export const loadInvites = async (
@@ -237,15 +252,22 @@ export const loadInvites = async (
       return {
         kind: 'failed',
         message: describeApiError(outcome.error),
-        retryable: outcome.error.retryable
+        retryable: outcome.error.retryable,
+        executionUnknown: outcome.error.status >= 500
       }
     case 'transportError':
-      return { kind: 'failed', message: TRANSPORT_ERROR_TEXT, retryable: true }
+      return {
+        kind: 'failed',
+        message: TRANSPORT_ERROR_TEXT,
+        retryable: true,
+        executionUnknown: true
+      }
     case 'malformedResponse':
       return {
         kind: 'failed',
         message: MALFORMED_RESPONSE_TEXT,
-        retryable: false
+        retryable: false,
+        executionUnknown: true
       }
   }
 }

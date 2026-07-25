@@ -12,7 +12,6 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
-import { dispositionForOutcome } from '../../core/idempotency'
 import {
   createInvite,
   loadMembers,
@@ -22,6 +21,7 @@ import {
 import {
   HOUSEHOLDS_ROUTE,
   LOGIN_ROUTE,
+  MEMBERS_ROUTE,
   PROFILE_ROUTE
 } from '../../platform/ports'
 
@@ -116,12 +116,13 @@ export default function MembersPage() {
     }
     let outcome: Awaited<ReturnType<typeof createInvite>>
     try {
-      const command = actionKeys.acquireSnapshot(action, payload)
-      outcome = await createInvite(
-        services,
-        householdId,
-        command.payload,
-        command.key
+      outcome = await services.commands.execute(
+        action,
+        MEMBERS_ROUTE,
+        {
+          kind: 'invite.create',
+          payload: { householdId, draft: payload }
+        }
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -133,7 +134,6 @@ export default function MembersPage() {
     } finally {
       setBusy(false)
     }
-    actionKeys.settle(action, dispositionForOutcome(outcome))
     switch (outcome.kind) {
       case 'created':
         setReveal({ kind: 'revealed', result: outcome.result })
@@ -171,12 +171,13 @@ export default function MembersPage() {
     }
     let outcome: Awaited<ReturnType<typeof revokeInvite>>
     try {
-      const command = actionKeys.acquireSnapshot(action, { inviteId })
-      outcome = await revokeInvite(
-        services,
-        householdId,
-        command.payload.inviteId,
-        command.key
+      outcome = await services.commands.execute(
+        action,
+        MEMBERS_ROUTE,
+        {
+          kind: 'invite.revoke',
+          payload: { householdId, inviteId }
+        }
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -188,7 +189,6 @@ export default function MembersPage() {
     } finally {
       setBusy(false)
     }
-    actionKeys.settle(action, dispositionForOutcome(outcome))
     if (outcome.kind === 'revoked') {
       setNotice({ kind: 'info', message: '邀请已撤销。' })
     } else if (outcome.kind === 'alreadyInactive') {
@@ -219,15 +219,13 @@ export default function MembersPage() {
     }
     let outcome: Awaited<ReturnType<typeof removeMembership>>
     try {
-      const command = actionKeys.acquireSnapshot(action, {
-        membershipId,
-        isSelf
-      })
-      outcome = await removeMembership(
-        services,
-        householdId,
-        command.payload.membershipId,
-        command.key
+      outcome = await services.commands.execute(
+        action,
+        MEMBERS_ROUTE,
+        {
+          kind: 'membership.remove',
+          payload: { householdId, membershipId, isSelf }
+        }
       )
     } catch {
       actionKeys.markUnknown(action)
@@ -239,7 +237,6 @@ export default function MembersPage() {
     } finally {
       setBusy(false)
     }
-    actionKeys.settle(action, dispositionForOutcome(outcome))
     if (!actionKeys.hasPending(action)) {
       setPendingRemoval(null)
     }
@@ -248,8 +245,10 @@ export default function MembersPage() {
         if (isSelf) {
           // 退出自己后已失去该家庭访问权：直接离开到家庭列表，
           // 不能再 refresh 当前家庭（否则成员列表请求必然 404）。
-          services.session.clearCurrentHouseholdId()
-          void services.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+          void services.navigation.reLaunch(
+            HOUSEHOLDS_ROUTE,
+            () => services.session.clearCurrentHouseholdId()
+          )
           return
         }
         setNotice({ kind: 'info', message: '已移除该成员。' })

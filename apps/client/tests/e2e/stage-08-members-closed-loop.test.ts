@@ -26,6 +26,7 @@ import {
   addDietaryConstraint,
   createProfile
 } from '../../src/core/profile-flow'
+import { MEMBERS_ROUTE } from '../../src/platform/ports'
 import { NodePlatform } from './support/node-platform'
 import { startE2eStack, type E2eStack } from './support/stack'
 
@@ -115,6 +116,16 @@ describe('stage 08 members closed loop (real API + PostgreSQL 18)', () => {
     assert.equal(joined.result.membership.role, 'member')
     assert.equal(joined.result.household.id, householdId)
     bMembershipId = joined.result.membership.id
+    assert.equal(
+      servicesB.session.restoreCurrentHouseholdId(),
+      null,
+      'the core command must not mutate household context before navigation'
+    )
+    const decision = await servicesB.navigation.navigateTo(
+      MEMBERS_ROUTE,
+      () => servicesB.session.saveCurrentHouseholdId(householdId)
+    )
+    assert.equal(decision.kind, 'allowed')
     assert.equal(servicesB.session.restoreCurrentHouseholdId(), householdId)
   })
 

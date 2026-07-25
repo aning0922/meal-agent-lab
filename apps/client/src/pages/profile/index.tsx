@@ -4,7 +4,6 @@ import { Button, Input, Text, View } from '@tarojs/components'
 import type {
   DietaryConstraintId,
   HouseholdId,
-  IdempotencyKey,
   MembershipId,
   PersonProfileId
 } from '@meal-agent/contracts'
@@ -14,21 +13,18 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
-import { dispositionForOutcome } from '../../core/idempotency'
+import type {
+  ClientCommandKind,
+  RegisteredCommand,
+  RegisteredCommandOutcome
+} from '../../core/command-registry'
 import { loadMembers } from '../../core/members-flow'
-import {
-  addDietaryConstraint,
-  archiveProfile,
-  createProfile,
-  removeDietaryConstraint,
-  restoreProfile,
-  updateProfile,
-  type ConstraintDraft
-} from '../../core/profile-flow'
+import type { ConstraintDraft } from '../../core/profile-flow'
 import {
   HOUSEHOLDS_ROUTE,
   LOGIN_ROUTE,
-  MEMBERS_ROUTE
+  MEMBERS_ROUTE,
+  PROFILE_ROUTE
 } from '../../platform/ports'
 
 type CookingSkill = 'none' | 'beginner' | 'intermediate' | 'advanced'
@@ -269,14 +265,10 @@ export default function ProfilePage() {
     return <View className='page'><Text>未选择家庭，正在返回…</Text></View>
   }
 
-  const executeCommand = async <
-    P,
-    T extends { readonly kind: string }
-  >(
+  const executeCommand = async <K extends ClientCommandKind>(
     action: string,
-    payload: P,
-    operation: (saved: P, key: IdempotencyKey) => Promise<T>
-  ): Promise<T | null> => {
+    command: RegisteredCommand<K>
+  ): Promise<RegisteredCommandOutcome<K> | null> => {
     if (actionKeys.hasOtherPending(action)) {
       setNotice({
         kind: 'error',
@@ -286,10 +278,12 @@ export default function ProfilePage() {
     }
     setBusy(true)
     try {
-      const command = actionKeys.acquireSnapshot(action, payload)
       setPendingRevision((value) => value + 1)
-      const outcome = await operation(command.payload, command.key)
-      actionKeys.settle(action, dispositionForOutcome(outcome))
+      const outcome = await getAppServices().commands.execute(
+        action,
+        PROFILE_ROUTE,
+        command
+      )
       setPendingRevision((value) => value + 1)
       return outcome
     } catch {
@@ -324,13 +318,10 @@ export default function ProfilePage() {
         : `profile:create:self:${linkedMembershipId}`
     const outcome = await executeCommand(
       action,
-      payload,
-      (saved, key) => createProfile(
-        getAppServices(),
-        householdId,
-        saved,
-        key
-      )
+      {
+        kind: 'profile.create',
+        payload: { householdId, draft: payload }
+      }
     )
     if (outcome === null) return
     if (outcome.kind === 'created') {
@@ -362,15 +353,10 @@ export default function ProfilePage() {
     }
     const outcome = await executeCommand(
       action,
-      payload,
-      (saved, key) => updateProfile(
-        getAppServices(),
-        householdId,
-        saved.profileId,
-        saved.draft,
-        saved.expectedVersion,
-        key
-      )
+      {
+        kind: 'profile.update',
+        payload: { householdId, ...payload }
+      }
     )
     if (outcome === null) return
     if (outcome.kind === 'updated') {
@@ -391,27 +377,20 @@ export default function ProfilePage() {
     if (busy) return
     const action = `profile:${operation}:${profile.id}`
     const payload = {
+      householdId,
       profileId: profile.id,
-      expectedVersion: profile.version,
-      operation
+      expectedVersion: profile.version
     }
-    const outcome = await executeCommand(action, payload, (saved, key) =>
-      saved.operation === 'archive'
-        ? archiveProfile(
-          getAppServices(),
-          householdId,
-          saved.profileId,
-          saved.expectedVersion,
-          key
-        )
-        : restoreProfile(
-          getAppServices(),
-          householdId,
-          saved.profileId,
-          saved.expectedVersion,
-          key
-        )
-    )
+    const outcome =
+      operation === 'archive'
+        ? await executeCommand(action, {
+            kind: 'profile.archive',
+            payload
+          })
+        : await executeCommand(action, {
+            kind: 'profile.restore',
+            payload
+          })
     if (outcome === null) return
     if (outcome.kind === 'updated') {
       setNotice({
@@ -465,15 +444,10 @@ export default function ProfilePage() {
     }
     const outcome = await executeCommand(
       action,
-      payload,
-      (saved, key) => addDietaryConstraint(
-        getAppServices(),
-        householdId,
-        saved.profileId,
-        saved.draft,
-        saved.expectedVersion,
-        key
-      )
+      {
+        kind: 'constraint.add',
+        payload: { householdId, ...payload }
+      }
     )
     if (outcome === null) return
     if (!actionKeys.hasPending(action)) {
@@ -504,15 +478,10 @@ export default function ProfilePage() {
     }
     const outcome = await executeCommand(
       action,
-      payload,
-      (saved, key) => removeDietaryConstraint(
-        getAppServices(),
-        householdId,
-        saved.profileId,
-        saved.constraintId,
-        saved.expectedVersion,
-        key
-      )
+      {
+        kind: 'constraint.remove',
+        payload: { householdId, ...payload }
+      }
     )
     if (outcome === null) return
     if (outcome.kind === 'removed') {
@@ -537,13 +506,10 @@ export default function ProfilePage() {
     }
     const outcome = await executeCommand(
       action,
-      payload,
-      (saved, key) => getAppServices().api.createPersonProfileLinkRequest(
-        householdId,
-        saved.profileId,
-        saved.request,
-        key
-      )
+      {
+        kind: 'profile.link-request',
+        payload: { householdId, ...payload }
+      }
     )
     if (outcome === null) return
     if (outcome.kind === 'success') {
@@ -571,13 +537,10 @@ export default function ProfilePage() {
     }
     const outcome = await executeCommand(
       action,
-      payload,
-      (saved, key) => getAppServices().api.confirmPersonProfileLinkRequest(
-        householdId,
-        saved.requestId,
-        saved.request,
-        key
-      )
+      {
+        kind: 'profile.link-confirm',
+        payload: { householdId, ...payload }
+      }
     )
     if (outcome === null) return
     if (outcome.kind === 'success') {

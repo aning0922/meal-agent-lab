@@ -108,9 +108,6 @@ export const createHousehold = async (
   )
   switch (outcome.kind) {
     case 'success': {
-      services.session.saveCurrentHouseholdId(
-        outcome.data.household.id
-      )
       return {
         kind: 'created',
         result: outcome.data,

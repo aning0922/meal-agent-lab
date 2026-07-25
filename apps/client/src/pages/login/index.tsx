@@ -30,7 +30,7 @@ export default function LoginPage() {
         services.session.restoreCurrentHouseholdId() !== null
           ? INVENTORY_ROUTE
           : HOUSEHOLDS_ROUTE
-      void services.adapter.navigation.reLaunch(route)
+      void services.navigation.reLaunch(route)
     }
   }, [])
 
@@ -42,7 +42,12 @@ export default function LoginPage() {
     const services = getAppServices()
     const result = await signIn(services)
     if (result.kind === 'success') {
-      await services.adapter.navigation.reLaunch(HOUSEHOLDS_ROUTE)
+      const pending = services.pendingCommands.status()
+      await services.navigation.reLaunch(
+        pending.phase === 'idle'
+          ? HOUSEHOLDS_ROUTE
+          : pending.ownerRoute
+      )
       return
     }
     setStatus(result)

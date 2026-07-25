@@ -2,7 +2,11 @@ import {
   authenticatedSessionSchema,
   type AuthenticatedSession
 } from '@meal-agent/contracts/identity'
-import { householdIdSchema, type HouseholdId } from '@meal-agent/contracts'
+import {
+  householdIdSchema,
+  type HouseholdId,
+  type UserId
+} from '@meal-agent/contracts'
 
 import type { RuntimePort, StoragePort } from '../platform/ports'
 
@@ -15,13 +19,17 @@ const CURRENT_HOUSEHOLD_STORAGE_KEY = 'meal-agent.current-household.v1'
  * 会话失效的最终事实。
  */
 export class SessionStore {
+  #authenticationGeneration = 0
+
   public constructor(
     private readonly storage: StoragePort,
     private readonly runtime: RuntimePort
   ) {}
 
-  public save(session: AuthenticatedSession): void {
+  public save(session: AuthenticatedSession): number {
+    this.#authenticationGeneration += 1
     this.storage.set(SESSION_STORAGE_KEY, session)
+    return this.#authenticationGeneration
   }
 
   public restore(): AuthenticatedSession | null {
@@ -43,12 +51,30 @@ export class SessionStore {
       return null
     }
 
+    if (this.#authenticationGeneration === 0) {
+      // 应用启动后恢复的既有会话也属于一个明确的认证 generation。
+      this.#authenticationGeneration = 1
+    }
     return parsed.data
   }
 
   public clear(): void {
+    this.#authenticationGeneration += 1
     this.storage.remove(SESSION_STORAGE_KEY)
     this.storage.remove(CURRENT_HOUSEHOLD_STORAGE_KEY)
+  }
+
+  public authenticationContext(): {
+    readonly principalId: UserId
+    readonly generation: number
+  } | null {
+    const session = this.restore()
+    return session === null
+      ? null
+      : {
+          principalId: session.user.id,
+          generation: this.#authenticationGeneration
+        }
   }
 
   public saveCurrentHouseholdId(householdId: HouseholdId): void {
