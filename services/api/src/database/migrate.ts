@@ -66,6 +66,31 @@ export class MigrationLockTimeoutError extends Error {
   }
 }
 
+export class MigrationOptionError extends Error {
+  public constructor(option: string) {
+    super(
+      `${option} must be a positive, finite, safe integer count of milliseconds`,
+    );
+    this.name = "MigrationOptionError";
+  }
+}
+
+/**
+ * 有界等待参数必须是正的有限安全整数：0、负数、NaN、Infinity 和小数一律立即
+ * 拒绝，避免把「无界等待」或「立即超时」偷偷带进部署 job。
+ */
+const boundedMilliseconds = (
+  option: string,
+  value: number | undefined,
+  fallback: number,
+): number => {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new MigrationOptionError(option);
+  }
+  return resolved;
+};
+
 export interface ApplyMigrationsOptions {
   /**
    * 只应用文件名 <= 该值的迁移（含），用于验证多文件序列的增量应用：
@@ -121,18 +146,31 @@ export const applyMigrations = async (
   databaseUrl: string,
   options: ApplyMigrationsOptions = {},
 ): Promise<void> => {
-  const lockWaitMs = options.lockWaitMs ?? migrationDefaults.lockWaitMs;
+  // 参数校验先于建立连接：非法上界不得先打开连接再失败。
+  const connectionTimeoutMs = boundedMilliseconds(
+    "connectionTimeoutMs",
+    options.connectionTimeoutMs,
+    migrationDefaults.connectionTimeoutMs,
+  );
+  const lockWaitMs = boundedMilliseconds(
+    "lockWaitMs",
+    options.lockWaitMs,
+    migrationDefaults.lockWaitMs,
+  );
   const role = options.role === undefined ? migrationRole : options.role;
   const pool = new Pool({
     connectionString: databaseUrl,
     max: 1,
-    connectionTimeoutMillis:
-      options.connectionTimeoutMs ?? migrationDefaults.connectionTimeoutMs,
+    connectionTimeoutMillis: connectionTimeoutMs,
     application_name: "meal-agent-migration",
   });
-  const client = await pool.connect();
+  // 连接建立也在 try 内：连接失败时仍必须 pool.end()，client 只在存在时释放，
+  // advisory lock 只在确实取得后才解锁（否则会留下 "you don't own a lock" 警告）。
+  let client: PoolClient | undefined;
+  let advisoryLockHeld = false;
 
   try {
+    client = await pool.connect();
     if (role !== null) {
       // 参数化设置 role GUC，等价于 SET ROLE，但角色名不进入 SQL 文本。
       await client.query("SELECT set_config('role', $1, false)", [role]);
@@ -146,6 +184,7 @@ export const applyMigrations = async (
       lockWaitMs,
       migrationDefaults.lockRetryDelayMs,
     );
+    advisoryLockHeld = true;
     await prepareMigrationMetadata(client);
 
     for (const migration of await readMigrations()) {
@@ -184,10 +223,14 @@ export const applyMigrations = async (
       }
     }
   } finally {
-    await client
-      .query("SELECT pg_advisory_unlock($1)", [advisoryLockKey])
-      .catch(() => undefined);
-    client.release();
+    if (client !== undefined) {
+      if (advisoryLockHeld) {
+        await client
+          .query("SELECT pg_advisory_unlock($1)", [advisoryLockKey])
+          .catch(() => undefined);
+      }
+      client.release();
+    }
     await pool.end();
   }
 };
@@ -212,10 +255,64 @@ export const migrationsAreCurrent = async (
   );
 };
 
+// ---------------------------------------------------------------------------
+// 运维入口
+//
+// 默认命令走安全路径：显式 SET ROLE meal_agent_migrator 应用全部待应用 migration。
+//
+// `--bootstrap-0000` 是唯一的 admin 例外，且是窄而固定的：它只能以 cluster admin
+// 身份（不切换 role）应用冻结的 0000，因为 0000 自身要 CREATE ROLE 并设置
+// BYPASSRLS，此时 meal_agent_migrator 还不存在。该模式不接受任意 role，也不接受
+// 任意 migration 边界。
+// ---------------------------------------------------------------------------
+
+export const bootstrapMigrationFlag = "--bootstrap-0000";
+
+/** `--bootstrap-0000` 的固定参数，调用方无法改写。 */
+export const bootstrapMigrationOptions: ApplyMigrationsOptions = Object.freeze({
+  role: null,
+  onlyThrough: "0000_stage_06.sql",
+});
+
+export type MigrationCliMode = "default" | "bootstrap-0000";
+
+export class MigrationCliUsageError extends Error {
+  public constructor(detail: string) {
+    super(
+      `${detail}. Usage: db:migrate [${bootstrapMigrationFlag}] ` +
+        "(no other arguments are accepted)",
+    );
+    this.name = "MigrationCliUsageError";
+  }
+}
+
+export const parseMigrationCliArguments = (
+  argv: readonly string[],
+): MigrationCliMode => {
+  if (argv.length === 0) {
+    return "default";
+  }
+  if (argv.length === 1 && argv[0] === bootstrapMigrationFlag) {
+    return "bootstrap-0000";
+  }
+  if (argv.length > 1) {
+    throw new MigrationCliUsageError(
+      `expected at most one argument, received ${String(argv.length)}`,
+    );
+  }
+  throw new MigrationCliUsageError(
+    `unknown argument ${JSON.stringify(argv[0])}`,
+  );
+};
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const mode = parseMigrationCliArguments(process.argv.slice(2));
   const databaseUrl = process.env["DATABASE_URL"];
   if (databaseUrl === undefined || databaseUrl === "") {
     throw new Error("DATABASE_URL is required");
   }
-  await applyMigrations(databaseUrl);
+  await applyMigrations(
+    databaseUrl,
+    mode === "bootstrap-0000" ? bootstrapMigrationOptions : {},
+  );
 }

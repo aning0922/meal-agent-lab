@@ -36,6 +36,29 @@ pnpm --filter @meal-agent/api db:migrate
 pnpm --filter @meal-agent/api dev
 ```
 
+### 数据库身份与迁移入口
+
+阶段 09A / M2A 起，迁移按数据库身份分成两条命令，`DATABASE_URL` 决定用哪个登录角色：
+
+```bash
+# 全新空库：cluster admin 应用冻结的 0000（它自身要 CREATE ROLE 并设置 BYPASSRLS）
+pnpm --filter @meal-agent/api db:migrate -- --bootstrap-0000
+
+# 常规迁移：migration login 显式进入 meal_agent_migrator 应用 0001—最新
+pnpm --filter @meal-agent/api db:migrate
+```
+
+默认命令会显式 `SET ROLE meal_agent_migrator`。`--bootstrap-0000` 是唯一的 admin
+例外，且是窄而固定的：它只应用 `0000_stage_06.sql`，不接受任意 role 或任意
+migration 边界；未知参数、重复参数和组合参数都会失败。
+
+连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s），另一会话持锁时
+在限定时间内明确失败，不会无限等待。
+
+角色基线、口令、owner 交接与备份授权由
+[`infra/docker/postgres/`](../../infra/docker/postgres/) 的 bootstrap 完成，
+完整顺序见该目录的 README。
+
 测试与构建：
 
 ```bash
