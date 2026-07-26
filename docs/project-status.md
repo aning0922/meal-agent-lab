@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-阶段 08 最终审计整改已在 `codex/stage-08-audit-closeout` 完成本地实现与标准门禁，等待项目总控合并前评审；尚未合并 `main`，不得开始阶段 09。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口，阶段 09 尚未开始。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -103,4 +103,4 @@
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库当前没有 remote/upstream 或远端 CI 证据。这不阻断本轮本地实现；项目总控合并阶段 08 到 main 后、开始阶段 09 前必须配置受控远端与真实 CI。下一步是合并前评审和总控决定是否合并，当前分支不得自行合并 main。
+仓库当前没有 remote/upstream 或远端 CI 证据。这不影响阶段 08 的本地验收结论，但在开始阶段 09 开发前必须配置受控 remote/upstream 与真实 CI。下一步是完成阶段 08 合并后收尾，并由项目总控定义阶段 09 的产品范围、数据治理前置项与架构门禁；不得把任何外部 Deferred 项改记为 Pass。
