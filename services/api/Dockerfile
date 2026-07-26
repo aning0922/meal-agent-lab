@@ -11,11 +11,13 @@
 # 属于阶段 09A 的 M2—M5，不在这里实现。
 
 # 基础镜像固定为 Docker Official Image `docker.io/library/node`：
-# Node.js 24.14.0 + Debian bookworm-slim，同时写出 exact patch tag 与不可变
+# Node.js 24.18.0 + Debian bookworm-slim，同时写出 exact patch tag 与不可变
 # manifest digest。digest 由本机 `docker buildx imagetools inspect` 查得，
-# 覆盖 linux/amd64、linux/arm64/v8、linux/ppc64le 和 linux/s390x。
+# 覆盖 linux/amd64、linux/arm64/v8 和 linux/ppc64le。
+# 该 patch 升级与 `.node-version` 保持一致，不改变 ADR-0002 的 Node 24 major
+# 基线，也不改动 engines 范围、pnpm 版本或 lockfile。
 # 不使用 latest、lts、node:24 等浮动标签；也不提供 ARG，避免外部参数覆盖基线。
-FROM docker.io/library/node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS node-base
+FROM docker.io/library/node:24.18.0-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS node-base
 
 # --------------------------------------------------------------------------
 # 1. 固定 Node/pnpm 工具链
@@ -91,6 +93,9 @@ RUN groupadd --gid 10001 meal-agent \
 # corepack 会读取 /app/package.json 的 `packageManager` 字段并在运行期下载
 # pnpm，因此它等价于把 pnpm 留在最终镜像里；npm/npx/yarn 同样能在运行期拉取
 # 代码。这里不安装任何新包，只删除未使用的上游组件。
+#
+# 删除后立即断言：基础镜像 patch 升级导致路径变化时必须构建失败，
+# 而不是静默保留包管理器。同时断言实际 node 版本与上面的 tag 一致。
 RUN rm -rf \
       /usr/local/bin/corepack \
       /usr/local/bin/npm \
@@ -99,7 +104,18 @@ RUN rm -rf \
       /usr/local/bin/yarnpkg \
       /usr/local/lib/node_modules/corepack \
       /usr/local/lib/node_modules/npm \
-      /opt/yarn-v1.22.22
+      /opt/yarn-v* \
+ && for tool in corepack npm npx yarn yarnpkg pnpm; do \
+      if command -v "$tool" > /dev/null 2>&1; then \
+        echo "package manager still present after cleanup: $tool" >&2; \
+        exit 1; \
+      fi; \
+    done \
+ && [ ! -e /usr/local/lib/node_modules/npm ] \
+ && [ ! -e /usr/local/lib/node_modules/corepack ] \
+ && ! ls -d /opt/yarn-* > /dev/null 2>&1 \
+ && [ "$(node --version)" = "v24.18.0" ] \
+ && node --version
 
 WORKDIR /app
 
