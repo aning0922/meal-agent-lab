@@ -16,7 +16,10 @@ import { FakePlatform } from '../support/fake-platform'
 import {
   apiErrorBody,
   authenticatedSessionFixture,
+  createHouseholdInviteResultFixture,
   createHouseholdResultFixture,
+  joinHouseholdResultFixture,
+  replayedIdempotencyMeta,
   successEnvelope,
   userFixture,
   uuidV7
@@ -147,6 +150,138 @@ describe('createAppServices', () => {
     assert.equal(requests[0]?.body, requests[1]?.body)
   })
 
+  it('household-scoped pending 在 401 后为同一 principal 恢复家庭上下文并收口成功或确定失败', async () => {
+    for (const serverResult of ['success', 'forbidden'] as const) {
+      const platform = new FakePlatform()
+      const services = createAppServices(platform, BASE_URL)
+      const session = authenticatedSessionSchema.parse(
+        authenticatedSessionFixture()
+      )
+      const householdId = householdIdSchema.parse(uuidV7(10))
+      services.authenticate(session)
+      services.session.saveCurrentHouseholdId(householdId)
+      platform.enqueueResponse(new Error('lost invite response'))
+      await services.commands.execute(
+        `invite:create:${serverResult}`,
+        '/pages/members/index',
+        {
+          kind: 'invite.create',
+          payload: {
+            householdId,
+            draft: { maxUses: 1, expiresInHours: 24 }
+          }
+        }
+      )
+
+      platform.enqueueJson(401, apiErrorBody('SESSION_EXPIRED'))
+      await services.api.getMe()
+      assert.equal(
+        services.pendingCommands.status().phase,
+        'auth-suspended'
+      )
+      assert.equal(services.session.restoreCurrentHouseholdId(), null)
+
+      const renewed = authenticatedSessionSchema.parse({
+        ...session,
+        accessToken: `${serverResult === 'success' ? 'u' : 'v'}`.repeat(43),
+        session: {
+          ...session.session,
+          id: uuidV7(serverResult === 'success' ? 51 : 52)
+        }
+      })
+      assert.equal(services.authenticate(renewed), 'resumed')
+      assert.equal(
+        services.session.restoreCurrentHouseholdId(),
+        householdId
+      )
+      assert.equal(
+        services.pendingRecoveryRoute(),
+        '/pages/members/index'
+      )
+
+      if (serverResult === 'success') {
+        platform.enqueueJson(
+          201,
+          successEnvelope(createHouseholdInviteResultFixture())
+        )
+      } else {
+        platform.enqueueJson(403, apiErrorBody('FORBIDDEN'))
+      }
+      const result = await services.commands.retryActive()
+      assert.equal(result.kind, 'reconciled')
+      if (result.kind === 'reconciled') {
+        assert.equal(
+          result.presentation.tone,
+          serverResult === 'success' ? 'success' : 'error'
+        )
+      }
+      assert.equal(services.pendingCommands.status().phase, 'idle')
+      assert.equal(
+        services.session.restoreCurrentHouseholdId(),
+        householdId
+      )
+    }
+  })
+
+  it('同一 principal 重登时若家庭 storage 恢复失败，只能进入不依赖家庭上下文的恢复页', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    const session = authenticatedSessionSchema.parse(
+      authenticatedSessionFixture()
+    )
+    const householdId = householdIdSchema.parse(uuidV7(10))
+    services.authenticate(session)
+    services.session.saveCurrentHouseholdId(householdId)
+    platform.enqueueResponse(new Error('lost invite response'))
+    await services.commands.execute(
+      'invite:create:storage-context-failure',
+      '/pages/members/index',
+      {
+        kind: 'invite.create',
+        payload: {
+          householdId,
+          draft: { maxUses: 1, expiresInHours: 24 }
+        }
+      }
+    )
+    platform.enqueueJson(401, apiErrorBody('SESSION_EXPIRED'))
+    await services.api.getMe()
+
+    const originalStorageSet = platform.storage.set
+    platform.storage.set = (key, value) => {
+      if (key.includes('current-household')) {
+        throw new Error('current household storage unavailable')
+      }
+      originalStorageSet(key, value)
+    }
+    const renewed = authenticatedSessionSchema.parse({
+      ...session,
+      accessToken: 'w'.repeat(43),
+      session: {
+        ...session.session,
+        id: uuidV7(53)
+      }
+    })
+    assert.equal(services.authenticate(renewed), 'resumed')
+    assert.equal(services.session.restoreCurrentHouseholdId(), null)
+    assert.equal(services.pendingRecoveryRoute(), HOUSEHOLDS_ROUTE)
+    assert.equal(
+      (
+        await services.navigation.reLaunch('/pages/members/index')
+      ).kind,
+      'denied'
+    )
+    assert.equal(
+      (await services.navigation.reLaunch(HOUSEHOLDS_ROUTE)).kind,
+      'allowed'
+    )
+    assert.deepEqual(platform.navigations.at(-1), {
+      kind: 'reLaunch',
+      route: HOUSEHOLDS_ROUTE
+    })
+    platform.storage.set = originalStorageSet
+  })
+
   it('不同 principal 登录会销毁不可访问的旧 envelope，且主动登出在 service 层 fail-closed', async () => {
     const platform = new FakePlatform()
     const services = createAppServices(platform, BASE_URL)
@@ -154,6 +289,9 @@ describe('createAppServices', () => {
       authenticatedSessionFixture()
     )
     services.authenticate(first)
+    services.session.saveCurrentHouseholdId(
+      householdIdSchema.parse(uuidV7(10))
+    )
     platform.enqueueResponse(new Error('lost join response'))
     await services.commands.execute(
       'household:join',
@@ -191,6 +329,8 @@ describe('createAppServices', () => {
     assert.equal(services.authenticate(second), 'replaced')
     assert.equal(services.pendingCommands.status().phase, 'idle')
     assert.equal(services.pendingCommands.activeSnapshot(), null)
+    assert.equal(services.session.restoreCurrentHouseholdId(), null)
+    assert.equal(services.pendingRecoveryRoute(), HOUSEHOLDS_ROUTE)
     assert.equal(
       JSON.stringify(services.pendingCommands.status()).includes(
         'SENSITIVE-INVITE-CODE'
@@ -391,5 +531,192 @@ describe('createAppServices', () => {
       route: INVENTORY_ROUTE
     })
     assert.equal(services.pendingCommands.status().phase, 'idle')
+  })
+
+  it('服务端成功后 navigation/storage 失败只进入本地恢复，绝不重发写命令', async () => {
+    const cases = [
+      {
+        label: 'reLaunch',
+        command: {
+          kind: 'household.create' as const,
+          payload: { name: '创建家庭', ownerDisplayName: '成员甲' }
+        },
+        action: 'household:create:local-recovery',
+        fail(platform: FakePlatform) {
+          const original = platform.navigation.reLaunch
+          platform.navigation.reLaunch = async () => {
+            throw new Error('reLaunch failed')
+          }
+          return () => {
+            platform.navigation.reLaunch = original
+          }
+        },
+        enqueueSuccess(platform: FakePlatform, key: string) {
+          platform.enqueueJson(
+            201,
+            successEnvelope(
+              createHouseholdResultFixture(),
+              replayedIdempotencyMeta(key)
+            )
+          )
+        }
+      },
+      {
+        label: 'navigateTo',
+        command: {
+          kind: 'household.join' as const,
+          payload: { inviteCode: 'A'.repeat(24) }
+        },
+        action: 'household:join:local-recovery',
+        fail(platform: FakePlatform) {
+          const original = platform.navigation.navigateTo
+          platform.navigation.navigateTo = async () => {
+            throw new Error('navigateTo failed')
+          }
+          return () => {
+            platform.navigation.navigateTo = original
+          }
+        },
+        enqueueSuccess(platform: FakePlatform, key: string) {
+          platform.enqueueJson(
+            200,
+            successEnvelope(
+              joinHouseholdResultFixture(),
+              replayedIdempotencyMeta(key)
+            )
+          )
+        }
+      },
+      {
+        label: 'storage',
+        command: {
+          kind: 'household.create' as const,
+          payload: { name: '存储失败家庭', ownerDisplayName: '成员乙' }
+        },
+        action: 'household:create:storage-recovery',
+        fail(platform: FakePlatform) {
+          const original = platform.storage.set
+          platform.storage.set = (key, value) => {
+            if (key.includes('current-household')) {
+              throw new Error('storage set failed')
+            }
+            original(key, value)
+          }
+          return () => {
+            platform.storage.set = original
+          }
+        },
+        enqueueSuccess(platform: FakePlatform, key: string) {
+          platform.enqueueJson(
+            201,
+            successEnvelope(
+              createHouseholdResultFixture(),
+              replayedIdempotencyMeta(key)
+            )
+          )
+        }
+      }
+    ]
+
+    for (const testCase of cases) {
+      const platform = new FakePlatform()
+      const services = createAppServices(platform, BASE_URL)
+      services.authenticate(
+        authenticatedSessionSchema.parse(authenticatedSessionFixture())
+      )
+      platform.enqueueResponse(new Error(`lost ${testCase.label} response`))
+      await services.commands.execute(
+        testCase.action,
+        HOUSEHOLDS_ROUTE,
+        testCase.command
+      )
+      const pending = services.pendingCommands.activeSnapshot()
+      assert.ok(pending)
+      const restoreLocalPort = testCase.fail(platform)
+      testCase.enqueueSuccess(platform, pending.key)
+
+      const result = await services.commands.retryActive()
+      assert.equal(result.kind, 'local-recovery-required')
+      assert.equal(services.pendingCommands.status().phase, 'idle')
+      assert.equal(
+        result.kind === 'local-recovery-required'
+          ? result.presentation.message
+          : '',
+        '命令已完成，但本地页面切换失败。请使用安全恢复入口重试本地切换；不会再次发送写命令。'
+      )
+      const writesAfterServerResult = platform.sentRequests.length
+      assert.deepEqual(await services.commands.retryActive(), {
+        kind: 'idle'
+      })
+      assert.equal(platform.sentRequests.length, writesAfterServerResult)
+
+      restoreLocalPort()
+      assert.equal(result.kind, 'local-recovery-required')
+      if (result.kind === 'local-recovery-required') {
+        const localResult =
+          await services.commands.retryLocalRecovery(result.recovery)
+        assert.equal(localResult.kind, 'reconciled')
+      }
+      assert.equal(platform.sentRequests.length, writesAfterServerResult)
+    }
+  })
+
+  it('不同 principal 不能执行上一用户已完成命令留下的本地恢复计划', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueResponse(new Error('lost create response'))
+    await services.commands.execute(
+      'household:create:principal-bound-recovery',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '用户一家庭', ownerDisplayName: '用户一' }
+      }
+    )
+    const pending = services.pendingCommands.activeSnapshot()
+    assert.ok(pending)
+    platform.enqueueJson(
+      201,
+      successEnvelope(
+        createHouseholdResultFixture(),
+        replayedIdempotencyMeta(pending.key)
+      )
+    )
+    const originalReLaunch = platform.navigation.reLaunch
+    platform.navigation.reLaunch = async () => {
+      throw new Error('local navigation failed')
+    }
+    const completed = await services.commands.retryActive()
+    assert.equal(completed.kind, 'local-recovery-required')
+    assert.equal(services.pendingCommands.status().phase, 'idle')
+    platform.navigation.reLaunch = originalReLaunch
+    services.session.clear()
+
+    const secondUser = userFixture(95)
+    services.authenticate(
+      authenticatedSessionSchema.parse({
+        ...authenticatedSessionFixture(),
+        accessToken: 'x'.repeat(43),
+        user: secondUser,
+        session: {
+          ...authenticatedSessionFixture().session,
+          id: uuidV7(96),
+          userId: secondUser.id,
+          authIdentityId: uuidV7(97)
+        }
+      })
+    )
+    const writesAfterCompletion = platform.sentRequests.length
+    assert.equal(completed.kind, 'local-recovery-required')
+    if (completed.kind === 'local-recovery-required') {
+      const localResult =
+        await services.commands.retryLocalRecovery(completed.recovery)
+      assert.equal(localResult.kind, 'local-recovery-forbidden')
+    }
+    assert.equal(platform.sentRequests.length, writesAfterCompletion)
+    assert.equal(services.session.restoreCurrentHouseholdId(), null)
   })
 })

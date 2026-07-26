@@ -2,6 +2,7 @@ import type { ApiError } from '@meal-agent/contracts/api'
 import type { AuthenticatedSession } from '@meal-agent/contracts/identity'
 
 import {
+  HOUSEHOLDS_ROUTE,
   LOGIN_ROUTE,
   type AppRoute,
   type PlatformAdapter
@@ -43,6 +44,11 @@ export interface AppServices {
    * 修改只能放在 onAllowed 中，不能先改 storage 再发现导航被拒绝。
    */
   readonly navigation: CoordinatedNavigation
+  /**
+   * 返回当前认证上下文中可安全进入的全局命令恢复入口。家庭级命令只有
+   * 在 currentHousehold 与 envelope 一致时才返回其 owner route。
+   */
+  pendingRecoveryRoute(): AppRoute
   authenticate(
     session: AuthenticatedSession
   ): 'fresh' | 'resumed' | 'replaced'
@@ -66,15 +72,21 @@ export const createAppServices = (
   ): NavigationDecision => {
     const status = pendingCommands.status()
     if (status.phase === 'idle') return { kind: 'allowed' }
-    // 仅允许回到命令 owner route 展示全局恢复入口；存在 pending 时不
-    // 允许同时改变 session/currentHousehold。
-    if (route === status.ownerRoute && !hasContextMutation) {
+    const currentHouseholdId = session.restoreCurrentHouseholdId()
+    const safeRecoveryRoute =
+      status.householdId === null ||
+      currentHouseholdId === status.householdId
+        ? status.ownerRoute
+        : HOUSEHOLDS_ROUTE
+    // 只允许进入与当前家庭上下文一致的 owner route，或不依赖家庭
+    // 上下文的家庭选择页恢复入口；存在 pending 时禁止附带上下文修改。
+    if (route === safeRecoveryRoute && !hasContextMutation) {
       return { kind: 'allowed' }
     }
     return {
       kind: 'denied',
       reason: 'pending-command',
-      ownerRoute: status.ownerRoute
+      ownerRoute: safeRecoveryRoute
     }
   }
 
@@ -160,12 +172,49 @@ export const createAppServices = (
     pendingCommands,
     commands,
     navigation,
+    pendingRecoveryRoute() {
+      const status = pendingCommands.status()
+      if (status.phase === 'idle') return HOUSEHOLDS_ROUTE
+      if (status.householdId === null) return status.ownerRoute
+      return session.restoreCurrentHouseholdId() === status.householdId
+        ? status.ownerRoute
+        : HOUSEHOLDS_ROUTE
+    },
     authenticate(authenticatedSession) {
+      const previousPrincipalId = session.restore()?.user.id ?? null
       const generation = session.save(authenticatedSession)
-      return pendingCommands.resumeAuthentication({
+      const result = pendingCommands.resumeAuthentication({
         principalId: authenticatedSession.user.id,
         generation
       })
+      if (
+        result === 'replaced' ||
+        (previousPrincipalId !== null &&
+          previousPrincipalId !== authenticatedSession.user.id)
+      ) {
+        session.clearCurrentHouseholdId()
+        return result
+      }
+      if (result === 'resumed') {
+        const pending = pendingCommands.status()
+        if (
+          pending.phase !== 'idle' &&
+          pending.householdId !== null
+        ) {
+          try {
+            session.saveCurrentHouseholdId(pending.householdId)
+          } catch {
+            // 会话恢复仍成立，但若本地 household storage 不可写，只能
+            // 留在不依赖家庭上下文的全局恢复页，不能跳进 scoped 页面。
+            try {
+              session.clearCurrentHouseholdId()
+            } catch {
+              // pendingRecoveryRoute 重新读取并校验；损坏/缺失均 fail closed。
+            }
+          }
+        }
+      }
+      return result
     },
     canSignOut() {
       return !pendingCommands.hasAnyPending()

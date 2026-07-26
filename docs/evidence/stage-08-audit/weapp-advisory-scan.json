@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "checkedAt": "2026-07-26T13:09:13+08:00",
+  "checkedAt": "2026-07-26T14:09:22+08:00",
   "command": "node scripts/check-production-audit.mjs --target=local-weapp",
   "decision": "temporary-local-weapp-only",
   "auditExitCode": 1,
@@ -16,8 +16,8 @@
   },
   "artifactRoot": "apps/client/dist",
   "artifactFiles": 30,
-  "artifactBytes": 565667,
-  "artifactSha256": "40f423a51dcdcee8f9135d71784fcfa651ad144a2bd617ea4dc1b033f1d807bb",
+  "artifactBytes": 566002,
+  "artifactSha256": "375076c85463a2dd1988774290f8845742f47692e485b37229636d837180b59d",
   "forbiddenSignaturesFound": 0,
   "blockedTargets": [
     "h5",

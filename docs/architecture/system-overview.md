@@ -57,7 +57,7 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 完整 PersonProfile 必须再走 GET 并执行当前授权/redaction。历史不安全缓存被 `0002` 转为 receipt 或 non-replayable tombstone，但保留命令完成标识。成员自退出的完成记录可在 active membership 消失后、household bootstrap 之前重放，最终落库必须影响且仅影响一条幂等记录。
 
-客户端普通资源 GET 不是 command-status：它不能证明一个 idempotency key 的命令已执行或未执行。结果未知时，app 级协调器跨页面保留原 payload snapshot、key 和不可变 `commandId`，以 CAS 阻止旧 attempt 结算新 envelope；retry 只允许原子 `unknown → in-flight`，因此 single-flight 不依赖页面按钮。typed registry 同时负责全局恢复 reconciliation，包括家庭上下文/导航、self-exit 和一次性邀请码内存交付；页面订阅 coordinator，在 pending 清除后重新渲染。GET 成功只能记录与 action/key 绑定的观察，GET 失败不产生证据。协调器不持久化邀请码或私密约束；进程重启后的安全恢复要等非敏感 locator + 服务端 receipt/status 或原子 fence，属于内部后续范围和发布阻断项。
+客户端普通资源 GET 不是 command-status：它不能证明一个 idempotency key 的命令已执行或未执行。结果未知时，app 级协调器跨页面保留原 payload snapshot、key 和不可变 `commandId`，以 CAS 阻止旧 attempt 结算新 envelope；retry 只允许原子 `unknown → in-flight`，因此 single-flight 不依赖页面按钮。服务端 definite outcome 先结算 command envelope，再执行 typed 本地 reconciliation；storage 或导航失败只留下不发写请求、绑定原 principal 的本地恢复计划，不会把已完成命令重新标成 unknown，也不能由换账号后的会话应用旧家庭上下文。401 后同 principal 从 envelope 恢复家庭上下文；若 storage 不可用则退到不依赖家庭上下文的全局恢复页，换 principal 则同时清除旧 envelope/家庭。typed registry 还负责 self-exit 和一次性邀请码内存交付；页面订阅 coordinator，在 pending 清除后重新渲染。GET 成功只能记录与 action/key 绑定的观察，GET 失败不产生证据。协调器不持久化邀请码或私密约束；进程重启后的安全恢复要等非敏感 locator + 服务端 receipt/status 或原子 fence，属于内部后续范围和发布阻断项。
 
 ## 契约与确定性规则
 
@@ -69,4 +69,4 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 本地 `stage08:check` 覆盖 contracts、API unit/HTTP、PostgreSQL migration/RLS/concurrency、客户端页面测试、双用户 E2E、OpenAPI、weapp build、依赖例外和文档链接。开发者工具 GUI 证据见[阶段 08 走查记录](../evidence/stage-08-gui/README.md)。
 
-依赖审计当前有一个截至 2026-08-08 的 local/weapp-only 例外；H5、外部测试、体验版和发布被阻断。真实微信、合法域名、真机、云平台、原生三端和远端 CI 均没有本轮 Pass 证据，详见[项目状态](../project-status.md)。
+依赖审计当前有一个截至 2026-08-08 的 local/weapp-only 例外；官方 HTTPS relay 不跟随 redirect，并分别限制原始和解压响应流为 16 MiB。H5、外部测试、体验版和发布被阻断。真实微信、合法域名、真机、云平台、原生三端和远端 CI 均没有本轮 Pass 证据，详见[项目状态](../project-status.md)。

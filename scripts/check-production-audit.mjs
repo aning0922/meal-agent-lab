@@ -6,10 +6,12 @@ import {
   statSync
 } from 'node:fs'
 import { createServer } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
-import { gunzipSync } from 'node:zlib'
+import { createGunzip } from 'node:zlib'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const auditEndpoint =
@@ -310,26 +312,48 @@ export const assertAcceptedAdvisories = (policy, actual) => {
  * 这里只接受两种可验证表示：直接 JSON，或带 gzip magic/CRC 的 JSON。
  * 任何损坏压缩、超限、非 JSON 或非 object 仍 fail closed。
  */
-export const normalizeAuditRegistryBody = (input) => {
+export const readLimitedAuditStream = async (stream, label) => {
+  const chunks = []
+  let bytes = 0
+  for await (const value of stream) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    bytes += chunk.length
+    if (bytes > maximumAuditBodyBytes) {
+      throw new Error(`${label} exceeds the 16 MiB size limit`)
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
+export const normalizeAuditRegistryBody = async (input) => {
   if (!Buffer.isBuffer(input) || input.length === 0) {
     throw new Error('audit registry returned an empty body')
   }
   if (input.length > maximumAuditBodyBytes) {
-    throw new Error('audit registry response exceeds the size limit')
+    throw new Error(
+      'raw audit registry response exceeds the 16 MiB size limit'
+    )
   }
   const isGzip = input[0] === 0x1f && input[1] === 0x8b
   let body
-  try {
-    body = isGzip
-      ? gunzipSync(input, {
-          maxOutputLength: maximumAuditBodyBytes
-        })
-      : input
-  } catch {
-    throw new Error('audit registry returned invalid gzip')
-  }
-  if (body.length > maximumAuditBodyBytes) {
-    throw new Error('decoded audit registry response exceeds the size limit')
+  if (isGzip) {
+    try {
+      body = await readLimitedAuditStream(
+        Readable.from([input]).pipe(createGunzip()),
+        'decoded audit registry response'
+      )
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes('16 MiB size limit')
+      ) {
+        throw error
+      }
+      throw new Error('audit registry returned invalid gzip')
+    }
+  } else {
+    body = input
   }
   let parsed
   try {
@@ -360,6 +384,48 @@ const readRequestBody = async (request) => {
   return Buffer.concat(chunks)
 }
 
+export const assertAuditUpstreamStatus = (statusCode) => {
+  if (statusCode !== 200) {
+    throw new Error(
+      `audit registry responded with HTTP ${String(statusCode)}; redirects are forbidden`
+    )
+  }
+}
+
+const requestAuditUpstream = async (requestBody) =>
+  await new Promise((resolvePromise, reject) => {
+    const upstreamRequest = httpsRequest(
+      auditEndpoint,
+      {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'accept-encoding': 'identity',
+          'content-type': 'application/json',
+          'content-length': String(requestBody.length)
+        }
+      },
+      (upstreamResponse) => {
+        void readLimitedAuditStream(
+          upstreamResponse,
+          'raw audit registry response'
+        )
+          .then((body) => {
+            assertAuditUpstreamStatus(upstreamResponse.statusCode)
+            resolvePromise(body)
+          })
+          .catch(reject)
+      }
+    )
+    upstreamRequest.setTimeout(60_000, () => {
+      upstreamRequest.destroy(
+        new Error('audit registry request timed out')
+      )
+    })
+    upstreamRequest.once('error', reject)
+    upstreamRequest.end(requestBody)
+  })
+
 /**
  * pnpm 仍负责根据 lockfile 生成请求、计算实际依赖路径并产生标准 audit
  * JSON。loopback relay 只修复官方 HTTPS endpoint 的传输表示，不生成、
@@ -377,23 +443,10 @@ const startAuditRegistryRelay = async () => {
         return
       }
       const requestBody = await readRequestBody(request)
-      const upstream = await fetch(auditEndpoint, {
-        method: 'POST',
-        headers: {
-          accept: 'application/json',
-          'accept-encoding': 'identity',
-          'content-type': 'application/json'
-        },
-        body: requestBody,
-        signal: AbortSignal.timeout(60_000)
-      })
-      const upstreamBody = Buffer.from(await upstream.arrayBuffer())
-      if (upstream.status !== 200) {
-        throw new Error(
-          `audit registry responded with HTTP ${upstream.status}`
-        )
-      }
-      const normalized = normalizeAuditRegistryBody(upstreamBody)
+      // node:https 不实现自动 redirect；任何 3xx 都由 status assertion
+      // fail closed。原始响应流和 gzip 解压流分别受独立 16 MiB 上限。
+      const upstreamBody = await requestAuditUpstream(requestBody)
+      const normalized = await normalizeAuditRegistryBody(upstreamBody)
       response.writeHead(200, {
         'content-type': 'application/json',
         'content-length': String(normalized.length),

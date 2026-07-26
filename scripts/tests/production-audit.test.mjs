@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Readable } from 'node:stream'
 import { gzipSync } from 'node:zlib'
 
 import {
   assertAcceptedAdvisories,
+  assertAuditUpstreamStatus,
   interpretAuditCommand,
   normalizeAuditRegistryBody,
+  readLimitedAuditStream,
   validateAuditPolicy
 } from '../check-production-audit.mjs'
 
@@ -92,25 +95,55 @@ test('registry/network error payload fails closed', () => {
   )
 })
 
-test('audit registry transport accepts plain JSON and valid gzip JSON', () => {
+test('audit registry transport accepts plain JSON and valid gzip JSON', async () => {
   const report = Buffer.from(
     JSON.stringify({ advisory: { id: 'GHSA-test-test-test' } })
   )
-  assert.deepEqual(normalizeAuditRegistryBody(report), report)
-  assert.deepEqual(normalizeAuditRegistryBody(gzipSync(report)), report)
+  assert.deepEqual(await normalizeAuditRegistryBody(report), report)
+  assert.deepEqual(
+    await normalizeAuditRegistryBody(gzipSync(report)),
+    report
+  )
 })
 
-test('audit registry transport rejects corrupt gzip and non-JSON bodies', () => {
-  assert.throws(
-    () =>
+test('audit registry transport rejects corrupt gzip and non-JSON bodies', async () => {
+  await assert.rejects(
+    async () =>
       normalizeAuditRegistryBody(
         Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x01])
       ),
     /invalid gzip/
   )
-  assert.throws(
-    () => normalizeAuditRegistryBody(Buffer.from('<html>failure</html>')),
+  await assert.rejects(
+    async () =>
+      normalizeAuditRegistryBody(Buffer.from('<html>failure</html>')),
     /non-JSON/
+  )
+})
+
+test('audit upstream rejects redirects instead of following them', () => {
+  for (const statusCode of [301, 302, 307, 308]) {
+    assert.throws(
+      () => assertAuditUpstreamStatus(statusCode),
+      /redirects are forbidden/
+    )
+  }
+  assert.doesNotThrow(() => assertAuditUpstreamStatus(200))
+})
+
+test('audit transport applies separate 16 MiB raw and decoded stream limits', async () => {
+  const overLimit = Buffer.alloc(16 * 1024 * 1024 + 1, 0x61)
+  await assert.rejects(
+    async () =>
+      readLimitedAuditStream(
+        Readable.from([overLimit]),
+        'raw audit registry response'
+      ),
+    /raw audit registry response exceeds the 16 MiB/
+  )
+  await assert.rejects(
+    async () => normalizeAuditRegistryBody(gzipSync(overLimit)),
+    /decoded audit registry response exceeds the 16 MiB/
   )
 })
 

@@ -60,8 +60,9 @@
 
 - MembersPage、ProfilePage 和 HouseholdsPage 均有真实 React 页面渲染测试，不以 core/API 调用冒充页面测试。
 - Households create/join、Inventory、Members 与 Profile 的全部写操作使用集中 typed command registry、retry dispatcher 和 app 级 pending-command coordinator。同一次动作保留完整不可变 command snapshot、原 idempotency key 与 `commandId`；结算执行 commandId CAS，跨用户或同用户新 key 后延迟返回的旧 attempt 不能清除/污染新 envelope。retry 只允许原子 `unknown → in-flight`，并发点击不会发送第二个 HTTP 请求。
-- envelope 绑定 principal、household、owner route 与认证 generation；401 只进入 `auth-suspended`，同一用户重新认证后可从全局恢复入口重试原 snapshot/key，不同用户不能读取或执行旧命令。主动登出在 service 层 fail-closed；程序化导航显式返回 `allowed`/`denied`，家庭上下文只在导航获准后修改。
+- envelope 绑定 principal、household、owner route 与认证 generation；401 只进入 `auth-suspended`，同一用户重新认证后恢复 envelope 的 household context 并从全局入口重试原 snapshot/key；若 household storage 恢复失败，只能进入不依赖家庭上下文的家庭选择/恢复页。不同用户会同时清除旧 envelope 和旧家庭上下文，不能读取或执行旧命令。主动登出在 service 层 fail-closed。
 - 全局恢复在 CAS 成功后执行 typed reconciliation：家庭 create/join 设置上下文并导航，self-exit 清上下文并离开，一次性邀请码明文只在内存中展示，安全重放无明文时保留撤销重建引导；确定失败、仍未知和认证暂停都有可见状态。页面订阅 coordinator，pending 清除后重新渲染并解除禁用。
+- 服务端命令 outcome 与本地 reconciliation 分开结算。成功或确定失败先释放 envelope/key；后续 storage、`reLaunch` 或 `navigateTo` 失败只显示“命令已完成，但本地页面切换失败”并提供不发写请求、绑定原 principal 的本地恢复入口，不会重新标记 unknown、宣称原 key 仍保留或让换账号会话继承旧家庭。
 - 协调器只在当前应用进程内跨页面存活，不持久化邀请码或私密约束请求体。进程重启后的安全命令恢复尚未实现；未来必须使用非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不能替代。
 - 关联确认显示安全档案名称、可见约束摘要、权限和归档/保留后果，不只显示 UUID；不可恢复档案禁用恢复按钮并解释原因，切换档案会清除档案级草稿。
 - weapp 生产构建已通过。微信开发者工具 RC `2.02.2607171` 的二次复跑绑定前一轮已提交的页面实现子树，覆盖 fake 登录、合成家庭、owner/self、五类 hard constraint 入口、未经权威映射的阻断态和 archive/restore 同 ID；本轮新增的结果未知状态机与关联 TOCTOU 由实际页面渲染、API 和 PostgreSQL 测试验证，未伪造新的 GUI Pass。截图仅保留模拟器区域并清理敏感元数据，证据边界见 [GUI 记录](evidence/stage-08-gui/README.md)。
@@ -76,14 +77,14 @@
 | API unit | 12/12 |
 | API HTTP | 6/6 |
 | PostgreSQL migration/RLS/concurrency | 50/50 |
-| client unit + page rendering | 124/124 |
+| client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
-| audit gate 与 transport 反向单测 | 9/9 |
+| audit gate 与 transport 反向单测 | 11/11 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
 | Markdown links | Pass |
 
-标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、1 high、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
+标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、1 high、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，不自动跟随 redirect，任何 3xx 都失败；原始响应流和 gzip 解压流分别实施 16 MiB 上限。normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
 
 ## Deferred 与下一门禁
 

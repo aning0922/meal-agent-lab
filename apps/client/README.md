@@ -16,7 +16,8 @@ FAM-003 已覆盖。FAM-004 的页面登记、确认与隐私范围已覆盖，�
 - PersonProfile/constraint mutation 只接收 receipt，成功或重放后 GET 最新资源；
 - Households create/join、Inventory、Members 与 Profile 的全部写操作进入集中 typed command registry 和 retry dispatcher；transport、5xx 或 malformed success 后保留完整不可变 command snapshot、原 idempotency key 与不可变 `commandId` 并冻结输入，刷新后的 lot/profile 不得用于重建重试；旧 attempt 通过 CAS 不能结算新 envelope，确定 400/403/404/409 才释放；
 - retry 只允许 coordinator 原子执行 `unknown → in-flight`，并发点击 single-flight。typed reconciliation 在 CAS 成功后处理家庭 create/join、self-exit、邀请明文或撤销重建引导及失败/暂停状态；页面订阅 pending，清除后立即解除禁用；
-- pending envelope 绑定 principal、household、owner route 和认证 generation。401 只进入 `auth-suspended`；同一用户重登可恢复，换用户不能读取或执行旧 payload/key。主动登出在 service 层 fail-closed；
+- 服务端 definite outcome 与本地页面 reconciliation 分开结算：命令成功/确定失败后先释放 envelope/key；随后 storage、`reLaunch` 或 `navigateTo` 失败只展示“命令已完成，但本地页面切换失败”和无写请求、绑定原 principal 的安全恢复入口，不会重新发送命令或误称 key 仍保留；
+- pending envelope 绑定 principal、household、owner route 和认证 generation。401 只进入 `auth-suspended`；同一用户重登会恢复 envelope 的 household context，storage 无法恢复时只进入不依赖家庭上下文的全局恢复页；换用户会清除旧 envelope 和家庭上下文，不能读取或执行旧 payload/key。主动登出在 service 层 fail-closed；
 - coordinator 提供订阅与全局恢复入口；普通 GET、资源消失、页面切换和宿主原生 Back 后仍从 snapshot 重试。程序化导航返回 `allowed`/`denied`，家庭上下文只在导航获准后修改；
 - 任一 pending 存在时只允许对应原动作重试，其他写入口和离页全部禁用；普通 GET 只能记录绑定 action/key 的观察，不能开放“已完成”或“未执行并放弃”，GET 失败不产生证据；
 - pending 只跨页面保存在当前应用进程内，不在本地持久化邀请码、敏感约束请求体或 token。进程重启后的安全恢复尚未实现，属于内部后续范围并阻断发布；未来只能使用非敏感 command locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不能代替；

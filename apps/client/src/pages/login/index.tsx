@@ -42,11 +42,8 @@ export default function LoginPage() {
     const services = getAppServices()
     const result = await signIn(services)
     if (result.kind === 'success') {
-      const pending = services.pendingCommands.status()
       await services.navigation.reLaunch(
-        pending.phase === 'idle'
-          ? HOUSEHOLDS_ROUTE
-          : pending.ownerRoute
+        services.pendingRecoveryRoute()
       )
       return
     }

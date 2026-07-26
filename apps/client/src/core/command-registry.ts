@@ -4,7 +4,8 @@ import type {
   HouseholdInviteId,
   MembershipId,
   PersonProfileId,
-  PersonProfileLinkRequestId
+  PersonProfileLinkRequestId,
+  UserId
 } from '@meal-agent/contracts'
 import type { IdempotencyKey } from '@meal-agent/contracts/api'
 import type { InventoryLot } from '@meal-agent/contracts/inventory'
@@ -17,7 +18,8 @@ import type { AppServices } from './app-services'
 import {
   HOUSEHOLDS_ROUTE,
   INVENTORY_ROUTE,
-  MEMBERS_ROUTE
+  MEMBERS_ROUTE,
+  type AppRoute
 } from '../platform/ports'
 import {
   createHousehold,
@@ -192,6 +194,24 @@ export interface CommandReconciliation {
     readonly label: '邀请码'
     readonly value: string
   }
+  readonly localTransition?: CommandLocalTransition
+}
+
+export interface CommandLocalTransition {
+  readonly navigation: 'reLaunch' | 'navigateTo'
+  readonly route: AppRoute
+  readonly householdContext:
+    | {
+        readonly kind: 'set'
+        readonly householdId: HouseholdId
+      }
+    | { readonly kind: 'clear' }
+}
+
+export interface CommandLocalRecovery {
+  readonly principalId: UserId
+  readonly completedPresentation: CommandReconciliation
+  readonly transition: CommandLocalTransition
 }
 
 type CommandHandler<K extends ClientCommandKind> = (
@@ -201,10 +221,9 @@ type CommandHandler<K extends ClientCommandKind> = (
 ) => Promise<ClientCommandDefinitions[K]['outcome']>
 
 type CommandReconciler<K extends ClientCommandKind> = (
-  services: AppServices,
   payload: ClientCommandDefinitions[K]['payload'],
   outcome: ClientCommandDefinitions[K]['outcome']
-) => Promise<CommandReconciliation>
+) => CommandReconciliation
 
 const commandRegistry: {
   readonly [K in ClientCommandKind]: CommandHandler<K>
@@ -339,43 +358,49 @@ const failure = (
 
 /**
  * 全局恢复后的 typed 业务收口。每个 command kind 必须有对应 handler；
- * dispatcher 只有在 commandId CAS 成功后才调用，旧 attempt 不能触发
- * 导航、session 变更或一次性秘密展示。
+ * dispatcher 只有在 commandId CAS 成功后才调用。reconciler 本身只生成
+ * presentation 与本地 transition 计划，不能直接导航或修改 session。
  */
 const commandReconciliationRegistry: {
   readonly [K in ClientCommandKind]: CommandReconciler<K>
 } = {
-  'household.create': async (services, _payload, outcome) => {
+  'household.create': (_payload, outcome) => {
     if (outcome.kind !== 'created') return failure(outcome)
-    await services.navigation.reLaunch(
-      INVENTORY_ROUTE,
-      () =>
-        services.session.saveCurrentHouseholdId(
-          outcome.result.household.id
-        )
-    )
-    return success('家庭已创建，已切换到该家庭。')
+    return {
+      ...success('家庭已创建，已切换到该家庭。'),
+      localTransition: {
+        navigation: 'reLaunch',
+        route: INVENTORY_ROUTE,
+        householdContext: {
+          kind: 'set',
+          householdId: outcome.result.household.id
+        }
+      }
+    }
   },
-  'household.join': async (services, _payload, outcome) => {
+  'household.join': (_payload, outcome) => {
     if (outcome.kind !== 'joined') return failure(outcome)
-    await services.navigation.navigateTo(
-      MEMBERS_ROUTE,
-      () =>
-        services.session.saveCurrentHouseholdId(
-          outcome.result.household.id
-        )
-    )
-    return success('已加入家庭并切换到成员页。')
+    return {
+      ...success('已加入家庭并切换到成员页。'),
+      localTransition: {
+        navigation: 'navigateTo',
+        route: MEMBERS_ROUTE,
+        householdContext: {
+          kind: 'set',
+          householdId: outcome.result.household.id
+        }
+      }
+    }
   },
-  'inventory.create': async (_services, _payload, outcome) =>
+  'inventory.create': (_payload, outcome) =>
     outcome.kind === 'created'
       ? success('库存批次已创建，请刷新页面查看最新库存。')
       : failure(outcome),
-  'inventory.consume': async (_services, _payload, outcome) =>
+  'inventory.consume': (_payload, outcome) =>
     outcome.kind === 'consumed'
       ? success('库存消耗已确认，请刷新页面查看最新数量。')
       : failure(outcome),
-  'invite.create': async (_services, _payload, outcome) => {
+  'invite.create': (_payload, outcome) => {
     if (outcome.kind !== 'created') return failure(outcome)
     const inviteCode = outcome.result.inviteCode
     if (inviteCode === undefined) {
@@ -392,52 +417,55 @@ const commandReconciliationRegistry: {
       secret: { label: '邀请码', value: inviteCode }
     }
   },
-  'invite.revoke': async (_services, _payload, outcome) =>
+  'invite.revoke': (_payload, outcome) =>
     outcome.kind === 'revoked'
       ? success('邀请已撤销。')
       : failure(outcome),
-  'membership.remove': async (services, payload, outcome) => {
+  'membership.remove': (payload, outcome) => {
     if (outcome.kind !== 'removed') return failure(outcome)
     if (payload.isSelf) {
-      await services.navigation.reLaunch(
-        HOUSEHOLDS_ROUTE,
-        () => services.session.clearCurrentHouseholdId()
-      )
-      return success(
-        '你已退出家庭；关联档案已归档并保留，重新加入不会自动恢复。'
-      )
+      return {
+        ...success(
+          '你已退出家庭；关联档案已归档并保留，重新加入不会自动恢复。'
+        ),
+        localTransition: {
+          navigation: 'reLaunch',
+          route: HOUSEHOLDS_ROUTE,
+          householdContext: { kind: 'clear' }
+        }
+      }
     }
     return success('成员已移除，其关联档案已归档并保留。')
   },
-  'profile.create': async (_services, _payload, outcome) =>
+  'profile.create': (_payload, outcome) =>
     outcome.kind === 'created'
       ? success('档案已创建，请刷新页面查看。')
       : failure(outcome),
-  'profile.update': async (_services, _payload, outcome) =>
+  'profile.update': (_payload, outcome) =>
     outcome.kind === 'updated'
       ? success('档案已更新，请刷新页面查看。')
       : failure(outcome),
-  'profile.archive': async (_services, _payload, outcome) =>
+  'profile.archive': (_payload, outcome) =>
     outcome.kind === 'updated'
       ? success('档案已归档。')
       : failure(outcome),
-  'profile.restore': async (_services, _payload, outcome) =>
+  'profile.restore': (_payload, outcome) =>
     outcome.kind === 'updated'
       ? success('档案已恢复。')
       : failure(outcome),
-  'constraint.add': async (_services, _payload, outcome) =>
+  'constraint.add': (_payload, outcome) =>
     outcome.kind === 'added'
       ? success('饮食约束已登记，请刷新档案查看。')
       : failure(outcome),
-  'constraint.remove': async (_services, _payload, outcome) =>
+  'constraint.remove': (_payload, outcome) =>
     outcome.kind === 'removed'
       ? success('饮食约束已移除，请刷新档案查看。')
       : failure(outcome),
-  'profile.link-request': async (_services, _payload, outcome) =>
+  'profile.link-request': (_payload, outcome) =>
     outcome.kind === 'success'
       ? success('档案关联请求已发起，等待目标成员确认。')
       : failure(outcome),
-  'profile.link-confirm': async (_services, _payload, outcome) =>
+  'profile.link-confirm': (_payload, outcome) =>
     outcome.kind === 'success'
       ? success('档案关联已确认，请重新加载最新档案。')
       : failure(outcome)
@@ -467,18 +495,44 @@ export const dispatchRegisteredCommand = async <
     key
   )
 
-export const reconcileRegisteredCommand = async <
+export const reconcileRegisteredCommand = <
   K extends ClientCommandKind
 >(
-  services: AppServices,
   command: RegisteredCommand<K>,
   outcome: RegisteredCommandOutcome<K>
-): Promise<CommandReconciliation> =>
+): CommandReconciliation =>
   commandReconciliationRegistry[command.kind](
-    services,
     command.payload,
     outcome
   )
+
+export const applyCommandLocalTransition = async (
+  services: AppServices,
+  transition: CommandLocalTransition
+): Promise<void> => {
+  const updateHouseholdContext = (): void => {
+    if (transition.householdContext.kind === 'set') {
+      services.session.saveCurrentHouseholdId(
+        transition.householdContext.householdId
+      )
+    } else {
+      services.session.clearCurrentHouseholdId()
+    }
+  }
+  const decision =
+    transition.navigation === 'reLaunch'
+      ? await services.navigation.reLaunch(
+          transition.route,
+          updateHouseholdContext
+        )
+      : await services.navigation.navigateTo(
+          transition.route,
+          updateHouseholdContext
+        )
+  if (decision.kind === 'denied') {
+    throw new Error('local navigation was denied')
+  }
+}
 
 export const commandLabel = (kind: ClientCommandKind): string =>
   ({

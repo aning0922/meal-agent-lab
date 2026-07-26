@@ -58,9 +58,9 @@
 | API unit | 12/12 |
 | API HTTP | 6/6 |
 | PostgreSQL migration/RLS/concurrency | 50/50 |
-| client unit + 页面渲染 | 124/124 |
+| client unit + 页面渲染 | 129/129 |
 | stage 07 + stage 08 E2E | 21/21 |
-| audit gate 与 transport 反向单测 | 9/9 |
+| audit gate 与 transport 反向单测 | 11/11 |
 | weapp build | Pass |
 | GUI | `c68217ed` 页面视觉范围 Pass；0004 增量未伪造新 GUI Pass，见[证据](../evidence/stage-08-gui/README.md) |
 | 依赖审计 | 官方 endpoint 有效报告 1 critical、1 high、8 moderate；local/weapp-only 限时例外门禁 Pass |

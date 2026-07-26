@@ -4,6 +4,7 @@ import { Button, Text, View } from '@tarojs/components'
 import { getAppServices } from '../app-runtime'
 import {
   commandLabel,
+  type CommandLocalRecovery,
   type CommandReconciliation
 } from '../core/command-registry'
 import type { PendingCommandStatus } from '../core/idempotency'
@@ -14,15 +15,21 @@ export const PendingCommandRecovery = () => {
     services.pendingCommands.status()
   )
   const [retrying, setRetrying] = useState(false)
+  const [recoveringLocally, setRecoveringLocally] = useState(false)
   const [reconciliation, setReconciliation] =
     useState<CommandReconciliation | null>(null)
+  const [localRecovery, setLocalRecovery] =
+    useState<CommandLocalRecovery | null>(null)
 
   useEffect(
     () =>
       services.pendingCommands.subscribe(() => {
         const next = services.pendingCommands.status()
         setStatus(next)
-        if (next.phase !== 'idle') setReconciliation(null)
+        if (next.phase !== 'idle') {
+          setReconciliation(null)
+          setLocalRecovery(null)
+        }
       }),
     [services]
   )
@@ -65,6 +72,11 @@ export const PendingCommandRecovery = () => {
                 switch (result.kind) {
                   case 'reconciled':
                     setReconciliation(result.presentation)
+                    setLocalRecovery(null)
+                    return
+                  case 'local-recovery-required':
+                    setReconciliation(result.presentation)
+                    setLocalRecovery(result.recovery)
                     return
                   case 'unknown':
                   case 'unexpected-error':
@@ -73,18 +85,21 @@ export const PendingCommandRecovery = () => {
                       message:
                         '重试结果仍未知；原命令和原 key 已保留，只能再次重试。'
                     })
+                    setLocalRecovery(null)
                     return
                   case 'auth-suspended':
                     setReconciliation({
                       tone: 'warning',
                       message: '认证已暂停，请使用原账号重新登录后恢复。'
                     })
+                    setLocalRecovery(null)
                     return
                   case 'in-flight':
                     setReconciliation({
                       tone: 'warning',
                       message: '原命令已在执行，没有发送第二个请求。'
                     })
+                    setLocalRecovery(null)
                     return
                   case 'stale-attempt':
                     setReconciliation({
@@ -92,6 +107,7 @@ export const PendingCommandRecovery = () => {
                       message:
                         '该响应属于已失效的旧请求，没有修改当前未决命令。'
                     })
+                    setLocalRecovery(null)
                     return
                   case 'idle':
                     return
@@ -110,20 +126,53 @@ export const PendingCommandRecovery = () => {
           className='button button--secondary'
           disabled={status.phase === 'auth-suspended'}
           onClick={() => {
-            void services.navigation.reLaunch(status.ownerRoute)
+            void services.navigation.reLaunch(
+              services.pendingRecoveryRoute()
+            )
           }}
         >
           返回命令页面
         </Button>
       )}
-      {status.phase === 'idle' && reconciliation !== null && (
+      {status.phase === 'idle' && localRecovery !== null && (
         <Button
-          className='button button--secondary'
-          onClick={() => setReconciliation(null)}
+          className={
+            recoveringLocally
+              ? 'button button--disabled'
+              : 'button'
+          }
+          disabled={recoveringLocally}
+          onClick={() => {
+            if (recoveringLocally) return
+            setRecoveringLocally(true)
+            void services.commands
+              .retryLocalRecovery(localRecovery)
+              .then((result) => {
+                setReconciliation(result.presentation)
+                setLocalRecovery(
+                  result.kind === 'local-recovery-required'
+                    ? result.recovery
+                    : null
+                )
+              })
+              .finally(() => setRecoveringLocally(false))
+          }}
         >
-          知道了
+          {recoveringLocally
+            ? '正在恢复页面切换…'
+            : '安全重试页面切换'}
         </Button>
       )}
+      {status.phase === 'idle' &&
+        reconciliation !== null &&
+        localRecovery === null && (
+          <Button
+            className='button button--secondary'
+            onClick={() => setReconciliation(null)}
+          >
+            知道了
+          </Button>
+        )}
     </View>
   )
 }

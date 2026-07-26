@@ -76,13 +76,13 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 - link household advisory 获取后重新读取 `clock_timestamp()`；materialize 与 accepted 写入前都在锁内重验 `expires_at`，`confirmed_at` 使用锁后时间。成员 DELETE 与 link confirm 先查询同 key 已完成记录，再做 household bootstrap；不存在完成记录的跨家庭 DELETE 返回 404，已提交的自退出或安全 409 仍可在 membership inactive 后重放。
 - 可缓存的 link 409 只有两个规范化 route，数据库 CHECK 要求 `response_body` 为 JSON object、`ok` 为 JSON boolean false、`error` 为 object 且 `error.code=CONFLICT`；缺字段、`{}` 与 JSON null 都必须失败，不能利用 PostgreSQL CHECK 的 UNKNOWN 放行。
 - production audit gate 严格校验例外 policy、有限可解析到期时间、完整 advisory metadata 和退出语义；仅 exit 0/1 的合法审计报告可继续，signal、exit 2、registry/network 错误及 advisory 新增、变化或消失均失败。
-- 审计命令仍由 `pnpm audit --prod --json` 生成依赖路径和标准退出语义。为收口 npm HKG 边缘曾出现的“无 `Content-Encoding` 头 gzip body”，门禁通过仅监听 loopback 的 transport normalizer 转发官方 HTTPS bulk endpoint；它只接受直接 JSON 或通过 gzip magic/CRC 校验后可解析为 object 的 JSON。损坏压缩、非 JSON、非 200、超限、缺 metadata 仍全部 fail closed，normalizer 不缓存、不生成 advisory。
+- 审计命令仍由 `pnpm audit --prod --json` 生成依赖路径和标准退出语义。为收口 npm HKG 边缘曾出现的“无 `Content-Encoding` 头 gzip body”，门禁通过仅监听 loopback 的 transport normalizer 转发官方 HTTPS bulk endpoint；它使用不自动跟随 redirect 的 HTTPS 请求，任何 3xx 都失败，并分别在原始响应流和 gzip 解压流实施 16 MiB 上限。它只接受直接 JSON 或通过 gzip magic/CRC 校验后可解析为 object 的 JSON；损坏压缩、非 JSON、非 200、超限、缺 metadata 仍全部 fail closed，normalizer 不缓存、不生成 advisory。
 
 ### 合并前根因复审的不变量
 
 - 客户端未决命令 envelope 必须绑定 `principalId`、`householdId`、`ownerRoute` 与认证 generation，并保存 typed registry command 的完整不可变 snapshot。401 只把命令转为 `auth-suspended`，不得删除未知结果；只有同一 principal 的新认证 generation 可以恢复，换用户必须 fail-closed 销毁且永远不能读取或执行旧 payload/key。
 - 所有写操作通过集中 typed command registry 和 retry dispatcher 执行，coordinator 提供订阅和全局恢复入口。普通 GET、资源消失、页面卸载或宿主原生 Back 都不能释放 envelope；恢复只重放 snapshot 与原 key。主动登出在 service/coordinator 边界拒绝，不能依赖页面按钮。
-- 程序化导航返回显式 `allowed`/`denied`；`session.currentHousehold` 等上下文变更只能作为获准导航的回调执行。存在 pending 时，除返回 `ownerRoute` 展示恢复入口外，不允许跨动作或带上下文变更的导航。
+- 程序化导航返回显式 `allowed`/`denied`；`session.currentHousehold` 等上下文变更只能作为获准导航的回调执行。同一 principal 在 401 后重新认证时，协调器从受 principal/generation 保护的 envelope 恢复 household context；若本地 storage 失败，只允许进入不依赖家庭上下文的家庭选择/全局恢复页，不能以 `currentHousehold=null` 进入 Members/Profile/Inventory。换 principal 会同时销毁旧 envelope 和旧家庭上下文。
 - PersonProfile/link 生命周期写路径固定锁序为：已完成 replay / household bootstrap → household link advisory → idempotency marker → request/profile/membership domain row locks。remove、linked self-create、create-link、confirm、archive/restore 复用同一 repository helper；同一 principal 的两个真实数据库 session 与 barrier 验证 self-exit vs confirm、linked self-create vs confirm 不出现 `40P01` 或 HTTP 500。
 - PostgreSQL-safe string primitive 接受的单位是 Unicode scalar value：拒绝 U+0000、孤立 high surrogate 和孤立 low surrogate，允许合法 surrogate pair/emoji。正则不依赖 JavaScript `u` flag，以便 OpenAPI 3.0 使用同一 pattern；runtime、OpenAPI 与 raw JSON HTTP 验证 80/81 emoji 字段长度，PostgreSQL JSONB 回归只验证编码层接受合法 supplementary scalar、拒绝孤立 surrogate。
 - Members 写操作的 400/403/404/409 都是确定失败并释放旧命令，5xx/transport/malformed success 才保留未知状态。页面测试必须断言真实按钮存在，并以请求计数增加证明交互实际触发网络调用，不能用 optional chaining 形成假通过。
@@ -92,6 +92,7 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 - 每个 pending envelope 有独立、不可变的 `commandId`。`settle`/`markUnknown` 只接受创建 attempt 时取得的 command reference 并执行 CAS；同 action 的旧 promise 无论跨用户还是同用户新 key 后延迟返回，都不能结算新 envelope，也不能把旧 outcome 交给页面继续执行副作用。
 - retry 只能由 coordinator 原子执行 `unknown → in-flight`；`in-flight` 与 `auth-suspended` 都不能发起请求。并发点击由该状态转换 single-flight，而不是只依靠按钮 `disabled`。
 - typed command registry 同时登记执行与全局恢复 reconciliation。CAS 成功后才能处理 outcome：家庭 create/join 设置上下文并导航；self-exit 清家庭上下文并离开；invite create 的首次明文只在内存中展示，安全重放无明文时展示撤销重建引导；确定失败、仍未知和认证暂停都有可见状态。页面订阅 coordinator，pending 清除后立即重新渲染并解除禁用。
+- retry 的服务端 command outcome 与本地 reconciliation/导航 outcome 是两个状态边界。服务端成功或确定失败一经 CAS 结算，envelope/key 即释放；后续 storage、`reLaunch` 或 `navigateTo` 失败只能进入“命令已完成、仅本地切换待恢复”，并提供不发送写请求、绑定原 principal 的本地恢复入口，绝不能重新标记 `unknown`、声称原 key 仍保留，或让换账号后的会话应用旧家庭上下文。
 - schema 节点扩展统一命名为 `x-meal-agent-contract-rule-ids`，承载该节点绑定的全部 contract rule ID；具体规则是 `native` 还是 `runtime-only` 仍以根部 manifest 的 classification 为准。旧名称暗示只承载 runtime-only，但实际还包含原生规则，因此废止。
 - PostgreSQL-safe pattern 使用 pair-first + negated surrogate class，在无 flag、`u` flag 与 Ajv 8 默认 `unicodeRegExp` 下语义一致。contracts/OpenAPI/Ajv 负责 U+0000、全部孤立 surrogate 和 80/81 emoji 长度；PostgreSQL JSONB 测试只证明编码层接受合法 supplementary scalar、拒绝孤立 surrogate，不把 JSONB 自身冒充字段长度约束。
 - 应用进程重启后的未知命令恢复是尚未完成的内部工程范围，并继续阻断发布；它不是账号、设备或云服务造成的外部依赖。未来仍只能使用非敏感 locator + 服务端 command-status/receipt 或原子 fence。

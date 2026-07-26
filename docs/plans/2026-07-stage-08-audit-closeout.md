@@ -63,7 +63,7 @@
 | S3-05 | constraint JSONB 在 UPDATE 前完整校验 | app-role 畸形数组/notes 反向测试，内容/version 不变 | Closed |
 | S3-06 | label-only allergy 与隐藏字段清理、五类阻断确认 | contracts/client 五类矩阵与实际页面确认展示 | Closed；FAM-004 仍 Partial |
 | S3-07 | schema 定义处 metadata binding，OpenAPI 对应节点携带 rule ID | 无直接 refine 扫描、故意错绑失败、逐 component 检查 | Closed |
-| S3-08 | production audit policy/退出语义 fail-closed | invalid expiry、signal、exit 2、registry、metadata、新增/消失 advisory，以及官方 registry JSON/gzip transport 正反例 9/9 | Closed |
+| S3-08 | production audit policy/退出语义 fail-closed | invalid expiry、signal、exit 2、registry、metadata、新增/消失 advisory，以及官方 registry JSON/gzip/redirect/双流上限正反例 11/11 | Closed |
 
 0004 未部署前的增量整改关闭项：
 
@@ -111,6 +111,14 @@
 | S7-03 | 全局恢复执行 typed 业务 reconciliation | 真实组件覆盖 invite 明文/无明文引导、self-exit、household create/join、确定失败/未知/认证暂停及页面解锁 | Closed |
 | S7-04 | PostgreSQL-safe pattern 跨正则执行器一致 | 无 flag、u flag、Ajv 8 默认配置遍历全部 surrogate；合法 supplementary 与 80/81 emoji parity | Closed |
 | S7-05 | schema rule 扩展名与范围一致 | `x-meal-agent-contract-rule-ids` 承载全部节点绑定，classification 区分 native/runtime-only | Closed |
+
+本轮合并前复验关闭项：
+
+| ID | 整改 | 关键证据 | 状态 |
+| --- | --- | --- | --- |
+| S8-01 | 服务端 definite outcome 与本地 reconciliation 分开结算 | 重放成功后分别注入 `reLaunch`、`navigateTo`、household storage 失败；envelope 已释放、提示只指向绑定原 principal 的本地恢复、retry 不新增写请求，换账号不能应用旧家庭 | Closed |
+| S8-02 | 401 后安全恢复 household-scoped pending | 同 principal 重登覆盖成功与 403 确定失败；storage 恢复失败只允许家庭选择/全局恢复页；换 principal 清 envelope 和家庭 | Closed |
+| S8-03 | audit upstream redirect 与双流上限 fail-closed | 301/302/307/308 拒绝；原始流与 gzip 解压流分别超过 16 MiB 时失败 | Closed |
 
 ## 3. A — 幂等与敏感数据
 
@@ -241,9 +249,9 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 | API unit | 12/12 |
 | API HTTP | 6/6 |
 | PostgreSQL/RLS/concurrency | 50/50 |
-| client unit/page | 124/124 |
+| client unit/page | 129/129 |
 | E2E | 21/21 |
-| audit gate 与 transport 反向单测 | 9/9 |
+| audit gate 与 transport 反向单测 | 11/11 |
 | OpenAPI | 19 paths / 25 operations |
 | weapp build | Pass |
 | GUI | `c68217ed` 页面视觉范围 Pass；0004 增量由页面/API/DB 自动化验证，未伪造新 GUI Pass |
@@ -253,7 +261,7 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 经 npm 官方 HTTPS bulk endpoint 取得、由 `pnpm audit --prod --json` 生成路径的有效报告为 1 critical、1 high、8 moderate。精确路径都属于 Taro 传递链。机器可读例外位于 [`security/audit-exceptions.json`](../../security/audit-exceptions.json)，截至 2026-08-08T23:59:59+08:00，只允许 `local-weapp`：
 
-- loopback transport normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON；损坏压缩、非 JSON、非 200、超限、registry/network 错误和缺 metadata 均失败；
+- loopback transport normalizer 不跟随 redirect，3xx 失败；原始响应流与 gzip 解压流分别受 16 MiB 上限保护，只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON；损坏压缩、非 JSON、非 200、超限、registry/network 错误和缺 metadata 均失败；
 - 精确匹配 advisory ID、module、severity、version、path count 和 path-set hash；
 - 扫描构建产物禁止已知 vulnerable dependency signature；
 - 新增/变更 advisory、旧项消失但例外未清理、到期、缺产物或目标为 H5/external-test/experience/release 都失败；

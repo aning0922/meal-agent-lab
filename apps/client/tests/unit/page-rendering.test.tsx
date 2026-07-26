@@ -35,6 +35,7 @@ import {
   ownerMembersViewFixture,
   personProfileFixture,
   removeMembershipResultFixture,
+  replayedIdempotencyMeta,
   successEnvelope,
   uuidV7
 } from '../support/fixtures'
@@ -169,6 +170,85 @@ describe('真实页面渲染回归', () => {
       renderer.root
         .findAll((node) => String(node.type) === 'taro-button')
         .find((button) => buttonText(button) === '知道了')
+    )
+  })
+
+  it('服务端成功但本地导航失败时只提供安全页面恢复，不再发送写命令', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, 'http://127.0.0.1:3000')
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueResponse(new Error('lost create response'))
+    await services.commands.execute(
+      'household:create:page-local-recovery',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '已完成家庭', ownerDisplayName: '成员甲' }
+      }
+    )
+    const pending = services.pendingCommands.activeSnapshot()
+    assert.ok(pending)
+    platform.enqueueJson(
+      201,
+      successEnvelope(
+        createHouseholdResultFixture(),
+        replayedIdempotencyMeta(pending.key)
+      )
+    )
+    const originalReLaunch = platform.navigation.reLaunch
+    platform.navigation.reLaunch = async () => {
+      throw new Error('local navigation failed')
+    }
+    cleanupServices = installAppServicesForPageTest(services)
+    await act(async () => {
+      renderer = create(<PendingCommandRecovery />)
+    })
+    const activeRenderer = requireRenderer()
+    const retry = activeRenderer.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原命令')
+    assert.ok(retry)
+    await act(async () => {
+      retry.props['onClick']()
+      await settleEffects()
+    })
+
+    assert.equal(services.pendingCommands.status().phase, 'idle')
+    assert.match(
+      textContent(activeRenderer.toJSON()),
+      /命令已完成，但本地页面切换失败/
+    )
+    assert.doesNotMatch(
+      textContent(activeRenderer.toJSON()),
+      /原命令和原 key 已保留/
+    )
+    assert.equal(
+      activeRenderer.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .some((button) => buttonText(button) === '重试原命令'),
+      false
+    )
+    const recover = activeRenderer.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '安全重试页面切换')
+    assert.ok(recover)
+    const writesAfterCompletion = platform.sentRequests.length
+
+    platform.navigation.reLaunch = originalReLaunch
+    await act(async () => {
+      recover.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(platform.sentRequests.length, writesAfterCompletion)
+    assert.match(
+      textContent(activeRenderer.toJSON()),
+      /家庭已创建，已切换到该家庭/
+    )
+    assert.equal(
+      services.session.restoreCurrentHouseholdId(),
+      createHouseholdResultFixture().household.id
     )
   })
 
