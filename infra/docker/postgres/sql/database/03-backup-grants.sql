@@ -44,15 +44,83 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO meal_agent_backup;
 GRANT SELECT ON ALL TABLES IN SCHEMA drizzle TO meal_agent_backup;
 GRANT SELECT ON ALL SEQUENCES IN SCHEMA public TO meal_agent_backup;
 
+-- 今后由 migrator 新建的 table/sequence 自动获得 backup 只读权限。
+-- sequence 只给 SELECT：USAGE/UPDATE 会让 nextval/setval 可用，那不是只读。
+ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public
+  GRANT SELECT ON TABLES TO meal_agent_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA drizzle
+  GRANT SELECT ON TABLES TO meal_agent_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public
+  GRANT SELECT ON SEQUENCES TO meal_agent_backup;
+
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
   ON ALL TABLES IN SCHEMA public FROM meal_agent_backup;
 REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
   ON ALL TABLES IN SCHEMA drizzle FROM meal_agent_backup;
+REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public FROM meal_agent_backup;
 REVOKE CREATE ON SCHEMA public FROM meal_agent_backup;
 REVOKE CREATE ON SCHEMA drizzle FROM meal_agent_backup;
 
 -- 备份角色不得执行受控状态转换函数：它只导出数据，不驱动业务写路径。
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA meal_agent_private FROM meal_agent_backup;
 REVOKE ALL ON SCHEMA meal_agent_private FROM meal_agent_backup;
+
+-- ---------------------------------------------------------------------------
+-- 结果自检：backup 必须精确只读。
+-- ---------------------------------------------------------------------------
+DO $verify_backup$
+DECLARE
+  problem text;
+BEGIN
+  -- 表/视图只有 SELECT，且不带 GRANT OPTION。
+  SELECT string_agg(format('%s.%s:%s%s', n.nspname, c.relname,
+                           acl.privilege_type,
+                           CASE WHEN acl.is_grantable THEN ' (grantable)'
+                                ELSE '' END),
+                    ', ')
+    INTO problem
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
+       aclexplode(c.relacl) AS acl
+  WHERE n.nspname IN ('public', 'drizzle')
+    AND acl.grantee <> 0
+    AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'
+    AND (acl.privilege_type <> 'SELECT' OR acl.is_grantable);
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'backup grants: backup must hold only non-grantable SELECT: %', problem;
+  END IF;
+
+  -- 列级授权一律不应存在。
+  SELECT string_agg(format('%s.%s.%s', n.nspname, c.relname, a.attname), ', ')
+    INTO problem
+  FROM pg_attribute a
+  JOIN pg_class c ON c.oid = a.attrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace,
+       aclexplode(a.attacl) AS acl
+  WHERE acl.grantee <> 0
+    AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'backup grants: backup must not hold column-level grants: %', problem;
+  END IF;
+
+  -- meal_agent_private 既无 USAGE 也无 EXECUTE。
+  IF has_schema_privilege('meal_agent_backup', 'meal_agent_private', 'USAGE') THEN
+    RAISE EXCEPTION
+      'backup grants: backup must not have USAGE on meal_agent_private';
+  END IF;
+
+  -- schema 只有 USAGE，没有 CREATE。
+  IF has_schema_privilege('meal_agent_backup', 'public', 'CREATE')
+     OR has_schema_privilege('meal_agent_backup', 'drizzle', 'CREATE') THEN
+    RAISE EXCEPTION 'backup grants: backup must not hold CREATE on a schema';
+  END IF;
+
+  -- 数据库级无 TEMP。
+  IF has_database_privilege('meal_agent_backup', current_database(), 'TEMP') THEN
+    RAISE EXCEPTION 'backup grants: backup must not hold TEMP';
+  END IF;
+END
+$verify_backup$;
 
 COMMIT;

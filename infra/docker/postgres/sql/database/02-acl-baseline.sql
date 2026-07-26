@@ -85,40 +85,51 @@ DECLARE
 BEGIN
   -- 2a. schema 级
   FOR grant_row IN
-    SELECT n.nspname, pg_catalog.pg_get_userbyid(acl.grantee) AS grantee
+    SELECT n.nspname, pg_catalog.pg_get_userbyid(acl.grantee) AS grantee,
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
     FROM pg_namespace n, aclexplode(n.nspacl) AS acl
     WHERE acl.grantee <> 0
       AND pg_catalog.pg_get_userbyid(acl.grantee) = ANY(login_roles)
-    GROUP BY 1, 2
+    GROUP BY 1, 2, 3
   LOOP
-    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM %I',
+    -- 必须以**真实 grantor 的身份**撤销：不带这一步的 REVOKE 只会撤销
+    -- 「由执行者授予」的那一份。对象权限的 GRANTED BY 只接受 current_user
+    -- （"grantor must be current user"），因此这里 SET LOCAL ROLE 到 grantor。
+    -- CASCADE 是显式选择：依赖链一并清除，保证收敛。
+    EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM %I CASCADE',
                    grant_row.nspname, grant_row.grantee);
+    RESET ROLE;
   END LOOP;
 
   -- 2b. table / view / materialized view / foreign table / sequence
   FOR grant_row IN
     SELECT n.nspname, c.relname, c.relkind,
-           pg_catalog.pg_get_userbyid(acl.grantee) AS grantee
+           pg_catalog.pg_get_userbyid(acl.grantee) AS grantee,
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace,
          aclexplode(c.relacl) AS acl
     WHERE acl.grantee <> 0
       AND pg_catalog.pg_get_userbyid(acl.grantee) = ANY(login_roles)
-    GROUP BY 1, 2, 3, 4
+    GROUP BY 1, 2, 3, 4, 5
   LOOP
+    EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
     IF grant_row.relkind = 'S' THEN
-      EXECUTE format('REVOKE ALL ON SEQUENCE %I.%I FROM %I',
+      EXECUTE format('REVOKE ALL ON SEQUENCE %I.%I FROM %I CASCADE',
                      grant_row.nspname, grant_row.relname, grant_row.grantee);
     ELSE
-      EXECUTE format('REVOKE ALL ON TABLE %I.%I FROM %I',
+      EXECUTE format('REVOKE ALL ON TABLE %I.%I FROM %I CASCADE',
                      grant_row.nspname, grant_row.relname, grant_row.grantee);
     END IF;
+    RESET ROLE;
   END LOOP;
 
   -- 2c. column 级：不会出现在 relacl 里，必须单独枚举 attacl
   FOR grant_row IN
     SELECT n.nspname, c.relname, a.attname,
            pg_catalog.pg_get_userbyid(acl.grantee) AS grantee,
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
            acl.privilege_type
     FROM pg_attribute a
     JOIN pg_class c ON c.oid = a.attrelid
@@ -127,27 +138,32 @@ BEGIN
     WHERE acl.grantee <> 0
       AND pg_catalog.pg_get_userbyid(acl.grantee) = ANY(login_roles)
   LOOP
-    EXECUTE format('REVOKE %s (%I) ON TABLE %I.%I FROM %I',
+    EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    EXECUTE format('REVOKE %s (%I) ON TABLE %I.%I FROM %I CASCADE',
                    grant_row.privilege_type, grant_row.attname,
                    grant_row.nspname, grant_row.relname, grant_row.grantee);
+    RESET ROLE;
   END LOOP;
 
   -- 2d. routine 级
   FOR grant_row IN
     SELECT n.nspname, p.proname, p.oid AS prooid,
-           pg_catalog.pg_get_userbyid(acl.grantee) AS grantee
+           pg_catalog.pg_get_userbyid(acl.grantee) AS grantee,
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
     FROM pg_proc p
     JOIN pg_namespace n ON n.oid = p.pronamespace,
          aclexplode(p.proacl) AS acl
     WHERE acl.grantee <> 0
       AND pg_catalog.pg_get_userbyid(acl.grantee) = ANY(login_roles)
-    GROUP BY 1, 2, 3, 4
+    GROUP BY 1, 2, 3, 4, 5
   LOOP
-    EXECUTE format('REVOKE ALL ON ROUTINE %I.%I(%s) FROM %I',
+    EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    EXECUTE format('REVOKE ALL ON ROUTINE %I.%I(%s) FROM %I CASCADE',
                    grant_row.nspname, grant_row.proname,
                    pg_catalog.pg_get_function_identity_arguments(
                      grant_row.prooid),
                    grant_row.grantee);
+    RESET ROLE;
   END LOOP;
 
   -- 2e. default privileges：FOR ROLE 必须与 defaclrole 精确匹配
@@ -196,6 +212,93 @@ GRANT USAGE ON SCHEMA drizzle TO meal_agent_app, meal_agent_backup;
 
 -- readiness 以 meal_agent_app 身份读取 migration ledger。
 GRANT SELECT ON drizzle.__meal_agent_migrations TO meal_agent_app;
+
+-- ---------------------------------------------------------------------------
+-- 3b. routine 边界。
+--
+--   * public 中不得存在业务 routine，更不得存在 SECURITY DEFINER 业务函数：
+--     受控状态转换函数都在 meal_agent_private，由 migrator 拥有。
+--   * PostgreSQL 默认把新函数的 EXECUTE 授予 PUBLIC。这里显式收回 public 与
+--     meal_agent_private 中现有 routine 的 PUBLIC EXECUTE，并用 default
+--     privileges 收回 migrator 今后新建 routine 的 PUBLIC EXECUTE。
+--   * **不**对 app 使用 `GRANT EXECUTE ON ALL FUNCTIONS`：app 的函数权限只能
+--     来自冻结 migration 明确授予的那一组，这里不得扩大。
+-- ---------------------------------------------------------------------------
+DO $routine_boundary$
+DECLARE
+  problem text;
+  routine_row record;
+BEGIN
+  SELECT string_agg(format('%s (security definer: %s)', p.proname, p.prosecdef),
+                    ', ' ORDER BY p.proname)
+    INTO problem
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: public must not contain business routines: %', problem;
+  END IF;
+
+  FOR routine_row IN
+    SELECT n.nspname, p.proname, p.oid AS prooid
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace,
+         aclexplode(p.proacl) AS acl
+    WHERE n.nspname IN ('public', 'meal_agent_private')
+      AND acl.grantee = 0
+      AND acl.privilege_type = 'EXECUTE'
+    GROUP BY 1, 2, 3
+  LOOP
+    EXECUTE format('REVOKE EXECUTE ON ROUTINE %I.%I(%s) FROM PUBLIC',
+                   routine_row.nspname, routine_row.proname,
+                   pg_catalog.pg_get_function_identity_arguments(
+                     routine_row.prooid));
+  END LOOP;
+END
+$routine_boundary$;
+
+-- migrator 今后在这两个 schema 新建的 routine 不再默认授予 PUBLIC EXECUTE。
+ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA meal_agent_private
+  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
+-- ---------------------------------------------------------------------------
+-- 3c. 被管理对象的 owner 必须是 migrator——不只是「login 不能是 owner」。
+-- ---------------------------------------------------------------------------
+DO $managed_owners$
+DECLARE
+  problem text;
+BEGIN
+  SELECT string_agg(format('%s %s.%s (owner %s)',
+           CASE c.relkind WHEN 'S' THEN 'sequence' WHEN 'v' THEN 'view'
+                          WHEN 'm' THEN 'matview' ELSE 'table' END,
+           n.nspname, c.relname, pg_catalog.pg_get_userbyid(c.relowner)),
+         ', ' ORDER BY n.nspname, c.relname)
+    INTO problem
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname IN ('public', 'drizzle')
+    AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> 'meal_agent_migrator';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: managed relation(s) not owned by meal_agent_migrator: %',
+      problem;
+  END IF;
+
+  SELECT string_agg(format('%s.%s (owner %s)', n.nspname, p.proname,
+                           pg_catalog.pg_get_userbyid(p.proowner)),
+                    ', ' ORDER BY n.nspname, p.proname)
+    INTO problem
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+    AND pg_catalog.pg_get_userbyid(p.proowner) <> 'meal_agent_migrator';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: managed routine(s) not owned by meal_agent_migrator: %',
+      problem;
+  END IF;
+END
+$managed_owners$;
 
 -- ---------------------------------------------------------------------------
 -- 4. 结果自检：枚举必须为空，基线必须成立。
@@ -301,6 +404,17 @@ BEGIN
         'acl baseline: app/backup must not hold CREATE on schema %', problem;
     END IF;
   END LOOP;
+
+  SELECT string_agg(format('%s.%s', n.nspname, p.proname), ', ')
+    INTO problem
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace,
+       aclexplode(p.proacl) AS acl
+  WHERE n.nspname IN ('public', 'meal_agent_private')
+    AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: PUBLIC still holds EXECUTE on routine(s): %', problem;
+  END IF;
 
   SELECT string_agg(candidate, ', ' ORDER BY candidate) INTO problem
   FROM unnest(login_roles) AS candidate

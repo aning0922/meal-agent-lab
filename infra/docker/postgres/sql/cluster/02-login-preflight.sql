@@ -20,7 +20,7 @@ BEGIN
 
   IF missing IS NOT NULL THEN
     RAISE EXCEPTION
-      'login preflight: % do not exist; run "bootstrap.sh roles" first',
+      'login preflight: % do not exist; run "bootstrap.sh cluster" first',
       missing;
   END IF;
 
@@ -35,7 +35,7 @@ BEGIN
 
   IF missing IS NOT NULL THEN
     RAISE EXCEPTION
-      'login preflight: % are not normalized; run "bootstrap.sh roles" first',
+      'login preflight: % are not normalized; run "bootstrap.sh cluster" first',
       missing;
   END IF;
 END

@@ -15,6 +15,10 @@
 
 \set ON_ERROR_STOP on
 
+-- psql 不在 dollar-quoted 块内做变量替换，因此先把 0000 的期望 checksum 放进
+-- 带命名空间的自定义 GUC。该值由 bootstrap.sh 从磁盘上的 migration 文件算出。
+SELECT set_config('meal_agent.stage06_hash', :'stage06_hash', false);
+
 BEGIN;
 
 -- ---------------------------------------------------------------------------
@@ -22,86 +26,162 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 DO $checks$
 DECLARE
-  -- 冻结 migration 与它们各自建立的 public 业务表。
+  -- 冻结的 0000 恰好建立的对象集合。handoff 是 fresh-install 的 0000-only
+  -- 步骤，因此这里不再维护 0001—0004 的第二份表名映射。
   stage06_tables constant text[] := ARRAY[
     'auth_identities', 'households', 'idempotency_records', 'inventory_events',
     'inventory_lots', 'memberships', 'person_profiles', 'sessions', 'users'
   ];
-  stage08_first constant text[] := ARRAY['household_invites'];
-  stage08_second constant text[] := ARRAY['person_profile_link_requests'];
+  stage06_routines constant text[] := ARRAY[
+    'app_household_id', 'app_user_id', 'has_active_membership',
+    'is_household_creator'
+  ];
+  stage06_schemas constant text[] := ARRAY[
+    'public', 'drizzle', 'meal_agent_private'
+  ];
   bootstrap_admin constant text := current_user;
-  applied text[];
-  allowed text[];
-  present text[];
+  expected_hash constant text := current_setting('meal_agent.stage06_hash');
+  applied_names text[];
+  applied_hash text;
+  database_owner text;
   problem text;
 BEGIN
-  -- 1a. ledger 必须存在且包含有效的 0000。
+  -- 1a. ledger 必须存在，且**恰好**只有 checksum 正确的 0000。
   IF to_regclass('drizzle.__meal_agent_migrations') IS NULL THEN
     RAISE EXCEPTION
       'owner handoff: migration ledger is missing; run '
       '"pnpm --filter @meal-agent/api db:bootstrap" first';
   END IF;
 
-  SELECT array_agg(name ORDER BY name) INTO applied
+  SELECT array_agg(name ORDER BY name) INTO applied_names
   FROM drizzle.__meal_agent_migrations;
-  applied := coalesce(applied, ARRAY[]::text[]);
+  applied_names := coalesce(applied_names, ARRAY[]::text[]);
 
-  IF NOT ('0000_stage_06.sql' = ANY(applied)) THEN
+  IF applied_names <> ARRAY['0000_stage_06.sql'] THEN
     RAISE EXCEPTION
-      'owner handoff: 0000_stage_06.sql has not been applied; run '
-      '"pnpm --filter @meal-agent/api db:bootstrap" first';
+      'owner handoff: this is a fresh-install, 0000-only step; the ledger must '
+      'contain exactly 0000_stage_06.sql but contains %', applied_names;
   END IF;
 
-  -- 1b. 根据 ledger 实际内容推导允许出现的 public 业务表集合。
-  --     只有 0000 时，0001/0002 建立的表出现即为异常。
-  allowed := stage06_tables;
-  IF '0001_stage_08.sql' = ANY(applied) THEN
-    allowed := allowed || stage08_first;
-  END IF;
-  IF '0002_stage_08_audit_closeout.sql' = ANY(applied) THEN
-    allowed := allowed || stage08_second;
+  SELECT hash INTO applied_hash FROM drizzle.__meal_agent_migrations
+  WHERE name = '0000_stage_06.sql';
+  IF applied_hash IS DISTINCT FROM expected_hash THEN
+    RAISE EXCEPTION
+      'owner handoff: the recorded 0000_stage_06.sql checksum does not match '
+      'the migration file on disk';
   END IF;
 
-  SELECT coalesce(array_agg(c.relname ORDER BY c.relname), ARRAY[]::text[])
-    INTO present
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p');
+  -- 1b. mutation 前先确认 database owner 只能是当前 bootstrap admin 或 migrator。
+  SELECT pg_catalog.pg_get_userbyid(datdba) INTO database_owner
+  FROM pg_database WHERE datname = current_database();
+  IF database_owner NOT IN (bootstrap_admin, 'meal_agent_migrator') THEN
+    RAISE EXCEPTION
+      'owner handoff: database owner is %, expected % or meal_agent_migrator',
+      database_owner, bootstrap_admin;
+  END IF;
 
-  -- 1c. 未知对象（表/视图/序列/物化视图/外部表）一律拒绝。
-  SELECT string_agg(format('%s %s.%s (owner %s)',
+  -- 1c. schema 集合必须恰好是 0000 之后应有的三个（外加系统 schema）。
+  SELECT string_agg(nspname, ', ' ORDER BY nspname) INTO problem
+  FROM pg_namespace
+  WHERE nspname <> 'information_schema'
+    AND nspname !~ '^pg_'
+    AND NOT (nspname = ANY(stage06_schemas));
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'owner handoff: unexpected schema(s): %', problem;
+  END IF;
+
+  -- 1d. public 中的关系必须恰好是 0000 的九张表——view/matview/sequence/
+  --     foreign table 或任何 0001+ 的表出现都说明状态不对。
+  SELECT string_agg(format('%s %s (owner %s)',
            CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table'
                           WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview'
-                          WHEN 'S' THEN 'sequence' WHEN 'f' THEN 'foreign table'
-                          ELSE c.relkind::text END,
-           n.nspname, c.relname, pg_catalog.pg_get_userbyid(c.relowner)),
-         ', ' ORDER BY n.nspname, c.relname)
+                          WHEN 'S' THEN 'sequence' ELSE 'foreign table' END,
+           c.relname, pg_catalog.pg_get_userbyid(c.relowner)),
+         ', ' ORDER BY c.relname)
     INTO problem
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'public'
-    AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
-    AND NOT (c.relname = ANY(allowed));
+    AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+    AND NOT (c.relkind IN ('r', 'p') AND c.relname = ANY(stage06_tables));
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION
-      'owner handoff: unmanaged object(s) in public for the applied migration '
-      'set %: %', applied, problem;
+      'owner handoff: unexpected object(s) in public for a 0000-only '
+      'database: %', problem;
   END IF;
 
-  -- 1d. 已应用的 migration 应当建立的表必须都在。
   SELECT string_agg(candidate, ', ' ORDER BY candidate) INTO problem
-  FROM unnest(allowed) AS candidate
-  WHERE NOT (candidate = ANY(present));
+  FROM unnest(stage06_tables) AS candidate
+  WHERE to_regclass('public.' || candidate) IS NULL;
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION
-      'owner handoff: migration(s) recorded as applied but table(s) missing: %',
+      'owner handoff: 0000 is recorded as applied but table(s) missing: %',
       problem;
   END IF;
 
-  -- 1e. drizzle schema 里除 ledger 外不应有其他对象。
+  -- 1e. public 中不得有任何用户 routine：0000 的函数都在 meal_agent_private。
+  SELECT string_agg(p.proname, ', ' ORDER BY p.proname) INTO problem
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'owner handoff: unexpected routine(s) in public: %', problem;
+  END IF;
+
+  -- 1f. meal_agent_private 中的 routine 必须恰好是 0000 建立的四个，且归 migrator。
+  SELECT string_agg(format('%s (owner %s)', p.proname,
+                           pg_catalog.pg_get_userbyid(p.proowner)),
+                    ', ' ORDER BY p.proname)
+    INTO problem
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'meal_agent_private'
+    AND (NOT (p.proname = ANY(stage06_routines))
+         OR pg_catalog.pg_get_userbyid(p.proowner) <> 'meal_agent_migrator');
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'owner handoff: unexpected or mis-owned routine(s) in '
+      'meal_agent_private: %', problem;
+  END IF;
+
+  SELECT string_agg(candidate, ', ' ORDER BY candidate) INTO problem
+  FROM unnest(stage06_routines) AS candidate
+  WHERE NOT EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'meal_agent_private' AND p.proname = candidate
+  );
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'owner handoff: 0000 routine(s) missing from meal_agent_private: %',
+      problem;
+  END IF;
+
+  -- 1g. 业务表 owner 只验证不接管。
+  SELECT string_agg(format('%s (owner %s)', c.relname,
+                           pg_catalog.pg_get_userbyid(c.relowner)),
+                    ', ' ORDER BY c.relname)
+    INTO problem
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> 'meal_agent_migrator';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'owner handoff: business table(s) are not owned by meal_agent_migrator; '
+      'the frozen 0000 sets this, so this is an unexpected state: %', problem;
+  END IF;
+
+  -- 1h. 用户自定义类型：0000 不建立任何，出现即异常。
+  SELECT string_agg(n.nspname || '.' || t.typname, ', ') INTO problem
+  FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+  WHERE n.nspname = ANY(ARRAY['public', 'meal_agent_private'])
+    AND t.typtype IN ('c', 'e', 'd', 'r')
+    AND NOT EXISTS (SELECT 1 FROM pg_class c
+                    WHERE c.oid = t.typrelid AND c.relkind <> 'c');
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION 'owner handoff: unexpected user-defined type(s): %', problem;
+  END IF;
+
+  -- 1i. drizzle schema 里除 ledger 外不应有其他对象。
   SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO problem
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
   WHERE n.nspname = 'drizzle'
     AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
     AND c.relname <> '__meal_agent_migrations';
@@ -110,50 +190,13 @@ BEGIN
       'owner handoff: unexpected object(s) in schema drizzle: %', problem;
   END IF;
 
-  -- 1f. 业务表 owner 只验证不接管：冻结的 0000—0004 已把它们设为 migrator。
-  SELECT string_agg(format('%s (owner %s)', c.relname,
-                           pg_catalog.pg_get_userbyid(c.relowner)),
-                    ', ' ORDER BY c.relname)
-    INTO problem
-  FROM pg_class c
-  JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname = 'public'
-    AND c.relkind IN ('r', 'p')
-    AND pg_catalog.pg_get_userbyid(c.relowner) <> 'meal_agent_migrator';
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION
-      'owner handoff: business table(s) are not owned by meal_agent_migrator; '
-      'the frozen migrations set this, so this is an unexpected state: %',
-      problem;
-  END IF;
-
-  -- 1g. meal_agent_private 的 SECURITY DEFINER 函数 owner 决定其有效权限，
-  --     同样只验证。
-  IF to_regnamespace('meal_agent_private') IS NULL THEN
-    RAISE EXCEPTION 'owner handoff: schema meal_agent_private is missing';
-  END IF;
-  SELECT string_agg(format('%s (owner %s)', p.proname,
-                           pg_catalog.pg_get_userbyid(p.proowner)),
-                    ', ' ORDER BY p.proname)
-    INTO problem
-  FROM pg_proc p
-  JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'meal_agent_private'
-    AND pg_catalog.pg_get_userbyid(p.proowner) <> 'meal_agent_migrator';
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION
-      'owner handoff: meal_agent_private function(s) not owned by '
-      'meal_agent_migrator: %', problem;
-  END IF;
-
-  -- 1h. 要交接的三个 schema 与 ledger，其当前 owner 只能是 migrator（已交接）
-  --     或执行本脚本的 bootstrap admin（尚未交接）。
+  -- 1j. 待交接的 schema 与 ledger，其当前 owner 只能是 migrator 或 bootstrap admin。
   SELECT string_agg(format('schema %s (owner %s)', nspname,
                            pg_catalog.pg_get_userbyid(nspowner)),
                     ', ' ORDER BY nspname)
     INTO problem
   FROM pg_namespace
-  WHERE nspname IN ('public', 'drizzle', 'meal_agent_private')
+  WHERE nspname = ANY(stage06_schemas)
     AND pg_catalog.pg_get_userbyid(nspowner)
         NOT IN ('meal_agent_migrator', bootstrap_admin, 'pg_database_owner');
   IF problem IS NOT NULL THEN

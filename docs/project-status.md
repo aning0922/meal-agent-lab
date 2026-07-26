@@ -88,10 +88,12 @@
 
 ## 阶段 09A 计划与下一门禁
 
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」实现完成、待总控复验；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
+- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
 - 计划分支：`codex/stage-09a-local-deployability-baseline`，从最新本地 `main` 建立独立 worktree。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
-- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter；尚缺 Dockerfile、Compose、runtime/migration 登录账号隔离、容器 smoke test 和备份恢复证据。
-- 当前总控机器没有可用 Docker CLI/Compose；安装兼容 Compose v2 的容器引擎并完成真实运行门禁前，阶段 09A 不得记录为 Pass。
+- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile 与数据库身份隔离已实现；仍缺 Compose 拓扑、Secret 文件注入、备份恢复证据与阶段总门禁。
+- 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。
 - GitHub `origin` 与 `main` upstream 已配置，仓库已有 CI workflow；当前只确认配置存在，没有在本次规划中读取或伪造远端 run Pass。
 
 ### Deferred — 外部依赖

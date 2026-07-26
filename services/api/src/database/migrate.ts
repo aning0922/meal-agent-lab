@@ -207,10 +207,37 @@ const assertAdminBootstrapPreflight = async (
   const present = businessTables.rows.map((row) => row.relname);
 
   if (ledgerPresent.rows[0]?.present === null) {
-    if (present.length > 0) {
+    // 全新库必须**真的**是空的：不仅没有 public 普通表，也不能有任何用户
+    // schema、public 里的 view/matview/sequence/foreign table、用户 routine
+    // 或用户自定义类型——它们都可能与 0000 冲突或表示这不是一个干净目标。
+    const residue = await client.query<{ kind: string; ident: string }>(
+      `SELECT 'schema' AS kind, nspname AS ident
+         FROM pg_namespace
+        WHERE nspname NOT IN ('public', 'information_schema')
+          AND nspname NOT LIKE 'pg\\_%'
+       UNION ALL
+       SELECT 'relation', n.nspname || '.' || c.relname
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f')
+       UNION ALL
+       SELECT 'routine', n.nspname || '.' || p.proname
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+       UNION ALL
+       SELECT 'type', n.nspname || '.' || t.typname
+         FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public'
+          AND t.typtype IN ('c','e','d','r')
+          AND NOT EXISTS (SELECT 1 FROM pg_class c
+                          WHERE c.oid = t.typrelid AND c.relkind <> 'c')
+       ORDER BY 1, 2`,
+    );
+    if (residue.rows.length > 0) {
       throw new MigrationPreflightError(
-        "the database has no migration ledger but already contains table(s): " +
-          present.join(", "),
+        "the database has no migration ledger but is not empty: " +
+          residue.rows
+            .map((row) => `${row.kind} ${row.ident}`)
+            .join(", "),
       );
     }
     return;
@@ -299,6 +326,7 @@ export const applyMigrations = async (
     migrationDefaults.lockWaitMs,
   );
   const role = options.role === undefined ? migrationRole : options.role;
+  const atomicWholeRun = options.adminBootstrap === true;
   const pool = new Pool({
     connectionString: databaseUrl,
     max: 1,
@@ -326,9 +354,12 @@ export const applyMigrations = async (
       migrationDefaults.lockRetryDelayMs,
     );
     advisoryLockHeld = true;
-    if (options.adminBootstrap === true) {
+    if (atomicWholeRun) {
       // 任何 DDL 之前：核对目标库、admin 能力与数据库状态。
       await assertAdminBootstrapPreflight(client);
+      // 元数据 schema、ledger、0000 与 ledger insert 必须原子：0000 失败后
+      // 不得留下 drizzle schema 或空 ledger。
+      await client.query("BEGIN");
     }
     await prepareMigrationMetadata(client);
 
@@ -353,6 +384,16 @@ export const applyMigrations = async (
         continue;
       }
 
+      if (atomicWholeRun) {
+        // 已经在外层事务里：单条 migration 不再自开事务。
+        await client.query(migration.sql);
+        await client.query(
+          `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
+           VALUES ($1, $2)`,
+          [migration.name, migration.hash],
+        );
+        continue;
+      }
       await client.query("BEGIN");
       try {
         await client.query(migration.sql);
@@ -367,6 +408,15 @@ export const applyMigrations = async (
         throw error;
       }
     }
+    if (atomicWholeRun) {
+      await client.query("COMMIT");
+    }
+  } catch (error) {
+    if (client !== undefined && atomicWholeRun) {
+      // 原子 bootstrap 失败：整批回滚，不留下 drizzle schema 或空 ledger。
+      await client.query("ROLLBACK").catch(() => undefined);
+    }
+    throw error;
   } finally {
     if (client !== undefined) {
       if (advisoryLockHeld) {
@@ -411,54 +461,39 @@ export const migrationsAreCurrent = async (
 // 任意 migration 边界。
 // ---------------------------------------------------------------------------
 
-export const bootstrapMigrationFlag = "--bootstrap-0000";
-
-/** `--bootstrap-0000` 的固定参数，调用方无法改写。 */
+/** `db:bootstrap` 独立入口使用的固定参数，调用方无法改写。 */
 export const bootstrapMigrationOptions: ApplyMigrationsOptions = Object.freeze({
   role: null,
   onlyThrough: stage06Migration,
   adminBootstrap: true,
 });
 
-export type MigrationCliMode = "default" | "bootstrap-0000";
-
 export class MigrationCliUsageError extends Error {
-  public constructor(detail: string) {
+  public constructor(received: readonly string[]) {
     super(
-      `${detail}. Usage: db:migrate [${bootstrapMigrationFlag}] ` +
-        "(no other arguments are accepted)",
+      `db:migrate takes no arguments (received ${JSON.stringify(received)}). ` +
+        "The cluster-admin path is a separate entry point: db:bootstrap.",
     );
     this.name = "MigrationCliUsageError";
   }
 }
 
-export const parseMigrationCliArguments = (
-  argv: readonly string[],
-): MigrationCliMode => {
-  if (argv.length === 0) {
-    return "default";
+/**
+ * db:migrate 只接受零参数。admin bootstrap 不再是本入口的一个 flag：
+ * 只要 flag 存在，`pnpm ... db:migrate --bootstrap-0000` 就可能误入 admin 模式。
+ */
+export const parseMigrationCliArguments = (argv: readonly string[]): void => {
+  if (argv.length > 0) {
+    throw new MigrationCliUsageError(argv);
   }
-  if (argv.length === 1 && argv[0] === bootstrapMigrationFlag) {
-    return "bootstrap-0000";
-  }
-  if (argv.length > 1) {
-    throw new MigrationCliUsageError(
-      `expected at most one argument, received ${String(argv.length)}`,
-    );
-  }
-  throw new MigrationCliUsageError(
-    `unknown argument ${JSON.stringify(argv[0])}`,
-  );
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const mode = parseMigrationCliArguments(process.argv.slice(2));
+  // 参数校验先于任何连接：非法调用不会建立 Pool，也不会碰数据库。
+  parseMigrationCliArguments(process.argv.slice(2));
   const databaseUrl = process.env["DATABASE_URL"];
   if (databaseUrl === undefined || databaseUrl === "") {
     throw new Error("DATABASE_URL is required");
   }
-  await applyMigrations(
-    databaseUrl,
-    mode === "bootstrap-0000" ? bootstrapMigrationOptions : {},
-  );
+  await applyMigrations(databaseUrl);
 }

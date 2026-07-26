@@ -48,15 +48,20 @@ pnpm --filter @meal-agent/api db:bootstrap
 pnpm --filter @meal-agent/api db:migrate
 ```
 
-两条命令都**不接受任何参数**：`db:bootstrap` 的语义是固定的（只应用
-`0000_stage_06.sql`、不切换 role），`db:migrate` 会显式 `SET ROLE
-meal_agent_migrator`。`pnpm run <script> -- --flag` 会把字面量 `--` 一并传给脚本，
-因此不提供需要转发参数的入口；未知参数、重复参数和组合参数一律失败。
+两条命令是**两个独立的入口程序**，都不接受任何参数。`db:bootstrap`
+（`src/database/bootstrap-0000.ts`）语义固定：只应用 `0000_stage_06.sql`、不切换
+role；`db:migrate`（`src/database/migrate.ts`）总是显式 `SET ROLE
+meal_agent_migrator`。admin 路径不再是 `db:migrate` 的一个 flag——只要 flag 存在，
+`pnpm ... db:migrate --bootstrap-0000` 就可能误入 admin 模式。两个入口都在**建立
+连接之前**拒绝任何参数。
 
 `db:bootstrap` 在执行任何 DDL 之前用真实连接核对目标库名、admin 能力和数据库
-状态（必须是空库，或恰好只正确应用了 `0000`）。指向 `postgres`、`template1` 或
-任何非项目库时立即失败，且不会留下 `drizzle` schema、migration ledger 或 `0000`
-的任何对象。
+状态。「空库」的判定是严格的：除了没有业务表，也不能有任何用户 schema、
+`public` 里的 view/matview/sequence/routine/用户类型。指向 `postgres`、
+`template1`、任何非项目库或任何非空库时立即失败。
+
+metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完成：`0000`
+失败时整批回滚，不会留下 `drizzle` schema 或空 ledger。
 
 连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
 600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是

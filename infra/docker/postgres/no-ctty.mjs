@@ -17,7 +17,9 @@
 // 用法：
 //   printf '%s\n%s\n' "$PW" "$PW" | node no-ctty.mjs psql --dbname db -c '\password role'
 //
-// 退出码与信号透传给调用方，失败不会被吞掉。
+// 退出码与信号都真实透传：子进程处于**新的进程组**，调用方发给本进程组的信号
+// 不会自动到达它，因此这里显式转发 SIGINT/SIGTERM/SIGHUP；子进程被信号终止时，
+// 本进程用同一信号自杀，让调用方看到真实的终止原因而不是一个普通退出码。
 
 import { spawn } from "node:child_process";
 
@@ -42,10 +44,26 @@ child.on("error", (error) => {
   process.exit(127);
 });
 
+const forwarded = ["SIGINT", "SIGTERM", "SIGHUP"];
+const forward = (signal) => {
+  try {
+    process.kill(child.pid, signal);
+  } catch {
+    // 子进程可能已经退出；忽略。
+  }
+};
+for (const signal of forwarded) {
+  process.on(signal, () => forward(signal));
+}
+
 child.on("exit", (code, signal) => {
   if (signal !== null) {
-    process.stderr.write(`no-ctty: ${command} terminated by ${signal}\n`);
-    process.exit(128);
+    // 恢复默认处置后用同一信号自杀，真实传播终止原因。
+    for (const name of forwarded) {
+      process.removeAllListeners(name);
+    }
+    process.kill(process.pid, signal);
+    return;
   }
   process.exit(code ?? 1);
 });

@@ -4,8 +4,11 @@ import test from "node:test";
 import pg from "pg";
 
 import {
+  BootstrapCliUsageError,
+  parseBootstrapCliArguments,
+} from "../../src/database/bootstrap-0000.js";
+import {
   applyMigrations,
-  bootstrapMigrationFlag,
   bootstrapMigrationOptions,
   MigrationCliUsageError,
   MigrationOptionError,
@@ -19,17 +22,14 @@ import {
  * 任意 role 或任意 migration 边界。
  */
 
-test("the default migration command switches to the migrator role", () => {
-  assert.equal(parseMigrationCliArguments([]), "default");
+test("db:migrate takes no arguments and always switches to the migrator role", () => {
+  assert.equal(parseMigrationCliArguments([]), undefined);
   assert.equal(migrationRole, "meal_agent_migrator");
 });
 
-test("the admin bootstrap flag is narrow and fixed", () => {
-  assert.equal(
-    parseMigrationCliArguments([bootstrapMigrationFlag]),
-    "bootstrap-0000",
-  );
-  // 该模式的参数是固定值，调用方无法借它传入任意 role 或任意边界。
+test("the admin bootstrap entry point is separate and fixed", () => {
+  assert.equal(parseBootstrapCliArguments([]), undefined);
+  // 该入口的参数是固定值，调用方无法借它传入任意 role 或任意边界。
   assert.deepEqual(bootstrapMigrationOptions, {
     role: null,
     onlyThrough: "0000_stage_06.sql",
@@ -38,22 +38,35 @@ test("the admin bootstrap flag is narrow and fixed", () => {
   assert.equal(Object.isFrozen(bootstrapMigrationOptions), true);
 });
 
-test("unknown, repeated and combined arguments are rejected", () => {
+test("db:migrate rejects every argument, including the admin bootstrap flag", () => {
   for (const argv of [
+    ["--bootstrap-0000"],
     ["--role=postgres"],
     ["--role", "postgres"],
     ["--only-through=0004_stage_08_final_closeout.sql"],
-    ["--bootstrap-0001"],
     ["bootstrap"],
     [""],
-    [bootstrapMigrationFlag, "--role=postgres"],
-    [bootstrapMigrationFlag, bootstrapMigrationFlag],
-    [bootstrapMigrationFlag, "extra"],
+    ["--", "--bootstrap-0000"],
   ]) {
     assert.throws(
       () => parseMigrationCliArguments(argv),
       MigrationCliUsageError,
-      `must reject ${JSON.stringify(argv)}`,
+      `db:migrate must reject ${JSON.stringify(argv)}`,
+    );
+  }
+});
+
+test("db:bootstrap rejects every argument", () => {
+  for (const argv of [
+    ["--bootstrap-0000"],
+    ["--role=postgres"],
+    ["--only-through=0000_stage_06.sql"],
+    [""],
+  ]) {
+    assert.throws(
+      () => parseBootstrapCliArguments(argv),
+      BootstrapCliUsageError,
+      `db:bootstrap must reject ${JSON.stringify(argv)}`,
     );
   }
 });

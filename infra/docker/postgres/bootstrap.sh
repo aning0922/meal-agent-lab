@@ -48,17 +48,47 @@ set -euo pipefail
 phase="${1:-}"
 shift || true
 
-dbname=""
-maintenance_db="${PGDATABASE:-postgres}"
+case "$phase" in
+  cluster|logins|handoff|acl|grants) ;;
+  *)
+    echo "bootstrap: usage: bootstrap.sh {cluster|logins|handoff|acl|grants}" >&2
+    echo "bootstrap:   cluster|logins  [--maintenance-db <db>]" >&2
+    echo "bootstrap:   handoff|acl|grants --dbname <db>" >&2
+    exit 2
+    ;;
+esac
+
+# 每个 phase 只接受它自己的 option：不相关的 option、重复 option、缺 value 和
+# 多余位置参数一律拒绝，不静默忽略，也不「最后一个覆盖」。
+case "$phase" in
+  cluster|logins) allowed_option="--maintenance-db" ;;
+  *)              allowed_option="--dbname" ;;
+esac
+
+option_value=""
+option_seen="no"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --dbname)
-      dbname="${2:-}"
+    --maintenance-db|--dbname)
+      if [ "$1" != "$allowed_option" ]; then
+        echo "bootstrap: $phase does not accept $1 (use $allowed_option)" >&2
+        exit 2
+      fi
+      if [ "$option_seen" = "yes" ]; then
+        echo "bootstrap: $1 given more than once" >&2
+        exit 2
+      fi
+      if [ $# -lt 2 ]; then
+        echo "bootstrap: $1 requires a value" >&2
+        exit 2
+      fi
+      option_value="$2"
+      option_seen="yes"
       shift 2
       ;;
-    --maintenance-db)
-      maintenance_db="${2:-}"
-      shift 2
+    -*)
+      echo "bootstrap: unknown option: $1" >&2
+      exit 2
       ;;
     *)
       echo "bootstrap: unexpected argument: $1" >&2
@@ -68,12 +98,21 @@ while [ $# -gt 0 ]; do
 done
 
 case "$phase" in
-  cluster|logins|handoff|acl|grants) ;;
+  cluster|logins)
+    if [ "$option_seen" = "yes" ]; then
+      maintenance_db="$option_value"
+    else
+      maintenance_db="${PGDATABASE:-postgres}"
+    fi
+    dbname=""
+    ;;
   *)
-    echo "bootstrap: usage: bootstrap.sh {cluster|logins|handoff|acl|grants}" >&2
-    echo "bootstrap:   cluster|logins  [--maintenance-db <db>]" >&2
-    echo "bootstrap:   handoff|acl|grants --dbname <db>" >&2
-    exit 2
+    if [ "$option_seen" != "yes" ]; then
+      echo "bootstrap: $phase requires --dbname <db>" >&2
+      exit 2
+    fi
+    dbname="$option_value"
+    maintenance_db=""
     ;;
 esac
 
@@ -139,6 +178,10 @@ case "$phase" in
     ;;
 
   logins)
+    # xtrace 必须在**第一次间接展开 Secret 之前**关闭：require_password 用
+    # ${!name} 读取口令变量，开着 set -x 时会把取值打进 stderr。
+    previous_options="$-"
+    set +x
     require_password MEAL_AGENT_MIGRATION_PASSWORD
     require_password MEAL_AGENT_RUNTIME_PASSWORD
     require_password MEAL_AGENT_BACKUP_PASSWORD
@@ -196,8 +239,6 @@ case "$phase" in
       esac
     }
 
-    previous_options="$-"
-    set +x
     for entry in \
       "meal_agent_migration_login:MEAL_AGENT_MIGRATION_PASSWORD" \
       "meal_agent_runtime_login:MEAL_AGENT_RUNTIME_PASSWORD" \
@@ -219,8 +260,28 @@ case "$phase" in
     ;;
 
   handoff)
+    # handoff 只接受 checksum 正确的 0000，因此需要磁盘上 0000 的实际 sha256。
+    stage06_file="${script_directory}/../../../services/api/migrations/0000_stage_06.sql"
+    if [ ! -f "$stage06_file" ]; then
+      echo "bootstrap: cannot find 0000_stage_06.sql at $stage06_file" >&2
+      exit 2
+    fi
+    if command -v sha256sum > /dev/null 2>&1; then
+      stage06_hash="$(sha256sum "$stage06_file" | cut -d' ' -f1)"
+    elif command -v shasum > /dev/null 2>&1; then
+      stage06_hash="$(shasum -a 256 "$stage06_file" | cut -d' ' -f1)"
+    else
+      echo "bootstrap: neither sha256sum nor shasum is available" >&2
+      exit 2
+    fi
     run_sql "${sql_directory}/database/00-preflight.sql"
-    run_sql "${sql_directory}/database/01-owner-handoff.sql"
+    "$psql_binary" \
+      --no-psqlrc --quiet --no-password \
+      --set ON_ERROR_STOP=on \
+      --set expected_db="$target_db" \
+      --set stage06_hash="$stage06_hash" \
+      --dbname "$target_db" \
+      --file "${sql_directory}/database/01-owner-handoff.sql"
     ;;
 
   acl)

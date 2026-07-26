@@ -56,25 +56,31 @@ owner handoff。
 全新安装：
 
 ```text
-1. admin      bootstrap.sh cluster                              角色 + membership
+1. admin      bootstrap.sh cluster                              角色 + membership（早于 createdb）
 2. admin      bootstrap.sh logins                               SCRAM 口令
 3. admin      createdb meal_agent
-4. admin      pnpm --filter @meal-agent/api db:bootstrap        应用冻结的 0000
-5. admin      bootstrap.sh handoff --dbname meal_agent          owner 交接
+4. admin      pnpm --filter @meal-agent/api db:bootstrap        原子应用冻结的 0000
+5. admin      bootstrap.sh handoff --dbname meal_agent          owner 交接（0000-only）
 6. admin      bootstrap.sh acl     --dbname meal_agent          ACL 基线
 7. migration  pnpm --filter @meal-agent/api db:migrate          SET ROLE 应用 0001—最新
 8. admin      bootstrap.sh grants  --dbname meal_agent          备份角色补授
 9. runtime    readiness                                         SET LOCAL ROLE meal_agent_app
 ```
 
+`cluster` 与 `logins` 刻意排在 `createdb` **之前**：它们连 maintenance 数据库，
+不要求目标库存在。
+
 恢复（M4 实现，本轮只登记约束）：
 
 ```text
 1. admin      bootstrap.sh cluster
-2. admin      createdb --owner=meal_agent_migrator meal_agent
-3. operator   pg_restore
-4. admin      bootstrap.sh acl    --dbname meal_agent
-5. admin      bootstrap.sh grants --dbname meal_agent
+2. admin      bootstrap.sh logins
+3. admin      createdb --owner=meal_agent_migrator meal_agent
+4. operator   pg_restore
+5. admin      bootstrap.sh acl     --dbname meal_agent
+6. migration  pnpm db:migrate                       应用备份之后新增的 migration
+7. admin      bootstrap.sh grants  --dbname meal_agent
+8. 验证       readiness / owner / GRANT / RLS / checksum
 ```
 
 恢复路径**不**执行 `0000`，也**不**执行 owner handoff：dump 已经带着正确的
@@ -117,10 +123,17 @@ conninfo `key=value`、引号和大写一律拒绝。cluster scope 用 `--mainte
 （默认 `postgres`）。每个阶段执行前都会核对 `current_database()` 与 admin 能力，
 并检查所处的 migration ledger/owner 状态；连错库或顺序错误时 fail closed。
 
-`handoff` 的全部状态检查都先于任何归属变更：ledger 缺失、缺少 `0000` 建立的表、
-提前出现 `0001`/`0002` 的表、出现未管理的表/视图/序列、被管理对象归属未知角色，
-都会在**没有做过任何 ownership 变更**的情况下失败。允许出现的对象集合由 ledger
-实际内容推导，业务表与 `meal_agent_private` 函数的 owner 只验证、不接管。
+`handoff` 是 **fresh-install 的 0000-only 步骤**：ledger 必须恰好只有 checksum
+正确的 `0000_stage_06.sql`。`0001+`、断档、未知条目或错误 checksum 全部 fail
+closed，因此它不支持「最新 migration 之后重跑」——可复用的是 `acl` 与 `grants`。
+
+它的全部状态检查都先于任何归属变更：ledger 异常、异常 database owner、缺少
+`0000` 建立的表、出现未管理的表/视图/序列/routine/类型、自定义 schema、
+被管理对象归属未知角色，都会在**没有做过任何 ownership 变更**的情况下失败。
+业务表与 `meal_agent_private` 函数的 owner 只验证、不接管。
+
+每个 phase 的参数语法是精确的：不相关的 option、重复 option、缺 value 和多余
+位置参数一律拒绝，不静默忽略也不「最后一个覆盖」。
 
 连接参数走标准 `PG*` 环境变量。`logins` 阶段要求三个非空密码环境变量
 （`MEAL_AGENT_MIGRATION_PASSWORD`、`MEAL_AGENT_RUNTIME_PASSWORD`、
@@ -142,7 +155,9 @@ conninfo `key=value`、引号和大写一律拒绝。cluster scope 用 `--mainte
   在 POSIX 上即 `setsid(2)`，并透传子进程退出码。两者都没有时明确失败而不是挂死。
 - 连接本身也用 `--no-password`：缺少 admin 凭据时立即失败，不会等待交互输入
   （连接口令提示有同样的 `/dev/tty` 缺陷）。
-- 展开 Secret 前显式 `set +x`，三个口令变量用完立即 `unset`。
+- 进入 `logins` 分支后、**第一次读取口令变量之前**就保存并关闭 xtrace，
+  三个变量 `unset` 之后才恢复；有 `bash -x` + 合成 sentinel + 注定失败的 PSQL
+  的回归测试，断言合并后的 stdout/stderr 零命中。
 - 口令为空字符串时服务端会**清空**该角色口令并且 psql 仍退出 0，因此设置后强制
   回查 `pg_authid`，确认三个角色都真的持有 SCRAM verifier。
 

@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "pnpm run typecheck && pnpm run test:unit && pnpm run test:http && pnpm run test:db && pnpm run openapi:check && pnpm run build",
-    "db:bootstrap": "tsx src/database/migrate.ts --bootstrap-0000",
+    "db:bootstrap": "tsx src/database/bootstrap-0000.ts",
     "db:migrate": "tsx src/database/migrate.ts",
     "db:migrate:test": "tsx scripts/with-test-database.ts migration",
     "dev": "tsx watch src/index.ts",

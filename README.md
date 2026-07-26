@@ -6,7 +6,7 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)已完成规划、尚未实施。当前不购买服务器，不接真实微信配置，也不开放公网；先完成 Docker Compose、数据库账号隔离、迁移、健康检查和备份恢复门禁。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1「API 容器构建基线」已由项目总控 Accepted（`services/api/Dockerfile` 与根 `.dockerignore`，固定 Node 24.18.0 digest、非 root `10001:10001`、runtime 无包管理器与客户端依赖）；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」实现完成、**待总控复验**（见 [`infra/docker/postgres/`](infra/docker/postgres/)）。M2B（Compose 拓扑）、M3、M4、M5 尚未开始。当前不购买服务器，不接真实微信配置，也不开放公网。
 
 当前纵切覆盖：
 

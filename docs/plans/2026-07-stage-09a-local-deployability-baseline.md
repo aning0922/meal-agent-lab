@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26
-- 状态：已规划，未实施
+- 状态：In Progress（M1 Accepted；M2A 待总控复验；M2B—M5 未开始）
 - 计划分支：`codex/stage-09a-local-deployability-baseline`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务

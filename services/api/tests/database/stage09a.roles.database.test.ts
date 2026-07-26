@@ -28,12 +28,13 @@ import { checkReadiness, createPersistence } from "../../src/database/pool.js";
  * 完整链路全部通过真实运维入口执行（bootstrap.sh 子进程 + db:migrate CLI 子
  * 进程），不直接调用内部函数冒充入口：
  *
- *   createdb
- *     → bootstrap.sh roles      角色基线（在冻结 0000 之前）
+ *   bootstrap.sh cluster      角色基线（**早于 createdb**，pristine 首次执行）
  *     → bootstrap.sh logins     SCRAM 口令
- *     → db:migrate --bootstrap-0000   （admin，唯一的窄例外）
- *     → bootstrap.sh handoff    owner 交接
- *     → db:migrate              （migration login，显式 SET ROLE）
+ *     → createdb
+ *     → pnpm db:bootstrap       （admin，独立零参数入口，应用冻结的 0000）
+ *     → bootstrap.sh handoff    owner 交接（fresh-install，0000-only）
+ *     → bootstrap.sh acl        目标数据库 ACL 基线
+ *     → pnpm db:migrate         （migration login，显式 SET ROLE，零参数）
  *     → bootstrap.sh grants     备份角色补授
  *     → readiness               （runtime login，事务内 SET LOCAL ROLE）
  *
@@ -402,32 +403,33 @@ before(async () => {
   );
   clusterStarted = true;
 
+  // 1. cluster scope 角色基线。**在目标库存在之前**首次执行——这是 pristine
+  //    集群上的首次证据，不是角色已存在后的幂等重跑。
+  await runBootstrap("cluster");
+  // 2. SCRAM 口令（同样是 cluster scope，同样早于 createdb）。
+  await runBootstrap("logins");
+  // 3. 目标库现在才创建。
   await mustSucceed(
     "createdb",
     join(postgresBin, "createdb"),
     [rolesDatabase],
     { env: adminEnvironment() },
   );
-
-  // 1. cluster scope 角色基线（连 maintenance DB，目标库此时才刚建好）。
-  await runBootstrap("cluster");
-  // 2. SCRAM 口令（同样是 cluster scope）。
-  await runBootstrap("logins");
-  // 3. admin 通过真实 pnpm 入口应用冻结的 0000。
+  // 4. admin 通过真实 pnpm 入口应用冻结的 0000。
   await mustSucceedCli(
     "pnpm db:bootstrap",
     await runPnpm("db:bootstrap", adminUrl()),
   );
-  // 4. owner 交接（仅全新安装路径）。
+  // 5. owner 交接（仅全新安装路径）。
   await runBootstrap("handoff");
-  // 5. 目标数据库 ACL 基线。
+  // 6. 目标数据库 ACL 基线。
   await runBootstrap("acl");
-  // 6. migration login 用真实 pnpm 默认命令完成 0001—0004。
+  // 7. migration login 用真实 pnpm 默认命令完成 0001—0004。
   await mustSucceedCli(
     "pnpm db:migrate",
     await runPnpm("db:migrate", migrationLoginUrl()),
   );
-  // 7. 备份角色补授。
+  // 8. 备份角色补授。
   await runBootstrap("grants");
 
   // 合成数据：两个家庭，用于验证 backup 能跨 FORCE RLS 完整读取。
@@ -1083,7 +1085,7 @@ test("deliberate privilege drift is converged back to the exact baseline by re-r
   });
 });
 
-test("re-running handoff and grants is repeatable and keeps ownership stable", async () => {
+test("re-running acl and grants is repeatable and keeps ownership stable", async () => {
   const owners = async (): Promise<string> =>
     withPool(adminPoolConfig(), async (pool) => {
       const result = await pool.query(
@@ -1097,35 +1099,108 @@ test("re-running handoff and grants is repeatable and keeps ownership stable", a
     });
 
   const before = await owners();
-  await runBootstrap("handoff");
+  // handoff 是 fresh-install 的 0000-only 步骤，完整 migration 之后不再适用；
+  // 可复用的是 acl 与 grants。
   await runBootstrap("acl");
   await runBootstrap("grants");
   assert.equal(await owners(), before);
 });
 
-test("owner handoff refuses to take ownership of an unmanaged table", async () => {
-  // 由 bootstrap admin 直接建表：它不在 allowlist 里，handoff 必须报告并失败，
-  // 而不是静默把它的所有权夺给 migrator。
-  await withPool(adminPoolConfig(), async (pool) => {
-    await pool.query("CREATE TABLE public.stage09a_unmanaged (id int)");
+test("owner handoff refuses unmanaged objects on a 0000-only database", async () => {
+  // 在独立的全新库上重放 fresh-install 前半段，然后注入各类未管理对象，
+  // 逐个证明 handoff 在**没有做过任何 ownership 变更**的情况下失败。
+  const probe = "meal_agent_stage09a_handoff";
+  await withPool(adminPoolConfig("postgres"), async (pool) => {
+    await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    await pool.query(`CREATE DATABASE ${probe}`);
   });
   try {
-    const result = await runCaptured(bootstrapScript, [
-      "handoff",
-      "--dbname",
-      rolesDatabase,
-    ], {
-      env: {
-        ...adminEnvironment(),
-        PATH: `${postgresBin}:${process.env["PATH"] ?? ""}`,
-      },
-    });
-    assert.notEqual(result.code, 0, "handoff must fail on an unmanaged table");
-    assert.match(result.stderr, /unmanaged object/i);
-    assert.match(result.stderr, /stage09a_unmanaged/);
+    await mustSucceedCli(
+      "pnpm db:bootstrap (handoff probe)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+
+    const ownerSnapshot = async (): Promise<string> =>
+      withPool(adminPoolConfig(probe), async (pool) => {
+        const result = await pool.query(
+          `SELECT 'db:' || d.datname AS ident,
+                  pg_catalog.pg_get_userbyid(d.datdba) AS owner
+             FROM pg_database d WHERE d.datname = current_database()
+           UNION ALL
+           SELECT 'schema:' || nspname, pg_catalog.pg_get_userbyid(nspowner)
+             FROM pg_namespace
+            WHERE nspname IN ('public','drizzle','meal_agent_private')
+           UNION ALL
+           SELECT 'rel:' || n.nspname || '.' || c.relname,
+                  pg_catalog.pg_get_userbyid(c.relowner)
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname IN ('public','drizzle')
+              AND c.relkind IN ('r','p','v','m','S')
+           ORDER BY 1`,
+        );
+        return JSON.stringify(result.rows);
+      });
+
+    const injections: readonly [string, readonly string[], RegExp][] = [
+      ["public view", ["CREATE VIEW public.stage09a_v AS SELECT 1 AS x"],
+        /unexpected object\(s\) in public/i],
+      ["public sequence", ["CREATE SEQUENCE public.stage09a_s"],
+        /unexpected object\(s\) in public/i],
+      ["public routine", [
+        "CREATE FUNCTION public.stage09a_f() RETURNS int LANGUAGE sql " +
+          "SECURITY DEFINER AS $$SELECT 1$$",
+      ], /unexpected routine\(s\) in public/i],
+      ["private routine", [
+        "CREATE FUNCTION meal_agent_private.stage09a_p() RETURNS int " +
+          "LANGUAGE sql AS $$SELECT 1$$",
+      ], /unexpected or mis-owned routine/i],
+      ["custom schema", ["CREATE SCHEMA stage09a_extra"],
+        /unexpected schema/i],
+      ["user type", ["CREATE TYPE public.stage09a_t AS (a int)"],
+        /unexpected object|unexpected user-defined type/i],
+      ["pre-created 0001 table", [
+        "CREATE TABLE public.household_invites (id uuid PRIMARY KEY)",
+      ], /unexpected object\(s\) in public/i],
+      ["dropped 0000 table", ["DROP TABLE public.sessions CASCADE"],
+        /table\(s\) missing|unexpected/i],
+      ["tampered ledger checksum", [
+        "UPDATE drizzle.__meal_agent_migrations SET hash = repeat('0', 64)",
+      ], /checksum does not match/i],
+    ];
+
+    for (const [label, statements, expected] of injections) {
+      await withPool(adminPoolConfig(probe), async (pool) => {
+        for (const statement of statements) {
+          await pool.query(statement);
+        }
+      });
+      // 注入之后、handoff 之前取快照：handoff 失败后归属必须与此完全一致。
+      const before = await ownerSnapshot();
+      const result = await bootstrap("handoff", probe);
+      assert.notEqual(result.code, 0, `handoff must reject: ${label}`);
+      assert.match(result.stderr, expected, `wrong reason for: ${label}`);
+      // 失败后 owner 快照必须完全不变。
+      assert.equal(
+        await ownerSnapshot(),
+        before,
+        `handoff mutated ownership before failing on: ${label}`,
+      );
+      // 还原注入，供下一个用例使用。
+      await withPool(adminPoolConfig("postgres"), async (pool) => {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+        await pool.query(`CREATE DATABASE ${probe}`);
+      });
+      await mustSucceedCli(
+        `pnpm db:bootstrap (reset after ${label})`,
+        await runPnpm("db:bootstrap", adminUrl(probe)),
+      );
+    }
+
+    // 干净的 0000-only 库上 handoff 必须成功。
+    await runBootstrap("handoff", probe);
   } finally {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query("DROP TABLE IF EXISTS public.stage09a_unmanaged");
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
     });
   }
 });
@@ -1649,5 +1724,374 @@ test("the server log never reports an unowned advisory lock unlock", async () =>
     serverLog.includes("you don't own a lock"),
     false,
     "pg_advisory_unlock must only run when the lock was actually acquired",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 第三轮整改新增证据
+// ---------------------------------------------------------------------------
+
+test("db:migrate rejects the admin flag through the real pnpm entry point", async () => {
+  // 上一轮的缺陷：db:migrate 接受 --bootstrap-0000 就可能误入 admin 模式。
+  // 现在 admin 路径是独立入口，db:migrate 只接受零参数。
+  for (const args of [["--bootstrap-0000"], ["--role=postgres"], ["extra"]]) {
+    const result = await runPnpm("db:migrate", migrationLoginUrl(), args);
+    assert.notEqual(result.code, 0, `db:migrate must reject ${String(args)}`);
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      /MigrationCliUsageError|takes no arguments/,
+    );
+  }
+  for (const args of [["--bootstrap-0000"], ["--role=postgres"]]) {
+    const result = await runPnpm("db:bootstrap", adminUrl(), args);
+    assert.notEqual(result.code, 0, `db:bootstrap must reject ${String(args)}`);
+    assert.match(
+      `${result.stdout}${result.stderr}`,
+      /BootstrapCliUsageError|takes no arguments/,
+    );
+  }
+});
+
+test("the fresh bootstrap preflight rejects every non-empty target and leaves no trace", async () => {
+  const probe = "meal_agent_stage09a_fresh";
+  const reset = async (): Promise<void> => {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+    });
+  };
+  const traces = async (): Promise<Record<string, string | null>> =>
+    withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query<{
+        drizzle: string | null;
+        ledger: string | null;
+        users: string | null;
+        priv: string | null;
+      }>(
+        `SELECT to_regnamespace('drizzle')::text AS drizzle,
+                to_regclass('drizzle.__meal_agent_migrations')::text AS ledger,
+                to_regclass('public.users')::text AS users,
+                to_regnamespace('meal_agent_private')::text AS priv`,
+      );
+      return result.rows[0] as unknown as Record<string, string | null>;
+    });
+
+  const cases: readonly [string, string, RegExp][] = [
+    ["public view", "CREATE VIEW public.probe_v AS SELECT 1 AS x",
+      /relation public\.probe_v/],
+    ["public sequence", "CREATE SEQUENCE public.probe_s",
+      /relation public\.probe_s/],
+    ["public routine", "CREATE FUNCTION public.probe_f() RETURNS int " +
+      "LANGUAGE sql AS $$SELECT 1$$", /routine public\.probe_f/],
+    ["user type", "CREATE TYPE public.probe_t AS (a int)",
+      /type public\.probe_t|relation public\.probe_t/],
+    ["empty drizzle schema", "CREATE SCHEMA drizzle", /schema drizzle/],
+    ["custom schema", "CREATE SCHEMA probe_extra", /schema probe_extra/],
+    ["private schema", "CREATE SCHEMA meal_agent_private",
+      /schema meal_agent_private/],
+    ["existing table", "CREATE TABLE public.probe_tbl (id int)",
+      /relation public\.probe_tbl/],
+  ];
+
+  try {
+    for (const [label, statement, expected] of cases) {
+      await reset();
+      await withPool(adminPoolConfig(probe), async (pool) => {
+        await pool.query(statement);
+      });
+      const result = await runPnpm("db:bootstrap", adminUrl(probe));
+      assert.notEqual(result.code, 0, `db:bootstrap must reject: ${label}`);
+      assert.match(
+        `${result.stdout}${result.stderr}`,
+        /is not empty/,
+        `wrong reason for: ${label}`,
+      );
+      assert.match(
+        `${result.stdout}${result.stderr}`,
+        expected,
+        `must name the offending object for: ${label}`,
+      );
+      // 零残留：bootstrap 不得新增 ledger、0000 对象或 meal_agent_private；
+      // drizzle schema 只在不是本用例自己造的时候断言不存在。
+      const after = await traces();
+      assert.equal(after["ledger"], null, `${label} left a ledger`);
+      assert.equal(after["users"], null, `${label} left 0000 tables`);
+      if (!statement.includes("CREATE SCHEMA meal_agent_private")) {
+        assert.equal(after["priv"], null, `${label} left meal_agent_private`);
+      }
+      if (!statement.includes("CREATE SCHEMA drizzle")) {
+        assert.equal(after["drizzle"], null, `${label} left a drizzle schema`);
+      }
+    }
+
+    // 合法项目库但非 superuser：同样拒绝且零残留。
+    await reset();
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(
+        `GRANT CONNECT ON DATABASE ${probe} TO meal_agent_migration_login`,
+      );
+    });
+    const nonSuper = await runPnpm(
+      "db:bootstrap",
+      `postgresql://meal_agent_migration_login:${passwords.migration}` +
+        `@127.0.0.1:${String(port)}/${probe}`,
+    );
+    assert.notEqual(nonSuper.code, 0);
+    assert.match(
+      `${nonSuper.stdout}${nonSuper.stderr}`,
+      /lacks cluster-admin capability/,
+    );
+    assert.deepEqual(await traces(), {
+      drizzle: null,
+      ledger: null,
+      users: null,
+      priv: null,
+    });
+
+    // 正确的 0000 重跑是幂等 no-op；0001+ 之后再跑必须拒绝。
+    await reset();
+    await mustSucceedCli(
+      "pnpm db:bootstrap (fresh)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+    await mustSucceedCli(
+      "pnpm db:bootstrap (idempotent re-run)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+    await runBootstrap("handoff", probe);
+    await runBootstrap("acl", probe);
+    await mustSucceedCli(
+      "pnpm db:migrate (probe)",
+      await runPnpm("db:migrate", migrationLoginUrl().replace(
+        rolesDatabase,
+        probe,
+      )),
+    );
+    const afterLatest = await runPnpm("db:bootstrap", adminUrl(probe));
+    assert.notEqual(afterLatest.code, 0, "0001+ must be refused");
+    assert.match(
+      `${afterLatest.stdout}${afterLatest.stderr}`,
+      /expected an empty database or exactly 0000/,
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
+});
+
+test("object ACL drift granted by an independent grantor is converged", async () => {
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("DROP ROLE IF EXISTS stage09a_obj_grantor");
+    await pool.query("CREATE ROLE stage09a_obj_grantor NOLOGIN");
+    // 让独立 grantor 拥有可再授予的权限，再由**它**授予登录角色。
+    await pool.query(
+      "GRANT SELECT ON public.households TO stage09a_obj_grantor " +
+        "WITH GRANT OPTION",
+    );
+    await pool.query("GRANT USAGE ON SCHEMA public TO stage09a_obj_grantor");
+    const client = await pool.connect();
+    try {
+      await client.query("SELECT set_config('role', 'stage09a_obj_grantor', false)");
+      await client.query(
+        "GRANT SELECT ON public.households TO meal_agent_runtime_login",
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  // 断言 grantor 确实不是 postgres。
+  const grantor = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ grantor: string }>(
+      `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+       FROM pg_class c, aclexplode(c.relacl) AS acl
+       WHERE c.relname = 'households' AND acl.grantee <> 0
+         AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_runtime_login'`,
+    );
+    return result.rows[0]?.grantor;
+  });
+  assert.equal(grantor, "stage09a_obj_grantor");
+
+  await runBootstrap("acl");
+
+  await withPool(adminPoolConfig(), async (pool) => {
+    const left = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pg_class c, aclexplode(c.relacl) AS acl
+       WHERE acl.grantee <> 0
+         AND pg_catalog.pg_get_userbyid(acl.grantee) LIKE 'meal\\_agent%\\_login'`,
+    );
+    assert.equal(left.rows[0]?.count, "0");
+    await pool.query("DROP OWNED BY stage09a_obj_grantor");
+    await pool.query("DROP ROLE IF EXISTS stage09a_obj_grantor");
+  });
+  await withPool(runtimeLoginUrl(), async (pool) => {
+    assert.match(
+      String(await attempt(pool, ["SELECT id FROM public.households"])),
+      /permission denied/i,
+    );
+  });
+});
+
+test("the backup role holds an exact read-only baseline including future objects", async () => {
+  await withPool(backupLoginUrl(), async (pool) => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('role', $1, true)", [
+        "meal_agent_backup",
+      ]);
+      // meal_agent_private 既不可见也不可执行。
+      const priv = await client
+        .query("SELECT meal_agent_private.app_user_id()")
+        .then(() => undefined)
+        .catch((error: Error) => error.message);
+      assert.match(String(priv), /permission denied/i);
+      await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  });
+
+  // migrator 今后新建的 table/sequence 自动获得 backup 只读权限。
+  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+    await client.query("CREATE TABLE public.stage09a_future (id int)");
+    await client.query("CREATE SEQUENCE public.stage09a_future_seq");
+  });
+  try {
+    await withPool(backupLoginUrl(), async (pool) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('role', $1, true)", [
+          "meal_agent_backup",
+        ]);
+        // 新表可读。
+        const rows = await client.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM public.stage09a_future",
+        );
+        assert.equal(rows.rows[0]?.count, "0");
+        // 新 sequence 只可 SELECT，不可 nextval/setval。
+        const current = await client.query(
+          "SELECT last_value FROM public.stage09a_future_seq",
+        );
+        assert.equal(current.rows.length, 1);
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+
+      for (const statement of [
+        "SELECT nextval('public.stage09a_future_seq')",
+        "SELECT setval('public.stage09a_future_seq', 5)",
+        "INSERT INTO public.stage09a_future (id) VALUES (1)",
+      ]) {
+        assert.match(
+          String(await attempt(pool, [statement], "meal_agent_backup")),
+          /permission denied/i,
+          `backup must not run: ${statement}`,
+        );
+      }
+    });
+  } finally {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query("DROP TABLE IF EXISTS public.stage09a_future");
+      await client.query("DROP SEQUENCE IF EXISTS public.stage09a_future_seq");
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("an unknown SECURITY DEFINER function in public is refused by the acl baseline", async () => {
+  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+    await client.query(
+      "CREATE FUNCTION public.stage09a_backdoor() RETURNS int " +
+        "LANGUAGE sql SECURITY DEFINER AS $$SELECT 1$$",
+    );
+  });
+  try {
+    const result = await bootstrap("acl");
+    assert.notEqual(result.code, 0, "acl must refuse a public SECURITY DEFINER");
+    assert.match(result.stderr, /public must not contain business routines/i);
+
+    // acl 是 fail closed 而不是静默阉割，因此此刻该函数仍保留默认的
+    // PUBLIC EXECUTE。收回 PUBLIC EXECUTE（正是基线对已知 routine 做的事）
+    // 之后，runtime/app 就无法再调用它。
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "REVOKE EXECUTE ON FUNCTION public.stage09a_backdoor() FROM PUBLIC",
+      );
+    });
+    await withPool(runtimeLoginUrl(), async (pool) => {
+      assert.match(
+        String(
+          await attempt(pool, ["SELECT public.stage09a_backdoor()"],
+            "meal_agent_app"),
+        ),
+        /permission denied/i,
+      );
+    });
+  } finally {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query("DROP FUNCTION IF EXISTS public.stage09a_backdoor()");
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("bootstrap never leaks a password under xtrace, even when psql fails", async () => {
+  // bash -x + 三个合成 sentinel + 注定失败的 PSQL：合并 stdout/stderr 必须零命中。
+  const sentinels = {
+    migration: `XtraceMigration-${randomBytes(9).toString("hex")}`,
+    runtime: `XtraceRuntime-${randomBytes(9).toString("hex")}`,
+    backup: `XtraceBackup-${randomBytes(9).toString("hex")}`,
+  };
+  const result = await runCaptured(
+    "bash",
+    ["-x", bootstrapScript, "logins", "--maintenance-db", "postgres"],
+    {
+      env: {
+        ...adminEnvironment(),
+        PATH: `${postgresBin}:${process.env["PATH"] ?? ""}`,
+        // 指向一个不存在的 psql，保证在展开 Secret 之后失败。
+        PSQL: join(clusterRoot, "definitely-not-psql"),
+        MEAL_AGENT_MIGRATION_PASSWORD: sentinels.migration,
+        MEAL_AGENT_RUNTIME_PASSWORD: sentinels.runtime,
+        MEAL_AGENT_BACKUP_PASSWORD: sentinels.backup,
+      },
+    },
+  );
+  assert.notEqual(result.code, 0, "the failing PSQL must make bootstrap fail");
+  const combined = `${result.stdout}${result.stderr}`;
+  assert.ok(combined.includes("+"), "bash -x must actually have traced");
+  for (const [label, sentinel] of Object.entries(sentinels)) {
+    assert.equal(
+      combined.includes(sentinel),
+      false,
+      `the ${label} password must not appear under xtrace`,
+    );
+  }
+});
+
+test("the no-ctty wrapper forwards signals and propagates termination", async () => {
+  const wrapper = join(repositoryRoot, "infra/docker/postgres/no-ctty.mjs");
+  // 子进程处于新会话，父进程必须显式转发信号并如实传播终止原因。
+  const child = spawn(
+    process.execPath,
+    [wrapper, "sh", "-c", "trap 'exit 42' TERM; sleep 30"],
+    { stdio: ["ignore", "ignore", "ignore"] },
+  );
+  const exited = new Promise<{ code: number | null; signal: string | null }>(
+    (resolve) => child.once("exit", (code, signal) => resolve({ code, signal })),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  child.kill("SIGTERM");
+  const outcome = await exited;
+  assert.equal(
+    outcome.code,
+    42,
+    "SIGTERM must reach the detached child, which exits 42",
   );
 });
