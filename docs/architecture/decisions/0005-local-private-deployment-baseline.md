@@ -50,6 +50,14 @@ loopback client
 
 数据库登录身份与数据库内 NOLOGIN 角色分离：
 
+0. **cluster role baseline**：连接 maintenance/control 数据库（默认 `postgres`）
+   建立并规范化六个 cluster 角色、role config、membership 与 SCRAM 口令。它
+   **不要求目标数据库存在**，也不修改目标数据库 ACL，因此新安装与恢复共用同一
+   阶段：恢复路径为 cluster baseline → `createdb --owner=meal_agent_migrator`
+   → `pg_restore` → 目标数据库 ACL 基线，**不**执行 `0000`，也**不**执行 owner
+   handoff。目标数据库的 ACL、schema 权限、owner 交接和对象权限属于独立的
+   database scope 阶段。
+
 1. **bootstrap/admin**：只在空实例初始化或全库恢复前出现。由于冻结的 `0000` 包含角色创建和 `BYPASSRLS` 设置，新安装路径由 bootstrap/admin 执行 `0000`，再把目标 database owner 设为 `meal_agent_migrator`，保证 `public` schema 的 owner/grantor 权限足以执行后续 `CREATE`/`REVOKE`，并把 `drizzle` schema 和 migration ledger 所有权交给该角色，最后建立后续登录角色；它是如实记录的 cluster-admin 边界。恢复路径预建 dump 引用的固定 NOLOGIN roles、登录角色，并直接创建由 `meal_agent_migrator` 拥有的空数据库，不先执行会与 dump 冲突的业务 migration。
 2. **migration login**：自身是非 superuser、`NOINHERIT`，但可显式 `SET ROLE meal_agent_migrator` 执行 `0001` 及以后 migration。`meal_agent_migrator` 是 database owner、具有 DDL 和 `BYPASSRLS` 的高权限数据库角色；因此 migration job 仍属于敏感高权限操作，只是没有 cluster superuser/角色管理权限。它不得进入 API container，advisory lock 必须有有界等待。
 3. **runtime login**：非 superuser、`NOINHERIT`、无 `CREATEDB`、无 `CREATEROLE`、无 `BYPASSRLS`，只能显式 `SET ROLE meal_agent_app`；不得设置或继承 `meal_agent_migrator`。

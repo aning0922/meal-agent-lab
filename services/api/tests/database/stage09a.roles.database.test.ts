@@ -13,6 +13,7 @@ import { Pool, type PoolClient } from "pg";
 import { loadConfig } from "../../src/config.js";
 import {
   applyMigrations,
+  migrationLimits,
   MigrationLockTimeoutError,
   MigrationOptionError,
 } from "../../src/database/migrate.js";
@@ -46,12 +47,10 @@ if (postgresBin === undefined || postgresBin === "") {
 }
 
 const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-const apiDirectory = fileURLToPath(new URL("../../", import.meta.url));
 const bootstrapScript = join(
   repositoryRoot,
   "infra/docker/postgres/bootstrap.sh",
 );
-const migrateEntry = join(apiDirectory, "src/database/migrate.ts");
 
 const rolesDatabase = "meal_agent_stage09a_roles";
 
@@ -171,31 +170,60 @@ const runtimeLoginUrl = (): string =>
 const backupLoginUrl = (): string =>
   loginUrl("meal_agent_backup_login", passwords.backup);
 
-const runBootstrap = async (phase: string): Promise<RunResult> =>
-  mustSucceed(`bootstrap ${phase}`, bootstrapScript, [
-    phase,
-    "--dbname",
-    rolesDatabase,
-  ], {
-    env: {
-      ...adminEnvironment(),
-      PATH: `${postgresBin}:${process.env["PATH"] ?? ""}`,
-      MEAL_AGENT_MIGRATION_PASSWORD: passwords.migration,
-      MEAL_AGENT_RUNTIME_PASSWORD: passwords.runtime,
-      MEAL_AGENT_BACKUP_PASSWORD: passwords.backup,
-    },
+/** bootstrap 环境：口令只经环境传入，绝不进入命令行。 */
+const bootstrapEnvironment = (): NodeJS.ProcessEnv => ({
+  ...adminEnvironment(),
+  PATH: `${postgresBin}:${process.env["PATH"] ?? ""}`,
+  MEAL_AGENT_MIGRATION_PASSWORD: passwords.migration,
+  MEAL_AGENT_RUNTIME_PASSWORD: passwords.runtime,
+  MEAL_AGENT_BACKUP_PASSWORD: passwords.backup,
+});
+
+/** cluster scope 连 maintenance DB；database scope 连目标库。 */
+const bootstrapArguments = (
+  phase: string,
+  database: string = rolesDatabase,
+): readonly string[] =>
+  phase === "cluster" || phase === "logins"
+    ? [phase, "--maintenance-db", "postgres"]
+    : [phase, "--dbname", database];
+
+const bootstrap = async (
+  phase: string,
+  database?: string,
+): Promise<RunResult> =>
+  runCaptured(bootstrapScript, bootstrapArguments(phase, database), {
+    env: bootstrapEnvironment(),
   });
 
-/** 通过真实 CLI 子进程运行 db:migrate，而不是直接调用内部函数。 */
-const runMigrateCli = async (
-  args: readonly string[],
+const runBootstrap = async (
+  phase: string,
+  database?: string,
+): Promise<RunResult> => {
+  const result = await bootstrap(phase, database);
+  assert.equal(
+    result.code,
+    0,
+    `bootstrap ${phase} failed (exit ${String(result.code)}): ` +
+      `${result.stderr.slice(0, 700)}`,
+  );
+  return result;
+};
+
+/**
+ * 原样 spawn README 里的 pnpm 命令，而不是 `node --import tsx migrate.ts`。
+ * 这样测试覆盖的就是运维实际会敲的入口，包括 pnpm 的参数传递语义。
+ */
+const runPnpm = async (
+  script: "db:bootstrap" | "db:migrate",
   databaseUrl: string,
+  extraArgs: readonly string[] = [],
 ): Promise<RunResult> =>
   runCaptured(
-    process.execPath,
-    ["--import", "tsx", migrateEntry, ...args],
+    "pnpm",
+    ["--filter", "@meal-agent/api", script, ...extraArgs],
     {
-      cwd: apiDirectory,
+      cwd: repositoryRoot,
       env: { ...process.env, DATABASE_URL: databaseUrl },
     },
   );
@@ -381,23 +409,25 @@ before(async () => {
     { env: adminEnvironment() },
   );
 
-  // 1. 角色基线（可以且确实在冻结的 0000 之前执行）。
-  await runBootstrap("roles");
-  // 2. SCRAM 口令。
+  // 1. cluster scope 角色基线（连 maintenance DB，目标库此时才刚建好）。
+  await runBootstrap("cluster");
+  // 2. SCRAM 口令（同样是 cluster scope）。
   await runBootstrap("logins");
-  // 3. admin 通过真实 CLI 的窄 bootstrap 模式应用 0000。
+  // 3. admin 通过真实 pnpm 入口应用冻结的 0000。
   await mustSucceedCli(
-    "db:migrate --bootstrap-0000",
-    await runMigrateCli(["--bootstrap-0000"], adminUrl()),
+    "pnpm db:bootstrap",
+    await runPnpm("db:bootstrap", adminUrl()),
   );
-  // 4. owner 交接。
+  // 4. owner 交接（仅全新安装路径）。
   await runBootstrap("handoff");
-  // 5. migration login 用默认命令完成 0001—0004。
+  // 5. 目标数据库 ACL 基线。
+  await runBootstrap("acl");
+  // 6. migration login 用真实 pnpm 默认命令完成 0001—0004。
   await mustSucceedCli(
-    "db:migrate (migration login)",
-    await runMigrateCli([], migrationLoginUrl()),
+    "pnpm db:migrate",
+    await runPnpm("db:migrate", migrationLoginUrl()),
   );
-  // 6. 备份角色补授。
+  // 7. 备份角色补授。
   await runBootstrap("grants");
 
   // 合成数据：两个家庭，用于验证 backup 能跨 FORCE RLS 完整读取。
@@ -764,7 +794,7 @@ test("the CLI rejects unknown, repeated and combined arguments", async () => {
     ["bootstrap"],
     ["--bootstrap-0000", "extra"],
   ]) {
-    const result = await runMigrateCli(args, url);
+    const result = await runPnpm("db:migrate", url, args);
     assert.notEqual(
       result.code,
       0,
@@ -777,7 +807,7 @@ test("the CLI rejects unknown, repeated and combined arguments", async () => {
 test("re-running the migration CLI is idempotent and checksum drift still fails closed", async () => {
   await mustSucceedCli(
     "second db:migrate",
-    await runMigrateCli([], migrationLoginUrl()),
+    await runPnpm("db:migrate", migrationLoginUrl()),
   );
 
   const originalHash = await asRole(
@@ -804,7 +834,7 @@ test("re-running the migration CLI is idempotent and checksum drift still fails 
     );
   });
 
-  const drifted = await runMigrateCli([], migrationLoginUrl());
+  const drifted = await runPnpm("db:migrate", migrationLoginUrl());
   assert.notEqual(drifted.code, 0);
   assert.match(drifted.stderr, /changed checksum/);
 
@@ -817,7 +847,7 @@ test("re-running the migration CLI is idempotent and checksum drift still fails 
   });
   await mustSucceedCli(
     "restored db:migrate",
-    await runMigrateCli([], migrationLoginUrl()),
+    await runPnpm("db:migrate", migrationLoginUrl()),
   );
 });
 
@@ -1018,8 +1048,10 @@ test("deliberate privilege drift is converged back to the exact baseline by re-r
   const drifted = await projectRoleSnapshot();
   assert.notEqual(drifted, baselineSnapshot, "drift must actually change state");
 
-  // 重跑 bootstrap 的角色基线。
-  await runBootstrap("roles");
+  // 重跑**完整** baseline：cluster scope（角色/config/membership）与
+  // database scope（数据库 ACL、public schema、对象授权）。
+  await runBootstrap("cluster");
+  await runBootstrap("acl");
 
   assert.equal(
     await projectRoleSnapshot(),
@@ -1066,6 +1098,7 @@ test("re-running handoff and grants is repeatable and keeps ownership stable", a
 
   const before = await owners();
   await runBootstrap("handoff");
+  await runBootstrap("acl");
   await runBootstrap("grants");
   assert.equal(await owners(), before);
 });
@@ -1088,7 +1121,7 @@ test("owner handoff refuses to take ownership of an unmanaged table", async () =
       },
     });
     assert.notEqual(result.code, 0, "handoff must fail on an unmanaged table");
-    assert.match(result.stderr, /unmanaged table/i);
+    assert.match(result.stderr, /unmanaged object/i);
     assert.match(result.stderr, /stage09a_unmanaged/);
   } finally {
     await withPool(adminPoolConfig(), async (pool) => {
@@ -1108,7 +1141,7 @@ test("bootstrap rejects connection strings and foreign database names", async ()
     "",
   ]) {
     const result = await runCaptured(bootstrapScript, [
-      "roles",
+      "acl",
       "--dbname",
       candidate,
     ], {
@@ -1198,7 +1231,7 @@ test("a migration job fails within a bounded wait when another session holds the
 
   await mustSucceedCli(
     "db:migrate after advisory unlock",
-    await runMigrateCli([], migrationLoginUrl()),
+    await runPnpm("db:migrate", migrationLoginUrl()),
   );
 });
 
@@ -1245,7 +1278,7 @@ test("a migration job fails within a bounded wait when the ledger table is locke
 
   await mustSucceedCli(
     "db:migrate after table unlock",
-    await runMigrateCli([], migrationLoginUrl()),
+    await runPnpm("db:migrate", migrationLoginUrl()),
   );
 });
 
@@ -1262,4 +1295,359 @@ test("invalid bounded-wait options are rejected before any connection is opened"
       `connectionTimeoutMs ${String(invalid)} must be rejected`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// 第二轮整改新增证据
+// ---------------------------------------------------------------------------
+
+test("the cluster baseline runs before the target database exists and enables createdb --owner", async () => {
+  // M4 恢复顺序的前置证据：cluster scope 只连 maintenance DB，不要求目标库存在。
+  const probeDatabase = "meal_agent_restore_probe";
+  await withPool(adminPoolConfig("postgres"), async (pool) => {
+    await pool.query(`DROP DATABASE IF EXISTS ${probeDatabase}`);
+  });
+
+  // 目标库尚不存在时运行 cluster 阶段。
+  await runBootstrap("cluster");
+  await withPool(adminPoolConfig("postgres"), async (pool) => {
+    const exists = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM pg_database WHERE datname = $1",
+      [probeDatabase],
+    );
+    assert.equal(exists.rows[0]?.count, "0", "probe database must not exist yet");
+  });
+
+  // 角色已就位，因此可以直接把新库的 owner 设为 migrator——这正是恢复路径
+  // 需要的前置条件。本轮不执行 pg_restore。
+  const created = await runCaptured(
+    join(postgresBin, "createdb"),
+    ["--owner=meal_agent_migrator", probeDatabase],
+    { env: adminEnvironment() },
+  );
+  assert.equal(
+    created.code,
+    0,
+    `createdb --owner=meal_agent_migrator failed: ${created.stderr.slice(0, 400)}`,
+  );
+
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      const owner = await pool.query<{ owner: string }>(
+        `SELECT pg_catalog.pg_get_userbyid(datdba) AS owner
+         FROM pg_database WHERE datname = $1`,
+        [probeDatabase],
+      );
+      assert.equal(owner.rows[0]?.owner, "meal_agent_migrator");
+    });
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probeDatabase}`);
+    });
+  }
+});
+
+test("admin bootstrap refuses a non-project database and leaves no trace", async () => {
+  // 指向 postgres / template1 / 普通外部库都必须失败，且不留下 drizzle schema、
+  // ledger 或 0000 的任何对象。
+  const foreign = "meal_agent_not_a_project_db_control";
+  await withPool(adminPoolConfig("postgres"), async (pool) => {
+    await pool.query(`DROP DATABASE IF EXISTS ${foreign.replace(/^meal_agent_/, "outsider_")}`);
+    await pool.query(`CREATE DATABASE outsider_control`);
+  });
+  try {
+    for (const database of ["postgres", "template1", "outsider_control"]) {
+      const result = await runPnpm("db:bootstrap", adminUrl(database));
+      assert.notEqual(
+        result.code,
+        0,
+        `db:bootstrap must refuse database ${database}`,
+      );
+      assert.match(
+        `${result.stdout}${result.stderr}`,
+        /not a project database|MigrationPreflightError/,
+      );
+
+      if (database === "template1") {
+        continue;
+      }
+      // 零副作用：没有 drizzle schema、没有 ledger、没有 0000 的表。
+      await withPool(adminPoolConfig(database), async (pool) => {
+        const traces = await pool.query<{
+          drizzle: string | null;
+          ledger: string | null;
+          users: string | null;
+        }>(
+          `SELECT to_regnamespace('drizzle')::text AS drizzle,
+                  to_regclass('drizzle.__meal_agent_migrations')::text AS ledger,
+                  to_regclass('public.users')::text AS users`,
+        );
+        assert.deepEqual(
+          traces.rows[0],
+          { drizzle: null, ledger: null, users: null },
+          `db:bootstrap left traces in ${database}`,
+        );
+      });
+    }
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query("DROP DATABASE IF EXISTS outsider_control");
+    });
+  }
+});
+
+test("object-level privilege drift on the login roles is converged and reverse-tested", async () => {
+  // 注入六类直接对象授权，包括 column、sequence、routine 与异常 default privilege。
+  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+    await client.query("CREATE SEQUENCE IF NOT EXISTS public.stage09a_drift_seq");
+  });
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("GRANT CREATE, USAGE ON SCHEMA public TO meal_agent_runtime_login");
+    await pool.query("GRANT SELECT ON drizzle.__meal_agent_migrations TO meal_agent_runtime_login");
+    await pool.query("GRANT INSERT, UPDATE ON public.households TO meal_agent_runtime_login");
+    await pool.query("GRANT SELECT (name) ON public.households TO meal_agent_backup_login");
+    await pool.query("GRANT USAGE, SELECT ON SEQUENCE public.stage09a_drift_seq TO meal_agent_runtime_login");
+    await pool.query("GRANT USAGE ON SCHEMA meal_agent_private TO meal_agent_runtime_login");
+    await pool.query(
+      "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA meal_agent_private TO meal_agent_runtime_login",
+    );
+    await pool.query(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+        "GRANT SELECT ON TABLES TO meal_agent_runtime_login",
+    );
+  });
+
+  // catalog 上确实出现了直接授权。
+  const directGrants = async (): Promise<number> =>
+    withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ count: string }>(
+        `SELECT (
+           (SELECT count(*) FROM pg_namespace n, aclexplode(n.nspacl) a
+            WHERE a.grantee <> 0
+              AND pg_get_userbyid(a.grantee) LIKE 'meal\\_agent%\\_login')
+         + (SELECT count(*) FROM pg_class c, aclexplode(c.relacl) a
+            WHERE a.grantee <> 0
+              AND pg_get_userbyid(a.grantee) LIKE 'meal\\_agent%\\_login')
+         + (SELECT count(*) FROM pg_attribute t, aclexplode(t.attacl) a
+            WHERE a.grantee <> 0
+              AND pg_get_userbyid(a.grantee) LIKE 'meal\\_agent%\\_login')
+         + (SELECT count(*) FROM pg_proc p, aclexplode(p.proacl) a
+            WHERE a.grantee <> 0
+              AND pg_get_userbyid(a.grantee) LIKE 'meal\\_agent%\\_login')
+         + (SELECT count(*) FROM pg_default_acl d, aclexplode(d.defaclacl) a
+            WHERE a.grantee <> 0
+              AND pg_get_userbyid(a.grantee) LIKE 'meal\\_agent%\\_login')
+         )::text AS count`,
+      );
+      return Number(result.rows[0]?.count ?? "0");
+    });
+  assert.ok(await directGrants() > 0, "drift must actually grant something");
+
+  // 重跑完整 baseline。
+  await runBootstrap("cluster");
+  await runBootstrap("acl");
+
+  // catalog 侧：直接授权清零。
+  assert.equal(await directGrants(), 0, "all direct login grants must be revoked");
+
+  // 反向侧：用真实 login 连接实际尝试。
+  await withPool(runtimeLoginUrl(), async (pool) => {
+    assert.match(
+      String(await attempt(pool, ["CREATE TABLE public.stage09a_after_drift (id int)"])),
+      /permission denied/i,
+      "runtime login must not retain schema CREATE",
+    );
+    assert.match(
+      String(await attempt(pool, ["SELECT name FROM drizzle.__meal_agent_migrations"])),
+      /permission denied/i,
+      "runtime login must not retain ledger SELECT before SET ROLE",
+    );
+    assert.match(
+      String(await attempt(pool, ["INSERT INTO public.households (id) VALUES (gen_random_uuid())"])),
+      /permission denied/i,
+      "runtime login must not retain table writes",
+    );
+    assert.match(
+      String(await attempt(pool, ["SELECT nextval('public.stage09a_drift_seq')"])),
+      /permission denied/i,
+      "runtime login must not retain sequence USAGE",
+    );
+    assert.match(
+      String(await attempt(pool, ["SELECT meal_agent_private.app_user_id()"])),
+      /permission denied/i,
+      "runtime login must not retain private schema USAGE / function EXECUTE",
+    );
+  });
+  await withPool(backupLoginUrl(), async (pool) => {
+    assert.match(
+      String(await attempt(pool, ["SELECT name FROM public.households"])),
+      /permission denied/i,
+      "backup login must not retain the column-level grant",
+    );
+  });
+
+  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+    await client.query("DROP SEQUENCE IF EXISTS public.stage09a_drift_seq");
+  });
+  await runBootstrap("acl");
+});
+
+test("the public schema baseline is strict in both directions", async () => {
+  const schemaState = async (): Promise<Record<string, boolean>> =>
+    withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{
+        public_usage: boolean;
+        public_create: boolean;
+        app_usage: boolean;
+        backup_usage: boolean;
+        app_create: boolean;
+      }>(
+        `SELECT has_schema_privilege('public', 'public', 'USAGE') AS public_usage,
+                has_schema_privilege('public', 'public', 'CREATE') AS public_create,
+                has_schema_privilege('meal_agent_app', 'public', 'USAGE') AS app_usage,
+                has_schema_privilege('meal_agent_backup', 'public', 'USAGE') AS backup_usage,
+                has_schema_privilege('meal_agent_app', 'public', 'CREATE') AS app_create`,
+      );
+      return result.rows[0] as unknown as Record<string, boolean>;
+    });
+
+  // 基线：PUBLIC 无 USAGE/CREATE；app/backup 有 USAGE、无 CREATE。
+  assert.deepEqual(await schemaState(), {
+    public_usage: false,
+    public_create: false,
+    app_usage: true,
+    backup_usage: true,
+    app_create: false,
+  });
+
+  // app 在没有 PUBLIC 默认 USAGE 的情况下仍然正常工作。
+  await asRole(runtimeLoginUrl(), "meal_agent_app", async (client) => {
+    const ok = await client.query<{ ready: number }>(
+      "SELECT count(*)::int AS ready FROM public.households",
+    );
+    assert.equal(typeof ok.rows[0]?.ready, "number");
+  });
+
+  // 人为重新授予 PUBLIC USAGE/CREATE，再跑 baseline 必须收回。
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC");
+  });
+  const widened = await schemaState();
+  assert.equal(widened["public_usage"], true, "drift must actually widen");
+  await runBootstrap("acl");
+  assert.deepEqual(await schemaState(), {
+    public_usage: false,
+    public_create: false,
+    app_usage: true,
+    backup_usage: true,
+    app_create: false,
+  });
+});
+
+test("membership granted by an independent grantor is still converged", async () => {
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("DROP ROLE IF EXISTS stage09a_grantor");
+    await pool.query("CREATE ROLE stage09a_grantor LOGIN NOINHERIT");
+    // 给独立 grantor ADMIN OPTION，再由**它**产生 membership。
+    await pool.query(
+      "GRANT meal_agent_app TO stage09a_grantor WITH ADMIN OPTION",
+    );
+    const client = await pool.connect();
+    try {
+      await client.query("SELECT set_config('role', 'stage09a_grantor', false)");
+      await client.query("GRANT meal_agent_app TO meal_agent_backup_login");
+    } finally {
+      client.release();
+    }
+  });
+
+  // 先断言 grantor 确实不是 postgres。
+  const grantors = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ grantor: string; member: string }>(
+      `SELECT gr.rolname AS grantor, m.rolname AS member
+       FROM pg_auth_members a
+       JOIN pg_roles m ON m.oid = a.member
+       JOIN pg_roles g ON g.oid = a.roleid
+       JOIN pg_roles gr ON gr.oid = a.grantor
+       WHERE g.rolname = 'meal_agent_app' AND m.rolname = 'meal_agent_backup_login'`,
+    );
+    return result.rows;
+  });
+  assert.equal(grantors.length, 1);
+  assert.equal(
+    grantors[0]?.grantor,
+    "stage09a_grantor",
+    "the membership must genuinely be granted by an independent grantor",
+  );
+
+  // 重跑 baseline：必须把它收敛掉（REVOKE ... GRANTED BY 逐行处理）。
+  await runBootstrap("cluster");
+
+  await withPool(adminPoolConfig(), async (pool) => {
+    const edges = await pool.query<{ edge: string }>(
+      `SELECT m.rolname || ' -> ' || g.rolname AS edge
+       FROM pg_auth_members a
+       JOIN pg_roles m ON m.oid = a.member
+       JOIN pg_roles g ON g.oid = a.roleid
+       WHERE m.rolname = ANY(ARRAY['meal_agent_migrator','meal_agent_app',
+             'meal_agent_backup','meal_agent_migration_login',
+             'meal_agent_runtime_login','meal_agent_backup_login'])
+          OR g.rolname = ANY(ARRAY['meal_agent_migrator','meal_agent_app',
+             'meal_agent_backup','meal_agent_migration_login',
+             'meal_agent_runtime_login','meal_agent_backup_login'])
+       ORDER BY edge`,
+    );
+    assert.deepEqual(
+      edges.rows.map((row) => row.edge),
+      [
+        "meal_agent_backup_login -> meal_agent_backup",
+        "meal_agent_migration_login -> meal_agent_migrator",
+        "meal_agent_runtime_login -> meal_agent_app",
+      ],
+    );
+    await pool.query("DROP ROLE IF EXISTS stage09a_grantor");
+  });
+  await runBootstrap("acl");
+});
+
+test("bounded-wait options have an explicit product-level maximum", async () => {
+  const url = migrationLoginUrl();
+  // 上界通过。
+  await assert.doesNotReject(
+    applyMigrations(url, {
+      lockWaitMs: migrationLimits.lockWaitMs,
+      connectionTimeoutMs: migrationLimits.connectionTimeoutMs,
+    }),
+  );
+  // 上界 + 1 与 MAX_SAFE_INTEGER 都必须失败（避免 Node timer 溢出退化为约 1ms）。
+  for (const invalid of [
+    migrationLimits.lockWaitMs + 1,
+    Number.MAX_SAFE_INTEGER,
+  ]) {
+    await assert.rejects(
+      applyMigrations(url, { lockWaitMs: invalid }),
+      MigrationOptionError,
+      `lockWaitMs ${String(invalid)} must be rejected`,
+    );
+  }
+  for (const invalid of [
+    migrationLimits.connectionTimeoutMs + 1,
+    Number.MAX_SAFE_INTEGER,
+  ]) {
+    await assert.rejects(
+      applyMigrations(url, { connectionTimeoutMs: invalid }),
+      MigrationOptionError,
+      `connectionTimeoutMs ${String(invalid)} must be rejected`,
+    );
+  }
+});
+
+test("the server log never reports an unowned advisory lock unlock", async () => {
+  // 上面的 advisory/表锁用例都跑过了；此时日志里不应出现「解锁未持有的锁」。
+  const serverLog = await readFile(serverLogPath, "utf8");
+  assert.equal(
+    serverLog.includes("you don't own a lock"),
+    false,
+    "pg_advisory_unlock must only run when the lock was actually acquired",
+  );
 });

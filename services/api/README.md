@@ -24,7 +24,7 @@ Node.js 24 + Fastify 5 模块化单体，使用 PostgreSQL 18、Drizzle schema �
   → 0004_stage_08_final_closeout.sql
 ```
 
-不得修改 0000—0003 或其 checksum。阶段 08 尚未部署，`0004` 按既定预发布策略继续原地修正：它在单一事务内先移除旧终态 CHECK、转换旧 pending、再建立新约束，并固化关联安全披露、统一 household 锁顺序、撤销 link request 直接 INSERT、让 409 终态先提交再映射 HTTP，收紧 constraint JSONB/UUIDv7 数据库边界。最终版本还在 advisory 锁后重取时钟并重验 expiry，封闭安全 409 CHECK 的 SQL UNKNOWN，并允许自退出/关联冲突在 bootstrap 前读取同 key 完成记录，同时让无完成记录的 foreign membership DELETE 稳定返回 404。历史 link 披露明确为 `legacy_unavailable`，历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
+`0000`—`0004` 现已全部冻结，不得修改任何字节或其 checksum。`0004` 在单一事务内先移除旧终态 CHECK、转换旧 pending、再建立新约束，并固化关联安全披露、统一 household 锁顺序、撤销 link request 直接 INSERT、让 409 终态先提交再映射 HTTP，收紧 constraint JSONB/UUIDv7 数据库边界。最终版本还在 advisory 锁后重取时钟并重验 expiry，封闭安全 409 CHECK 的 SQL UNKNOWN，并允许自退出/关联冲突在 bootstrap 前读取同 key 完成记录，同时让无完成记录的 foreign membership DELETE 稳定返回 404。历史 link 披露明确为 `legacy_unavailable`，历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
 
 ## 本地运行
 
@@ -42,18 +42,26 @@ pnpm --filter @meal-agent/api dev
 
 ```bash
 # 全新空库：cluster admin 应用冻结的 0000（它自身要 CREATE ROLE 并设置 BYPASSRLS）
-pnpm --filter @meal-agent/api db:migrate -- --bootstrap-0000
+pnpm --filter @meal-agent/api db:bootstrap
 
 # 常规迁移：migration login 显式进入 meal_agent_migrator 应用 0001—最新
 pnpm --filter @meal-agent/api db:migrate
 ```
 
-默认命令会显式 `SET ROLE meal_agent_migrator`。`--bootstrap-0000` 是唯一的 admin
-例外，且是窄而固定的：它只应用 `0000_stage_06.sql`，不接受任意 role 或任意
-migration 边界；未知参数、重复参数和组合参数都会失败。
+两条命令都**不接受任何参数**：`db:bootstrap` 的语义是固定的（只应用
+`0000_stage_06.sql`、不切换 role），`db:migrate` 会显式 `SET ROLE
+meal_agent_migrator`。`pnpm run <script> -- --flag` 会把字面量 `--` 一并传给脚本，
+因此不提供需要转发参数的入口；未知参数、重复参数和组合参数一律失败。
 
-连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s），另一会话持锁时
-在限定时间内明确失败，不会无限等待。
+`db:bootstrap` 在执行任何 DDL 之前用真实连接核对目标库名、admin 能力和数据库
+状态（必须是空库，或恰好只正确应用了 `0000`）。指向 `postgres`、`template1` 或
+任何非项目库时立即失败，且不会留下 `drizzle` schema、migration ledger 或 `0000`
+的任何对象。
+
+连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
+600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是
+Node 定时器超过 2^31-1 毫秒会溢出并退化为约 1ms，"超大超时"会静默变成"几乎不
+等待"。
 
 角色基线、口令、owner 交接与备份授权由
 [`infra/docker/postgres/`](../../infra/docker/postgres/) 的 bootstrap 完成，

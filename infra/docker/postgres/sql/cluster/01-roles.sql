@@ -1,7 +1,12 @@
--- 阶段 09A / M2A：项目角色基线。
+-- 阶段 09A / M2A：cluster scope 角色基线。
 --
--- 独立、幂等、可在冻结的 0000 之前执行。M4 的恢复流程将复用同一阶段预建 dump
--- 引用的角色；本文件不执行任何恢复动作，也不创建业务对象。
+-- 独立、幂等，连接明确的 maintenance/control 数据库（默认 postgres）执行。
+-- **不要求目标 meal_agent 数据库存在**，也不修改任何目标数据库的 ACL——
+-- 数据库级与对象级权限属于 database scope（sql/database/）。
+--
+-- 因此本阶段可以在 createdb 之前运行，M4 的恢复流程将复用它预建 dump 引用的
+-- 角色，然后 createdb --owner=meal_agent_migrator 再 pg_restore。
+-- 本文件不执行任何恢复动作，也不创建业务对象。
 --
 -- 每次运行都把六个项目角色**完整规范化**到基线：属性、role-level GUC 配置、
 -- membership 图和目标数据库级权限。因此重复执行只会收敛权限，不会叠加权限。
@@ -149,32 +154,16 @@ GRANT meal_agent_backup TO meal_agent_backup_login
   WITH ADMIN FALSE, INHERIT FALSE, SET TRUE;
 
 -- ---------------------------------------------------------------------------
--- 6. 目标数据库级权限。
---    默认 datacl 为 NULL，意味着 PUBLIC 隐含拥有 CONNECT 与 TEMPORARY；
---    这里显式收回，使 datacl 变为具名 ACL。
---
---    三个登录角色先清空自身既有数据库权限，再只授予 CONNECT——它们除目标数据库
---    的 CONNECT 之外，没有任何 schema/table/sequence/function 权限。
---
---    meal_agent_migrator 被刻意排除：owner handoff 之后它是 database owner，
---    对 owner 执行 REVOKE ALL 会剥夺其隐含的 CREATE/TEMP 权限。
--- ---------------------------------------------------------------------------
-REVOKE CONNECT, TEMPORARY ON DATABASE :"expected_db" FROM PUBLIC;
-
-REVOKE ALL ON DATABASE :"expected_db" FROM
-  meal_agent_migration_login, meal_agent_runtime_login, meal_agent_backup_login;
-GRANT CONNECT ON DATABASE :"expected_db" TO
-  meal_agent_migration_login, meal_agent_runtime_login, meal_agent_backup_login;
-
--- app 与 backup 永远不是 database owner，且不需要任何数据库级权限；
--- 尤其不得具有 TEMPORARY。
-REVOKE ALL ON DATABASE :"expected_db" FROM meal_agent_app, meal_agent_backup;
-
--- ---------------------------------------------------------------------------
--- 7. 结果自检：基线不成立就 fail closed，而不是留下半套权限。
+-- 6. 结果自检：基线不成立就 fail closed，而不是留下半套权限。
 -- ---------------------------------------------------------------------------
 DO $verify$
 DECLARE
+  -- 精确六角色数组：不使用未转义的 LIKE 'meal_agent%'（`_` 是通配符）。
+  project_roles constant text[] := ARRAY[
+    'meal_agent_migrator', 'meal_agent_app', 'meal_agent_backup',
+    'meal_agent_migration_login', 'meal_agent_runtime_login',
+    'meal_agent_backup_login'
+  ];
   problem text;
 BEGIN
   SELECT string_agg(rolname, ', ' ORDER BY rolname) INTO problem
@@ -213,7 +202,7 @@ BEGIN
 
   IF (SELECT count(*) FROM pg_db_role_setting s
       JOIN pg_roles r ON r.oid = s.setrole
-      WHERE r.rolname LIKE 'meal_agent%') <> 0 THEN
+      WHERE r.rolname = ANY(project_roles)) <> 0 THEN
     RAISE EXCEPTION 'role baseline: leftover role-level configuration remains';
   END IF;
 
@@ -228,8 +217,8 @@ BEGIN
   FROM pg_auth_members membership
   JOIN pg_roles member_role ON member_role.oid = membership.member
   JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
-  WHERE (member_role.rolname LIKE 'meal_agent%'
-         OR granted_role.rolname LIKE 'meal_agent%')
+  WHERE (member_role.rolname = ANY(project_roles)
+         OR granted_role.rolname = ANY(project_roles))
     AND NOT (
       member_role.rolname || '|' || granted_role.rolname = ANY(ARRAY[
         'meal_agent_migration_login|meal_agent_migrator',
@@ -247,37 +236,12 @@ BEGIN
   IF (SELECT count(*) FROM pg_auth_members membership
       JOIN pg_roles member_role ON member_role.oid = membership.member
       JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
-      WHERE member_role.rolname LIKE 'meal_agent%'
-         OR granted_role.rolname LIKE 'meal_agent%') <> 3 THEN
+      WHERE member_role.rolname = ANY(project_roles)
+         OR granted_role.rolname = ANY(project_roles)) <> 3 THEN
     RAISE EXCEPTION
       'role baseline: expected exactly three project membership edges';
   END IF;
 
-  IF has_database_privilege('public', current_database(), 'CONNECT')
-     OR has_database_privilege('public', current_database(), 'TEMP') THEN
-    RAISE EXCEPTION
-      'role baseline: PUBLIC still holds CONNECT/TEMP on %', current_database();
-  END IF;
-
-  SELECT string_agg(candidate, ', ' ORDER BY candidate) INTO problem
-  FROM unnest(ARRAY['meal_agent_app', 'meal_agent_backup']) AS candidate
-  WHERE has_database_privilege(candidate, current_database(), 'TEMP');
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION 'role baseline: % must not hold TEMP', problem;
-  END IF;
-
-  SELECT string_agg(candidate, ', ' ORDER BY candidate) INTO problem
-  FROM unnest(ARRAY[
-    'meal_agent_migration_login', 'meal_agent_runtime_login',
-    'meal_agent_backup_login'
-  ]) AS candidate
-  WHERE NOT has_database_privilege(candidate, current_database(), 'CONNECT')
-     OR has_database_privilege(candidate, current_database(), 'TEMP');
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION
-      'role baseline: % must hold exactly CONNECT on %', problem,
-      current_database();
-  END IF;
 END
 $verify$;
 

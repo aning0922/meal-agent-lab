@@ -14,8 +14,10 @@ migration，不新增也不修改任何业务表结构，因此不进入
 `CONNECT` 外，没有任何直接授予的 schema/table/sequence/function 权限**，必须显式
 `SET ROLE` 才能取得对应角色的权限。
 
-> `public` schema 的 `USAGE` 来自 PostgreSQL 对 `PUBLIC` 的默认授予，对所有角色
-> 一视同仁，不是对登录角色的直接授予。本阶段没有改动该默认。
+`public` 与 `drizzle` schema 采用**严格基线**：`PUBLIC` 的 `USAGE`/`CREATE` 被显式
+收回，`USAGE` 只显式授予 `meal_agent_app` 与 `meal_agent_backup`，`migrator` 作为
+schema owner 无需授予。因此三个登录角色在 `SET ROLE` 之前对 `public` 没有有效
+`USAGE`，基线也不再依赖 template 的默认 ACL。
 
 | 登录角色 | 可进入 | connection limit | 用途 |
 | --- | --- | --- | --- |
@@ -38,35 +40,58 @@ membership 恰好三条边，全部 `WITH ADMIN FALSE, INHERIT FALSE, SET TRUE`�
 目标数据库上 `PUBLIC` 的 `CONNECT` 与 `TEMPORARY` 已被收回；`meal_agent_app` 与
 `meal_agent_backup` 都不持有 `TEMPORARY`。
 
+## 两个作用域
+
+- **cluster scope**（`cluster`、`logins`）连接明确的 maintenance/control 数据库
+  （默认 `postgres`），只处理六个 cluster 角色、role config、membership 与口令。
+  **不要求目标数据库存在**，也不修改任何目标数据库 ACL。
+- **database scope**（`handoff`、`acl`、`grants`）只在目标 `meal_agent*` 数据库
+  存在后运行，处理数据库 ACL、schema ACL、owner 交接与对象权限。
+
+这样拆开之后，恢复路径可以复用 cluster scope 与 ACL 基线，而不必碰 `0000` 或
+owner handoff。
+
 ## 执行顺序
 
+全新安装：
+
 ```text
-1. admin      createdb
-2. admin      bootstrap.sh roles              角色基线（可在冻结 0000 之前执行）
-3. admin      bootstrap.sh logins             SCRAM 口令
-4. admin      db:migrate -- --bootstrap-0000  应用冻结的 0000
-5. admin      bootstrap.sh handoff            database/public/drizzle/ledger owner 交接
-6. migration  db:migrate                      显式 SET ROLE meal_agent_migrator 应用 0001—最新
-7. admin      bootstrap.sh grants             备份角色只读补授
-8. runtime    readiness                       事务内 SET LOCAL ROLE meal_agent_app
+1. admin      bootstrap.sh cluster                              角色 + membership
+2. admin      bootstrap.sh logins                               SCRAM 口令
+3. admin      createdb meal_agent
+4. admin      pnpm --filter @meal-agent/api db:bootstrap        应用冻结的 0000
+5. admin      bootstrap.sh handoff --dbname meal_agent          owner 交接
+6. admin      bootstrap.sh acl     --dbname meal_agent          ACL 基线
+7. migration  pnpm --filter @meal-agent/api db:migrate          SET ROLE 应用 0001—最新
+8. admin      bootstrap.sh grants  --dbname meal_agent          备份角色补授
+9. runtime    readiness                                         SET LOCAL ROLE meal_agent_app
 ```
+
+恢复（M4 实现，本轮只登记约束）：
+
+```text
+1. admin      bootstrap.sh cluster
+2. admin      createdb --owner=meal_agent_migrator meal_agent
+3. operator   pg_restore
+4. admin      bootstrap.sh acl    --dbname meal_agent
+5. admin      bootstrap.sh grants --dbname meal_agent
+```
+
+恢复路径**不**执行 `0000`，也**不**执行 owner handoff：dump 已经带着正确的
+owner，重跑只会制造漂移。
 
 第 4 步必须由 cluster admin 执行：冻结的 `0000` 自身要 `CREATE ROLE` 并设置
 `BYPASSRLS`，此时切换到 `meal_agent_migrator` 还拿不到这些能力。这是如实记录的
 cluster-admin 边界，不伪装成最小权限步骤。
 
-第 5 步是硬前置：`0001` 起包含 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`，
-只有 `public` schema 的 owner 才能执行。未做 owner 交接时，migration login 无法
-应用 `0001`。
-
-`roles` 阶段刻意可以独立、提前执行。M4 的恢复流程将复用它来预建 dump 引用的
-角色；恢复时**不得**在已有 dump 目标上重跑 `0000`，也不得对 dump 已经建立的
-对象重跑 owner handoff。本轮不实现任何恢复流程。
+第 5 步是硬前置：`0002_stage_08_audit_closeout.sql` 含
+`REVOKE CREATE ON SCHEMA public FROM PUBLIC`，只有 `public` schema 的 owner 才能
+执行。未做 owner 交接时，migration login 无法应用到 `0002`。
 
 ## 收敛性
 
-每个阶段都可重复执行。`roles` 阶段每次都把六个项目角色**完整规范化**回基线：
-属性、role-level GUC 配置、membership 图和数据库级权限；越界 membership 被逐条
+每个阶段都可重复执行。`cluster` 阶段每次都把六个项目角色**完整规范化**回基线：
+属性、role-level GUC 配置与 membership 图；`acl` 阶段收敛数据库/schema/对象权限。越界 membership 被逐条
 撤销后重新授予目标边。因此重复 bootstrap 只会收敛权限，不会叠加权限。
 
 两个容易踩空的地方已被显式处理：
@@ -80,16 +105,22 @@ cluster-admin 边界，不伪装成最小权限步骤。
 ## 用法
 
 ```bash
-infra/docker/postgres/bootstrap.sh roles   --dbname meal_agent
-infra/docker/postgres/bootstrap.sh logins  --dbname meal_agent
+infra/docker/postgres/bootstrap.sh cluster
+infra/docker/postgres/bootstrap.sh logins
 infra/docker/postgres/bootstrap.sh handoff --dbname meal_agent
+infra/docker/postgres/bootstrap.sh acl     --dbname meal_agent
 infra/docker/postgres/bootstrap.sh grants  --dbname meal_agent
 ```
 
 `--dbname` 只接受严格的 `meal_agent` 或 `meal_agent_<suffix>` 标识符；URI、
-conninfo `key=value`、引号和大写一律拒绝。每个阶段执行前都会核对
-`current_database()` 与 admin 能力，并检查所处的 migration ledger/owner 状态；
-连错库或顺序错误时 fail closed。
+conninfo `key=value`、引号和大写一律拒绝。cluster scope 用 `--maintenance-db`
+（默认 `postgres`）。每个阶段执行前都会核对 `current_database()` 与 admin 能力，
+并检查所处的 migration ledger/owner 状态；连错库或顺序错误时 fail closed。
+
+`handoff` 的全部状态检查都先于任何归属变更：ledger 缺失、缺少 `0000` 建立的表、
+提前出现 `0001`/`0002` 的表、出现未管理的表/视图/序列、被管理对象归属未知角色，
+都会在**没有做过任何 ownership 变更**的情况下失败。允许出现的对象集合由 ledger
+实际内容推导，业务表与 `meal_agent_private` 函数的 owner 只验证、不接管。
 
 连接参数走标准 `PG*` 环境变量。`logins` 阶段要求三个非空密码环境变量
 （`MEAL_AGENT_MIGRATION_PASSWORD`、`MEAL_AGENT_RUNTIME_PASSWORD`、
@@ -104,9 +135,14 @@ conninfo `key=value`、引号和大写一律拒绝。每个阶段执行前都会
 两个 `\password` 的陷阱已被处理：
 
 - 它的提示先尝试打开 `/dev/tty`，只有失败才回落到 stdin。因此在有控制终端的
-  交互式 shell 里用管道喂口令会**永久阻塞且无任何错误**。容器与 CI 没有控制
-  终端，是正常路径；有控制终端时脚本优先用 `setsid` 脱离，没有 `setsid` 则明确
-  失败而不是挂死。
+  交互式 shell 里用管道喂口令会**永久阻塞且无任何错误**（macOS 普通 Terminal
+  正是这种情况，且系统不带 `setsid`）。脚本因此统一在「无控制终端」的会话里
+  执行 `\password`：优先用 util-linux 的 `setsid`，否则用仓库内的
+  [`no-ctty.mjs`](no-ctty.mjs)——它只用 Node 标准库，`spawn(..., { detached: true })`
+  在 POSIX 上即 `setsid(2)`，并透传子进程退出码。两者都没有时明确失败而不是挂死。
+- 连接本身也用 `--no-password`：缺少 admin 凭据时立即失败，不会等待交互输入
+  （连接口令提示有同样的 `/dev/tty` 缺陷）。
+- 展开 Secret 前显式 `set +x`，三个口令变量用完立即 `unset`。
 - 口令为空字符串时服务端会**清空**该角色口令并且 psql 仍退出 0，因此设置后强制
   回查 `pg_authid`，确认三个角色都真的持有 SCRAM verifier。
 

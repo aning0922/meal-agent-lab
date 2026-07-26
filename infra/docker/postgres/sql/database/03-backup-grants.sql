@@ -2,7 +2,7 @@
 --
 -- 由 bootstrap/admin 在 0001—最新 migration 应用之后执行；可重复执行。
 --
--- 03-owner-handoff.sql 的 ALTER DEFAULT PRIVILEGES 已经覆盖「由 migrator 新建
+-- 01-owner-handoff.sql 的 ALTER DEFAULT PRIVILEGES 已经覆盖「由 migrator 新建
 -- 的表」，这里再做一次显式补授，用于兜底历史上由其他角色建立的对象。
 -- 只授予 SELECT，并再次收回全部写权限与 DDL 权限。
 --
@@ -33,7 +33,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION
       'backup grants: meal_agent_backup does not exist; run '
-      '"bootstrap.sh roles" first';
+      '"bootstrap.sh cluster" first';
   END IF;
 END
 $grants_preflight$;

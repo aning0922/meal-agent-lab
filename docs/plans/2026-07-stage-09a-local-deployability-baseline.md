@@ -75,7 +75,11 @@ PostgreSQL healthy
    - `api`：migration 成功后启动，提供容器和 HTTP 健康检查；
    - 可显式调用的 `backup` / `restore` 命令或等价脚本，不常驻。
 2. API host 端口只能绑定 `127.0.0.1`，不得使用未限定的 `3000:3000`。
-3. bootstrap、migration、runtime 和备份恢复使用显式权限边界：
+3. bootstrap 分成 **cluster scope** 与 **database scope** 两段：cluster scope 连
+   maintenance 数据库建立六个角色、membership 与口令，不要求目标数据库存在；
+   database scope 在目标数据库存在后处理数据库/schema ACL、owner 交接与对象权限。
+   恢复路径复用 cluster scope 与 database ACL 基线，但不重跑 `0000` 或 owner
+   handoff。bootstrap、migration、runtime 和备份恢复使用显式权限边界：
    - 当前冻结的 `0000` 会创建角色并设置 `BYPASSRLS`，空库首次安装客观上需要 bootstrap/admin；新安装路径由它执行 `0000`，把目标 database owner 设为 `meal_agent_migrator`，保证 `public` schema 的 owner/grantor 权限足以执行后续 `CREATE`/`REVOKE`，把 `drizzle` schema 和 migration ledger 所有权交给该角色，再建立后续登录角色；
    - 全库恢复路径只预建 dump 引用的固定 NOLOGIN roles、登录角色，并直接创建 owner 为 `meal_agent_migrator` 的空数据库；不先执行 `0000` 或其他会与 dump 冲突的业务 migration。restore operator 受控连接恢复但不得改变 database owner，恢复完成后再由 migration login 应用备份之后新增的 migration；
    - `0001` 及以后由自身非 superuser、`NOINHERIT` 的 migration login 显式进入 `meal_agent_migrator` 执行。后者是 database owner，具有 DDL 和 `BYPASSRLS`，所以 migration job 仍是敏感的高权限数据库操作，只是没有 cluster superuser/角色管理权限；migration 凭据不进入 API container；

@@ -2,31 +2,43 @@
 #
 # 阶段 09A / M2A：PostgreSQL 18 bootstrap orchestrator。
 #
-# 以 cluster admin 身份建立数据库身份边界。它只做角色与归属，不执行业务
-# migration，也不写 migration ledger。
+# 以 cluster admin 身份建立数据库身份边界。它只做角色、口令与归属/权限，
+# 不执行业务 migration，也不写 migration ledger。
+#
+# 分成两个**作用域**：
+#
+#   cluster scope —— 连接明确的 maintenance/control 数据库（默认 postgres），
+#     只创建并规范化六个 cluster role、role config、membership 与口令。
+#     不要求目标 meal_agent 数据库存在，也不修改任何目标数据库 ACL。
+#     因此它可以在 createdb 之前运行，M4 的恢复流程将复用它：
+#       cluster → createdb --owner=meal_agent_migrator → pg_restore → database
+#
+#   database scope —— 只在目标 meal_agent* 数据库存在后运行，处理数据库 ACL、
+#     schema ACL、owner 交接和对象权限。
 #
 # 用法：
-#   bootstrap.sh roles    --dbname <db>   # 角色基线（可在冻结 0000 之前执行）
-#   bootstrap.sh logins   --dbname <db>   # 为三个 login 设置口令
-#   bootstrap.sh handoff  --dbname <db>   # 0000 之后、0001 之前
-#   bootstrap.sh grants   --dbname <db>   # 0001—最新 migration 之后
+#   bootstrap.sh cluster  [--maintenance-db postgres]   # 角色 + membership
+#   bootstrap.sh logins   [--maintenance-db postgres]   # SCRAM 口令
+#   bootstrap.sh handoff  --dbname <db>                 # 仅全新安装：owner 交接
+#   bootstrap.sh acl      --dbname <db>                 # ACL 基线（全新安装与恢复后均可复用）
+#   bootstrap.sh grants   --dbname <db>                 # migration 之后的备份补授
 #
-# 完整的执行顺序（M2A 验证的路径）：
-#   1. admin      createdb
-#   2. admin      bootstrap.sh roles          （六个项目角色的属性与 membership 基线）
-#   3. admin      bootstrap.sh logins         （SCRAM 口令）
-#   4. admin      db:migrate -- --bootstrap-0000
-#   5. admin      bootstrap.sh handoff        （owner 交接 + 数据库级 ACL）
-#   6. migration  db:migrate                  （显式 SET ROLE meal_agent_migrator）
-#   7. admin      bootstrap.sh grants         （备份角色只读补授）
-#   8. runtime    readiness                   （事务内 SET LOCAL ROLE meal_agent_app）
+# 全新安装顺序：
+#   1. admin      bootstrap.sh cluster
+#   2. admin      bootstrap.sh logins
+#   3. admin      createdb meal_agent
+#   4. admin      pnpm --filter @meal-agent/api db:bootstrap     （应用冻结的 0000）
+#   5. admin      bootstrap.sh handoff --dbname meal_agent
+#   6. admin      bootstrap.sh acl     --dbname meal_agent
+#   7. migration  pnpm --filter @meal-agent/api db:migrate       （SET ROLE migrator）
+#   8. admin      bootstrap.sh grants  --dbname meal_agent
+#   9. runtime    readiness
 #
-# `roles` 阶段刻意可在 `0000` 之前独立执行，M4 的恢复流程将复用同一阶段来预建
-# dump 引用的角色。本轮不实现任何恢复流程。
+# 恢复顺序（M4 实现，本轮只登记约束）：cluster → createdb --owner=meal_agent_migrator
+#   → pg_restore → acl → grants。恢复路径**不**运行 0000，也**不**运行 handoff。
 #
-# 连接参数走标准 PG* 环境变量（PGHOST/PGPORT/PGUSER/PGPASSWORD 等）。
-# `logins` 阶段需要三个密码环境变量，只通过环境传入，不进入命令行、仓库或
-# psql 历史，并且以客户端生成的 SCRAM verifier 形式发送，原始口令不进入 SQL：
+# 连接参数走标准 PG* 环境变量。`logins` 阶段需要三个非空密码环境变量，
+# 它们只经环境与 stdin 传递，并由 psql 的 \password 在客户端生成 SCRAM verifier：
 #   MEAL_AGENT_MIGRATION_PASSWORD
 #   MEAL_AGENT_RUNTIME_PASSWORD
 #   MEAL_AGENT_BACKUP_PASSWORD
@@ -37,10 +49,15 @@ phase="${1:-}"
 shift || true
 
 dbname=""
+maintenance_db="${PGDATABASE:-postgres}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dbname)
       dbname="${2:-}"
+      shift 2
+      ;;
+    --maintenance-db)
+      maintenance_db="${2:-}"
       shift 2
       ;;
     *)
@@ -51,39 +68,59 @@ while [ $# -gt 0 ]; do
 done
 
 case "$phase" in
-  roles|logins|handoff|grants) ;;
+  cluster|logins|handoff|acl|grants) ;;
   *)
-    echo "bootstrap: usage: bootstrap.sh {roles|logins|handoff|grants} --dbname <db>" >&2
+    echo "bootstrap: usage: bootstrap.sh {cluster|logins|handoff|acl|grants}" >&2
+    echo "bootstrap:   cluster|logins  [--maintenance-db <db>]" >&2
+    echo "bootstrap:   handoff|acl|grants --dbname <db>" >&2
     exit 2
     ;;
 esac
-
-# --dbname 只接受严格的项目数据库标识符：拒绝 URI、conninfo key=value、引号、
-# 空格、大写和任何 psql 会当作连接串解释的形式。
-if ! printf '%s' "$dbname" | grep -Eq '^meal_agent(_[a-z0-9_]+)?$'; then
-  echo "bootstrap: --dbname must be 'meal_agent' or 'meal_agent_<suffix>'" >&2
-  echo "bootstrap: URIs, conninfo strings and quoted identifiers are rejected" >&2
-  exit 2
-fi
-if [ "${#dbname}" -gt 63 ]; then
-  echo "bootstrap: --dbname exceeds the PostgreSQL identifier length limit" >&2
-  exit 2
-fi
 
 script_directory="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 sql_directory="${script_directory}/sql"
 psql_binary="${PSQL:-psql}"
 
+# cluster scope 连 maintenance DB；database scope 连目标库。
+case "$phase" in
+  cluster|logins)
+    target_db="$maintenance_db"
+    if [ -z "$target_db" ]; then
+      echo "bootstrap: --maintenance-db must not be empty" >&2
+      exit 2
+    fi
+    # maintenance DB 只需是一个普通标识符；它不是项目库。
+    if ! printf '%s' "$target_db" | grep -Eq '^[a-z_][a-z0-9_]*$'; then
+      echo "bootstrap: --maintenance-db must be a plain identifier" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    target_db="$dbname"
+    # --dbname 只接受严格的项目数据库标识符：拒绝 URI、conninfo key=value、
+    # 引号、空格、大写和任何 psql 会当作连接串解释的形式。
+    if ! printf '%s' "$target_db" | grep -Eq '^meal_agent(_[a-z0-9_]+)?$'; then
+      echo "bootstrap: --dbname must be 'meal_agent' or 'meal_agent_<suffix>'" >&2
+      echo "bootstrap: URIs, conninfo strings and quoted identifiers are rejected" >&2
+      exit 2
+    fi
+    ;;
+esac
+if [ "${#target_db}" -gt 63 ]; then
+  echo "bootstrap: database name exceeds the identifier length limit" >&2
+  exit 2
+fi
+
 run_sql() {
-  # --no-psqlrc 忽略 ~/.psqlrc；ON_ERROR_STOP 由 SQL 内部设置并在此重申。
-  # expected_db 让 SQL 侧再核对一次 current_database()，避免 PGDATABASE、
-  # service 文件或连接串把我们悄悄接到别的库上。
+  # --no-psqlrc 忽略 ~/.psqlrc；-w 拒绝任何交互式口令提示，缺少 admin 凭据时
+  # 立即失败而不是挂起等待输入；expected_db 让 SQL 侧再核对 current_database()。
   "$psql_binary" \
     --no-psqlrc \
     --quiet \
+    --no-password \
     --set ON_ERROR_STOP=on \
-    --set expected_db="$dbname" \
-    --dbname "$dbname" \
+    --set expected_db="$target_db" \
+    --dbname "$target_db" \
     --file "$1"
 }
 
@@ -95,41 +132,72 @@ require_password() {
   fi
 }
 
-# 每个阶段执行前的通用预检：确认真的连到了 --dbname 指定的库，并且当前身份
-# 具备 cluster admin 能力。指向错误数据库时 fail closed。
-run_sql "${sql_directory}/00-preflight-common.sql"
-
 case "$phase" in
-  roles)
-    run_sql "${sql_directory}/01-role-baseline.sql"
+  cluster)
+    run_sql "${sql_directory}/cluster/00-preflight.sql"
+    run_sql "${sql_directory}/cluster/01-roles.sql"
     ;;
+
   logins)
     require_password MEAL_AGENT_MIGRATION_PASSWORD
     require_password MEAL_AGENT_RUNTIME_PASSWORD
     require_password MEAL_AGENT_BACKUP_PASSWORD
-    run_sql "${sql_directory}/02-login-preflight.sql"
+    run_sql "${sql_directory}/cluster/00-preflight.sql"
+    run_sql "${sql_directory}/cluster/02-login-preflight.sql"
 
     # psql 的 \password 在客户端生成 SCRAM-SHA-256 verifier，只把 verifier 放进
     # ALTER USER；原始口令不进入 SQL 文本、命令行、仓库或服务端日志。
     #
-    # 但 \password 的提示走 simple_prompt()，它**先尝试打开 /dev/tty**，只有在
-    # 打开失败时才回落到 stdin。因此在有控制终端的交互式 shell 里，管道喂口令会
-    # 永久阻塞且没有任何错误输出。容器与 CI 没有控制终端，是正常路径；这里对有
-    # 控制终端的情况显式处理：优先用 setsid 脱离，否则明确失败而不是挂死。
-    detach=""
+    # 但它的提示走 simple_prompt()，**先尝试打开 /dev/tty**，只有失败才回落到
+    # stdin。因此在有控制终端的终端里直接用管道喂口令会永久阻塞且没有任何错误。
+    # 这里统一在「无控制终端」的会话里执行：优先用 util-linux 的 setsid，
+    # 否则用仓库内的 no-ctty.mjs（Node 标准库，spawn detached 即 setsid(2)）。
+    # bash 3.2（macOS 自带）在 `set -u` 下展开空数组会报 unbound variable，
+    # 因此用一个标量策略变量而不是数组。
+    detach_mode="none"
     if ( exec 3< /dev/tty ) 2> /dev/null; then
       if command -v setsid > /dev/null 2>&1; then
-        detach="setsid"
+        detach_mode="setsid"
+      elif command -v node > /dev/null 2>&1; then
+        detach_mode="node"
       else
-        echo "bootstrap: refusing to set passwords from a controlling terminal" >&2
+        echo "bootstrap: a controlling terminal is present, but neither" >&2
+        echo "bootstrap: 'setsid' nor 'node' is available to detach from it." >&2
         echo "bootstrap: psql's \\password would block on /dev/tty instead of" >&2
-        echo "bootstrap: reading stdin, and no 'setsid' is available to detach." >&2
-        echo "bootstrap: run this phase without a controlling terminal" >&2
-        echo "bootstrap: (container, CI, or 'setsid bootstrap.sh logins ...')." >&2
+        echo "bootstrap: reading stdin. Run this phase without a controlling" >&2
+        echo "bootstrap: terminal (container/CI), or install one of them." >&2
         exit 2
       fi
     fi
 
+    # 展开 Secret 之前关闭 xtrace，避免口令进入 stderr 的调试输出。
+    set_password() {
+      # $1 = 角色名；口令从 stdin 读入，绝不进入命令行或 SQL 文本。
+      case "$detach_mode" in
+        setsid)
+          setsid "$psql_binary" --no-psqlrc --quiet --no-password \
+            --set ON_ERROR_STOP=on --dbname "$target_db" \
+            --command "SET password_encryption = 'scram-sha-256';" \
+            --command "\\password \"$1\""
+          ;;
+        node)
+          node "${script_directory}/no-ctty.mjs" \
+            "$psql_binary" --no-psqlrc --quiet --no-password \
+            --set ON_ERROR_STOP=on --dbname "$target_db" \
+            --command "SET password_encryption = 'scram-sha-256';" \
+            --command "\\password \"$1\""
+          ;;
+        *)
+          "$psql_binary" --no-psqlrc --quiet --no-password \
+            --set ON_ERROR_STOP=on --dbname "$target_db" \
+            --command "SET password_encryption = 'scram-sha-256';" \
+            --command "\\password \"$1\""
+          ;;
+      esac
+    }
+
+    previous_options="$-"
+    set +x
     for entry in \
       "meal_agent_migration_login:MEAL_AGENT_MIGRATION_PASSWORD" \
       "meal_agent_runtime_login:MEAL_AGENT_RUNTIME_PASSWORD" \
@@ -138,23 +206,30 @@ case "$phase" in
       role_name="${entry%%:*}"
       password_variable="${entry##*:}"
       printf '%s\n%s\n' "${!password_variable}" "${!password_variable}" \
-        | ${detach} "$psql_binary" \
-            --no-psqlrc \
-            --quiet \
-            --set ON_ERROR_STOP=on \
-            --dbname "$dbname" \
-            --command "SET password_encryption = 'scram-sha-256';" \
-            --command "\\password \"${role_name}\""
+        | set_password "$role_name"
     done
+    # 用完立即清除进程环境中的口令，并恢复原来的 xtrace 设置。
+    unset MEAL_AGENT_MIGRATION_PASSWORD
+    unset MEAL_AGENT_RUNTIME_PASSWORD
+    unset MEAL_AGENT_BACKUP_PASSWORD
+    case "$previous_options" in *x*) set -x ;; esac
 
-    # 强制后置校验：\password 在口令为空时会让服务端**清空**口令并且仍然退出 0，
-    # 因此必须回查 pg_authid 确认三个角色都真的持有 SCRAM verifier。
-    run_sql "${sql_directory}/05-login-verify.sql"
+    # 强制后置校验：\password 在口令为空时会让服务端**清空**口令并且仍然退出 0。
+    run_sql "${sql_directory}/cluster/03-login-verify.sql"
     ;;
+
   handoff)
-    run_sql "${sql_directory}/03-owner-handoff.sql"
+    run_sql "${sql_directory}/database/00-preflight.sql"
+    run_sql "${sql_directory}/database/01-owner-handoff.sql"
     ;;
+
+  acl)
+    run_sql "${sql_directory}/database/00-preflight.sql"
+    run_sql "${sql_directory}/database/02-acl-baseline.sql"
+    ;;
+
   grants)
-    run_sql "${sql_directory}/04-backup-grants.sql"
+    run_sql "${sql_directory}/database/00-preflight.sql"
+    run_sql "${sql_directory}/database/03-backup-grants.sql"
     ;;
 esac

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import pg from "pg";
+
 import {
   applyMigrations,
   bootstrapMigrationFlag,
@@ -31,6 +33,7 @@ test("the admin bootstrap flag is narrow and fixed", () => {
   assert.deepEqual(bootstrapMigrationOptions, {
     role: null,
     onlyThrough: "0000_stage_06.sql",
+    adminBootstrap: true,
   });
   assert.equal(Object.isFrozen(bootstrapMigrationOptions), true);
 });
@@ -78,5 +81,33 @@ test("bounded-wait options must be positive finite safe integers", async () => {
       MigrationOptionError,
       `connectionTimeoutMs ${String(invalid)} must be rejected`,
     );
+  }
+});
+
+test("the pool is ended even when the connection itself fails", async () => {
+  // migrate.ts 自己构造 Pool，因此这里在 prototype 上做受控替身：
+  // 连接失败时也必须走到 pool.end()，否则部署 job 会泄漏连接池。
+  const pool = pg.Pool.prototype as unknown as {
+    connect: () => Promise<never>;
+    end: () => Promise<void>;
+  };
+  const originalConnect = pool.connect;
+  const originalEnd = pool.end;
+  let endCalls = 0;
+  pool.connect = async () => {
+    throw new Error("synthetic ECONNREFUSED");
+  };
+  pool.end = async () => {
+    endCalls += 1;
+  };
+  try {
+    await assert.rejects(
+      applyMigrations("postgresql://invalid@127.0.0.1:1/invalid"),
+      /synthetic ECONNREFUSED/,
+    );
+    assert.equal(endCalls, 1, "pool.end must run even when connect() rejects");
+  } finally {
+    pool.connect = originalConnect;
+    pool.end = originalEnd;
   }
 });
