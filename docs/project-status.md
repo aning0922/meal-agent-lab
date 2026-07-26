@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口，阶段 09 尚未开始。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)已完成规划、尚未实施：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -86,7 +86,13 @@
 
 标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、1 high、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，不自动跟随 redirect，任何 3xx 都失败；原始响应流和 gzip 解压流分别实施 16 MiB 上限。normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
 
-## Deferred 与下一门禁
+## 阶段 09A 计划与下一门禁
+
+- 计划分支：`codex/stage-09a-local-deployability-baseline`，从最新本地 `main` 建立独立 worktree。
+- 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
+- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter；尚缺 Dockerfile、Compose、runtime/migration 登录账号隔离、容器 smoke test 和备份恢复证据。
+- 当前总控机器没有可用 Docker CLI/Compose；安装兼容 Compose v2 的容器引擎并完成真实运行门禁前，阶段 09A 不得记录为 Pass。
+- GitHub `origin` 与 `main` upstream 已配置，仓库已有 CI workflow；当前只确认配置存在，没有在本次规划中读取或伪造远端 run Pass。
 
 ### Deferred — 外部依赖
 
@@ -103,4 +109,4 @@
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库当前没有 remote/upstream 或远端 CI 证据。这不影响阶段 08 的本地验收结论，但在开始阶段 09 开发前必须配置受控 remote/upstream 与真实 CI。下一步是完成阶段 08 合并后收尾，并由项目总控定义阶段 09 的产品范围、数据治理前置项与架构门禁；不得把任何外部 Deferred 项改记为 Pass。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。下一步是在独立 worktree 实施阶段 09A，并保持所有外部 Deferred 项原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。

@@ -1,0 +1,207 @@
+# 阶段 09A：本地可部署性与私有测试基线
+
+- 日期：2026-07-26
+- 状态：已规划，未实施
+- 计划分支：`codex/stage-09a-local-deployability-baseline`
+- 规划基线：`main` `35ddf78`
+- 负责人：项目总控、基础设施执行任务、安全复核任务
+
+## 决策摘要
+
+阶段 09A 先建立可重复、可审计的本地部署包，不购买云服务器，不接入真实微信配置，也不开放公网服务。完成并通过本阶段后，才评估阶段 09B 的单台私有测试服务器。
+
+已确认的外部条件：
+
+- 首批使用者主要在深圳；
+- 当前没有云厂商偏好；
+- 服务器仅按内部测试考虑，尚未购买；
+- 当前没有真实微信 AppID/AppSecret、合法 HTTPS 域名或发布条件。
+
+因此本阶段只做 Docker Compose 本地/私有测试拓扑。腾讯云广州是后续测试服务器的默认候选，不是本阶段已选择或已购买的基础设施；真正创建云资源时再记录供应商、区域、账号、网络和成本决策。
+
+## 当前事实
+
+- `services/api` 已有可构建的 Fastify 服务、`/healthz`、`/readyz`、graceful shutdown、PostgreSQL migration checksum 和递归日志脱敏。
+- production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
+- PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
+- 仓库已有 GitHub `origin`，本地 `main` 在规划时跟踪 `origin/main`；存在 GitHub Actions 工作流，但本计划没有把任何未读取的远端 run 记为 Pass。
+- `infra/docker/` 与 `infra/environments/` 仍为空骨架；没有 API Dockerfile、Compose、容器 smoke test、备份恢复脚本或部署运行手册。
+- 当前总控机器可用 Node.js 24.14.0、pnpm 11.9.0 和 PostgreSQL 18，但未发现 Docker CLI、Docker Compose、OrbStack、Colima 或 Podman。没有实际容器运行证据前不得把本阶段记为完成。
+- 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
+- 现有 local/weapp-only 依赖审计例外将在 2026-08-08 到期并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
+
+## 目标拓扑
+
+```text
+本机浏览器、客户端或 SSH tunnel
+  └─ 127.0.0.1:<api-port>
+       └─ API container（非 root、runtime 数据库凭据）
+            └─ internal Docker network
+                 └─ PostgreSQL 18（不发布 host 端口）
+
+PostgreSQL healthy
+  ├─ 一次性 bootstrap container（cluster admin，只执行空库 0000 和角色交接）
+  └─ 一次性 migration container（login 非 superuser，进入高权限 migrator role）
+       └─ 应用已审查的 0001 → 0004 及本阶段新增 migration
+
+显式 backup/restore command（独立 operator 凭据）
+  └─ 只处理合成测试数据和本地备份目录
+```
+
+`HOST=0.0.0.0` 只用于 API container 内监听；Compose 必须把 host publish address 固定为 `127.0.0.1`。数据库不得声明 host port。阶段 09B 若使用远程机器，仍通过 SSH tunnel 访问，不因容器内部监听地址而开放公网。
+
+## 实施范围
+
+### M1：容器构建基线
+
+1. 新增适用于 monorepo 根构建上下文的 `.dockerignore`。
+2. 新增 `services/api/Dockerfile`：
+   - Node.js 24 LTS exact patch 或 digest 可审查；
+   - multi-stage build；
+   - 使用根 lockfile 和 `pnpm install --frozen-lockfile`；
+   - 先构建 `@meal-agent/contracts`，再构建 API；
+   - runtime image 不包含源码工具链、测试依赖或未使用 workspace；
+   - 以固定非 root 用户运行；
+   - 包含运行所需的 compiled files、package metadata 和 SQL migrations。
+3. 镜像不得内置 `.env`、Git 元数据、私钥、AppSecret、真实账号数据、测试报告或本机路径。
+4. 基础镜像必须固定到可审查的 Node 24 与 PostgreSQL 18 安全 patch；升级 patch 不改变 ADR-0002 的 major 基线，但要重新运行完整门禁。
+
+### M2：Compose 与数据库角色
+
+1. 在 `infra/docker/` 增加单机 local-test Compose，至少包含：
+   - `postgres`：PostgreSQL 18、named volume、健康检查、无 host port；
+   - `bootstrap`：仅在全新安装或恢复前显式运行的 cluster-admin job；
+   - `migrate`：一次性 migration job，新安装时在 bootstrap 成功后运行；
+   - `api`：migration 成功后启动，提供容器和 HTTP 健康检查；
+   - 可显式调用的 `backup` / `restore` 命令或等价脚本，不常驻。
+2. API host 端口只能绑定 `127.0.0.1`，不得使用未限定的 `3000:3000`。
+3. bootstrap、migration、runtime 和备份恢复使用显式权限边界：
+   - 当前冻结的 `0000` 会创建角色并设置 `BYPASSRLS`，空库首次安装客观上需要 bootstrap/admin；新安装路径由它执行 `0000`，把目标 database owner 设为 `meal_agent_migrator`，保证 `public` schema 的 owner/grantor 权限足以执行后续 `CREATE`/`REVOKE`，把 `drizzle` schema 和 migration ledger 所有权交给该角色，再建立后续登录角色；
+   - 全库恢复路径只预建 dump 引用的固定 NOLOGIN roles、登录角色，并直接创建 owner 为 `meal_agent_migrator` 的空数据库；不先执行 `0000` 或其他会与 dump 冲突的业务 migration。restore operator 受控连接恢复但不得改变 database owner，恢复完成后再由 migration login 应用备份之后新增的 migration；
+   - `0001` 及以后由自身非 superuser、`NOINHERIT` 的 migration login 显式进入 `meal_agent_migrator` 执行。后者是 database owner，具有 DDL 和 `BYPASSRLS`，所以 migration job 仍是敏感的高权限数据库操作，只是没有 cluster superuser/角色管理权限；migration 凭据不进入 API container；
+   - runtime login 使用 `NOINHERIT`，非 superuser、无 `CREATEDB`、无 `CREATEROLE`、无 `BYPASSRLS`，只能显式进入 `meal_agent_app` 运行角色；
+   - API container 只取得 runtime login；
+   - 完整备份使用独立 `NOINHERIT` login，进入一个无写权限但具有 `BYPASSRLS`/全库读取能力的专用角色；该角色是敏感数据导出权限，不得借用 API runtime，也不得笼统表述为普通只读账号；
+   - 恢复使用显式高权限 operator，不进入 API container。
+4. 角色初始化必须可重复执行并有数据库反向测试；API runtime 必须无法 `SET ROLE meal_agent_migrator` 或备份角色，备份角色必须不能写业务表或执行 DDL。不得修改已冻结的 `0000`—`0004`。业务数据库结构若确需变化，只能追加新 migration。
+5. 容器至少使用 `no-new-privileges`、删除不需要的 Linux capabilities，并在可行时启用只读根文件系统和临时目录。
+6. 不使用 privileged、host network、Docker socket mount 或宿主目录数据库 bind mount。
+7. `/readyz` 必须以 runtime 真实可用的 `meal_agent_app` 权限读取 migration ledger；不能依赖登录角色继承权限或超级用户连接。
+8. migration advisory lock 和数据库连接具有有界超时；另一 migration 持锁时，部署 job 必须明确失败或在限定时间内退出，不能无限等待。
+
+### M3：配置和 fake 登录边界
+
+1. 在 `infra/environments/` 增加 local-test 配置模板；所有密码、token 和 Secret 保持空值，由未跟踪环境文件或进程环境注入。
+2. local-test 显式使用 `WECHAT_ADAPTER=fake` 和合成身份；不得写入真实 AppID/AppSecret。
+3. 配置独立表达部署暴露级别；public、staging 或 production 暴露级别必须拒绝 fake，不能只依赖 `NODE_ENV`。local-test 配置发现非空 AppID/AppSecret 时也必须 fail closed。
+4. 新增 Compose 配置静态门禁，至少拒绝：
+   - API 绑定 `0.0.0.0` host publish 或省略 host IP；
+   - API 通过 IPv6 或其他 host listener 暴露；
+   - PostgreSQL 发布 host port；
+   - API 获得 operator/bootstrap Secret；
+   - privileged、host network 或 Docker socket；
+   - 非空 Secret 出现在受版本控制模板。
+5. 动态门禁从宿主非 loopback 地址访问 API 必须失败；`HOST=0.0.0.0` 只允许作为容器内部监听事实。
+6. Secret 不通过 Docker build arg、image layer、命令行或 Compose environment value。bootstrap、migration、runtime、backup 和 restore 的数据库凭据全部通过未跟踪、权限受限的 secret file 注入，解析后的 Compose 配置与 `docker inspect` 不出现 Secret 值。API 与 migration 至少支持 `DATABASE_URL_FILE` 与 `DATABASE_URL` 互斥注入。
+7. 日志脱敏补充 `databaseUrl`、`connectionString`、`password` 和 `dsn` 及常见命名变体，并增加包含带密码 PostgreSQL URL 的 sentinel 测试。
+8. fake 模式不得调用外部微信服务。真实 adapter 在未来接入 Secret 前必须把 code2Session 限制到微信官方 HTTPS origin/path；自动化替身只允许在无真实 Secret 的测试环境使用。
+9. 认证和家庭私有响应增加 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`；不启用 wildcard CORS。
+10. 阶段 09A 不增加反向代理、TLS、域名、登录限流或 WAF。没有真实微信配置时，禁止把 local-test 拓扑改名或表述为 staging/production。
+
+### M4：生命周期、备份和恢复
+
+1. 提供明确命令完成：
+   - 构建镜像；
+   - 从空 volume 初始化；
+   - 执行 migration；
+   - 启动 API；
+   - 检查 `/healthz` 与 `/readyz`；
+   - 停止并重启后验证数据仍在；
+   - 销毁本阶段专用测试资源。
+2. 提供 `pg_dump` 自定义格式备份和恢复到全新测试数据库的脚本或容器命令；runbook 必须说明 `pg_dump` 不包含 cluster roles，并区分“全新安装”与“从 dump 恢复”的 bootstrap 顺序。备份测试至少包含两个合成家庭，证明完整导出不受 FORCE RLS 截断。
+3. 备份生成 SHA-256；恢复前先校验，不匹配时禁止调用 `pg_restore`。恢复使用单事务；备份文件写入已忽略目录，不进入 Git。执行前后打印目标环境和数据库标识，但不打印密码或完整连接串。
+4. 恢复演练必须使用合成 sentinel 数据，验证：
+   - migration ledger 和 checksum 完整；
+   - 恢复后 `/readyz` 通过；
+   - 合成家庭/库存记录可授权读取；
+   - runtime role 仍不能绕过 RLS 或执行 DDL。
+   - database owner 为 `meal_agent_migrator`，全部 schema/table/function owner、`SECURITY DEFINER` owner、GRANT 与 RLS 状态和备份前一致。
+5. 本阶段只记录本地演练耗时，不声明生产 RPO/RTO。
+6. SIGTERM 测试必须证明进程在限定时间内真正退出；当前只设置 `process.exitCode` 的超时分支不能作为强制退出证据。
+
+### M5：门禁、CI 与文档
+
+1. 增加根命令 `pnpm stage09a:check`，至少串联：
+   - `pnpm stage08:check`；
+   - Dockerfile/Compose 静态检查；
+   - 镜像构建；
+   - 空库启动与 migration；
+   - health/readiness；
+   - runtime 最小权限反向测试；
+   - 持久化重启；
+   - 备份恢复；
+   - 日志/镜像/配置 Secret 扫描；
+   - 清理。
+2. 容器测试失败时保留足够诊断信息，但不得输出 Secret；无论成功失败都清理本阶段创建的 container/network，失败现场需要显式 opt-in 才保留。
+3. GitHub Actions 使用同一 `stage09a:check`，不维护第二套部署逻辑。远端 run 未真实成功前只记录 workflow 已配置，不记录 CI Pass。
+4. API runtime image 必须证明不包含 Taro、Swiper、webpack-dev-server 等客户端依赖，并执行适用于服务端镜像的独立依赖/组件扫描。
+5. 在 2026-08-08 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。
+6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
+
+## 验收门禁
+
+| # | 必须满足 |
+| --- | --- |
+| 1 | 从干净 checkout 使用一条文档化命令构建并启动，不依赖本机 `node_modules`、`dist` 或全局 pnpm |
+| 2 | PostgreSQL 为 18.x，migration 从空库顺序执行，第二次执行幂等，checksum 漂移 fail closed |
+| 3 | `/healthz` 只证明进程存活；数据库不可用、migration 缺失或 checksum 不一致时 `/readyz` 返回非 ready |
+| 4 | 原生 PostgreSQL 18 空实例真实完成 `0000 → database/public/drizzle/ledger 权限交接 → migration login SET ROLE 执行 0001—最新`；migration login 自身非 superuser，但 migrator role 的 DDL/BYPASSRLS 高权限被如实记录；API runtime 不能 DDL 或进入 `meal_agent_migrator`，也不持有 bootstrap/migration 凭据 |
+| 5 | PostgreSQL 无 host port；API 只发布到 `127.0.0.1`，无额外 IPv6 listener，宿主非 loopback 地址访问失败；fake 登录拓扑没有公网入口 |
+| 6 | API container 非 root，未使用 privileged、host network 或 Docker socket，镜像和配置不含 Secret |
+| 7 | 停止/重启后合成数据保留；备份包含两个合成家庭；SHA-256 不匹配会在 restore 前失败；合法备份可单事务恢复到 owner 为 `meal_agent_migrator` 的全新数据库，并通过 database/schema/object owner、GRANT/RLS、readiness 和授权读取验证 |
+| 8 | migration 等锁和 graceful shutdown 均有界；SIGTERM 超时会真正结束进程；固定场景“写已提交但响应丢失 → API 被终止并重启 → 原 payload + 原 Idempotency-Key 重试”只存在一条领域事件并重放原结果 |
+| 9 | `pnpm stage08:check` 继续全绿，不因容器化改变 contracts、API、客户端或数据库语义 |
+| 10 | 本地完整门禁通过；如创建 PR，则 GitHub Actions 真实 run 通过并记录 URL/ID |
+| 11 | Docker 不可用时门禁明确失败为缺少前置工具，不能降级成静态检查后宣称 Pass |
+| 12 | `git diff --check`、Markdown 本地链接及密钥/真实数据/生成物扫描通过 |
+| 13 | API image 不含客户端构建依赖；依赖例外未过期、未静默扩展，且 external-test 阻断保持生效 |
+
+## 非范围
+
+- 购买或创建腾讯云、阿里云及其他云资源；
+- 公网 IP、域名、ICP、HTTPS 证书、反向代理、WAF 或 CDN；
+- 托管 PostgreSQL、正式 Secret 服务、生产监控和生产备份策略；
+- 真实 AppID/AppSecret、`wx.login`/code2Session、真机、体验版、审核或发布；
+- Android、iOS、HarmonyOS 构建、签名或商店发布；
+- 菜单推荐、菜谱、采购、Agent、OCR、通知或新的业务 API；
+- 权威 allergen、food concept、宗教/伦理或 cooking-technique 词表。
+
+最后一项仍是推荐能力的产品安全前置，但与本地部署基线是不同工作流，不应混入同一个基础设施提交。
+
+## 工具前置
+
+执行任务开始时先检查 Docker CLI 与 Compose v2。当前总控机器尚未安装可用容器引擎，因此可以先实现和静态审查，但在安装 Docker Desktop、OrbStack、Colima 或其他兼容 Docker Compose v2 的引擎之前，阶段 09A 不得完成最终验收。
+
+项目只依赖标准 `docker` / `docker compose` 接口，不在仓库中绑定某个 Mac 桌面产品。系统级安装由产品负责人确认并完成，执行任务不得静默安装桌面软件、修改系统网络或接受第三方许可。
+
+## 实施与复核流程
+
+1. 从最新本地 `main` 创建独立 worktree 和 `codex/stage-09a-local-deployability-baseline`。
+2. 执行任务只实现本计划，保持每个里程碑独立提交，不合并 `main`。
+3. 实现任务提交后，由项目总控先做部署架构、数据库最小权限和恢复证据审核。
+4. 再由独立复核任务执行容器逃逸面、Secret、网络暴露、migration/restore 破坏性风险审查。
+5. P0/P1 全部关闭、完整门禁通过且文档与事实一致后，才建议合并。
+6. 阶段 09A 合并后再决定是否购买一个月测试服务器并启动阶段 09B；阶段 09B 必须单独记录云账号、区域、网络、防火墙、访问方式和成本。
+
+## 计划验证命令
+
+具体参数由实现落地，命令入口保持稳定：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm stage09a:check
+pnpm docs:links:check
+git diff --check
+```
+
+在 Docker 工具缺失、Compose 运行未完成或备份恢复未验证时，只能记录 `Blocked — 缺少本地容器引擎`，不能把阶段状态改为已完成。

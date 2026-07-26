@@ -15,3 +15,4 @@
 - [阶段 07：正式客户端纵切](2026-07-stage-07-client-vertical-slice.md)
 - [阶段 08：家庭成员与硬约束原始实施记录](2026-07-stage-08-members-and-constraints.md)
 - [阶段 08：审计整改与架构收口实施记录](2026-07-stage-08-audit-closeout.md)
+- [阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)
