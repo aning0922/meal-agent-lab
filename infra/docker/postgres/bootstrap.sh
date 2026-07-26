@@ -24,18 +24,26 @@
 #   bootstrap.sh grants   --dbname <db>                 # migration 之后的备份补授
 #
 # 全新安装顺序：
-#   1. admin      bootstrap.sh cluster
-#   2. admin      bootstrap.sh logins
+#   1. admin      bootstrap.sh cluster                            角色 + membership
+#   2. admin      bootstrap.sh logins                             SCRAM 口令
 #   3. admin      createdb meal_agent
-#   4. admin      pnpm --filter @meal-agent/api db:bootstrap     （应用冻结的 0000）
-#   5. admin      bootstrap.sh handoff --dbname meal_agent
-#   6. admin      bootstrap.sh acl     --dbname meal_agent
-#   7. migration  pnpm --filter @meal-agent/api db:migrate       （SET ROLE migrator）
-#   8. admin      bootstrap.sh grants  --dbname meal_agent
+#   4. admin      pnpm --filter @meal-agent/api db:bootstrap      原子应用冻结的 0000
+#   5. admin      bootstrap.sh handoff --dbname meal_agent        owner 交接（0000-only）
+#   6. admin      bootstrap.sh acl     --dbname meal_agent        ACL 基线
+#   7. migration  pnpm --filter @meal-agent/api db:migrate        SET ROLE 应用 0001—最新
+#   8. admin      bootstrap.sh grants  --dbname meal_agent        备份只读基线
 #   9. runtime    readiness
 #
-# 恢复顺序（M4 实现，本轮只登记约束）：cluster → createdb --owner=meal_agent_migrator
-#   → pg_restore → acl → grants。恢复路径**不**运行 0000，也**不**运行 handoff。
+# 恢复顺序（M4 实现，本轮只登记契约）：
+#   1. admin      bootstrap.sh cluster
+#   2. admin      bootstrap.sh logins
+#   3. admin      createdb --owner=meal_agent_migrator meal_agent
+#   4. operator   pg_restore
+#   5. admin      bootstrap.sh acl     --dbname meal_agent
+#   6. migration  pnpm db:migrate                                 备份之后新增的 migration
+#   7. admin      bootstrap.sh grants  --dbname meal_agent
+#   8. 验证       readiness / owner / GRANT / RLS / checksum
+# 恢复路径**不**运行 0000，也**不**运行 handoff。
 #
 # 连接参数走标准 PG* 环境变量。`logins` 阶段需要三个非空密码环境变量，
 # 它们只经环境与 stdin 传递，并由 psql 的 \password 在客户端生成 SCRAM verifier：

@@ -57,17 +57,99 @@ END
 $owned_by_login$;
 
 -- ---------------------------------------------------------------------------
+-- 0b. 任何 mutation 之前验证 owner。owner 不对时 fail closed——恢复路径尤其
+--     不能靠 ACL 阶段偷偷接管归属。
+-- ---------------------------------------------------------------------------
+DO $owner_preconditions$
+DECLARE
+  problem text;
+BEGIN
+  IF (SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database
+      WHERE datname = current_database()) <> 'meal_agent_migrator' THEN
+    RAISE EXCEPTION
+      'acl baseline: database owner is %, expected meal_agent_migrator; '
+      'run "bootstrap.sh handoff" (fresh install) or restore with '
+      'createdb --owner=meal_agent_migrator',
+      (SELECT pg_catalog.pg_get_userbyid(datdba) FROM pg_database
+       WHERE datname = current_database());
+  END IF;
+
+  SELECT string_agg(format('%s (owner %s)', nspname,
+                           pg_catalog.pg_get_userbyid(nspowner)), ', ')
+    INTO problem
+  FROM pg_namespace
+  WHERE nspname IN ('public', 'drizzle', 'meal_agent_private')
+    AND pg_catalog.pg_get_userbyid(nspowner) <> 'meal_agent_migrator';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: schema(s) not owned by meal_agent_migrator: %', problem;
+  END IF;
+
+  SELECT string_agg(format('%s.%s (owner %s)', n.nspname, c.relname,
+                           pg_catalog.pg_get_userbyid(c.relowner)), ', ')
+    INTO problem
+  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+    AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> 'meal_agent_migrator';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: managed relation(s) not owned by meal_agent_migrator: %',
+      problem;
+  END IF;
+
+  SELECT string_agg(format('%s.%s (owner %s)', n.nspname, p.proname,
+                           pg_catalog.pg_get_userbyid(p.proowner)), ', ')
+    INTO problem
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+    AND pg_catalog.pg_get_userbyid(p.proowner) <> 'meal_agent_migrator';
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'acl baseline: managed routine(s) not owned by meal_agent_migrator: %',
+      problem;
+  END IF;
+END
+$owner_preconditions$;
+
+-- ---------------------------------------------------------------------------
 -- 1. 数据库级 ACL
 --    默认 datacl 为 NULL，表示 PUBLIC 隐含拥有 CONNECT 与 TEMPORARY。
 --    meal_agent_migrator 被刻意排除：它是（或将成为）database owner，
 --    对 owner 执行 REVOKE ALL 会剥夺其隐含的 CREATE/TEMP 权限。
 -- ---------------------------------------------------------------------------
 REVOKE CONNECT, TEMPORARY ON DATABASE :"expected_db" FROM PUBLIC;
-REVOKE ALL ON DATABASE :"expected_db" FROM
-  meal_agent_migration_login, meal_agent_runtime_login, meal_agent_backup_login;
+
+-- 数据库级授权同样可能来自别的 grantor：按 catalog 逐条以真实 grantor 身份撤销。
+DO $database_acl$
+DECLARE
+  targets constant text[] := ARRAY[
+    'meal_agent_migration_login', 'meal_agent_runtime_login',
+    'meal_agent_backup_login', 'meal_agent_app', 'meal_agent_backup'
+  ];
+  grant_row record;
+BEGIN
+  FOR grant_row IN
+    SELECT d.datname,
+           pg_catalog.pg_get_userbyid(acl.grantee) AS grantee,
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
+           acl.privilege_type
+    FROM pg_database d, aclexplode(d.datacl) AS acl
+    WHERE d.datname = current_database()
+      AND acl.grantee <> 0
+      AND pg_catalog.pg_get_userbyid(acl.grantee) = ANY(targets)
+  LOOP
+    EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    EXECUTE format('REVOKE %s ON DATABASE %I FROM %I CASCADE',
+                   grant_row.privilege_type, grant_row.datname,
+                   grant_row.grantee);
+    RESET ROLE;
+  END LOOP;
+END
+$database_acl$;
+
 GRANT CONNECT ON DATABASE :"expected_db" TO
   meal_agent_migration_login, meal_agent_runtime_login, meal_agent_backup_login;
-REVOKE ALL ON DATABASE :"expected_db" FROM meal_agent_app, meal_agent_backup;
 
 -- ---------------------------------------------------------------------------
 -- 2. 三个登录角色的全部直接对象授权：逐条枚举并撤销。
@@ -106,21 +188,33 @@ BEGIN
   FOR grant_row IN
     SELECT n.nspname, c.relname, c.relkind,
            pg_catalog.pg_get_userbyid(acl.grantee) AS grantee,
-           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
+           acl.privilege_type
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace,
          aclexplode(c.relacl) AS acl
     WHERE acl.grantee <> 0
       AND pg_catalog.pg_get_userbyid(acl.grantee) = ANY(login_roles)
-    GROUP BY 1, 2, 3, 4, 5
   LOOP
     EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    -- 精确按 privilege_type 撤销（含 GRANT OPTION FOR），而不是 REVOKE ALL：
+    -- sequence 的 USAGE/SELECT/UPDATE 语义不同，必须逐项处理。
     IF grant_row.relkind = 'S' THEN
-      EXECUTE format('REVOKE ALL ON SEQUENCE %I.%I FROM %I CASCADE',
-                     grant_row.nspname, grant_row.relname, grant_row.grantee);
+      EXECUTE format(
+        'REVOKE GRANT OPTION FOR %s ON SEQUENCE %I.%I FROM %I CASCADE',
+        grant_row.privilege_type, grant_row.nspname, grant_row.relname,
+        grant_row.grantee);
+      EXECUTE format('REVOKE %s ON SEQUENCE %I.%I FROM %I CASCADE',
+                     grant_row.privilege_type, grant_row.nspname,
+                     grant_row.relname, grant_row.grantee);
     ELSE
-      EXECUTE format('REVOKE ALL ON TABLE %I.%I FROM %I CASCADE',
-                     grant_row.nspname, grant_row.relname, grant_row.grantee);
+      EXECUTE format(
+        'REVOKE GRANT OPTION FOR %s ON TABLE %I.%I FROM %I CASCADE',
+        grant_row.privilege_type, grant_row.nspname, grant_row.relname,
+        grant_row.grantee);
+      EXECUTE format('REVOKE %s ON TABLE %I.%I FROM %I CASCADE',
+                     grant_row.privilege_type, grant_row.nspname,
+                     grant_row.relname, grant_row.grantee);
     END IF;
     RESET ROLE;
   END LOOP;
@@ -242,7 +336,10 @@ BEGIN
   FOR routine_row IN
     SELECT n.nspname, p.proname, p.oid AS prooid
     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace,
-         aclexplode(p.proacl) AS acl
+         -- proacl 为 NULL 时是**隐式**默认 ACL（PUBLIC 有 EXECUTE），
+         -- aclexplode(NULL) 会漏掉它，因此用 acldefault 展开。
+         aclexplode(COALESCE(p.proacl,
+                             acldefault('f', p.proowner))) AS acl
     WHERE n.nspname IN ('public', 'meal_agent_private')
       AND acl.grantee = 0
       AND acl.privilege_type = 'EXECUTE'
@@ -256,10 +353,10 @@ BEGIN
 END
 $routine_boundary$;
 
--- migrator 今后在这两个 schema 新建的 routine 不再默认授予 PUBLIC EXECUTE。
-ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public
-  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA meal_agent_private
+-- migrator 今后新建的 routine 不再默认授予 PUBLIC EXECUTE。
+-- 这里用**全局**（不带 IN SCHEMA）形式：带 schema 的默认权限只覆盖该 schema，
+-- 覆盖不到将来出现在其他 schema 的函数。
+ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator
   REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 -- ---------------------------------------------------------------------------
@@ -408,7 +505,7 @@ BEGIN
   SELECT string_agg(format('%s.%s', n.nspname, p.proname), ', ')
     INTO problem
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace,
-       aclexplode(p.proacl) AS acl
+       aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
   WHERE n.nspname IN ('public', 'meal_agent_private')
     AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE';
   IF problem IS NOT NULL THEN

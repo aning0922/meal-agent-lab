@@ -32,10 +32,6 @@ DECLARE
     'auth_identities', 'households', 'idempotency_records', 'inventory_events',
     'inventory_lots', 'memberships', 'person_profiles', 'sessions', 'users'
   ];
-  stage06_routines constant text[] := ARRAY[
-    'app_household_id', 'app_user_id', 'has_active_membership',
-    'is_household_creator'
-  ];
   stage06_schemas constant text[] := ARRAY[
     'public', 'drizzle', 'meal_agent_private'
   ];
@@ -118,39 +114,74 @@ BEGIN
       problem;
   END IF;
 
-  -- 1e. public 中不得有任何用户 routine：0000 的函数都在 meal_agent_private。
-  SELECT string_agg(p.proname, ', ' ORDER BY p.proname) INTO problem
-  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'public';
+  -- 1e—1i. 三个 schema 的 relation / routine / type **完整枚举**，与 0000 的
+  --        精确 manifest 比对。routine 用 schema + proname +
+  --        pg_get_function_identity_arguments + prokind 匹配，并校验 owner 与
+  --        prosecdef；不按 proname 粗匹配，因此同名 overload 也会被发现。
+  SELECT string_agg(entry, ', ' ORDER BY entry) INTO problem
+  FROM (
+    -- 实际存在但不在 manifest 中的 routine（含 overload、drizzle/public 中的
+    -- 任何 routine、owner 或 SECURITY DEFINER 属性不符的条目）。
+    SELECT format('unexpected routine %s.%s(%s) [kind=%s owner=%s secdef=%s]',
+                  n.nspname, p.proname,
+                  pg_catalog.pg_get_function_identity_arguments(p.oid),
+                  p.prokind, pg_catalog.pg_get_userbyid(p.proowner),
+                  p.prosecdef) AS entry
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = ANY(stage06_schemas)
+      AND NOT EXISTS (
+        SELECT 1 FROM unnest(
+          ARRAY['meal_agent_private|app_user_id||f|f',
+                'meal_agent_private|app_household_id||f|f',
+                'meal_agent_private|has_active_membership|target_household_id uuid|f|t',
+                'meal_agent_private|is_household_creator|target_household_id uuid|f|t']
+        ) AS expected
+        WHERE expected = n.nspname || '|' || p.proname || '|' ||
+              pg_catalog.pg_get_function_identity_arguments(p.oid) || '|' ||
+              p.prokind::text || '|' ||
+              CASE WHEN p.prosecdef THEN 't' ELSE 'f' END
+          AND pg_catalog.pg_get_userbyid(p.proowner) = 'meal_agent_migrator'
+      )
+    UNION ALL
+    -- manifest 中声明但实际缺失的 routine。
+    SELECT format('missing routine %s', expected)
+    FROM unnest(
+      ARRAY['meal_agent_private|app_user_id||f|f',
+            'meal_agent_private|app_household_id||f|f',
+            'meal_agent_private|has_active_membership|target_household_id uuid|f|t',
+            'meal_agent_private|is_household_creator|target_household_id uuid|f|t']
+    ) AS expected
+    WHERE NOT EXISTS (
+      SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE expected = n.nspname || '|' || p.proname || '|' ||
+            pg_catalog.pg_get_function_identity_arguments(p.oid) || '|' ||
+            p.prokind::text || '|' ||
+            CASE WHEN p.prosecdef THEN 't' ELSE 'f' END
+        AND pg_catalog.pg_get_userbyid(p.proowner) = 'meal_agent_migrator'
+    )
+    UNION ALL
+    -- drizzle 与 meal_agent_private 中除 ledger 外不允许任何 relation。
+    SELECT format('unexpected relation %s.%s [kind=%s owner=%s]',
+                  n.nspname, c.relname, c.relkind,
+                  pg_catalog.pg_get_userbyid(c.relowner))
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname IN ('drizzle', 'meal_agent_private')
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+      AND NOT (n.nspname = 'drizzle'
+               AND c.relname = '__meal_agent_migrations'
+               AND c.relkind = 'r')
+    UNION ALL
+    -- 三个 schema 中 0000 都不建立任何用户自定义类型。
+    SELECT format('unexpected type %s.%s', n.nspname, t.typname)
+    FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = ANY(stage06_schemas)
+      AND t.typtype IN ('c', 'e', 'd', 'r')
+      AND NOT EXISTS (SELECT 1 FROM pg_class c
+                      WHERE c.oid = t.typrelid AND c.relkind <> 'c')
+  ) AS manifest_violations;
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION
-      'owner handoff: unexpected routine(s) in public: %', problem;
-  END IF;
-
-  -- 1f. meal_agent_private 中的 routine 必须恰好是 0000 建立的四个，且归 migrator。
-  SELECT string_agg(format('%s (owner %s)', p.proname,
-                           pg_catalog.pg_get_userbyid(p.proowner)),
-                    ', ' ORDER BY p.proname)
-    INTO problem
-  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-  WHERE n.nspname = 'meal_agent_private'
-    AND (NOT (p.proname = ANY(stage06_routines))
-         OR pg_catalog.pg_get_userbyid(p.proowner) <> 'meal_agent_migrator');
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION
-      'owner handoff: unexpected or mis-owned routine(s) in '
-      'meal_agent_private: %', problem;
-  END IF;
-
-  SELECT string_agg(candidate, ', ' ORDER BY candidate) INTO problem
-  FROM unnest(stage06_routines) AS candidate
-  WHERE NOT EXISTS (
-    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'meal_agent_private' AND p.proname = candidate
-  );
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION
-      'owner handoff: 0000 routine(s) missing from meal_agent_private: %',
+      'owner handoff: object manifest does not match the frozen 0000: %',
       problem;
   END IF;
 
@@ -166,28 +197,6 @@ BEGIN
     RAISE EXCEPTION
       'owner handoff: business table(s) are not owned by meal_agent_migrator; '
       'the frozen 0000 sets this, so this is an unexpected state: %', problem;
-  END IF;
-
-  -- 1h. 用户自定义类型：0000 不建立任何，出现即异常。
-  SELECT string_agg(n.nspname || '.' || t.typname, ', ') INTO problem
-  FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-  WHERE n.nspname = ANY(ARRAY['public', 'meal_agent_private'])
-    AND t.typtype IN ('c', 'e', 'd', 'r')
-    AND NOT EXISTS (SELECT 1 FROM pg_class c
-                    WHERE c.oid = t.typrelid AND c.relkind <> 'c');
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION 'owner handoff: unexpected user-defined type(s): %', problem;
-  END IF;
-
-  -- 1i. drizzle schema 里除 ledger 外不应有其他对象。
-  SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO problem
-  FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-  WHERE n.nspname = 'drizzle'
-    AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-    AND c.relname <> '__meal_agent_migrations';
-  IF problem IS NOT NULL THEN
-    RAISE EXCEPTION
-      'owner handoff: unexpected object(s) in schema drizzle: %', problem;
   END IF;
 
   -- 1j. 待交接的 schema 与 ledger，其当前 owner 只能是 migrator 或 bootstrap admin。

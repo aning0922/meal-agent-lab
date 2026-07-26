@@ -123,6 +123,10 @@ conninfo `key=value`、引号和大写一律拒绝。cluster scope 用 `--mainte
 （默认 `postgres`）。每个阶段执行前都会核对 `current_database()` 与 admin 能力，
 并检查所处的 migration ledger/owner 状态；连错库或顺序错误时 fail closed。
 
+`acl` 在任何 mutation 之前验证 database / 三个 schema / 全部被管理 relation 与
+routine 的 owner 都是 `meal_agent_migrator`；不符合时 fail closed，绝不在恢复路径
+上偷偷接管归属。
+
 `handoff` 是 **fresh-install 的 0000-only 步骤**：ledger 必须恰好只有 checksum
 正确的 `0000_stage_06.sql`。`0001+`、断档、未知条目或错误 checksum 全部 fail
 closed，因此它不支持「最新 migration 之后重跑」——可复用的是 `acl` 与 `grants`。

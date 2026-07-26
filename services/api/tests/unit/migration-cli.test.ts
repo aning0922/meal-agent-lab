@@ -30,9 +30,11 @@ test("db:migrate takes no arguments and always switches to the migrator role", (
 test("the admin bootstrap entry point is separate and fixed", () => {
   assert.equal(parseBootstrapCliArguments([]), undefined);
   // 该入口的参数是固定值，调用方无法借它传入任意 role 或任意边界。
+  // exactMigration 而不是 onlyThrough：admin 路径锁定精确文件，
+  // 不使用会随排序变化的字典序上界。
   assert.deepEqual(bootstrapMigrationOptions, {
     role: null,
-    onlyThrough: "0000_stage_06.sql",
+    exactMigration: "0000_stage_06.sql",
     adminBootstrap: true,
   });
   assert.equal(Object.isFrozen(bootstrapMigrationOptions), true);

@@ -1149,15 +1149,15 @@ test("owner handoff refuses unmanaged objects on a 0000-only database", async ()
       ["public routine", [
         "CREATE FUNCTION public.stage09a_f() RETURNS int LANGUAGE sql " +
           "SECURITY DEFINER AS $$SELECT 1$$",
-      ], /unexpected routine\(s\) in public/i],
+      ], /object manifest does not match|unexpected routine/i],
       ["private routine", [
         "CREATE FUNCTION meal_agent_private.stage09a_p() RETURNS int " +
           "LANGUAGE sql AS $$SELECT 1$$",
-      ], /unexpected or mis-owned routine/i],
+      ], /object manifest does not match|unexpected routine/i],
       ["custom schema", ["CREATE SCHEMA stage09a_extra"],
         /unexpected schema/i],
       ["user type", ["CREATE TYPE public.stage09a_t AS (a int)"],
-        /unexpected object|unexpected user-defined type/i],
+        /unexpected object|unexpected type|object manifest does not match/i],
       ["pre-created 0001 table", [
         "CREATE TABLE public.household_invites (id uuid PRIMARY KEY)",
       ], /unexpected object\(s\) in public/i],
@@ -2093,5 +2093,338 @@ test("the no-ctty wrapper forwards signals and propagates termination", async ()
     outcome.code,
     42,
     "SIGTERM must reach the detached child, which exits 42",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 第四轮整改新增证据
+// ---------------------------------------------------------------------------
+
+test("db:bootstrap loads exactly 0000 and refuses a prequel or a missing file", async () => {
+  const migrationsDir = join(repositoryRoot, "services/api/migrations");
+  const prequel = join(migrationsDir, "0000_aaa_prequel.sql");
+  const target = join(migrationsDir, "0000_stage_06.sql");
+  const moved = join(clusterRoot, "0000_stage_06.sql.moved");
+  const probe = "meal_agent_stage09a_exact";
+  await withPool(adminPoolConfig("postgres"), async (pool) => {
+    await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    await pool.query(`CREATE DATABASE ${probe}`);
+  });
+  try {
+    // 1. 字典序排在 0000 之前的文件绝不能被 admin 路径执行。
+    await writeFile(prequel, "CREATE TABLE public.prequel_should_never_run (id int);\n", "utf8");
+    const withPrequel = await runPnpm("db:bootstrap", adminUrl(probe));
+    assert.notEqual(withPrequel.code, 0, "a prequel file must be refused");
+    assert.match(
+      `${withPrequel.stdout}${withPrequel.stderr}`,
+      /migration selection|sort before it/,
+    );
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      const trace = await pool.query<{ present: string | null }>(
+        "SELECT to_regclass('public.prequel_should_never_run')::text AS present",
+      );
+      assert.equal(trace.rows[0]?.present, null, "the prequel must not run");
+    });
+    await rm(prequel, { force: true });
+
+    // 2. 目标文件缺失：零连接、零 DDL。
+    await rm(moved, { force: true });
+    await writeFile(moved, await readFile(target, "utf8"), "utf8");
+    await rm(target, { force: true });
+    try {
+      const missing = await runPnpm("db:bootstrap", adminUrl(probe));
+      assert.notEqual(missing.code, 0, "a missing 0000 must be refused");
+      assert.match(
+        `${missing.stdout}${missing.stderr}`,
+        /migration selection|was not found on disk/,
+      );
+      await withPool(adminPoolConfig(probe), async (pool) => {
+        const trace = await pool.query<{ drizzle: string | null }>(
+          "SELECT to_regnamespace('drizzle')::text AS drizzle",
+        );
+        assert.equal(trace.rows[0]?.drizzle, null, "no DDL may have run");
+      });
+    } finally {
+      await writeFile(target, await readFile(moved, "utf8"), "utf8");
+      await rm(moved, { force: true });
+    }
+
+    // 3. 还原后正常成功。
+    await mustSucceedCli(
+      "pnpm db:bootstrap (restored)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+  } finally {
+    await rm(prequel, { force: true });
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
+});
+
+test("a 0000-only re-run still validates full object state", async () => {
+  const probe = "meal_agent_stage09a_rerun";
+  const snapshot = async (): Promise<string> =>
+    withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query(
+        `SELECT n.nspname || '.' || c.relname AS ident,
+                pg_catalog.pg_get_userbyid(c.relowner) AS owner
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname IN ('public','drizzle','meal_agent_private')
+            AND c.relkind IN ('r','p','v','m','S')
+          ORDER BY 1`,
+      );
+      return JSON.stringify(result.rows);
+    });
+
+  const injections: readonly [string, string, RegExp][] = [
+    ["view", "CREATE VIEW public.rerun_v AS SELECT 1 AS x", /relation public\.rerun_v/],
+    ["sequence", "CREATE SEQUENCE public.rerun_s", /relation public\.rerun_s/],
+    ["routine", "CREATE FUNCTION public.rerun_f() RETURNS int LANGUAGE sql AS $$SELECT 1$$",
+      /routine public\.rerun_f/],
+    ["type", "CREATE TYPE public.rerun_t AS (a int)", /type public\.rerun_t/],
+    ["schema", "CREATE SCHEMA rerun_extra", /schema rerun_extra/],
+  ];
+  try {
+    for (const [label, statement, expected] of injections) {
+      await withPool(adminPoolConfig("postgres"), async (pool) => {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+        await pool.query(`CREATE DATABASE ${probe}`);
+      });
+      await mustSucceedCli(
+        `pnpm db:bootstrap (${label})`,
+        await runPnpm("db:bootstrap", adminUrl(probe)),
+      );
+      await withPool(adminPoolConfig(probe), async (pool) => {
+        await pool.query(statement);
+      });
+      const before = await snapshot();
+      const result = await runPnpm("db:bootstrap", adminUrl(probe));
+      assert.notEqual(result.code, 0, `re-run must reject: ${label}`);
+      assert.match(
+        `${result.stdout}${result.stderr}`,
+        /must not contain extra objects/,
+        `wrong reason for: ${label}`,
+      );
+      assert.match(`${result.stdout}${result.stderr}`, expected);
+      assert.equal(await snapshot(), before, `${label} changed object state`);
+    }
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
+});
+
+test("handoff enforces the exact 0000 routine and relation manifest", async () => {
+  const probe = "meal_agent_stage09a_manifest";
+  const snapshot = async (): Promise<string> =>
+    withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query(
+        `SELECT 'db' AS ident, pg_catalog.pg_get_userbyid(datdba) AS owner
+           FROM pg_database WHERE datname = current_database()
+         UNION ALL
+         SELECT 'schema:' || nspname, pg_catalog.pg_get_userbyid(nspowner)
+           FROM pg_namespace
+          WHERE nspname IN ('public','drizzle','meal_agent_private')
+         ORDER BY 1`,
+      );
+      return JSON.stringify(result.rows);
+    });
+
+  const injections: readonly [string, string, RegExp][] = [
+    ["drizzle SECURITY DEFINER routine",
+      "CREATE FUNCTION drizzle.evil() RETURNS int LANGUAGE sql " +
+        "SECURITY DEFINER AS $$SELECT 1$$",
+      /unexpected routine drizzle\.evil/],
+    ["private same-name overload",
+      "CREATE FUNCTION meal_agent_private.app_user_id(extra int) " +
+        "RETURNS uuid LANGUAGE sql AS $$SELECT NULL::uuid$$",
+      /unexpected routine meal_agent_private\.app_user_id\(extra integer\)/],
+    ["private unmanaged table",
+      "CREATE TABLE meal_agent_private.stash (id int)",
+      /unexpected relation meal_agent_private\.stash/],
+    ["drizzle type",
+      "CREATE TYPE drizzle.weird AS (a int)",
+      /unexpected type drizzle\.weird|unexpected relation drizzle\.weird/],
+    ["drizzle sequence",
+      "CREATE SEQUENCE drizzle.counter",
+      /unexpected relation drizzle\.counter/],
+  ];
+  try {
+    for (const [label, statement, expected] of injections) {
+      await withPool(adminPoolConfig("postgres"), async (pool) => {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+        await pool.query(`CREATE DATABASE ${probe}`);
+      });
+      await mustSucceedCli(
+        `pnpm db:bootstrap (${label})`,
+        await runPnpm("db:bootstrap", adminUrl(probe)),
+      );
+      await withPool(adminPoolConfig(probe), async (pool) => {
+        await pool.query(statement);
+      });
+      const before = await snapshot();
+      const result = await bootstrap("handoff", probe);
+      assert.notEqual(result.code, 0, `handoff must reject: ${label}`);
+      assert.match(result.stderr, /object manifest does not match/,
+        `wrong category for: ${label}`);
+      assert.match(result.stderr, expected, `wrong detail for: ${label}`);
+      assert.equal(await snapshot(), before, `${label} mutated ownership`);
+    }
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
+});
+
+test("the acl baseline refuses to run when ownership is wrong", async () => {
+  // 把 drizzle schema 的 owner 改掉，acl 必须 fail closed 且不改变任何归属。
+  const snapshot = async (): Promise<string> =>
+    withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query(
+        `SELECT nspname AS ident, pg_catalog.pg_get_userbyid(nspowner) AS owner
+           FROM pg_namespace
+          WHERE nspname IN ('public','drizzle','meal_agent_private') ORDER BY 1`,
+      );
+      return JSON.stringify(result.rows);
+    });
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("ALTER SCHEMA drizzle OWNER TO postgres");
+  });
+  const before = await snapshot();
+  try {
+    const result = await bootstrap("acl");
+    assert.notEqual(result.code, 0, "acl must refuse a wrong schema owner");
+    assert.match(result.stderr, /not owned by meal_agent_migrator/);
+    assert.equal(await snapshot(), before, "acl mutated ownership before failing");
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query("ALTER SCHEMA drizzle OWNER TO meal_agent_migrator");
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("backup default privilege drift is converged and future objects stay read-only", async () => {
+  // 注入默认 INSERT、SELECT WITH GRANT OPTION 与 sequence USAGE/UPDATE。
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+        "GRANT INSERT ON TABLES TO meal_agent_backup",
+    );
+    await pool.query(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+        "GRANT SELECT ON TABLES TO meal_agent_backup WITH GRANT OPTION",
+    );
+    await pool.query(
+      "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+        "GRANT USAGE, UPDATE ON SEQUENCES TO meal_agent_backup",
+    );
+  });
+  await runBootstrap("grants");
+
+  // 收敛之后新建对象，证明只读。
+  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+    await client.query("CREATE TABLE public.stage09a_defacl (id int)");
+    await client.query("CREATE SEQUENCE public.stage09a_defacl_seq");
+  });
+  try {
+    await withPool(backupLoginUrl(), async (pool) => {
+      for (const statement of [
+        "INSERT INTO public.stage09a_defacl (id) VALUES (1)",
+        "SELECT nextval('public.stage09a_defacl_seq')",
+        "SELECT setval('public.stage09a_defacl_seq', 5)",
+      ]) {
+        assert.match(
+          String(await attempt(pool, [statement], "meal_agent_backup")),
+          /permission denied|must be owner|grant option/i,
+          `backup must not run: ${statement.slice(0, 46)}`,
+        );
+      }
+      // 再授权无效：PostgreSQL 在 grantor 缺少 grant option 时只发 WARNING
+      // 并且**不授予任何权限**，因此这里断言实际效果而不是错误。
+      await attempt(
+        pool,
+        ["GRANT SELECT ON public.stage09a_defacl TO meal_agent_app"],
+        "meal_agent_backup",
+      );
+      // 只读仍然成立。
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('role', $1, true)", [
+          "meal_agent_backup",
+        ]);
+        const rows = await client.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM public.stage09a_defacl",
+        );
+        assert.equal(rows.rows[0]?.count, "0");
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+    });
+
+    // app 没有因为 backup 的再授权尝试而拿到任何权限。
+    await withPool(adminPoolConfig(), async (pool) => {
+      const granted = await pool.query<{ ok: boolean }>(
+        `SELECT has_table_privilege('meal_agent_app',
+                'public.stage09a_defacl', 'SELECT') AS ok`,
+      );
+      assert.equal(granted.rows[0]?.ok, false,
+        "backup must not be able to re-grant");
+    });
+  } finally {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query("DROP TABLE IF EXISTS public.stage09a_defacl");
+      await client.query("DROP SEQUENCE IF EXISTS public.stage09a_defacl_seq");
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("no-ctty forwards SIGTERM to the whole detached process group quickly", async () => {
+  const wrapper = join(repositoryRoot, "infra/docker/postgres/no-ctty.mjs");
+  const markerFile = join(clusterRoot, "no-ctty-descendant.pid");
+  await rm(markerFile, { force: true });
+  // 子进程再派生一个后代；两者都必须随 SIGTERM 消失。
+  const child = spawn(
+    process.execPath,
+    [
+      wrapper,
+      "sh",
+      "-c",
+      `sh -c 'echo $$ > ${markerFile}; sleep 60' & wait`,
+    ],
+    { stdio: ["ignore", "ignore", "ignore"] },
+  );
+  const exited = new Promise<number | null>((resolve) =>
+    child.once("exit", (code) => resolve(code)),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const descendant = Number((await readFile(markerFile, "utf8")).trim());
+  assert.ok(Number.isInteger(descendant) && descendant > 0);
+
+  const startedAt = Date.now();
+  child.kill("SIGTERM");
+  await exited;
+  const elapsed = Date.now() - startedAt;
+  assert.ok(elapsed < 2_000, `termination took ${String(elapsed)}ms`);
+
+  // 后代进程也必须已经退出。
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  let alive = true;
+  try {
+    process.kill(descendant, 0);
+  } catch {
+    alive = false;
+  }
+  assert.equal(alive, false, "the descendant process must be gone too");
+  process.stdout.write(
+    `no-ctty signal case: terminated in ${String(elapsed)}ms\n`,
   );
 });

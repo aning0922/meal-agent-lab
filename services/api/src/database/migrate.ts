@@ -117,6 +117,12 @@ export interface ApplyMigrationsOptions {
    */
   readonly onlyThrough?: string;
   /**
+   * 只加载并执行**精确的这一个** migration 文件。与 onlyThrough 的字典序上界
+   * 不同：它不依赖排序，也不会因为新增了排在前面的文件而多执行。
+   * admin bootstrap 用它锁定 0000_stage_06.sql。
+   */
+  readonly exactMigration?: string;
+  /**
    * 迁移执行角色。缺省显式 SET ROLE meal_agent_migrator，供 NOINHERIT 的
    * migration login 使用。
    *
@@ -130,11 +136,18 @@ export interface ApplyMigrationsOptions {
   /** advisory lock 与 DDL 锁等待的上界；超时后明确失败，不无限等待。 */
   readonly lockWaitMs?: number;
   /**
-   * admin bootstrap 模式。只由固定的 `--bootstrap-0000` 入口设置：在执行任何
+   * admin bootstrap 模式。只由独立的 db:bootstrap 入口设置：在执行任何
    * DDL 之前，用真实连接核对目标库、身份能力与数据库状态；不满足时 fail closed，
    * 不会留下 drizzle schema、ledger 或 0000 的任何对象。
    */
   readonly adminBootstrap?: boolean;
+}
+
+export class MigrationSelectionError extends Error {
+  public constructor(detail: string) {
+    super(`migration selection: ${detail}`);
+    this.name = "MigrationSelectionError";
+  }
 }
 
 export class MigrationPreflightError extends Error {
@@ -272,6 +285,45 @@ const assertAdminBootstrapPreflight = async (
       `unknown table(s) present for a 0000-only database: ${unexpected.join(", ")}`,
     );
   }
+
+  // 幂等重跑同样要做完整对象状态校验：ledger 已有 0000 之后再冒出额外的
+  // schema / relation / routine / type，说明这不是一个可以安全重跑的状态。
+  const residue = await client.query<{ kind: string; ident: string }>(
+    `SELECT 'schema' AS kind, nspname AS ident
+       FROM pg_namespace
+      WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
+        AND nspname NOT IN ('public', 'drizzle', 'meal_agent_private')
+     UNION ALL
+     SELECT 'relation', n.nspname || '.' || c.relname
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+        AND c.relkind IN ('v', 'm', 'S', 'f')
+     UNION ALL
+     SELECT 'relation', n.nspname || '.' || c.relname
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname IN ('drizzle', 'meal_agent_private')
+        AND c.relkind IN ('r', 'p')
+        AND NOT (n.nspname = 'drizzle'
+                 AND c.relname = '__meal_agent_migrations')
+     UNION ALL
+     SELECT 'routine', n.nspname || '.' || p.proname
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname IN ('public', 'drizzle')
+     UNION ALL
+     SELECT 'type', n.nspname || '.' || t.typname
+       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+        AND t.typtype IN ('c', 'e', 'd', 'r')
+        AND NOT EXISTS (SELECT 1 FROM pg_class c
+                        WHERE c.oid = t.typrelid AND c.relkind <> 'c')
+     ORDER BY 1, 2`,
+  );
+  if (residue.rows.length > 0) {
+    throw new MigrationPreflightError(
+      "a 0000-only database must not contain extra objects: " +
+        residue.rows.map((row) => `${row.kind} ${row.ident}`).join(", "),
+    );
+  }
   const missing = stage06Tables.filter((relname) => !present.includes(relname));
   if (missing.length > 0) {
     throw new MigrationPreflightError(
@@ -327,6 +379,43 @@ export const applyMigrations = async (
   );
   const role = options.role === undefined ? migrationRole : options.role;
   const atomicWholeRun = options.adminBootstrap === true;
+
+  // 选中集合在**建立 Pool 之前**解析：目标文件缺失、重复或会被额外执行时，
+  // 直接失败，不产生任何连接或 DDL。
+  const available = await readMigrations();
+  let selected: readonly MigrationFile[];
+  if (options.exactMigration !== undefined) {
+    const matches = available.filter(
+      (migration) => migration.name === options.exactMigration,
+    );
+    if (matches.length !== 1) {
+      throw new MigrationSelectionError(
+        matches.length === 0
+          ? `migration ${options.exactMigration} was not found on disk`
+          : `migration ${options.exactMigration} is ambiguous ` +
+            `(${String(matches.length)} matches)`,
+      );
+    }
+    // 精确一个文件：字典序上更早的文件也不会被这条路径执行。
+    const earlier = available.filter(
+      (migration) => migration.name < String(options.exactMigration),
+    );
+    if (earlier.length > 0) {
+      throw new MigrationSelectionError(
+        "the admin bootstrap path must execute exactly " +
+          `${String(options.exactMigration)}, but ` +
+          `${earlier.map((migration) => migration.name).join(", ")} would ` +
+          "sort before it and is not part of that path",
+      );
+    }
+    selected = matches;
+  } else if (options.onlyThrough !== undefined) {
+    const bound = options.onlyThrough;
+    selected = available.filter((migration) => migration.name <= bound);
+  } else {
+    selected = available;
+  }
+
   const pool = new Pool({
     connectionString: databaseUrl,
     max: 1,
@@ -363,13 +452,7 @@ export const applyMigrations = async (
     }
     await prepareMigrationMetadata(client);
 
-    for (const migration of await readMigrations()) {
-      if (
-        options.onlyThrough !== undefined &&
-        migration.name > options.onlyThrough
-      ) {
-        break;
-      }
+      for (const migration of selected) {
       const existing = await client.query<{ hash: string }>(
         "SELECT hash FROM drizzle.__meal_agent_migrations WHERE name = $1",
         [migration.name],
@@ -464,7 +547,7 @@ export const migrationsAreCurrent = async (
 /** `db:bootstrap` 独立入口使用的固定参数，调用方无法改写。 */
 export const bootstrapMigrationOptions: ApplyMigrationsOptions = Object.freeze({
   role: null,
-  onlyThrough: stage06Migration,
+  exactMigration: stage06Migration,
   adminBootstrap: true,
 });
 

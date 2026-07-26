@@ -46,10 +46,18 @@ child.on("error", (error) => {
 
 const forwarded = ["SIGINT", "SIGTERM", "SIGHUP"];
 const forward = (signal) => {
+  // detached 子进程是新进程组的组长，pid 即 pgid。用负 pid 把信号送给**整个
+  // 进程组**，否则 psql 派生出来的后代不会收到。
+  try {
+    process.kill(-child.pid, signal);
+    return;
+  } catch {
+    // 进程组可能已经消失，退回到单个 pid。
+  }
   try {
     process.kill(child.pid, signal);
   } catch {
-    // 子进程可能已经退出；忽略。
+    // 子进程已经退出；忽略。
   }
 };
 for (const signal of forwarded) {
