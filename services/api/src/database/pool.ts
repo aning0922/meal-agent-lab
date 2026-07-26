@@ -65,15 +65,20 @@ export const setHouseholdContext = async (
 export const checkReadiness = async (
   persistence: Persistence,
 ): Promise<boolean> => {
-  const client = await persistence.pool.connect();
+  // 连接建立必须在 try 内：数据库不可达时 `connect()` 会 reject，若让它逃逸，
+  // readiness 会被错误处理器兜底成 500 INTERNAL_ERROR，而不是 503 未就绪。
+  let client: PoolClient | undefined;
   try {
+    client = await persistence.pool.connect();
     const database = await client.query<{ ready: number }>(
       "SELECT 1 AS ready",
     );
     return database.rows[0]?.ready === 1 && (await migrationsAreCurrent(client));
   } catch {
+    // 连接失败、探测查询失败和 migration ledger 读取失败都只代表未就绪。
+    // 这里不返回、不记录也不重抛数据库错误，避免连接串或凭据进入响应与日志。
     return false;
   } finally {
-    client.release();
+    client?.release();
   }
 };

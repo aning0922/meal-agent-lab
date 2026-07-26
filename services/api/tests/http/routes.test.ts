@@ -15,6 +15,7 @@ import {
   type BuildAppOptions,
 } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
+import { createPersistence } from "../../src/database/pool.js";
 import { createLogger } from "../../src/logging.js";
 
 const ids = {
@@ -114,6 +115,57 @@ test("health and readiness use the shared success/error contracts", async () => 
       apiErrorSchema.parse(readiness.json()).code,
       "EXTERNAL_DEPENDENCY_UNAVAILABLE",
     );
+  } finally {
+    await app.close();
+  }
+});
+
+test("readiness fails closed as 503 when the database itself is unreachable", async () => {
+  // 走真实 checkReadiness 路径：不注入 readiness 替身，只把 persistence 指向
+  // 本机 loopback 上确定无人监听的端口，因此 pool.connect() 必然被拒绝。
+  const dsnSentinel = "readiness_unreachable_sentinel";
+  const unreachable = loadConfig({
+    NODE_ENV: "test",
+    LOG_LEVEL: "info",
+    DATABASE_URL: `postgresql://readiness_probe@127.0.0.1:1/${dsnSentinel}`,
+    WECHAT_ADAPTER: "fake",
+  });
+  let logs = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      logs += chunk.toString();
+      callback();
+    },
+  });
+  const app = await buildApp({
+    config: unreachable,
+    logger: createLogger("info", stream),
+    operations,
+    persistence: createPersistence(unreachable),
+    closePersistence: true,
+  });
+  try {
+    // /healthz 只证明进程存活，语义不受数据库影响。
+    const health = await app.inject({ method: "GET", url: "/healthz" });
+    assert.equal(health.statusCode, 200, health.body);
+    serviceLivenessSuccessSchema.parse(health.json());
+
+    const readiness = await app.inject({ method: "GET", url: "/readyz" });
+    assert.equal(readiness.statusCode, 503, readiness.body);
+    assert.equal(readiness.headers["content-type"]?.includes(
+      "application/problem+json",
+    ), true);
+    const problem = apiErrorSchema.parse(readiness.json());
+    assert.equal(problem.code, "EXTERNAL_DEPENDENCY_UNAVAILABLE");
+    assert.equal(problem.status, 503);
+    assert.equal(problem.retryable, true);
+
+    // 连接串、主机端口和数据库错误都不得进入响应体或日志。
+    assert.equal(readiness.body.includes(dsnSentinel), false);
+    assert.equal(readiness.body.includes("127.0.0.1"), false);
+    assert.equal(readiness.body.includes("ECONNREFUSED"), false);
+    assert.equal(logs.includes(dsnSentinel), false);
+    assert.equal(logs.includes("ECONNREFUSED"), false);
   } finally {
     await app.close();
   }
