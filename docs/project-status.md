@@ -51,17 +51,18 @@
 ### 契约与 OpenAPI
 
 - `@meal-agent/contracts` 为 `0.4.0`，客户端、API、测试和 OpenAPI 共用同一事实源。
-- 会进入 PostgreSQL `text`/`varchar`/`jsonb` 的公共字符串使用共享 PostgreSQL-safe primitive：HTTP contract 层拒绝 U+0000 和孤立 high/low surrogate，长度按 Unicode scalar value 计算，合法 emoji 的 80/81 边界与 PostgreSQL、OpenAPI 一致。
-- 当前公共边界的 33 条 refine/superRefine 与 2 条原生 schema 规则在 schema 定义处通过统一 helper 绑定；binding 及 OpenAPI component 从实际 Zod metadata 派生，contracts 构建显式保留注册模块的 side effects，故意错绑会使门禁失败。
+- 会进入 PostgreSQL `text`/`varchar`/`jsonb` 的公共字符串使用共享 PostgreSQL-safe primitive：HTTP contract 层拒绝 U+0000 和全部孤立 high/low surrogate；pair-first pattern 在无 flag、`u` flag 与 Ajv 8 默认配置下都接受合法 supplementary scalar，并由 contract/OpenAPI 验证 80/81 emoji 长度。PostgreSQL JSONB 回归只证明编码层接受合法 emoji、拒绝孤立 surrogate，不冒充字段长度证据。
+- 当前公共边界的 33 条 refine/superRefine 与 2 条原生 schema 规则在 schema 定义处通过统一 helper 绑定；节点的 `x-meal-agent-contract-rule-ids` 承载全部绑定 ID，根 manifest classification 区分 native/runtime-only。binding 及 OpenAPI component 从实际 Zod metadata 派生，contracts 构建显式保留注册模块的 side effects，故意错绑会使门禁失败。
 - 创建库存 initial amount、消耗 amount 必须为正数；inventory event delta 必须非零，lot `currentQuantity` 可以为零。运行时、生成 schema、OpenAPI 和关键 HTTP 行为有一致性测试。
 - 生成产物为 [`services/api/openapi/stage-08.openapi.json`](../services/api/openapi/stage-08.openapi.json)，覆盖 19 个 path、25 个 method operation；生成器只转换 numeric exclusive bound、保留 boolean 形式且二次转换幂等。标准 validator、关键字扫描以及 approximate amount、tokenVersion、resultingLotVersion 三个 zero 语义测试共同禁止 `const`、数值型 exclusive bound、`type: null` 和 runtime/OpenAPI 漂移；禁止手工维护第二份 OpenAPI。
 
 ### 客户端与 GUI
 
 - MembersPage、ProfilePage 和 HouseholdsPage 均有真实 React 页面渲染测试，不以 core/API 调用冒充页面测试。
-- Households create/join、Inventory、Members 与 Profile 的全部写操作使用集中 typed command registry、retry dispatcher 和 app 级 pending-command coordinator。同一次动作在 transport、5xx 或 malformed success 后保留包括资源/version 在内的完整不可变 command snapshot 与原 idempotency key；刷新库存或档案后仍执行保存的原命令，不从新 lot/profile 重建。pending 时其他写入口和带上下文变更的离页全部冻结，只能重试原动作；普通 GET 只形成绑定 action/key 的观察，不能开放完成/放弃，GET 失败不产生证据。确定的 400/403/404/409 才释放旧动作。
+- Households create/join、Inventory、Members 与 Profile 的全部写操作使用集中 typed command registry、retry dispatcher 和 app 级 pending-command coordinator。同一次动作保留完整不可变 command snapshot、原 idempotency key 与 `commandId`；结算执行 commandId CAS，跨用户或同用户新 key 后延迟返回的旧 attempt 不能清除/污染新 envelope。retry 只允许原子 `unknown → in-flight`，并发点击不会发送第二个 HTTP 请求。
 - envelope 绑定 principal、household、owner route 与认证 generation；401 只进入 `auth-suspended`，同一用户重新认证后可从全局恢复入口重试原 snapshot/key，不同用户不能读取或执行旧命令。主动登出在 service 层 fail-closed；程序化导航显式返回 `allowed`/`denied`，家庭上下文只在导航获准后修改。
-- 协调器只在当前应用进程内跨页面存活，不持久化邀请码或私密约束请求体。进程重启后的安全命令恢复尚未实现；未来必须使用非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不能替代，因此该能力保持 Deferred。
+- 全局恢复在 CAS 成功后执行 typed reconciliation：家庭 create/join 设置上下文并导航，self-exit 清上下文并离开，一次性邀请码明文只在内存中展示，安全重放无明文时保留撤销重建引导；确定失败、仍未知和认证暂停都有可见状态。页面订阅 coordinator，pending 清除后重新渲染并解除禁用。
+- 协调器只在当前应用进程内跨页面存活，不持久化邀请码或私密约束请求体。进程重启后的安全命令恢复尚未实现；未来必须使用非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不能替代。
 - 关联确认显示安全档案名称、可见约束摘要、权限和归档/保留后果，不只显示 UUID；不可恢复档案禁用恢复按钮并解释原因，切换档案会清除档案级草稿。
 - weapp 生产构建已通过。微信开发者工具 RC `2.02.2607171` 的二次复跑绑定前一轮已提交的页面实现子树，覆盖 fake 登录、合成家庭、owner/self、五类 hard constraint 入口、未经权威映射的阻断态和 archive/restore 同 ID；本轮新增的结果未知状态机与关联 TOCTOU 由实际页面渲染、API 和 PostgreSQL 测试验证，未伪造新的 GUI Pass。截图仅保留模拟器区域并清理敏感元数据，证据边界见 [GUI 记录](evidence/stage-08-gui/README.md)。
 
@@ -75,24 +76,29 @@
 | API unit | 12/12 |
 | API HTTP | 6/6 |
 | PostgreSQL migration/RLS/concurrency | 50/50 |
-| client unit + page rendering | 115/115 |
+| client unit + page rendering | 124/124 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
-| audit gate 反向单测 | 7/7 |
+| audit gate 与 transport 反向单测 | 9/9 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
 | Markdown links | Pass |
 
-原始 `pnpm audit --prod` 仍以退出码 `1` 报告 1 critical、1 high、8 moderate。机器门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
+标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、1 high、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
 
 ## Deferred 与下一门禁
 
-以下仍是 `Deferred — 外部依赖`，没有被本地 fake adapter 或模拟器改记为 Pass：
+### Deferred — 外部依赖
+
+以下项目没有被本地 fake adapter 或模拟器改记为 Pass：
 
 - 真实 AppID/AppSecret、真实 `wx.login`/code2Session、合法 HTTPS 域名；
 - 真机、多设备真实会话、体验版、审核、发布与 CI 上传凭据；
 - 云 API、托管 PostgreSQL、正式 Secret 管理、WAF、备份恢复和可观测平台；
 - Android、iOS、HarmonyOS 工具链、签名、实机和发布。
-- 应用进程重启后的未知命令恢复协议（非敏感 locator + 服务端 command-status/receipt 或原子 fence）；当前普通 GET 不构成恢复证据。
+
+### 内部后续范围 / 发布阻断
+
+- 应用进程重启后的未知命令恢复协议尚未实现；必须使用非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不构成恢复证据。该项不是外部依赖，并在完成前阻断发布。
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 

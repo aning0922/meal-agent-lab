@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import SwaggerParser from "@apidevtools/swagger-parser";
+import { Ajv } from "ajv";
 import type { OpenAPIV3 } from "openapi-types";
 
 import {
@@ -279,18 +280,6 @@ const openApiNumberAccepts = (
   }
   return true;
 };
-const openApiStringAccepts = (
-  schema: Record<string, unknown>,
-  value: string,
-): boolean => {
-  if (
-    typeof schema["pattern"] === "string" &&
-    !new RegExp(schema["pattern"]).test(value)
-  ) {
-    return false;
-  }
-  return true;
-};
 const componentSchema = (
   name: string,
 ): Record<string, unknown> => {
@@ -370,9 +359,32 @@ assert.ok(
   profileDisplayNameSchemas.length > 0,
   "profile displayName must appear in OpenAPI",
 );
+const ajv = new Ajv();
+const profileDisplayNameValidators = profileDisplayNameSchemas.map(
+  (schema) => {
+    assert.equal(
+      typeof schema["pattern"],
+      "string",
+      "profile displayName must retain its PostgreSQL-safe pattern",
+    );
+    const pattern = schema["pattern"] as string;
+    return {
+      withoutFlag: new RegExp(pattern),
+      withUnicodeFlag: new RegExp(pattern, "u"),
+      ajv: ajv.compile({
+        type: "string",
+        minLength: schema["minLength"],
+        maxLength: schema["maxLength"],
+        pattern,
+      }),
+    };
+  },
+);
 for (const [value, accepted] of [
   ["😀".repeat(80), true],
   ["😀".repeat(81), false],
+  ["😀", true],
+  ["\u0000", false],
   [`档案${"\ud800"}`, false],
   [`档案${"\udfff"}`, false],
 ] as const) {
@@ -386,13 +398,53 @@ for (const [value, accepted] of [
     accepted,
     "runtime profile displayName scalar boundary mismatch",
   );
+  for (const validator of profileDisplayNameValidators) {
+    assert.equal(
+      validator.withoutFlag.test(value),
+      accepted,
+      "OpenAPI pattern without flags must preserve scalar semantics",
+    );
+    assert.equal(
+      validator.withUnicodeFlag.test(value),
+      accepted,
+      "OpenAPI pattern with the u flag must preserve scalar semantics",
+    );
+    assert.equal(
+      validator.ajv(value),
+      accepted,
+      "Ajv 8 default configuration must preserve scalar semantics",
+    );
+  }
+}
+for (let codeUnit = 0xd800; codeUnit <= 0xdfff; codeUnit += 1) {
+  const isolated = String.fromCharCode(codeUnit);
   assert.equal(
-    profileDisplayNameSchemas.some((schema) =>
-      openApiStringAccepts(schema, value)
-    ),
-    accepted,
-    "OpenAPI profile displayName scalar boundary mismatch",
+    createPersonProfileRequestSchema.safeParse({
+      displayName: `档案${isolated}`,
+      defaultParticipation: null,
+      defaultPortionScale: null,
+      cookingSkill: null,
+    }).success,
+    false,
+    `runtime must reject isolated surrogate U+${codeUnit.toString(16)}`,
   );
+  for (const validator of profileDisplayNameValidators) {
+    assert.equal(
+      validator.withoutFlag.test(isolated),
+      false,
+      `flagless pattern must reject isolated U+${codeUnit.toString(16)}`,
+    );
+    assert.equal(
+      validator.withUnicodeFlag.test(isolated),
+      false,
+      `u pattern must reject isolated U+${codeUnit.toString(16)}`,
+    );
+    assert.equal(
+      validator.ajv(isolated),
+      false,
+      `Ajv must reject isolated U+${codeUnit.toString(16)}`,
+    );
+  }
 }
 for (const propertyName of ["foodConceptIds", "allergenCodes"]) {
   const schemas = collectPropertySchemas(
@@ -520,13 +572,13 @@ const createLotResponse = JSON.stringify(
 );
 assert.equal(
   consumedResponse.includes(
-    '"x-meal-agent-runtime-rule-ids":["inventory.consume-result.consistency.v1"]',
+    '"x-meal-agent-contract-rule-ids":["inventory.consume-result.consistency.v1"]',
   ),
   true,
 );
 assert.equal(
   createLotResponse.includes(
-    '"x-meal-agent-runtime-rule-ids":["inventory.create-result.consistency.v1"]',
+    '"x-meal-agent-contract-rule-ids":["inventory.create-result.consistency.v1"]',
   ),
   true,
 );

@@ -13,6 +13,7 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
+import { usePendingCommandSubscription } from '../../components/use-pending-command-subscription'
 import type {
   ClientCommandKind,
   RegisteredCommand,
@@ -114,6 +115,7 @@ const skillLabel = (
       }[value]
 
 export default function ProfilePage() {
+  usePendingCommandSubscription()
   const [state, setState] = useState<PageState>({ kind: 'loading' })
   const [notice, setNotice] = useState<Notice>({ kind: 'none' })
   const [busy, setBusy] = useState(false)
@@ -287,7 +289,6 @@ export default function ProfilePage() {
       setPendingRevision((value) => value + 1)
       return outcome
     } catch {
-      actionKeys.markUnknown(action)
       setPendingRevision((value) => value + 1)
       setNotice({
         kind: 'error',

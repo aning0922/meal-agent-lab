@@ -9,7 +9,8 @@ import { signOut } from '../../src/core/auth-flow'
 import {
   HOUSEHOLDS_ROUTE,
   INVENTORY_ROUTE,
-  LOGIN_ROUTE
+  LOGIN_ROUTE,
+  type HttpResponse
 } from '../../src/platform/ports'
 import { FakePlatform } from '../support/fake-platform'
 import {
@@ -22,6 +23,14 @@ import {
 } from '../support/fixtures'
 
 const BASE_URL = 'http://127.0.0.1:3000'
+
+const deferredResponse = () => {
+  let resolve!: (response: HttpResponse) => void
+  const promise = new Promise<HttpResponse>((accept) => {
+    resolve = accept
+  })
+  return { promise, resolve }
+}
 
 describe('createAppServices', () => {
   it('401 会话过期：清会话、跳登录页、提示可被消费一次', async () => {
@@ -69,7 +78,7 @@ describe('createAppServices', () => {
     services.authenticate(
       authenticatedSessionSchema.parse(authenticatedSessionFixture())
     )
-    services.pendingCommands.acquireCommand(
+    const envelope = services.pendingCommands.acquireCommand(
       'household:join',
       HOUSEHOLDS_ROUTE,
       {
@@ -77,7 +86,7 @@ describe('createAppServices', () => {
         payload: { inviteCode: 'never-persist-this-invite' }
       }
     )
-    services.pendingCommands.markUnknown('household:join')
+    services.pendingCommands.markUnknown(envelope)
     const decision = await services.navigation.navigateTo(INVENTORY_ROUTE)
     assert.equal(decision.kind, 'denied')
     assert.deepEqual(platform.navigations, [])
@@ -199,7 +208,7 @@ describe('createAppServices', () => {
     const householdId = householdIdSchema.parse(
       uuidV7(80)
     )
-    services.pendingCommands.acquireCommand(
+    const envelope = services.pendingCommands.acquireCommand(
       'household:create',
       HOUSEHOLDS_ROUTE,
       {
@@ -207,7 +216,7 @@ describe('createAppServices', () => {
         payload: { name: '待重试', ownerDisplayName: '成员甲' }
       }
     )
-    services.pendingCommands.markUnknown('household:create')
+    services.pendingCommands.markUnknown(envelope)
 
     const denied = await services.navigation.reLaunch(
       INVENTORY_ROUTE,
@@ -216,12 +225,171 @@ describe('createAppServices', () => {
     assert.equal(denied.kind, 'denied')
     assert.equal(services.session.restoreCurrentHouseholdId(), null)
 
-    services.pendingCommands.complete('household:create')
+    services.pendingCommands.complete(envelope)
     const allowed = await services.navigation.reLaunch(
       INVENTORY_ROUTE,
       () => services.session.saveCurrentHouseholdId(householdId)
     )
     assert.equal(allowed.kind, 'allowed')
     assert.equal(services.session.restoreCurrentHouseholdId(), householdId)
+  })
+
+  it('旧 HTTP attempt 延迟成功不能清除同用户同 action 的新 key envelope', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    const delayed = deferredResponse()
+    platform.enqueueResponse(delayed.promise)
+    const oldAttempt = services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '旧家庭', ownerDisplayName: '旧成员' }
+      }
+    )
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const oldEnvelope = services.pendingCommands.activeSnapshot()
+    assert.ok(oldEnvelope)
+    services.pendingCommands.complete(oldEnvelope)
+
+    platform.enqueueResponse(new Error('new command response lost'))
+    await services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '新家庭', ownerDisplayName: '新成员' }
+      }
+    )
+    const current = services.pendingCommands.activeSnapshot()
+    assert.ok(current)
+    assert.notEqual(current.commandId, oldEnvelope.commandId)
+    assert.notEqual(current.key, oldEnvelope.key)
+    assert.equal(current.phase, 'unknown')
+
+    delayed.resolve({
+      statusCode: 201,
+      body: JSON.stringify(
+        successEnvelope(createHouseholdResultFixture())
+      )
+    })
+    await assert.rejects(oldAttempt, /stale command attempt/)
+    assert.equal(
+      services.pendingCommands.activeSnapshot()?.commandId,
+      current.commandId
+    )
+    assert.equal(services.pendingCommands.status().phase, 'unknown')
+  })
+
+  it('前一用户旧 HTTP attempt 延迟失败不能污染后一用户同 action envelope', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    const delayed = deferredResponse()
+    platform.enqueueResponse(delayed.promise)
+    const oldAttempt = services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '用户一家庭', ownerDisplayName: '用户一' }
+      }
+    )
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    const oldEnvelope = services.pendingCommands.activeSnapshot()
+    assert.ok(oldEnvelope)
+
+    services.pendingCommands.suspendForAuthentication()
+    services.session.clear()
+    const secondUser = userFixture(90)
+    services.authenticate(
+      authenticatedSessionSchema.parse({
+        ...authenticatedSessionFixture(),
+        accessToken: 't'.repeat(43),
+        user: secondUser,
+        session: {
+          ...authenticatedSessionFixture().session,
+          id: uuidV7(91),
+          userId: secondUser.id,
+          authIdentityId: uuidV7(92)
+        }
+      })
+    )
+    platform.enqueueResponse(new Error('new user response lost'))
+    await services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '用户二家庭', ownerDisplayName: '用户二' }
+      }
+    )
+    const current = services.pendingCommands.activeSnapshot()
+    assert.ok(current)
+    assert.notEqual(current.principalId, oldEnvelope.principalId)
+    assert.notEqual(current.commandId, oldEnvelope.commandId)
+
+    delayed.resolve({
+      statusCode: 403,
+      body: JSON.stringify(apiErrorBody('FORBIDDEN'))
+    })
+    await assert.rejects(oldAttempt, /stale command attempt/)
+    assert.equal(
+      services.pendingCommands.activeSnapshot()?.commandId,
+      current.commandId
+    )
+    assert.equal(services.pendingCommands.status().phase, 'unknown')
+  })
+
+  it('retryActive 仅从 unknown 单次起飞，并发点击不产生第二个 HTTP 请求', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, BASE_URL)
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueResponse(new Error('first response lost'))
+    await services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '待恢复家庭', ownerDisplayName: '成员甲' }
+      }
+    )
+    assert.equal(services.pendingCommands.status().phase, 'unknown')
+
+    const delayed = deferredResponse()
+    platform.enqueueResponse(delayed.promise)
+    const firstRetry = services.commands.retryActive()
+    const secondRetry = await services.commands.retryActive()
+    assert.equal(secondRetry.kind, 'in-flight')
+    assert.equal(
+      platform.sentRequests.filter((request) =>
+        request.url.endsWith('/households')
+      ).length,
+      2
+    )
+
+    const created = createHouseholdResultFixture()
+    delayed.resolve({
+      statusCode: 201,
+      body: JSON.stringify(successEnvelope(created))
+    })
+    const result = await firstRetry
+    assert.equal(result.kind, 'reconciled')
+    assert.equal(
+      services.session.restoreCurrentHouseholdId(),
+      created.household.id
+    )
+    assert.deepEqual(platform.navigations.at(-1), {
+      kind: 'reLaunch',
+      route: INVENTORY_ROUTE
+    })
+    assert.equal(services.pendingCommands.status().phase, 'idle')
   })
 })

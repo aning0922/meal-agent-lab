@@ -31,7 +31,7 @@
 | P2-01 | 双邀请码并发加入可能 500 | household+user advisory transaction lock；已成员稳定业务结果 | DB 并发测试无 500、计数正确 | Closed |
 | P2-02 | 日志未识别 inviteCode | camel/snake/case/nested 键统一脱敏 | 单元与日志 sentinel | Closed |
 | P2-03 | 过期邀请仍显示 active | migration 物化既有过期邀请；读取统一 effective status | mapper/DB/HTTP 反例 | Closed |
-| P2-04 | 同动作重试换 idempotency key | app 级协调器保存完整不可变 snapshot + 原 key；普通 GET 不释放未知命令，跨动作/离页被阻断 | Households/Inventory/Members/Profile 页面与 core 测试；进程重启恢复未冒充 Pass | Closed；重启恢复 Deferred |
+| P2-04 | 同动作重试换 idempotency key | app 级协调器保存完整不可变 snapshot + 原 key；普通 GET 不释放未知命令，跨动作/离页被阻断 | Households/Inventory/Members/Profile 页面与 core 测试；进程重启恢复未冒充 Pass | Closed；重启恢复是内部发布阻断 |
 | P2-05 | owner 视图 `isSelf=false` | 按 session user ID 判断 self | 多 owner/实际 MembersPage 测试与 GUI | Closed |
 | P2-06 | audit 1 critical、1 high、8 moderate，无门禁 | 精确 advisory/path/version allowlist + 到期日 + weapp 产物扫描 | 新增、变化、消失未清理、过期或受禁 target 均失败 | Time-boxed |
 | P2-07 | 文档、路由和测试数量漂移 | 同步 README、状态、架构、API/client、ADR、两份阶段 08 记录 | Markdown link gate；OpenAPI 生成 route count | Closed |
@@ -63,7 +63,7 @@
 | S3-05 | constraint JSONB 在 UPDATE 前完整校验 | app-role 畸形数组/notes 反向测试，内容/version 不变 | Closed |
 | S3-06 | label-only allergy 与隐藏字段清理、五类阻断确认 | contracts/client 五类矩阵与实际页面确认展示 | Closed；FAM-004 仍 Partial |
 | S3-07 | schema 定义处 metadata binding，OpenAPI 对应节点携带 rule ID | 无直接 refine 扫描、故意错绑失败、逐 component 检查 | Closed |
-| S3-08 | production audit policy/退出语义 fail-closed | invalid expiry、signal、exit 2、registry、metadata、新增/消失 advisory 7/7 | Closed |
+| S3-08 | production audit policy/退出语义 fail-closed | invalid expiry、signal、exit 2、registry、metadata、新增/消失 advisory，以及官方 registry JSON/gzip transport 正反例 9/9 | Closed |
 
 0004 未部署前的增量整改关闭项：
 
@@ -90,17 +90,27 @@
 | S5-03 | link confirm 在 household advisory 后重取时钟并在 accepted 前重验 expiry | 两个真实 session 的 barrier 跨越 expires_at，只能提交 raw `expired` + HTTP 409 | Closed |
 | S5-04 | membership DELETE 与 link 409 在 bootstrap 前只读同 key 完成记录 | foreign DELETE 404；自退出与 inactive target 同 key 重放原结果 | Closed |
 | S5-05 | 安全 409 migration/Drizzle CHECK 封闭 SQL UNKNOWN | object + `ok=false` + `error.code=CONFLICT`；`{}`、JSON null、缺字段均 23514 | Closed |
-| S5-06 | Households create/join、Inventory、Members、Profile 统一 app 级 pending coordinator | GET 失败不开放 abandon、GET→retry→unknown 清观察、下一动作不继承、跨动作/离页与邀请丢响应页面测试 | Closed；进程重启恢复 Deferred |
+| S5-06 | Households create/join、Inventory、Members、Profile 统一 app 级 pending coordinator | GET 失败不开放 abandon、GET→retry→unknown 清观察、下一动作不继承、跨动作/离页与邀请丢响应页面测试 | Closed；重启恢复是内部发布阻断 |
 
 合并前根因整改关闭项：
 
 | ID | 整改 | 关键证据 | 状态 |
 | --- | --- | --- | --- |
 | S6-01 | pending envelope 绑定 principal/household/owner route/auth generation；401 suspend | 同用户重登复用原 snapshot/key；换用户不可读/不可执行；主动登出 service fail-closed | Closed |
-| S6-02 | 集中 typed command registry、retry dispatcher、订阅与全局恢复入口 | GET/资源消失/页面卸载/宿主 Back 后从原 snapshot 重试；导航显式 allowed/denied 后才改家庭上下文 | Closed；进程重启恢复仍 Deferred |
+| S6-02 | 集中 typed command registry、retry dispatcher、订阅与全局恢复入口 | GET/资源消失/页面卸载/宿主 Back 后从原 snapshot 重试；导航显式 allowed/denied 后才改家庭上下文 | Closed；重启恢复是内部发布阻断 |
 | S6-03 | repository 统一 link 生命周期锁总序 | 同一 principal 两个真实 session + DB barrier 覆盖 self-exit vs confirm、linked self-create vs confirm，无 `40P01`/500 | Closed |
-| S6-04 | PostgreSQL-safe primitive 拒绝孤立 surrogate 且允许合法 emoji | contracts、raw JSON HTTP 400 不触达 handler、OpenAPI 和 JSONB 的 80/81 emoji parity | Closed |
+| S6-04 | PostgreSQL-safe primitive 拒绝孤立 surrogate 且允许合法 emoji | contracts/raw JSON HTTP/OpenAPI 验证 80/81 字段长度；JSONB 独立验证编码层接受合法 emoji、拒绝孤立 surrogate | Closed |
 | S6-05 | Members 4xx disposition 与真实页面交互断言 | 403 释放旧 action；按钮存在且两次点击均使请求数增加，新动作使用新 key | Closed |
+
+最终合并前复审关闭项：
+
+| ID | 整改 | 关键证据 | 状态 |
+| --- | --- | --- | --- |
+| S7-01 | pending 结算改为不可变 commandId CAS | 同用户新 key 的旧 HTTP 延迟成功、跨用户的旧 HTTP 延迟失败均不能清除或污染新 envelope | Closed |
+| S7-02 | retry 仅允许原子 unknown → in-flight | 两次并发 `retryActive` 只有一次 HTTP，第二次返回 in-flight | Closed |
+| S7-03 | 全局恢复执行 typed 业务 reconciliation | 真实组件覆盖 invite 明文/无明文引导、self-exit、household create/join、确定失败/未知/认证暂停及页面解锁 | Closed |
+| S7-04 | PostgreSQL-safe pattern 跨正则执行器一致 | 无 flag、u flag、Ajv 8 默认配置遍历全部 surrogate；合法 supplementary 与 80/81 emoji parity | Closed |
+| S7-05 | schema rule 扩展名与范围一致 | `x-meal-agent-contract-rule-ids` 承载全部节点绑定，classification 区分 native/runtime-only | Closed |
 
 ## 3. A — 幂等与敏感数据
 
@@ -172,7 +182,7 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 
 - 可表达的正数与零值规则直接生成原生 JSON Schema；
 - 所有公共 refine/superRefine 进入稳定 rule manifest，并逐 schema 绑定；
-- 不能原生表达的规则生成 `x-meal-agent-runtime-rules` 稳定 ID 扩展；
+- 每个 schema 节点生成 `x-meal-agent-contract-rule-ids`，承载该节点全部绑定规则；根 manifest classification 区分 native 与 runtime-only，只有 runtime-only 需要消费者额外执行；
 - 生成器校验源码扫描、manifest 覆盖、ID 唯一性和 native/runtime-only 分类；
 - OpenAPI 只由脚本生成，不手工编辑 JSON。
 
@@ -187,7 +197,7 @@ dining-only → linked 使用两步明确命令：owner 发起 link request，�
 
 runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩展元数据存在等同为 runtime 行为通过。
 
-另有三个显式 zero 语义反例：approximate amount、session tokenVersion 与 inventory event resultingLotVersion 在 runtime 和 OpenAPI 中都拒绝 0。所有会持久化到 PostgreSQL text/varchar/jsonb 的公共字符串使用共享 primitive，在 HTTP 前拒绝 U+0000 与孤立 high/low surrogate，并以 Unicode scalar value 计算长度；合法 emoji 的 80/81 边界与 PostgreSQL `character_length`、OpenAPI 对齐，pattern 不依赖 JavaScript `u` flag。
+另有三个显式 zero 语义反例：approximate amount、session tokenVersion 与 inventory event resultingLotVersion 在 runtime 和 OpenAPI 中都拒绝 0。所有会持久化到 PostgreSQL text/varchar/jsonb 的公共字符串使用共享 primitive，在 HTTP 前拒绝 U+0000 与全部孤立 high/low surrogate。pair-first pattern 在无 flag、`u` flag 与 Ajv 8 默认配置下均接受合法 supplementary scalar；contract/OpenAPI 验证 80/81 emoji 长度。裸 PostgreSQL JSONB 测试只证明 Unicode 编码接受合法 emoji、拒绝孤立 surrogate，不证明字段长度。
 
 ## 7. E — 客户端范围
 
@@ -198,10 +208,11 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 - FAM-005 当前范围：cooking skill unknown/查看/编辑；
 - MembersPage owner/self 正确；
 - Households create/join、Inventory、Members、Profile 的全部写操作使用集中 typed command registry、retry dispatcher 和 app 级协调器；同动作 transport/5xx/malformed 重试复用 key，进行中 payload/version 不得变化，相关输入冻结，其他写入与带上下文变更的离页被阻断；
-- envelope 绑定 principal、household、owner route 与认证 generation；401 进入 `auth-suspended`，同用户重登恢复，换用户不可读/不可执行。coordinator 订阅驱动全局恢复入口，页面卸载和宿主原生 Back 后仍从 snapshot 重试；
+- envelope 绑定 principal、household、owner route、认证 generation 与不可变 commandId；401 进入 `auth-suspended`，同用户重登恢复，换用户不可读/不可执行。结算使用 commandId CAS，旧 attempt 不能影响同 action 新 envelope；
+- retry 只允许 coordinator 原子执行 `unknown → in-flight`；typed reconciliation 处理 household create/join、self-exit、invite 一次性明文/无明文引导和可见结果状态。coordinator 订阅驱动全局入口及页面解锁；
 - 程序化导航显式返回 `allowed`/`denied`，`currentHousehold` 只在导航获准后写入；主动登出由 service/coordinator fail-closed；
 - 普通 GET 只能记录绑定 action/key 的 observation，不能证明命令执行与否；GET 失败不产生证据，retry、新动作、成功或确定失败清除旧 observation；
-- 不持久化邀请码、私密约束或其他敏感请求体。应用进程重启后的命令恢复当前不支持；未来需要非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不得代替。
+- 不持久化邀请码、私密约束或其他敏感请求体。应用进程重启后的命令恢复当前不支持；未来需要非敏感 locator + 服务端 command-status/receipt 或原子 fence，普通 GET 不得代替。该项是内部后续范围并阻断发布，不是外部依赖。
 
 ### 明确后续
 
@@ -230,9 +241,9 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 | API unit | 12/12 |
 | API HTTP | 6/6 |
 | PostgreSQL/RLS/concurrency | 50/50 |
-| client unit/page | 115/115 |
+| client unit/page | 124/124 |
 | E2E | 21/21 |
-| audit gate 反向单测 | 7/7 |
+| audit gate 与 transport 反向单测 | 9/9 |
 | OpenAPI | 19 paths / 25 operations |
 | weapp build | Pass |
 | GUI | `c68217ed` 页面视觉范围 Pass；0004 增量由页面/API/DB 自动化验证，未伪造新 GUI Pass |
@@ -240,8 +251,9 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 ### 依赖 audit 决策
 
-原始 `pnpm audit --prod` 为 1 critical、1 high、8 moderate。精确路径都属于 Taro 传递链。机器可读例外位于 [`security/audit-exceptions.json`](../../security/audit-exceptions.json)，截至 2026-08-08T23:59:59+08:00，只允许 `local-weapp`：
+经 npm 官方 HTTPS bulk endpoint 取得、由 `pnpm audit --prod --json` 生成路径的有效报告为 1 critical、1 high、8 moderate。精确路径都属于 Taro 传递链。机器可读例外位于 [`security/audit-exceptions.json`](../../security/audit-exceptions.json)，截至 2026-08-08T23:59:59+08:00，只允许 `local-weapp`：
 
+- loopback transport normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON；损坏压缩、非 JSON、非 200、超限、registry/network 错误和缺 metadata 均失败；
 - 精确匹配 advisory ID、module、severity、version、path count 和 path-set hash；
 - 扫描构建产物禁止已知 vulnerable dependency signature；
 - 新增/变更 advisory、旧项消失但例外未清理、到期、缺产物或目标为 H5/external-test/experience/release 都失败；
@@ -334,7 +346,9 @@ git status --short
 
 原始 audit 非零是已知事实；`audit:prod:check` 才执行精确、限时的本地例外决策。两者都必须报告。
 
-## 13. Deferred
+## 13. Deferred 与内部发布阻断
+
+### Deferred — 外部依赖
 
 以下没有 Pass 证据：
 
@@ -342,11 +356,14 @@ git status --short
 - 真机、真实多设备会话、微信分享、体验版、审核、发布和 CI 上传；
 - 云 API、托管数据库、正式 Secret 管理、WAF、备份恢复和可观测平台；
 - Android、iOS、HarmonyOS 构建、签名、实机和发布；
-- 应用进程重启后的未知命令恢复协议（非敏感 locator + 服务端 command-status/receipt 或原子 fence）；
 - H5 和外部测试（依赖例外期间明确阻断）；
 - 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票；
 - cooking-technique 与宗教/伦理/食品安全正式规则词表；
 - linked profile 转 dining-only 的独立双确认命令。
+
+### 内部后续范围 / 发布阻断
+
+- 应用进程重启后的未知命令恢复协议（非敏感 locator + 服务端 command-status/receipt 或原子 fence）尚未实现；普通 GET 不能代替。该项在发布前必须关闭或形成新的、明确的产品范围决策，不能归因于外部环境。
 
 远端 Git/CI 不阻断本轮本地实现。项目总控合并阶段 08 到 main 后、阶段 09 开发前必须配置受控 remote/upstream 和真实 CI；当前不得伪造远端 Pass。
 

@@ -54,15 +54,15 @@
 
 | 层 | 结果 |
 | --- | --- |
-| contracts | 26/26 |
+| contracts | 28/28 |
 | API unit | 12/12 |
-| API HTTP | 5/5 |
-| PostgreSQL migration/RLS/concurrency | 43/43 |
-| client unit + 页面渲染 | 102/102 |
+| API HTTP | 6/6 |
+| PostgreSQL migration/RLS/concurrency | 50/50 |
+| client unit + 页面渲染 | 124/124 |
 | stage 07 + stage 08 E2E | 21/21 |
-| audit gate 反向单测 | 7/7 |
+| audit gate 与 transport 反向单测 | 9/9 |
 | weapp build | Pass |
 | GUI | `c68217ed` 页面视觉范围 Pass；0004 增量未伪造新 GUI Pass，见[证据](../evidence/stage-08-gui/README.md) |
-| 依赖审计 | 原始 1 critical、1 high、8 moderate；local/weapp-only 限时例外门禁 Pass |
+| 依赖审计 | 官方 endpoint 有效报告 1 critical、1 high、8 moderate；local/weapp-only 限时例外门禁 Pass |
 
 最终命令、数据兼容、风险和 Deferred 以[审计整改记录](2026-07-stage-08-audit-closeout.md)为准。本文件保留原阶段目标和边界，不再作为独立的“可开始阶段 09”依据。

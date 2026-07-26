@@ -50,13 +50,23 @@ describe('createIdempotencyKey', () => {
 })
 
 describe('PendingActionIdempotency', () => {
-  it('同一进行中动作复用 key/完整 command，完成后新动作换 key', () => {
+  it('in-flight 不能重入；unknown 重试复用 key/完整 command，完成后新动作换 key', () => {
     const { pending } = createPending()
     const first = pending.acquireCommand(
       'household:create',
       HOUSEHOLDS_ROUTE,
       householdCommand('家庭甲')
     )
+    assert.throws(
+      () =>
+        pending.acquireCommand(
+          'household:create',
+          HOUSEHOLDS_ROUTE,
+          householdCommand('刷新后的家庭名')
+        ),
+      /already in flight/
+    )
+    pending.markUnknown(first)
     const retry = pending.acquireCommand(
       'household:create',
       HOUSEHOLDS_ROUTE,
@@ -65,7 +75,7 @@ describe('PendingActionIdempotency', () => {
     assert.equal(retry.key, first.key)
     assert.deepEqual(retry.command, first.command)
 
-    pending.complete('household:create')
+    pending.complete(retry)
     assert.notEqual(
       pending.acquireCommand(
         'household:create',
@@ -78,12 +88,12 @@ describe('PendingActionIdempotency', () => {
 
   it('一个 app 级未知命令阻止任何其他写 action', () => {
     const { pending } = createPending()
-    pending.acquireCommand(
+    const envelope = pending.acquireCommand(
       'household:create',
       HOUSEHOLDS_ROUTE,
       householdCommand('家庭甲')
     )
-    pending.markUnknown('household:create')
+    pending.markUnknown(envelope)
     assert.throws(
       () =>
         pending.acquireCommand(
@@ -119,12 +129,12 @@ describe('PendingActionIdempotency', () => {
 
   it('401 suspend 不删除；同 principal 新 generation 恢复，不同 principal 替换', () => {
     const first = createPending()
-    first.pending.acquireCommand(
+    const envelope = first.pending.acquireCommand(
       'household:create',
       HOUSEHOLDS_ROUTE,
       householdCommand('家庭甲')
     )
-    first.pending.markUnknown('household:create')
+    first.pending.markUnknown(envelope)
     first.pending.suspendForAuthentication()
     assert.equal(first.pending.status().phase, 'auth-suspended')
     assert.equal(first.pending.activeSnapshot(), null)
@@ -164,7 +174,7 @@ describe('PendingActionIdempotency', () => {
       HOUSEHOLDS_ROUTE,
       householdCommand('家庭甲')
     )
-    pending.markUnknown(first.action)
+    pending.markUnknown(first)
     pending.recordObservation(first.action, first.key, {
       kind: 'resource-get',
       observedAt: '2026-07-25T12:00:00.000Z',
@@ -180,7 +190,7 @@ describe('PendingActionIdempotency', () => {
     assert.equal(retry.key, first.key)
     assert.equal(retry.observation, undefined)
     assert.deepEqual(retry.command, first.command)
-    pending.markUnknown(first.action)
+    pending.markUnknown(retry)
     assert.equal(pending.snapshot(first.action)?.observation, undefined)
   })
 
@@ -191,13 +201,13 @@ describe('PendingActionIdempotency', () => {
       HOUSEHOLDS_ROUTE,
       householdCommand('家庭甲')
     )
-    pending.markUnknown(first.action)
+    pending.markUnknown(first)
     pending.recordObservation(first.action, first.key, {
       kind: 'resource-get',
       observedAt: '2026-07-25T12:00:00.000Z',
       summary: 'households refreshed'
     })
-    pending.complete(first.action)
+    pending.complete(first)
     const next = pending.acquireCommand(
       'household:create',
       HOUSEHOLDS_ROUTE,
@@ -205,6 +215,64 @@ describe('PendingActionIdempotency', () => {
     )
     assert.notEqual(next.key, first.key)
     assert.equal(next.observation, undefined)
+  })
+
+  it('commandId CAS 阻止同用户同 action 旧 key 的延迟结果污染新 envelope', () => {
+    const { pending } = createPending()
+    const oldEnvelope = pending.acquireCommand(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      householdCommand('旧家庭')
+    )
+    assert.equal(pending.complete(oldEnvelope), true)
+    const current = pending.acquireCommand(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      householdCommand('新家庭')
+    )
+    assert.notEqual(current.commandId, oldEnvelope.commandId)
+    assert.notEqual(current.key, oldEnvelope.key)
+
+    assert.equal(pending.markUnknown(oldEnvelope), false)
+    assert.equal(pending.complete(oldEnvelope), false)
+    assert.equal(
+      pending.activeSnapshot()?.commandId,
+      current.commandId
+    )
+    assert.equal(pending.status().phase, 'in-flight')
+  })
+
+  it('commandId CAS 阻止前一用户旧 attempt 结算后一用户同 action 命令', () => {
+    const fixture = createPending()
+    const oldEnvelope = fixture.pending.acquireCommand(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      householdCommand('用户一家庭')
+    )
+    fixture.pending.markUnknown(oldEnvelope)
+    fixture.pending.suspendForAuthentication()
+    fixture.setContext({
+      principalId: userIdSchema.parse(uuidV7(2)),
+      generation: 2
+    })
+    assert.equal(
+      fixture.pending.resumeAuthentication({
+        principalId: userIdSchema.parse(uuidV7(2)),
+        generation: 2
+      }),
+      'replaced'
+    )
+    const current = fixture.pending.acquireCommand(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      householdCommand('用户二家庭')
+    )
+
+    assert.equal(fixture.pending.complete(oldEnvelope), false)
+    assert.equal(
+      fixture.pending.activeSnapshot()?.commandId,
+      current.commandId
+    )
   })
 
   it('只把 transport、5xx 和 malformed success 视为结果未知', () => {

@@ -46,13 +46,13 @@ pnpm --filter @meal-agent/api openapi:check
 pnpm --filter @meal-agent/api build
 ```
 
-数据库测试使用临时 PostgreSQL 18 cluster，覆盖空库及“0003 + pending → 0004”增量 migration、checksum、RLS、应用角色直接 SQL、函数签名/权限、丢响应自退出重放、foreign DELETE 404、并发 join、两个真实 session 的 link expiry barrier、create/list/confirm 与 remove/archive 竞态、同一 principal 的 self-exit vs confirm 及 linked self-create vs confirm barrier、inactive target 同 key 409 重放、关联披露 TOCTOU、畸形 409 body 拒绝、JSONB surrogate 边界和敏感幂等历史转换。
+数据库测试使用临时 PostgreSQL 18 cluster，覆盖空库及“0003 + pending → 0004”增量 migration、checksum、RLS、应用角色直接 SQL、函数签名/权限、丢响应自退出重放、foreign DELETE 404、并发 join、两个真实 session 的 link expiry barrier、create/list/confirm 与 remove/archive 竞态、同一 principal 的 self-exit vs confirm 及 linked self-create vs confirm barrier、inactive target 同 key 409 重放、关联披露 TOCTOU、畸形 409 body 拒绝、JSONB 编码层接受合法 emoji/拒绝孤立 surrogate，以及敏感幂等历史转换。80/81 emoji 是 contract/OpenAPI 字段长度证据，不由裸 JSONB 测试证明。
 
 ## OpenAPI 与路由
 
-OpenAPI 3.0.3 只能由 contracts/runtime schema 生成。生成器只把 JSON Schema 数值型 exclusive bound 转为 OpenAPI 3.0 boolean 形式，保留已有 boolean exclusive bound，且连续转换两次与一次完全相同。`@apidevtools/swagger-parser` 标准验证、禁用关键字扫描、approximate amount/tokenVersion/resultingLotVersion 三个 zero boundary、PostgreSQL-safe string 的 80/81 emoji 与孤立 surrogate runtime ↔ OpenAPI 语义测试，以及 committed/generated 深比较共同阻止 `const`、数值型 exclusive bound、`type: null` 或手工产物漂移；string pattern 不依赖 JavaScript `u` flag。
+OpenAPI 3.0.3 只能由 contracts/runtime schema 生成。生成器只把 JSON Schema 数值型 exclusive bound 转为 OpenAPI 3.0 boolean 形式，保留已有 boolean exclusive bound，且连续转换两次与一次完全相同。`@apidevtools/swagger-parser` 标准验证、禁用关键字扫描、approximate amount/tokenVersion/resultingLotVersion 三个 zero boundary，以及 PostgreSQL-safe string 在无 flag、`u` flag 和 Ajv 8 默认配置下的全部孤立 surrogate、合法 supplementary scalar 与 80/81 emoji parity，共同阻止方言或行为漂移。
 
-[`openapi/stage-08.openapi.json`](openapi/stage-08.openapi.json) 由 route schema 和共享 contracts 生成，覆盖 19 个 path、25 个 method operation；runtime-only rule ID 同时出现在对应生成 schema component，而不是只列在根清单。不得手工编辑生成 JSON。
+[`openapi/stage-08.openapi.json`](openapi/stage-08.openapi.json) 由 route schema 和共享 contracts 生成，覆盖 19 个 path、25 个 method operation；节点扩展 `x-meal-agent-contract-rule-ids` 承载全部绑定规则 ID，根 manifest 的 classification 准确区分原生与 runtime-only。不得手工编辑生成 JSON。
 
 业务路由：
 

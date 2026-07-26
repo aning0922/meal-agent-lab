@@ -37,6 +37,12 @@ export type CommandDisposition =
   | 'definite-failure'
   | 'unknown'
 
+export type CommandId = string & { readonly __brand: 'CommandId' }
+
+export interface PendingCommandReference {
+  readonly commandId: CommandId
+}
+
 export interface PendingAuthenticationContext {
   readonly principalId: UserId
   readonly generation: number
@@ -53,6 +59,7 @@ export interface PendingCommandObservation {
 export interface PendingCommandEnvelope<
   C = AnyRegisteredCommand
 > {
+  readonly commandId: CommandId
   readonly action: string
   readonly key: IdempotencyKey
   readonly command: C
@@ -75,6 +82,7 @@ export type PendingCommandStatus =
     }
 
 type StoredPending = {
+  readonly commandId: CommandId
   readonly action: string
   readonly key: IdempotencyKey
   readonly command: AnyRegisteredCommand
@@ -153,6 +161,9 @@ export class PendingActionIdempotency {
           'another pending command must be resumed before starting a new action'
         )
       }
+      if (existing.phase !== 'unknown') {
+        throw new Error('the pending command is already in flight')
+      }
       existing.phase = 'in-flight'
       existing.resumePhase = 'in-flight'
       delete existing.observation
@@ -163,6 +174,7 @@ export class PendingActionIdempotency {
     }
 
     const pending: StoredPending = {
+      commandId: `command-${this.runtime.randomToken()}` as CommandId,
       action,
       key: createIdempotencyKey(this.runtime),
       command: canonicalCommand as AnyRegisteredCommand,
@@ -185,6 +197,7 @@ export class PendingActionIdempotency {
       throw new Error('authentication must resume before reading command')
     }
     return {
+      commandId: pending.commandId,
       action: pending.action,
       key: pending.key,
       command: pending.command,
@@ -225,28 +238,63 @@ export class PendingActionIdempotency {
       : null
   }
 
-  public settle(action: string, disposition: CommandDisposition): void {
+  /**
+   * 只有创建 attempt 时取得的不可变 commandId 才能结算对应 envelope。
+   * 旧 promise 即使在换用户或同 action 新 key 之后延迟返回，也只能得到
+   * false，不能清除或污染后来建立的命令。
+   */
+  public settle(
+    reference: PendingCommandReference,
+    disposition: CommandDisposition
+  ): boolean {
     const pending = this.#pending
-    if (pending === null || pending.action !== action) return
+    if (
+      pending === null ||
+      pending.commandId !== reference.commandId
+    ) {
+      return false
+    }
     // 401 handler may suspend while the request is unwinding. Never let the
     // later page/dispatcher disposition erase that unknown command.
-    if (pending.phase === 'auth-suspended') return
+    if (pending.phase === 'auth-suspended') return false
     if (disposition === 'unknown') {
       pending.phase = 'unknown'
       pending.resumePhase = 'unknown'
       this.#emit()
-      return
+      return true
     }
     this.#pending = null
     this.#emit()
+    return true
   }
 
-  public markUnknown(action: string): void {
-    this.settle(action, 'unknown')
+  public markUnknown(reference: PendingCommandReference): boolean {
+    return this.settle(reference, 'unknown')
   }
 
-  public complete(action: string): void {
-    this.settle(action, 'completed')
+  public complete(reference: PendingCommandReference): boolean {
+    return this.settle(reference, 'completed')
+  }
+
+  /**
+   * retry 的唯一原子入口：只允许 unknown → in-flight。JavaScript 同步
+   * 临界区先改 phase，随后并发点击只能看到 in-flight，无法发出第二个
+   * HTTP 请求。
+   */
+  public beginRetry(): PendingCommandEnvelope | null {
+    const pending = this.#pending
+    if (
+      pending === null ||
+      pending.phase !== 'unknown' ||
+      !this.#isCurrent(pending)
+    ) {
+      return null
+    }
+    pending.phase = 'in-flight'
+    pending.resumePhase = 'in-flight'
+    delete pending.observation
+    this.#emit()
+    return this.#visibleEnvelope(pending)
   }
 
   public hasPending(action: string): boolean {

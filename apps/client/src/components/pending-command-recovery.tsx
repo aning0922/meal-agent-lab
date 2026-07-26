@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react'
 import { Button, Text, View } from '@tarojs/components'
 
 import { getAppServices } from '../app-runtime'
-import { commandLabel } from '../core/command-registry'
+import {
+  commandLabel,
+  type CommandReconciliation
+} from '../core/command-registry'
 import type { PendingCommandStatus } from '../core/idempotency'
 
 export const PendingCommandRecovery = () => {
@@ -11,49 +14,116 @@ export const PendingCommandRecovery = () => {
     services.pendingCommands.status()
   )
   const [retrying, setRetrying] = useState(false)
+  const [reconciliation, setReconciliation] =
+    useState<CommandReconciliation | null>(null)
 
   useEffect(
     () =>
       services.pendingCommands.subscribe(() => {
-        setStatus(services.pendingCommands.status())
+        const next = services.pendingCommands.status()
+        setStatus(next)
+        if (next.phase !== 'idle') setReconciliation(null)
       }),
     [services]
   )
 
-  if (status.phase === 'idle') return null
+  if (status.phase === 'idle' && reconciliation === null) return null
 
   return (
     <View className='pending-command-recovery'>
-      <Text>
-        未决命令：{commandLabel(status.commandKind)}。
-        {status.phase === 'auth-suspended'
-          ? '会话已暂停；必须使用原账号重新登录，其他账号不能读取或执行此命令。'
-          : '普通 GET、页面切换或资源消失都不会释放该命令。'}
-      </Text>
-      {status.phase !== 'auth-suspended' && (
+      {status.phase !== 'idle' && (
+        <Text>
+          未决命令：{commandLabel(status.commandKind)}。
+          {status.phase === 'auth-suspended'
+            ? '会话已暂停；必须使用原账号重新登录，其他账号不能读取或执行此命令。'
+            : status.phase === 'in-flight'
+              ? '请求正在执行；为避免重复写入，当前不能再次发送。'
+              : '结果未知；只能使用原 snapshot 和原 key 重试。普通 GET、页面切换或资源消失都不会释放该命令。'}
+        </Text>
+      )}
+      {reconciliation !== null && (
+        <View>
+          <Text>{reconciliation.message}</Text>
+          {reconciliation.secret !== undefined && (
+            <Text>
+              {reconciliation.secret.label}：
+              {reconciliation.secret.value}
+            </Text>
+          )}
+        </View>
+      )}
+      {status.phase === 'unknown' && (
         <Button
           className={retrying ? 'button button--disabled' : 'button'}
           disabled={retrying}
           onClick={() => {
             if (retrying) return
             setRetrying(true)
-            void services.commands.retryActive().finally(() => {
-              setRetrying(false)
-            })
+            void services.commands
+              .retryActive()
+              .then((result) => {
+                switch (result.kind) {
+                  case 'reconciled':
+                    setReconciliation(result.presentation)
+                    return
+                  case 'unknown':
+                  case 'unexpected-error':
+                    setReconciliation({
+                      tone: 'warning',
+                      message:
+                        '重试结果仍未知；原命令和原 key 已保留，只能再次重试。'
+                    })
+                    return
+                  case 'auth-suspended':
+                    setReconciliation({
+                      tone: 'warning',
+                      message: '认证已暂停，请使用原账号重新登录后恢复。'
+                    })
+                    return
+                  case 'in-flight':
+                    setReconciliation({
+                      tone: 'warning',
+                      message: '原命令已在执行，没有发送第二个请求。'
+                    })
+                    return
+                  case 'stale-attempt':
+                    setReconciliation({
+                      tone: 'warning',
+                      message:
+                        '该响应属于已失效的旧请求，没有修改当前未决命令。'
+                    })
+                    return
+                  case 'idle':
+                    return
+                }
+              })
+              .finally(() => {
+                setRetrying(false)
+              })
           }}
         >
           {retrying ? '正在重试原命令…' : '重试原命令'}
         </Button>
       )}
-      <Button
-        className='button button--secondary'
-        disabled={status.phase === 'auth-suspended'}
-        onClick={() => {
-          void services.navigation.reLaunch(status.ownerRoute)
-        }}
-      >
-        返回命令页面
-      </Button>
+      {status.phase !== 'idle' && (
+        <Button
+          className='button button--secondary'
+          disabled={status.phase === 'auth-suspended'}
+          onClick={() => {
+            void services.navigation.reLaunch(status.ownerRoute)
+          }}
+        >
+          返回命令页面
+        </Button>
+      )}
+      {status.phase === 'idle' && reconciliation !== null && (
+        <Button
+          className='button button--secondary'
+          onClick={() => setReconciliation(null)}
+        >
+          知道了
+        </Button>
+      )}
     </View>
   )
 }

@@ -12,6 +12,7 @@ import type {
 } from '@meal-agent/contracts/members'
 
 import { getAppServices } from '../../app-runtime'
+import { usePendingCommandSubscription } from '../../components/use-pending-command-subscription'
 import {
   createInvite,
   loadMembers,
@@ -52,6 +53,7 @@ const constraintSummary = (count: number): string =>
   count === 0 ? '无已登记约束' : `${count} 条饮食约束`
 
 export default function MembersPage() {
+  usePendingCommandSubscription()
   const [state, setState] = useState<MembersState>({ kind: 'loading' })
   const [notice, setNotice] = useState<Notice>({ kind: 'none' })
   const [reveal, setReveal] = useState<InviteReveal>({ kind: 'none' })
@@ -125,7 +127,6 @@ export default function MembersPage() {
         }
       )
     } catch {
-      actionKeys.markUnknown(action)
       setNotice({
         kind: 'error',
         message: '邀请创建结果未知；只能用原请求和原幂等键重试。'
@@ -180,7 +181,6 @@ export default function MembersPage() {
         }
       )
     } catch {
-      actionKeys.markUnknown(action)
       setNotice({
         kind: 'error',
         message: '撤销结果未知；只能用原请求和原幂等键重试。'
@@ -228,7 +228,6 @@ export default function MembersPage() {
         }
       )
     } catch {
-      actionKeys.markUnknown(action)
       setNotice({
         kind: 'error',
         message: '退出或移除结果未知；只能用原请求和原幂等键重试。'

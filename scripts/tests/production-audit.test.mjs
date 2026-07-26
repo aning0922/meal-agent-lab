@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { gzipSync } from 'node:zlib'
 
 import {
   assertAcceptedAdvisories,
   interpretAuditCommand,
+  normalizeAuditRegistryBody,
   validateAuditPolicy
 } from '../check-production-audit.mjs'
 
@@ -87,6 +89,28 @@ test('registry/network error payload fails closed', () => {
         })
       ),
     /registry\/network failure/
+  )
+})
+
+test('audit registry transport accepts plain JSON and valid gzip JSON', () => {
+  const report = Buffer.from(
+    JSON.stringify({ advisory: { id: 'GHSA-test-test-test' } })
+  )
+  assert.deepEqual(normalizeAuditRegistryBody(report), report)
+  assert.deepEqual(normalizeAuditRegistryBody(gzipSync(report)), report)
+})
+
+test('audit registry transport rejects corrupt gzip and non-JSON bodies', () => {
+  assert.throws(
+    () =>
+      normalizeAuditRegistryBody(
+        Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x01])
+      ),
+    /invalid gzip/
+  )
+  assert.throws(
+    () => normalizeAuditRegistryBody(Buffer.from('<html>failure</html>')),
+    /non-JSON/
   )
 })
 

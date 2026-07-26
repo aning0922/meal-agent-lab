@@ -83,7 +83,7 @@ test("every public refinement uses the rule helper and actual schema metadata is
     )) {
       assert.equal(
         generated.includes(
-          `"x-meal-agent-runtime-rule-ids":["${rule.id}"`,
+          `"x-meal-agent-contract-rule-ids":["${rule.id}"`,
         ) ||
           generated.includes(`"${rule.id}"`),
         true,

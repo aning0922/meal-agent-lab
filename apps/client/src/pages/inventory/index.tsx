@@ -8,6 +8,7 @@ import type {
 } from '@meal-agent/contracts/inventory'
 
 import { getAppServices } from '../../app-runtime'
+import { usePendingCommandSubscription } from '../../components/use-pending-command-subscription'
 import {
   CONFIDENCE_TEXT,
   formatQuantity,
@@ -85,6 +86,7 @@ const QUALITATIVE_LEVEL_LABEL: Record<
 }
 
 export default function InventoryPage() {
+  usePendingCommandSubscription()
   const [householdId, setHouseholdId] = useState<HouseholdId | null>(null)
   const [list, setList] = useState<ListState>({ kind: 'loading' })
   const [banner, setBanner] = useState<Banner | null>(null)
@@ -233,7 +235,6 @@ export default function InventoryPage() {
         }
       )
     } catch {
-      actionKeys.markUnknown(action)
       setCreateStatus({
         kind: 'failed',
         message: '请求结果未知；请保持当前输入并使用同一请求重试。',
@@ -295,7 +296,6 @@ export default function InventoryPage() {
         }
       )
     } catch {
-      actionKeys.markUnknown(action)
       setConsumeStatus({
         kind: 'failed',
         message: '消耗结果未知；请保持数量并使用同一请求重试。',

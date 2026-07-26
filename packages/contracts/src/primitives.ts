@@ -28,15 +28,16 @@ const lowercaseUuidV7Pattern =
 
 /**
  * 一个 PostgreSQL 可持久化的 Unicode scalar：
- * - BMP 中排除 U+0000 与 surrogate 区间；
- * - supplementary code point 必须由完整 high+low surrogate pair 表示。
+ * - 无 `u` 模式下先以完整 high+low pair 匹配 supplementary scalar；
+ * - 有 `u` 模式下 negated surrogate class 把 supplementary scalar 视为
+ *   单一 code point，同时排除 U+0000 与 surrogate code point。
  *
  * 该片段刻意不依赖 RegExp `u` flag。这样同一 pattern 可直接进入
  * OpenAPI 3.0，并由一次重复匹配代表一个 PostgreSQL character_length
- * 字符；合法 emoji 算一个，孤立 high/low surrogate 不匹配。
+ * 字符；合法 emoji 算一个，全部孤立 high/low surrogate 不匹配。
  */
 const postgresUnicodeScalarPattern =
-  "(?:[\\u0001-\\uD7FF\\uE000-\\uFFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])";
+  "(?:[\\uD800-\\uDBFF][\\uDC00-\\uDFFF]|[^\\u0000\\uD800-\\uDFFF])";
 
 /**
  * PostgreSQL text/varchar/jsonb reject U+0000 and non-scalar surrogate

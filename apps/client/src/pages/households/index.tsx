@@ -4,6 +4,7 @@ import { Button, Input, Text, View } from '@tarojs/components'
 import type { Household } from '@meal-agent/contracts/identity'
 
 import { getAppServices } from '../../app-runtime'
+import { usePendingCommandSubscription } from '../../components/use-pending-command-subscription'
 import { signOut } from '../../core/auth-flow'
 import {
   loadHouseholds,
@@ -42,6 +43,7 @@ type SubmitState =
     }
 
 export default function HouseholdsPage() {
+  usePendingCommandSubscription()
   const [list, setList] = useState<ListState>({ kind: 'loading' })
   const [name, setName] = useState('')
   const [ownerDisplayName, setOwnerDisplayName] = useState('')
@@ -117,7 +119,6 @@ export default function HouseholdsPage() {
         { kind: 'household.join', payload }
       )
     } catch {
-      actionKeys.markUnknown(joinAction)
       setJoinState({
         kind: 'failed',
         message: '请求结果未知；请保持当前邀请码并使用同一请求重试。',
@@ -185,7 +186,6 @@ export default function HouseholdsPage() {
         }
       )
     } catch {
-      actionKeys.markUnknown(createAction)
       setSubmit({
         kind: 'failed',
         message: '请求结果未知；请保持当前输入并使用同一请求重试。',

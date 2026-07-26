@@ -15,6 +15,11 @@ import type {
 
 import type { AppServices } from './app-services'
 import {
+  HOUSEHOLDS_ROUTE,
+  INVENTORY_ROUTE,
+  MEMBERS_ROUTE
+} from '../platform/ports'
+import {
   createHousehold,
   type CreateHouseholdDraft
 } from './household-flow'
@@ -179,11 +184,27 @@ export type AnyRegisteredCommand = {
 export type RegisteredCommandOutcome<K extends ClientCommandKind> =
   ClientCommandDefinitions[K]['outcome']
 
+export interface CommandReconciliation {
+  readonly tone: 'success' | 'warning' | 'error'
+  readonly message: string
+  /** 一次性秘密只驻留在全局恢复组件的内存 state，不进入 storage。 */
+  readonly secret?: {
+    readonly label: '邀请码'
+    readonly value: string
+  }
+}
+
 type CommandHandler<K extends ClientCommandKind> = (
   services: AppServices,
   payload: ClientCommandDefinitions[K]['payload'],
   key: IdempotencyKey
 ) => Promise<ClientCommandDefinitions[K]['outcome']>
+
+type CommandReconciler<K extends ClientCommandKind> = (
+  services: AppServices,
+  payload: ClientCommandDefinitions[K]['payload'],
+  outcome: ClientCommandDefinitions[K]['outcome']
+) => Promise<CommandReconciliation>
 
 const commandRegistry: {
   readonly [K in ClientCommandKind]: CommandHandler<K>
@@ -279,6 +300,149 @@ const commandRegistry: {
     )
 }
 
+const messageFromOutcome = (
+  outcome: unknown,
+  fallback: string
+): string => {
+  if (outcome !== null && typeof outcome === 'object') {
+    const record = outcome as {
+      readonly message?: unknown
+      readonly messages?: unknown
+      readonly error?: { readonly message?: unknown }
+    }
+    if (typeof record.message === 'string') return record.message
+    if (
+      Array.isArray(record.messages) &&
+      record.messages.every((message) => typeof message === 'string')
+    ) {
+      return record.messages.join('；')
+    }
+    if (typeof record.error?.message === 'string') {
+      return record.error.message
+    }
+  }
+  return fallback
+}
+
+const success = (message: string): CommandReconciliation => ({
+  tone: 'success',
+  message
+})
+
+const failure = (
+  outcome: unknown,
+  fallback = '命令已收到确定失败，旧幂等动作已释放。'
+): CommandReconciliation => ({
+  tone: 'error',
+  message: messageFromOutcome(outcome, fallback)
+})
+
+/**
+ * 全局恢复后的 typed 业务收口。每个 command kind 必须有对应 handler；
+ * dispatcher 只有在 commandId CAS 成功后才调用，旧 attempt 不能触发
+ * 导航、session 变更或一次性秘密展示。
+ */
+const commandReconciliationRegistry: {
+  readonly [K in ClientCommandKind]: CommandReconciler<K>
+} = {
+  'household.create': async (services, _payload, outcome) => {
+    if (outcome.kind !== 'created') return failure(outcome)
+    await services.navigation.reLaunch(
+      INVENTORY_ROUTE,
+      () =>
+        services.session.saveCurrentHouseholdId(
+          outcome.result.household.id
+        )
+    )
+    return success('家庭已创建，已切换到该家庭。')
+  },
+  'household.join': async (services, _payload, outcome) => {
+    if (outcome.kind !== 'joined') return failure(outcome)
+    await services.navigation.navigateTo(
+      MEMBERS_ROUTE,
+      () =>
+        services.session.saveCurrentHouseholdId(
+          outcome.result.household.id
+        )
+    )
+    return success('已加入家庭并切换到成员页。')
+  },
+  'inventory.create': async (_services, _payload, outcome) =>
+    outcome.kind === 'created'
+      ? success('库存批次已创建，请刷新页面查看最新库存。')
+      : failure(outcome),
+  'inventory.consume': async (_services, _payload, outcome) =>
+    outcome.kind === 'consumed'
+      ? success('库存消耗已确认，请刷新页面查看最新数量。')
+      : failure(outcome),
+  'invite.create': async (_services, _payload, outcome) => {
+    if (outcome.kind !== 'created') return failure(outcome)
+    const inviteCode = outcome.result.inviteCode
+    if (inviteCode === undefined) {
+      return {
+        tone: 'warning',
+        message:
+          '邀请已创建，但安全重放不会再次返回明文邀请码。请返回成员页撤销该邀请，再明确创建一个新邀请。'
+      }
+    }
+    return {
+      tone: 'success',
+      message:
+        '邀请已创建。邀请码只显示这一次，请立即安全地交付给受邀成员。',
+      secret: { label: '邀请码', value: inviteCode }
+    }
+  },
+  'invite.revoke': async (_services, _payload, outcome) =>
+    outcome.kind === 'revoked'
+      ? success('邀请已撤销。')
+      : failure(outcome),
+  'membership.remove': async (services, payload, outcome) => {
+    if (outcome.kind !== 'removed') return failure(outcome)
+    if (payload.isSelf) {
+      await services.navigation.reLaunch(
+        HOUSEHOLDS_ROUTE,
+        () => services.session.clearCurrentHouseholdId()
+      )
+      return success(
+        '你已退出家庭；关联档案已归档并保留，重新加入不会自动恢复。'
+      )
+    }
+    return success('成员已移除，其关联档案已归档并保留。')
+  },
+  'profile.create': async (_services, _payload, outcome) =>
+    outcome.kind === 'created'
+      ? success('档案已创建，请刷新页面查看。')
+      : failure(outcome),
+  'profile.update': async (_services, _payload, outcome) =>
+    outcome.kind === 'updated'
+      ? success('档案已更新，请刷新页面查看。')
+      : failure(outcome),
+  'profile.archive': async (_services, _payload, outcome) =>
+    outcome.kind === 'updated'
+      ? success('档案已归档。')
+      : failure(outcome),
+  'profile.restore': async (_services, _payload, outcome) =>
+    outcome.kind === 'updated'
+      ? success('档案已恢复。')
+      : failure(outcome),
+  'constraint.add': async (_services, _payload, outcome) =>
+    outcome.kind === 'added'
+      ? success('饮食约束已登记，请刷新档案查看。')
+      : failure(outcome),
+  'constraint.remove': async (_services, _payload, outcome) =>
+    outcome.kind === 'removed'
+      ? success('饮食约束已移除，请刷新档案查看。')
+      : failure(outcome),
+  'profile.link-request': async (_services, _payload, outcome) =>
+    outcome.kind === 'success'
+      ? success('档案关联请求已发起，等待目标成员确认。')
+      : failure(outcome),
+  'profile.link-confirm': async (_services, _payload, outcome) =>
+    outcome.kind === 'success'
+      ? success('档案关联已确认，请重新加载最新档案。')
+      : failure(outcome)
+}
+
 export const registeredCommandKinds = Object.freeze(
   Object.keys(commandRegistry) as ClientCommandKind[]
 )
@@ -301,6 +465,19 @@ export const dispatchRegisteredCommand = async <
     services,
     command.payload,
     key
+  )
+
+export const reconcileRegisteredCommand = async <
+  K extends ClientCommandKind
+>(
+  services: AppServices,
+  command: RegisteredCommand<K>,
+  outcome: RegisteredCommandOutcome<K>
+): Promise<CommandReconciliation> =>
+  commandReconciliationRegistry[command.kind](
+    services,
+    command.payload,
+    outcome
   )
 
 export const commandLabel = (kind: ClientCommandKind): string =>

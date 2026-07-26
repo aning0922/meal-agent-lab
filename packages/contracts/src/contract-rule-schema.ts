@@ -37,15 +37,15 @@ const attachRule = <T extends z.ZodType>(
   }
   const metadata = schema.meta() ?? {};
   const existingIds = Array.isArray(
-    metadata["x-meal-agent-runtime-rule-ids"],
+    metadata["x-meal-agent-contract-rule-ids"],
   )
     ? (metadata[
-        "x-meal-agent-runtime-rule-ids"
+        "x-meal-agent-contract-rule-ids"
       ] as ContractRuleId[])
     : [];
   const next = schema.meta({
     ...metadata,
-    "x-meal-agent-runtime-rule-ids": [
+    "x-meal-agent-contract-rule-ids": [
       ...new Set([...existingIds, id]),
     ],
     "x-zod-refinements": [
@@ -122,7 +122,7 @@ export const validateContractRuleSchemaBindings = (
   for (const binding of bindings) {
     const metadata = binding.schema.meta() ?? {};
     const actualIds =
-      metadata["x-meal-agent-runtime-rule-ids"];
+      metadata["x-meal-agent-contract-rule-ids"];
     const actualBoundary =
       metadata["x-meal-agent-rule-boundary"];
     if (!Array.isArray(actualIds)) {

@@ -3,7 +3,10 @@ import { afterEach, describe, it } from 'node:test'
 import type { ReactTestRenderer, ReactTestRendererJSON } from 'react-test-renderer'
 import { act, create } from 'react-test-renderer'
 
-import { householdIdSchema } from '@meal-agent/contracts'
+import {
+  householdIdSchema,
+  membershipIdSchema
+} from '@meal-agent/contracts'
 import { authenticatedSessionSchema } from '@meal-agent/contracts/identity'
 
 import { installAppServicesForPageTest } from '../../src/app-runtime'
@@ -18,6 +21,7 @@ import { FakePlatform } from '../support/fake-platform'
 import {
   authenticatedSessionFixture,
   apiErrorBody,
+  createHouseholdInviteResultFixture,
   getPersonProfileResultFixture,
   hardConstraintFixture,
   INVITE_CODE,
@@ -30,6 +34,7 @@ import {
   membershipFixture,
   ownerMembersViewFixture,
   personProfileFixture,
+  removeMembershipResultFixture,
   successEnvelope,
   uuidV7
 } from '../support/fixtures'
@@ -89,6 +94,16 @@ const buttonText = (instance: {
     .filter((child): child is string => typeof child === 'string')
     .join('')
 
+const requireRenderer = (): ReactTestRenderer => {
+  assert.ok(renderer)
+  return renderer
+}
+
+const requireCleanup = (): (() => void) => {
+  assert.ok(cleanupServices)
+  return cleanupServices
+}
+
 describe('真实页面渲染回归', () => {
   it('全局恢复入口在原生 Back 后仍从 registry snapshot 重试原命令', async () => {
     const platform = new FakePlatform()
@@ -138,7 +153,301 @@ describe('真实页面渲染回归', () => {
       writes[1]?.headers['idempotency-key']
     )
     assert.equal(writes[0]?.body, writes[1]?.body)
-    assert.equal(renderer.toJSON(), null)
+    assert.equal(
+      services.session.restoreCurrentHouseholdId(),
+      createHouseholdResultFixture().household.id
+    )
+    assert.deepEqual(platform.navigations.at(-1), {
+      kind: 'reLaunch',
+      route: '/pages/inventory/index'
+    })
+    assert.match(
+      textContent(renderer.toJSON()),
+      /家庭已创建，已切换到该家庭/
+    )
+    assert.ok(
+      renderer.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((button) => buttonText(button) === '知道了')
+    )
+  })
+
+  it('全局恢复交付一次性邀请码明文，并在安全重放无明文时保留撤销重建引导', async () => {
+    const setup = async (withSecret: boolean) => {
+      const platform = new FakePlatform()
+      const services = createAppServices(
+        platform,
+        'http://127.0.0.1:3000'
+      )
+      services.authenticate(
+        authenticatedSessionSchema.parse(authenticatedSessionFixture())
+      )
+      const householdId = householdIdSchema.parse(uuidV7(10))
+      platform.enqueueResponse(new Error('lost invite response'))
+      await services.commands.execute(
+        `invite:create:${withSecret ? 'secret' : 'replay'}`,
+        '/pages/members/index',
+        {
+          kind: 'invite.create',
+          payload: {
+            householdId,
+            draft: { maxUses: 1, expiresInHours: 24 }
+          }
+        }
+      )
+      platform.enqueueJson(
+        201,
+        successEnvelope(
+          withSecret
+            ? createHouseholdInviteResultFixture()
+            : { invite: householdInviteFixture() }
+        )
+      )
+      cleanupServices = installAppServicesForPageTest(services)
+      await act(async () => {
+        renderer = create(<PendingCommandRecovery />)
+      })
+      const activeRenderer = requireRenderer()
+      const retry = activeRenderer.root
+        .findAll((node) => String(node.type) === 'taro-button')
+        .find((button) => buttonText(button) === '重试原命令')
+      assert.ok(retry)
+      await act(async () => {
+        retry.props['onClick']()
+        await settleEffects()
+      })
+      return textContent(activeRenderer.toJSON())
+    }
+
+    const secretText = await setup(true)
+    assert.match(secretText, new RegExp(INVITE_CODE))
+    assert.match(secretText, /只显示这一次/)
+    renderer?.unmount()
+    cleanupServices?.()
+    renderer = undefined
+    cleanupServices = undefined
+
+    const replayText = await setup(false)
+    assert.doesNotMatch(replayText, new RegExp(INVITE_CODE))
+    assert.match(replayText, /撤销该邀请.*新邀请/)
+  })
+
+  it('全局恢复 self-exit 后清家庭上下文、离开家庭并展示归档保留语义', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, 'http://127.0.0.1:3000')
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    const householdId = householdIdSchema.parse(uuidV7(10))
+    const membershipId = membershipIdSchema.parse(
+      membershipFixture({ sequence: 20 }).id
+    )
+    services.session.saveCurrentHouseholdId(householdId)
+    platform.enqueueResponse(new Error('lost exit response'))
+    await services.commands.execute(
+      'membership:remove:self',
+      '/pages/members/index',
+      {
+        kind: 'membership.remove',
+        payload: { householdId, membershipId, isSelf: true }
+      }
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope(removeMembershipResultFixture('left'))
+    )
+    cleanupServices = installAppServicesForPageTest(services)
+    await act(async () => {
+      renderer = create(<PendingCommandRecovery />)
+    })
+    const activeRenderer = requireRenderer()
+    const retry = activeRenderer.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原命令')
+    assert.ok(retry)
+    await act(async () => {
+      retry.props['onClick']()
+      await settleEffects()
+    })
+
+    assert.equal(services.session.restoreCurrentHouseholdId(), null)
+    assert.deepEqual(platform.navigations.at(-1), {
+      kind: 'reLaunch',
+      route: HOUSEHOLDS_ROUTE
+    })
+    assert.match(
+      textContent(activeRenderer.toJSON()),
+      /档案已归档并保留.*不会自动恢复/
+    )
+  })
+
+  it('全局恢复 join 后切换家庭，确定失败和认证暂停都有可见状态', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, 'http://127.0.0.1:3000')
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueResponse(new Error('lost join response'))
+    await services.commands.execute(
+      'household:join',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.join',
+        payload: { inviteCode: INVITE_CODE }
+      }
+    )
+    platform.enqueueJson(200, successEnvelope(joinHouseholdResultFixture()))
+    cleanupServices = installAppServicesForPageTest(services)
+    await act(async () => {
+      renderer = create(<PendingCommandRecovery />)
+    })
+    let activeRenderer = requireRenderer()
+    assert.match(textContent(activeRenderer.toJSON()), /结果未知/)
+    const retry = activeRenderer.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原命令')
+    assert.ok(retry)
+    await act(async () => {
+      retry.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(
+      services.session.restoreCurrentHouseholdId(),
+      joinHouseholdResultFixture().household.id
+    )
+    assert.match(textContent(activeRenderer.toJSON()), /已加入家庭并切换到成员页/)
+
+    activeRenderer.unmount()
+    requireCleanup()()
+    renderer = undefined
+    cleanupServices = undefined
+
+    const forbiddenPlatform = new FakePlatform()
+    const forbiddenServices = createAppServices(
+      forbiddenPlatform,
+      'http://127.0.0.1:3000'
+    )
+    forbiddenServices.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    const householdId = householdIdSchema.parse(uuidV7(10))
+    forbiddenPlatform.enqueueResponse(new Error('lost invite response'))
+    await forbiddenServices.commands.execute(
+      'invite:create:forbidden',
+      '/pages/members/index',
+      {
+        kind: 'invite.create',
+        payload: {
+          householdId,
+          draft: { maxUses: 1, expiresInHours: 24 }
+        }
+      }
+    )
+    forbiddenPlatform.enqueueJson(403, apiErrorBody('FORBIDDEN'))
+    cleanupServices = installAppServicesForPageTest(forbiddenServices)
+    await act(async () => {
+      renderer = create(<PendingCommandRecovery />)
+    })
+    activeRenderer = requireRenderer()
+    const forbiddenRetry = activeRenderer.root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原命令')
+    assert.ok(forbiddenRetry)
+    await act(async () => {
+      forbiddenRetry.props['onClick']()
+      await settleEffects()
+    })
+    assert.match(textContent(activeRenderer.toJSON()), /只有家庭所有者/)
+    assert.equal(forbiddenServices.pendingCommands.status().phase, 'idle')
+
+    activeRenderer.unmount()
+    requireCleanup()()
+    renderer = undefined
+    cleanupServices = undefined
+
+    const suspendedPlatform = new FakePlatform()
+    const suspendedServices = createAppServices(
+      suspendedPlatform,
+      'http://127.0.0.1:3000'
+    )
+    suspendedServices.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    suspendedPlatform.enqueueResponse(new Error('lost create response'))
+    await suspendedServices.commands.execute(
+      'household:create:suspended',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '暂停家庭', ownerDisplayName: '成员甲' }
+      }
+    )
+    suspendedServices.pendingCommands.suspendForAuthentication()
+    cleanupServices = installAppServicesForPageTest(suspendedServices)
+    await act(async () => {
+      renderer = create(<PendingCommandRecovery />)
+    })
+    assert.match(
+      textContent(requireRenderer().toJSON()),
+      /会话已暂停.*原账号/
+    )
+  })
+
+  it('全局 retry 清除 pending 后，相关真实页面通过订阅重新渲染并解除禁用', async () => {
+    const platform = new FakePlatform()
+    const services = createAppServices(platform, 'http://127.0.0.1:3000')
+    services.authenticate(
+      authenticatedSessionSchema.parse(authenticatedSessionFixture())
+    )
+    platform.enqueueResponse(new Error('lost create response'))
+    await services.commands.execute(
+      'household:create',
+      HOUSEHOLDS_ROUTE,
+      {
+        kind: 'household.create',
+        payload: { name: '恢复家庭', ownerDisplayName: '成员甲' }
+      }
+    )
+    platform.enqueueJson(
+      200,
+      successEnvelope({
+        items: [],
+        pageInfo: { nextCursor: null, hasMore: false }
+      })
+    )
+    platform.enqueueJson(
+      201,
+      successEnvelope(createHouseholdResultFixture())
+    )
+    cleanupServices = installAppServicesForPageTest(services)
+    await act(async () => {
+      renderer = create(
+        <>
+          <HouseholdsPage />
+          <PendingCommandRecovery />
+        </>
+      )
+      await settleEffects()
+    })
+    const householdName = () =>
+      requireRenderer().root
+        .findAll((node) => String(node.type) === 'taro-input')
+        .find((input) => input.props['placeholder'] === '例如：我家')
+    assert.equal(householdName()?.props['disabled'], true)
+    const retry = requireRenderer().root
+      .findAll((node) => String(node.type) === 'taro-button')
+      .find((button) => buttonText(button) === '重试原命令')
+    assert.ok(retry)
+    await act(async () => {
+      retry.props['onClick']()
+      await settleEffects()
+    })
+    assert.equal(services.pendingCommands.status().phase, 'idle')
+    assert.equal(householdName()?.props['disabled'], false)
+    assert.match(
+      textContent(requireRenderer().toJSON()),
+      /家庭已创建，已切换到该家庭/
+    )
   })
 
   it('HouseholdsPage 明示新成员事实为未知且不再展示推测默认值', async () => {

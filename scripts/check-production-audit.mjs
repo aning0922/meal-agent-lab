@@ -5,11 +5,16 @@ import {
   readdirSync,
   statSync
 } from 'node:fs'
+import { createServer } from 'node:http'
 import { relative, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { gunzipSync } from 'node:zlib'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const auditEndpoint =
+  'https://registry.npmjs.org/-/npm/v1/security/advisories/bulk'
+const maximumAuditBodyBytes = 16 * 1024 * 1024
 
 const assertExactKeys = (value, keys, label) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -300,17 +305,203 @@ export const assertAcceptedAdvisories = (policy, actual) => {
   }
 }
 
+/**
+ * npm audit 的 HKG 边缘曾返回无 Content-Encoding 头的 gzip payload。
+ * 这里只接受两种可验证表示：直接 JSON，或带 gzip magic/CRC 的 JSON。
+ * 任何损坏压缩、超限、非 JSON 或非 object 仍 fail closed。
+ */
+export const normalizeAuditRegistryBody = (input) => {
+  if (!Buffer.isBuffer(input) || input.length === 0) {
+    throw new Error('audit registry returned an empty body')
+  }
+  if (input.length > maximumAuditBodyBytes) {
+    throw new Error('audit registry response exceeds the size limit')
+  }
+  const isGzip = input[0] === 0x1f && input[1] === 0x8b
+  let body
+  try {
+    body = isGzip
+      ? gunzipSync(input, {
+          maxOutputLength: maximumAuditBodyBytes
+        })
+      : input
+  } catch {
+    throw new Error('audit registry returned invalid gzip')
+  }
+  if (body.length > maximumAuditBodyBytes) {
+    throw new Error('decoded audit registry response exceeds the size limit')
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(body.toString('utf8'))
+  } catch {
+    throw new Error('audit registry returned non-JSON data')
+  }
+  if (
+    parsed === null ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed)
+  ) {
+    throw new Error('audit registry JSON must be an object')
+  }
+  return body
+}
+
+const readRequestBody = async (request) => {
+  const chunks = []
+  let bytes = 0
+  for await (const chunk of request) {
+    bytes += chunk.length
+    if (bytes > maximumAuditBodyBytes) {
+      throw new Error('audit request exceeds the size limit')
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks)
+}
+
+/**
+ * pnpm 仍负责根据 lockfile 生成请求、计算实际依赖路径并产生标准 audit
+ * JSON。loopback relay 只修复官方 HTTPS endpoint 的传输表示，不生成、
+ * 缓存或伪造 advisory；所有异常都返回 502，让 pnpm/gate 失败。
+ */
+const startAuditRegistryRelay = async () => {
+  const server = createServer(async (request, response) => {
+    try {
+      if (
+        request.method !== 'POST' ||
+        request.url !== '/-/npm/v1/security/advisories/bulk'
+      ) {
+        response.writeHead(404, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ error: 'unsupported audit route' }))
+        return
+      }
+      const requestBody = await readRequestBody(request)
+      const upstream = await fetch(auditEndpoint, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'accept-encoding': 'identity',
+          'content-type': 'application/json'
+        },
+        body: requestBody,
+        signal: AbortSignal.timeout(60_000)
+      })
+      const upstreamBody = Buffer.from(await upstream.arrayBuffer())
+      if (upstream.status !== 200) {
+        throw new Error(
+          `audit registry responded with HTTP ${upstream.status}`
+        )
+      }
+      const normalized = normalizeAuditRegistryBody(upstreamBody)
+      response.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': String(normalized.length),
+        'cache-control': 'no-store'
+      })
+      response.end(normalized)
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error)
+      response.writeHead(502, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store'
+      })
+      response.end(JSON.stringify({ error: message }))
+    }
+  })
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolvePromise)
+  })
+  const address = server.address()
+  if (address === null || typeof address === 'string') {
+    server.close()
+    throw new Error('could not bind the audit registry relay')
+  }
+  return {
+    registry: `http://127.0.0.1:${address.port}/`,
+    close: () =>
+      new Promise((resolvePromise, reject) => {
+        server.close((error) =>
+          error === undefined ? resolvePromise() : reject(error)
+        )
+      })
+  }
+}
+
+const runAuditCommand = async (registry) => {
+  const pnpmEntrypoint = process.env.npm_execpath
+  const executable =
+    pnpmEntrypoint === undefined ? 'pnpm' : process.execPath
+  const argumentsList =
+    pnpmEntrypoint === undefined
+      ? ['audit', '--prod', '--json', `--registry=${registry}`]
+      : [
+          pnpmEntrypoint,
+          'audit',
+          '--prod',
+          '--json',
+          `--registry=${registry}`
+        ]
+  return await new Promise((resolvePromise) => {
+    const child = spawn(executable, argumentsList, {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const stdout = []
+    const stderr = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+    let exceededBuffer = false
+    const collect = (chunks, chunk, currentBytes) => {
+      const nextBytes = currentBytes + chunk.length
+      if (nextBytes > maximumAuditBodyBytes) {
+        exceededBuffer = true
+        child.kill('SIGTERM')
+        return nextBytes
+      }
+      chunks.push(chunk)
+      return nextBytes
+    }
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes = collect(stdout, chunk, stdoutBytes)
+    })
+    child.stderr.on('data', (chunk) => {
+      stderrBytes = collect(stderr, chunk, stderrBytes)
+    })
+    child.once('error', (error) => {
+      resolvePromise({
+        status: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        error
+      })
+    })
+    child.once('close', (status, signal) => {
+      resolvePromise({
+        status: exceededBuffer ? 2 : status,
+        signal,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8')
+      })
+    })
+  })
+}
+
 const collectFiles = (directory) =>
   readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = resolve(directory, entry.name)
     return entry.isDirectory() ? collectFiles(path) : [path]
   })
 
-const main = () => {
+const main = async () => {
   const fail = (message) => {
     process.stderr.write(`audit gate failed: ${message}\n`)
     process.exitCode = 1
   }
+  let relay
   try {
     const policyPath = resolve(root, 'security/audit-exceptions.json')
     const policy = validateAuditPolicy(
@@ -325,23 +516,8 @@ const main = () => {
         `target "${target || '(missing)'}" is blocked; exception only permits ${policy.allowedTarget}`
       )
     }
-    const pnpmEntrypoint = process.env.npm_execpath
-    const command =
-      pnpmEntrypoint === undefined
-        ? spawnSync('pnpm', ['audit', '--prod', '--json'], {
-            cwd: root,
-            encoding: 'utf8',
-            maxBuffer: 16 * 1024 * 1024
-          })
-        : spawnSync(
-            process.execPath,
-            [pnpmEntrypoint, 'audit', '--prod', '--json'],
-            {
-              cwd: root,
-              encoding: 'utf8',
-              maxBuffer: 16 * 1024 * 1024
-            }
-          )
+    relay = await startAuditRegistryRelay()
+    const command = await runAuditCommand(relay.registry)
     const { audit, actual } = interpretAuditCommand(command)
     assertAcceptedAdvisories(policy, actual)
 
@@ -390,9 +566,11 @@ const main = () => {
     process.stdout.write(`audit exception gate PASS ${JSON.stringify(result)}\n`)
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error))
+  } finally {
+    await relay?.close()
   }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main()
+  await main()
 }
