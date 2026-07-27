@@ -119,12 +119,23 @@ test("only a normal trailing line ending is tolerated around the banner", () => 
     "\npsql (PostgreSQL) 18.4",
     "\n\npsql (PostgreSQL) 18.4\n",
     "\r\npsql (PostgreSQL) 18.4",
-    // 行尾多余空白同样不是正常行尾。
+    // 裸 CR 不是正常行尾：既不剥掉也不容忍。
+    "psql (PostgreSQL) 18.4\r",
+    "psql (PostgreSQL) 18.4\r\r\n",
+    "psql (PostgreSQL)\r18.4",
+    "psql (PostgreSQL) 18.4\n\r",
+    // 行尾多余空白同样不是正常行尾——包括 vendor suffix 之后的空格与 Tab。
     "psql (PostgreSQL) 18.4 ",
     "psql (PostgreSQL) 18.4\t",
     "psql (PostgreSQL) 18.4 \n",
+    "psql (PostgreSQL) 18.4\t\n",
+    "psql (PostgreSQL) 18.4 (Homebrew) ",
+    "psql (PostgreSQL) 18.4 (Homebrew)\t",
+    "psql (PostgreSQL) 18.4 (Homebrew) \n",
+    "psql (PostgreSQL) 18.4 (Homebrew)\t\r\n",
     // 两个换行意味着输出不止一行。
     "psql (PostgreSQL) 18.4\n\n",
+    "psql (PostgreSQL) 18.4\r\n\r\n",
   ]) {
     assert.equal(
       parsePostgresBanner("psql", text).ok,
@@ -133,11 +144,14 @@ test("only a normal trailing line ending is tolerated around the banner", () => 
     );
   }
 
-  // 只有「恰好一个行尾换行」被容许。
+  // 只有「无换行 / 单个 LF / 单个 CRLF」三种形态被容许。
   for (const text of [
     "psql (PostgreSQL) 18.4",
     "psql (PostgreSQL) 18.4\n",
     "psql (PostgreSQL) 18.4\r\n",
+    "psql (PostgreSQL) 18.4 (Homebrew)",
+    "psql (PostgreSQL) 18.4 (Homebrew)\n",
+    "psql (PostgreSQL) 18.4 (Homebrew)\r\n",
   ]) {
     assert.equal(
       parsePostgresBanner("psql", text).ok,

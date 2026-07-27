@@ -46,16 +46,18 @@ const bannerPattern =
   /^(?<tool>[A-Za-z_][A-Za-z0-9_]*) \(PostgreSQL\) (?<version>\d+\.\d+)(?: \S.*)?$/;
 
 /**
- * 只剥掉**一个正常行尾换行**（`\n` 或 `\r\n`），不做 `trim()`。
+ * 只剥掉**一个正常行尾换行**：`\r\n` 或 `\n`，别的一律不动，也不做 `trim()`。
  *
  * `trim()` 会连前导空白与前导空行一起吃掉，于是 `"  psql (PostgreSQL) 18.4"` 或
  * 一段带前导噪声的输出都能通过——而那已经不是这个可执行文件的标准 banner 了。
+ * 裸 `\r` 同理：它不是正常行尾，剥掉它等于替一个畸形输出打补丁，因此保留在串里，
+ * 由后面的 CR/LF 检查拒绝。
  */
 const stripLineEnding = (banner: string): string => {
-  const withoutNewline = banner.endsWith("\n") ? banner.slice(0, -1) : banner;
-  return withoutNewline.endsWith("\r")
-    ? withoutNewline.slice(0, -1)
-    : withoutNewline;
+  if (banner.endsWith("\r\n")) {
+    return banner.slice(0, -2);
+  }
+  return banner.endsWith("\n") ? banner.slice(0, -1) : banner;
 };
 
 export interface PostgresBannerResult {
@@ -83,6 +85,13 @@ export const parsePostgresBanner = (
       detail: `expected a single-line version banner, got ${JSON.stringify(
         banner,
       )}`,
+    };
+  }
+  // 行尾空白（空格或 Tab）也不是正常行尾：vendor suffix 之后不应该再有东西。
+  if (/\s$/.test(line)) {
+    return {
+      ok: false,
+      detail: `version banner has trailing whitespace: ${JSON.stringify(line)}`,
     };
   }
   const match = bannerPattern.exec(line);

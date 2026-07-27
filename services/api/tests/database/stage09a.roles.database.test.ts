@@ -5907,89 +5907,173 @@ test("cleanup drops only the roles that exist and still leaves nothing behind", 
   // 整条语句因为第三个角色不存在而失败，前两个角色的授权与对象全部残留。
   // 这里就复现那种「部分注入」的形态，并证明逐角色清理不会被缺席的角色带垮。
   const prefix = "stage09a_partial_";
+  const escapedPrefix = "stage09a!_partial!_";
   const created = [`${prefix}alpha`, `${prefix}gamma`] as const;
   const absent = `${prefix}beta`;
+  const candidates = [...created, absent];
+  const table = `public.${prefix}owned`;
   const { errors, stage } = createCleanupRecorder();
+  // OID 保存在外层：注入中途失败时，兜底清理仍然知道要删哪个 Large Object。
+  let largeObjectId = "";
+  let bodyError: unknown;
 
-  await withPool(adminPoolConfig(), async (pool) => {
-    for (const role of created) {
-      await pool.query(`DROP ROLE IF EXISTS ${role}`);
-    }
-    await pool.query(`DROP ROLE IF EXISTS ${absent}`);
-    // 只创建两个：beta 故意缺席。
-    for (const role of created) {
-      await pool.query(`CREATE ROLE ${role} NOLOGIN`);
-      await pool.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
-      await pool.query(`GRANT SELECT ON public.households TO ${role}`);
-      await pool.query(
-        `GRANT SELECT (display_name) ON public.users TO ${role}`,
-      );
-      await pool.query(
-        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
-          `GRANT SELECT ON TABLES TO ${role}`,
-      );
-    }
-    // 其中一个角色还拥有一个真实对象与一个 Large Object：DROP OWNED BY 必须把
-    // 它们一并带走，否则「无残留」只是没检查到。
-    await pool.query(`CREATE TABLE public.${prefix}owned (id int)`);
-    await pool.query(
-      `ALTER TABLE public.${prefix}owned OWNER TO ${created[0]}`,
-    );
-    const loid = await pool.query<{ loid: string }>(
-      "SELECT lo_from_bytea(0, 'stage09a-partial'::bytea)::text AS loid",
-    );
-    const owned = loid.rows[0]?.loid;
-    assert.ok(owned !== undefined);
-    await pool.query(`ALTER LARGE OBJECT ${owned} OWNER TO ${created[0]}`);
-  });
-
-  // 注入确实生效：先证明「有东西要清理」，否则「无残留」不构成证据。
-  assert.notDeepEqual(await injectedLeftovers(`${prefix.replaceAll("_", "!_")}`, ""), []);
-
-  // 撤销 default privilege（它不属于 DROP OWNED BY 之外的任何一步的副产物，
-  // 但对不存在的角色执行会失败——同样必须逐角色成阶段）。
-  for (const role of [...created, absent]) {
-    await stage(`revoke-default-${role}`, async () => {
-      await withPool(adminPoolConfig(), async (pool) => {
+  try {
+    await withPool(adminPoolConfig(), async (pool) => {
+      for (const role of candidates) {
+        await pool.query(`DROP ROLE IF EXISTS ${role}`);
+      }
+      // 只创建两个：beta 故意缺席。
+      for (const role of created) {
+        await pool.query(`CREATE ROLE ${role} NOLOGIN`);
+        await pool.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+        await pool.query(`GRANT SELECT ON public.households TO ${role}`);
+        await pool.query(
+          `GRANT SELECT (display_name) ON public.users TO ${role}`,
+        );
         await pool.query(
           `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
-            `REVOKE SELECT ON TABLES FROM ${role}`,
+            `GRANT SELECT ON TABLES TO ${role}`,
         );
+      }
+      // 其中一个角色还拥有一个真实对象与一个 Large Object：DROP OWNED BY 必须把
+      // 它们一并带走，否则「无残留」只是没检查到。
+      await pool.query(`CREATE TABLE ${table} (id int)`);
+      await pool.query(`ALTER TABLE ${table} OWNER TO ${created[0]}`);
+      const loid = await pool.query<{ loid: string }>(
+        "SELECT lo_from_bytea(0, 'stage09a-partial'::bytea)::text AS loid",
+      );
+      const owned = loid.rows[0]?.loid;
+      assert.ok(owned !== undefined);
+      largeObjectId = owned;
+      await pool.query(`ALTER LARGE OBJECT ${owned} OWNER TO ${created[0]}`);
+    });
+
+    // 注入确实生效：先证明「有东西要清理」，否则「无残留」不构成证据。
+    assert.notDeepEqual(
+      await injectedLeftovers(escapedPrefix, largeObjectId),
+      [],
+      "the injection must really leave something behind to clean up",
+    );
+
+    // 撤销 default privilege：它不是 DROP OWNED BY 的副产物，而对不存在的角色执行
+    // 会失败——因此同样必须逐角色成阶段。
+    for (const role of candidates) {
+      await stage(`revoke-default-${role}`, async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(
+            `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+              `REVOKE SELECT ON TABLES FROM ${role}`,
+          );
+        });
+      });
+    }
+    const dropped = await dropInjectedRolesIndividually(candidates, stage);
+
+    // 只有真实存在的两个角色被枚举出来并逐个删除；缺席的第三个既不报错也不阻塞。
+    assert.deepEqual(dropped, [...created]);
+    assert.equal(
+      errors.length,
+      1,
+      "only the revoke aimed at the absent role may fail",
+    );
+    const [failure] = errors;
+    assert.ok(failure instanceof Error);
+    assert.match(failure.message, new RegExp(`revoke-default-${absent} failed`));
+    // 底层原因必须是 PostgreSQL 的 undefined_object，而不是别的偶发错误：
+    // 只断言「有一条失败」会把连接中断之类的问题也当成通过。
+    assert.match(failure.message, new RegExp(`role "${absent}" does not exist`));
+    const cause: unknown = failure.cause;
+    assert.equal(
+      (cause as { readonly code?: unknown }).code,
+      "42704",
+      "the deliberate failure must be undefined_object for the absent role",
+    );
+
+    // 清理后由独立 catalog 查询复查：角色、成员关系、七类 ACL、default ACL、
+    // 归属与 Large Object 全部为零。
+    assert.deepEqual(
+      await injectedLeftovers(escapedPrefix, largeObjectId),
+      [],
+      "per-role cleanup must leave no role, grant, owned object or large object",
+    );
+    // 成功路径的关键点：表与 Large Object 是被 DROP OWNED BY **本身**带走的，
+    // 下面的 finally 只是兜底，不能替它作证。
+    await withPool(adminPoolConfig(), async (pool) => {
+      const present = await pool.query<{
+        table_present: string | null;
+        large_objects: string;
+      }>(
+        `SELECT to_regclass($1)::text AS table_present,
+                (SELECT count(*)::text FROM pg_catalog.pg_largeobject_metadata
+                  WHERE oid = $2::text::oid) AS large_objects`,
+        [table, largeObjectId],
+      );
+      assert.deepEqual(present.rows[0], {
+        table_present: null,
+        large_objects: "0",
       });
     });
+  } catch (error) {
+    bodyError = error;
+  } finally {
+    // 兜底清理必须能从**任意中断点**接手，因此每一步都是幂等的：先按实际存在的
+    // 角色撤销 default privilege，再显式删表、按已保存的 OID 尝试 lo_unlink，
+    // 最后逐角色 DROP OWNED / DROP ROLE。它不依赖正文的任何断言已经执行过。
+    const fallback = createCleanupRecorder();
+    let existing: readonly string[] = [];
+    await fallback.stage("fallback-enumerate-roles", async () => {
+      existing = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ rolname: string }>(
+          `SELECT rolname FROM pg_catalog.pg_roles
+            WHERE rolname = ANY ($1::text[]) ORDER BY rolname`,
+          [candidates],
+        );
+        return result.rows.map((row) => row.rolname);
+      });
+    });
+    for (const role of existing) {
+      await fallback.stage(`fallback-revoke-default-${role}`, async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(
+            `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+              `REVOKE SELECT ON TABLES FROM ${role}`,
+          );
+        });
+      });
+    }
+    await fallback.stage("fallback-drop-table", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`DROP TABLE IF EXISTS ${table}`);
+      });
+    });
+    if (largeObjectId !== "") {
+      await fallback.stage("fallback-unlink-large-object", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          // 用 WHERE 过滤而不是直接 lo_unlink：对象已经不在时返回零行，不报错。
+          await pool.query(
+            `SELECT lo_unlink(m.oid) FROM pg_catalog.pg_largeobject_metadata m
+              WHERE m.oid = $1::text::oid`,
+            [largeObjectId],
+          );
+        });
+      });
+    }
+    await dropInjectedRolesIndividually(candidates, fallback.stage);
+
+    for (const error of fallback.errors) {
+      process.stdout.write(
+        `partial-role fallback cleanup: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
+    if (bodyError !== undefined) {
+      throw bodyError;
+    }
+    if (fallback.errors[0] !== undefined) {
+      throw fallback.errors[0];
+    }
   }
-  const dropped = await dropInjectedRolesIndividually(
-    [...created, absent],
-    stage,
-  );
-
-  // 只有真实存在的两个角色被枚举出来并逐个删除；缺席的第三个既不报错也不阻塞。
-  assert.deepEqual(dropped, [...created]);
-  assert.deepEqual(
-    errors.map((error) =>
-      error instanceof Error ? error.message.split(":")[0] : String(error),
-    ),
-    [`cleanup stage revoke-default-${absent} failed`],
-    "only the revoke aimed at the absent role may fail, and it must be recorded",
-  );
-
-  // 清理后由独立 catalog 查询复查：角色、成员关系、七类 ACL、default ACL、
-  // 归属与 Large Object 全部为零。
-  assert.deepEqual(
-    await injectedLeftovers(`${prefix.replaceAll("_", "!_")}`, ""),
-    [],
-    "per-role cleanup must leave no role, grant, owned object or large object",
-  );
-  await withPool(adminPoolConfig(), async (pool) => {
-    const table = await pool.query<{ present: string | null }>(
-      `SELECT to_regclass('public.${prefix}owned')::text AS present`,
-    );
-    assert.equal(
-      table.rows[0]?.present,
-      null,
-      "DROP OWNED BY must have taken the owned table with it",
-    );
-  });
 });
 
 test("the projection keeps identities unambiguous for names containing # @ | and quotes", async () => {
