@@ -6361,3 +6361,263 @@ test("the projection keeps identities unambiguous for names containing # @ | and
     });
   }
 });
+
+/**
+ * **独立** catalog 快照：直接读 ACL 列的文本，不经过 canonical projector。
+ * 收敛的证据因此不是「projector 自证」——即使 projector 与策略同时错了，这份
+ * 快照也会显示状态确实变了或确实没变。
+ */
+const rawAuthorizationSnapshot = async (
+  database: string = rolesDatabase,
+): Promise<string> =>
+  withPool(adminPoolConfig(database), async (pool) => {
+    const result = await pool.query<{ entry: string }>(
+      `SELECT 'database ' || COALESCE(d.datacl::text, '<null>') AS entry
+         FROM pg_database d WHERE d.datname = current_database()
+       UNION ALL
+       SELECT 'schema ' || n.nspname || ' '
+                || COALESCE(n.nspacl::text, '<null>')
+         FROM pg_namespace n
+        WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+       UNION ALL
+       SELECT 'relation ' || n.nspname || '.' || c.relname || ' '
+                || COALESCE(c.relacl::text, '<null>')
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+       UNION ALL
+       SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname
+                || ' ' || a.attacl::text
+         FROM pg_attribute a
+         JOIN pg_class c ON c.oid = a.attrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+          AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL
+       UNION ALL
+       SELECT 'routine ' || n.nspname || '.' || p.proname || '/'
+                || p.pronargs::text || ' ' || COALESCE(p.proacl::text, '<null>')
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+       UNION ALL
+       SELECT 'type ' || n.nspname || '.' || t.typname || ' '
+                || COALESCE(t.typacl::text, '<null>')
+         FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+       UNION ALL
+       SELECT 'language ' || l.lanname || ' '
+                || COALESCE(l.lanacl::text, '<null>')
+         FROM pg_language l
+       UNION ALL
+       SELECT 'lo-entry ' || p.proname || '/' || p.pronargs::text || ' '
+                || COALESCE(p.proacl::text, '<null>')
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'pg_catalog'
+          AND (p.proname LIKE 'lo\\_%' OR p.proname IN ('loread', 'lowrite'))
+       UNION ALL
+       SELECT 'default ' || pg_catalog.pg_get_userbyid(d.defaclrole) || ' '
+                || d.defaclobjtype::text || ' ' || COALESCE(dn.nspname, '-')
+                || ' ' || d.defaclacl::text
+         FROM pg_default_acl d
+         LEFT JOIN pg_namespace dn ON dn.oid = d.defaclnamespace
+       UNION ALL
+       SELECT 'largeobject ' || m.oid::text || ' '
+                || pg_catalog.pg_get_userbyid(m.lomowner)
+         FROM pg_largeobject_metadata m`,
+    );
+    return result.rows
+      .map((row) => row.entry)
+      .sort(byCodeUnit)
+      .join("\n");
+  });
+
+/** 备份角色真实持有的表级授权，直接从 relacl 读出。 */
+const backupTableGrants = async (): Promise<readonly string[]> =>
+  withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ entry: string }>(
+      `SELECT n.nspname || '.' || c.relname || ':' || acl.privilege_type
+                AS entry
+         FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace,
+              aclexplode(c.relacl) AS acl
+        WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+          AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'
+        ORDER BY 1`,
+    );
+    return result.rows.map((row) => row.entry);
+  });
+
+test("containment and final round-trip through the real acl and grants entries", async () => {
+  // 恢复/安装流程真正会走的顺序：acl → grants → acl → grants。containment 阶段
+  // 刻意不给备份角色任何表级 SELECT；final 阶段精确建立；切回 containment 时
+  // 必须**精确删除**刚建立的那一批，而不是留着或多删。
+  try {
+    await runBootstrap("acl");
+    const containment = await rawAuthorizationSnapshot();
+    assert.equal((await runAuthorizationVerify("containment")).code, 0);
+    assert.deepEqual(
+      await backupTableGrants(),
+      [],
+      "containment must not leave a full-database read grant behind",
+    );
+
+    await runBootstrap("grants");
+    const final = await rawAuthorizationSnapshot();
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+    const finalBackupGrants = await backupTableGrants();
+    assert.ok(
+      finalBackupGrants.length > 0,
+      "final must establish the backup read baseline",
+    );
+    assert.ok(
+      finalBackupGrants.every((entry) => entry.endsWith(":SELECT")),
+      "the backup baseline must be read-only",
+    );
+    assert.notEqual(containment, final, "the two phases must really differ");
+
+    await runBootstrap("acl");
+    assert.equal(
+      await rawAuthorizationSnapshot(),
+      containment,
+      "switching back to containment must remove exactly what final added",
+    );
+    assert.deepEqual(await backupTableGrants(), []);
+
+    await runBootstrap("grants");
+    assert.equal(
+      await rawAuthorizationSnapshot(),
+      final,
+      "switching forward again must rebuild exactly the final baseline",
+    );
+  } finally {
+    await bootstrap("acl");
+    await bootstrap("grants");
+  }
+});
+
+test("each converge phase is idempotent under an independent catalog snapshot", async () => {
+  try {
+    for (const phase of ["acl", "grants"] as const) {
+      await runBootstrap(phase);
+      const first = await rawAuthorizationSnapshot();
+      await runBootstrap(phase);
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        first,
+        `${phase} must converge, not accumulate`,
+      );
+      assert.equal(
+        (
+          await runAuthorizationVerify(
+            phase === "acl" ? "containment" : "final",
+          )
+        ).code,
+        0,
+      );
+    }
+  } finally {
+    await bootstrap("acl");
+    await bootstrap("grants");
+  }
+});
+
+test("acl and grants both fail before any mutation and report the same problems", async () => {
+  // 「先改、再靠事务回滚冒充 preflight」是被禁止的：这里每个用例都先注入一处
+  // **无关的**待收敛漂移，失败之后它必须原封不动地留着——如果收敛先跑了一部分
+  // 再回滚，快照对得上但命令语义已经不是 preflight 了；如果收敛真的跑了并提交，
+  // 快照会立刻对不上。
+  const problems = (stderr: string): string | undefined =>
+    /manifest version \d+\): (?<detail>[^\n]*)/u.exec(stderr)?.groups?.["detail"];
+
+  const cases: readonly {
+    label: string;
+    inject: string;
+    revert: string;
+    expected: RegExp;
+  }[] = [
+    {
+      label: "owner drift",
+      inject: "ALTER SCHEMA drizzle OWNER TO postgres",
+      revert: "ALTER SCHEMA drizzle OWNER TO meal_agent_migrator",
+      expected: new RegExp(
+        `object ${keyPattern("schema", "drizzle")} is owned by postgres`,
+      ),
+    },
+    {
+      label: "routine fingerprint drift",
+      inject:
+        "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) SECURITY INVOKER",
+      revert:
+        "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) SECURITY DEFINER",
+      expected: /drifted routine .*secdef=f/u,
+    },
+    {
+      label: "an unknown routine planted in public",
+      inject:
+        "CREATE FUNCTION public.stage09a_preflight_backdoor() RETURNS int " +
+        "LANGUAGE sql SECURITY DEFINER AS $$SELECT 1$$",
+      revert: "DROP FUNCTION public.stage09a_preflight_backdoor()",
+      expected: new RegExp(
+        `unknown routine ${keyPattern(
+          "routine",
+          "public",
+          "stage09a_preflight_backdoor",
+          [],
+        )}`,
+      ),
+    },
+    {
+      label: "membership granted to an external role",
+      inject:
+        "GRANT meal_agent_app TO meal_agent_backup_login WITH INHERIT TRUE",
+      revert: "REVOKE meal_agent_app FROM meal_agent_backup_login",
+      expected:
+        /unexpected role membership meal_agent_backup_login in meal_agent_app; run the cluster role baseline first/u,
+    },
+  ];
+
+  for (const testCase of cases) {
+    try {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query("GRANT SELECT ON public.households TO PUBLIC");
+        await pool.query(testCase.inject);
+      });
+      const before = await rawAuthorizationSnapshot();
+
+      const acl = await bootstrap("acl");
+      const grants = await bootstrap("grants");
+      assert.notEqual(acl.code, 0, `acl must refuse: ${testCase.label}`);
+      assert.notEqual(grants.code, 0, `grants must refuse: ${testCase.label}`);
+      assert.match(acl.stderr, testCase.expected, `acl: ${testCase.label}`);
+      assert.match(
+        grants.stderr,
+        testCase.expected,
+        `grants: ${testCase.label}`,
+      );
+      // 两个阶段的问题清单必须逐字相同：致命前置条件由同一段 generated 收敛块
+      // 承担，不再由两个入口各写一份。
+      assert.equal(
+        problems(acl.stderr),
+        problems(grants.stderr),
+        `both phases must report the same problems for: ${testCase.label}`,
+      );
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        before,
+        `nothing may change before the preflight fails: ${testCase.label}`,
+      );
+    } finally {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(testCase.revert).catch(() => undefined);
+        await pool
+          .query("REVOKE SELECT ON public.households FROM PUBLIC")
+          .catch(() => undefined);
+      });
+      await bootstrap("acl");
+      await bootstrap("grants");
+    }
+    assert.equal(
+      (await runAuthorizationVerify("final")).code,
+      0,
+      `the baseline must be clean again after: ${testCase.label}`,
+    );
+  }
+});
