@@ -149,29 +149,32 @@ export const defaultAclObjtypeMappings: readonly DefaultAclObjtypeMapping[] =
   ] as const);
 
 /**
- * 映射表本身 fail closed：objtype 必须是单字符、互不重复、按固定序排列，并且
- * 恰好覆盖 PostgreSQL 18 能写进 `pg_default_acl` 的全部 objtype。少一个就意味着
- * 那一类默认权限在 base 里静默消失，多一个则意味着渲染出一个 PostgreSQL 不认识
- * 的 `acldefault` 参数。
+ * canonical 六元组的**逐字文本**。校验只比对这一行：只检查「objtype 集合齐全」
+ * 是不够的——把 `S` 映射成 `S`（错误目标）或把 sequence 标成非 schema-scoped
+ * （错误作用域）都能通过集合检查，却分别导致低报权限与整类槽位消失。
+ */
+const canonicalObjtypeSignature = "L>L/f,S>s/t,T>T/t,f>f/t,n>n/f,r>r/t";
+
+const objtypeSignature = (
+  mappings: readonly DefaultAclObjtypeMapping[],
+): string =>
+  mappings
+    .map(
+      (mapping) =>
+        `${mapping.objtype}>${mapping.acldefaultObjtype}/` +
+        `${mapping.schemaScoped ? "t" : "f"}`,
+    )
+    .join(",");
+
+/**
+ * 映射表本身 fail closed。任何偏离 canonical 六元组的写法——少一项、多一项、
+ * 乱序、重复、映射到错误的 `acldefault` objtype，或标错 schema 作用域——都在渲染
+ * 之前抛出，而不是渲染出一段「少了一类默认权限」或「把 sequence 当 FOREIGN
+ * SERVER」的 SQL。
  */
 export const assertDefaultAclObjtypeMappings = (
   mappings: readonly DefaultAclObjtypeMapping[] = defaultAclObjtypeMappings,
 ): void => {
-  const objtypes = mappings.map((mapping) => mapping.objtype);
-  if (new Set(objtypes).size !== objtypes.length) {
-    throw new AuthorizationManifestError(
-      "duplicate pg_default_acl objtype in the acldefault mapping",
-    );
-  }
-  if (
-    [...objtypes].sort(byCodeUnit).join("") !== objtypes.join("") ||
-    objtypes.join("") !== "LSTfnr"
-  ) {
-    throw new AuthorizationManifestError(
-      "the acldefault mapping must cover exactly the six pg_default_acl " +
-        `objtypes L,S,T,f,n,r in code-unit order; found ${objtypes.join(",")}`,
-    );
-  }
   for (const mapping of mappings) {
     if (
       mapping.objtype.length !== 1 ||
@@ -182,6 +185,14 @@ export const assertDefaultAclObjtypeMappings = (
           "character to a single character",
       );
     }
+  }
+  const signature = objtypeSignature(mappings);
+  if (signature !== canonicalObjtypeSignature) {
+    throw new AuthorizationManifestError(
+      "the acldefault mapping must be exactly the canonical six " +
+        `<defaclobjtype>><acldefault objtype>/<schema-scoped> tuples ` +
+        `${canonicalObjtypeSignature}; found ${signature}`,
+    );
   }
 };
 

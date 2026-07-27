@@ -78,7 +78,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 39/39 |
+| API unit | 42/42 |
 | API HTTP | 7/7 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 108/108 |
 | client unit + page rendering | 129/129 |
@@ -133,15 +133,30 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 
 | 项 | 现状 |
 | --- | --- |
-| ACL 全主体覆盖 | 收敛与断言仍使用 `watchedGrantees` 静态名单。canonical projector 动态枚举全部 grantee/grantor，但**尚未接入** verify/converge |
-| default privilege | 现有 verify 仍用 `COALESCE(schema, global, builtin)` 冒充叠加语义，且同样把 `defaclobjtype` 直接喂给 `acldefault`（sequence 低报）。真实并集语义只在只读投影里，待接入 |
-| type / Large Object | 策略已写定：managed 非数组类型由 owner/migrator 保留必要 `USAGE`，`PUBLIC`/app/backup/三个 login 默认无 `USAGE`；数组类型只记录向元素类型委托，不建立也不撤销独立 ACL；任意 LO 对象 R8B 必须 fail closed，只报告不删数据，LO 的 OID 不进固定允许 manifest。**收敛实现属于 R8B，尚未落地** |
+| ACL 全主体覆盖 | 收敛与断言仍使用 `watchedGrantees` 静态名单。canonical projector 已做到目标覆盖面，但**尚未接入** verify/converge |
+| default privilege | 现有 verify 仍用 `COALESCE(schema, global, builtin)` 冒充叠加语义。真实并集语义只在只读投影里，待接入 |
+| `currentDefaultCte` 的 S→s 缺陷 | **已知缺陷，R8B 必须替换**：`authorization-manifest-sql.ts` 的 `currentDefaultCte` 同样把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，因此 sequence 的默认权限被低报为只剩 `USAGE`。它**同时被 converge 与 verify 两个块引用**，替换后必须重新生成并复验 `authorization-converge.generated.sql` 与 `authorization-verify.generated.sql` 两个 adapter。本轮属冻结路径，未改动 |
+| type / Large Object | **策略已决定，R8B 只负责落实、不再裁定**：managed 非数组类型由 owner/migrator 保留必要 `USAGE`，`PUBLIC`/app/backup/三个 login 默认无 `USAGE`；数组类型只记录向元素类型委托，不建立也不撤销独立 ACL；任意 LO 对象 R8B 必须 fail closed，只报告不删数据，LO 的 OID 不进固定允许 manifest |
+
+**「ACL 全主体覆盖」的准确含义**（避免被读成「枚举了所有角色的所有权限」）：
+
+- **normalized raw ACL**：在**受监管对象类别**（database、三个 managed schema 及
+  其中的 relation/sequence/column/routine/非数组 type、language、Large Object，以及
+  20 个 `pg_catalog` LO 入口点）内，动态枚举**全部 grantee 与 grantor**，不使用
+  任何静态名单；
+- **effective**：只覆盖 `PUBLIC`、项目角色（`meal_agent` 前缀）与目标库内**全部
+  非 superuser LOGIN**。它**不是**对集群所有角色的枚举，外部 NOLOGIN 角色不在
+  探测集合内（它们的直接授权仍由 raw 层可见）；
+- 未覆盖的对象类别也不声称覆盖：FDW/foreign server/user mapping、tablespace、
+  event trigger、subscription、publication、parameter ACL 均不在投影内。
 
 **证据边界**：以上只覆盖数据库身份与授权的**可观察性**。Compose、端口发布、secret file、备份恢复与阶段总门禁均未实现，也未取得证据；`pnpm stage09a:check` 尚未创建。
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector 最终修订**完成、待总控复验；R8B（把 projector 接入 verify/converge，并裁定类型/Large Object 的收敛）未开始；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过复验前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector 最终修订**完成、待总控复验；R8B（把 projector 接入 verify/converge、替换带 S→s 缺陷的 `currentDefaultCte` 并重新生成复验 converge/verify 两个 adapter、落实已决定的类型/Large Object 策略）未开始；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过复验前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
-- **两个阶段感知的事实源**。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**382 条规范化行**，描述 PUBLIC/app/backup/三个 login 的 catalog ACL、`pg_default_acl` 有效默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要；未登记的 `(ledger, phase)` fail closed。③R8A 新增的**只读授权投影**：`services/api/src/database/authorization-projection-sql.ts` 渲染的单条只读 SELECT，是 R8B 要接入的 canonical projector，**当前不被任何 bootstrap 阶段加载**。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
+- **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
+  受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
+  不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**382 条规范化行**，描述 PUBLIC/app/backup/三个 login 的 catalog ACL、`pg_default_acl` 有效默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要；未登记的 `(ledger, phase)` fail closed。③R8A 新增的**只读授权投影**：`services/api/src/database/authorization-projection-sql.ts` 渲染的单条只读 SELECT，是 R8B 要接入的 canonical projector，**当前不被任何 bootstrap 阶段加载**。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
 - **恢复/安装流程分为两个阶段**：`bootstrap.sh acl` 是 containment（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），`bootstrap.sh grants` 是 final（migration 之后建立最终 ACL，并**同时**验证 PUBLIC、app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只重建允许项，后验同时比对 catalog ACL 与 `has_*_privilege` 有效权限。
 - 产品声明禁用 Large Object，因此除 `lomacl` 与 `defaclobjtype='L'` 收敛为空外，还收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）的 `PUBLIC EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。R8B 起对**任意** LO 对象一律 fail closed，且只报告、不自动删除未知数据，LO 的 OID 不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。

@@ -147,7 +147,13 @@ login**——只检查备份角色会漏掉「migration 顺手把某张新表授
 不是允许角色白名单）。语义细节与 PostgreSQL 18.4 实测结论见
 [`services/api/README.md`](../../../services/api/README.md)。
 
-类型与 Large Object 的当前策略（R8A 只报告，收敛属于 R8B）：managed 非数组类型由
+**R8B 必须替换的已知缺陷**：`authorization-manifest-sql.ts` 的 `currentDefaultCte`
+把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的默认权限被低报为
+只剩 `USAGE`；它**同时被 `authorization-converge.generated.sql` 与
+`authorization-verify.generated.sql` 引用**，替换后两个 adapter 都必须重新生成并
+复验。R8A 属冻结路径，未改动它。
+
+类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：managed 非数组类型由
 owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个 login
 默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立 ACL；产品禁用
 Large Object，R8B 对**任意** LO 对象必须 fail closed，**只报告、不自动删除未知

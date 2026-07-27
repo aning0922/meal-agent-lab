@@ -27,7 +27,7 @@
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
 - （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的**只读**授权投影——投影尚未被任何 bootstrap 阶段加载）。仍然缺席的是 Compose 拓扑、`infra/environments/` 配置模板、容器 smoke test、备份恢复脚本与部署运行手册。
 - 当前总控机器可用 Node.js 24.14.0（M1 镜像内固定为 Node 24.18.0）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有实际 Compose 运行与备份恢复证据前仍不得把本阶段记为完成。
-- **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的：`scripts/stage-environment.ts` 对标准的 `postgres (PostgreSQL) 18.3` 输出直接 fail closed，并有单元测试证明。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
+- **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），五个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
 - 现有 local/weapp-only 依赖审计例外将在 2026-08-08 到期并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
 
@@ -110,11 +110,20 @@ PostgreSQL healthy
       非空 global 行替换内建默认而空行等价于没有行，以及以上每一条都能被**独立
       catalog 查询**复现。
     - **R8B（未开始）**才把 projector 接入 verify/converge、去掉
-      `watchedGrantees` 静态名单，并裁定类型与 Large Object 的收敛。R8B **不得**
-      把动态投影冻结成跨 cluster 的固定快照：`role` 行是覆盖面证据而非允许角色
-      白名单，外部角色按策略匹配，任意 LO 对象按政策判为异常且只报告不删数据，
-      LO 的 OID 不进入固定允许 manifest。
-15. 类型与 Large Object 的策略（R8A 只报告，收敛属于 R8B）：managed 非数组类型由
+      `watchedGrantees` 静态名单，并**落实**（不是再裁定）下面第 15 条已决定的
+      类型与 Large Object 策略。R8B 还必须替换
+      `authorization-manifest-sql.ts` 的 `currentDefaultCte`：它同样把
+      `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，因此 sequence 的默认
+      权限被低报；该 CTE **同时被 converge 与 verify 两个块引用**，替换后必须
+      重新生成并复验 `authorization-converge.generated.sql` 与
+      `authorization-verify.generated.sql`。R8B **不得**把动态投影冻结成跨 cluster
+      的固定快照：`role` 行是覆盖面证据而非允许角色白名单，外部角色按策略匹配，
+      任意 LO 对象按政策判为异常且只报告不删数据，LO 的 OID 不进入固定允许
+      manifest。
+    - 「ACL 全主体覆盖」的准确含义：**normalized raw ACL** 在受监管对象类别内
+      动态枚举全部 grantee 与 grantor；**effective** 只覆盖 `PUBLIC`、项目角色与
+      目标库内全部非 superuser LOGIN，不是对集群所有角色的枚举。
+15. 类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：managed 非数组类型由
     owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个
     login 默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立
     ACL（PostgreSQL 直接拒绝对数组类型授权与改属）；产品禁用 Large Object，创建/
@@ -193,7 +202,7 @@ PostgreSQL healthy
 | # | 必须满足 |
 | --- | --- |
 | 1 | 从干净 checkout 使用一条文档化命令构建并启动，不依赖本机 `node_modules`、`dist` 或全局 pnpm |
-| 2 | PostgreSQL 固定为 **18.4**（exact patch，`18.3` 被判据直接拒绝且有自动化测试），migration 从空库顺序执行，第二次执行幂等，checksum 漂移 fail closed；Compose 固定的 image digest 必须由真实仓库解析获得，不得编造 |
+| 2 | PostgreSQL 固定为 **18.4**（exact patch，`createdb`/`initdb`/`pg_ctl`/`postgres`/`psql` 五个工具逐一按 banner 主版本字段严格校验，混装与 `18.3` 一律拒绝，均有自动化测试），migration 从空库顺序执行，第二次执行幂等，checksum 漂移 fail closed；Compose 固定的 image digest 必须由真实仓库解析获得，不得编造 |
 | 3 | `/healthz` 只证明进程存活；数据库不可用、migration 缺失或 checksum 不一致时 `/readyz` 返回非 ready |
 | 4 | 原生 PostgreSQL 18 空实例真实完成 `0000 → database/public/drizzle/ledger 权限交接 → migration login SET ROLE 执行 0001—最新`；migration login 自身非 superuser，但 migrator role 的 DDL/BYPASSRLS 高权限被如实记录；API runtime 不能 DDL 或进入 `meal_agent_migrator`，也不持有 bootstrap/migration 凭据 |
 | 5 | PostgreSQL 无 host port；API 只发布到 `127.0.0.1`，无额外 IPv6 listener，宿主非 loopback 地址访问失败；fake 登录拓扑没有公网入口 |

@@ -75,6 +75,17 @@ R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未
 `authorization-manifest-sql.ts` 承担。下面的「目标设计」与「已实现事实」分开写，
 不要把前者当成后者。
 
+「ACL 全主体覆盖」指两件互不等同的事：**normalized raw ACL** 在受监管对象类别内
+动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色
+（`meal_agent` 前缀）与目标库内**全部非 superuser LOGIN**——它不是对集群所有角色的
+枚举，外部 NOLOGIN 角色的直接授权由 raw 层可见但不进入 effective 探测。
+
+**R8B 必须替换的已知缺陷**：`authorization-manifest-sql.ts` 的 `currentDefaultCte`
+同样把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的默认权限因此
+被低报为只剩 `USAGE`。该 CTE **同时被 converge 与 verify 两个块引用**（
+`renderAuthorizationConvergeAdapter` 与 `renderAuthorizationVerifySql`），替换后必须
+重新生成并复验两个 generated adapter。R8A 属冻结路径，未改动它。
+
 ### 冻结 0000 的安全 manifest
 
 已经应用过 `0000` 的库（幂等重跑，以及 bootstrap 侧的 owner handoff）不再各自
@@ -112,11 +123,15 @@ database owner 夺回给 admin——都直接拒绝，因为单字段判据会�
 
 对象 catalog 基线实际绑定 **PostgreSQL 18.4**：约束/索引/表达式的规范化文本、
 PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都由具体 patch
-版本决定。判据是 exact-patch 的，`scripts/stage-environment.ts` 对 `18.3` 直接
-fail closed，并有单元测试用标准 `postgres --version` 输出证明这一点。M2B 落
-Compose 时必须**解析真实仓库**得到 18.4 的 exact image digest 再固定，当前文档
-不得写入任何编造的 digest；patch 升级要重新 capture manifest、重跑 parity 并显式
-rebaseline。
+版本决定。判据是 exact-patch 的，并且覆盖**整套工具链**：`pnpm --filter
+@meal-agent/api environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、
+`psql` 逐个执行 `--version`，按标准 banner 的**主版本字段**严格解析（锚定文法，
+不做任何 `includes` / 子串判断），五个都必须是 exact 18.4。混装会被拒绝：任一工具
+是 18.3、banner 报的是别的工具名、或缺失/不可执行，即使 `postgres` 自己是 18.4 也
+失败；`psql (PostgreSQL) 18.3 (Ubuntu 18.4-1…)` 这种「主版本 18.3、vendor suffix
+含 18.4」的形态也会被拒绝。M2B 落 Compose 时必须**解析真实仓库**得到 18.4 的
+exact image digest 再固定，当前文档不得写入任何编造的 digest；patch 升级要重新
+capture manifest、重跑 parity 并显式 rebaseline。
 
 [`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
 把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何
@@ -205,7 +220,7 @@ app、backup 与三个 login）。两个阶段执行同一段生成的收敛块�
 在 ACL 上。因此投影不再按 `lanpltrusted` 过滤 raw 层——否则 raw 说「没人有
 USAGE」而 effective 说「所有人都有」，两层自相矛盾。
 
-类型与 Large Object 的当前策略（R8A 只报告，收敛属于 R8B）：
+类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：
 
 - **managed 非数组类型**：owner（`meal_agent_migrator`）保留必要 `USAGE`；
   `PUBLIC`、app、backup 与三个 login 默认无 `USAGE`。全新安装后 row type 的

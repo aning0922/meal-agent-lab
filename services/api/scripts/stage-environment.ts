@@ -4,46 +4,143 @@ import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const requiredPostgresExecutables = [
-  "postgres",
+
+/**
+ * 受监管的 PostgreSQL 工具。门禁不只看 `postgres`：`initdb` 建集群、`pg_ctl` 起
+ * 停、`createdb` 建库、`psql` 执行 bootstrap 与 generated adapter。任何一个来自
+ * 另一个 patch 的安装，采集到的 catalog 文本就可能与冻结 manifest 不一致，而
+ * 「只有 server 是 18.4」恰恰是最容易发生、也最难被发现的那种混装。
+ */
+export const requiredPostgresExecutables = [
+  "createdb",
   "initdb",
   "pg_ctl",
-  "createdb",
+  "postgres",
+  "psql",
 ] as const;
 
-const executableExists = async (path: string): Promise<boolean> => {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
+export type PostgresExecutable = (typeof requiredPostgresExecutables)[number];
+
+/**
+ * 对象 manifest 与授权 manifest 的 catalog 基线是从**具体 patch** 采集并冻结的：
+ * `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 的规范化文本、
+ * PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都可能随 patch
+ * 变化。因此判据 fail closed 到 exact 18.4，而不是宽松的 `18.x`：patch 升级必须
+ * 重新 capture manifest、重跑 parity 并显式 rebaseline。
+ *
+ * M2B 落地 Compose 之后，还要额外登记容器镜像的 exact image digest（必须解析真实
+ * 镜像仓库获得，不得编造）。
+ */
+export const supportedPostgresVersion = "18.4";
+
+/**
+ * 标准 banner 的严格文法：`<tool> (PostgreSQL) <major>.<minor>[ <vendor suffix>]`。
+ *
+ * 整串锚定匹配，**不做任何 `includes` / 子串判断**——子串判据会把
+ * `psql (PostgreSQL) 18.3 (Ubuntu 18.4-1.pgdg24.04+1)` 误判为 18.4：主版本字段是
+ * 18.3，`18.4` 只出现在 vendor suffix 里。版本号也必须恰好是两段，`18.4.1` 或
+ * `18.4beta1` 这类形态一律拒绝而不是宽容解析。
+ */
+const bannerPattern =
+  /^(?<tool>[A-Za-z_][A-Za-z0-9_]*) \(PostgreSQL\) (?<version>\d+\.\d+)(?: .*)?$/;
+
+export interface PostgresBannerResult {
+  readonly ok: boolean;
+  /** 解析出的主版本字段，仅在文法匹配时存在。 */
+  readonly version?: string;
+  /** 失败原因；成功时为空串。 */
+  readonly detail: string;
+}
+
+/**
+ * 解析单个工具的 `--version` 输出。
+ *
+ * banner 里的工具名必须与**实际执行的**工具名一致：否则一个把自己报成
+ * `postgres (PostgreSQL) 18.4` 的伪造 `psql` 就能骗过版本检查。
+ */
+export const parsePostgresBanner = (
+  tool: string,
+  banner: string,
+): PostgresBannerResult => {
+  const trimmed = banner.trim();
+  if (trimmed === "" || trimmed.includes("\n")) {
+    return {
+      ok: false,
+      detail: `expected a single-line version banner, got ${JSON.stringify(
+        banner,
+      )}`,
+    };
   }
+  const match = bannerPattern.exec(trimmed);
+  if (match?.groups === undefined) {
+    return {
+      ok: false,
+      detail:
+        `expected a PostgreSQL version banner, got ${JSON.stringify(trimmed)}`,
+    };
+  }
+  const reported = match.groups["tool"];
+  const version = match.groups["version"];
+  if (reported === undefined || version === undefined) {
+    return {
+      ok: false,
+      detail: `unparsable version banner: ${JSON.stringify(trimmed)}`,
+    };
+  }
+  if (reported !== tool) {
+    return {
+      ok: false,
+      detail:
+        `banner reports ${JSON.stringify(reported)} but the executable ` +
+        `is ${JSON.stringify(tool)}: ${JSON.stringify(trimmed)}`,
+    };
+  }
+  if (version !== supportedPostgresVersion) {
+    return {
+      ok: false,
+      version,
+      detail:
+        `expected PostgreSQL ${supportedPostgresVersion}, found ` +
+        `${version}: ${JSON.stringify(trimmed)}`,
+    };
+  }
+  return { ok: true, version, detail: "" };
 };
 
-const postgresVersionAt = async (
-  binDirectory: string,
-): Promise<string | undefined> => {
-  if (
-    !(
-      await Promise.all(
-        requiredPostgresExecutables.map((name) =>
-          executableExists(join(binDirectory, name)),
-        ),
-      )
-    ).every(Boolean)
-  ) {
-    return undefined;
+/** `null` 表示该工具缺失、不可执行或执行失败。 */
+export type PostgresToolBanner = string | null;
+
+export interface PostgresToolchainFailure {
+  readonly tool: string;
+  readonly detail: string;
+}
+
+/**
+ * 判定一整套工具链。返回**全部**失败项而不是第一项：混装时运维需要一次看清
+ * 哪几个工具来自别的安装。
+ */
+export const evaluatePostgresToolchain = (
+  banners: Readonly<Partial<Record<PostgresExecutable, PostgresToolBanner>>>,
+): readonly PostgresToolchainFailure[] => {
+  const failures: PostgresToolchainFailure[] = [];
+  for (const tool of requiredPostgresExecutables) {
+    const banner = banners[tool];
+    if (banner === undefined || banner === null) {
+      failures.push({ tool, detail: "is missing or not executable" });
+      continue;
+    }
+    const parsed = parsePostgresBanner(tool, banner);
+    if (!parsed.ok) {
+      failures.push({ tool, detail: parsed.detail });
+    }
   }
-  try {
-    const { stdout } = await execFileAsync(
-      join(binDirectory, "postgres"),
-      ["--version"],
-    );
-    return stdout.trim();
-  } catch {
-    return undefined;
-  }
+  return failures;
 };
+
+const describeFailures = (
+  failures: readonly PostgresToolchainFailure[],
+): string =>
+  failures.map((failure) => `${failure.tool} ${failure.detail}`).join("; ");
 
 export const assertStageNodeVersion = (): void => {
   const [major = 0, minor = 0] = process.versions.node
@@ -56,41 +153,61 @@ export const assertStageNodeVersion = (): void => {
   }
 };
 
-/**
- * 对象 manifest 的 catalog 基线是从**具体 patch 版本**采集并冻结的：
- * `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 的规范化文本、
- * PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都可能随 patch
- * 变化。因此这里 fail closed 到 exact 18.4，而不是宽松的 `18.x`：patch 升级必须
- * 重新 capture manifest、重跑 parity 并显式 rebaseline。
- *
- * M2B 落地 Compose 之后，还要额外登记容器镜像的 exact manifest digest。
- */
-export const supportedPostgresVersion = "18.4";
+const executableExists = async (path: string): Promise<boolean> => {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
-/**
- * exact-patch 判据。导出只是为了可测：`postgres --version` 的标准输出形如
- * `postgres (PostgreSQL) 18.3`，而 18.3 与 18.4 的 catalog 基线不可互换，因此
- * 必须有一条自动化测试证明 18.3 被拒绝，而不是靠人读这段注释。
- */
-export const isSupportedPostgres = (version: string): boolean =>
-  version.includes(` ${supportedPostgresVersion} `) ||
-  version.includes(` ${supportedPostgresVersion}\n`) ||
-  version.trimEnd().endsWith(` ${supportedPostgresVersion}`);
+/** 逐个执行 `--version`；缺失或执行失败都返回 `null`，交给判定层统一处理。 */
+const collectToolchainBanners = async (
+  binDirectory: string,
+): Promise<Record<PostgresExecutable, PostgresToolBanner>> => {
+  const entries = await Promise.all(
+    requiredPostgresExecutables.map(
+      async (tool): Promise<[PostgresExecutable, PostgresToolBanner]> => {
+        const path = join(binDirectory, tool);
+        if (!(await executableExists(path))) {
+          return [tool, null];
+        }
+        try {
+          const { stdout } = await execFileAsync(path, ["--version"]);
+          return [tool, stdout];
+        } catch {
+          return [tool, null];
+        }
+      },
+    ),
+  );
+  return Object.fromEntries(entries) as Record<
+    PostgresExecutable,
+    PostgresToolBanner
+  >;
+};
 
 export const findPostgres18Bin = async (): Promise<{
   readonly binDirectory: string;
   readonly version: string;
 }> => {
+  const describe = (
+    banners: Record<PostgresExecutable, PostgresToolBanner>,
+  ): string => (banners.postgres ?? "an incomplete installation").trim();
+
   const explicit = process.env["PG_BIN"];
   if (explicit !== undefined) {
-    const version = await postgresVersionAt(explicit);
-    if (version === undefined || !isSupportedPostgres(version)) {
+    const banners = await collectToolchainBanners(explicit);
+    const failures = evaluatePostgresToolchain(banners);
+    if (failures.length > 0) {
       throw new Error(
-        `PG_BIN must contain PostgreSQL ${supportedPostgresVersion} binaries; ` +
-          `found ${version ?? "an incomplete installation"}`,
+        `PG_BIN must contain a complete PostgreSQL ${supportedPostgresVersion} ` +
+          `toolchain (${requiredPostgresExecutables.join(", ")}); ` +
+          describeFailures(failures),
       );
     }
-    return { binDirectory: explicit, version };
+    return { binDirectory: explicit, version: describe(banners) };
   }
 
   const candidates = [
@@ -101,14 +218,14 @@ export const findPostgres18Bin = async (): Promise<{
       .filter((entry) => entry !== ""),
   ];
   for (const candidate of new Set(candidates)) {
-    const version = await postgresVersionAt(candidate);
-    if (version !== undefined && isSupportedPostgres(version)) {
-      return { binDirectory: candidate, version };
+    const banners = await collectToolchainBanners(candidate);
+    if (evaluatePostgresToolchain(banners).length === 0) {
+      return { binDirectory: candidate, version: describe(banners) };
     }
   }
   throw new Error(
-    `Stage 06 requires PostgreSQL ${supportedPostgresVersion} binaries; ` +
-      `install PostgreSQL ${supportedPostgresVersion} or set PG_BIN to its ` +
-      "bin directory",
+    `Stage 06 requires a complete PostgreSQL ${supportedPostgresVersion} ` +
+      `toolchain (${requiredPostgresExecutables.join(", ")}); install ` +
+      `PostgreSQL ${supportedPostgresVersion} or set PG_BIN to its bin directory`,
   );
 };

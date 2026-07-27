@@ -4367,13 +4367,19 @@ const defaultPhysicalRow = (
   detail: `exists=t empty=${empty ? "t" : "f"}`,
 });
 
-/** 某个 `(defaclrole, objtype, scope, grantee)` 在 default-effective 里的权限集合。 */
-const defaultEffectivePrivileges = (
+/**
+ * 某个 `(defaclrole, objtype, scope)` 槽位在 default-effective 里的**完整元组**：
+ * `grantee|grantor|privilege|grantable`。
+ *
+ * 只比较 privilege 是不够的——grantor 决定「谁能撤销这条授权」，grantable 决定
+ * 「拿到的人能不能再授出去」，两者都属于安全边界。因此 parity 按整组元组做集合
+ * 比较，行数也随之被精确固定。
+ */
+const defaultEffectiveTuples = (
   rows: readonly ProjectionRow[],
   defaclrole: string,
   objtype: string,
   scope: string,
-  grantee: string,
 ): readonly string[] =>
   rows
     .filter((row) => row.kind === "default-effective")
@@ -4382,16 +4388,75 @@ const defaultEffectivePrivileges = (
       if (!Array.isArray(parsed) || parsed.length !== 6) {
         return [];
       }
-      const [role, type, rowScope, rowGrantee, , privilege] = parsed as string[];
-      return role === defaclrole &&
-        type === objtype &&
-        rowScope === scope &&
-        rowGrantee === grantee &&
-        privilege !== undefined
-        ? [privilege]
-        : [];
+      const [role, type, rowScope, grantee, grantor, privilege] =
+        parsed as string[];
+      if (role !== defaclrole || type !== objtype || rowScope !== scope) {
+        return [];
+      }
+      const grantable = row.detail === "grantable=t" ? "t" : "f";
+      assert.match(row.detail, /^grantable=[tf]$/, row.detail);
+      return [
+        `${String(grantee)}|${String(grantor)}|${String(privilege)}|${grantable}`,
+      ];
     })
     .sort(byCodeUnit);
+
+/** 某个 `(defaclrole, objtype, scope, grantee)` 在 default-effective 里的权限集合。 */
+const defaultEffectivePrivileges = (
+  rows: readonly ProjectionRow[],
+  defaclrole: string,
+  objtype: string,
+  scope: string,
+  grantee: string,
+): readonly string[] =>
+  defaultEffectiveTuples(rows, defaclrole, objtype, scope)
+    .filter((tuple) => tuple.startsWith(`${grantee}|`))
+    .map((tuple) => tuple.split("|")[2] ?? "")
+    .sort(byCodeUnit);
+
+/**
+ * **独立** catalog 查询：把一个真实存在的对象的 ACL 展开成同样的完整元组。
+ *
+ * `NULL` ACL 按 PostgreSQL 语义展开为内建默认权限，`acldefault` 的 objtype 在这里
+ * 由调用方逐个写死（table `r`、sequence **`s`**、function `f`），因此它同时是
+ * 「sequence 在 `acldefault` 里是小写 `s`」这一事实的独立陈述——不依赖 projector
+ * 的映射表。
+ */
+const realObjectAclTuples = async (
+  database: string,
+  target:
+    | { readonly kind: "relation"; readonly name: string; readonly objtype: "r" | "s" }
+    | { readonly kind: "routine"; readonly name: string },
+): Promise<readonly string[]> =>
+  withPool(adminPoolConfig(database), async (pool) => {
+    const tuple =
+      `CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+            ELSE pg_catalog.pg_get_userbyid(acl.grantee)::text END
+       || '|' || pg_catalog.pg_get_userbyid(acl.grantor)::text
+       || '|' || acl.privilege_type::text
+       || '|' || CASE WHEN acl.is_grantable THEN 't' ELSE 'f' END`;
+    const result =
+      target.kind === "relation"
+        ? await pool.query<{ tuple: string }>(
+            `SELECT ${tuple} AS tuple
+               FROM pg_catalog.pg_class c,
+                    aclexplode(COALESCE(c.relacl,
+                                        acldefault('${target.objtype}'::"char",
+                                                   c.relowner))) AS acl
+              WHERE c.oid = $1::regclass`,
+            [target.name],
+          )
+        : await pool.query<{ tuple: string }>(
+            `SELECT ${tuple} AS tuple
+               FROM pg_catalog.pg_proc p,
+                    aclexplode(COALESCE(p.proacl,
+                                        acldefault('f'::"char",
+                                                   p.proowner))) AS acl
+              WHERE p.oid = $1::regprocedure`,
+            [target.name],
+          );
+    return result.rows.map((row) => row.tuple).sort(byCodeUnit);
+  });
 
 const migratorRole = "meal_agent_migrator";
 
@@ -4695,10 +4760,30 @@ test("default privilege composition matches the ACL of really created objects", 
       "the non-empty global row must really remove TRUNCATE",
     );
     assert.ok(realTablePrivileges.includes("MAINTAIN"));
+    // 完整元组 parity：grantee / grantor / privilege / grantable 全都要对上，
+    // 行数也随之被精确固定。
+    const d1Tuples = await realObjectAclTuples(probe, {
+      kind: "relation",
+      name: `${schema}.d1`,
+      objtype: "r",
+    });
     assert.deepEqual(
-      defaultEffectivePrivileges(rows, migratorRole, "r", schema, migratorRole),
-      realTablePrivileges,
-      "default-effective must equal the privileges of the real new table",
+      d1Tuples,
+      [
+        "meal_agent_migrator|meal_agent_migrator|DELETE|f",
+        "meal_agent_migrator|meal_agent_migrator|INSERT|f",
+        "meal_agent_migrator|meal_agent_migrator|MAINTAIN|f",
+        "meal_agent_migrator|meal_agent_migrator|REFERENCES|f",
+        "meal_agent_migrator|meal_agent_migrator|SELECT|f",
+        "meal_agent_migrator|meal_agent_migrator|TRIGGER|f",
+        "meal_agent_migrator|meal_agent_migrator|UPDATE|f",
+      ],
+      "the real table ACL is the global row verbatim, without TRUNCATE",
+    );
+    assert.deepEqual(
+      defaultEffectiveTuples(rows, migratorRole, "r", schema),
+      d1Tuples,
+      "default-effective must equal the full ACL tuples of the real new table",
     );
     assertExactRow(
       rows,
@@ -4765,10 +4850,18 @@ test("default privilege composition matches the ACL of really created objects", 
       encodeProjectionIdentity([migratorRole, "T", "-", "global"]),
       "no type row was ever created, so no physical row may be reported",
     );
-    // 但两者的**有效**默认权限相同：都落回内建默认。
+    // 但两者的**有效**默认权限相同：都落回内建默认。完整元组 parity。
+    const d2Tuples = await realObjectAclTuples(probe, {
+      kind: "routine",
+      name: `${schema}.d2()`,
+    });
+    assert.deepEqual(d2Tuples, [
+      "PUBLIC|meal_agent_migrator|EXECUTE|f",
+      "meal_agent_migrator|meal_agent_migrator|EXECUTE|f",
+    ]);
     assert.deepEqual(
-      defaultEffectivePrivileges(rows, migratorRole, "f", schema, "PUBLIC"),
-      ["EXECUTE"],
+      defaultEffectiveTuples(rows, migratorRole, "f", schema),
+      d2Tuples,
       "an empty global row must behave exactly like a missing row",
     );
     assert.deepEqual(
@@ -4836,9 +4929,19 @@ test("default privilege composition matches the ACL of really created objects", 
       defaultPhysicalRow(migratorRole, "S", "-", "global", true),
       "the empty global sequence row exists",
     );
+    const d3Tuples = await realObjectAclTuples(probe, {
+      kind: "relation",
+      name: `${schema}.d3`,
+      objtype: "s",
+    });
+    assert.deepEqual(d3Tuples, [
+      "meal_agent_migrator|meal_agent_migrator|SELECT|f",
+      "meal_agent_migrator|meal_agent_migrator|UPDATE|f",
+      "meal_agent_migrator|meal_agent_migrator|USAGE|f",
+    ]);
     assert.deepEqual(
-      defaultEffectivePrivileges(rows, migratorRole, "S", schema, migratorRole),
-      realSequencePrivileges,
+      defaultEffectiveTuples(rows, migratorRole, "S", schema),
+      d3Tuples,
       "default-effective must not degrade a sequence to a FOREIGN SERVER",
     );
 
@@ -4883,6 +4986,38 @@ test("default privilege composition matches the ACL of really created objects", 
     // 独立事实：schema 内的新表拿到 grantable SELECT，且**只有一条**；
     // schema 外的新表只有 global 的非 grantable SELECT。
     assert.deepEqual(realGrants, ["d4:SELECT:t", "d5:SELECT:f"]);
+    // 两个 scope 各自做完整元组 parity：同一个 owner、同一批 objtype，只因 schema
+    // 行的有无而结果不同——grantor 与 grantable 都必须对上。
+    const d4Tuples = await realObjectAclTuples(probe, {
+      kind: "relation",
+      name: `${schema}.d4`,
+      objtype: "r",
+    });
+    const d5Tuples = await realObjectAclTuples(probe, {
+      kind: "relation",
+      name: "public.d5",
+      objtype: "r",
+    });
+    assert.ok(
+      d4Tuples.includes(`${reader}|meal_agent_migrator|SELECT|t`) &&
+        !d4Tuples.includes(`${reader}|meal_agent_migrator|SELECT|f`),
+      "the schema overlay yields exactly one grantable SELECT for the reader",
+    );
+    assert.ok(
+      d5Tuples.includes(`${reader}|meal_agent_migrator|SELECT|f`) &&
+        !d5Tuples.includes(`${reader}|meal_agent_migrator|SELECT|t`),
+      "a scope without a schema row keeps the non-grantable global SELECT",
+    );
+    assert.deepEqual(
+      defaultEffectiveTuples(rows, migratorRole, "r", schema),
+      d4Tuples,
+      "default-effective must equal the full ACL tuples of the in-schema table",
+    );
+    assert.deepEqual(
+      defaultEffectiveTuples(rows, migratorRole, "r", "public"),
+      d5Tuples,
+      "default-effective must equal the full ACL tuples of the public table",
+    );
     assertExactRow(
       rows,
       defaultEffectiveRow(
@@ -4965,16 +5100,41 @@ test("the read-only authorization projection observes every ACL subject", async 
   ): readonly ProjectionIdentityPart[] => parts;
   const databaseObject = object("database", projectionDatabaseKey);
 
-  const largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
-    const result = await pool.query<{ loid: string }>(
-      "SELECT lo_from_bytea(0, 'stage09a-r8a'::bytea)::text AS loid",
-    );
-    const loid = result.rows[0]?.loid;
-    assert.ok(loid !== undefined);
-    return loid;
-  });
+  // Large Object 的创建也在 try 之内：它已经改变了集群状态，创建之后的任何一步
+  // 失败都必须走同一段清理，否则这个 LO 会留给后续串行用例。
+  let largeObjectId = "";
+  let bodyError: unknown;
+  const cleanupErrors: unknown[] = [];
+  /** 清理的一个阶段：失败也继续往下走，错误留到最后统一处理。 */
+  const cleanupStage = async (
+    label: string,
+    stage: () => Promise<void>,
+  ): Promise<boolean> => {
+    try {
+      await stage();
+      return true;
+    } catch (error) {
+      cleanupErrors.push(
+        new Error(
+          `cleanup stage ${label} failed: ` +
+            (error instanceof Error ? error.message : String(error)),
+          { cause: error },
+        ),
+      );
+      return false;
+    }
+  };
 
   try {
+    largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ loid: string }>(
+        "SELECT lo_from_bytea(0, 'stage09a-r8a'::bytea)::text AS loid",
+      );
+      const loid = result.rows[0]?.loid;
+      assert.ok(loid !== undefined);
+      return loid;
+    });
+
     await withPool(adminPoolConfig(), async (pool) => {
       for (const statement of [
         `CREATE ROLE ${outsider} NOLOGIN`,
@@ -5410,7 +5570,7 @@ test("the read-only authorization projection observes every ACL subject", async 
 
     // row type 的 PUBLIC USAGE：全新安装后 typacl 已经是
     // {meal_agent_migrator=U/meal_agent_migrator}，PUBLIC 不在其中。本轮只如实
-    // 报告这一状态，不收敛（R8B 待裁定）。
+    // 报告这一状态，不收敛（策略已定，R8B 待落实）。
     assertExactRow(
       drifted,
       aclRow(
@@ -5438,21 +5598,27 @@ test("the read-only authorization projection observes every ACL subject", async 
       `authorization projection: ${String(expectations.length)} injected ` +
         `subjects asserted exactly across ${String(drifted.length)} rows\n`,
     );
+  } catch (error) {
+    // 先记下主因，让清理**完整跑完**；否则一次断言失败会把注入状态留给后续用例。
+    bodyError = error;
   } finally {
     // 1. 核心对象的 owner 恢复**不允许**被吞掉：DROP OWNED BY 会删掉仍归属于
-    //    该角色的对象，所以恢复失败必须立刻暴露，而不是继续往下走。
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(
-        `ALTER TABLE public.sessions OWNER TO ${migratorRole}`,
-      );
-      await pool.query(
-        "ALTER FUNCTION meal_agent_private.app_user_id() " +
-          `OWNER TO ${migratorRole}`,
-      );
+    //    该角色的对象，所以恢复失败必须被记录，并阻止后面的 DROP OWNED。
+    await cleanupStage("restore-owners", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(
+          `ALTER TABLE public.sessions OWNER TO ${migratorRole}`,
+        );
+        await pool.query(
+          "ALTER FUNCTION meal_agent_private.app_user_id() " +
+            `OWNER TO ${migratorRole}`,
+        );
+      });
     });
 
     // 2. 独立 catalog 查询确认归属已经回到 migrator，**然后**才允许 DROP OWNED。
-    await withPool(adminPoolConfig(), async (pool) => {
+    const ownershipRestored = await cleanupStage("verify-owners", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
       const restored = await pool.query<{ entry: string }>(
         `SELECT 'relation:' || pg_catalog.pg_get_userbyid(c.relowner) AS entry
            FROM pg_catalog.pg_class c WHERE c.oid = 'public.sessions'::regclass
@@ -5465,42 +5631,90 @@ test("the read-only authorization projection observes every ACL subject", async 
            FROM pg_catalog.pg_type t WHERE t.oid = 'public.sessions'::regtype
          ORDER BY 1`,
       );
-      assert.deepEqual(
-        restored.rows.map((row) => row.entry),
-        [
-          `relation:${migratorRole}`,
-          `routine:${migratorRole}`,
-          `type:${migratorRole}`,
-        ],
-        "ownership must be restored before DROP OWNED BY is allowed to run",
-      );
+        assert.deepEqual(
+          restored.rows.map((row) => row.entry),
+          [
+            `relation:${migratorRole}`,
+            `routine:${migratorRole}`,
+            `type:${migratorRole}`,
+          ],
+          "ownership must be restored before DROP OWNED BY is allowed to run",
+        );
+      });
     });
 
-    // 3. 现在才拆授权、default privilege、成员关系与 Large Object。
-    await withPool(adminPoolConfig(), async (pool) => {
-      for (const statement of [
+    // 3. 拆授权、default privilege、成员关系与 Large Object。逐条独立成阶段：
+    //    某一条失败（例如目标已不存在）不应挡住后面的清理。
+    for (const [label, statement] of [
+      [
+        "revoke-global-default",
         `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
           `REVOKE INSERT ON TABLES FROM ${outsider}`,
+      ],
+      [
+        "revoke-schema-default",
         `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA public ` +
           `REVOKE SELECT ON TABLES FROM ${outsider}`,
+      ],
+      [
+        "revoke-default-grant-option",
         `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA public ` +
           "REVOKE GRANT OPTION FOR SELECT ON TABLES FROM meal_agent_backup",
+      ],
+      [
+        "revoke-lo-entry-point",
         `REVOKE EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) FROM ${outsider}`,
+      ],
+      [
+        "revoke-column-grant",
         `REVOKE SELECT (display_name) ON public.users FROM ${columnOnly}`,
-        `ALTER LARGE OBJECT ${largeObjectId} OWNER TO postgres`,
-        `SELECT lo_unlink(${largeObjectId})`,
-        `REVOKE ${outsider} FROM ${inheritor}`,
-        `DROP OWNED BY ${outsider}, ${inheritor}, ${columnOnly}`,
-        `DROP ROLE IF EXISTS ${outsider}`,
-        `DROP ROLE IF EXISTS ${inheritor}`,
-        `DROP ROLE IF EXISTS ${columnOnly}`,
-      ]) {
-        await pool.query(statement);
-      }
-    });
+      ],
+      ["revoke-membership", `REVOKE ${outsider} FROM ${inheritor}`],
+    ] as const) {
+      await cleanupStage(label, async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(statement);
+        });
+      });
+    }
+
+    // Large Object 单独成阶段，且只在真的创建成功时执行。
+    if (largeObjectId !== "") {
+      await cleanupStage("drop-large-object", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(
+            `ALTER LARGE OBJECT ${largeObjectId} OWNER TO postgres`,
+          );
+          await pool.query(`SELECT lo_unlink(${largeObjectId})`);
+        });
+      });
+    }
+
+    // 归属没有确认回到 migrator 时**绝不**执行 DROP OWNED BY：那会连带删除仍
+    // 属于注入角色的业务对象。此时宁可把角色留下来由人处理。
+    if (ownershipRestored) {
+      await cleanupStage("drop-roles", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(
+            `DROP OWNED BY ${outsider}, ${inheritor}, ${columnOnly}`,
+          );
+          for (const role of [outsider, inheritor, columnOnly]) {
+            await pool.query(`DROP ROLE IF EXISTS ${role}`);
+          }
+        });
+      });
+    } else {
+      cleanupErrors.push(
+        new Error(
+          "cleanup skipped DROP OWNED BY because ownership was not verified " +
+            "back on meal_agent_migrator",
+        ),
+      );
+    }
 
     // 4. 清理证据由**独立查询**给出，不靠投影自证。
-    await withPool(adminPoolConfig(), async (pool) => {
+    await cleanupStage("verify-clean-catalog", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
       const leftovers = await pool.query<{ what: string; count: string }>(
         `SELECT 'roles' AS what, count(*)::text AS count
            FROM pg_catalog.pg_roles WHERE rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
@@ -5560,14 +5774,35 @@ test("the read-only authorization projection observes every ACL subject", async 
         `app_user_id:${migratorRole}`,
         `sessions:${migratorRole}`,
       ]);
+      });
     });
 
     // 5. 投影回到 baseline 只是**附加**证据。
-    assert.deepEqual(
-      await authorizationProjection(),
-      baseline,
-      "the projection must return to the exact baseline after cleanup",
-    );
+    await cleanupStage("verify-projection-baseline", async () => {
+      assert.deepEqual(
+        await authorizationProjection(),
+        baseline,
+        "the projection must return to the exact baseline after cleanup",
+      );
+    });
+
+    // 主因优先：正文失败时把清理失败一并打印，但抛出正文错误；正文成功时抛出
+    // **首个**清理错误，避免残留状态污染后续串行用例却无人知晓。
+    if (cleanupErrors.length > 0) {
+      for (const error of cleanupErrors) {
+        process.stdout.write(
+          `authorization projection cleanup: ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      }
+    }
+    if (bodyError !== undefined) {
+      throw bodyError;
+    }
+    if (cleanupErrors[0] !== undefined) {
+      throw cleanupErrors[0];
+    }
   }
 });
 

@@ -535,24 +535,47 @@ test("the default ACL objtype mapping never confuses S (foreign server) with s (
   );
   assertDefaultAclObjtypeMappings();
 
-  // 3. 缺一个、多一个、乱序或重复都必须 fail closed，而不是渲染出一段
-  //    「少了一类默认权限」的 SQL。
-  for (const broken of [
-    defaultAclObjtypeMappings.filter((mapping) => mapping.objtype !== "S"),
+  // 3. 缺一个、多一个、乱序、重复，以及**映射目标错**或**作用域错**都必须 fail
+  //    closed。后两类是集合检查抓不到的：`S->S` 会把 sequence 当 FOREIGN SERVER
+  //    从而低报权限，`S->s/false` 会让 sequence 的 schema 级槽位整类消失。
+  const replace = (
+    objtype: string,
+    patch: Partial<{ acldefaultObjtype: string; schemaScoped: boolean }>,
+  ) =>
+    defaultAclObjtypeMappings.map((mapping) =>
+      mapping.objtype === objtype ? { ...mapping, ...patch } : mapping,
+    );
+  for (const [label, broken] of [
+    ["missing", defaultAclObjtypeMappings.filter((m) => m.objtype !== "S")],
     [
-      ...defaultAclObjtypeMappings,
-      { objtype: "x", acldefaultObjtype: "x", schemaScoped: false },
+      "extra",
+      [
+        ...defaultAclObjtypeMappings,
+        { objtype: "x", acldefaultObjtype: "x", schemaScoped: false },
+      ],
     ],
-    [...defaultAclObjtypeMappings].reverse(),
-    [...defaultAclObjtypeMappings, ...defaultAclObjtypeMappings],
-  ]) {
+    ["reordered", [...defaultAclObjtypeMappings].reverse()],
+    ["duplicated", [...defaultAclObjtypeMappings, ...defaultAclObjtypeMappings]],
+    ["wrong target S->S", replace("S", { acldefaultObjtype: "S" })],
+    ["wrong scope S->s/false", replace("S", { schemaScoped: false })],
+    ["wrong target r->s", replace("r", { acldefaultObjtype: "s" })],
+    ["wrong scope n->n/true", replace("n", { schemaScoped: true })],
+  ] as const) {
     assert.throws(
       () => {
         assertDefaultAclObjtypeMappings(broken);
       },
-      (error: unknown) => error instanceof AuthorizationManifestError,
+      (error: unknown) =>
+        error instanceof AuthorizationManifestError &&
+        /canonical six/.test(error.message),
+      `${label} must fail closed`,
     );
   }
+  // 渲染入口本身也会先做这一步：canonical 映射通过，破坏后的映射拿不到 SQL。
+  assert.equal(
+    renderAuthorizationProjectionSql(),
+    renderAuthorizationProjectionSql(),
+  );
 
   // 4. 渲染出的 SQL 必须走映射列，绝不能再把 defaclobjtype 直接喂给 acldefault。
   const sql = renderAuthorizationProjectionSql();

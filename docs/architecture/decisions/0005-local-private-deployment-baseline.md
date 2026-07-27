@@ -120,8 +120,10 @@ database、`public`/`drizzle` schema、drizzle ledger 及其数组类型要么�
 `BEGIN…COMMIT` 里被 `\ir` 进来的，不还原就会让同一事务的后续语句继承被改过的
 GUC。
 
-对象 catalog 基线实际绑定 **PostgreSQL 18.4**，且判据是 exact-patch 的：`18.3`
-被直接拒绝，并有自动化测试用标准 `postgres --version` 输出证明。M2B 落 Compose 时
+对象 catalog 基线实际绑定 **PostgreSQL 18.4**，且判据是 exact-patch 的，并覆盖
+整套工具链：`createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个按标准 banner 的
+主版本字段锚定解析，五个都必须是 18.4；混装（例如只有 server 是 18.4）与 `18.3`
+一律拒绝，并有自动化测试。M2B 落 Compose 时
 必须**解析真实镜像仓库**得到 18.4 的 exact image digest 再固定——在此之前任何文档
 都不得写入编造的 digest；patch 升级必须重新 capture manifest、重跑 parity 并显式
 rebaseline。
@@ -168,9 +170,19 @@ PostgreSQL 18.4 实测确定并已固化为测试的语义：非空 global `pg_d
 成只剩 `USAGE`。另外 `acldefault('l', …)` 对受信与非受信语言完全相同，非受信语言
 的限制在建函数时按 superuser 判定，不体现在 ACL 上。
 
+「ACL 全主体覆盖」限定为两件互不等同的事：**normalized raw ACL** 在受监管对象类别
+内动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色与
+目标库内**全部非 superuser LOGIN**，不是对集群所有角色的枚举。
+
+**R8B 必须替换的已知缺陷**：`authorization-manifest-sql.ts` 的 `currentDefaultCte`
+同样把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，因此 sequence 的默认
+权限被低报为只剩 `USAGE`。它**同时被 converge 与 verify 两个块引用**，替换后必须
+重新生成并复验两个 generated adapter。R8A 属冻结路径，未改动它。
+
 R8B 的边界：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
 出现过的 owner、Large Object 的 OID），因此不得把整份投影冻结成跨 cluster 的固定
-快照。只有 database identity 是可移植的逻辑键；外部角色只能用策略匹配。
+快照。只有 database identity 是可移植的逻辑键；外部角色只能用策略匹配。类型与
+Large Object 的策略见 §2.3，**已决定**，R8B 只负责落实。
 
 #### 2.3 私有 schema、恢复路径与 Large Object
 

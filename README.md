@@ -6,7 +6,7 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1「API 容器构建基线」已由项目总控 Accepted（`services/api/Dockerfile` 与根 `.dockerignore`，固定 Node 24.18.0 digest、非 root `10001:10001`、runtime 无包管理器与客户端依赖）；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读授权投影最终修订**已完成、待总控复验（见 [`infra/docker/postgres/`](infra/docker/postgres/)）。R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，**尚未接入** verify/converge，因此 **ACL 全主体覆盖**与 **default privilege 叠加语义**目前只做到「能被完整、确定地观察」，收敛仍由旧的静态名单承担；类型与 Large Object 的收敛同样属于 R8B。R8B 未开始；M2B（Compose 拓扑）、M3、M4、M5 未开始，且在 M2A 通过复验前**禁止进入**。数据库基线固定 PostgreSQL 18.4，M2B 才解析并固定 exact image digest。当前不购买服务器，不接真实微信配置，也不开放公网。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1「API 容器构建基线」已由项目总控 Accepted（`services/api/Dockerfile` 与根 `.dockerignore`，固定 Node 24.18.0 digest、非 root `10001:10001`、runtime 无包管理器与客户端依赖）；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读授权投影最终修订**已完成、待总控复验（见 [`infra/docker/postgres/`](infra/docker/postgres/)）。R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，**尚未接入** verify/converge，因此 **ACL 全主体覆盖**与 **default privilege 叠加语义**目前只做到「能被完整、确定地观察」，收敛仍由旧的静态名单承担；类型与 Large Object 的策略已决定，R8B 只负责落实。R8B 另需替换 `currentDefaultCte` 的 sequence S→s 缺陷，并重新生成、复验 converge 与 verify 两个 generated adapter。R8B 未开始；M2B（Compose 拓扑）、M3、M4、M5 未开始，且在 M2A 通过复验前**禁止进入**。数据库基线固定 PostgreSQL 18.4，M2B 才解析并固定 exact image digest。当前不购买服务器，不接真实微信配置，也不开放公网。
 
 当前纵切覆盖：
 
