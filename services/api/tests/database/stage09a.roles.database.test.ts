@@ -26,6 +26,10 @@ import {
   MigrationLockTimeoutError,
   MigrationOptionError,
 } from "../../src/database/migrate.js";
+import {
+  encodeProjectionIdentity,
+  projectionDatabaseKey,
+} from "../../src/database/authorization-projection-sql.js";
 import { renderStage06CatalogProjectionSql } from "../../src/database/stage06-manifest-sql.js";
 import { canonicalManifestRows } from "../../src/database/stage06-manifest.js";
 import { checkReadiness, createPersistence } from "../../src/database/pool.js";
@@ -4274,94 +4278,171 @@ test("the read-only authorization projection observes every ACL subject", async 
     const drifted = await authorizationProjection();
     const sees = (needle: string): boolean =>
       drifted.some((row) => row.includes(needle));
+    // canonical identity 现在是 JSON 数组，两侧共用 `encodeProjectionIdentity`。
+    const object = (...parts: readonly string[]): readonly string[] => parts;
+    const aclRow = (
+      objectKey: readonly string[],
+      grantee: string,
+      grantor: string,
+      privilege: string,
+      grantable: string,
+    ): string =>
+      `acl|${encodeProjectionIdentity([
+        objectKey,
+        grantee,
+        grantor,
+        privilege,
+      ])}|grantable=${grantable}`;
+    const outsider = "stage09a_r8a_outsider";
+    const inheritor = "stage09a_r8a_inheritor";
+    const migrator = "meal_agent_migrator";
+    const databaseObject = object("database", projectionDatabaseKey);
+
     const expectations: readonly [string, string][] = [
       [
         "unknown grantee on the database",
-        `acl|database:${rolesDatabase}#stage09a_r8a_outsider#meal_agent_migrator#CONNECT|grantable=f`,
+        aclRow(databaseObject, outsider, migrator, "CONNECT", "f"),
       ],
       [
         "unknown grantee on a managed schema",
-        "acl|schema:meal_agent_private#stage09a_r8a_outsider#meal_agent_migrator#USAGE|grantable=f",
+        aclRow(object("schema", "meal_agent_private"), outsider, migrator,
+               "USAGE", "f"),
       ],
       [
         "unknown grantee on a table",
-        "acl|relation:public.households#stage09a_r8a_outsider#meal_agent_migrator#SELECT|grantable=f",
+        aclRow(object("relation", "public", "households"), outsider, migrator,
+               "SELECT", "f"),
       ],
       [
         "unknown grantee on a routine",
-        "acl|routine:meal_agent_private.app_user_id()#stage09a_r8a_outsider#",
+        `acl|${encodeProjectionIdentity([
+          ["routine", "meal_agent_private", "app_user_id", []],
+          outsider,
+        ]).slice(0, -1)}`,
       ],
       [
         "unknown grantee on a type",
-        "acl|type:public.users#stage09a_r8a_outsider#meal_agent_migrator#USAGE|grantable=f",
+        aclRow(object("type", "public", "users"), outsider, migrator, "USAGE",
+               "f"),
       ],
       [
         "third-party grantor duplicating a compliant-looking SELECT",
-        "acl|relation:public.users#meal_agent_app#stage09a_r8a_outsider#SELECT|grantable=f",
+        aclRow(object("relation", "public", "users"), "meal_agent_app",
+               outsider, "SELECT", "f"),
       ],
       [
         "the canonical SELECT is still a separate row",
-        "acl|relation:public.users#meal_agent_app#meal_agent_migrator#SELECT|grantable=f",
+        aclRow(object("relation", "public", "users"), "meal_agent_app",
+               migrator, "SELECT", "f"),
       ],
       [
         "WITH GRANT OPTION",
-        "acl|relation:public.users#meal_agent_backup#stage09a_r8a_outsider#INSERT|grantable=t",
+        aclRow(object("relation", "public", "users"), "meal_agent_backup",
+               outsider, "INSERT", "t"),
       ],
       [
         "raw global default privilege",
-        "default-global|meal_agent_migrator#r@-#stage09a_r8a_outsider#meal_agent_migrator#INSERT|grantable=f",
+        `default-global|${encodeProjectionIdentity([
+          migrator, "r", "-", outsider, migrator, "INSERT",
+        ])}|grantable=f`,
       ],
       [
         "raw schema default privilege",
-        "default-schema|meal_agent_migrator#r@public#stage09a_r8a_outsider#meal_agent_migrator#SELECT|grantable=f",
+        `default-schema|${encodeProjectionIdentity([
+          migrator, "r", "public", outsider, migrator, "SELECT",
+        ])}|grantable=f`,
+      ],
+      [
+        "the global default row's existence is preserved separately",
+        `default-row|${encodeProjectionIdentity([
+          migrator, "r", "-", "global",
+        ])}|exists=t empty=f`,
       ],
       [
         "global INSERT survives the overlay",
-        "default-effective|meal_agent_migrator#r@public#stage09a_r8a_outsider#meal_agent_migrator#INSERT|grantable=f",
+        `default-effective|${encodeProjectionIdentity([
+          migrator, "r", "public", outsider, migrator, "INSERT",
+        ])}|grantable=f`,
       ],
       [
         "schema SELECT survives the overlay",
-        "default-effective|meal_agent_migrator#r@public#stage09a_r8a_outsider#meal_agent_migrator#SELECT|grantable=f",
+        `default-effective|${encodeProjectionIdentity([
+          migrator, "r", "public", outsider, migrator, "SELECT",
+        ])}|grantable=f`,
       ],
       [
-        "default SELECT WITH GRANT OPTION",
-        "default-effective|meal_agent_migrator#r@public#meal_agent_backup#meal_agent_migrator#SELECT|grantable=t",
+        "default SELECT WITH GRANT OPTION collapses to one grantable row",
+        `default-effective|${encodeProjectionIdentity([
+          migrator, "r", "public", "meal_agent_backup", migrator, "SELECT",
+        ])}|grantable=t`,
       ],
       [
         "external LOGIN inheriting privileges",
-        "effective|relation:public.households#stage09a_r8a_inheritor|privs=SELECT",
+        `effective|${encodeProjectionIdentity([
+          object("relation", "public", "households"), inheritor,
+        ])}|privs=SELECT`,
       ],
       [
         "external LOGIN reaching a large object entry point",
-        "effective|routine:pg_catalog.lo_creat(integer)#stage09a_r8a_inheritor|privs=EXECUTE",
+        `effective|${encodeProjectionIdentity([
+          ["routine", "pg_catalog", "lo_creat", [["pg_catalog", "int4"]]],
+          inheritor,
+        ])}|privs=EXECUTE`,
       ],
       [
         "a large object owned by a non-project role",
-        `large-object|largeobject:${largeObjectId}|owner=stage09a_r8a_outsider`,
+        `large-object|${encodeProjectionIdentity([
+          "largeobject", largeObjectId,
+        ])}|owner=${outsider}`,
       ],
       [
         "large object ACL granted to PUBLIC",
-        `acl|largeobject:${largeObjectId}#PUBLIC#stage09a_r8a_outsider#UPDATE|grantable=f`,
+        aclRow(object("largeobject", largeObjectId), "PUBLIC", outsider,
+               "UPDATE", "f"),
+      ],
+      [
+        "large object effective privilege for a project role",
+        `effective|${encodeProjectionIdentity([
+          object("largeobject", largeObjectId), "meal_agent_app",
+        ])}|privs=SELECT`,
       ],
       [
         "relation owner drift",
-        "owner|relation:public.sessions|owner=stage09a_r8a_outsider",
+        `owner|${encodeProjectionIdentity(
+          object("relation", "public", "sessions"),
+        )}|owner=${outsider}`,
       ],
       [
         "routine owner drift",
-        "owner|routine:meal_agent_private.app_user_id()|owner=stage09a_r8a_outsider",
+        `owner|${encodeProjectionIdentity([
+          "routine", "meal_agent_private", "app_user_id", [],
+        ])}|owner=${outsider}`,
       ],
       [
         "type owner drift follows the relation",
-        "owner|type:public.sessions|owner=stage09a_r8a_outsider",
+        `owner|${encodeProjectionIdentity(
+          object("type", "public", "sessions"),
+        )}|owner=${outsider}`,
       ],
       [
         "array types are flagged as delegating, not independently grantable",
-        "type-class|type:public._households|class=array delegates-to=households",
+        `type-class|${encodeProjectionIdentity(
+          object("type", "public", "_households"),
+        )}|class=array delegates-to=${encodeProjectionIdentity([
+          "public", "households",
+        ])}`,
       ],
       [
         "row types are flagged as directly grantable",
-        "type-class|type:public.households|class=row grantable-directly=t",
+        `type-class|${encodeProjectionIdentity(
+          object("type", "public", "households"),
+        )}|class=row grantable-directly=t`,
+      ],
+      [
+        "language effective USAGE is probed",
+        `effective|${encodeProjectionIdentity([
+          object("language", "plpgsql"), "meal_agent_app",
+        ])}|privs=USAGE`,
       ],
     ];
     for (const [label, expected] of expectations) {
@@ -4378,15 +4459,25 @@ test("the read-only authorization projection observes every ACL subject", async 
     // PUBLIC USAGE 早已不在，app/backup/三个 login 对 row type 都没有有效 USAGE。
     // 这一状态目前并没有被任何 manifest 显式声明过——它属于 R8B 待裁定项。
     assert.ok(
-      sees("acl|type:public.households#meal_agent_migrator#meal_agent_migrator#USAGE"),
+      sees(
+        aclRow(object("type", "public", "households"), migrator, migrator,
+               "USAGE", "f"),
+      ),
       "the row type's own ACL must be observable",
     );
+    const arrayTypePrefix = `acl|${encodeProjectionIdentity([
+      object("type", "public", "_households"),
+    ]).slice(0, -1)}`;
     assert.ok(
-      !drifted.some((row) => row.startsWith("acl|type:public._households#")),
+      !drifted.some((row) => row.startsWith(arrayTypePrefix)),
       "array types must not be projected as independently grantable",
     );
+    const publicRowTypePrefix = `acl|${encodeProjectionIdentity([
+      object("type", "public", "households"),
+      "PUBLIC",
+    ]).slice(0, -1)}`;
     const rowTypePublicUsage = drifted.filter((row) =>
-      row.startsWith("acl|type:public.households#PUBLIC#"),
+      row.startsWith(publicRowTypePrefix),
     );
     assert.deepEqual(
       rowTypePublicUsage,
