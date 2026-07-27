@@ -131,13 +131,14 @@ login**——只检查备份角色会漏掉「migration 顺手把某张新表授
 `PUBLIC EXECUTE`。只封堵已有 LO 的对象权限而放着创建入口，等于允许 runtime 自己
 造一个不受 schema ACL 与 RLS 约束的存储面。
 
-## 只读授权投影（R8A，尚未接入本目录的任何阶段）
+## 只读授权投影（R8A 已 Accepted；接入 verify/converge 的 R8B In Progress）
 
 `generated/authorization-projection.generated.sql` 是**第四个** generated adapter，
 也是 R8A 唯一的新增交付：一段**单条只读 SELECT**，不含 `GRANT`/`REVOKE`/`ALTER`/
-`SET ROLE`/`SET`/`set_config`。它**没有**被 `01`/`02`/`03` 任何一段 SQL 加载，
-`acl` 与 `grants` 的行为在 R8A 保持字节不变；把它接入 verify/converge 是 R8B 的
-工作，尚未开始。
+`SET ROLE`/`SET`/`set_config`。R8A 已由项目总控 **Accepted**（验收落点 `ca65275`），
+当时它**没有**被 `01`/`02`/`03` 任何一段 SQL 加载，`acl` 与 `grants` 的行为在 R8A
+保持字节不变。把它接入 verify/converge、让观察与收敛共享同一套 catalog 事实，是
+**In Progress** 的 R8B。
 
 它按五类事实观察目标库，每类只声称自己实际证明的事：**规范化的直接授权语义**
 （`acl`，`NULL` ACL 展开为隐式内建默认，因此不是「物理 ACL 行」）、

@@ -65,15 +65,17 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 
 ### 阶段 09A / M2A 当前状态
 
-M1 已 Accepted；M2A 的 **R8A 只读 projector 最终修订**已完成，待总控复验。R8B
-（把 projector 接入 verify/converge）**未开始**；M2B—M5 未开始，且在 M2A 通过
-复验前禁止进入。
+M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点
+`ca65275`。**R8B（把 projector 接入 verify/converge）In Progress**；M2A 整体仍为
+In Progress，未通过验收；M2B—M5 未开始，且在 M2A 通过验收前禁止进入。
 
 R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
-断言阶段。因此 **ACL 全主体覆盖**与 **default privilege 叠加语义**目前只做到
+断言阶段。因此 **ACL 全主体覆盖**与 **default privilege 叠加语义**在 R8A 只做到
 「能被完整、确定地观察」，收敛仍由旧的 `watchedGrantees` 静态名单与
-`authorization-manifest-sql.ts` 承担。下面的「目标设计」与「已实现事实」分开写，
-不要把前者当成后者。
+`authorization-manifest-sql.ts` 承担。R8B 的正确结构是「PostgreSQL catalog → 共享
+结构化 projector CTE → 公开只读 projection adapter / verify 的可移植策略匹配器 /
+converge 的可移植策略匹配器」，**共享的是事实采集**，不把动态投影冻结成跨环境快照。
+下面的「目标设计」与「已实现事实」分开写，不要把前者当成后者。
 
 「ACL 全主体覆盖」指两件互不等同的事：**normalized raw ACL** 在受监管对象类别内
 动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色
@@ -188,7 +190,7 @@ app、backup 与三个 login）。两个阶段执行同一段生成的收敛块�
 （`lo_create`、`lo_creat`、`lo_from_bytea`、`lo_put` …）的 `PUBLIC EXECUTE`：
 只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的不受约束的存储面。
 
-### 只读授权投影（R8A，尚未接入 verify/converge）
+### 只读授权投影（R8A 已 Accepted；接入 verify/converge 的 R8B In Progress）
 
 [`src/database/authorization-projection-sql.ts`](src/database/authorization-projection-sql.ts)
 渲染出**单条只读 SELECT**（`generated/authorization-projection.generated.sql`）：

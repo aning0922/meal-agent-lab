@@ -154,8 +154,13 @@ identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE`
 收敛正确的前提是**先能把权限状态完整、确定地看见**。因此 R8A 只交付一个 canonical
 projector：`authorization-projection-sql.ts` 渲染出的**单条只读 SELECT**（第四个
 generated adapter），不含任何 mutation，也**尚未接入** `02-acl-baseline.sql` /
-`03-backup-grants.sql`。R8B 才把它接入 verify/converge。在此之前，收敛与断言仍由
-`watchedGrantees` 静态名单承担——文档不得把 R8A 的可观察性表述为已收敛。
+`03-backup-grants.sql`。R8A 已由项目总控 **Accepted**（验收落点 `ca65275`）。
+R8B（**In Progress**）才把它接入 verify/converge。在 R8B 完成并通过验收之前，收敛与
+断言仍由 `watchedGrantees` 静态名单承担——文档不得把 R8A 的可观察性表述为已收敛，
+也不得把进行中的 R8B 表述为已完成。R8B 的正确结构是「PostgreSQL catalog → 共享
+结构化 projector CTE → 公开只读 projection adapter / verify 的可移植策略匹配器 /
+converge 的可移植策略匹配器」：**共享的是事实采集**，不是把动态投影冻结成跨环境
+快照。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
 PostgreSQL 语义展开为隐式内建默认，因此它不是「物理 ACL 行」）、

@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-阶段 08 最终审计整改已合并 `main`；FAM-003 已完成，FAM-004/FAM-005 仍为部分完成。阶段 09A **进行中**：M1 容器构建基线已 Accepted；M2A 数据库身份边界的 **R8A 只读 projector 最终修订**已完成、待总控复验。R8A 只交付可观察性——canonical projector 是纯 SELECT，尚未接入 verify/converge，因此 ACL 全主体覆盖、default privilege 叠加语义与类型/Large Object 三项**只做到可观察，收敛属于 R8B**；类型/Large Object 的策略已决定，R8B 只负责落实。R8B 还必须统一替换 `currentDefaultCte` 的整套 default privilege 缺陷（COALESCE 伪叠加、空 global 行语义、S→s），它同时影响收敛与断言，替换后要重新生成并复验 converge/verify 两个 adapter。R8B 未开始；M2B—M5 未开始且在 M2A 通过复验前禁止进入；ADR-0005 仍为 `Proposed`。文档中的「目标设计」与「已实现事实」分节表述，不得互相冒充。真实微信、真机、云环境、体验版、发布和远端 CI 不得由本地自动化或模拟器证据替代。
+阶段 08 最终审计整改已合并 `main`；FAM-003 已完成，FAM-004/FAM-005 仍为部分完成。阶段 09A **进行中**：M1 容器构建基线已 Accepted；M2A 数据库身份边界的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点 `ca65275`。R8A 只交付可观察性——canonical projector 是纯 SELECT，因此 ACL 全主体覆盖、default privilege 叠加语义与类型/Large Object 三项在 R8A **只做到可观察，收敛属于 R8B**；类型/Large Object 的策略已决定，R8B 只负责落实。**R8B In Progress**：把 projector 接入 verify/converge、去掉静态 grantee 名单、统一替换 `currentDefaultCte` 的整套 default privilege 缺陷（COALESCE 伪叠加、空 global 行语义、S→s），它同时影响收敛与断言，替换后要重新生成并复验 converge/verify 两个 adapter。**M2A 整体仍为 In Progress**，未通过验收；M2B—M5 未开始且在 M2A 通过验收前禁止进入；ADR-0005 仍为 `Proposed`。文档中的「目标设计」与「已实现事实」分节表述，不得互相冒充。真实微信、真机、云环境、体验版、发布和远端 CI 不得由本地自动化或模拟器证据替代。
 
 ## 当前状态与计划
 

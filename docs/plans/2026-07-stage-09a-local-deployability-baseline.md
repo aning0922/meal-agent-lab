@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-27 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 最终修订完成、待总控复验；R8B 未开始；M2B—M5 未开始，且在 M2A 通过复验前禁止进入）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B In Progress；M2A 整体仍为 In Progress；M2B—M5 未开始，且在 M2A 通过验收前禁止进入）
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -100,7 +100,7 @@ PostgreSQL healthy
 13. `meal_agent_private`：`PUBLIC` 无 `USAGE`/`CREATE`；app 只有所需 `USAGE`、无 `CREATE`；backup 与三个 login 无有效访问；按真实 grantor 收敛；缺失任一 managed schema 时在任何 mutation 之前失败。恢复路径上 `drizzle` 出现未知 routine 或 `SECURITY DEFINER` 必须 fail closed，`PUBLIC` 派生的 `EXECUTE` 必须纳入 app/backup 的**有效**权限验证。Large Object 同时处理 `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 的 `defaclobjtype='L'`：当前产品不使用 LO，因此采用「存在项目角色 LO 权限或异常默认权限即收敛并断言为空」，不借此扩展业务能力。数据库级 `PUBLIC` 的跨 grantor ACL 必须**真正收敛**，不能只在后置校验失败后整体回滚。
 
 14. 授权状态的**观察层与收敛层分开推进**：
-    - **R8A（本轮，已完成待复验）**只交付 canonical projector——一段**单条只读
+    - **R8A（已由总控 Accepted，验收落点 `ca65275`）**只交付 canonical projector——一段**单条只读
       SELECT**（第四个 generated adapter），不含任何 mutation，**不接入**
       `02-acl-baseline.sql` / `03-backup-grants.sql`，两个既有授权 adapter 保持
       字节不变。它必须证明：identity 为 JSON 数组且 Node 与 PostgreSQL 编码逐字节
@@ -109,9 +109,12 @@ PostgreSQL healthy
       objtype 与 `acldefault()` 的 objtype 分别映射（sequence 是 `S` 与 `s`）、
       非空 global 行替换内建默认而空行等价于没有行，以及以上每一条都能被**独立
       catalog 查询**复现。
-    - **R8B（未开始）**才把 projector 接入 verify/converge、去掉
+    - **R8B（In Progress）**才把 projector 接入 verify/converge、去掉
       `watchedGrantees` 静态名单，并**落实**（不是再裁定）下面第 15 条已决定的
-      类型与 Large Object 策略。R8B 还必须**统一替换**
+      类型与 Large Object 策略。正确结构是「PostgreSQL catalog → 共享结构化
+      projector CTE → 公开只读 projection adapter / verify 的可移植策略匹配器 /
+      converge 的可移植策略匹配器」：**共享的是事实采集，不是把动态投影冻结成
+      跨环境快照**。R8B 还必须**统一替换**
       `authorization-manifest-sql.ts` 的 `currentDefaultCte`，它有三个互相独立的
       错误：`COALESCE(schema, global, builtin)` 三选一冒充叠加语义、把「空 global
       行」与「没有这一行」混为一谈、把 `pg_default_acl.defaclobjtype` 直接喂给
