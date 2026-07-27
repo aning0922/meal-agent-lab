@@ -53,13 +53,51 @@ const sqlTextArray = (values: readonly string[]): string =>
     : `ARRAY[${values.map(sqlLiteral).join(", ")}]::text[]`;
 
 /**
- * handoff 是否已经完成。判定依据是可观察的事实：目标 database 的 owner 是否已经
- * 是 `meal_agent_migrator`。handoff 的第一条 mutation 就是 `ALTER DATABASE …
- * OWNER TO`，而且整段在同一事务内，因此这个标志不会停在中间态。
+ * handoff 阶段由**整组** owner 状态判定，而不是 database owner 单字段。
+ *
+ * 只有两种合法状态：整组都还没交接（pre-handoff），或整组都已属于
+ * `meal_agent_migrator`（post-handoff）。任何混合态——例如「handoff 之后只把
+ * database owner 夺回给 admin」或「database 属于 admin 而 schema/ledger 已属于
+ * migrator」——都不是一个可以继续推理的状态，必须直接拒绝，否则单字段判据会被
+ * 一次局部改动整体带偏。
+ *
+ * `handoff_pending_owners` 返回该组对象当前 owner 的去重集合。
  */
-const handedOff =
-  "(SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator'" +
-  " FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())";
+export const handoffOwnerTupleSql = (
+  manifest: Stage06Manifest = stage06SecurityManifest,
+): string => {
+  const pending = handoffPendingKeys(manifest);
+  return `SELECT DISTINCT owner_name FROM (
+      SELECT pg_catalog.pg_get_userbyid(d.datdba)::text AS owner_name
+        FROM pg_catalog.pg_database d
+       WHERE d.datname = current_database()
+         AND ${sqlLiteral(`database:${databaseIdentity}`)}
+               = ANY (${sqlTextArray(pending)})
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(n.nspowner)::text
+        FROM pg_catalog.pg_namespace n
+       WHERE 'schema:' || n.nspname = ANY (${sqlTextArray(pending)})
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(c.relowner)::text
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE 'relation:' || n.nspname || '.' || c.relname
+               = ANY (${sqlTextArray(pending)})
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(t.typowner)::text
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+       WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (${sqlTextArray(pending)})
+    ) AS handoff_owners`;
+};
+
+/**
+ * 合法过渡态的 owner 取值：migrator（已交接）、`pg_database_owner` 或当前执行
+ * bootstrap 的 admin（未交接）。
+ */
+const transitionalOwnerArray =
+  "ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[]";
 
 /**
  * owner 归一化。只有**声明为 handoff-pending 的对象**、且 handoff 尚未完成时，
@@ -75,11 +113,7 @@ const ownerExpression = (
   `CASE
               WHEN ${sqlLiteral(`${kind}:`)} || ${identityExpression}
                      = ANY (${sqlTextArray(pending)})
-                   AND (${ownerExpressionSql} = 'meal_agent_migrator'
-                        OR (NOT ${handedOff}
-                            AND ${ownerExpressionSql} = ANY (
-                              ARRAY['pg_database_owner',
-                                    current_user::text]::text[])))
+                   AND ${ownerExpressionSql} = ANY (${transitionalOwnerArray})
                 THEN 'handoff-pending'
               ELSE ${ownerExpressionSql}
             END`;
@@ -432,11 +466,47 @@ export const renderStage06ManifestCheckSql = (
 
   return `DO ${dollarTag}
 DECLARE
+  saved_search_path text;
+  saved_quoting text;
+  owner_states text;
   divergence_count integer;
   divergence text;
 BEGIN
+  -- set_config 的第三个参数只表示「事务内」：它在**事务**结束时才恢复，不会在
+  -- DO 块结束时恢复。本块是在一个显式事务里被包含进来执行的，因此必须自己保存
+  -- 并还原，否则同一事务的后续语句会继承被改过的两个 GUC。
+  saved_search_path := current_setting('search_path');
+  saved_quoting := current_setting('quote_all_identifiers');
   PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
   PERFORM pg_catalog.set_config('quote_all_identifiers', 'off', true);
+
+  -- owner handoff 的阶段由**整组** owner 判定。只有「整组都还没交接」和「整组
+  -- 都属于 migrator」两种合法状态；混合态说明有人只改了其中一部分，不是可以继续
+  -- 推理的状态。
+  SELECT pg_catalog.string_agg(owner_name, ',' ORDER BY owner_name COLLATE "C")
+    INTO owner_states
+    FROM (${handoffOwnerTupleSql(manifest)}) AS tuple_owners;
+  IF owner_states IS NOT NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM (${handoffOwnerTupleSql(manifest)}) AS bad
+       WHERE bad.owner_name <> ALL (${transitionalOwnerArray})
+    ) THEN
+      RAISE EXCEPTION
+        'stage06 object manifest: unexpected owner(s) on the handoff group: %',
+        owner_states;
+    END IF;
+    IF EXISTS (SELECT 1 FROM (${handoffOwnerTupleSql(
+      manifest,
+    )}) AS a WHERE a.owner_name = 'meal_agent_migrator')
+       AND EXISTS (SELECT 1 FROM (${handoffOwnerTupleSql(
+         manifest,
+       )}) AS b WHERE b.owner_name <> 'meal_agent_migrator') THEN
+      RAISE EXCEPTION
+        'stage06 object manifest: the owner handoff group is in a mixed state '
+        '(%); it must be entirely pre-handoff or entirely owned by '
+        'meal_agent_migrator', owner_states;
+    END IF;
+  END IF;
 
   WITH expected (kind, identity, detail) AS (
     VALUES
@@ -495,6 +565,9 @@ ${expected}
         || CASE WHEN divergence_count > ${String(reportedDivergences)}
                   THEN '; ...' ELSE '' END;
   END IF;
+
+  PERFORM pg_catalog.set_config('search_path', saved_search_path, true);
+  PERFORM pg_catalog.set_config('quote_all_identifiers', saved_quoting, true);
 END
 ${dollarTag};
 `;

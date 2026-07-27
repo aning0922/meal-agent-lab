@@ -12,11 +12,131 @@
 
 DO $meal_agent_stage06_manifest$
 DECLARE
+  saved_search_path text;
+  saved_quoting text;
+  owner_states text;
   divergence_count integer;
   divergence text;
 BEGIN
+  -- set_config 的第三个参数只表示「事务内」：它在**事务**结束时才恢复，不会在
+  -- DO 块结束时恢复。本块是在一个显式事务里被包含进来执行的，因此必须自己保存
+  -- 并还原，否则同一事务的后续语句会继承被改过的两个 GUC。
+  saved_search_path := current_setting('search_path');
+  saved_quoting := current_setting('quote_all_identifiers');
   PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
   PERFORM pg_catalog.set_config('quote_all_identifiers', 'off', true);
+
+  -- owner handoff 的阶段由**整组** owner 判定。只有「整组都还没交接」和「整组
+  -- 都属于 migrator」两种合法状态；混合态说明有人只改了其中一部分，不是可以继续
+  -- 推理的状态。
+  SELECT pg_catalog.string_agg(owner_name, ',' ORDER BY owner_name COLLATE "C")
+    INTO owner_states
+    FROM (SELECT DISTINCT owner_name FROM (
+      SELECT pg_catalog.pg_get_userbyid(d.datdba)::text AS owner_name
+        FROM pg_catalog.pg_database d
+       WHERE d.datname = current_database()
+         AND 'database:<current>'
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(n.nspowner)::text
+        FROM pg_catalog.pg_namespace n
+       WHERE 'schema:' || n.nspname = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(c.relowner)::text
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE 'relation:' || n.nspname || '.' || c.relname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(t.typowner)::text
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+       WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+    ) AS handoff_owners) AS tuple_owners;
+  IF owner_states IS NOT NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM (SELECT DISTINCT owner_name FROM (
+      SELECT pg_catalog.pg_get_userbyid(d.datdba)::text AS owner_name
+        FROM pg_catalog.pg_database d
+       WHERE d.datname = current_database()
+         AND 'database:<current>'
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(n.nspowner)::text
+        FROM pg_catalog.pg_namespace n
+       WHERE 'schema:' || n.nspname = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(c.relowner)::text
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE 'relation:' || n.nspname || '.' || c.relname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(t.typowner)::text
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+       WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+    ) AS handoff_owners) AS bad
+       WHERE bad.owner_name <> ALL (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
+    ) THEN
+      RAISE EXCEPTION
+        'stage06 object manifest: unexpected owner(s) on the handoff group: %',
+        owner_states;
+    END IF;
+    IF EXISTS (SELECT 1 FROM (SELECT DISTINCT owner_name FROM (
+      SELECT pg_catalog.pg_get_userbyid(d.datdba)::text AS owner_name
+        FROM pg_catalog.pg_database d
+       WHERE d.datname = current_database()
+         AND 'database:<current>'
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(n.nspowner)::text
+        FROM pg_catalog.pg_namespace n
+       WHERE 'schema:' || n.nspname = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(c.relowner)::text
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE 'relation:' || n.nspname || '.' || c.relname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(t.typowner)::text
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+       WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+    ) AS handoff_owners) AS a WHERE a.owner_name = 'meal_agent_migrator')
+       AND EXISTS (SELECT 1 FROM (SELECT DISTINCT owner_name FROM (
+      SELECT pg_catalog.pg_get_userbyid(d.datdba)::text AS owner_name
+        FROM pg_catalog.pg_database d
+       WHERE d.datname = current_database()
+         AND 'database:<current>'
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(n.nspowner)::text
+        FROM pg_catalog.pg_namespace n
+       WHERE 'schema:' || n.nspname = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(c.relowner)::text
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE 'relation:' || n.nspname || '.' || c.relname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(t.typowner)::text
+        FROM pg_catalog.pg_type t
+        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+       WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+    ) AS handoff_owners) AS b WHERE b.owner_name <> 'meal_agent_migrator') THEN
+      RAISE EXCEPTION
+        'stage06 object manifest: the owner handoff group is in a mixed state '
+        '(%); it must be entirely pre-handoff or entirely owned by '
+        'meal_agent_migrator', owner_states;
+    END IF;
+  END IF;
 
   WITH expected (kind, identity, detail) AS (
     VALUES
@@ -437,11 +557,7 @@ BEGIN
                ('owner=' || CASE
               WHEN 'database:' || '<current>'::text
                      = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
-                   AND (pg_catalog.pg_get_userbyid(d.datdba)::text = 'meal_agent_migrator'
-                        OR (NOT (SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator' FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())
-                            AND pg_catalog.pg_get_userbyid(d.datdba)::text = ANY (
-                              ARRAY['pg_database_owner',
-                                    current_user::text]::text[])))
+                   AND pg_catalog.pg_get_userbyid(d.datdba)::text = ANY (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
                 THEN 'handoff-pending'
               ELSE pg_catalog.pg_get_userbyid(d.datdba)::text
             END)::text AS detail
@@ -453,11 +569,7 @@ BEGIN
                ('owner=' || CASE
               WHEN 'schema:' || n.nspname::text
                      = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
-                   AND (pg_catalog.pg_get_userbyid(n.nspowner)::text = 'meal_agent_migrator'
-                        OR (NOT (SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator' FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())
-                            AND pg_catalog.pg_get_userbyid(n.nspowner)::text = ANY (
-                              ARRAY['pg_database_owner',
-                                    current_user::text]::text[])))
+                   AND pg_catalog.pg_get_userbyid(n.nspowner)::text = ANY (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
                 THEN 'handoff-pending'
               ELSE pg_catalog.pg_get_userbyid(n.nspowner)::text
             END)::text
@@ -471,11 +583,7 @@ BEGIN
                  || ' owner=' || CASE
               WHEN 'relation:' || (n.nspname || '.' || c.relname)::text
                      = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
-                   AND (pg_catalog.pg_get_userbyid(c.relowner)::text = 'meal_agent_migrator'
-                        OR (NOT (SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator' FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())
-                            AND pg_catalog.pg_get_userbyid(c.relowner)::text = ANY (
-                              ARRAY['pg_database_owner',
-                                    current_user::text]::text[])))
+                   AND pg_catalog.pg_get_userbyid(c.relowner)::text = ANY (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
                 THEN 'handoff-pending'
               ELSE pg_catalog.pg_get_userbyid(c.relowner)::text
             END
@@ -547,11 +655,7 @@ BEGIN
                         || pg_catalog.pg_get_function_identity_arguments(p.oid)
                         || ')')::text
                      = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
-                   AND (pg_catalog.pg_get_userbyid(p.proowner)::text = 'meal_agent_migrator'
-                        OR (NOT (SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator' FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())
-                            AND pg_catalog.pg_get_userbyid(p.proowner)::text = ANY (
-                              ARRAY['pg_database_owner',
-                                    current_user::text]::text[])))
+                   AND pg_catalog.pg_get_userbyid(p.proowner)::text = ANY (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
                 THEN 'handoff-pending'
               ELSE pg_catalog.pg_get_userbyid(p.proowner)::text
             END
@@ -603,11 +707,7 @@ BEGIN
                  || ' owner=' || CASE
               WHEN 'type:' || (n.nspname || '.' || t.typname)::text
                      = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
-                   AND (pg_catalog.pg_get_userbyid(t.typowner)::text = 'meal_agent_migrator'
-                        OR (NOT (SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator' FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())
-                            AND pg_catalog.pg_get_userbyid(t.typowner)::text = ANY (
-                              ARRAY['pg_database_owner',
-                                    current_user::text]::text[])))
+                   AND pg_catalog.pg_get_userbyid(t.typowner)::text = ANY (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
                 THEN 'handoff-pending'
               ELSE pg_catalog.pg_get_userbyid(t.typowner)::text
             END
@@ -813,5 +913,8 @@ BEGIN
         || CASE WHEN divergence_count > 8
                   THEN '; ...' ELSE '' END;
   END IF;
+
+  PERFORM pg_catalog.set_config('search_path', saved_search_path, true);
+  PERFORM pg_catalog.set_config('quote_all_identifiers', saved_quoting, true);
 END
 $meal_agent_stage06_manifest$;

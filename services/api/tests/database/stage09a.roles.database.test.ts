@@ -3713,24 +3713,81 @@ test("the object manifest is stable across session GUCs and catches a post-hando
       );
     }
 
-    // 2. handoff **之前** admin 拥有 public/drizzle 是合法过渡态。
-    assert.equal((await runObjectManifest(probe)).code, 0);
+    // 2. handoff **之前** admin 拥有 public/drizzle 是合法过渡态；handoff 之后
+    //    整组属于 migrator 也是合法态。两者都必须正向通过。
+    assert.equal((await runObjectManifest(probe)).code, 0, "legal pre-handoff");
     await runBootstrap("handoff", probe);
-    assert.equal((await runObjectManifest(probe)).code, 0);
+    assert.equal((await runObjectManifest(probe)).code, 0, "legal post-handoff");
 
-    // 3. handoff **之后**再把 owner 夺回去就不再是过渡态，必须判为漂移。
+    // 2b. `set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复。
+    //     这些块是在 BEGIN…COMMIT 里被 \ir 进来的，因此必须显式还原，否则同一
+    //     事务里后续语句会继承被改过的 GUC。
+    const restored = await runCaptured(
+      join(postgresBin, "psql"),
+      [
+        "--no-psqlrc",
+        "--quiet",
+        "--no-password",
+        "--tuples-only",
+        "--no-align",
+        "--set",
+        "ON_ERROR_STOP=on",
+        "--dbname",
+        probe,
+        "--command",
+        "BEGIN",
+        "--command",
+        "SET quote_all_identifiers = on",
+        "--command",
+        "SET search_path = public",
+        "--file",
+        generatedSql("0000-object-manifest.generated.sql"),
+        "--command",
+        "SHOW quote_all_identifiers",
+        "--command",
+        "SHOW search_path",
+        "--command",
+        "COMMIT",
+      ],
+      { env: adminEnvironment() },
+    );
+    assert.equal(restored.code, 0, restored.stderr.slice(0, 300));
+    const shown = restored.stdout.split("\n").filter((line) => line !== "");
+    assert.ok(
+      shown.includes("on"),
+      `quote_all_identifiers must be restored, saw: ${restored.stdout}`,
+    );
+    assert.ok(
+      shown.some((line) => line.includes("public")),
+      `search_path must be restored, saw: ${restored.stdout}`,
+    );
+
+    // 3. handoff 阶段由**整组** owner 判定，不是 database owner 单字段。任何
+    //    混合态都必须直接拒绝——单字段判据会被一次局部改动整体带偏。
     for (const [label, grab, restore, expected] of [
       [
-        "schema",
-        "ALTER SCHEMA public OWNER TO postgres",
-        "ALTER SCHEMA public OWNER TO meal_agent_migrator",
-        /drifted schema public \[expected owner=handoff-pending\] \[found owner=postgres\]/,
+        "only the database owner grabbed back",
+        `ALTER DATABASE ${probe} OWNER TO postgres`,
+        `ALTER DATABASE ${probe} OWNER TO meal_agent_migrator`,
+        /owner handoff group is in a mixed state \(meal_agent_migrator,postgres\)/,
       ],
       [
-        "ledger",
+        "database owned by admin while schema and ledger are migrator",
+        `ALTER DATABASE ${probe} OWNER TO postgres`,
+        `ALTER DATABASE ${probe} OWNER TO meal_agent_migrator`,
+        /entirely pre-handoff or entirely owned by meal_agent_migrator/,
+      ],
+      [
+        "only schema public grabbed back",
+        "ALTER SCHEMA public OWNER TO postgres",
+        "ALTER SCHEMA public OWNER TO meal_agent_migrator",
+        /owner handoff group is in a mixed state/,
+      ],
+      [
+        "only the ledger grabbed back",
         "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO postgres",
         "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO meal_agent_migrator",
-        /drifted relation drizzle\.__meal_agent_migrations.*owner=postgres/,
+        /owner handoff group is in a mixed state/,
       ],
     ] as const) {
       await withPool(adminPoolConfig(probe), async (pool) => {

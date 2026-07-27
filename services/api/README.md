@@ -79,7 +79,7 @@ ledger）执行完毕后，catalog 中与安全相关的规范化投影——**�
 | `index` / `constraint` | 24 / 163 | 规范化定义（PostgreSQL 18 把 NOT NULL 也登记为约束） |
 | `routine` | 4 | identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path` 与 `row_security=off`）/正文 `sha256` 摘要 |
 | `policy` | 14 | command/roles/permissive/`USING`/`WITH CHECK` |
-| `type` | 10 | **全部用户 type，含 shell 与 base**（每张表的数组类型也在内） |
+| `type` | 10 | managed schema 内的用户 type，含 shell、base 与每张表的行类型/数组类型；`pg_catalog` 等系统 schema 不在范围内 |
 | `constraint-trigger` | 60 | 外键背后的内部触发器**启用状态** |
 | `trigger` / `rule` / operator / opclass / opfamily / collation / conversion / statistics / text-search / extension | 0 | 0000 一个都不建，出现即 `unexpected` |
 
@@ -87,10 +87,21 @@ ledger）执行完毕后，catalog 中与安全相关的规范化投影——**�
 把外键背后的内部触发器一起置为禁用，从此外键不再强制，而表结构、约束定义与 RLS
 全都看不出任何变化。它们的名字里带 OID，因此按「表 + 约束 + 触发器函数」定位。
 
-owner 判定与 handoff 阶段绑定：`handoff-pending` 只在目标 database 的 owner 还不是
-`meal_agent_migrator` 时才放行 bootstrap admin；handoff 完成之后这些对象必须精确
-属于 migrator。规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers`，
-因此 `pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` 的输出不随会话变化。
+owner handoff 的阶段由**整组 owner** 判定，而不是 database owner 单字段：整组
+（database、`public`/`drizzle` schema、drizzle ledger 及其数组类型）要么全部尚未
+交接，要么全部属于 `meal_agent_migrator`；任何混合态——例如 handoff 之后只把
+database owner 夺回给 admin——都直接拒绝，因为单字段判据会被一次局部改动整体
+带偏。
+
+规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers`，因此
+`pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` 的输出不随会话变化；
+块结束时两个 GUC 都会**显式还原**——`set_config(..., true)` 只在**事务**结束时
+恢复，不会在 `DO` 块结束时恢复，而这些块是在 `BEGIN…COMMIT` 里被 `\ir` 进来的。
+
+对象 catalog 基线实际绑定 **PostgreSQL 18.4**：约束/索引/表达式的规范化文本、
+PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都由具体 patch
+版本决定。M2B 必须固定 18.4 的 exact image digest，patch 升级要重新 capture
+manifest、重跑 parity 并显式 rebaseline。
 
 [`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
 把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何

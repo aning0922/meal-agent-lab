@@ -102,17 +102,24 @@ relkind/owner/persistence/`relrowsecurity`/`relforcerowsecurity`、**每一列**
 /类型/NOT NULL/默认值/identity/generated/存储与排序规则、index 与 constraint 的
 规范化定义、routine 的 identity args/prokind/owner/`prosecdef`/language/
 `proconfig`/正文摘要、policy 的 command/roles/permissive/`USING`/`WITH CHECK`、
-**全部用户 type（含 shell 与 base）**、trigger 与**外键背后的内部 constraint
+**managed schema 内的用户 type（含 shell、base 与行类型/数组类型）**、trigger 与**外键背后的内部 constraint
 trigger 启用状态**（`ALTER TABLE … DISABLE TRIGGER ALL` 会让外键静默失效，而表
 结构、约束定义与 RLS 全都看不出变化）、rule，以及 operator / opclass / opfamily /
 collation / conversion / 扩展统计 / 文本搜索四件套 / extension 这些明确枚举的
 namespace 类别，并强制唯一键、固定排序与重复 identity 拒绝。
 
-owner 判定与 handoff 阶段绑定：`handoff-pending` 只在「目标 database 的 owner 还
-不是 `meal_agent_migrator`」时才放行 bootstrap admin / `pg_database_owner`；
-handoff 完成之后这些对象必须精确属于 migrator，admin 重新夺回 owner 会被判为漂移。
-规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers`，因此
-`pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` 的输出不随会话变化。
+owner handoff 的阶段由**整组 owner** 判定，而不是 database owner 单字段：
+database、`public`/`drizzle` schema、drizzle ledger 及其数组类型要么整组尚未交接，
+要么整组属于 `meal_agent_migrator`。任何混合态直接拒绝——单字段判据会被一次局部
+改动整体带偏。
+
+规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers` 并在块结束时
+**显式还原**：`set_config(..., true)` 只在**事务**结束时恢复，而这些块是在
+`BEGIN…COMMIT` 里被 `\ir` 进来的，不还原就会让同一事务的后续语句继承被改过的
+GUC。
+
+对象 catalog 基线实际绑定 **PostgreSQL 18.4**。M2B 必须固定该 patch 的 exact
+image digest；patch 升级必须重新 capture manifest、重跑 parity 并显式 rebaseline。
 
 #### 2.2 授权状态由第二个 ledger 感知 manifest 描述
 
@@ -155,6 +162,19 @@ identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE`
 - 数据库级与 schema 级的 `PUBLIC` 授权可能来自任意第三方 grantor。普通 `REVOKE`
   只撤销「由执行者授予」的那一份，因此必须按真实 grantor 逐条撤销——**真正收敛**，
   而不是等后置校验失败后整体回滚：回滚只让命令失败，权限仍然留在数据库里。
+
+#### 2.4 恢复契约与受支持的 ledger 窗口
+
+当前**没有任何历史部署**，因此也不存在需要兼容的历史 dump。据此明确：
+
+- 首个受支持的 backup ledger 是 **`0000—0004`**。`0001`—`0003` 的中间态 dump
+  从未被产出过，也不声称受支持。
+- 今后每新增一个 migration，都必须为支持窗口内的**旧 ledger** 保留对应的
+  containment manifest 状态；删除旧状态等于宣布该窗口的 dump 不再可恢复，属于
+  需要显式决策的破坏性变更。
+- M4 至少要验证一次「受支持的旧 ledger → 当前 ledger」的完整恢复：
+  `cluster` → `createdb --owner=meal_agent_migrator` → `pg_restore`（旧 ledger）
+  → containment → `db:migrate`（补齐到当前 ledger）→ final → 验证。
 
 ### 3. fake 登录需要配置与网络双重防线
 
