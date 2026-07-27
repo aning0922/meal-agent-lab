@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26
-- 状态：In Progress（M1 Accepted；M2A 待总控复验；M2B—M5 未开始）
-- 计划分支：`codex/stage-09a-local-deployability-baseline`
+- 日期：2026-07-26（2026-07-27 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 第五轮整改完成、待总控复验；M2B—M5 未开始）
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -26,7 +26,7 @@
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 在规划时跟踪 `origin/main`；存在 GitHub Actions 工作流，但本计划没有把任何未读取的远端 run 记为 Pass。
 - `infra/docker/` 与 `infra/environments/` 仍为空骨架；没有 API Dockerfile、Compose、容器 smoke test、备份恢复脚本或部署运行手册。
-- 当前总控机器可用 Node.js 24.14.0、pnpm 11.9.0 和 PostgreSQL 18，但未发现 Docker CLI、Docker Compose、OrbStack、Colima 或 Podman。没有实际容器运行证据前不得把本阶段记为完成。
+- 当前总控机器可用 Node.js 24.14.0、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有实际 Compose 运行与备份恢复证据前仍不得把本阶段记为完成。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
 - 现有 local/weapp-only 依赖审计例外将在 2026-08-08 到期并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
 
@@ -92,6 +92,10 @@ PostgreSQL healthy
 6. 不使用 privileged、host network、Docker socket mount 或宿主目录数据库 bind mount。
 7. `/readyz` 必须以 runtime 真实可用的 `meal_agent_app` 权限读取 migration ledger；不能依赖登录角色继承权限或超级用户连接。
 8. migration advisory lock 和数据库连接具有有界超时；另一 migration 持锁时，部署 job 必须明确失败或在限定时间内退出，不能无限等待。
+9. 冻结 `0000` 的「对象与安全属性投影」只有**一个事实源**：`services/api/src/database/` 下的 typed readonly manifest。它必须覆盖三个 managed schema 的存在性与「没有多余 schema」、relation 的 schema/name/relkind/owner、index 与 constraint 的规范化定义、routine 的 schema/name/identity args/prokind/owner/`prosecdef`/language/`proconfig`（尤其固定 `search_path` 与 `row_security=off`）与关键定义摘要、`relrowsecurity`/`relforcerowsecurity`、policy 的 table/name/command/roles/permissive/`USING`/`WITH CHECK`、type 及明确允许的其他 namespace 对象，并强制唯一键、固定排序与重复 identity 拒绝。不得用正则解析 `0000_stage_06.sql` 推导，也不得继续维护 TS/SQL 两份手写 allowlist。
+10. 同一模块或相邻模块提供确定性 SQL renderer：输出必须是 `pg` 与 `psql` 都能执行的纯 SQL，不含 `\ir` 等 psql-only 元命令，不执行任何 ownership/ACL mutation。`migrate.ts` 的 0000-only 重跑 preflight 直接执行渲染结果；开发期 generator 把同一 renderer 输出写入 `infra/docker/postgres/sql/database/generated/0000-object-manifest.generated.sql`；`01-owner-handoff.sql` 在 mutation 之前、事务之内用相对路径 `\ir` 加载它。
+11. 只读 `manifest:check` 门禁：内存渲染后与 tracked generated SQL 逐字节比较，不得自动改写文件；generated 文件带 do-not-edit 标记、版本与 canonical manifest digest，不含时间戳、绝对路径、locale 或随机值。仅证明「TS 与 generated SQL 一致」不足够——还必须在真实 PostgreSQL 18 上干净执行冻结 `0000` 后，把 catalog 的规范化安全投影与 TypeScript manifest 逐行比对。
+12. `meal_agent_private`：`PUBLIC` 无 `USAGE`/`CREATE`；app 只有所需 `USAGE`、无 `CREATE`；backup 与三个 login 无有效访问；按真实 grantor 收敛；缺失任一 managed schema 时在任何 mutation 之前失败。恢复路径上 `drizzle` 出现未知 routine 或 `SECURITY DEFINER` 必须 fail closed，`PUBLIC` 派生的 `EXECUTE` 必须纳入 app/backup 的**有效**权限验证。Large Object 同时处理 `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 的 `defaclobjtype='L'`：当前产品不使用 LO，因此采用「存在项目角色 LO 权限或异常默认权限即收敛并断言为空」，不借此扩展业务能力。数据库级 `PUBLIC` 的跨 grantor ACL 必须**真正收敛**，不能只在后置校验失败后整体回滚。
 
 ### M3：配置和 fake 登录边界
 
@@ -184,7 +188,7 @@ PostgreSQL healthy
 
 ## 工具前置
 
-执行任务开始时先检查 Docker CLI 与 Compose v2。当前总控机器尚未安装可用容器引擎，因此可以先实现和静态审查，但在安装 Docker Desktop、OrbStack、Colima 或其他兼容 Docker Compose v2 的引擎之前，阶段 09A 不得完成最终验收。
+执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。
 
 项目只依赖标准 `docker` / `docker compose` 接口，不在仓库中绑定某个 Mac 桌面产品。系统级安装由产品负责人确认并完成，执行任务不得静默安装桌面软件、修改系统网络或接受第三方许可。
 
@@ -208,4 +212,11 @@ pnpm docs:links:check
 git diff --check
 ```
 
-在 Docker 工具缺失、Compose 运行未完成或备份恢复未验证时，只能记录 `Blocked — 缺少本地容器引擎`，不能把阶段状态改为已完成。
+M2A 另有两条只读命令，已并入 `pnpm --filter @meal-agent/api check`：
+
+```bash
+pnpm --filter @meal-agent/api manifest:check      # 只读门禁，不改文件
+pnpm --filter @meal-agent/api manifest:generate   # 开发期重新生成 adapter
+```
+
+Compose 运行未完成或备份恢复未验证时，只能记录对应里程碑 `未开始`/`未验证`，不能把阶段状态改为已完成。容器引擎已就绪，`Blocked — 缺少本地容器引擎` 不再适用。

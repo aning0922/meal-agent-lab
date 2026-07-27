@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)已完成规划、尚未实施：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted，M2A 待总控复验，M2B—M5 未开始；详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -88,9 +88,11 @@
 
 ## 阶段 09A 计划与下一门禁
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」实现完成、待总控复验；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」第五轮整改完成、待总控复验；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
-- 计划分支：`codex/stage-09a-local-deployability-baseline`，从最新本地 `main` 建立独立 worktree。
+- 冻结 `0000` 的「对象与安全属性投影」只有一个事实源：`services/api/src/database/stage06-manifest.ts` 的 typed readonly manifest（218 条规范化行）。确定性 renderer 输出纯 SQL；`migrate.ts` 直接执行内存渲染结果，`01-owner-handoff.sql` 在 mutation 前、事务内用相对路径 `\ir` 加载 `infra/docker/postgres/sql/database/generated/0000-object-manifest.generated.sql`。三道锁：只读 `manifest:check` 逐字节比对（不自动改写文件）、真实 PostgreSQL 18 上 catalog 投影与 TS manifest 逐行 parity（owner handoff 前后各一次）、两个入口对同一批漂移给出逐字相同的拒绝理由。此前 TS/SQL 两份手写 allowlist 已删除。
+- M2A 第五轮同时收口：`meal_agent_private` 的 ACL 基线（`PUBLIC` 无访问、app 只有 `USAGE` 且不能建对象、backup 与三个 login 无有效访问、按真实 grantor 收敛、缺失 managed schema 在 mutation 前失败）；恢复路径上 `drizzle` 的未知/`SECURITY DEFINER` routine fail closed，且 `PUBLIC` 派生的 `EXECUTE` 纳入 app/backup 有效权限验证；Large Object 的 `lomacl` 与 `defaclobjtype='L'` 默认权限收敛并断言为空；数据库级 `PUBLIC` 的跨 grantor ACL 真正收敛，而不是后置校验失败后整体回滚。
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
 - API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile 与数据库身份隔离已实现；仍缺 Compose 拓扑、Secret 文件注入、备份恢复证据与阶段总门禁。
 - 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。
@@ -111,4 +113,4 @@
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。下一步是在独立 worktree 实施阶段 09A，并保持所有外部 Deferred 项原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。下一步是总控复验 M2A，然后进入 M2B（Compose 拓扑），并保持所有外部 Deferred 项原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。

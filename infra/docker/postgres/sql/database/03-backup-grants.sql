@@ -2,11 +2,11 @@
 --
 -- 由 bootstrap/admin 在 0001—最新 migration 应用之后执行；可重复执行。
 --
--- 01-owner-handoff.sql 的 ALTER DEFAULT PRIVILEGES 已经覆盖「由 migrator 新建
--- 的表」，这里再做一次显式补授，用于兜底历史上由其他角色建立的对象。
+-- 本文件的 ALTER DEFAULT PRIVILEGES 覆盖「由 migrator 新建的表与 sequence」，
+-- 前面的显式补授则兜底历史上由其他角色建立的对象。
 -- 只授予 SELECT，并再次收回全部写权限与 DDL 权限。
 --
--- M4 的恢复流程只在此登记约束，本轮不实现：恢复时复用 01-role-baseline.sql
+-- M4 的恢复流程只在此登记约束，本轮不实现：恢复时复用 cluster/01-roles.sql
 -- 预建 dump 引用的角色，不得在已有 dump 目标上重跑 0000，也不得对 dump 已经
 -- 建立的对象重跑 owner handoff。
 
@@ -164,7 +164,25 @@ BEGIN
       CASE grant_row.defaclobjtype
         WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES'
         WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES'
-        WHEN 'n' THEN 'SCHEMAS' END);
+        WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' END);
+  END LOOP;
+
+  -- 1g. Large Object：备份角色是「可以读到全部业务数据」的敏感角色，因此它更
+  --     不能顺带拿到不受 schema ACL 与 RLS 约束的 LO 权限。当前产品不使用 LO，
+  --     这里直接收敛掉指向 backup 的 LO 权限与 objtype='L' 默认权限。
+  FOR grant_row IN
+    SELECT m.oid AS loid,
+           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
+           acl.privilege_type
+    FROM pg_largeobject_metadata m, aclexplode(m.lomacl) AS acl
+    WHERE acl.grantee <> 0
+      AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'
+  LOOP
+    EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    EXECUTE format(
+      'REVOKE %s ON LARGE OBJECT %s FROM meal_agent_backup CASCADE',
+      grant_row.privilege_type, grant_row.loid);
+    RESET ROLE;
   END LOOP;
 END
 $converge_backup$;
@@ -228,13 +246,20 @@ BEGIN
       'backup grants: backup must not hold column-level grants: %', problem;
   END IF;
 
-  -- 3c. routine：backup 不得持有任何 EXECUTE。
-  SELECT string_agg(format('%s.%s', n.nspname, p.proname), ', ')
-    INTO problem
-  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace,
-       aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
-  WHERE acl.grantee <> 0
-    AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup';
+  -- 3c. routine：backup 不得持有任何**有效** EXECUTE。
+  --     用 has_function_privilege 而不是只看直接 grantee：`GRANT EXECUTE ...
+  --     TO PUBLIC` 会派生给 backup，恢复路径带进来的这类授权只查直接授权是看
+  --     不见的。SECURITY DEFINER 函数尤其致命——那等于让 backup 以 migrator
+  --     身份执行。
+  SELECT string_agg(entry, ', ' ORDER BY entry) INTO problem
+  FROM (
+    SELECT format('%s.%s(%s) [security definer: %s]', n.nspname, p.proname,
+                  pg_catalog.pg_get_function_identity_arguments(p.oid),
+                  p.prosecdef) AS entry
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE has_function_privilege('meal_agent_backup', p.oid, 'EXECUTE')
+      AND n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+  ) AS effective_execute;
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION
       'backup grants: backup must not hold routine EXECUTE: %', problem;
@@ -291,6 +316,32 @@ BEGIN
   IF problem IS NOT NULL THEN
     RAISE EXCEPTION
       'backup grants: unexpected default privilege(s) for backup: %', problem;
+  END IF;
+
+  -- 3g. Large Object：backup 不得持有任何 LO 权限，也不得有 objtype='L' 的默认
+  --     权限；PUBLIC 的 LO 授权会派生给 backup，因此一并断言为空。
+  SELECT string_agg(entry, ', ' ORDER BY entry) INTO problem
+  FROM (
+    SELECT format('large object %s -> %s (%s)', m.oid,
+                  CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                       ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
+                  acl.privilege_type) AS entry
+    FROM pg_largeobject_metadata m, aclexplode(m.lomacl) AS acl
+    WHERE acl.grantee = 0
+       OR pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'
+    UNION ALL
+    SELECT format('default large object privilege %s -> %s',
+                  pg_catalog.pg_get_userbyid(d.defaclrole),
+                  CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                       ELSE pg_catalog.pg_get_userbyid(acl.grantee) END)
+    FROM pg_default_acl d, aclexplode(d.defaclacl) AS acl
+    WHERE d.defaclobjtype = 'L'
+      AND (acl.grantee = 0
+           OR pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup')
+  ) AS large_objects;
+  IF problem IS NOT NULL THEN
+    RAISE EXCEPTION
+      'backup grants: backup must hold no large object privilege: %', problem;
   END IF;
 END
 $verify_backup$;

@@ -63,6 +63,40 @@ meal_agent_migrator`。admin 路径不再是 `db:migrate` 的一个 flag——�
 metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完成：`0000`
 失败时整批回滚，不会留下 `drizzle` schema 或空 ledger。
 
+### 冻结 0000 的安全 manifest
+
+已经应用过 `0000` 的库（幂等重跑，以及 bootstrap 侧的 owner handoff）不再各自
+维护一份手写对象清单。唯一事实源是
+[`src/database/stage06-manifest.ts`](src/database/stage06-manifest.ts) 的 typed
+readonly manifest：它描述冻结 `0000`（外加 migration runner 建立的 drizzle
+ledger）执行完毕后，catalog 中与安全相关的规范化投影——三个 managed schema 的
+存在性与「没有多余 schema」、relation 的 `relkind`/owner/RLS/FORCE RLS、index 与
+constraint 的规范化定义、routine 的 identity args/owner/`SECURITY DEFINER`/
+language/`proconfig`（固定 `search_path` 与 `row_security=off` 就在这里）/正文
+`sha256` 摘要、policy 的 command/roles/permissive/`USING`/`WITH CHECK`，以及
+type 与 trigger。当前共 218 条规范化行。
+
+[`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
+把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何
+ownership/ACL/DDL 变更，只在不匹配时 `RAISE EXCEPTION`。`migrate.ts` 直接执行
+内存渲染结果；`infra/docker/postgres/sql/database/01-owner-handoff.sql` 通过相对
+路径 `\ir` 加载 generated 出的同一段文本。因此两个入口对同一批漂移给出**逐字
+相同**的拒绝理由。
+
+```bash
+# 开发期重新生成 generated adapter（会覆盖 tracked 文件）
+pnpm --filter @meal-agent/api manifest:generate
+
+# 只读门禁：内存渲染与 tracked 文件逐字节比较，不会自动改写
+pnpm --filter @meal-agent/api manifest:check
+```
+
+`manifest:check` 已并入 `pnpm --filter @meal-agent/api check`。generated 文件带
+do-not-edit 标记、manifest 版本与 canonical digest，不含时间戳、绝对路径、locale
+或随机值。「TS manifest ↔ generated SQL 一致」只是其中一环：数据库测试还在真实
+PostgreSQL 18 上执行冻结 `0000`，把 catalog 的规范化投影与 TypeScript manifest
+逐行比对（owner handoff 前后各一次），因此 manifest 不可能只是自洽而与事实脱节。
+
 连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
 600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是
 Node 定时器超过 2^31-1 毫秒会溢出并退化为约 1ms，"超大超时"会静默变成"几乎不

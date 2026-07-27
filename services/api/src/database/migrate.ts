@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import { Pool, type PoolClient } from "pg";
 
+import { renderStage06ManifestCheckSql } from "./stage06-manifest-sql.js";
+
 const migrationsDirectory = fileURLToPath(
   new URL("../../migrations/", import.meta.url),
 );
@@ -157,18 +159,31 @@ export class MigrationPreflightError extends Error {
   }
 }
 
-/** 冻结的 0000 建立的业务表，用于推导允许的空库/已 bootstrap 状态。 */
-export const stage06Tables: readonly string[] = Object.freeze([
-  "auth_identities",
-  "households",
-  "idempotency_records",
-  "inventory_events",
-  "inventory_lots",
-  "memberships",
-  "person_profiles",
-  "sessions",
-  "users",
-]);
+/**
+ * 冻结 0000 的对象与安全属性检查 SQL。
+ *
+ * 它由 `stage06-manifest.ts` 的 typed manifest 渲染而来，与 bootstrap 侧
+ * `01-owner-handoff.sql` 通过 `\ir` 加载的 generated adapter 是**同一段文本**
+ * （`manifest:check` 逐字节保证）。因此这里不再维护第二份手写对象 allowlist，
+ * 两个入口对同一批对象漂移也会给出同一条拒绝理由。
+ *
+ * 只渲染一次：渲染是纯函数，且与连接、库名、locale 无关。
+ */
+const stage06ManifestCheckSql = renderStage06ManifestCheckSql();
+
+/**
+ * 执行 manifest 检查。它是只读的：不匹配时抛错，不做任何 ownership/ACL 变更。
+ * 错误信息原样保留，只加上本入口的前缀，方便与 bootstrap 侧逐条对照。
+ */
+const assertStage06Manifest = async (client: PoolClient): Promise<void> => {
+  try {
+    await client.query(stage06ManifestCheckSql);
+  } catch (error) {
+    throw new MigrationPreflightError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
 
 const projectDatabasePattern = /^meal_agent(_[a-z0-9_]+)?$/;
 
@@ -211,13 +226,6 @@ const assertAdminBootstrapPreflight = async (
   const ledgerPresent = await client.query<{ present: string | null }>(
     "SELECT to_regclass('drizzle.__meal_agent_migrations') AS present",
   );
-  const businessTables = await client.query<{ relname: string }>(
-    `SELECT c.relname FROM pg_class c
-     JOIN pg_namespace n ON n.oid = c.relnamespace
-     WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
-     ORDER BY c.relname`,
-  );
-  const present = businessTables.rows.map((row) => row.relname);
 
   if (ledgerPresent.rows[0]?.present === null) {
     // 全新库必须**真的**是空的：不仅没有 public 普通表，也不能有任何用户
@@ -277,59 +285,11 @@ const assertAdminBootstrapPreflight = async (
       "the applied 0000_stage_06.sql checksum does not match the file on disk",
     );
   }
-  const unexpected = present.filter(
-    (relname) => !stage06Tables.includes(relname),
-  );
-  if (unexpected.length > 0) {
-    throw new MigrationPreflightError(
-      `unknown table(s) present for a 0000-only database: ${unexpected.join(", ")}`,
-    );
-  }
 
-  // 幂等重跑同样要做完整对象状态校验：ledger 已有 0000 之后再冒出额外的
-  // schema / relation / routine / type，说明这不是一个可以安全重跑的状态。
-  const residue = await client.query<{ kind: string; ident: string }>(
-    `SELECT 'schema' AS kind, nspname AS ident
-       FROM pg_namespace
-      WHERE nspname <> 'information_schema' AND nspname !~ '^pg_'
-        AND nspname NOT IN ('public', 'drizzle', 'meal_agent_private')
-     UNION ALL
-     SELECT 'relation', n.nspname || '.' || c.relname
-       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
-        AND c.relkind IN ('v', 'm', 'S', 'f')
-     UNION ALL
-     SELECT 'relation', n.nspname || '.' || c.relname
-       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname IN ('drizzle', 'meal_agent_private')
-        AND c.relkind IN ('r', 'p')
-        AND NOT (n.nspname = 'drizzle'
-                 AND c.relname = '__meal_agent_migrations')
-     UNION ALL
-     SELECT 'routine', n.nspname || '.' || p.proname
-       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE n.nspname IN ('public', 'drizzle')
-     UNION ALL
-     SELECT 'type', n.nspname || '.' || t.typname
-       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-      WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
-        AND t.typtype IN ('c', 'e', 'd', 'r')
-        AND NOT EXISTS (SELECT 1 FROM pg_class c
-                        WHERE c.oid = t.typrelid AND c.relkind <> 'c')
-     ORDER BY 1, 2`,
-  );
-  if (residue.rows.length > 0) {
-    throw new MigrationPreflightError(
-      "a 0000-only database must not contain extra objects: " +
-        residue.rows.map((row) => `${row.kind} ${row.ident}`).join(", "),
-    );
-  }
-  const missing = stage06Tables.filter((relname) => !present.includes(relname));
-  if (missing.length > 0) {
-    throw new MigrationPreflightError(
-      `0000 is recorded as applied but table(s) are missing: ${missing.join(", ")}`,
-    );
-  }
+  // 幂等重跑的完整对象状态校验全部交给 manifest：缺失、多余、以及 owner、RLS、
+  // policy、约束、索引、routine 的 proconfig / SECURITY DEFINER / 正文摘要等
+  // 安全属性漂移，都在这一步统一判定。
+  await assertStage06Manifest(client);
 };
 
 const sleep = (milliseconds: number): Promise<void> =>
@@ -492,6 +452,9 @@ export const applyMigrations = async (
       }
     }
     if (atomicWholeRun) {
+      // 刚刚应用的 0000 也必须与冻结 manifest 完全一致。不一致时整批回滚，
+      // 不会留下一个「与 manifest 不同的 0000」当作后续所有检查的基线。
+      await assertStage06Manifest(client);
       await client.query("COMMIT");
     }
   } catch (error) {

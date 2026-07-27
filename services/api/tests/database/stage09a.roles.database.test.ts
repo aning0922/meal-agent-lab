@@ -17,6 +17,8 @@ import {
   MigrationLockTimeoutError,
   MigrationOptionError,
 } from "../../src/database/migrate.js";
+import { renderStage06CatalogProjectionSql } from "../../src/database/stage06-manifest-sql.js";
+import { canonicalManifestRows } from "../../src/database/stage06-manifest.js";
 import { checkReadiness, createPersistence } from "../../src/database/pool.js";
 
 /**
@@ -1141,28 +1143,30 @@ test("owner handoff refuses unmanaged objects on a 0000-only database", async ()
         return JSON.stringify(result.rows);
       });
 
+    // 期望信息全部来自渲染出的 manifest 检查块（checksum 那条除外——它由
+    // handoff 自己的顺序前置条件抛出，早于 manifest）。
     const injections: readonly [string, readonly string[], RegExp][] = [
       ["public view", ["CREATE VIEW public.stage09a_v AS SELECT 1 AS x"],
-        /unexpected object\(s\) in public/i],
+        /unexpected relation public\.stage09a_v/],
       ["public sequence", ["CREATE SEQUENCE public.stage09a_s"],
-        /unexpected object\(s\) in public/i],
+        /unexpected relation public\.stage09a_s/],
       ["public routine", [
         "CREATE FUNCTION public.stage09a_f() RETURNS int LANGUAGE sql " +
           "SECURITY DEFINER AS $$SELECT 1$$",
-      ], /object manifest does not match|unexpected routine/i],
+      ], /unexpected routine public\.stage09a_f\(\) .*secdef=t/],
       ["private routine", [
         "CREATE FUNCTION meal_agent_private.stage09a_p() RETURNS int " +
           "LANGUAGE sql AS $$SELECT 1$$",
-      ], /object manifest does not match|unexpected routine/i],
+      ], /unexpected routine meal_agent_private\.stage09a_p\(\)/],
       ["custom schema", ["CREATE SCHEMA stage09a_extra"],
-        /unexpected schema/i],
+        /unexpected schema stage09a_extra/],
       ["user type", ["CREATE TYPE public.stage09a_t AS (a int)"],
-        /unexpected object|unexpected type|object manifest does not match/i],
+        /unexpected type public\.stage09a_t/],
       ["pre-created 0001 table", [
         "CREATE TABLE public.household_invites (id uuid PRIMARY KEY)",
-      ], /unexpected object\(s\) in public/i],
+      ], /unexpected relation public\.household_invites/],
       ["dropped 0000 table", ["DROP TABLE public.sessions CASCADE"],
-        /table\(s\) missing|unexpected/i],
+        /missing relation public\.sessions/],
       ["tampered ledger checksum", [
         "UPDATE drizzle.__meal_agent_migrations SET hash = repeat('0', 64)",
       ], /checksum does not match/i],
@@ -2013,7 +2017,10 @@ test("an unknown SECURITY DEFINER function in public is refused by the acl basel
   try {
     const result = await bootstrap("acl");
     assert.notEqual(result.code, 0, "acl must refuse a public SECURITY DEFINER");
-    assert.match(result.stderr, /public must not contain business routines/i);
+    assert.match(
+      result.stderr,
+      /public and drizzle must not contain routines: public\.stage09a_backdoor\(\) \[security definer: t\]/i,
+    );
 
     // acl 是 fail closed 而不是静默阉割，因此此刻该函数仍保留默认的
     // PUBLIC EXECUTE。收回 PUBLIC EXECUTE（正是基线对已知 routine 做的事）
@@ -2203,7 +2210,7 @@ test("a 0000-only re-run still validates full object state", async () => {
       assert.notEqual(result.code, 0, `re-run must reject: ${label}`);
       assert.match(
         `${result.stdout}${result.stderr}`,
-        /must not contain extra objects/,
+        /stage06 object manifest does not match the frozen 0000/,
         `wrong reason for: ${label}`,
       );
       assert.match(`${result.stdout}${result.stderr}`, expected);
@@ -2487,4 +2494,951 @@ test("backup routine grants from an independent grantor are converged", async ()
   });
   await runBootstrap("acl");
   await runBootstrap("grants");
+});
+
+// ---------------------------------------------------------------------------
+// 阶段 09A / M2A 第五轮：冻结 0000 的安全 manifest，以及 private schema、
+// 恢复路径 routine、Large Object 与数据库 PUBLIC 跨 grantor 的反例。
+// ---------------------------------------------------------------------------
+
+/** 在指定库上以 admin 身份跑规范化投影，返回排序后的规范化行。 */
+const catalogProjection = async (
+  database: string,
+): Promise<readonly { kind: string; identity: string; detail: string }[]> =>
+  withPool(adminPoolConfig(database), async (pool) => {
+    const client = await pool.connect();
+    try {
+      // 投影结果与 search_path 有关（pg_get_indexdef / pg_get_expr 会省略可见
+      // schema 的限定），因此这里用与渲染块相同的固定值。
+      await client.query("BEGIN");
+      await client.query("SET LOCAL search_path = pg_catalog");
+      const result = await client.query<{
+        kind: string;
+        identity: string;
+        detail: string;
+      }>(renderStage06CatalogProjectionSql());
+      await client.query("ROLLBACK");
+      return [...result.rows].sort((left, right) => {
+        if (left.kind !== right.kind) {
+          return left.kind < right.kind ? -1 : 1;
+        }
+        if (left.identity === right.identity) {
+          return 0;
+        }
+        return left.identity < right.identity ? -1 : 1;
+      });
+    } finally {
+      client.release();
+    }
+  });
+
+/** 从合并输出里抽出 manifest 拒绝信息，用于比较两个入口是否一致。 */
+const manifestRejection = (result: RunResult): string => {
+  const combined = `${result.stdout}${result.stderr}`;
+  const match = /stage06 object manifest does not match[^\n]*/.exec(combined);
+  return match === null ? "" : match[0];
+};
+
+test("the frozen 0000 projects exactly the TypeScript manifest on real PostgreSQL 18", async () => {
+  // 证明 manifest 不是「和 generated SQL 自洽」而已：真实 PostgreSQL 18 上执行
+  // 冻结 0000 之后，catalog 的规范化安全投影必须与 TypeScript manifest 逐行相同。
+  const probe = "meal_agent_stage09a_parity";
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+    });
+    await mustSucceedCli(
+      "pnpm db:bootstrap (parity)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+
+    const expected = canonicalManifestRows().map((row) => ({
+      kind: row.kind,
+      identity: row.identity,
+      detail: row.detail,
+    }));
+    assert.ok(expected.length > 200, "the manifest must be non-trivial");
+
+    // 1. owner handoff **之前**：public / drizzle / ledger 的 owner 仍是
+    //    bootstrap admin 或 pg_database_owner，属于合法过渡态。
+    assert.deepEqual(await catalogProjection(probe), expected);
+
+    // 2. owner handoff **之后**：owner 变成 migrator，同一份 manifest 仍然成立。
+    await runBootstrap("handoff", probe);
+    assert.deepEqual(await catalogProjection(probe), expected);
+
+    process.stdout.write(
+      `stage06 manifest parity: ${String(expected.length)} canonical rows ` +
+        "matched before and after owner handoff\n",
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
+});
+
+test("every security-relevant drift is rejected identically by both entry points", async () => {
+  const probe = "meal_agent_stage09a_drift";
+  const admin = adminPoolConfig(probe);
+
+  /** 注入前先记下精确定义，回滚时按原样恢复，避免测试之间互相污染。 */
+  const captured = new Map<string, string>();
+  const capture = async (key: string, sql: string): Promise<void> => {
+    await withPool(admin, async (pool) => {
+      const result = await pool.query<{ definition: string }>(sql);
+      const definition = result.rows[0]?.definition;
+      assert.ok(definition !== undefined, `could not capture ${key}`);
+      captured.set(key, definition);
+    });
+  };
+  const definitionOf = (key: string): string => {
+    const definition = captured.get(key);
+    assert.ok(definition !== undefined, `missing captured definition ${key}`);
+    return definition;
+  };
+
+  const ownerSnapshot = async (): Promise<string> =>
+    withPool(admin, async (pool) => {
+      const result = await pool.query(
+        `SELECT 'db' AS ident, pg_catalog.pg_get_userbyid(datdba) AS owner
+           FROM pg_database WHERE datname = current_database()
+         UNION ALL
+         SELECT 'schema:' || nspname, pg_catalog.pg_get_userbyid(nspowner)
+           FROM pg_namespace
+          WHERE nspname IN ('public','drizzle','meal_agent_private')
+         ORDER BY 1`,
+      );
+      return JSON.stringify(result.rows);
+    });
+
+  const runStatements = async (statements: readonly string[]): Promise<void> => {
+    await withPool(admin, async (pool) => {
+      for (const statement of statements) {
+        await pool.query(statement);
+      }
+    });
+  };
+
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+    });
+    await mustSucceedCli(
+      "pnpm db:bootstrap (drift probe)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+
+    await capture(
+      "app_user_id",
+      `SELECT pg_catalog.pg_get_functiondef(
+                'meal_agent_private.app_user_id()'::regprocedure) AS definition`,
+    );
+    await capture(
+      "linked_membership_index",
+      `SELECT pg_catalog.pg_get_indexdef(
+                'public.person_profiles_linked_membership_unique'::regclass)
+              AS definition`,
+    );
+    await capture(
+      "users_status_check",
+      `SELECT pg_catalog.pg_get_constraintdef(oid) AS definition
+         FROM pg_constraint WHERE conname = 'users_status_check'`,
+    );
+    await capture(
+      "households_user_list_select_using",
+      `SELECT pg_catalog.pg_get_expr(polqual, polrelid) AS definition
+         FROM pg_policy WHERE polname = 'households_user_list_select'`,
+    );
+    await capture(
+      "households_creator_insert_check",
+      `SELECT pg_catalog.pg_get_expr(polwithcheck, polrelid) AS definition
+         FROM pg_policy WHERE polname = 'households_creator_insert'`,
+    );
+
+    interface DriftCase {
+      readonly label: string;
+      readonly inject: readonly string[];
+      readonly revert: readonly string[];
+      readonly expected: RegExp;
+      /**
+       * 有些漂移无法逐字节还原：PostgreSQL 重新解析 `pg_get_constraintdef` 的
+       * 输出时会给出**等价但文本不同**的规范化结果。这类用例直接重建探针库，
+       * 而不是假装还原成功——manifest 的意义正是不接受「等价即可」。
+       */
+      readonly rebuild?: true;
+    }
+
+    const cases: readonly DriftCase[] = [
+      {
+        label: "private routine added",
+        inject: [
+          "CREATE FUNCTION meal_agent_private.stage09a_added() RETURNS int " +
+            "LANGUAGE sql AS $$SELECT 1$$",
+        ],
+        revert: ["DROP FUNCTION meal_agent_private.stage09a_added()"],
+        expected: /unexpected routine meal_agent_private\.stage09a_added\(\)/,
+      },
+      {
+        label: "private routine missing",
+        // 重命名而不是 DROP：四个函数都被 policy 引用，DROP CASCADE 会连带删除
+        // policy，掩盖「routine 缺失」这一条本身。
+        inject: [
+          "ALTER FUNCTION meal_agent_private.app_user_id() " +
+            "RENAME TO app_user_id_moved",
+        ],
+        revert: [
+          "ALTER FUNCTION meal_agent_private.app_user_id_moved() " +
+            "RENAME TO app_user_id",
+        ],
+        expected: /missing routine meal_agent_private\.app_user_id\(\)/,
+      },
+      {
+        label: "private routine overload",
+        inject: [
+          "CREATE FUNCTION meal_agent_private.app_user_id(extra int) " +
+            "RETURNS uuid LANGUAGE sql AS $$SELECT NULL::uuid$$",
+        ],
+        revert: ["DROP FUNCTION meal_agent_private.app_user_id(int)"],
+        expected:
+          /unexpected routine meal_agent_private\.app_user_id\(extra integer\)/,
+      },
+      {
+        label: "private routine body drift",
+        inject: [
+          "CREATE OR REPLACE FUNCTION meal_agent_private.app_user_id() " +
+            "RETURNS uuid LANGUAGE sql STABLE PARALLEL SAFE " +
+            "AS $$SELECT '00000000-0000-7000-8000-000000000000'::uuid$$",
+        ],
+        revert: [],
+        expected: /drifted routine meal_agent_private\.app_user_id\(\).*body=/,
+      },
+      {
+        label: "private routine owner drift",
+        inject: [
+          "ALTER FUNCTION meal_agent_private.app_user_id() OWNER TO postgres",
+        ],
+        revert: [
+          "ALTER FUNCTION meal_agent_private.app_user_id() " +
+            "OWNER TO meal_agent_migrator",
+        ],
+        expected:
+          /drifted routine meal_agent_private\.app_user_id\(\).*owner=postgres/,
+      },
+      {
+        label: "SECURITY DEFINER search_path drift",
+        inject: [
+          "ALTER FUNCTION meal_agent_private.has_active_membership(uuid) " +
+            "SET search_path = public",
+        ],
+        revert: [
+          "ALTER FUNCTION meal_agent_private.has_active_membership(uuid) " +
+            "SET search_path = pg_catalog, public",
+        ],
+        expected:
+          /drifted routine meal_agent_private\.has_active_membership\(target_household_id uuid\).*config=search_path=public/,
+      },
+      {
+        label: "SECURITY DEFINER row_security drift",
+        inject: [
+          "ALTER FUNCTION meal_agent_private.is_household_creator(uuid) " +
+            "RESET row_security",
+        ],
+        revert: [
+          "ALTER FUNCTION meal_agent_private.is_household_creator(uuid) " +
+            "SET row_security = off",
+        ],
+        expected:
+          /drifted routine meal_agent_private\.is_household_creator\(target_household_id uuid\)/,
+      },
+      {
+        label: "SECURITY DEFINER turned into SECURITY INVOKER",
+        inject: [
+          "ALTER FUNCTION meal_agent_private.has_active_membership(uuid) " +
+            "SECURITY INVOKER",
+        ],
+        revert: [
+          "ALTER FUNCTION meal_agent_private.has_active_membership(uuid) " +
+            "SECURITY DEFINER",
+        ],
+        expected:
+          /drifted routine meal_agent_private\.has_active_membership\(target_household_id uuid\).*secdef=f/,
+      },
+      {
+        label: "row level security disabled",
+        inject: ["ALTER TABLE public.households DISABLE ROW LEVEL SECURITY"],
+        revert: ["ALTER TABLE public.households ENABLE ROW LEVEL SECURITY"],
+        expected: /drifted relation public\.households.*rls=f/,
+      },
+      {
+        label: "force row level security dropped",
+        inject: ["ALTER TABLE public.memberships NO FORCE ROW LEVEL SECURITY"],
+        revert: ["ALTER TABLE public.memberships FORCE ROW LEVEL SECURITY"],
+        expected: /drifted relation public\.memberships.*force=f/,
+      },
+      {
+        label: "policy added",
+        inject: [
+          "CREATE POLICY stage09a_extra ON public.households " +
+            "FOR SELECT TO meal_agent_app USING (true)",
+        ],
+        revert: ["DROP POLICY stage09a_extra ON public.households"],
+        expected: /unexpected policy public\.households\.stage09a_extra/,
+      },
+      {
+        label: "policy removed",
+        inject: [
+          "ALTER POLICY households_user_list_select ON public.households " +
+            "RENAME TO households_user_list_select_moved",
+        ],
+        revert: [
+          "ALTER POLICY households_user_list_select_moved ON public.households " +
+            "RENAME TO households_user_list_select",
+        ],
+        expected:
+          /missing policy public\.households\.households_user_list_select/,
+      },
+      {
+        label: "policy roles widened to PUBLIC",
+        inject: [
+          "ALTER POLICY households_user_list_select ON public.households " +
+            "TO PUBLIC",
+        ],
+        revert: [
+          "ALTER POLICY households_user_list_select ON public.households " +
+            "TO meal_agent_app",
+        ],
+        expected:
+          /drifted policy public\.households\.households_user_list_select.*roles=PUBLIC/,
+      },
+      {
+        label: "policy USING rewritten",
+        inject: [
+          "ALTER POLICY households_user_list_select ON public.households " +
+            "USING (true)",
+        ],
+        revert: [],
+        expected:
+          /drifted policy public\.households\.households_user_list_select.*using=true/,
+      },
+      {
+        label: "policy WITH CHECK rewritten",
+        inject: [
+          "ALTER POLICY households_creator_insert ON public.households " +
+            "WITH CHECK (true)",
+        ],
+        revert: [],
+        expected:
+          /drifted policy public\.households\.households_creator_insert.*check=true/,
+      },
+      {
+        label: "policy command and permissiveness rewritten",
+        inject: [
+          "DROP POLICY households_creator_insert ON public.households",
+          "CREATE POLICY households_creator_insert ON public.households " +
+            "AS RESTRICTIVE FOR ALL TO meal_agent_app USING (true)",
+        ],
+        revert: [],
+        expected:
+          /drifted policy public\.households\.households_creator_insert.*permissive=f/,
+      },
+      {
+        label: "index removed",
+        inject: [
+          "DROP INDEX public.person_profiles_linked_membership_unique",
+        ],
+        revert: [],
+        expected:
+          /missing index public\.person_profiles_linked_membership_unique/,
+      },
+      {
+        label: "index added",
+        inject: [
+          "CREATE INDEX stage09a_extra_index ON public.users (locale)",
+        ],
+        revert: ["DROP INDEX public.stage09a_extra_index"],
+        expected: /unexpected index public\.stage09a_extra_index/,
+      },
+      {
+        label: "constraint removed",
+        inject: [
+          "ALTER TABLE public.users DROP CONSTRAINT users_status_check",
+        ],
+        revert: [],
+        rebuild: true,
+        expected: /missing constraint public\.users\.users_status_check/,
+      },
+      {
+        label: "not null constraint dropped",
+        inject: ["ALTER TABLE public.users ALTER COLUMN locale DROP NOT NULL"],
+        revert: ["ALTER TABLE public.users ALTER COLUMN locale SET NOT NULL"],
+        expected: /missing constraint public\.users\.users_locale_not_null/,
+      },
+    ];
+
+    // 需要用捕获定义还原的用例，在这里补上还原语句。
+    const revertOverrides = new Map<string, readonly string[]>([
+      [
+        "private routine body drift",
+        // pg_get_functiondef 是 CREATE OR REPLACE 形式，可直接重放。
+        [definitionOf("app_user_id")],
+      ],
+      [
+        "policy USING rewritten",
+        [
+          "ALTER POLICY households_user_list_select ON public.households " +
+            `USING (${definitionOf("households_user_list_select_using")})`,
+        ],
+      ],
+      [
+        "policy WITH CHECK rewritten",
+        [
+          "ALTER POLICY households_creator_insert ON public.households " +
+            `WITH CHECK (${definitionOf("households_creator_insert_check")})`,
+        ],
+      ],
+      [
+        "policy command and permissiveness rewritten",
+        [
+          "DROP POLICY households_creator_insert ON public.households",
+          "CREATE POLICY households_creator_insert ON public.households " +
+            "FOR INSERT TO meal_agent_app WITH CHECK " +
+            `(${definitionOf("households_creator_insert_check")})`,
+        ],
+      ],
+      ["index removed", [definitionOf("linked_membership_index")]],
+    ]);
+
+    const cleanState = await ownerSnapshot();
+    for (const driftCase of cases) {
+      await runStatements(driftCase.inject);
+      const beforeOwners = await ownerSnapshot();
+
+      const rerun = await runPnpm("db:bootstrap", adminUrl(probe));
+      const handoff = await bootstrap("handoff", probe);
+
+      assert.notEqual(
+        rerun.code,
+        0,
+        `db:bootstrap must reject: ${driftCase.label}`,
+      );
+      assert.notEqual(
+        handoff.code,
+        0,
+        `handoff must reject: ${driftCase.label}`,
+      );
+
+      const rerunMessage = manifestRejection(rerun);
+      const handoffMessage = manifestRejection(handoff);
+      assert.match(
+        rerunMessage,
+        driftCase.expected,
+        `db:bootstrap gave the wrong reason for: ${driftCase.label} ` +
+          `(${rerunMessage.slice(0, 300)})`,
+      );
+      assert.equal(
+        rerunMessage,
+        handoffMessage,
+        `the two entry points disagreed on: ${driftCase.label}`,
+      );
+      assert.equal(
+        await ownerSnapshot(),
+        beforeOwners,
+        `${driftCase.label} mutated ownership before failing`,
+      );
+
+      if (driftCase.rebuild === true) {
+        await withPool(adminPoolConfig("postgres"), async (pool) => {
+          await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+          await pool.query(`CREATE DATABASE ${probe}`);
+        });
+      } else {
+        await runStatements(
+          revertOverrides.get(driftCase.label) ?? driftCase.revert,
+        );
+      }
+
+      // 还原之后必须重新干净：这既证明反例是可逆的，也保证下一个用例不会
+      // 建立在残留漂移之上。
+      await mustSucceedCli(
+        `pnpm db:bootstrap (clean after ${driftCase.label})`,
+        await runPnpm("db:bootstrap", adminUrl(probe)),
+      );
+      assert.equal(
+        await ownerSnapshot(),
+        cleanState,
+        `${driftCase.label} left ownership changed`,
+      );
+    }
+    process.stdout.write(
+      `stage06 manifest drift cases: ${String(cases.length)} rejected ` +
+        "identically by db:bootstrap and bootstrap.sh handoff\n",
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
+});
+
+test("the private schema stays closed and the app role cannot create objects there", async () => {
+  const privateState = async (): Promise<Record<string, boolean>> =>
+    withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query(
+        `SELECT
+           has_schema_privilege('public', 'meal_agent_private', 'USAGE')
+             AS public_usage,
+           has_schema_privilege('public', 'meal_agent_private', 'CREATE')
+             AS public_create,
+           has_schema_privilege('meal_agent_app', 'meal_agent_private', 'USAGE')
+             AS app_usage,
+           has_schema_privilege('meal_agent_app', 'meal_agent_private', 'CREATE')
+             AS app_create,
+           has_schema_privilege('meal_agent_backup', 'meal_agent_private',
+                                'USAGE') AS backup_usage,
+           has_schema_privilege('meal_agent_runtime_login',
+                                'meal_agent_private', 'USAGE')
+             AS runtime_login_usage,
+           has_schema_privilege('meal_agent_backup_login',
+                                'meal_agent_private', 'USAGE')
+             AS backup_login_usage,
+           has_schema_privilege('meal_agent_migration_login',
+                                'meal_agent_private', 'USAGE')
+             AS migration_login_usage`,
+      );
+      return result.rows[0] as unknown as Record<string, boolean>;
+    });
+
+  const baseline = {
+    public_usage: false,
+    public_create: false,
+    app_usage: true,
+    app_create: false,
+    backup_usage: false,
+    runtime_login_usage: false,
+    backup_login_usage: false,
+    migration_login_usage: false,
+  };
+  assert.deepEqual(await privateState(), baseline);
+
+  // 注入：PUBLIC 拿到 USAGE + CREATE，app 直接拿到 CREATE，backup 拿到 USAGE，
+  // 并且其中一条由独立 grantor 授予，证明收敛是按真实 grantor 进行的。
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("DROP ROLE IF EXISTS stage09a_private_grantor");
+    await pool.query("CREATE ROLE stage09a_private_grantor NOLOGIN");
+    await pool.query(
+      "GRANT USAGE ON SCHEMA meal_agent_private TO stage09a_private_grantor " +
+        "WITH GRANT OPTION",
+    );
+    await pool.query(
+      "GRANT USAGE, CREATE ON SCHEMA meal_agent_private TO PUBLIC",
+    );
+    await pool.query(
+      "GRANT CREATE ON SCHEMA meal_agent_private TO meal_agent_app",
+    );
+    const client = await pool.connect();
+    try {
+      await client.query(
+        "SELECT set_config('role', 'stage09a_private_grantor', false)",
+      );
+      await client.query(
+        "GRANT USAGE ON SCHEMA meal_agent_private TO meal_agent_backup",
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  const widened = await privateState();
+  assert.equal(widened["public_create"], true, "drift must actually widen");
+  assert.equal(widened["backup_usage"], true, "drift must actually widen");
+
+  const grantor = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ grantor: string }>(
+      `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+         FROM pg_namespace n, aclexplode(n.nspacl) AS acl
+        WHERE n.nspname = 'meal_agent_private' AND acl.grantee <> 0
+          AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'`,
+    );
+    return result.rows[0]?.grantor;
+  });
+  assert.equal(grantor, "stage09a_private_grantor");
+
+  try {
+    await runBootstrap("acl");
+    assert.deepEqual(
+      await privateState(),
+      baseline,
+      "the acl baseline must converge meal_agent_private back to the baseline",
+    );
+
+    // app 仍然能调用受控函数，但不能在这个 schema 里建任何对象。
+    await withPool(runtimeLoginUrl(), async (pool) => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT set_config('role', 'meal_agent_app', true)");
+        const callable = await client.query<{ value: string | null }>(
+          "SELECT meal_agent_private.app_user_id()::text AS value",
+        );
+        assert.equal(callable.rows[0]?.value, null);
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+
+      for (const statement of [
+        "CREATE TABLE meal_agent_private.stage09a_app_owned (id int)",
+        "CREATE FUNCTION meal_agent_private.stage09a_app_fn() RETURNS int " +
+          "LANGUAGE sql AS $$SELECT 1$$",
+      ]) {
+        assert.match(
+          String(await attempt(pool, [statement], "meal_agent_app")),
+          /permission denied/i,
+          `meal_agent_app must not create objects in meal_agent_private: ` +
+            statement.slice(0, 50),
+        );
+      }
+    });
+
+    // backup 连 schema 都进不去。
+    await withPool(backupLoginUrl(), async (pool) => {
+      assert.match(
+        String(
+          await attempt(
+            pool,
+            ["SELECT meal_agent_private.app_user_id()"],
+            "meal_agent_backup",
+          ),
+        ),
+        /permission denied/i,
+      );
+    });
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(
+        "REVOKE ALL ON SCHEMA meal_agent_private FROM stage09a_private_grantor",
+      );
+      await pool.query("DROP ROLE IF EXISTS stage09a_private_grantor");
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("a restore-style SECURITY DEFINER routine in drizzle fails both baselines closed", async () => {
+  // 恢复路径不跑 0000，对象全部来自 dump：dump 可以把任意函数带进 drizzle。
+  // 这类函数默认带 PUBLIC EXECUTE，于是 app 与 backup 会**派生**出以 migrator
+  // 身份执行的能力。基线必须 fail closed，而不是只看直接授权后放行。
+  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+    await client.query(
+      "CREATE FUNCTION drizzle.stage09a_restored_backdoor() RETURNS text " +
+        "LANGUAGE sql SECURITY DEFINER AS $$SELECT current_user::text$$",
+    );
+  });
+  try {
+    // 0. 基线的 default privileges 已经收回了「migrator 新建函数默认给 PUBLIC
+    //    EXECUTE」，所以刚建好时还没有派生权限。
+    const beforeRestoreGrant = await withPool(
+      adminPoolConfig(),
+      async (pool) => {
+        const result = await pool.query<{ app: boolean }>(
+          `SELECT has_function_privilege('meal_agent_app',
+                    'drizzle.stage09a_restored_backdoor()'::regprocedure,
+                    'EXECUTE') AS app`,
+        );
+        return result.rows[0]?.app;
+      },
+    );
+    assert.equal(
+      beforeRestoreGrant,
+      false,
+      "the default-privilege baseline must already deny PUBLIC EXECUTE",
+    );
+
+    // 1. pg_restore 会把 dump 里记录的 ACL 原样重放，包括显式的
+    //    `GRANT EXECUTE ... TO PUBLIC`。default privileges 管不到它。
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "GRANT EXECUTE ON FUNCTION drizzle.stage09a_restored_backdoor() " +
+          "TO PUBLIC",
+      );
+    });
+
+    // 派生 EXECUTE 客观存在：这正是只查直接授权会漏掉的那一份。
+    const derived = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ app: boolean; backup: boolean }>(
+        `SELECT has_function_privilege('meal_agent_app',
+                  'drizzle.stage09a_restored_backdoor()'::regprocedure,
+                  'EXECUTE') AS app,
+                has_function_privilege('meal_agent_backup',
+                  'drizzle.stage09a_restored_backdoor()'::regprocedure,
+                  'EXECUTE') AS backup`,
+      );
+      return result.rows[0];
+    });
+    assert.equal(derived?.app, true, "PUBLIC EXECUTE derives to app");
+    assert.equal(derived?.backup, true, "PUBLIC EXECUTE derives to backup");
+
+    // 2. 两个 database scope 阶段都必须拒绝。
+    const acl = await bootstrap("acl");
+    assert.notEqual(acl.code, 0, "acl must refuse a drizzle routine");
+    assert.match(
+      acl.stderr,
+      /public and drizzle must not contain routines: drizzle\.stage09a_restored_backdoor\(\) \[security definer: t\]/,
+    );
+
+    const grants = await bootstrap("grants");
+    assert.notEqual(grants.code, 0, "grants must refuse the derived EXECUTE");
+    assert.match(
+      grants.stderr,
+      /backup must not hold routine EXECUTE: drizzle\.stage09a_restored_backdoor\(\) \[security definer: t\]/,
+    );
+
+    // 3. 收回 PUBLIC EXECUTE（基线对已知 routine 做的事）之后，app 与 backup
+    //    都不能再以 migrator 身份执行它。
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "REVOKE EXECUTE ON FUNCTION drizzle.stage09a_restored_backdoor() " +
+          "FROM PUBLIC",
+      );
+    });
+    for (const [url, role] of [
+      [runtimeLoginUrl(), "meal_agent_app"],
+      [backupLoginUrl(), "meal_agent_backup"],
+    ] as const) {
+      await withPool(url, async (pool) => {
+        assert.match(
+          String(
+            await attempt(
+              pool,
+              ["SELECT drizzle.stage09a_restored_backdoor()"],
+              role,
+            ),
+          ),
+          /permission denied/i,
+          `${role} must not execute a drizzle SECURITY DEFINER routine`,
+        );
+      });
+    }
+  } finally {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "DROP FUNCTION IF EXISTS drizzle.stage09a_restored_backdoor()",
+      );
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("large object privileges are converged and stay unreachable for runtime and backup", async () => {
+  // Large Object 不受 schema ACL 与 RLS 约束：任何项目角色拿到 LO 权限都等于
+  // 绕开整套边界。当前产品不使用 LO，因此基线的策略是「存在即收敛并断言为空」。
+  const largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ loid: string }>(
+      "SELECT lo_from_bytea(0, 'stage09a-sentinel'::bytea)::text AS loid",
+    );
+    const loid = result.rows[0]?.loid;
+    assert.ok(loid !== undefined);
+    return loid;
+  });
+
+  const leftover = async (): Promise<number> =>
+    withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ count: string }>(
+        `SELECT (
+           (SELECT count(*) FROM pg_largeobject_metadata m,
+                   aclexplode(m.lomacl) AS acl
+             WHERE acl.grantee = 0
+                OR pg_catalog.pg_get_userbyid(acl.grantee) LIKE 'meal\\_agent%')
+           + (SELECT count(*) FROM pg_default_acl d, aclexplode(d.defaclacl) acl
+               WHERE d.defaclobjtype = 'L'
+                 AND acl.grantee IS DISTINCT FROM d.defaclrole)
+         )::text AS count`,
+      );
+      return Number(result.rows[0]?.count ?? "-1");
+    });
+
+  try {
+    assert.equal(await leftover(), 0, "the baseline starts with no LO grants");
+
+    // 注入：直接授权、PUBLIC 授权与 objtype='L' 的默认权限漂移。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(
+        `GRANT SELECT, UPDATE ON LARGE OBJECT ${largeObjectId} ` +
+          "TO meal_agent_app, meal_agent_backup, meal_agent_runtime_login",
+      );
+      await pool.query(
+        `GRANT SELECT ON LARGE OBJECT ${largeObjectId} TO PUBLIC`,
+      );
+      await pool.query(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "GRANT SELECT, UPDATE ON LARGE OBJECTS TO meal_agent_backup",
+      );
+      await pool.query(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "GRANT SELECT ON LARGE OBJECTS TO PUBLIC",
+      );
+    });
+    assert.ok(await leftover() > 0, "the drift must actually widen");
+
+    await runBootstrap("acl");
+    assert.equal(
+      await leftover(),
+      0,
+      "the acl baseline must converge every large object privilege",
+    );
+    await runBootstrap("grants");
+    assert.equal(await leftover(), 0, "grants must keep the LO baseline empty");
+
+    // runtime 与 backup 都不能写入 Large Object。
+    for (const [url, role] of [
+      [runtimeLoginUrl(), "meal_agent_app"],
+      [backupLoginUrl(), "meal_agent_backup"],
+    ] as const) {
+      await withPool(url, async (pool) => {
+        for (const statement of [
+          `SELECT lo_put(${largeObjectId}, 0, 'tampered'::bytea)`,
+          `SELECT lo_get(${largeObjectId})`,
+          `UPDATE pg_largeobject SET data = 'x'::bytea ` +
+            `WHERE loid = ${largeObjectId}`,
+        ]) {
+          assert.match(
+            String(await attempt(pool, [statement], role)),
+            /permission denied|must be owner/i,
+            `${role} must not reach large object ${largeObjectId}: ` +
+              statement.slice(0, 40),
+          );
+        }
+      });
+    }
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`SELECT lo_unlink(${largeObjectId})`).catch(() => undefined);
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("a database-level PUBLIC grant from an independent grantor is converged, not rolled back", async () => {
+  // 回归：跨 grantor 的 PUBLIC CONNECT 此前只在后置校验里失败并整体回滚，
+  // 权限依旧留在数据库里。现在它必须被**真正撤销**，且命令成功返回。
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("DROP ROLE IF EXISTS stage09a_db_grantor");
+    await pool.query("CREATE ROLE stage09a_db_grantor NOLOGIN");
+    await pool.query(
+      `GRANT CONNECT, TEMPORARY ON DATABASE ${rolesDatabase} ` +
+        "TO stage09a_db_grantor WITH GRANT OPTION",
+    );
+    const client = await pool.connect();
+    try {
+      await client.query(
+        "SELECT set_config('role', 'stage09a_db_grantor', false)",
+      );
+      await client.query(
+        `GRANT CONNECT, TEMPORARY ON DATABASE ${rolesDatabase} TO PUBLIC`,
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  try {
+    const injected = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ grantor: string; privilege: string }>(
+        `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
+                acl.privilege_type AS privilege
+           FROM pg_database d, aclexplode(d.datacl) AS acl
+          WHERE d.datname = current_database() AND acl.grantee = 0
+          ORDER BY privilege`,
+      );
+      return result.rows;
+    });
+    assert.deepEqual(
+      injected.map((row) => `${row.grantor}:${row.privilege}`),
+      ["stage09a_db_grantor:CONNECT", "stage09a_db_grantor:TEMPORARY"],
+      "the PUBLIC grant must genuinely come from an independent grantor",
+    );
+
+    // 收敛必须成功——不是「失败并回滚」。
+    await runBootstrap("acl");
+
+    await withPool(adminPoolConfig(), async (pool) => {
+      const remaining = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+           FROM pg_database d, aclexplode(d.datacl) AS acl
+          WHERE d.datname = current_database() AND acl.grantee = 0`,
+      );
+      assert.equal(remaining.rows[0]?.count, "0", "PUBLIC must hold nothing");
+      const effective = await pool.query<{ connect: boolean; temp: boolean }>(
+        `SELECT has_database_privilege('public', current_database(), 'CONNECT')
+                  AS connect,
+                has_database_privilege('public', current_database(), 'TEMP')
+                  AS temp`,
+      );
+      assert.equal(effective.rows[0]?.connect, false);
+      assert.equal(effective.rows[0]?.temp, false);
+    });
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(
+        `REVOKE ALL ON DATABASE ${rolesDatabase} ` +
+          "FROM stage09a_db_grantor CASCADE",
+      );
+      await pool.query("DROP ROLE IF EXISTS stage09a_db_grantor");
+    });
+    await runBootstrap("acl");
+    await runBootstrap("grants");
+  }
+});
+
+test("a missing managed schema fails the acl baseline before any mutation", async () => {
+  const probe = "meal_agent_stage09a_missing_schema";
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+    });
+    await mustSucceedCli(
+      "pnpm db:bootstrap (missing schema probe)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+    await runBootstrap("handoff", probe);
+    await runBootstrap("acl", probe);
+
+    // 先制造一处**可观察的**待收敛漂移，再删掉一个 managed schema：
+    // 失败必须发生在任何 mutation 之前，因此漂移必须原封不动地留着。
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      await pool.query("GRANT USAGE, CREATE ON SCHEMA public TO PUBLIC");
+      await pool.query("DROP SCHEMA meal_agent_private CASCADE");
+    });
+
+    const result = await bootstrap("acl", probe);
+    assert.notEqual(result.code, 0, "acl must refuse a missing managed schema");
+    assert.match(
+      result.stderr,
+      /managed schema\(s\) missing: meal_agent_private/,
+    );
+
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      const state = await pool.query<{ usage: boolean; create: boolean }>(
+        `SELECT has_schema_privilege('public', 'public', 'USAGE') AS usage,
+                has_schema_privilege('public', 'public', 'CREATE') AS create`,
+      );
+      assert.equal(
+        state.rows[0]?.usage,
+        true,
+        "the baseline must not have converged anything before failing",
+      );
+      assert.equal(state.rows[0]?.create, true);
+    });
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    });
+  }
 });

@@ -68,6 +68,53 @@ loopback client
 
 API readiness 必须在与真实 runtime 相同的权限边界下检查数据库和 migration ledger，不能依赖测试时期的超级用户连接偶然通过。
 
+#### 2.1 冻结 `0000` 的安全 manifest 只有一个事实源
+
+migration runner 与 bootstrap 的 owner handoff 都需要回答同一个问题：「这个库
+是不是恰好处于冻结 `0000` 应用之后的状态」。两边各写一份手写对象清单会独立
+漂移，而且只能回答「对象在不在」，回答不了 RLS、policy、`proconfig`、约束定义
+这些真正决定安全边界的问题。
+
+因此：typed readonly manifest 是唯一事实源，确定性 renderer 把它渲染成纯 SQL；
+`migrate.ts` 直接执行内存渲染结果，bootstrap 的 `01-owner-handoff.sql` 在
+mutation 之前、事务之内用相对路径 `\ir` 加载 generated 出的同一段文本。渲染结果
+只读——不匹配时 `RAISE EXCEPTION`，不做任何 ownership/ACL/DDL 变更。PostgreSQL 与
+bootstrap 运行时都不执行 Node，Node 只在开发机/CI 上生成 adapter。
+
+一致性由三道互相独立的锁保证，缺一不可：
+
+1. **TS ↔ generated SQL**：只读 `manifest:check` 逐字节比对，不自动改写文件；
+   generated 文件带 do-not-edit 标记、版本与 canonical digest，不含时间戳、
+   绝对路径、locale 或随机值。
+2. **manifest ↔ 真实 catalog**：在真实 PostgreSQL 18 上干净执行冻结 `0000` 之后，
+   catalog 的规范化安全投影必须与 TypeScript manifest 逐行相同（owner handoff
+   前后各一次）。只证明第 1 条是不够的——两份自洽的错误仍然是错误。
+3. **两个入口一致**：同一批漂移在 `db:bootstrap` 与 `bootstrap.sh handoff` 上
+   给出逐字相同的拒绝理由。
+
+manifest 覆盖 schema 存在性与「没有多余 schema」、relation 的
+relkind/owner/`relrowsecurity`/`relforcerowsecurity`、index 与 constraint 的
+规范化定义、routine 的 identity args/prokind/owner/`prosecdef`/language/
+`proconfig`/正文摘要、policy 的 command/roles/permissive/`USING`/`WITH CHECK`，
+以及 type 与 trigger，并强制唯一键、固定排序与重复 identity 拒绝。
+
+#### 2.2 私有 schema、恢复路径与 Large Object
+
+- `meal_agent_private` 是受控 `SECURITY DEFINER` 函数所在的 schema：`PUBLIC` 无
+  `USAGE`/`CREATE`，app 只有 `USAGE`（因此不能在其中建对象），backup 与三个
+  login 没有任何有效访问。缺失任一 managed schema 时，ACL 基线在任何 mutation
+  之前失败。
+- 恢复路径的对象全部来自 dump：`drizzle` 中出现任何 routine（尤其
+  `SECURITY DEFINER`）必须 fail closed；routine 权限按**有效权限**验证，把
+  `GRANT EXECUTE ... TO PUBLIC` 派生给 app/backup 的那一份也算在内。
+- Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此对
+  `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 中 `defaclobjtype='L'` 采取
+  「存在项目角色或 `PUBLIC` 权限即收敛并断言为空」，不借此扩展任何业务能力；
+  项目角色**拥有** LO 属于异常状态，只报告并失败，不删数据。
+- 数据库级与 schema 级的 `PUBLIC` 授权可能来自任意第三方 grantor。普通 `REVOKE`
+  只撤销「由执行者授予」的那一份，因此必须按真实 grantor 逐条撤销——**真正收敛**，
+  而不是等后置校验失败后整体回滚：回滚只让命令失败，权限仍然留在数据库里。
+
 ### 3. fake 登录需要配置与网络双重防线
 
 - local/private Compose 明确使用 fake adapter 和合成身份；
@@ -128,7 +175,7 @@ API readiness 必须在与真实 runtime 相同的权限边界下检查数据库
 
 ### 成本和限制
 
-- 总控机器必须先安装兼容 Docker Compose v2 的容器引擎才能完成最终验收；
+- 最终验收需要兼容 Docker Compose v2 的容器引擎；总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），该前置不再阻塞；
 - 既有 `0000` 导致空库 bootstrap 仍有一个显式高权限步骤；
 - 单机 Compose 不提供生产高可用、正式 Secret 服务、WAF 或生产监控；
 - fake 登录环境只能用于合成数据和内部验证；

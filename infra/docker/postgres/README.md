@@ -14,10 +14,20 @@ migration，不新增也不修改任何业务表结构，因此不进入
 `CONNECT` 外，没有任何直接授予的 schema/table/sequence/function 权限**，必须显式
 `SET ROLE` 才能取得对应角色的权限。
 
-`public` 与 `drizzle` schema 采用**严格基线**：`PUBLIC` 的 `USAGE`/`CREATE` 被显式
-收回，`USAGE` 只显式授予 `meal_agent_app` 与 `meal_agent_backup`，`migrator` 作为
-schema owner 无需授予。因此三个登录角色在 `SET ROLE` 之前对 `public` 没有有效
-`USAGE`，基线也不再依赖 template 的默认 ACL。
+三个 managed schema（`public`、`drizzle`、`meal_agent_private`）采用**严格基线**：
+`PUBLIC` 的 `USAGE`/`CREATE` 被显式收回，只显式授予必要的 `USAGE`，`migrator`
+作为 schema owner 无需授予。因此三个登录角色在 `SET ROLE` 之前对任何 managed
+schema 都没有有效访问，基线也不再依赖 template 的默认 ACL。
+
+| schema | `PUBLIC` | `meal_agent_app` | `meal_agent_backup` | 三个 login |
+| --- | --- | --- | --- | --- |
+| `public` | 无 | `USAGE`（无 `CREATE`） | `USAGE`（无 `CREATE`） | 无 |
+| `drizzle` | 无 | `USAGE`（无 `CREATE`） | `USAGE`（无 `CREATE`） | 无 |
+| `meal_agent_private` | 无 | `USAGE`（无 `CREATE`） | **无** | 无 |
+
+`meal_agent_private` 是受控状态转换函数（`SECURITY DEFINER`）所在的 schema。app
+只拿到 `USAGE`，因此**不能在其中创建任何对象**；backup 连 schema 都进不去——它是
+敏感的全库导出角色，没有任何理由以 migrator 身份执行函数。
 
 | 登录角色 | 可进入 | connection limit | 用途 |
 | --- | --- | --- | --- |
@@ -100,13 +110,25 @@ cluster-admin 边界，不伪装成最小权限步骤。
 属性、role-level GUC 配置与 membership 图；`acl` 阶段收敛数据库/schema/对象权限。越界 membership 被逐条
 撤销后重新授予目标边。因此重复 bootstrap 只会收敛权限，不会叠加权限。
 
-两个容易踩空的地方已被显式处理：
+几个容易踩空的地方已被显式处理：
 
 - `ALTER ROLE x RESET ALL` 只清全局设置，不清 `ALTER ROLE x IN DATABASE d SET ...`
   留下的每库设置，因此按 catalog 逐条清理；
 - `pg_auth_members` 的键是 `(roleid, member, grantor)`，不带 `GRANTED BY` 的
   `REVOKE` 只会删掉「由执行者授予」的那一行，因此按 catalog 逐行撤销并显式指定
-  `GRANTED BY`。
+  `GRANTED BY`；
+- 对象与数据库权限同理：普通 `REVOKE` 只撤销「由执行者授予」的那一份，第三方
+  grantor 授予的授权会残留。**`PUBLIC` 也是如此**——数据库级与 schema 级的
+  `PUBLIC` 授权按真实 grantor 逐条 `SET LOCAL ROLE` 后撤销，是**真正撤销**，
+  而不是等后置校验失败再整体回滚（回滚只让命令失败，权限仍留在库里）；
+- Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此
+  `pg_largeobject_metadata.lomacl` 中指向项目角色或 `PUBLIC` 的权限、以及
+  `pg_default_acl` 中 `defaclobjtype = 'L'` 的非 owner 默认权限一律收敛并断言为
+  空；项目角色**拥有** LO 属于异常状态，只报告并失败，不删数据；
+- routine 权限按**有效权限**（`has_function_privilege`）验证而不是只看直接
+  grantee：`GRANT EXECUTE ... TO PUBLIC` 会派生给每个角色，恢复路径带进来的这类
+  授权只查直接授权是看不见的。`public` 与 `drizzle` 中不允许存在任何 routine，
+  出现即 fail closed——dump 可以把任意 `SECURITY DEFINER` 函数带进 `drizzle`。
 
 ## 用法
 
@@ -123,18 +145,39 @@ conninfo `key=value`、引号和大写一律拒绝。cluster scope 用 `--mainte
 （默认 `postgres`）。每个阶段执行前都会核对 `current_database()` 与 admin 能力，
 并检查所处的 migration ledger/owner 状态；连错库或顺序错误时 fail closed。
 
-`acl` 在任何 mutation 之前验证 database / 三个 schema / 全部被管理 relation 与
-routine 的 owner 都是 `meal_agent_migrator`；不符合时 fail closed，绝不在恢复路径
-上偷偷接管归属。
+`acl` 在任何 mutation 之前先确认三个 managed schema 都存在（缺任何一个都说明这
+不是一个可以安全收敛的目标：新安装漏了 `0000`，或恢复只恢复了一部分），再验证
+database / 三个 schema / 全部被管理 relation 与 routine 的 owner 都是
+`meal_agent_migrator`；不符合时 fail closed，绝不在恢复路径上偷偷接管归属。
 
 `handoff` 是 **fresh-install 的 0000-only 步骤**：ledger 必须恰好只有 checksum
 正确的 `0000_stage_06.sql`。`0001+`、断档、未知条目或错误 checksum 全部 fail
 closed，因此它不支持「最新 migration 之后重跑」——可复用的是 `acl` 与 `grants`。
 
-它的全部状态检查都先于任何归属变更：ledger 异常、异常 database owner、缺少
-`0000` 建立的表、出现未管理的表/视图/序列/routine/类型、自定义 schema、
-被管理对象归属未知角色，都会在**没有做过任何 ownership 变更**的情况下失败。
-业务表与 `meal_agent_private` 函数的 owner 只验证、不接管。
+它的全部状态检查都先于任何归属变更，且**不再手写对象清单**：ledger 与 database
+owner 由 `01-owner-handoff.sql` 自己检查，对象与安全属性由事务内用相对路径
+`\ir` 加载的 [`sql/database/generated/0000-object-manifest.generated.sql`](sql/database/generated/0000-object-manifest.generated.sql)
+判定。业务表与 `meal_agent_private` 函数的 owner 只验证、不接管。
+
+### 冻结 0000 的对象与安全属性 manifest
+
+generated adapter 是**生成文件，禁止手改**。事实源是
+[`services/api/src/database/stage06-manifest.ts`](../../../services/api/src/database/stage06-manifest.ts)
+的 typed manifest，由 `pnpm --filter @meal-agent/api manifest:generate` 生成，
+`manifest:check` 逐字节保证它与内存渲染结果一致（只读门禁，不会自动改写文件）。
+`services/api` 的 `db:bootstrap` 幂等重跑预检执行的是**同一段文本**，因此两个
+入口对同一批漂移给出逐字相同的拒绝理由。
+
+它覆盖三个 managed schema 的存在性与「没有多余 schema」、relation 的
+`relkind`/owner/`RLS`/`FORCE RLS`、index 与 constraint 的规范化定义、routine 的
+identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path`
+与 `row_security=off`）/正文 `sha256` 摘要、policy 的
+command/roles/permissive/`USING`/`WITH CHECK`，以及 type 与 trigger——当前 218 条
+规范化行。它是纯 SQL、只读：不匹配时 `RAISE EXCEPTION`，不做任何变更。
+
+manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写一份：它是在
+真实 PostgreSQL 18 上执行冻结 `0000` 之后从 catalog 采集并冻结的规范化投影，
+数据库测试在 owner handoff 前后各做一次逐行 parity 比对。
 
 每个 phase 的参数语法是精确的：不相关的 option、重复 option、缺 value 和多余
 位置参数一律拒绝，不静默忽略也不「最后一个覆盖」。
