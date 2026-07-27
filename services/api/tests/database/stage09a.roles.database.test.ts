@@ -2428,3 +2428,63 @@ test("no-ctty forwards SIGTERM to the whole detached process group quickly", asy
     `no-ctty signal case: terminated in ${String(elapsed)}ms\n`,
   );
 });
+
+test("backup routine grants from an independent grantor are converged", async () => {
+  // 回归：backup routine 撤销循环此前多传了一个未 SELECT 的 grantee 参数，
+  // 只有在真的存在 backup routine 授权时才会触发运行时错误。
+  await withPool(adminPoolConfig(), async (pool) => {
+    await pool.query("DROP ROLE IF EXISTS stage09a_fn_grantor");
+    await pool.query("CREATE ROLE stage09a_fn_grantor NOLOGIN");
+    // 基线已收回 PUBLIC 对 meal_agent_private 的 USAGE，grantor 需要显式取得，
+    // 否则它连函数都解析不到。
+    await pool.query(
+      "GRANT USAGE ON SCHEMA meal_agent_private TO stage09a_fn_grantor",
+    );
+    await pool.query(
+      "GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() " +
+        "TO stage09a_fn_grantor WITH GRANT OPTION",
+    );
+    const client = await pool.connect();
+    try {
+      await client.query(
+        "SELECT set_config('role', 'stage09a_fn_grantor', false)",
+      );
+      await client.query(
+        "GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() " +
+          "TO meal_agent_backup",
+      );
+    } finally {
+      client.release();
+    }
+  });
+
+  const grantor = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ grantor: string }>(
+      `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+       FROM pg_proc p, aclexplode(COALESCE(p.proacl,
+              acldefault('f', p.proowner))) AS acl
+       WHERE p.proname = 'app_user_id' AND acl.grantee <> 0
+         AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'`,
+    );
+    return result.rows[0]?.grantor;
+  });
+  assert.equal(grantor, "stage09a_fn_grantor");
+
+  // 这一步在修复前会因为 format 参数过多而运行时失败。
+  await runBootstrap("grants");
+
+  await withPool(adminPoolConfig(), async (pool) => {
+    const left = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM pg_proc p, aclexplode(COALESCE(p.proacl,
+              acldefault('f', p.proowner))) AS acl
+       WHERE acl.grantee <> 0
+         AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_backup'`,
+    );
+    assert.equal(left.rows[0]?.count, "0", "backup must hold no routine EXECUTE");
+    await pool.query("DROP OWNED BY stage09a_fn_grantor");
+    await pool.query("DROP ROLE IF EXISTS stage09a_fn_grantor");
+  });
+  await runBootstrap("acl");
+  await runBootstrap("grants");
+});

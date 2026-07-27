@@ -135,11 +135,12 @@ BEGIN
     GROUP BY 1, 2, 3, 4
   LOOP
     EXECUTE format('SET LOCAL ROLE %I', grant_row.grantor);
+    -- format 只有三个占位符；grantee 固定为 meal_agent_backup，
+    -- 多传一个未 SELECT 的 grant_row.grantee 会在循环体真正执行时报运行时错误。
     EXECUTE format('REVOKE ALL ON ROUTINE %I.%I(%s) FROM meal_agent_backup CASCADE',
                    grant_row.nspname, grant_row.proname,
                    pg_catalog.pg_get_function_identity_arguments(
-                     grant_row.prooid),
-                   grant_row.grantee);
+                     grant_row.prooid));
     RESET ROLE;
   END LOOP;
 
