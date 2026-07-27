@@ -303,6 +303,30 @@ const asRole = async <T>(
     }
   });
 
+/**
+ * canonical projector 的**结构化 identity**：测试与实现共用同一份编码，因此
+ * 断言不再依赖 `#`/`@`/`|` 拼接串，也不会因为名字里出现这些字符而错位。
+ */
+const key = (...parts: readonly ProjectionIdentityPart[]): string =>
+  encodeProjectionIdentity(parts);
+
+const escapeRegExp = (value: string): string =>
+  value.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+
+/** 完整 identity 出现在诊断文本里的正则片段。 */
+const keyPattern = (...parts: readonly ProjectionIdentityPart[]): string =>
+  escapeRegExp(key(...parts));
+
+/**
+ * identity **前缀**：`grant` 类诊断的 identity 是四元组
+ * `(object, grantee, grantor, privilege)`，只想断言前两段时不能带结尾的 `]`。
+ */
+const keyPrefixPattern = (
+  ...parts: readonly ProjectionIdentityPart[]
+): string => escapeRegExp(key(...parts).slice(0, -1));
+
+const uuidArgument = [["pg_catalog", "uuid"]] as const;
+
 const households = {
   first: "018f0900-0000-7000-8000-000000000001",
   second: "018f0900-0000-7000-8000-000000000002",
@@ -2039,7 +2063,14 @@ test("an unknown SECURITY DEFINER function in public is refused by the acl basel
     assert.notEqual(result.code, 0, "acl must refuse a public SECURITY DEFINER");
     assert.match(
       result.stderr,
-      /public and drizzle must not contain routines: public\.stage09a_backdoor\(\) \[security definer: t\]/i,
+      new RegExp(
+        `unknown routine ${keyPattern(
+          "routine",
+          "public",
+          "stage09a_backdoor",
+          [],
+        )}`,
+      ),
     );
 
     // acl 是 fail closed 而不是静默阉割，因此此刻该函数仍保留默认的
@@ -2355,7 +2386,13 @@ test("the acl baseline refuses to run when ownership is wrong", async () => {
   try {
     const result = await bootstrap("acl");
     assert.notEqual(result.code, 0, "acl must refuse a wrong schema owner");
-    assert.match(result.stderr, /not owned by meal_agent_migrator/);
+    assert.match(
+      result.stderr,
+      new RegExp(
+        `object ${keyPattern("schema", "drizzle")} is owned by postgres, ` +
+          "expected meal_agent_migrator",
+      ),
+    );
     assert.equal(await snapshot(), before, "acl mutated ownership before failing");
   } finally {
     await withPool(adminPoolConfig(), async (pool) => {
@@ -3238,14 +3275,30 @@ test("a restore-style SECURITY DEFINER routine in drizzle fails both baselines c
     assert.notEqual(acl.code, 0, "acl must refuse a drizzle routine");
     assert.match(
       acl.stderr,
-      /public and drizzle must not contain routines: drizzle\.stage09a_restored_backdoor\(\) \[security definer: t\]/,
+      new RegExp(
+        `unknown routine ${keyPattern(
+          "routine",
+          "drizzle",
+          "stage09a_restored_backdoor",
+          [],
+        )}`,
+      ),
     );
 
     const grants = await bootstrap("grants");
     assert.notEqual(grants.code, 0, "grants must refuse a drizzle routine");
+    // 两个阶段现在给出**逐字相同**的拒绝理由：致命前置条件由同一段 generated
+    // 收敛块承担，不再由两个入口各写一份。
     assert.match(
       grants.stderr,
-      /backup grants: public and drizzle must not contain routines: drizzle\.stage09a_restored_backdoor\(\) \[security definer: t\]/,
+      new RegExp(
+        `unknown routine ${keyPattern(
+          "routine",
+          "drizzle",
+          "stage09a_restored_backdoor",
+          [],
+        )}`,
+      ),
     );
 
     // 3. 收回 PUBLIC EXECUTE（基线对已知 routine 做的事）之后，app 与 backup
@@ -3285,93 +3338,121 @@ test("a restore-style SECURITY DEFINER routine in drizzle fails both baselines c
   }
 });
 
-test("large object privileges are converged and stay unreachable for runtime and backup", async () => {
-  // Large Object 不受 schema ACL 与 RLS 约束：任何项目角色拿到 LO 权限都等于
-  // 绕开整套边界。当前产品不使用 LO，因此基线的策略是「存在即收敛并断言为空」。
-  const largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
-    const result = await pool.query<{ loid: string }>(
-      "SELECT lo_from_bytea(0, 'stage09a-sentinel'::bytea)::text AS loid",
-    );
-    const loid = result.rows[0]?.loid;
-    assert.ok(loid !== undefined);
-    return loid;
-  });
+test("any large object fails both baselines closed before a single mutation", async () => {
+  // Large Object 不受 schema ACL 与 RLS 约束：任何 LO 都是一个不受整套边界约束
+  // 的存储面。产品声明禁用 LO，因此 R8B 的策略是**任意** LO 对象一律 fail
+  // closed，而且**只报告**——不 lo_unlink、不删数据、不接管归属、不改 lomacl。
+  //
+  // 三种归属都必须触发：cluster admin、外部角色、项目角色。OID 是环境相关的，
+  // 因此它只出现在诊断文本里，绝不进入任何固定允许 manifest。
+  const externalOwner = "stage09a_lo_owner";
+  const sentinel = "stage09a-lo-binary-sentinel";
+  const largeObjectIds: string[] = [];
 
-  const leftover = async (): Promise<number> =>
+  // 独立 catalog 快照：不经过 projector 自证，直接读 pg_largeobject_metadata、
+  // pg_largeobject 与一处无关对象的 ACL。
+  const catalogSnapshot = async (): Promise<string> =>
     withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ count: string }>(
-        `SELECT (
-           (SELECT count(*) FROM pg_largeobject_metadata m,
-                   aclexplode(m.lomacl) AS acl
-             WHERE acl.grantee = 0
-                OR pg_catalog.pg_get_userbyid(acl.grantee) LIKE 'meal\\_agent%')
-           + (SELECT count(*) FROM pg_default_acl d, aclexplode(d.defaclacl) acl
-               WHERE d.defaclobjtype = 'L'
-                 AND acl.grantee IS DISTINCT FROM d.defaclrole)
-         )::text AS count`,
+      const objects = await pool.query(
+        `SELECT m.oid::text AS loid,
+                pg_catalog.pg_get_userbyid(m.lomowner) AS owner,
+                COALESCE(m.lomacl::text, '<null>') AS acl,
+                pg_catalog.encode(
+                  pg_catalog.sha256(lo_get(m.oid)), 'hex') AS data_digest
+           FROM pg_largeobject_metadata m ORDER BY m.oid`,
       );
-      return Number(result.rows[0]?.count ?? "-1");
+      const unrelated = await pool.query(
+        `SELECT COALESCE(c.relacl::text, '<null>') AS acl
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relname = 'households'`,
+      );
+      return JSON.stringify({ objects: objects.rows, unrelated: unrelated.rows });
     });
 
   try {
-    assert.equal(await leftover(), 0, "the baseline starts with no LO grants");
-
-    // 注入：直接授权、PUBLIC 授权与 objtype='L' 的默认权限漂移。
     await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(
-        `GRANT SELECT, UPDATE ON LARGE OBJECT ${largeObjectId} ` +
-          "TO meal_agent_app, meal_agent_backup, meal_agent_runtime_login",
-      );
-      await pool.query(
-        `GRANT SELECT ON LARGE OBJECT ${largeObjectId} TO PUBLIC`,
-      );
-      await pool.query(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "GRANT SELECT, UPDATE ON LARGE OBJECTS TO meal_agent_backup",
-      );
-      await pool.query(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "GRANT SELECT ON LARGE OBJECTS TO PUBLIC",
-      );
+      await pool.query(`CREATE ROLE ${externalOwner} NOLOGIN`);
+      for (const owner of ["postgres", externalOwner, "meal_agent_migrator"]) {
+        const created = await pool.query<{ loid: string }>(
+          "SELECT lo_from_bytea(0, $1::bytea)::text AS loid",
+          [Buffer.from(`${sentinel}:${owner}`, "utf8")],
+        );
+        const loid = created.rows[0]?.loid;
+        assert.ok(loid !== undefined);
+        largeObjectIds.push(loid);
+        await pool.query(`ALTER LARGE OBJECT ${loid} OWNER TO ${owner}`);
+      }
+      // 一处**无关的** ACL 漂移：LO 存在时它必须原样不动，证明失败发生在任何
+      // mutation 之前，而不是「改到一半再回滚」。
+      await pool.query("GRANT SELECT ON public.households TO PUBLIC");
     });
-    assert.ok(await leftover() > 0, "the drift must actually widen");
 
-    await runBootstrap("acl");
+    const before = await catalogSnapshot();
+
+    for (const phase of ["acl", "grants"] as const) {
+      const result = await bootstrap(phase);
+      assert.notEqual(result.code, 0, `${phase} must refuse any large object`);
+      assert.match(
+        result.stderr,
+        /authorization preflight failed .*large object \d+ owned by /u,
+        `${phase} must report the large object before mutating`,
+      );
+      for (const loid of largeObjectIds) {
+        assert.ok(
+          result.stderr.includes(`large object ${loid} owned by `),
+          `${phase} must report large object ${loid}`,
+        );
+      }
+    }
+    for (const phase of ["containment", "final"] as const) {
+      const verified = await runAuthorizationVerify(phase);
+      assert.notEqual(verified.code, 0, `verify ${phase} must fail closed`);
+      assert.match(verified.stderr, /large object \d+ owned by /u);
+    }
+
     assert.equal(
-      await leftover(),
-      0,
-      "the acl baseline must converge every large object privilege",
+      await catalogSnapshot(),
+      before,
+      "owner, lomacl, large object data and the unrelated ACL drift must all " +
+        "be byte-identical: the baseline only reports",
     );
-    await runBootstrap("grants");
-    assert.equal(await leftover(), 0, "grants must keep the LO baseline empty");
 
-    // runtime 与 backup 都不能写入 Large Object。
+    // 入口点仍然对 PUBLIC、项目角色与全部非 superuser LOGIN 关闭。
     for (const [url, role] of [
       [runtimeLoginUrl(), "meal_agent_app"],
       [backupLoginUrl(), "meal_agent_backup"],
     ] as const) {
       await withPool(url, async (pool) => {
-        for (const statement of [
-          `SELECT lo_put(${largeObjectId}, 0, 'tampered'::bytea)`,
-          `SELECT lo_get(${largeObjectId})`,
-          `UPDATE pg_largeobject SET data = 'x'::bytea ` +
-            `WHERE loid = ${largeObjectId}`,
-        ]) {
-          assert.match(
-            String(await attempt(pool, [statement], role)),
-            /permission denied|must be owner/i,
-            `${role} must not reach large object ${largeObjectId}: ` +
-              statement.slice(0, 40),
-          );
+        for (const loid of largeObjectIds) {
+          for (const statement of [
+            `SELECT lo_put(${loid}, 0, 'tampered'::bytea)`,
+            `SELECT lo_get(${loid})`,
+            `UPDATE pg_largeobject SET data = 'x'::bytea WHERE loid = ${loid}`,
+          ]) {
+            assert.match(
+              String(await attempt(pool, [statement], role)),
+              /permission denied|must be owner/iu,
+              `${role} must not reach large object ${loid}`,
+            );
+          }
         }
       });
     }
   } finally {
+    // 清理只发生在 finally：正文永远不删未知数据。
     await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`SELECT lo_unlink(${largeObjectId})`).catch(() => undefined);
+      await pool
+        .query("REVOKE SELECT ON public.households FROM PUBLIC")
+        .catch(() => undefined);
+      for (const loid of largeObjectIds) {
+        await pool.query(`SELECT lo_unlink(${loid})`).catch(() => undefined);
+      }
+      await pool
+        .query(`DROP ROLE IF EXISTS ${externalOwner}`)
+        .catch(() => undefined);
     });
-    await runBootstrap("acl");
-    await runBootstrap("grants");
+    await bootstrap("acl");
+    await bootstrap("grants");
   }
 });
 
@@ -3472,7 +3553,7 @@ test("a missing managed schema fails the acl baseline before any mutation", asyn
     assert.notEqual(result.code, 0, "acl must refuse a missing managed schema");
     assert.match(
       result.stderr,
-      /managed schema\(s\) missing: meal_agent_private/,
+      /managed schema meal_agent_private is missing/,
     );
 
     await withPool(adminPoolConfig(probe), async (pool) => {
@@ -3897,7 +3978,9 @@ test("the authorization manifest is ledger-aware and fails closed on unknown sta
   );
   assert.match(
     containment.stderr,
-    /unexpected (grant|effective) relation:[a-z_.]+#meal_agent_backup/,
+    new RegExp(
+      `unexpected (grant|effective) \\[\\["relation", .*"meal_agent_backup"`,
+    ),
   );
 
   // 3. 未登记的 ledger：加一条假 migration 记录，两个阶段都必须 fail closed。
@@ -3940,12 +4023,18 @@ test("the final authorization check covers PUBLIC and app, not only backup", asy
     {
       label: "app widened with DELETE",
       inject: ["GRANT DELETE ON public.users TO meal_agent_app"],
-      expected: /drifted (grant|effective) relation:public\.users#meal_agent_app/,
+      expected: new RegExp(
+        `(drifted effective|unexpected grant) ` +
+          `${keyPattern(["relation", "public", "users"], "meal_agent_app")}`,
+      ),
     },
     {
       label: "PUBLIC granted table SELECT",
       inject: ["GRANT SELECT ON public.households TO PUBLIC"],
-      expected: /unexpected (grant|effective) relation:public\.households#PUBLIC/,
+      expected: new RegExp(
+        `unexpected (grant|effective) ` +
+          `${keyPattern(["relation", "public", "households"], "PUBLIC")}`,
+      ),
     },
     {
       label: "PUBLIC granted EXECUTE on a private routine",
@@ -3953,27 +4042,103 @@ test("the final authorization check covers PUBLIC and app, not only backup", asy
       inject: [
         "GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() TO PUBLIC",
       ],
-      expected:
-        /unexpected effective routine:meal_agent_private\.app_user_id\(\)#meal_agent_backup/,
+      expected: new RegExp(
+        `unexpected effective ` +
+          `${keyPattern(
+            ["routine", "meal_agent_private", "app_user_id", []],
+            "meal_agent_backup",
+          )}`,
+      ),
     },
     {
       label: "login granted schema USAGE",
       inject: ["GRANT USAGE ON SCHEMA public TO meal_agent_runtime_login"],
-      expected: /unexpected (grant|effective) schema:public#meal_agent_runtime_login/,
+      expected: new RegExp(
+        `unexpected (grant|effective) ` +
+          `${keyPattern(["schema", "public"], "meal_agent_runtime_login")}`,
+      ),
     },
     {
       label: "backup default privilege widened",
+      // 物理行多出一条 INSERT，叠加出的有效默认权限也随之漂移：两层都必须报。
       inject: [
         "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
           "GRANT INSERT ON TABLES TO meal_agent_backup",
       ],
-      expected: /drifted default r@public#meal_agent_backup/,
+      expected: new RegExp(
+        `unexpected default privilege ${keyPattern(
+          "meal_agent_migrator",
+          "r",
+          "public",
+          "meal_agent_backup",
+          "meal_agent_migrator",
+          "INSERT",
+        )}`,
+      ),
     },
     {
       label: "large object entry point reopened",
       inject: ["GRANT EXECUTE ON FUNCTION pg_catalog.lo_create(oid) TO PUBLIC"],
-      expected:
-        /unexpected effective routine:pg_catalog\.lo_create\(oid\)#meal_agent_app/,
+      expected: new RegExp(
+        `unexpected effective ${keyPattern(
+          ["routine", "pg_catalog", "lo_create", [["pg_catalog", "oid"]]],
+          "meal_agent_app",
+        )}`,
+      ),
+    },
+    {
+      label: "a fixed grant carrying a grant option",
+      // 权限集合看起来完全合规——app 本来就该有 SELECT——但元组多了可再授予
+      // 标志。只比对权限集合看不见这一份。
+      inject: [
+        "GRANT SELECT ON public.users TO meal_agent_app WITH GRANT OPTION",
+      ],
+      expected: new RegExp(
+        `grant option on ${keyPattern(
+          ["relation", "public", "users"],
+          "meal_agent_app",
+          "meal_agent_migrator",
+          "SELECT",
+        )}`,
+      ),
+    },
+    {
+      label: "a column-level grant",
+      // 列级授权没有任何允许项：即使权限本身出现在表级 manifest 里也是漂移。
+      inject: ["GRANT SELECT (id) ON public.users TO meal_agent_backup"],
+      expected: new RegExp(
+        `unexpected grant ${keyPrefixPattern(
+          ["column", "public", "users", "id"],
+          "meal_agent_backup",
+        )}`,
+      ),
+    },
+    {
+      label: "PUBLIC granted USAGE on a managed row type",
+      // 行类型上的 USAGE 会**沿委托关系**传到数组类型 public._users 上：数组
+      // 类型自己没有独立 ACL，它的有效权限完全取自元素类型。因此这里断言的是
+      // 委托后的有效权限——只看行类型的直接授权会漏掉这半边。
+      inject: ["GRANT USAGE ON TYPE public.users TO PUBLIC"],
+      expected: new RegExp(
+        `unexpected effective ${keyPattern(
+          ["type", "public", "_users"],
+          "PUBLIC",
+        )}`,
+      ),
+    },
+    {
+      label: "an explicit language grant",
+      // 用 `sql` 而不是 `plpgsql`：显式授权会把 lanacl 从 NULL 物化成一份等价的
+      // 显式 ACL，撤销之后也回不到 NULL。R8A 的「lanacl IS NULL 但规范化语义仍是
+      // PUBLIC/owner 都有 USAGE」这条证据需要一门**未被动过**的语言，因此把
+      // plpgsql 留作那个例子。收敛之后 `sql` 的规范化投影与内建默认逐行相同。
+      inject: ["GRANT USAGE ON LANGUAGE sql TO meal_agent_app"],
+      expected: new RegExp(
+        `unexpected grant ${keyPrefixPattern(
+          ["language", "sql"],
+          "meal_agent_app",
+        )}`,
+      ),
     },
   ];
 
@@ -3993,7 +4158,8 @@ test("the final authorization check covers PUBLIC and app, not only backup", asy
       assert.match(
         verified.stderr,
         authorizationCase.expected,
-        `wrong detail for: ${authorizationCase.label}`,
+        `wrong detail for: ${authorizationCase.label}: ` +
+          verified.stderr.slice(0, 900),
       );
 
       // 收敛之后必须重新通过——「撤销一切不在 manifest 里的，再只重建允许项」。
@@ -4016,53 +4182,98 @@ test("the final authorization check covers PUBLIC and app, not only backup", asy
 test("a private routine is matched by identity, owner, SECURITY DEFINER, proconfig and body", async () => {
   // 禁止 schema 级通配豁免：meal_agent_private 里的每个 routine 都按 identity
   // 精确匹配指纹，而不是「只要在这个 schema 就放行」。
+  const activeOwner = [
+    "routine",
+    "meal_agent_private",
+    "is_active_owner",
+    uuidArgument,
+  ] as const;
   const cases: readonly [string, string, string, RegExp][] = [
     [
       "owner drift",
       "ALTER FUNCTION meal_agent_private.app_user_id() OWNER TO postgres",
       "ALTER FUNCTION meal_agent_private.app_user_id() OWNER TO meal_agent_migrator",
-      /drifted routine meal_agent_private\.app_user_id\(\).*owner=postgres/,
+      new RegExp(
+        `object ${keyPattern(
+          "routine",
+          "meal_agent_private",
+          "app_user_id",
+          [],
+        )} is owned by postgres`,
+      ),
     ],
     [
       "SECURITY INVOKER",
       "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) SECURITY INVOKER",
       "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) SECURITY DEFINER",
-      /drifted routine meal_agent_private\.is_active_owner\(target_household_id uuid\).*secdef=f/,
+      new RegExp(
+        `drifted routine ${keyPattern(...activeOwner)}.*secdef=f`,
+      ),
     ],
     [
       "search_path drift",
       "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) SET search_path = public",
       "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) " +
         "SET search_path = pg_catalog, public",
-      /drifted routine meal_agent_private\.is_active_owner\(target_household_id uuid\).*config=search_path=public/,
+      new RegExp(
+        `drifted routine ${keyPattern(
+          ...activeOwner,
+        )}.*config=search_path=public`,
+      ),
     ],
     [
       "row_security drift",
       "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) RESET row_security",
       "ALTER FUNCTION meal_agent_private.is_active_owner(uuid) SET row_security = off",
-      /drifted routine meal_agent_private\.is_active_owner\(target_household_id uuid\)/,
+      new RegExp(`drifted routine ${keyPattern(...activeOwner)}`),
     ],
     [
       "unexpected routine",
       "CREATE FUNCTION meal_agent_private.stage09a_sixth() RETURNS int " +
         "LANGUAGE sql AS $$SELECT 1$$",
       "DROP FUNCTION meal_agent_private.stage09a_sixth()",
-      /unexpected routine meal_agent_private\.stage09a_sixth\(\)/,
+      new RegExp(
+        `unknown routine ${keyPattern(
+          "routine",
+          "meal_agent_private",
+          "stage09a_sixth",
+          [],
+        )}`,
+      ),
+    ],
+    [
+      "a routine planted in drizzle",
+      // 恢复路径可以把任意函数带进 drizzle：它同样是「未登记的 routine」。
+      "CREATE FUNCTION drizzle.stage09a_restored() RETURNS int " +
+        "LANGUAGE sql SECURITY DEFINER AS $$SELECT 1$$",
+      "DROP FUNCTION drizzle.stage09a_restored()",
+      new RegExp(
+        `unknown routine ${keyPattern(
+          "routine",
+          "drizzle",
+          "stage09a_restored",
+          [],
+        )}`,
+      ),
     ],
   ];
 
   try {
     assert.equal((await runAuthorizationVerify("final")).code, 0);
     for (const [label, inject, revert, expected] of cases) {
-      await withPool(adminPoolConfig(), async (pool) => {
-        await pool.query(inject);
-      });
-      const result = await runAuthorizationVerify("final");
-      assert.notEqual(result.code, 0, `must reject: ${label}`);
-      assert.match(result.stderr, expected, `wrong detail for: ${label}`);
-      await withPool(adminPoolConfig(), async (pool) => {
-        await pool.query(revert);
-      });
+      // 每个 case 自己 finally 复原：正文断言失败时也不会把漂移留给后续测试。
+      try {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(inject);
+        });
+        const result = await runAuthorizationVerify("final");
+        assert.notEqual(result.code, 0, `must reject: ${label}`);
+        assert.match(result.stderr, expected, `wrong detail for: ${label}`);
+      } finally {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(revert).catch(() => undefined);
+        });
+      }
       assert.equal(
         (await runAuthorizationVerify("final")).code,
         0,
@@ -4070,8 +4281,8 @@ test("a private routine is matched by identity, owner, SECURITY DEFINER, proconf
       );
     }
   } finally {
-    await runBootstrap("acl");
-    await runBootstrap("grants");
+    await bootstrap("acl");
+    await bootstrap("grants");
   }
 });
 

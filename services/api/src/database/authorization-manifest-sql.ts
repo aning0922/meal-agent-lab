@@ -3,54 +3,70 @@ import {
   authorizationManifest,
   authorizationManifestVersion,
   AuthorizationManifestError,
-  authorizationStateKey,
   authorizationStateKeys,
-  canonicalAuthorizationRows,
-  defaultAclSlots,
   type AuthorizationManifest,
 } from "./authorization-manifest.js";
-import { byCodeUnit } from "./stage06-manifest.js";
+import {
+  granteeSql,
+  policyLiteral,
+  policyTextArray,
+  renderAuthorizationPreflightStatement,
+  renderAuthorizationSharedCtes,
+} from "./authorization-policy-sql.js";
 
 /**
- * 阶段 09A / M2A：把 ledger 感知的授权 manifest 渲染成两段确定性 SQL。
+ * 阶段 09A / M2A（R8B）：把 ledger 感知的授权 manifest 渲染成两段确定性 SQL。
  *
- *   - **converge**：按真实 grantor 撤销一切「不在 manifest 里」的授权，然后只
- *     重建 manifest 允许的项。它是唯一会改 ACL 的产物，由 database scope 的
+ *   - **converge**：按真实 grantor 撤销一切「策略不允许」的授权，然后只重建
+ *     manifest 允许的项。它是唯一会改 ACL 的产物，由 database scope 的
  *     containment / final 两个阶段各调用一次。
- *   - **verify**：只读断言。同时比对 catalog ACL、`pg_default_acl` 的**有效**
- *     默认权限，以及 `has_*_privilege` 的**有效**权限——后者会把 `PUBLIC` 派生和
- *     角色继承算进来，只查直接授权看不见的洞在这里才会显形。
+ *   - **verify**：只读断言。
+ *
+ * 两段共享同一条链路，这是 R8B 的结构要求：
+ *
+ * ```text
+ * PostgreSQL catalog
+ *   → 共享结构化 projector CTE（authorization-projection-sql.ts）
+ *       → 公开只读 projection adapter
+ *       → 可移植策略匹配器（authorization-policy-sql.ts）→ verify
+ *       → 可移植策略匹配器（authorization-policy-sql.ts）→ converge
+ * ```
+ *
+ * 共享的是**事实采集**，不是把动态投影冻结成跨环境快照：两段都从
+ * `acl_source` / `default_row` / `default_raw` / `default_effective` /
+ * `effective_source` / `owner_source` / `type_class` / `role_membership` /
+ * `probe_role` 读同一套事实，再套同一份可移植策略。因此本文件里**没有**
+ * `watchedGrantees` 那样的观察过滤，也**没有**第二份 catalog 枚举。
  *
  * 阶段通过带命名空间的 GUC `meal_agent.acl_phase` 传入（`containment` /
  * `final`），ledger 从 `drizzle.__meal_agent_migrations` 现场读取。未登记的
  * `(ledger, phase)` 组合一律 fail closed。
+ *
+ * ## 收敛的顺序保证
+ *
+ * 1. **致命前置条件**（`authorization-policy-sql.ts` 的 preflight）先于任何
+ *    mutation 执行。不允许「先改、再靠事务回滚冒充 preflight」。
+ * 2. 再按真实 grantor 撤销策略不允许的授权，以及一切可再授予标志。
+ * 3. 再以 canonical grantor（`principals.owner`）补齐缺失的固定允许项。
+ * 4. 最后按 `pg_default_acl` 的**物理行**收敛默认权限；`default_effective`
+ *    只在 verify 里做语义验证，绝不用来反推该执行哪条语句。
  */
 
 const convergeTag = "$meal_agent_authorization_converge$";
 const verifyTag = "$meal_agent_authorization_verify$";
 
-const unrenderable = (value: string): boolean =>
-  ["\\", "\r", "\n", String.fromCharCode(0), convergeTag, verifyTag].some(
-    (forbidden) => value.includes(forbidden),
-  );
-
-const literal = (value: string): string => {
-  if (unrenderable(value)) {
-    throw new AuthorizationManifestError(
-      "a manifest value cannot be rendered as a deterministic SQL literal",
-    );
+const assertRenderable = (manifest: AuthorizationManifest): void => {
+  for (const forbidden of [convergeTag, verifyTag]) {
+    if (
+      manifest.managedSchemas.some((schema) => schema.includes(forbidden)) ||
+      manifest.deniedRoutines.some((routine) => routine.includes(forbidden))
+    ) {
+      throw new AuthorizationManifestError(
+        "a manifest value cannot be rendered as a deterministic SQL literal",
+      );
+    }
   }
-  return `'${value.replaceAll("'", "''")}'`;
 };
-
-const textArray = (values: readonly string[]): string =>
-  values.length === 0
-    ? "ARRAY[]::text[]"
-    : `ARRAY[${values.map(literal).join(", ")}]::text[]`;
-
-/** `PUBLIC` 在 `has_*_privilege` 里写作小写 `public`，在 SQL 语句里写作 `PUBLIC`。 */
-const granteeProbe = (grantee: string): string =>
-  grantee === "PUBLIC" ? "public" : grantee;
 
 const sessionPreamble = `  PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
   PERFORM pg_catalog.set_config('quote_all_identifiers', 'off', true);`;
@@ -73,582 +89,401 @@ const stateResolution = (manifest: AuthorizationManifest): string => `
       acl_phase;
   END IF;
   state_key := ledger_signature || '|' || acl_phase;
-  IF NOT (state_key = ANY (${textArray(authorizationStateKeys(manifest))})) THEN
+  IF NOT (state_key = ANY (${policyTextArray(
+    authorizationStateKeys(manifest),
+  )})) THEN
     RAISE EXCEPTION
       'authorization manifest: unregistered (ledger, phase) state %; register '
       'it in services/api/src/database/authorization-manifest.ts before '
       'running this baseline', state_key;
   END IF;`;
 
-const watchedArray = (manifest: AuthorizationManifest): string =>
-  textArray([...manifest.watchedGrantees].sort(byCodeUnit));
-
-const managedArray = (manifest: AuthorizationManifest): string =>
-  textArray([...manifest.managedSchemas].sort(byCodeUnit));
-
-/**
- * 被管理对象及其 SQL 目标片段。`GRANT` 需要它来定位那些当前**还没有任何 ACL 行**
- * 的对象，因此不能只从现有 ACL 反推。
- */
-const managedObjectsCte = (manifest: AuthorizationManifest): string => `
-    managed_objects (objkey, target) AS (
-      SELECT 'database:<current>'::text,
-             ('DATABASE ' || quote_ident(current_database()))::text
-      UNION ALL
-      SELECT 'schema:' || n.nspname,
-             'SCHEMA ' || quote_ident(n.nspname)
-        FROM pg_catalog.pg_namespace n
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'relation:' || n.nspname || '.' || c.relname,
-             CASE WHEN c.relkind = 'S' THEN 'SEQUENCE ' ELSE 'TABLE ' END
-               || quote_ident(n.nspname) || '.' || quote_ident(c.relname)
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-         AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-      UNION ALL
-      SELECT 'routine:' || n.nspname || '.' || p.proname || '('
-               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
-             'ROUTINE ' || quote_ident(n.nspname) || '.'
-               || quote_ident(p.proname) || '('
-               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
-        FROM pg_catalog.pg_proc p
-        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'type:' || n.nspname || '.' || t.typname,
-             'TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname)
-        FROM pg_catalog.pg_type t
-        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'language:' || l.lanname, 'LANGUAGE ' || quote_ident(l.lanname)
-        FROM pg_catalog.pg_language l
-    )`;
-
-/**
- * 当前直接授权。带 grantor 与目标片段，供收敛阶段以**真实 grantor 身份**撤销；
- * 列级授权单独带 colname，因为它不在 `relacl` 里。
- */
-const currentAclCte = (manifest: AuthorizationManifest): string => `
-    current_acl (objkey, target, colname, grantee, grantor, privilege,
-                 grantable) AS (
-      SELECT 'database:<current>'::text,
-             ('DATABASE ' || quote_ident(current_database()))::text,
-             NULL::text,
-             (CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                   ELSE pg_catalog.pg_get_userbyid(acl.grantee) END)::text,
-             pg_catalog.pg_get_userbyid(acl.grantor)::text,
-             acl.privilege_type::text, acl.is_grantable
-        FROM pg_catalog.pg_database d,
-             -- datacl 为 NULL 时是**隐式**默认 ACL（PUBLIC 有 CONNECT/TEMPORARY），
-             -- aclexplode(NULL) 会漏掉它，因此用 acldefault 展开。
-             aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) AS acl
-       WHERE d.datname = current_database()
-      UNION ALL
-      SELECT 'schema:' || n.nspname,
-             'SCHEMA ' || quote_ident(n.nspname), NULL,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             pg_catalog.pg_get_userbyid(acl.grantor),
-             acl.privilege_type, acl.is_grantable
-        FROM pg_catalog.pg_namespace n, aclexplode(n.nspacl) AS acl
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'relation:' || n.nspname || '.' || c.relname,
-             CASE WHEN c.relkind = 'S' THEN 'SEQUENCE ' ELSE 'TABLE ' END
-               || quote_ident(n.nspname) || '.' || quote_ident(c.relname),
-             NULL,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             pg_catalog.pg_get_userbyid(acl.grantor),
-             acl.privilege_type, acl.is_grantable
-        FROM pg_catalog.pg_class c
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace,
-             aclexplode(c.relacl) AS acl
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'column:' || n.nspname || '.' || c.relname || '.' || a.attname,
-             'TABLE ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname),
-             a.attname::text,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             pg_catalog.pg_get_userbyid(acl.grantor),
-             acl.privilege_type, acl.is_grantable
-        FROM pg_catalog.pg_attribute a
-        JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace,
-             aclexplode(a.attacl) AS acl
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'routine:' || n.nspname || '.' || p.proname || '('
-               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
-             'ROUTINE ' || quote_ident(n.nspname) || '.'
-               || quote_ident(p.proname) || '('
-               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
-             NULL,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             pg_catalog.pg_get_userbyid(acl.grantor),
-             acl.privilege_type, acl.is_grantable
-        FROM pg_catalog.pg_proc p
-        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace,
-             aclexplode(COALESCE(p.proacl,
-                                 acldefault('f', p.proowner))) AS acl
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'type:' || n.nspname || '.' || t.typname,
-             'TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname),
-             NULL,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             pg_catalog.pg_get_userbyid(acl.grantor),
-             acl.privilege_type, acl.is_grantable
-        FROM pg_catalog.pg_type t
-        JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace,
-             aclexplode(COALESCE(t.typacl,
-                                 acldefault('T', t.typowner))) AS acl
-       WHERE n.nspname = ANY (${managedArray(manifest)})
-      UNION ALL
-      SELECT 'language:' || l.lanname,
-             'LANGUAGE ' || quote_ident(l.lanname), NULL,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             pg_catalog.pg_get_userbyid(acl.grantor),
-             acl.privilege_type, acl.is_grantable
-        FROM pg_catalog.pg_language l, aclexplode(l.lanacl) AS acl
-    )`;
-
-/** `pg_default_acl` 的**有效**默认权限：schema 行 → 全局行 → 内建默认。 */
-const currentDefaultCte = (manifest: AuthorizationManifest): string => {
-  const slots = defaultAclSlots(manifest)
-    .map(
-      (slot, index) =>
-        `        (${literal(slot.objtype)}${index === 0 ? "::text" : ""}, ` +
-        `${literal(slot.scope)}${index === 0 ? "::text" : ""})`,
-    )
-    .join(",\n");
-  return `
-    default_slots (objtype, scope) AS (
-      VALUES
-${slots}
-    ),
-    current_default (scope_key, grantee, privilege) AS (
-      SELECT s.objtype || '@' || s.scope,
-             CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END,
-             acl.privilege_type::text
-        FROM default_slots s,
-             LATERAL (
-               SELECT COALESCE(
-                 (SELECT d.defaclacl
-                    FROM pg_catalog.pg_default_acl d
-                    JOIN pg_catalog.pg_namespace dn ON dn.oid = d.defaclnamespace
-                   WHERE pg_catalog.pg_get_userbyid(d.defaclrole)
-                           = 'meal_agent_migrator'
-                     AND d.defaclobjtype = s.objtype::"char"
-                     AND dn.nspname = s.scope),
-                 (SELECT d.defaclacl
-                    FROM pg_catalog.pg_default_acl d
-                   WHERE pg_catalog.pg_get_userbyid(d.defaclrole)
-                           = 'meal_agent_migrator'
-                     AND d.defaclobjtype = s.objtype::"char"
-                     AND d.defaclnamespace = 0),
-                 acldefault(s.objtype::"char",
-                            (SELECT oid FROM pg_catalog.pg_roles
-                              WHERE rolname = 'meal_agent_migrator'))
-               ) AS effective_acl
-             ) AS resolved,
-             aclexplode(resolved.effective_acl) AS acl
-       WHERE (CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                   ELSE pg_catalog.pg_get_userbyid(acl.grantee) END)
-             = ANY (${watchedArray(manifest)})
-    )`;
-};
-
-/** manifest 允许的直接授权 / 默认权限，带 state key 供运行期筛选。 */
-const allowedCtes = (manifest: AuthorizationManifest): string => {
-  const grantRows: string[] = [];
-  const defaultRows: string[] = [];
-  for (const state of manifest.states) {
-    const key = authorizationStateKey(state.ledger, state.phase);
-    for (const entry of state.grants) {
-      for (const privilege of entry.privileges) {
-        grantRows.push(
-          `        (${literal(key)}, ${literal(entry.object)}, ` +
-            `${literal(entry.grantee)}, ${literal(privilege)})`,
-        );
-      }
-    }
-    for (const entry of state.defaults) {
-      for (const privilege of entry.privileges) {
-        defaultRows.push(
-          `        (${literal(key)}, ${literal(entry.scope)}, ` +
-            `${literal(entry.grantee)}, ${literal(privilege)})`,
-        );
-      }
-    }
-  }
-  grantRows.sort(byCodeUnit);
-  defaultRows.sort(byCodeUnit);
-  const cast = (rows: string[]): string =>
-    rows
-      .map((row, index) =>
-        index === 0
-          ? row.replace(/, /gu, "::text, ").replace(/\)$/u, "::text)")
-          : row,
-      )
-      .join(",\n");
-  return `
-    allowed_grant (state, objkey, grantee, privilege) AS (
-      VALUES
-${cast(grantRows)}
-    ),
-    allowed_default (state, scope_key, grantee, privilege) AS (
-      VALUES
-${cast(defaultRows)}
-    )`;
-};
-
-const objtypeKeyword = `CASE split_part(scope_key, '@', 1)
-             WHEN 'r' THEN 'TABLES' WHEN 'S' THEN 'SEQUENCES'
-             WHEN 'f' THEN 'FUNCTIONS' WHEN 'T' THEN 'TYPES'
-             WHEN 'n' THEN 'SCHEMAS' WHEN 'L' THEN 'LARGE OBJECTS' END`;
-
-/**
- * 收敛：先关闭 Large Object 入口，再撤销一切不在 manifest 里的授权（按真实
- * grantor），最后只重建 manifest 允许的项。`GRANT OPTION` 一律不允许，因此存在
- * grant option 时无条件先收回。
- */
-export const renderAuthorizationConvergeSql = (
-  manifest: AuthorizationManifest = authorizationManifest,
-): string => `DO ${convergeTag}
-DECLARE
+const declarations = `DECLARE
   ledger_signature text;
   acl_phase text;
   state_key text;
-  missing text;
+  problem_count integer;
+  problem_detail text;`;
+
+/**
+ * 收敛。**全部致命前置条件先于任何 mutation 执行**；随后按真实 grantor 撤销策略
+ * 不允许的授权与一切可再授予标志，再以 canonical grantor 补齐固定允许项，最后
+ * 按 `pg_default_acl` 的物理行收敛默认权限。
+ */
+export const renderAuthorizationConvergeSql = (
+  manifest: AuthorizationManifest = authorizationManifest,
+): string => {
+  assertRenderable(manifest);
+  const owner = policyLiteral(manifest.principals.owner);
+  const shared = renderAuthorizationSharedCtes(manifest);
+  return `DO ${convergeTag}
+${declarations}
   row_record record;
 BEGIN
 ${sessionPreamble}
 ${stateResolution(manifest)}
 
-  -- 1. Large Object 入口。产品声明禁用 LO，因此 pg_catalog 的创建/读写入口不能
-  --    保留 PUBLIC EXECUTE——否则 runtime 可以自己造出不受 schema ACL 与 RLS
-  --    约束的存储面。同时清掉可能直接授予被监管角色的那一份。
-  FOR row_record IN
-    SELECT identity FROM unnest(${textArray(
-      [...manifest.deniedRoutines].sort(byCodeUnit),
-    )}) AS identity
-  LOOP
-    IF to_regprocedure(row_record.identity) IS NOT NULL THEN
-      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC CASCADE',
-                     row_record.identity);
-      EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM %s CASCADE',
-                     row_record.identity,
-                     (SELECT string_agg(quote_ident(g), ', ' ORDER BY g)
-                        FROM unnest(${watchedArray(manifest)}) AS g
-                       WHERE g <> 'PUBLIC'));
-    END IF;
-  END LOOP;
+  -- 1. 致命前置条件。**在任何 mutation 之前**：managed schema、项目角色、归属、
+  --    routine 指纹、manifest 要求的对象、未知 defaclobjtype、任意 Large
+  --    Object，以及无法由 ACL mutation 修复的 membership 漂移。
+${renderAuthorizationPreflightStatement(manifest)}
 
-  -- 1b. Large Object 上的对象权限。LO 不受 schema ACL 与 RLS 约束，产品也不使用
-  --     它，因此指向被监管角色或 PUBLIC 的 lomacl 条目一律按真实 grantor 撤销。
-  --     LO 的**归属**不在这里处理：项目角色拥有 LO 由调用方报告并失败，不删数据。
+  -- 2. 一次性算出**全部**收敛动作，再按固定顺序执行。动作流在 mutation 开始
+  --    之前就已经确定，因此顺序是可复核的：
+  --      1) 按真实 grantor 撤销策略不允许的直接授权（含列级）；
+  --      2) 收回一切可再授予标志；
+  --      3) 以 canonical grantor 补齐缺失的固定允许项；
+  --      4) 按 pg_default_acl 的**物理行**收敛默认权限。
+  --
+  --    为什么必须按真实 grantor：普通 REVOKE 只撤销「由执行者授予」的那一份，
+  --    第三方 grantor 授予的授权会残留。因此先 SET LOCAL ROLE 成该 grantor 再
+  --    撤销——这是**真正的收敛**，而不是等后置校验失败再整体回滚（回滚只让命令
+  --    失败，权限仍然留在数据库里）。
+  --
+  --    条目本身允许、只是多带了可再授予标志时只收回该标志，不动 owner 自身的
+  --    权限。Large Object 已在前置条件里 fail closed，不参与任何 mutation。
+  --
+  --    默认权限的判据是**物理行**：内建默认不需要任何语句，只有物理行才需要。
+  --    绝不从 default_effective 反推语句——那会把「本来就该有的内建默认」当成
+  --    需要显式授予的项。
   FOR row_record IN
-    SELECT m.oid AS loid,
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                ELSE quote_ident(pg_catalog.pg_get_userbyid(acl.grantee))
-           END AS grantee_sql,
-           pg_catalog.pg_get_userbyid(acl.grantor) AS grantor,
-           acl.privilege_type AS privilege
-      FROM pg_catalog.pg_largeobject_metadata m,
-           aclexplode(m.lomacl) AS acl
-     WHERE acl.grantee = 0
-        OR pg_catalog.pg_get_userbyid(acl.grantee)
-             = ANY (${watchedArray(manifest)})
+    WITH
+${shared}
+    SELECT action.action_kind, action.run_as, action.target_sql, action.colname,
+           action.privilege, action.grantee_sql, action.verb,
+           action.defaclrole, action.scope_kind, action.scope,
+           action.ddl_keyword
+      FROM (
+        SELECT 1 AS ordinal,
+               CASE WHEN v.colname IS NOT NULL THEN 'acl-revoke-column'
+                    WHEN v.privilege_allowed THEN 'acl-revoke-option'
+                    ELSE 'acl-revoke' END AS action_kind,
+               v.grantor AS run_as, v.target_sql, v.colname, v.privilege,
+               ${granteeSql("v.grantee")} AS grantee_sql,
+               NULL::text AS verb, NULL::text AS defaclrole,
+               NULL::text AS scope_kind, NULL::text AS scope,
+               NULL::text AS ddl_keyword,
+               v.objkey::text AS sort_key
+          FROM acl_verdict v
+         WHERE v.object_class <> 'largeobject'
+           AND (NOT v.privilege_allowed OR v.grantable)
+        UNION ALL
+        SELECT 2, 'acl-grant', ${owner}, mo.target_sql, NULL, g.privilege,
+               ${granteeSql("g.grantee")}, NULL, NULL, NULL, NULL, NULL,
+               g.objkey::text
+          FROM allowed_grants g
+          JOIN managed_object mo ON mo.objkey = g.objkey
+         WHERE g.state = state_key
+           AND NOT EXISTS (SELECT 1 FROM acl_source s
+                            WHERE s.objkey = g.objkey
+                              AND s.grantee = g.grantee
+                              AND s.privilege = g.privilege
+                              AND s.grantor = ${owner}
+                              AND NOT s.grantable)
+        UNION ALL
+        -- 非 canonical owner 的默认权限条目一律是漂移：逐条撤销。撤空之后剩下
+        -- 的空物理行是**无效应状态**，予以容忍——不去动外部角色的默认权限，也
+        -- 不把它的 owner 冻结进任何允许集合。
+        SELECT 3, 'default', NULL, NULL, NULL, r.privilege,
+               ${granteeSql("r.grantee")}, 'REVOKE', r.defaclrole,
+               r.scope_kind, r.scope, t.ddl_keyword, r.defaclrole
+          FROM default_raw r
+          JOIN default_objtype t ON t.objtype = r.objtype
+         WHERE r.defaclrole <> ${owner}
+        UNION ALL
+        -- canonical owner 的槽位按「当前 → 目标」逐条收敛。目标由 default_raw
+        -- 与起算点共同决定，**不是**从 default_effective 反推出来的。
+        SELECT 3, 'default', NULL, NULL, NULL, c.privilege,
+               ${granteeSql("c.grantee")}, 'REVOKE', c.defaclrole,
+               c.scope_kind, c.scope, t.ddl_keyword, c.defaclrole
+          FROM default_current c
+          JOIN default_objtype t ON t.objtype = c.objtype
+         WHERE c.defaclrole = ${owner}
+           AND NOT EXISTS (SELECT 1 FROM default_target d
+                            WHERE d.objtype = c.objtype AND d.scope = c.scope
+                              AND d.grantee = c.grantee
+                              AND d.grantor = c.grantor
+                              AND d.privilege = c.privilege
+                              AND d.grantable = c.grantable)
+        UNION ALL
+        SELECT 4, 'default', NULL, NULL, NULL, d.privilege,
+               ${granteeSql("d.grantee")}, 'GRANT', d.defaclrole,
+               d.scope_kind, d.scope, t.ddl_keyword, d.defaclrole
+          FROM default_target d
+          JOIN default_objtype t ON t.objtype = d.objtype
+         WHERE NOT EXISTS (SELECT 1 FROM default_current c
+                            WHERE c.defaclrole = d.defaclrole
+                              AND c.objtype = d.objtype AND c.scope = d.scope
+                              AND c.grantee = d.grantee
+                              AND c.grantor = d.grantor
+                              AND c.privilege = d.privilege
+                              AND c.grantable = d.grantable)
+      ) AS action
+     ORDER BY action.ordinal, action.sort_key COLLATE "C",
+              action.grantee_sql COLLATE "C",
+              COALESCE(action.run_as, '') COLLATE "C",
+              COALESCE(action.scope, '') COLLATE "C",
+              action.privilege COLLATE "C"
   LOOP
-    EXECUTE format('SET LOCAL ROLE %I', row_record.grantor);
-    EXECUTE format('REVOKE %s ON LARGE OBJECT %s FROM %s CASCADE',
-                   row_record.privilege, row_record.loid,
-                   row_record.grantee_sql);
-    RESET ROLE;
-  END LOOP;
-
-  -- 2. 撤销 current − allowed，按真实 grantor。列级授权一律不允许。
-  FOR row_record IN
-    WITH${currentAclCte(manifest)},${allowedCtes(manifest)}
-    SELECT ca.target, ca.colname, ca.privilege, ca.grantable,
-           ca.grantor,
-           CASE WHEN ca.grantee = 'PUBLIC' THEN 'PUBLIC'
-                ELSE quote_ident(ca.grantee) END AS grantee_sql,
-           EXISTS (SELECT 1 FROM allowed_grant a
-                    WHERE a.state = state_key AND a.objkey = ca.objkey
-                      AND a.grantee = ca.grantee
-                      AND a.privilege = ca.privilege) AS is_allowed
-      FROM current_acl ca
-     WHERE ca.grantee = ANY (${watchedArray(manifest)})
-  LOOP
-    IF row_record.is_allowed AND NOT row_record.grantable
-       AND row_record.colname IS NULL THEN
-      CONTINUE;
+    IF row_record.run_as IS NOT NULL THEN
+      EXECUTE format('SET LOCAL ROLE %I', row_record.run_as);
     END IF;
-    EXECUTE format('SET LOCAL ROLE %I', row_record.grantor);
-    IF row_record.colname IS NOT NULL THEN
+    IF row_record.action_kind = 'acl-revoke-column' THEN
       EXECUTE format('REVOKE %s (%I) ON %s FROM %s CASCADE',
                      row_record.privilege, row_record.colname,
-                     row_record.target, row_record.grantee_sql);
-    ELSE
+                     row_record.target_sql, row_record.grantee_sql);
+    ELSIF row_record.action_kind = 'acl-revoke-option' THEN
       EXECUTE format('REVOKE GRANT OPTION FOR %s ON %s FROM %s CASCADE',
-                     row_record.privilege, row_record.target,
+                     row_record.privilege, row_record.target_sql,
                      row_record.grantee_sql);
-      IF NOT row_record.is_allowed THEN
-        EXECUTE format('REVOKE %s ON %s FROM %s CASCADE',
-                       row_record.privilege, row_record.target,
-                       row_record.grantee_sql);
-      END IF;
+    ELSIF row_record.action_kind = 'acl-revoke' THEN
+      EXECUTE format('REVOKE %s ON %s FROM %s CASCADE',
+                     row_record.privilege, row_record.target_sql,
+                     row_record.grantee_sql);
+    ELSIF row_record.action_kind = 'acl-grant' THEN
+      EXECUTE format('GRANT %s ON %s TO %s', row_record.privilege,
+                     row_record.target_sql, row_record.grantee_sql);
+    ELSE
+      EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I%s %s %s ON %s %s %s',
+                     row_record.defaclrole,
+                     CASE WHEN row_record.scope_kind = 'global' THEN ''
+                          ELSE ' IN SCHEMA ' || quote_ident(row_record.scope)
+                     END,
+                     row_record.verb, row_record.privilege,
+                     row_record.ddl_keyword,
+                     CASE WHEN row_record.verb = 'GRANT' THEN 'TO' ELSE 'FROM'
+                     END,
+                     row_record.grantee_sql);
     END IF;
-    RESET ROLE;
-  END LOOP;
-
-  -- 3. manifest 声明的对象必须真实存在，否则 GRANT 会静默漏掉。
-  WITH${managedObjectsCte(manifest)},${allowedCtes(manifest)}
-  SELECT string_agg(DISTINCT a.objkey, ', ' ORDER BY a.objkey) INTO missing
-    FROM allowed_grant a
-   WHERE a.state = state_key
-     AND NOT EXISTS (SELECT 1 FROM managed_objects mo
-                      WHERE mo.objkey = a.objkey);
-  IF missing IS NOT NULL THEN
-    RAISE EXCEPTION
-      'authorization manifest: state % expects object(s) that do not exist: %',
-      state_key, missing;
-  END IF;
-
-  -- 4. 授予 allowed − current。
-  FOR row_record IN
-    WITH${managedObjectsCte(manifest)},${currentAclCte(
-      manifest,
-    )},${allowedCtes(manifest)}
-    SELECT mo.target,
-           CASE WHEN a.grantee = 'PUBLIC' THEN 'PUBLIC'
-                ELSE quote_ident(a.grantee) END AS grantee_sql,
-           a.privilege
-      FROM allowed_grant a
-      JOIN managed_objects mo ON mo.objkey = a.objkey
-     WHERE a.state = state_key
-       AND NOT EXISTS (SELECT 1 FROM current_acl ca
-                        WHERE ca.objkey = a.objkey
-                          AND ca.grantee = a.grantee
-                          AND ca.privilege = a.privilege
-                          AND ca.colname IS NULL)
-  LOOP
-    EXECUTE format('GRANT %s ON %s TO %s', row_record.privilege,
-                   row_record.target, row_record.grantee_sql);
-  END LOOP;
-
-  -- 5. default privileges：逐槽位比较有效默认权限并收敛。
-  FOR row_record IN
-    WITH${currentDefaultCte(manifest)},${allowedCtes(manifest)}
-    SELECT scope_key, grantee, privilege, action FROM (
-      SELECT cd.scope_key, cd.grantee, cd.privilege, 'REVOKE'::text AS action
-        FROM current_default cd
-       WHERE NOT EXISTS (SELECT 1 FROM allowed_default ad
-                          WHERE ad.state = state_key
-                            AND ad.scope_key = cd.scope_key
-                            AND ad.grantee = cd.grantee
-                            AND ad.privilege = cd.privilege)
-      UNION ALL
-      SELECT ad.scope_key, ad.grantee, ad.privilege, 'GRANT'
-        FROM allowed_default ad
-       WHERE ad.state = state_key
-         AND NOT EXISTS (SELECT 1 FROM current_default cd
-                          WHERE cd.scope_key = ad.scope_key
-                            AND cd.grantee = ad.grantee
-                            AND cd.privilege = ad.privilege)
-    ) AS diff
-     ORDER BY action DESC, scope_key, grantee, privilege
-  LOOP
-    EXECUTE format(
-      'ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator%s %s %s ON %s %s %s',
-      CASE WHEN split_part(row_record.scope_key, '@', 2) = 'global' THEN ''
-           ELSE ' IN SCHEMA '
-                || quote_ident(split_part(row_record.scope_key, '@', 2)) END,
-      row_record.action, row_record.privilege,
-      ${objtypeKeyword.replaceAll("scope_key", "row_record.scope_key")},
-      CASE WHEN row_record.action = 'REVOKE' THEN 'FROM' ELSE 'TO' END,
-      CASE WHEN row_record.grantee = 'PUBLIC' THEN 'PUBLIC'
-           ELSE quote_ident(row_record.grantee) END);
+    IF row_record.run_as IS NOT NULL THEN
+      RESET ROLE;
+    END IF;
   END LOOP;
 END
 ${convergeTag};
 `;
+};
 
-/** 只读断言：catalog ACL、有效默认权限与 `has_*_privilege` 有效权限三者同时比对。 */
+/**
+ * 只读断言。同一套共享事实 + 同一份可移植策略，只是不执行任何 mutation：
+ * catalog ACL 的**完整元组**（object + grantee + grantor + privilege +
+ * grantable）、`pg_default_acl` 的物理行与叠加出的**有效**默认权限，以及
+ * `has_*_privilege` 的有效权限三者同时比对。
+ */
 export const renderAuthorizationVerifySql = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
-  const rows = canonicalAuthorizationRows(manifest);
-  if (rows.length === 0) {
-    throw new AuthorizationManifestError("the manifest must not be empty");
-  }
-  const expected = rows
-    .map(
-      (row, index) =>
-        `      (${literal(row.state)}${index === 0 ? "::text" : ""}, ` +
-        `${literal(row.kind)}${index === 0 ? "::text" : ""}, ` +
-        `${literal(row.identity)}${index === 0 ? "::text" : ""}, ` +
-        `${literal(row.detail)}${index === 0 ? "::text" : ""})`,
-    )
-    .join(",\n");
-
+  assertRenderable(manifest);
+  const owner = policyLiteral(manifest.principals.owner);
   return `DO ${verifyTag}
-DECLARE
-  ledger_signature text;
-  acl_phase text;
-  state_key text;
+${declarations}
   divergence_count integer;
   divergence text;
 BEGIN
 ${sessionPreamble}
 ${stateResolution(manifest)}
 
-  WITH expected_all (state, kind, identity, detail) AS (
-    VALUES
-${expected}
+  -- 1. 与收敛完全相同的致命前置条件，同样先于一切判断。
+${renderAuthorizationPreflightStatement(manifest)}
+
+  -- 2. 策略比对。三层同时看：完整元组的直接授权、default privilege 的物理行与
+  --    有效叠加、has_*_privilege 的有效权限。
+  WITH
+${renderAuthorizationSharedCtes(manifest)},
+  default_effective_actual (objtype, scope, grantee, privileges, grantable) AS (
+    SELECT objtype, scope, grantee,
+           array_agg(privilege ORDER BY privilege COLLATE "C"),
+           bool_or(grantable)
+      FROM default_effective
+     WHERE defaclrole = ${owner}
+     GROUP BY objtype, scope, grantee
   ),
-  expected AS (
-    SELECT kind, identity, detail FROM expected_all WHERE state = state_key
-  ),${currentAclCte(manifest)},${currentDefaultCte(manifest)},
-  watched (grantee, probe) AS (
-    VALUES
-${manifest.watchedGrantees
-  .map(
-    (grantee, index) =>
-      `      (${literal(grantee)}${index === 0 ? "::text" : ""}, ` +
-      `${literal(granteeProbe(grantee))}${index === 0 ? "::text" : ""})`,
-  )
-  .join(",\n")}
-  ),
-  actual (kind, identity, detail) AS (
-    -- 受控 routine 的精确指纹：identity + owner + SECURITY DEFINER + proconfig
-    -- + 正文摘要。EXECUTE 授权只是一半，另一半是「以谁的身份、带什么
-    -- search_path / row_security、跑的是不是原来那份正文」。
-    SELECT 'routine'::text,
-           (n.nspname || '.' || p.proname || '('
-             || pg_catalog.pg_get_function_identity_arguments(p.oid)
-             || ')')::text,
-           ('owner=' || pg_catalog.pg_get_userbyid(p.proowner)
-             || ' secdef=' || CASE WHEN p.prosecdef THEN 't' ELSE 'f' END
-             || ' config='
-             || COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')
-             || ' body='
-             || pg_catalog.encode(
-                  pg_catalog.sha256(
-                    pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex'))::text
-      FROM pg_catalog.pg_proc p
-      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-     WHERE n.nspname = ANY (${managedArray(manifest)})
+  divergence_rows (rank, kind, entry) AS (
+    -- 有效权限：项目主体逐条精确匹配；外部角色在受监管四类对象上必须为空。
+    SELECT 1, 'effective'::text,
+           'unexpected effective ' || jsonb_build_array(e.objkey, e.role_name)::text
+             || ' [privs=' || array_to_string(e.privileges, ',') || ']'
+      FROM effective_regulated e
+      LEFT JOIN allowed_effective a
+        ON a.state = state_key AND a.objkey = e.objkey
+       AND a.role_name = e.role_name
+     WHERE a.objkey IS NULL
     UNION ALL
-    -- 同一条权限可能由多个 grantor 分别授予，aclexplode 会给出多行。这里先
-    -- DISTINCT 再聚合，否则「两个 grantor 都授了 SELECT」会渲染成 SELECT,SELECT。
-    SELECT 'grant', (objkey || '#' || grantee)::text,
-           ('privs=' || pg_catalog.string_agg(entry, ','
-                                              ORDER BY entry COLLATE "C"))::text
-      FROM (
-        SELECT DISTINCT objkey, grantee,
-               privilege || CASE WHEN grantable THEN '*' ELSE '' END AS entry
-          FROM current_acl
-         WHERE grantee = ANY (${watchedArray(manifest)})
-      ) AS distinct_acl
-     GROUP BY objkey, grantee
+    SELECT 1, 'effective',
+           'missing effective ' || jsonb_build_array(a.objkey, a.role_name)::text
+             || ' [expected privs=' || array_to_string(a.privileges, ',') || ']'
+      FROM allowed_effective a
+      LEFT JOIN effective_regulated e
+        ON e.objkey = a.objkey AND e.role_name = a.role_name
+     WHERE a.state = state_key AND e.objkey IS NULL
     UNION ALL
-    SELECT 'default', scope_key || '#' || grantee,
-           'privs=' || pg_catalog.string_agg(privilege, ','
-                                             ORDER BY privilege COLLATE "C")
-      FROM current_default
-     GROUP BY scope_key, grantee
+    SELECT 1, 'effective',
+           'drifted effective ' || jsonb_build_array(a.objkey, a.role_name)::text
+             || ' [expected privs=' || array_to_string(a.privileges, ',')
+             || '] [found privs=' || array_to_string(e.privileges, ',') || ']'
+      FROM allowed_effective a
+      JOIN effective_regulated e
+        ON e.objkey = a.objkey AND e.role_name = a.role_name
+     WHERE a.state = state_key AND e.privileges IS DISTINCT FROM a.privileges
     UNION ALL
-    SELECT 'effective', object || '#' || role, 'privs=' || privileges
-      FROM (
-        SELECT 'database:<current>' AS object, w.grantee AS role,
-               (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
-                  FROM unnest(ARRAY['CONNECT', 'CREATE', 'TEMPORARY']) AS p
-                 WHERE has_database_privilege(w.probe, current_database(), p))
-                 AS privileges
-          FROM watched w
-        UNION ALL
-        SELECT 'schema:' || n.nspname, w.grantee,
-               (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
-                  FROM unnest(ARRAY['CREATE', 'USAGE']) AS p
-                 WHERE has_schema_privilege(w.probe, n.oid, p))
-          FROM pg_catalog.pg_namespace n, watched w
-         WHERE n.nspname = ANY (${managedArray(manifest)})
-        UNION ALL
-        SELECT 'relation:' || n.nspname || '.' || c.relname, w.grantee,
-               CASE WHEN c.relkind = 'S' THEN
-                 (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
-                    FROM unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) AS p
-                   WHERE has_sequence_privilege(w.probe, c.oid, p))
-               ELSE
-                 (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
-                    FROM unnest(ARRAY['DELETE', 'INSERT', 'MAINTAIN',
-                                      'REFERENCES', 'SELECT', 'TRIGGER',
-                                      'TRUNCATE', 'UPDATE']) AS p
-                   WHERE has_table_privilege(w.probe, c.oid, p))
-               END
-          FROM pg_catalog.pg_class c
-          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace, watched w
-         WHERE n.nspname = ANY (${managedArray(manifest)})
-           AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
-        UNION ALL
-        SELECT 'routine:' || n.nspname || '.' || p.proname || '('
-                 || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')',
-               w.grantee,
-               CASE WHEN has_function_privilege(w.probe, p.oid, 'EXECUTE')
-                    THEN 'EXECUTE' ELSE NULL END
-          FROM pg_catalog.pg_proc p
-          JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace, watched w
-         WHERE n.nspname = ANY (${managedArray(manifest)})
-        UNION ALL
-        SELECT 'routine:' || denied.identity, w.grantee,
-               CASE WHEN has_function_privilege(
-                      w.probe, denied.identity::regprocedure, 'EXECUTE')
-                    THEN 'EXECUTE' ELSE NULL END
-          FROM unnest(${textArray(
-            [...manifest.deniedRoutines].sort(byCodeUnit),
-          )}) AS denied(identity), watched w
-         WHERE to_regprocedure(denied.identity) IS NOT NULL
-      ) AS effective_rows
-     WHERE privileges IS NOT NULL
-  ),
-  divergence_rows (kind, entry) AS (
-    SELECT a.kind,
-           'unexpected ' || a.kind || ' ' || a.identity || ' [' || a.detail || ']'
-      FROM actual a
-      LEFT JOIN expected e ON e.kind = a.kind AND e.identity = a.identity
-     WHERE e.kind IS NULL
+    -- language：PostgreSQL 的内建默认让每个探测主体恰好有 USAGE。多一点少一点
+    -- 都说明有人显式动过 lanacl。
+    SELECT 1, 'effective',
+           'unexpected language privileges '
+             || jsonb_build_array(e.objkey, e.role_name)::text
+             || ' [privs=' || array_to_string(e.privileges, ',') || ']'
+      FROM effective_actual e
+     WHERE e.object_class = 'language'
+       AND e.privileges IS DISTINCT FROM ARRAY['USAGE']
     UNION ALL
-    SELECT e.kind, 'missing ' || e.kind || ' ' || e.identity
-             || ' [expected ' || e.detail || ']'
-      FROM expected e
-      LEFT JOIN actual a ON a.kind = e.kind AND a.identity = e.identity
-     WHERE a.kind IS NULL
+    -- 类型、20 个 Large Object 入口点与 Large Object 本身：除对象 owner 之外
+    -- 任何主体都不得有效到达。
+    SELECT 1, 'effective',
+           'unexpected effective ' || jsonb_build_array(e.objkey, e.role_name)::text
+             || ' [privs=' || array_to_string(e.privileges, ',') || ']'
+      FROM effective_actual e
+     WHERE e.object_class IN ('type', 'denied-routine', 'largeobject')
+       AND NOT (e.object_class = 'type' AND e.role_name = ${owner})
     UNION ALL
-    SELECT e.kind,
-           'drifted ' || e.kind || ' ' || e.identity
-             || ' [expected ' || e.detail || '] [found ' || a.detail || ']'
-      FROM expected e
-      JOIN actual a ON a.kind = e.kind AND a.identity = e.identity
-     WHERE a.detail IS DISTINCT FROM e.detail
+    -- owner 必须**保留** managed 非数组类型的 USAGE：收敛只收回别人的权限。
+    SELECT 1, 'effective',
+           'owner lost USAGE on type ' || tc.objkey::text
+      FROM type_class tc
+     WHERE tc.class_name <> 'array'
+       AND NOT EXISTS (SELECT 1 FROM effective_actual e
+                        WHERE e.objkey = tc.objkey
+                          AND e.object_class = 'type'
+                          AND e.role_name = ${owner}
+                          AND e.privileges = ARRAY['USAGE'])
+    UNION ALL
+    -- 列级有效权限必须是同表表级有效权限的子集：列级授权一律不允许，出现即说明
+    -- 收敛没有覆盖到列。
+    SELECT 1, 'effective',
+           'column privileges exceed table privileges '
+             || jsonb_build_array(c.objkey, c.role_name)::text
+             || ' [privs=' || array_to_string(c.privileges, ',') || ']'
+      FROM effective_actual c
+      LEFT JOIN effective_actual r
+        ON r.object_class = 'relation' AND r.role_name = c.role_name
+       AND r.objkey = jsonb_build_array('relation', c.objkey->1, c.objkey->2)
+     WHERE c.object_class = 'column'
+       AND NOT (c.privileges <@ COALESCE(r.privileges, ARRAY[]::text[]))
+    UNION ALL
+    -- 直接授权的**完整元组**：object + grantee + grantor + privilege +
+    -- grantable。权限集合看起来合规但 grantor 错误、重复授权或可再授予，
+    -- 都在这里现形。
+    SELECT 3, 'grant',
+           'unexpected grant '
+             || jsonb_build_array(v.objkey, v.grantee, v.grantor,
+                                  v.privilege)::text
+             || ' [grantable=' || CASE WHEN v.grantable THEN 't' ELSE 'f' END
+             || ']'
+      FROM acl_verdict v
+     WHERE NOT v.privilege_allowed
+    UNION ALL
+    SELECT 3, 'grant',
+           'grant option on '
+             || jsonb_build_array(v.objkey, v.grantee, v.grantor,
+                                  v.privilege)::text
+      FROM acl_verdict v
+     WHERE v.privilege_allowed AND v.grantable
+    UNION ALL
+    SELECT 3, 'grant',
+           'missing grant '
+             || jsonb_build_array(g.objkey, g.grantee, ${owner},
+                                  g.privilege)::text
+      FROM allowed_grants g
+     WHERE g.state = state_key
+       AND NOT EXISTS (SELECT 1 FROM acl_source s
+                        WHERE s.objkey = g.objkey
+                          AND s.grantee = g.grantee
+                          AND s.privilege = g.privilege
+                          AND s.grantor = ${owner}
+                          AND NOT s.grantable)
+    UNION ALL
+    -- pg_default_acl 的**物理行**：它决定实际执行哪条默认权限语句。
+    SELECT 4, 'default',
+           'unexpected default privilege '
+             || jsonb_build_array(v.defaclrole, v.objtype, v.scope, v.grantee,
+                                  v.grantor, v.privilege)::text
+             || ' [grantable=' || CASE WHEN v.grantable THEN 't' ELSE 'f' END
+             || ']'
+      FROM default_verdict v
+     WHERE NOT v.privilege_allowed
+    UNION ALL
+    SELECT 4, 'default',
+           'grant option on default privilege '
+             || jsonb_build_array(v.defaclrole, v.objtype, v.scope, v.grantee,
+                                  v.grantor, v.privilege)::text
+      FROM default_verdict v
+     WHERE v.privilege_allowed AND v.grantable
+    UNION ALL
+    SELECT 4, 'default',
+           'missing default privilege '
+             || jsonb_build_array(${owner}, ad.objtype, ad.scope, ad.grantee,
+                                  ${owner}, ad.privilege)::text
+      FROM allowed_default ad
+     WHERE ad.state = state_key
+       AND NOT EXISTS (SELECT 1 FROM default_raw r
+                        WHERE r.defaclrole = ${owner}
+                          AND r.grantor = ${owner}
+                          AND r.objtype = ad.objtype
+                          AND r.scope = ad.scope
+                          AND r.grantee = ad.grantee
+                          AND r.privilege = ad.privilege
+                          AND NOT r.grantable)
+    UNION ALL
+    -- 叠加出的**有效**默认权限：只在这里做最终语义验证，绝不据此反推语句。
+    SELECT 4, 'default-effective',
+           'unexpected effective default privilege '
+             || jsonb_build_array(da.objtype, da.scope, da.grantee)::text
+             || ' [privs=' || array_to_string(da.privileges, ',')
+             || ' grantable=' || CASE WHEN da.grantable THEN 't' ELSE 'f' END
+             || ']'
+      FROM default_effective_actual da
+      LEFT JOIN allowed_default_effective ae
+        ON ae.state = state_key AND ae.objtype = da.objtype
+       AND ae.scope = da.scope AND ae.grantee = da.grantee
+     WHERE ae.objtype IS NULL
+    UNION ALL
+    SELECT 4, 'default-effective',
+           'missing effective default privilege '
+             || jsonb_build_array(ae.objtype, ae.scope, ae.grantee)::text
+             || ' [expected privs=' || array_to_string(ae.privileges, ',') || ']'
+      FROM allowed_default_effective ae
+      LEFT JOIN default_effective_actual da
+        ON da.objtype = ae.objtype AND da.scope = ae.scope
+       AND da.grantee = ae.grantee
+     WHERE ae.state = state_key AND da.objtype IS NULL
+    UNION ALL
+    SELECT 4, 'default-effective',
+           'drifted effective default privilege '
+             || jsonb_build_array(ae.objtype, ae.scope, ae.grantee)::text
+             || ' [expected privs=' || array_to_string(ae.privileges, ',')
+             || '] [found privs=' || array_to_string(da.privileges, ',')
+             || ' grantable=' || CASE WHEN da.grantable THEN 't' ELSE 'f' END
+             || ']'
+      FROM allowed_default_effective ae
+      JOIN default_effective_actual da
+        ON da.objtype = ae.objtype AND da.scope = ae.scope
+       AND da.grantee = ae.grantee
+     WHERE ae.state = state_key
+       AND (da.privileges IS DISTINCT FROM ae.privileges OR da.grantable)
+    UNION ALL
+    -- 数组类型只向元素类型委托：PostgreSQL 直接拒绝对它们授权与改属，因此它们
+    -- 既不能成为收敛目标，也不该有任何直接 ACL 条目。
+    SELECT 5, 'type',
+           'array type ' || tc.objkey::text
+             || ' must never be an authorization target'
+      FROM type_class tc
+     WHERE tc.class_name = 'array'
+       AND (EXISTS (SELECT 1 FROM managed_object mo WHERE mo.objkey = tc.objkey)
+            OR EXISTS (SELECT 1 FROM acl_source a WHERE a.objkey = tc.objkey))
   )
   SELECT (SELECT count(*) FROM divergence_rows)::integer,
          (SELECT pg_catalog.string_agg(pg_catalog.left(entry, 400), '; '
                                        ORDER BY rank, entry COLLATE "C")
-            FROM (SELECT CASE kind WHEN 'effective' THEN 1 WHEN 'routine' THEN 2
-                                   WHEN 'grant' THEN 3 ELSE 4 END AS rank,
-                         entry
-                    FROM divergence_rows
+            FROM (SELECT rank, entry FROM divergence_rows
                    ORDER BY rank, entry COLLATE "C" LIMIT 8) AS capped)
     INTO divergence_count, divergence;
 
@@ -675,6 +510,8 @@ const adapterHeader = (
   "--",
   "-- GENERATED FILE — DO NOT EDIT.",
   "-- 事实源： services/api/src/database/authorization-manifest.ts",
+  "-- 共享观察： services/api/src/database/authorization-projection-sql.ts",
+  "-- 可移植策略： services/api/src/database/authorization-policy-sql.ts",
   "-- 重新生成： pnpm --filter @meal-agent/api manifest:generate",
   "-- 门禁： pnpm --filter @meal-agent/api manifest:check（内存渲染逐字节比对，" +
     "不会自动改写本文件）",
@@ -692,8 +529,9 @@ export const renderAuthorizationConvergeAdapter = (
   [
     ...adapterHeader(
       manifest,
-      "授权收敛（按真实 grantor 撤销一切不在 manifest 内的授权，再只重建允许项）。",
-      "本文件会修改 ACL：这是它的职责。它不改 ownership，也不建任何对象。",
+      "授权收敛（按真实 grantor 撤销一切策略不允许的授权，再只重建允许项）。",
+      "本文件会修改 ACL：这是它的职责。它不改 ownership，也不建任何对象；" +
+        "全部致命前置条件先于任何 mutation 执行。",
     ),
     renderAuthorizationConvergeSql(manifest),
   ].join("\n");
@@ -704,7 +542,8 @@ export const renderAuthorizationVerifyAdapter = (
   [
     ...adapterHeader(
       manifest,
-      "授权断言（catalog ACL + 有效默认权限 + has_*_privilege 有效权限）。",
+      "授权断言（完整元组的 catalog ACL + default privilege 物理行与有效叠加 + " +
+        "has_*_privilege 有效权限）。",
       "本文件是纯只读 SQL：不匹配时 RAISE EXCEPTION，不做任何变更。",
     ),
     renderAuthorizationVerifySql(manifest),

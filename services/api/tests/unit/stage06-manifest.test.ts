@@ -43,7 +43,6 @@ import {
   authorizationStateKeys,
   AuthorizationManifestError,
   canonicalAuthorizationRows,
-  defaultAclSlots,
   type AuthorizationManifest,
 } from "../../src/database/authorization-manifest.js";
 
@@ -307,10 +306,17 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
 
   const keys = rows.map((row) => `${row.state}:${row.kind}:${row.identity}`);
   assert.equal(new Set(keys).size, keys.length, "identities must be unique");
-  const sorted = [...keys].sort((left, right) =>
-    left < right ? -1 : left > right ? 1 : 0,
+  // 排序是**逐字段**的 `(state, kind, identity)`，不是把三段拼起来再比：拼接会
+  // 让分隔符参与比较（`default-effective` 与 `default` 就会互换位置）。
+  const compare = (left: string, right: string): number =>
+    left < right ? -1 : left > right ? 1 : 0;
+  const sorted = [...rows].sort(
+    (left, right) =>
+      compare(left.state, right.state) ||
+      compare(left.kind, right.kind) ||
+      compare(left.identity, right.identity),
   );
-  assert.deepEqual(keys, sorted, "rows must be sorted");
+  assert.deepEqual(rows, sorted, "rows must be sorted");
 
   // 至少覆盖 0000-only 与当前 0000—0004 两个 ledger，各带两个阶段。
   const states = authorizationStateKeys();
@@ -324,8 +330,23 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
   );
 
   const kinds = new Set(rows.map((row) => row.kind));
-  for (const kind of ["grant", "default", "effective", "routine"]) {
+  for (const kind of [
+    "grant",
+    "default",
+    "default-effective",
+    "effective",
+    "routine",
+  ]) {
     assert.ok(kinds.has(kind), `kind ${kind} must be covered`);
+  }
+
+  // identity 全部是结构化 JSON 数组，绝不是 `#`/`@` 拼接串。
+  for (const row of rows) {
+    assert.ok(
+      row.identity.startsWith("[") && row.identity.endsWith("]"),
+      `identity ${row.identity} must be a structured JSON array`,
+    );
+    assert.doesNotThrow(() => JSON.parse(row.identity) as unknown);
   }
 
   // 备份角色的表级 SELECT 只属于 final：两个阶段必须真的不同。
@@ -334,17 +355,50 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
       (row) =>
         row.state === state &&
         row.kind === "grant" &&
-        row.identity.startsWith("relation:") &&
-        row.identity.endsWith("#meal_agent_backup"),
+        row.identity.startsWith('[["relation"') &&
+        row.identity.endsWith('"meal_agent_backup"]'),
     ).length;
   assert.equal(backupRelations("0000_stage_06.sql|containment"), 0);
   assert.ok(backupRelations("0000_stage_06.sql|final") > 0);
 
-  // 默认权限槽位覆盖三个 managed schema 与全局。
-  const slots = defaultAclSlots().map((slot) => `${slot.objtype}@${slot.scope}`);
-  assert.ok(slots.includes("f@global"));
-  assert.ok(slots.includes("r@public"));
-  assert.equal(new Set(slots).size, slots.length);
+  // `defaults` 是 pg_default_acl 的**物理行**，`defaultEffective` 才是叠加结果。
+  // 两者必须真的不同：物理行只有少数几条，有效默认权限覆盖全部槽位。
+  for (const state of authorizationManifest.states) {
+    assert.ok(
+      state.defaults.length < state.defaultEffective.length,
+      "physical default rows must be a strict subset of the composed effect",
+    );
+    for (const entry of state.defaults) {
+      assert.ok(
+        entry.scope === "-" ||
+          authorizationManifest.managedSchemas.includes(entry.scope),
+        `default scope ${entry.scope} must be global or a managed schema`,
+      );
+    }
+  }
+  const finalState = authorizationManifest.states.find(
+    (state) => state.phase === "final" && state.ledger.length === 1,
+  );
+  assert.ok(finalState !== undefined);
+  // 全局 FUNCTIONS 行是真实存在的物理行（它把 PUBLIC EXECUTE 从内建默认里去掉）。
+  assert.ok(
+    finalState.defaults.some(
+      (entry) => entry.objtype === "f" && entry.scope === "-",
+    ),
+  );
+  // sequence 的**有效**默认权限必须保留 SELECT/UPDATE/USAGE：把 defaclobjtype
+  // 的 S 直接喂给 acldefault 会把它低报成只剩 USAGE。
+  const sequenceOwnerDefault = finalState.defaultEffective.find(
+    (entry) =>
+      entry.objtype === "S" &&
+      entry.scope === "public" &&
+      entry.grantee === "meal_agent_migrator",
+  );
+  assert.deepEqual([...(sequenceOwnerDefault?.privileges ?? [])].sort(), [
+    "SELECT",
+    "UPDATE",
+    "USAGE",
+  ]);
 });
 
 test("the authorization manifest rejects duplicates, empty and grantable privileges", () => {
@@ -384,15 +438,52 @@ test("the authorization manifest rejects duplicates, empty and grantable privile
       /grant options are never allowed/.test(error.message),
   );
 
-  const withUnwatchedGrantee: AuthorizationManifest = {
+  // 外部角色永远拿不到固定允许项：它们只能由策略匹配（结论恒为「不允许」）。
+  const withExternalGrantee: AuthorizationManifest = {
     ...authorizationManifest,
     states: [{ ...first, grants: [{ ...grant, grantee: "postgres" }] }],
   };
   assert.throws(
-    () => canonicalAuthorizationRows(withUnwatchedGrantee),
+    () => canonicalAuthorizationRows(withExternalGrantee),
     (error: unknown) =>
       error instanceof AuthorizationManifestError &&
-      /unwatched grantee/.test(error.message),
+      /not a project principal/.test(error.message),
+  );
+
+  // owner 的权限来自归属，由策略放行；把它登记成固定 grantee 会让「owner 自持」
+  // 与「显式授予」两条规则重叠，直接拒绝。
+  const withOwnerAsGrantee: AuthorizationManifest = {
+    ...authorizationManifest,
+    principals: {
+      ...authorizationManifest.principals,
+      grantees: [
+        ...authorizationManifest.principals.grantees,
+        authorizationManifest.principals.owner,
+      ],
+    },
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(withOwnerAsGrantee),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /canonical owner must not be registered/.test(error.message),
+  );
+
+  // type / column / language / Large Object 由策略判定，manifest 不得登记允许项。
+  const withTypeGrant: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [
+      {
+        ...first,
+        grants: [{ ...grant, object: ["type", "public", "users"] }],
+      },
+    ],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(withTypeGrant),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /decided by policy/.test(error.message),
   );
 });
 
@@ -501,14 +592,14 @@ test("the authorization projection is deterministic and performs no mutation", (
     assert.ok(first.includes(kind), `projection must emit ${kind}`);
   }
 
-  // 动态枚举：不得引用 watchedGrantees 静态名单。
-  for (const watched of authorizationManifest.watchedGrantees) {
-    if (watched === "PUBLIC") {
+  // 动态枚举：共享事实层不得引用任何固定项目主体作为过滤条件。
+  for (const principal of authorizationManifest.principals.grantees) {
+    if (principal === "PUBLIC") {
       continue;
     }
     assert.ok(
-      !first.includes(`'${watched}'`),
-      `the projection must not filter on the static grantee ${watched}`,
+      !first.includes(`'${principal}'`),
+      `the projection must not filter on the static grantee ${principal}`,
     );
   }
 

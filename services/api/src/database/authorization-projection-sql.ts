@@ -348,7 +348,9 @@ const routineTarget = (procAlias: string, schemaAlias: string): string =>
  * | `default_owner` / `default_slot` / `default_base` | 有效默认权限的中间层 |
  * | `default_effective` | 按真实语义叠加出的有效默认权限——**只用于语义验证** |
  * | `owner_source` | 归属 |
- * | `effective_source` | `has_*_privilege` 探测结果 |
+ * | `effective_source` | `has_*_privilege` 探测结果（privileges 是排序数组） |
+ * | `routine_fingerprint` | 受控 routine 的 owner / `SECURITY DEFINER` / `proconfig` / 正文摘要 |
+ * | `role_membership` | `pg_auth_members` 全图——database scope 只观察、不修改 |
  * | `type_class` | 类型分类与数组类型的委托关系 |
  * | `large_object` | Large Object 的归属 |
  *
@@ -611,15 +613,18 @@ ${defaultAclObjtypeMappings
            pg_catalog.pg_get_userbyid(m.lomowner)::text
       FROM pg_catalog.pg_largeobject_metadata m
   ),
+  -- 有效权限。privileges 是**排序后的数组**而不是拼接串：策略层需要做子集判定
+  -- （列级有效权限必须是同表表级有效权限的子集），拼接串只能靠再切一次字符串。
+  -- 对外三列投影里再 array_to_string 成原来的 'privs=A,B' 形态，语义不变。
   effective_source (objkey, object_class, role_name, privileges) AS (
     SELECT ${databaseKey}, 'database'::text, pr.role_name,
-           (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
+           (SELECT array_agg(p ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['CONNECT', 'CREATE', 'TEMPORARY']) AS p
              WHERE has_database_privilege(pr.probe_name, current_database(), p))
       FROM probe_role pr
     UNION ALL
     SELECT jsonb_build_array('schema', n.nspname), 'schema', pr.role_name,
-           (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
+           (SELECT array_agg(p ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['CREATE', 'USAGE']) AS p
              WHERE has_schema_privilege(pr.probe_name, n.oid, p))
       FROM managed_schema n, probe_role pr
@@ -627,11 +632,11 @@ ${defaultAclObjtypeMappings
     SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
            pr.role_name,
            CASE WHEN c.relkind = 'S' THEN
-             (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
+             (SELECT array_agg(p ORDER BY p COLLATE "C")
                 FROM unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) AS p
                WHERE has_sequence_privilege(pr.probe_name, c.oid, p))
            ELSE
-             (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
+             (SELECT array_agg(p ORDER BY p COLLATE "C")
                 FROM unnest(ARRAY['DELETE', 'INSERT', 'MAINTAIN', 'REFERENCES',
                                   'SELECT', 'TRIGGER', 'TRUNCATE',
                                   'UPDATE']) AS p
@@ -644,7 +649,7 @@ ${defaultAclObjtypeMappings
     -- 列级有效权限：列上的授权不出现在 relacl 里，只看表级会整类漏掉。
     SELECT jsonb_build_array('column', n.nspname, c.relname, a.attname),
            'column', pr.role_name,
-           (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
+           (SELECT array_agg(p ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['INSERT', 'REFERENCES', 'SELECT',
                                 'UPDATE']) AS p
              WHERE has_column_privilege(pr.probe_name, c.oid, a.attnum, p))
@@ -656,34 +661,61 @@ ${defaultAclObjtypeMappings
     UNION ALL
     SELECT ${routineKey("p", "n.nspname")}, 'routine', pr.role_name,
            CASE WHEN has_function_privilege(pr.probe_name, p.oid, 'EXECUTE')
-                THEN 'EXECUTE' ELSE NULL END
+                THEN ARRAY['EXECUTE'] ELSE NULL END
       FROM pg_catalog.pg_proc p
       JOIN managed_schema n ON n.oid = p.pronamespace, probe_role pr
     UNION ALL
     SELECT ${routineKey("lp", "lpn.nspname")}, 'denied-routine', pr.role_name,
            CASE WHEN has_function_privilege(pr.probe_name, lp.oid, 'EXECUTE')
-                THEN 'EXECUTE' ELSE NULL END
+                THEN ARRAY['EXECUTE'] ELSE NULL END
       FROM denied_routine dr
       JOIN pg_catalog.pg_proc lp ON lp.oid = dr.oid
       JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace, probe_role pr
     UNION ALL
     SELECT jsonb_build_array('type', n.nspname, t.typname), 'type', pr.role_name,
            CASE WHEN has_type_privilege(pr.probe_name, t.oid, 'USAGE')
-                THEN 'USAGE' ELSE NULL END
+                THEN ARRAY['USAGE'] ELSE NULL END
       FROM pg_catalog.pg_type t
       JOIN managed_schema n ON n.oid = t.typnamespace, probe_role pr
     UNION ALL
     SELECT jsonb_build_array('language', l.lanname), 'language', pr.role_name,
            CASE WHEN has_language_privilege(pr.probe_name, l.oid, 'USAGE')
-                THEN 'USAGE' ELSE NULL END
+                THEN ARRAY['USAGE'] ELSE NULL END
       FROM pg_catalog.pg_language l, probe_role pr
     UNION ALL
     SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
            pr.role_name,
-           (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
+           (SELECT array_agg(p ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['SELECT', 'UPDATE']) AS p
              WHERE has_largeobject_privilege(pr.probe_name, m.oid, p))
       FROM pg_catalog.pg_largeobject_metadata m, probe_role pr
+  ),
+  -- 受控 routine 的精确指纹：identity + owner + SECURITY DEFINER + proconfig
+  -- + 正文摘要。执行授权只是一半，另一半是「以谁的身份、带什么
+  -- search_path / row_security、跑的是不是原来那份正文」。
+  routine_fingerprint (objkey, owner_name, security_definer, config,
+                       body_digest) AS (
+    SELECT ${routineKey("p", "n.nspname")},
+           pg_catalog.pg_get_userbyid(p.proowner)::text,
+           p.prosecdef,
+           COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')::text,
+           pg_catalog.encode(
+             pg_catalog.sha256(
+               pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex')::text
+      FROM pg_catalog.pg_proc p
+      JOIN managed_schema n ON n.oid = p.pronamespace
+  ),
+  -- 角色成员图。database scope **不修改** membership，只观察：由继承造成、
+  -- 无法靠 ACL mutation 修复的 effective 漂移必须 fail closed 并指向
+  -- cluster role baseline。这里是纯事实，不含任何允许集合。
+  role_membership (member_name, granted_name, grantor_name, admin_option,
+                   inherit_option, set_option) AS (
+    SELECT m.rolname::text, g.rolname::text, gr.rolname::text,
+           a.admin_option, a.inherit_option, a.set_option
+      FROM pg_catalog.pg_auth_members a
+      JOIN pg_catalog.pg_roles m ON m.oid = a.member
+      JOIN pg_catalog.pg_roles g ON g.oid = a.roleid
+      JOIN pg_catalog.pg_roles gr ON gr.oid = a.grantor
   ),
   -- 类型分类：managed 非数组类型的 PUBLIC/app/backup/三个 login 默认无 USAGE，
   -- owner（migrator）保留必要权限；数组类型只记录委托关系，既不建立也不尝试
@@ -768,7 +800,7 @@ ${renderAuthorizationProjectorCtes(manifest)}
         FROM default_effective
       UNION ALL
       SELECT 'effective', jsonb_build_array(objkey, role_name)::text,
-             'privs=' || privileges
+             'privs=' || pg_catalog.array_to_string(privileges, ',')
         FROM effective_source
        WHERE privileges IS NOT NULL
       UNION ALL
