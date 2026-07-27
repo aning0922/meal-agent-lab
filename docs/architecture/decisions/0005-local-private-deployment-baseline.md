@@ -155,12 +155,13 @@ identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE`
 projector：`authorization-projection-sql.ts` 渲染出的**单条只读 SELECT**（第四个
 generated adapter），不含任何 mutation，也**尚未接入** `02-acl-baseline.sql` /
 `03-backup-grants.sql`。R8A 已由项目总控 **Accepted**（验收落点 `ca65275`）。
-R8B（**In Progress**）才把它接入 verify/converge。在 R8B 完成并通过验收之前，收敛与
-断言仍由 `watchedGrantees` 静态名单承担——文档不得把 R8A 的可观察性表述为已收敛，
-也不得把进行中的 R8B 表述为已完成。R8B 的正确结构是「PostgreSQL catalog → 共享
-结构化 projector CTE → 公开只读 projection adapter / verify 的可移植策略匹配器 /
-converge 的可移植策略匹配器」：**共享的是事实采集**，不是把动态投影冻结成跨环境
-快照。
+R8B（**实现完成，待总控复验**）把它接入了 verify/converge，结构是「PostgreSQL
+catalog → 共享结构化 projector CTE → 公开只读 projection adapter / verify 的可移植
+策略匹配器 / converge 的可移植策略匹配器」：**共享的是事实采集**，不是把动态投影
+冻结成跨环境快照。`watchedGrantees` 静态名单已删除，收敛与断言按完整元组
+（object + grantee + grantor + privilege + grantable）判定，固定允许授权的 canonical
+grantor 恒为 `meal_agent_migrator`。M2A 在总控验收通过之前仍为待验收，本 ADR 保持
+`Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
 PostgreSQL 语义展开为隐式内建默认，因此它不是「物理 ACL 行」）、
@@ -179,18 +180,21 @@ PostgreSQL 18.4 实测确定并已固化为测试的语义：非空 global `pg_d
 内动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色与
 目标库内**全部非 superuser LOGIN**，不是对集群所有角色的枚举。
 
-**R8B 必须统一替换的已知缺陷**：`authorization-manifest-sql.ts` 的
+**R8B 已统一替换的缺陷**：旧 `authorization-manifest-sql.ts` 的
 `currentDefaultCte` 有三个互相独立的错误——`COALESCE(schema, global, builtin)` 三选一
 冒充叠加语义、把「空 global 行」与「没有这一行」混为一谈、把
 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`（sequence 的 `S` 被当成 FOREIGN
 SERVER）。它**同时被 converge 与 verify 两个块引用**，因此这三条同时影响 containment
-与 final 两个阶段的**收敛**与**断言**，不是只有断言受影响。R8B 必须一次性替换并
-重新生成、复验两个 generated adapter。R8A 属冻结路径，未改动它。
+与 final 两个阶段的**收敛**与**断言**，不是只有断言受影响。R8B 已一次性替换，并
+重新生成、在真实 PostgreSQL 18.4 上复验了两个 generated adapter。另有一条只有收敛
+侧才会暴露的语义同时补上：`ALTER DEFAULT PRIVILEGES` 的**起算点**是 global 从内建
+`acldefault` 起算、schema 从空起算，因此「内容是内建默认真子集」的 global 行只能靠
+**撤销**得到——只补授缺失项时结果恰好等于内建默认，PostgreSQL 会直接把行删掉。
 
-R8B 的边界：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
-出现过的 owner、Large Object 的 OID），因此不得把整份投影冻结成跨 cluster 的固定
-快照。只有 database identity 是可移植的逻辑键；外部角色只能用策略匹配。类型与
-Large Object 的策略见 §2.3，**已决定**，R8B 只负责落实。
+边界仍然成立：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
+出现过的 owner、Large Object 的 OID），因此整份投影**没有**被冻结成跨 cluster 的固定
+快照。只有 database identity 是可移植的逻辑键；外部角色一律用策略匹配。类型与
+Large Object 的策略见 §2.3，**已决定**，R8B 已落实。
 
 #### 2.3 私有 schema、恢复路径与 Large Object
 
@@ -209,8 +213,9 @@ Large Object 的策略见 §2.3，**已决定**，R8B 只负责落实。
 - Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此对
   `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 中 `defaclobjtype='L'` 采取
   「存在项目角色或 `PUBLIC` 权限即收敛并断言为空」，不借此扩展任何业务能力。
-  R8B 起对**任意** LO 对象（不限于项目角色拥有的）一律 fail closed：**只报告、
-  不自动删除未知数据**，LO 的 OID 也不进入任何固定允许 manifest。**并且**：既然产品
+  R8B 起对**任意** LO 对象（不限于项目角色拥有的）一律在任何 mutation 之前 fail
+  closed：**只报告、不自动删除未知数据**，不解除链接、不接管归属、不改 `lomacl`，
+  LO 的 OID 也不进入任何固定允许 manifest。**并且**：既然产品
   声明禁用 LO，就必须同时关闭 `pg_catalog` 的创建/读写入口（`lo_create`、
   `lo_creat`、`lo_from_bytea`、`lo_put`、`lo_import` 等 20 个函数默认对 `PUBLIC`
   开放 `EXECUTE`）——只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的

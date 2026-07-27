@@ -121,24 +121,45 @@ containment 刻意不给备份角色表级 `SELECT`：migration 期间没有理�
 全库的授权。final 阶段才建立最终 ACL，并且**同时验证 PUBLIC、app、backup 与三个
 login**——只检查备份角色会漏掉「migration 顺手把某张新表授给了 PUBLIC」。
 
-两个阶段执行同一段生成的收敛块（`generated/authorization-converge.generated.sql`）：
-按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只
-重建允许项；随后由只读断言块（`generated/authorization-verify.generated.sql`）同时
-比对 catalog ACL 与有效权限。未登记的 `(ledger, phase)` 组合一律 fail closed。
+两个阶段执行同一段生成的收敛块（`generated/authorization-converge.generated.sql`），
+顺序固定且可复核：**先执行全部致命前置条件**（managed schema 齐全、六个项目角色
+存在、归属正确、登录角色不拥有任何对象、routine 指纹与未知 routine、manifest 要求
+的对象存在、未知 `defaclobjtype`、**任意** Large Object、无法由 ACL mutation 修复
+的 membership 漂移），再按真实 grantor 撤销一切策略不允许的授权与可再授予标志（含
+列级授权），然后以 canonical grantor `meal_agent_migrator` 重建允许项，最后按
+`pg_default_acl` 的**物理行**收敛默认权限；随后由只读断言块
+（`generated/authorization-verify.generated.sql`）同时比对**完整元组**的 catalog
+ACL、default privilege 的物理行与有效叠加，以及 `has_*_privilege` 有效权限。
+未登记的 `(ledger, phase)` 组合一律 fail closed。
+
+「先改、再靠事务回滚冒充 preflight」被明确排除：回滚只让命令失败，中途已经产生过
+真实变更，权限本身也仍留在数据库里。`acl` 与 `grants` 因此对同一批漂移给出**逐字
+相同**的问题清单。
 
 产品声明禁用 Large Object，因此收敛块同时收回 `pg_catalog` 中 20 个 LO 入口点
 （`lo_create` / `lo_creat` / `lo_from_bytea` / `lo_put` / `lo_import` …）的
 `PUBLIC EXECUTE`。只封堵已有 LO 的对象权限而放着创建入口，等于允许 runtime 自己
 造一个不受 schema ACL 与 RLS 约束的存储面。
 
-## 只读授权投影（R8A 已 Accepted；接入 verify/converge 的 R8B In Progress）
+## canonical projector（R8A Accepted；R8B 已接入 verify/converge，待总控复验）
 
-`generated/authorization-projection.generated.sql` 是**第四个** generated adapter，
-也是 R8A 唯一的新增交付：一段**单条只读 SELECT**，不含 `GRANT`/`REVOKE`/`ALTER`/
-`SET ROLE`/`SET`/`set_config`。R8A 已由项目总控 **Accepted**（验收落点 `ca65275`），
-当时它**没有**被 `01`/`02`/`03` 任何一段 SQL 加载，`acl` 与 `grants` 的行为在 R8A
-保持字节不变。把它接入 verify/converge、让观察与收敛共享同一套 catalog 事实，是
-**In Progress** 的 R8B。
+`generated/authorization-projection.generated.sql` 是**第四个** generated adapter：
+一段**单条只读 SELECT**，不含 `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/
+`set_config`。R8A 已由项目总控 **Accepted**（验收落点 `ca65275`）。
+
+R8B 把它上面那一整段 CTE 变成**共享的结构化 projector**：
+
+```text
+PostgreSQL catalog
+  → 共享结构化 projector CTE
+      → 公开只读 projection adapter（本文件，对外三列，R8A 语义不回归）
+      → 可移植策略匹配器 → generated/authorization-verify.generated.sql
+      → 可移植策略匹配器 → generated/authorization-converge.generated.sql
+```
+
+**共享的是事实采集**，不是把动态投影冻结成跨环境快照：本文件仍然只观察，一条
+期望值都没有；期望值在 `authorization-manifest.ts`，策略在
+`authorization-policy-sql.ts`。
 
 它按五类事实观察目标库，每类只声称自己实际证明的事：**规范化的直接授权语义**
 （`acl`，`NULL` ACL 展开为隐式内建默认，因此不是「物理 ACL 行」）、
@@ -148,21 +169,24 @@ login**——只检查备份角色会漏掉「migration 顺手把某张新表授
 不是允许角色白名单）。语义细节与 PostgreSQL 18.4 实测结论见
 [`services/api/README.md`](../../../services/api/README.md)。
 
-**R8B 必须统一替换的已知缺陷**：`authorization-manifest-sql.ts` 的
+**R8B 已统一替换的缺陷**：旧 `authorization-manifest-sql.ts` 的
 `currentDefaultCte` 有三个互相独立的错误——`COALESCE(schema, global, builtin)` 三选一
 冒充叠加语义、把「空 global 行」与「没有这一行」混为一谈、把
 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`（sequence 的 `S` 被当成 FOREIGN
-SERVER，默认权限低报为只剩 `USAGE`）。它**同时被
-`authorization-converge.generated.sql` 与 `authorization-verify.generated.sql`
-引用**，因此这三条同时影响 `acl` 的**收敛**与 `grants` 的**断言**；替换必须一次性
-完成，两个 adapter 都要重新生成并复验。R8A 属冻结路径，未改动它。
+SERVER）。它同时被两个 adapter 引用，因此三条同时影响 `acl` 的**收敛**与 `grants`
+的**断言**。该 CTE 连同 `currentAclCte`（第二份 catalog 枚举）与 `watchedGrantees`
+观察过滤一并删除，两个 adapter 已重新生成并在真实 PostgreSQL 18.4 上复验。
 
-类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：managed 非数组类型由
-owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个 login
-默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立 ACL；产品禁用
-Large Object，R8B 对**任意** LO 对象必须 fail closed，**只报告、不自动删除未知
-数据**，创建/读写入口、项目角色权限与异常 default ACL 必须关闭，LO 的 OID 不进入
-任何固定允许 manifest。
+R8B 还补上了一个只有收敛侧才会暴露的语义：默认权限语句的**起算点**是 global 从
+内建 `acldefault` 起算、schema 从空起算。因此「内容是内建默认真子集」的 global 行
+（本基线的 `f@global`）只能靠**撤销**得到——只补授缺失项时，结果恰好等于内建默认，
+PostgreSQL 会直接把行删掉，那一行永远造不出来。
+
+类型与 Large Object 的策略**已决定**，R8B 已落实：managed 非数组类型只保留
+owner/`meal_agent_migrator` 的 `USAGE`，`PUBLIC`、app、backup 与三个 login 无
+`USAGE`；数组类型只记录向元素类型的委托，既不进入收敛目标也不该有独立 ACL；产品
+禁用 Large Object，**任意** LO 对象在任何 mutation 之前 fail closed，**只报告、不
+解除链接、不删数据、不接管归属、不改 `lomacl`**，LO 的 OID 不进入任何固定允许集合。
 
 ## 收敛性
 
@@ -205,10 +229,12 @@ conninfo `key=value`、引号和大写一律拒绝。cluster scope 用 `--mainte
 （默认 `postgres`）。每个阶段执行前都会核对 `current_database()` 与 admin 能力，
 并检查所处的 migration ledger/owner 状态；连错库或顺序错误时 fail closed。
 
-`acl` 在任何 mutation 之前先确认三个 managed schema 都存在（缺任何一个都说明这
-不是一个可以安全收敛的目标：新安装漏了 `0000`，或恢复只恢复了一部分），再验证
-database / 三个 schema / 全部被管理 relation 与 routine 的 owner 都是
-`meal_agent_migrator`；不符合时 fail closed，绝不在恢复路径上偷偷接管归属。
+`acl` 与 `grants` 都在任何 mutation 之前先确认三个 managed schema 都存在（缺任何
+一个都说明这不是一个可以安全收敛的目标：新安装漏了 `0000`，或恢复只恢复了一部分），
+再验证 database / 三个 schema / 全部被管理 relation、routine 与 type 的 owner 都是
+`meal_agent_migrator`；不符合时 fail closed，绝不在恢复路径上偷偷接管归属。这两段
+SQL 本身是**薄入口**，只固定阶段 GUC 与事务边界——前置条件由 generated 收敛块统一
+承担，因此两个阶段的判据完全一致。
 
 `handoff` 是 **fresh-install 的 0000-only 步骤**：ledger 必须恰好只有 checksum
 正确的 `0000_stage_06.sql`。`0001+`、断档、未知条目或错误 checksum 全部 fail

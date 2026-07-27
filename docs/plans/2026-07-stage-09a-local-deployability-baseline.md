@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-27 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B In Progress；M2A 整体仍为 In Progress；M2B—M5 未开始，且在 M2A 通过验收前禁止进入）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 实现完成、待总控复验；M2A 整体待验收；M2B—M5 未开始，且在 M2A 通过验收前禁止进入）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -109,26 +109,29 @@ PostgreSQL healthy
       objtype 与 `acldefault()` 的 objtype 分别映射（sequence 是 `S` 与 `s`）、
       非空 global 行替换内建默认而空行等价于没有行，以及以上每一条都能被**独立
       catalog 查询**复现。
-    - **R8B（In Progress）**才把 projector 接入 verify/converge、去掉
-      `watchedGrantees` 静态名单，并**落实**（不是再裁定）下面第 15 条已决定的
-      类型与 Large Object 策略。正确结构是「PostgreSQL catalog → 共享结构化
-      projector CTE → 公开只读 projection adapter / verify 的可移植策略匹配器 /
-      converge 的可移植策略匹配器」：**共享的是事实采集，不是把动态投影冻结成
-      跨环境快照**。R8B 还必须**统一替换**
+    - **R8B（实现完成，待总控复验）**把 projector 接入了 verify/converge、删除了
+      `watchedGrantees` 静态名单，并**落实**了下面第 15 条已决定的类型与 Large
+      Object 策略。落地结构是「PostgreSQL catalog → 共享结构化 projector CTE →
+      公开只读 projection adapter / verify 的可移植策略匹配器 / converge 的可移植
+      策略匹配器」：**共享的是事实采集，不是把动态投影冻结成跨环境快照**。ACL
+      比较覆盖完整元组（object + grantee + grantor + privilege + grantable），固定
+      允许授权的 canonical grantor 恒为 `meal_agent_migrator`；`default_raw` 决定
+      执行哪条默认权限语句、`default_effective` 只做语义验证；全部致命前置条件在
+      任何 mutation 之前执行，`02`/`03` 因此收成薄入口。R8B 还**统一替换**了
       `authorization-manifest-sql.ts` 的 `currentDefaultCte`，它有三个互相独立的
       错误：`COALESCE(schema, global, builtin)` 三选一冒充叠加语义、把「空 global
       行」与「没有这一行」混为一谈、把 `pg_default_acl.defaclobjtype` 直接喂给
       `acldefault`（sequence 的 `S` 被当成 FOREIGN SERVER）。该 CTE **同时被
       converge 与 verify 两个块引用**，因此这三条同时影响收敛与断言；替换后必须
       重新生成并复验 `authorization-converge.generated.sql` 与
-      `authorization-verify.generated.sql`。R8B **不得**把动态投影冻结成跨 cluster
-      的固定快照：`role` 行是覆盖面证据而非允许角色白名单，外部角色按策略匹配，
-      任意 LO 对象按政策判为异常且只报告不删数据，LO 的 OID 不进入固定允许
-      manifest。
+      `authorization-verify.generated.sql`——两者都已重新生成并在真实 PostgreSQL
+      18.4 上复验。R8B **没有**把动态投影冻结成跨 cluster 的固定快照：`role` 行仍
+      只是覆盖面证据而非允许角色白名单，外部角色一律按策略匹配，任意 LO 对象按
+      政策判为异常且只报告不删数据，LO 的 OID 不进入固定允许 manifest。
     - 「ACL 全主体覆盖」的准确含义：**normalized raw ACL** 在受监管对象类别内
       动态枚举全部 grantee 与 grantor；**effective** 只覆盖 `PUBLIC`、项目角色与
       目标库内全部非 superuser LOGIN，不是对集群所有角色的枚举。
-15. 类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：managed 非数组类型由
+15. 类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 已落实，不再裁定）：managed 非数组类型由
     owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个
     login 默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立
     ACL（PostgreSQL 直接拒绝对数组类型授权与改属）；产品禁用 Large Object，创建/

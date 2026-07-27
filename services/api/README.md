@@ -66,32 +66,41 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 ### 阶段 09A / M2A 当前状态
 
 M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点
-`ca65275`。**R8B（把 projector 接入 verify/converge）In Progress**；M2A 整体仍为
-In Progress，未通过验收；M2B—M5 未开始，且在 M2A 通过验收前禁止进入。
+`ca65275`。**R8B 实现完成，待总控复验**；**M2A 整体待验收**；M2B—M5 未开始，且在
+M2A 通过验收前禁止进入。ADR-0005 保持 `Proposed`。
 
 R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
-断言阶段。因此 **ACL 全主体覆盖**与 **default privilege 叠加语义**在 R8A 只做到
-「能被完整、确定地观察」，收敛仍由旧的 `watchedGrantees` 静态名单与
-`authorization-manifest-sql.ts` 承担。R8B 的正确结构是「PostgreSQL catalog → 共享
-结构化 projector CTE → 公开只读 projection adapter / verify 的可移植策略匹配器 /
-converge 的可移植策略匹配器」，**共享的是事实采集**，不把动态投影冻结成跨环境快照。
-下面的「目标设计」与「已实现事实」分开写，不要把前者当成后者。
+断言阶段。R8B 把它接入了 verify 与 converge，结构是：
+
+```text
+PostgreSQL catalog
+  → 共享结构化 projector CTE（authorization-projection-sql.ts）
+      → 公开只读 projection adapter（对外三列，R8A 语义不回归）
+      → 可移植策略匹配器（authorization-policy-sql.ts）→ verify
+      → 可移植策略匹配器（authorization-policy-sql.ts）→ converge
+```
+
+**共享的是事实采集**，不是把动态投影冻结成跨环境快照：期望值与策略全部在
+manifest 与 policy 两层，projector 一条期望值都没有。
 
 「ACL 全主体覆盖」指两件互不等同的事：**normalized raw ACL** 在受监管对象类别内
 动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色
 （`meal_agent` 前缀）与目标库内**全部非 superuser LOGIN**——它不是对集群所有角色的
-枚举，外部 NOLOGIN 角色的直接授权由 raw 层可见但不进入 effective 探测。
+枚举，外部 NOLOGIN 角色的直接授权由 raw 层可见但不进入 effective 探测。R8B 起，
+这两件事**同时**是收敛与断言的判据，不再有 `watchedGrantees` 那样的观察名单。
 
-**R8B 必须统一替换的已知缺陷**：`authorization-manifest-sql.ts` 的
-`currentDefaultCte` 有三个互相独立的错误——①`COALESCE(schema, global, builtin)`
-三选一**冒充叠加语义**（schema 行一旦存在就把 global 行整条丢掉）；②把「空 global
-行」与「没有这一行」混为一谈（空 ACL 展开是零行，行存在性必须先于 `aclexplode`
-判断）；③把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的 `S`
-被当成 FOREIGN SERVER，默认权限被低报为只剩 `USAGE`。该 CTE **同时被 converge 与
-verify 两个块引用**（`renderAuthorizationConvergeAdapter` 与
-`renderAuthorizationVerifySql`），所以这三条**同时影响** `bootstrap.sh acl` 的收敛与
-`grants` 的断言，不是只有断言受影响。R8B 必须一次性替换，并重新生成、复验两个
-generated adapter。R8A 属冻结路径，未改动它。
+**R8B 已统一替换的缺陷**：旧 `authorization-manifest-sql.ts` 的 `currentDefaultCte`
+有三个互相独立的错误——①`COALESCE(schema, global, builtin)` 三选一**冒充叠加语义**；
+②把「空 global 行」与「没有这一行」混为一谈；③把 `pg_default_acl.defaclobjtype`
+直接喂给 `acldefault`，sequence 的 `S` 被当成 FOREIGN SERVER。它同时被 converge 与
+verify 引用，因此三条同时影响收敛与断言。该 CTE 连同 `currentAclCte`（第二份
+catalog 枚举）与 `watchedGrantees` 观察过滤一并删除，两个 generated adapter 已重新
+生成并在真实 PostgreSQL 18.4 上复验。
+
+R8B 另外补上了一个只有收敛侧才会暴露的语义：`ALTER DEFAULT PRIVILEGES` 的**起算
+点**是 global 从内建 `acldefault` 起算、schema 从空起算。因此「内容是内建默认真
+子集」的 global 行（本基线的 `f@global`）只能靠**撤销**得到——旧实现只补授缺失项，
+而补授的结果恰好等于内建默认时 PostgreSQL 会直接把行删掉，于是那一行永远造不出来。
 
 ### 冻结 0000 的安全 manifest
 
@@ -168,34 +177,79 @@ manifest 不可能只是自洽而与事实脱节。
 对象 manifest 只描述冻结 `0000` 之后的**结构**，回答不了「0001—0004 应用之后 app
 应该有哪些表权限」。授权因此另立一个事实源
 [`src/database/authorization-manifest.ts`](src/database/authorization-manifest.ts)，
-按 `(ledger, phase)` 精确描述 `PUBLIC` / `meal_agent_app` / `meal_agent_backup` /
-三个 login 的：
+按 `(ledger, phase)` 登记**固定允许项**。R8B 起它不再表达「要观察谁」——观察面
+由 canonical projector 动态给出（全部 grantee 与 grantor），manifest 只回答「什么
+是允许的」：
 
-- `grant`：catalog 里的直接授权（含隐式默认 ACL 展开）；
-- `default`：`pg_default_acl` 的**有效**默认权限，按 objtype × schema/global 逐槽位；
-- `effective`：`has_*_privilege` 的**有效**权限——`PUBLIC` 派生与角色继承都算在内；
-- `routine`：受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要，
-  **按 identity 精确匹配，没有 schema 级通配豁免**。
+- `grants`：固定允许的**直接授权**，canonical grantor 恒为 `meal_agent_migrator`，
+  永不允许可再授予。只覆盖 database / schema / relation / routine 四类；type、
+  column、language、Large Object 与 20 个 LO 入口点由**可移植策略**判定，manifest
+  不得为它们登记允许项；
+- `defaults`：`pg_default_acl` 的**物理行**条目——它决定实际要执行哪条默认权限
+  语句，**不是**有效默认权限；
+- `defaultEffective`：按 PostgreSQL 真实语义叠加出的**有效**默认权限，**只用于
+  最终语义验证**。禁止据此反推该执行哪条语句：内建默认不需要任何语句；
+- `effective`：`has_*_privilege` 的**有效**权限——`PUBLIC` 派生与角色继承都算在内。
+  只对 `PUBLIC`/app/backup/三个 login × 上述四类对象逐条精确验证，其余非
+  superuser LOGIN 由策略判定（除内建 language `USAGE` 外不得有任何受监管权限）；
+- `routines`：受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文
+  摘要，**按 identity 精确匹配，没有 schema 级通配豁免**；managed schema 里出现
+  任何**未登记**的 routine 一律 fail closed。
 
-当前登记 4 个状态（`0000` 与 `0000—0004` 两个 ledger × containment / final 两个
-阶段），共 382 条规范化行；未登记的 `(ledger, phase)` 一律 fail closed。
+全部 identity 都是**结构化 JSON 数组**，与 canonical projector 的编码逐字节相同
+（[`src/database/authorization-identity.ts`](src/database/authorization-identity.ts)）；
+两侧都不再用 `#`/`@`/`|` 拼接串，也不允许 `split_part` 反解。
+
+当前 manifest 版本为 **2**，登记 4 个状态（`0000` 与 `0000—0004` 两个 ledger ×
+containment / final 两个阶段）；未登记的 `(ledger, phase)` 一律 fail closed。
 
 阶段划分对应恢复/安装流程的两个真实时刻：`bootstrap.sh acl` 是 **containment**
 （migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），
 `bootstrap.sh grants` 是 **final**（migration 之后建立最终 ACL，并同时验证 PUBLIC、
-app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销
-一切不在 manifest 内的授权，再只重建允许项。
+app、backup 与三个 login）。两个阶段执行同一段生成的收敛块。
 
-产品声明禁用 Large Object，因此收敛块还会收回 `pg_catalog` 中 20 个 LO 入口点
-（`lo_create`、`lo_creat`、`lo_from_bytea`、`lo_put` …）的 `PUBLIC EXECUTE`：
-只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的不受约束的存储面。
+收敛块的顺序是固定且可复核的：
 
-### 只读授权投影（R8A 已 Accepted；接入 verify/converge 的 R8B In Progress）
+1. **致命前置条件**先于任何 mutation 执行——managed schema 齐全、六个项目角色
+   存在、归属正确、登录角色不拥有任何对象、routine 指纹与未知 routine、manifest
+   要求的对象存在、未知 `defaclobjtype`、**任意** Large Object，以及无法由 ACL
+   mutation 修复的 membership 漂移。不允许「先改、再靠事务回滚冒充 preflight」：
+   回滚只让命令失败，中途已经产生过真实变更，权限本身也仍留在数据库里；
+2. 按**真实 grantor** 撤销策略不允许的直接授权与一切可再授予标志（普通 REVOKE
+   只撤销「由执行者授予」的那一份）；
+3. 以 canonical grantor（`meal_agent_migrator`）补齐固定允许项；
+4. 按 `pg_default_acl` 的**物理行**收敛默认权限。
+
+可移植策略（[`src/database/authorization-policy-sql.ts`](src/database/authorization-policy-sql.ts)）
+不含任何环境相关的名字：
+
+- 固定允许授权的 canonical grantor 恒为 `meal_agent_migrator`，永不允许可再授予；
+  完整元组是 object + grantee + grantor + privilege + grantable，因此权限集合看起来
+  合规但 grantor 错误、存在重复授权或可再授予，都会被发现并收敛；
+- 对象 owner 自身的内建权限按策略放行——managed 非数组 type 因此只剩 owner；
+- 数组类型只记录向元素类型的委托，既不进入收敛目标也不该有独立 ACL；
+- 列级授权没有任何允许项；
+- `language` 只允许 PostgreSQL 内建的 owner 与 `PUBLIC USAGE`，显式外部授权、
+  错误 grantor 与可再授予一律是漂移；
+- 20 个 `pg_catalog` LO 入口点只允许**函数 owner** 的 `EXECUTE`，因此 `PUBLIC`、
+  项目角色与全部非 superuser LOGIN 都无法有效到达；
+- **任意** Large Object 一律 fail closed：**只报告，不解除链接、不删数据、不接管
+  归属、不改 `lomacl`**，OID 也不进入任何固定允许集合。
+
+### canonical projector 与只读授权投影
 
 [`src/database/authorization-projection-sql.ts`](src/database/authorization-projection-sql.ts)
-渲染出**单条只读 SELECT**（`generated/authorization-projection.generated.sql`）：
-不含 `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/`set_config`，既不改数据也不改调用
-方会话。它是 R8B 要接入的 canonical projector，**本轮只用于观察与反向测试**。
+被拆成两层：
+
+- `renderAuthorizationProjectorCtes` 是**可复用的结构化 projector CTE renderer**，
+  只做事实采集（`regulated_object` / `acl_source` / `default_row` / `default_raw` /
+  `default_effective` / `owner_source` / `effective_source` / `routine_fingerprint` /
+  `role_membership` / `type_class` / `large_object` / `probe_role` …），不含任何
+  期望值、任何策略判断、任何 mutation。verify 与 converge 复用的就是这一层；
+- `renderAuthorizationProjectionSql` 是**对外三列 `(kind, identity, detail)` 的只读
+  SELECT**（`generated/authorization-projection.generated.sql`）：不含
+  `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/`set_config`，既不改数据也不改调用方
+  会话。它的行集与语义在 R8B **不回归**——四个状态下与 R8A 逐行相同。
 
 每个 kind 只声称自己实际证明的事：
 
@@ -227,21 +281,23 @@ app、backup 与三个 login）。两个阶段执行同一段生成的收敛块�
 在 ACL 上。因此投影不再按 `lanpltrusted` 过滤 raw 层——否则 raw 说「没人有
 USAGE」而 effective 说「所有人都有」，两层自相矛盾。
 
-类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：
+类型与 Large Object 的策略**已决定**，R8B 已落实（下列都由真实 PostgreSQL 18.4
+测试证明）：
 
 - **managed 非数组类型**：owner（`meal_agent_migrator`）保留必要 `USAGE`；
   `PUBLIC`、app、backup 与三个 login 默认无 `USAGE`。全新安装后 row type 的
   `typacl` 已经是 `{meal_agent_migrator=U/meal_agent_migrator}`，投影如实报告；
 - **数组类型**：只记录「向元素类型委托」，既不建立也不撤销独立 ACL——PostgreSQL
   对数组类型直接拒绝授权与改属（`cannot set privileges of array types`）；
-- **Large Object**：产品声明禁用。R8B 对**任意** LO 对象必须 fail closed，且
-  **只报告、不自动删除未知数据**；创建/读写入口、项目角色权限与异常 default ACL
-  必须关闭。LO 的 OID 不进入任何固定允许 manifest。
+- **Large Object**：产品声明禁用。**任意** LO 对象（不限于项目角色拥有的）在任何
+  mutation 之前 fail closed，且**只报告、不自动删除未知数据**——不解除链接、不接管
+  归属、不改 `lomacl`。LO 存在时其他无关 ACL 漂移在前后逐字节不变。LO 的 OID 不
+  进入任何固定允许集合。
 
-R8B 的边界：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
-出现过的 owner、LO 的 OID），因此**不得**把整份投影冻结成跨 cluster 的固定快照。
-只有 database identity 是可移植的逻辑键 `["database", "<current>"]`；外部角色只能
-用策略匹配，不能逐个登记角色名。
+边界仍然成立：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
+出现过的 owner、LO 的 OID），因此整份投影**没有**被冻结成跨 cluster 的固定快照。
+只有 database identity 是可移植的逻辑键 `["database", "<current>"]`；外部角色一律
+用策略匹配，没有逐个登记角色名。
 
 连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
 600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是
