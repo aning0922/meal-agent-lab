@@ -6363,27 +6363,39 @@ test("the projection keeps identities unambiguous for names containing # @ | and
 });
 
 /**
- * **独立** catalog 快照：直接读 ACL 列的文本，不经过 canonical projector。
- * 收敛的证据因此不是「projector 自证」——即使 projector 与策略同时错了，这份
- * 快照也会显示状态确实变了或确实没变。
+ * **独立** catalog 快照：直接读 ACL 列，不经过 canonical projector。收敛的证据
+ * 因此不是「projector 自证」——即使 projector 与策略同时错了，这份快照也会显示
+ * 状态确实变了或确实没变。
+ *
+ * 唯一的规范化是 PostgreSQL 自己的语义：`NULL` ACL 表示「适用内建默认权限」，
+ * 因此按 `acldefault` 展开。它与 projector 无关，是在这里独立重新推导的——包括
+ * sequence 必须用 `acldefault` 的小写 `s`（大写 `S` 是 FOREIGN SERVER）。
+ * 一条被显式授权又被撤销回内建默认的 ACL（物理上从 `NULL` 变成等价的显式值）
+ * 因此仍然算「回到基线」，而任何真实的权限变化都会立刻显形。
+ * 空的 `attacl` 与空的 `pg_default_acl` 行是无效应状态，同样不计入。
  */
 const rawAuthorizationSnapshot = async (
   database: string = rolesDatabase,
 ): Promise<string> =>
   withPool(adminPoolConfig(database), async (pool) => {
     const result = await pool.query<{ entry: string }>(
-      `SELECT 'database ' || COALESCE(d.datacl::text, '<null>') AS entry
+      `SELECT 'database ' ||
+              COALESCE(d.datacl, acldefault('d', d.datdba))::text AS entry
          FROM pg_database d WHERE d.datname = current_database()
        UNION ALL
        SELECT 'schema ' || n.nspname || ' '
-                || COALESCE(n.nspacl::text, '<null>')
+                || COALESCE(n.nspacl, acldefault('n', n.nspowner))::text
          FROM pg_namespace n
         WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
        UNION ALL
        SELECT 'relation ' || n.nspname || '.' || c.relname || ' '
-                || COALESCE(c.relacl::text, '<null>')
+                || COALESCE(c.relacl,
+                            acldefault(CASE WHEN c.relkind = 'S' THEN 's'
+                                            ELSE 'r' END::"char",
+                                       c.relowner))::text
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+          AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
        UNION ALL
        SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname
                 || ' ' || a.attacl::text
@@ -6391,24 +6403,27 @@ const rawAuthorizationSnapshot = async (
          JOIN pg_class c ON c.oid = a.attrelid
          JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
-          AND a.attnum > 0 AND NOT a.attisdropped AND a.attacl IS NOT NULL
+          AND a.attnum > 0 AND NOT a.attisdropped
+          AND COALESCE(array_length(a.attacl, 1), 0) > 0
        UNION ALL
        SELECT 'routine ' || n.nspname || '.' || p.proname || '/'
-                || p.pronargs::text || ' ' || COALESCE(p.proacl::text, '<null>')
+                || p.pronargs::text || ' '
+                || COALESCE(p.proacl, acldefault('f', p.proowner))::text
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
        UNION ALL
        SELECT 'type ' || n.nspname || '.' || t.typname || ' '
-                || COALESCE(t.typacl::text, '<null>')
+                || COALESCE(t.typacl, acldefault('T', t.typowner))::text
          FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
         WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+          AND NOT (t.typcategory = 'A' AND t.typelem <> 0)
        UNION ALL
        SELECT 'language ' || l.lanname || ' '
-                || COALESCE(l.lanacl::text, '<null>')
+                || COALESCE(l.lanacl, acldefault('l', l.lanowner))::text
          FROM pg_language l
        UNION ALL
        SELECT 'lo-entry ' || p.proname || '/' || p.pronargs::text || ' '
-                || COALESCE(p.proacl::text, '<null>')
+                || COALESCE(p.proacl, acldefault('f', p.proowner))::text
          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
         WHERE n.nspname = 'pg_catalog'
           AND (p.proname LIKE 'lo\\_%' OR p.proname IN ('loread', 'lowrite'))
@@ -6418,6 +6433,7 @@ const rawAuthorizationSnapshot = async (
                 || ' ' || d.defaclacl::text
          FROM pg_default_acl d
          LEFT JOIN pg_namespace dn ON dn.oid = d.defaclnamespace
+        WHERE COALESCE(array_length(d.defaclacl, 1), 0) > 0
        UNION ALL
        SELECT 'largeobject ' || m.oid::text || ' '
                 || pg_catalog.pg_get_userbyid(m.lomowner)
@@ -6619,5 +6635,585 @@ test("acl and grants both fail before any mutation and report the same problems"
       0,
       `the baseline must be clean again after: ${testCase.label}`,
     );
+  }
+});
+
+test("all four registered states converge, verify clean and stay put on a second run", async () => {
+  // 证据面覆盖**四个**状态，而不是只覆盖主库当前所处的那一个：
+  //   0000 containment / 0000 final / 0000—0004 containment / 0000—0004 final。
+  // 每个状态都干净通过断言，收敛连跑两遍之后**独立** catalog 快照不变。
+  const probe = "meal_agent_stage09a_states";
+  const probeMigrationUrl = `postgresql://meal_agent_migration_login:${passwords.migration}@127.0.0.1:${String(port)}/${probe}`;
+  const observed: string[] = [];
+  try {
+    await mustSucceed("createdb", join(postgresBin, "createdb"), [probe], {
+      env: adminEnvironment(),
+    });
+    await mustSucceedCli(
+      "pnpm db:bootstrap",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+    await runBootstrap("handoff", probe);
+
+    const settle = async (
+      phase: "acl" | "grants",
+      expectation: "containment" | "final",
+      label: string,
+    ): Promise<void> => {
+      await runBootstrap(phase, probe);
+      assert.equal(
+        (await runAuthorizationVerify(expectation, probe)).code,
+        0,
+        `${label} must verify clean`,
+      );
+      const first = await rawAuthorizationSnapshot(probe);
+      await runBootstrap(phase, probe);
+      assert.equal(
+        await rawAuthorizationSnapshot(probe),
+        first,
+        `${label} must not move on a second converge`,
+      );
+      assert.equal(
+        (await runAuthorizationVerify(expectation, probe)).code,
+        0,
+        `${label} must still verify clean after the second converge`,
+      );
+      observed.push(`${label}=${String(first.split("\n").length)}`);
+    };
+
+    await settle("acl", "containment", "0000 containment");
+    await settle("grants", "final", "0000 final");
+    await mustSucceedCli(
+      "pnpm db:migrate",
+      await runPnpm("db:migrate", probeMigrationUrl),
+    );
+    await settle("acl", "containment", "0000-0004 containment");
+    await settle("grants", "final", "0000-0004 final");
+
+    assert.equal(observed.length, 4);
+    process.stdout.write(
+      `authorization states settled: ${observed.join(", ")}\n`,
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`).catch(() => undefined);
+    });
+  }
+});
+
+test("a role created after the adapters were generated is still discovered and converged", async () => {
+  // 动态发现的真正判据：generated SQL 里根本没有这个角色名，它却必须被发现、
+  // 被精确报出、被收敛。静态名单做不到这一点。
+  const stranger = "stage09a_late_role";
+  const generated = await Promise.all(
+    [
+      "authorization-converge.generated.sql",
+      "authorization-verify.generated.sql",
+      "authorization-projection.generated.sql",
+    ].map(async (name) => readFile(generatedSql(name), "utf8")),
+  );
+  for (const text of generated) {
+    assert.ok(
+      !text.includes(stranger),
+      "the generated SQL must not contain the late role name",
+    );
+  }
+
+  try {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`CREATE ROLE ${stranger} LOGIN NOSUPERUSER`);
+      await pool.query(`GRANT USAGE ON SCHEMA public TO ${stranger}`);
+      await pool.query(`GRANT SELECT ON public.users TO ${stranger}`);
+      await pool.query(`GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${stranger}`);
+    });
+
+    const verified = await runAuthorizationVerify("final");
+    assert.notEqual(verified.code, 0, "a late role must not pass unnoticed");
+    assert.ok(
+      verified.stderr.includes(stranger),
+      `the divergence must name the late role: ${verified.stderr.slice(0, 400)}`,
+    );
+
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+    const remaining = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ count: string }>(
+        `SELECT (
+           has_schema_privilege($1, 'public', 'USAGE')::int
+           + has_table_privilege($1, 'public.users', 'SELECT')::int
+           + has_database_privilege($1, current_database(), 'CONNECT')::int
+         )::text AS count`,
+        [stranger],
+      );
+      return result.rows[0]?.count;
+    });
+    assert.equal(remaining, "0", "the late role must retain nothing");
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`DROP OWNED BY ${stranger}`).catch(() => undefined);
+      await pool.query(`DROP ROLE IF EXISTS ${stranger}`).catch(() => undefined);
+    });
+    await bootstrap("acl");
+    await bootstrap("grants");
+  }
+});
+
+test("unknown grantees, third-party grantors, duplicates and grant options converge in every class", async () => {
+  // 完整元组的意义：权限集合看起来合规也不够——grantor 错误、重复授权、
+  // 可再授予标志都必须被发现并精确收敛。这里一次覆盖 database / schema /
+  // table / column / sequence / routine / type / language 八类。
+  const stranger = "stage09a_matrix_stranger";
+  const thirdParty = "stage09a_matrix_grantor";
+  const sequence = "meal_agent_private.stage09a_matrix_seq";
+  let before = "";
+  try {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`CREATE ROLE ${stranger} LOGIN NOSUPERUSER`);
+      await pool.query(`CREATE ROLE ${thirdParty} NOLOGIN`);
+    });
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(`CREATE SEQUENCE ${sequence}`);
+    });
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+    before = await rawAuthorizationSnapshot();
+
+    await withPool(adminPoolConfig(), async (pool) => {
+      // 未知 grantee，覆盖八类。
+      await pool.query(
+        `GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${stranger}`,
+      );
+      await pool.query(`GRANT USAGE, CREATE ON SCHEMA public TO ${stranger}`);
+      await pool.query(`GRANT SELECT, UPDATE ON public.users TO ${stranger}`);
+      await pool.query(`GRANT SELECT (id) ON public.households TO ${stranger}`);
+      await pool.query(`GRANT SELECT, USAGE ON SEQUENCE ${sequence} TO ${stranger}`);
+      await pool.query(
+        `GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() TO ${stranger}`,
+      );
+      await pool.query(`GRANT USAGE ON TYPE public.users TO ${stranger}`);
+      await pool.query(`GRANT USAGE ON LANGUAGE plpgsql TO ${stranger}`);
+      // 可再授予标志加在一条**本来就合规**的授权上。
+      await pool.query(
+        "GRANT SELECT ON public.users TO meal_agent_app WITH GRANT OPTION",
+      );
+      // 第三方 grantor 重复授予一条本来就合规的权限。它需要 schema USAGE 才能
+      // 解析表名——那一份同样是漂移，同样必须被收敛掉。
+      await pool.query(`GRANT USAGE ON SCHEMA public TO ${thirdParty}`);
+      await pool.query(
+        `GRANT SELECT ON public.users TO ${thirdParty} WITH GRANT OPTION`,
+      );
+      const client = await pool.connect();
+      try {
+        await client.query("SELECT set_config('role', $1, false)", [thirdParty]);
+        await client.query("GRANT SELECT ON public.users TO meal_agent_app");
+      } finally {
+        client.release();
+      }
+    });
+
+    const duplicated = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ grantor: string }>(
+        `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
+                aclexplode(c.relacl) AS acl
+          WHERE n.nspname = 'public' AND c.relname = 'users'
+            AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_app'
+            AND acl.privilege_type = 'SELECT'
+          ORDER BY 1`,
+      );
+      return result.rows.map((row) => row.grantor);
+    });
+    assert.deepEqual(
+      duplicated,
+      ["meal_agent_migrator", thirdParty],
+      "the duplicate must genuinely come from a second grantor",
+    );
+
+    const verified = await runAuthorizationVerify("final");
+    assert.notEqual(verified.code, 0);
+    await runBootstrap("grants");
+    assert.equal(
+      (await runAuthorizationVerify("final")).code,
+      0,
+      "every class must converge back to the baseline",
+    );
+    assert.equal(
+      await rawAuthorizationSnapshot(),
+      before,
+      "the independent catalog snapshot must return to the exact baseline",
+    );
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      for (const role of [stranger, thirdParty]) {
+        await pool.query(`DROP OWNED BY ${role}`).catch(() => undefined);
+        await pool.query(`DROP ROLE IF EXISTS ${role}`).catch(() => undefined);
+      }
+    });
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client
+        .query(`DROP SEQUENCE IF EXISTS ${sequence}`)
+        .catch(() => undefined);
+    });
+    await bootstrap("acl");
+    await bootstrap("grants");
+  }
+});
+
+test("external logins are covered directly, through inheritance and by exclusion", async () => {
+  // effective 的覆盖面定义：PUBLIC + 项目角色 + 目标库**全部非 superuser
+  // LOGIN**。外部 NOLOGIN 的直接授权由 raw ACL 捕获，它经继承影响 LOGIN 时由
+  // effective 捕获；superuser 不在探测集合内，这一点必须有对照。
+  const login = "stage09a_ext_login";
+  const nologin = "stage09a_ext_group";
+  const superuser = "stage09a_ext_super";
+  try {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`CREATE ROLE ${login} LOGIN NOSUPERUSER`);
+      await pool.query(`CREATE ROLE ${nologin} NOLOGIN`);
+      await pool.query(`CREATE ROLE ${superuser} LOGIN SUPERUSER`);
+    });
+
+    // 1. 外部 LOGIN 的直接授权。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`GRANT SELECT ON public.users TO ${login}`);
+    });
+    let verified = await runAuthorizationVerify("final");
+    assert.notEqual(verified.code, 0, "a direct external grant must be caught");
+    assert.ok(verified.stderr.includes(login));
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+    // 2. 外部 NOLOGIN 的直接授权由 raw ACL 层捕获，即使它不在 effective 探测
+    //    集合内。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`GRANT SELECT ON public.users TO ${nologin}`);
+    });
+    verified = await runAuthorizationVerify("final");
+    assert.notEqual(verified.code, 0, "a NOLOGIN grant must be caught by raw ACL");
+    assert.match(
+      verified.stderr,
+      new RegExp(
+        `unexpected grant ${keyPrefixPattern(
+          ["relation", "public", "users"],
+          nologin,
+        )}`,
+      ),
+    );
+
+    // 3. 同一份授权经继承落到外部 LOGIN 上时由 effective 捕获。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`GRANT ${nologin} TO ${login} WITH INHERIT TRUE`);
+    });
+    verified = await runAuthorizationVerify("final");
+    assert.notEqual(verified.code, 0);
+    assert.match(
+      verified.stderr,
+      new RegExp(
+        `unexpected effective ${keyPattern(
+          ["relation", "public", "users"],
+          login,
+        )}`,
+      ),
+      `inheritance must surface in effective: ${verified.stderr.slice(0, 400)}`,
+    );
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`REVOKE ${nologin} FROM ${login}`);
+    });
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+    // 4. 异常 membership 进入 app：ACL 层修不了它，必须在 mutation 之前 fail
+    //    closed 并指向 cluster role baseline。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`GRANT meal_agent_app TO ${login} WITH INHERIT TRUE`);
+    });
+    const acl = await bootstrap("acl");
+    assert.notEqual(acl.code, 0);
+    assert.match(
+      acl.stderr,
+      new RegExp(
+        `unexpected role membership ${login} in meal_agent_app; ` +
+          "run the cluster role baseline first",
+      ),
+    );
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`REVOKE meal_agent_app FROM ${login}`);
+    });
+
+    // 5. superuser 对照：它拥有一切权限，但**不在**探测集合内，因此基线保持
+    //    干净——这正是「effective 不是对集群所有角色的枚举」的准确含义。
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+    const superuserReach = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ reachable: boolean; probed: boolean }>(
+        `SELECT has_table_privilege($1, 'public.users', 'SELECT') AS reachable,
+                EXISTS (SELECT 1 FROM pg_roles r
+                         WHERE r.rolname = $1 AND NOT r.rolsuper) AS probed`,
+        [superuser],
+      );
+      return result.rows[0];
+    });
+    assert.equal(superuserReach?.reachable, true);
+    assert.equal(superuserReach?.probed, false);
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      for (const role of [login, nologin, superuser]) {
+        await pool.query(`REVOKE meal_agent_app FROM ${role}`).catch(() => undefined);
+        await pool.query(`DROP OWNED BY ${role}`).catch(() => undefined);
+        await pool.query(`DROP ROLE IF EXISTS ${role}`).catch(() => undefined);
+      }
+    });
+    await bootstrap("acl");
+    await bootstrap("grants");
+  }
+});
+
+/** `pg_default_acl` 的物理行，直接从 catalog 读出（不经过 projector）。 */
+const defaultRowSnapshot = async (): Promise<readonly string[]> =>
+  withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ entry: string }>(
+      `SELECT pg_catalog.pg_get_userbyid(d.defaclrole) || ' '
+                || d.defaclobjtype::text || ' ' || COALESCE(dn.nspname, '-')
+                || ' ' || d.defaclacl::text AS entry
+         FROM pg_default_acl d
+         LEFT JOIN pg_namespace dn ON dn.oid = d.defaclnamespace
+        ORDER BY 1`,
+    );
+    return result.rows.map((row) => row.entry);
+  });
+
+test("empty global default rows and default grant options converge to the exact target", async () => {
+  // 默认权限语句的起算点：global 从内建 acldefault 起算、schema 从空起算。
+  //   - f@global 的目标内容是内建默认的**真子集**（去掉 PUBLIC EXECUTE），
+  //     把它清空之后只补授缺失项永远造不回来——必须靠撤销；
+  //   - S@global 本来就没有行，人为造一个空行之后必须回到「没有行」；
+  //   - schema 行上的 WITH GRANT OPTION 只能收回标志，不能连权限一起撤掉。
+  const baseline = await defaultRowSnapshot();
+  assert.ok(
+    baseline.some((entry) => entry.startsWith("meal_agent_migrator f -")),
+    "the baseline must already carry the global FUNCTIONS row",
+  );
+  try {
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "REVOKE EXECUTE ON FUNCTIONS FROM meal_agent_migrator",
+      );
+      await pool.query(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "REVOKE ALL ON SEQUENCES FROM meal_agent_migrator",
+      );
+      await pool.query(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "IN SCHEMA public GRANT SELECT ON TABLES TO meal_agent_backup " +
+          "WITH GRANT OPTION",
+      );
+    });
+    const injected = await defaultRowSnapshot();
+    assert.ok(
+      injected.includes("meal_agent_migrator f - {}"),
+      `the FUNCTIONS row must really be empty: ${injected.join(" | ")}`,
+    );
+    assert.ok(
+      injected.includes("meal_agent_migrator S - {}"),
+      `the SEQUENCES row must really be empty: ${injected.join(" | ")}`,
+    );
+    assert.ok(
+      injected.some((entry) => entry.includes("r public") && entry.includes("*")),
+      "the schema row must really carry a grant option",
+    );
+    assert.notEqual(
+      (await runAuthorizationVerify("final")).code,
+      0,
+      "the injected default privilege state must be rejected",
+    );
+
+    await runBootstrap("grants");
+    assert.deepEqual(
+      await defaultRowSnapshot(),
+      baseline,
+      "the physical default rows must return to the exact baseline",
+    );
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+    // 语义验证：新建的真实对象必须落到收敛后的默认权限上。
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "CREATE FUNCTION public.stage09a_default_probe() RETURNS int " +
+          "LANGUAGE sql AS $$SELECT 1$$",
+      );
+      await client.query("CREATE SEQUENCE public.stage09a_default_seq");
+    });
+    const created = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{
+        public_execute: boolean;
+        backup_sequence: boolean;
+        owner_sequence: boolean;
+      }>(
+        `SELECT has_function_privilege('public',
+                  'public.stage09a_default_probe()'::regprocedure, 'EXECUTE')
+                  AS public_execute,
+                has_sequence_privilege('meal_agent_backup',
+                  'public.stage09a_default_seq', 'SELECT') AS backup_sequence,
+                has_sequence_privilege('meal_agent_migrator',
+                  'public.stage09a_default_seq', 'USAGE') AS owner_sequence`,
+      );
+      return result.rows[0];
+    });
+    // f@global 的物理行确实生效：新函数没有 PUBLIC EXECUTE。
+    assert.equal(created?.public_execute, false);
+    // S@public 的 schema 行确实生效，而且 owner 的内建 USAGE 没有被误删——
+    // 把 defaclobjtype 的 S 直接喂给 acldefault 会把这一条低报掉。
+    assert.equal(created?.backup_sequence, true);
+    assert.equal(created?.owner_sequence, true);
+  } finally {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client
+        .query("DROP FUNCTION IF EXISTS public.stage09a_default_probe()")
+        .catch(() => undefined);
+      await client
+        .query("DROP SEQUENCE IF EXISTS public.stage09a_default_seq")
+        .catch(() => undefined);
+    });
+    await bootstrap("acl");
+    await bootstrap("grants");
+  }
+});
+
+test("managed types keep only the owner, arrays are never targeted and runtime CRUD still works", async () => {
+  // 类型策略的落实：managed 非数组类型只保留 owner 的 USAGE；数组类型只记录向
+  // 元素类型的委托，既不建立也不撤销独立 ACL（PostgreSQL 直接拒绝）。
+  const created = [
+    "public.stage09a_enum",
+    "public.stage09a_domain",
+    "public.stage09a_composite",
+  ];
+  try {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "CREATE TYPE public.stage09a_enum AS ENUM ('a', 'b')",
+      );
+      await client.query("CREATE DOMAIN public.stage09a_domain AS text");
+      await client.query(
+        "CREATE TYPE public.stage09a_composite AS (first_column int)",
+      );
+    });
+
+    // 新建类型的 typacl 是 NULL，规范化语义是「PUBLIC 与 owner 都有 USAGE」，
+    // 因此 PUBLIC 的那一份必须被判为漂移。
+    const verified = await runAuthorizationVerify("final");
+    assert.notEqual(verified.code, 0, "PUBLIC USAGE on a new type is drift");
+    // 三个新类型各自的元素类型与数组类型都会现形（数组是委托来的），因此这里
+    // 只断言「确实是类型层的越权」而不是某一条具体的排序位置。
+    assert.match(
+      verified.stderr,
+      /unexpected (grant|effective) \[\["type", "public", "_?stage09a_/u,
+      verified.stderr.slice(0, 400),
+    );
+
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+    const usage = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{
+        subject: string;
+        element: boolean;
+        array_type: boolean;
+      }>(
+        `SELECT subject,
+                has_type_privilege(subject, 'public.stage09a_enum', 'USAGE')
+                  AS element,
+                has_type_privilege(subject, 'public._stage09a_enum', 'USAGE')
+                  AS array_type
+           FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
+                             'meal_agent_backup_login',
+                             'meal_agent_migration_login',
+                             'meal_agent_runtime_login',
+                             'meal_agent_migrator']) AS subject
+          ORDER BY subject`,
+      );
+      return result.rows;
+    });
+    for (const row of usage) {
+      const expected = row.subject === "meal_agent_migrator";
+      assert.equal(row.element, expected, `element USAGE for ${row.subject}`);
+      // 数组类型没有独立 ACL：它的有效权限完全委托给元素类型。
+      assert.equal(row.array_type, expected, `array USAGE for ${row.subject}`);
+    }
+
+    // 数组类型上的 ACL 语句被 PostgreSQL 直接拒绝——因此收敛绝不能把它们当成
+    // 目标，否则每一轮都会炸。
+    const arrayGrant = await withPool(adminPoolConfig(), async (pool) =>
+      attempt(pool, [
+        "GRANT USAGE ON TYPE public._stage09a_enum TO meal_agent_app",
+      ]),
+    );
+    assert.match(String(arrayGrant), /cannot set privileges of array types/iu);
+    const arrayOwner = await withPool(adminPoolConfig(), async (pool) =>
+      attempt(pool, ["ALTER TYPE public._stage09a_enum OWNER TO postgres"]),
+    );
+    assert.match(String(arrayOwner), /cannot alter array type/iu);
+    const arrayAcl = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+          WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+            AND t.typcategory = 'A' AND t.typelem <> 0
+            AND t.typacl IS NOT NULL`,
+      );
+      return result.rows[0]?.count;
+    });
+    assert.equal(arrayAcl, "0", "no array type may carry its own ACL");
+
+    // runtime CRUD 不受影响：撤掉行类型的 PUBLIC USAGE 不影响表上的 DML。
+    await withPool(runtimeLoginUrl(), async (pool) => {
+      for (const relation of [
+        "public.users",
+        "public.households",
+        "public.memberships",
+        "public.inventory_lots",
+        "drizzle.__meal_agent_migrations",
+      ]) {
+        assert.equal(
+          await attempt(
+            pool,
+            [`SELECT count(*) FROM ${relation}`],
+            "meal_agent_app",
+          ),
+          undefined,
+          `the app role must still read ${relation}`,
+        );
+      }
+      assert.equal(
+        await attempt(
+          pool,
+          [
+            "SELECT set_config('meal_agent.user_id', $$018f0900-0000-7000-8000-0000000000a1$$, true)",
+            "SELECT set_config('meal_agent.household_id', $$018f0900-0000-7000-8000-000000000001$$, true)",
+            "INSERT INTO users (id, status, display_name, locale, created_at, " +
+              "updated_at, version) VALUES " +
+              "($$018f0900-0000-7000-8000-0000000000b1$$, 'active', " +
+              "$$合成用户-type$$, 'zh-CN', now(), now(), 0)",
+          ],
+          "meal_agent_app",
+        ),
+        undefined,
+        "the app role must still write through its own grants",
+      );
+    });
+  } finally {
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      for (const name of created) {
+        await client
+          .query(
+            name.includes("domain")
+              ? `DROP DOMAIN IF EXISTS ${name}`
+              : `DROP TYPE IF EXISTS ${name}`,
+          )
+          .catch(() => undefined);
+      }
+    });
+    await bootstrap("acl");
+    await bootstrap("grants");
   }
 });
