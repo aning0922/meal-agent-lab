@@ -1,4 +1,4 @@
--- 阶段 09A / M2A：授权 catalog 的**只读**投影（R8A 最终修订）。
+-- 阶段 09A / M2A：授权 catalog 的**只读**投影（canonical projector 的对外三列）。
 --
 -- GENERATED FILE — DO NOT EDIT.
 -- 事实源： services/api/src/database/authorization-projection-sql.ts
@@ -7,16 +7,18 @@
 --
 -- 本文件是**单条只读 SELECT**：不含 GRANT / REVOKE / ALTER / SET ROLE /
 -- SET / set_config 或任何其他 mutation，因此它既不改数据也不改调用方会话。
--- 它是后续 verify / converge 共用的 canonical projector，本轮只用于观察与
--- 反向测试，尚未接入 02/03 的任何阶段。
+-- 它上面那一整段 CTE 是 R8B 的**共享结构化 projector**：verify 与 converge
+-- 复用同一段事实采集，因此观察、策略判断与收敛看到的是同一套 catalog 事实。
+-- 本文件只是它的**只读出口**，不含任何期望值与策略判断。
 --
 -- 每个 kind 只声称自己实际证明的事：
 --   acl               规范化的直接授权语义（NULL ACL 展开为隐式内建默认），
 --                     **不是**物理 catalog 里存在的 ACL 行；
 --   default-row       pg_default_acl 的**物理行**存在性（含 empty 标志）；
---   default-global /  物理行展开后的条目；
+--   default-global /  物理行展开后的条目——**决定执行哪条 default DDL**；
 --   default-schema
---   default-effective 按 PostgreSQL 真实语义叠加出的有效默认权限；
+--   default-effective 按 PostgreSQL 真实语义叠加出的有效默认权限，
+--                     **只用于语义验证**，不得据此反推 DDL；
 --   default-unmapped  未知 defaclobjtype 的 fail-closed 标记（健康库恒为空）；
 --   effective         has_*_privilege 的探测结果（含 PUBLIC 派生与角色继承）；
 --   owner /           归属；
@@ -47,42 +49,45 @@ WITH
       FROM unnest(ARRAY['pg_catalog.lo_close(integer)', 'pg_catalog.lo_creat(integer)', 'pg_catalog.lo_create(oid)', 'pg_catalog.lo_export(oid, text)', 'pg_catalog.lo_from_bytea(oid, bytea)', 'pg_catalog.lo_get(oid)', 'pg_catalog.lo_get(oid, bigint, integer)', 'pg_catalog.lo_import(text)', 'pg_catalog.lo_import(text, oid)', 'pg_catalog.lo_lseek(integer, integer, integer)', 'pg_catalog.lo_lseek64(integer, bigint, integer)', 'pg_catalog.lo_open(oid, integer)', 'pg_catalog.lo_put(oid, bigint, bytea)', 'pg_catalog.lo_tell(integer)', 'pg_catalog.lo_tell64(integer)', 'pg_catalog.lo_truncate(integer, integer)', 'pg_catalog.lo_truncate64(integer, bigint)', 'pg_catalog.lo_unlink(oid)', 'pg_catalog.loread(integer, integer)', 'pg_catalog.lowrite(integer, bytea)']::text[]) AS lo(identity)
      WHERE to_regprocedure(lo.identity) IS NOT NULL
   ),
-  acl_source (objkey, grantee, grantor, privilege, grantable) AS (
-    SELECT jsonb_build_array('database', '<current>'),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
-      FROM pg_catalog.pg_database d,
-           aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) AS acl
-     WHERE d.datname = current_database()
+  -- 受监管对象的**统一枚举**。identity、分类、owner、DDL 目标、原始 ACL 与
+  -- acldefault 的 objtype 都在这里一次性确定，下游的 acl_source 与
+  -- managed_object 都从它派生，不再各自重复扫描 catalog。
+  --   * acl_default_objtype 为 NULL 表示该类没有内建默认 ACL（只有列级如此：
+  --     attacl IS NULL 就是「没有列级授权」，不能 COALESCE 成内建默认）。
+  --   * 数组类型不在此枚举内：PostgreSQL 直接拒绝对数组类型授权与改属，
+  --     它们只在 type_class 里记录「向元素类型委托」。
+  regulated_object (objkey, object_class, owner_name, owner_oid, target_sql,
+                    colname, acl, acl_default_objtype) AS (
+    SELECT jsonb_build_array('database', '<current>'), 'database'::text,
+           pg_catalog.pg_get_userbyid(d.datdba)::text, d.datdba,
+           ('DATABASE ' || quote_ident(current_database()))::text, NULL::text,
+           d.datacl, 'd'::"char"
+      FROM pg_catalog.pg_database d WHERE d.datname = current_database()
     UNION ALL
-    SELECT jsonb_build_array('schema', n.nspname),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
-      FROM managed_schema n,
-           aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) AS acl
+    SELECT jsonb_build_array('schema', n.nspname), 'schema',
+           pg_catalog.pg_get_userbyid(n.nspowner), n.nspowner,
+           'SCHEMA ' || quote_ident(n.nspname), NULL,
+           n.nspacl, 'n'
+      FROM managed_schema n
     UNION ALL
-    SELECT jsonb_build_array('relation', n.nspname, c.relname),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+    SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
+           pg_catalog.pg_get_userbyid(c.relowner), c.relowner,
+           CASE WHEN c.relkind = 'S' THEN 'SEQUENCE ' ELSE 'TABLE ' END
+             || quote_ident(n.nspname) || '.' || quote_ident(c.relname), NULL,
+           c.relacl,
+           CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END::"char"
       FROM pg_catalog.pg_class c
-      JOIN managed_schema n ON n.oid = c.relnamespace,
-           aclexplode(COALESCE(c.relacl,
-                               acldefault(CASE WHEN c.relkind = 'S'
-                                               THEN 's' ELSE 'r' END::"char",
-                                          c.relowner))) AS acl
+      JOIN managed_schema n ON n.oid = c.relnamespace
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
     UNION ALL
     SELECT jsonb_build_array('column', n.nspname, c.relname, a.attname),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+           'column', pg_catalog.pg_get_userbyid(c.relowner), c.relowner,
+           'TABLE ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname),
+           a.attname::text,
+           a.attacl, NULL
       FROM pg_catalog.pg_attribute a
       JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-      JOIN managed_schema n ON n.oid = c.relnamespace,
-           aclexplode(a.attacl) AS acl
+      JOIN managed_schema n ON n.oid = c.relnamespace
      WHERE a.attnum > 0 AND NOT a.attisdropped
     UNION ALL
     SELECT jsonb_build_array('routine', n.nspname, p.proname,
@@ -92,13 +97,15 @@ WITH
                       AS argument(type_oid, ordinality)
                JOIN pg_catalog.pg_type at ON at.oid = argument.type_oid
                JOIN pg_catalog.pg_namespace atn ON atn.oid = at.typnamespace),
-            '[]'::jsonb)),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+            '[]'::jsonb)), 'routine',
+           pg_catalog.pg_get_userbyid(p.proowner), p.proowner,
+           'ROUTINE ' || quote_ident(n.nspname) || '.'
+             || quote_ident(p.proname) || '('
+             || pg_catalog.pg_get_function_identity_arguments(p.oid)
+             || ')', NULL,
+           p.proacl, 'f'
       FROM pg_catalog.pg_proc p
-      JOIN managed_schema n ON n.oid = p.pronamespace,
-           aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
+      JOIN managed_schema n ON n.oid = p.pronamespace
     UNION ALL
     -- 20 个 pg_catalog Large Object 入口点：产品声明禁用 LO，它们的直接 ACL
     -- 同样必须可见。
@@ -109,22 +116,24 @@ WITH
                       AS argument(type_oid, ordinality)
                JOIN pg_catalog.pg_type at ON at.oid = argument.type_oid
                JOIN pg_catalog.pg_namespace atn ON atn.oid = at.typnamespace),
-            '[]'::jsonb)),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+            '[]'::jsonb)), 'denied-routine',
+           pg_catalog.pg_get_userbyid(lp.proowner), lp.proowner,
+           'ROUTINE ' || quote_ident(lpn.nspname) || '.'
+             || quote_ident(lp.proname) || '('
+             || pg_catalog.pg_get_function_identity_arguments(lp.oid)
+             || ')', NULL,
+           lp.proacl, 'f'
       FROM denied_routine dr
       JOIN pg_catalog.pg_proc lp ON lp.oid = dr.oid
-      JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace,
-           aclexplode(COALESCE(lp.proacl, acldefault('f', lp.proowner))) AS acl
+      JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace
     UNION ALL
-    SELECT jsonb_build_array('type', n.nspname, t.typname),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+    SELECT jsonb_build_array('type', n.nspname, t.typname), 'type',
+           pg_catalog.pg_get_userbyid(t.typowner), t.typowner,
+           'TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname),
+           NULL,
+           t.typacl, 'T'
       FROM pg_catalog.pg_type t
-      JOIN managed_schema n ON n.oid = t.typnamespace,
-           aclexplode(COALESCE(t.typacl, acldefault('T', t.typowner))) AS acl
+      JOIN managed_schema n ON n.oid = t.typnamespace
      WHERE NOT (t.typcategory = 'A' AND t.typelem <> 0)
     UNION ALL
     -- language 的隐式 ACL。PostgreSQL 18.4 实测：acldefault 对**受信与非受信
@@ -133,19 +142,39 @@ WITH
     -- 角色、非受信语言同样返回 true。
     -- 所以这里**不能**按 lanpltrusted 过滤：那会让 raw 说「没人有 USAGE」而
     -- effective 说「所有人都有」，两层自相矛盾。
-    SELECT jsonb_build_array('language', l.lanname),
-           CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
-                  ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
-      FROM pg_catalog.pg_language l,
-           aclexplode(COALESCE(l.lanacl, acldefault('l', l.lanowner))) AS acl
+    SELECT jsonb_build_array('language', l.lanname), 'language',
+           pg_catalog.pg_get_userbyid(l.lanowner), l.lanowner,
+           'LANGUAGE ' || quote_ident(l.lanname), NULL,
+           l.lanacl, 'l'
+      FROM pg_catalog.pg_language l
     UNION ALL
-    SELECT jsonb_build_array('largeobject', m.oid::text),
+    SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
+           pg_catalog.pg_get_userbyid(m.lomowner), m.lomowner,
+           NULL, NULL,
+           m.lomacl, 'L'
+      FROM pg_catalog.pg_largeobject_metadata m
+  ),
+  -- 可以直接作为授权语句目标的对象。列级授权要经由父表加列名，Large Object
+  -- 一律 fail closed 不参与 mutation，入口点只允许 owner 自身，因此三者都不在
+  -- 这里。（本文件仍是纯 SELECT：这里只是把执行目标文本采集成事实。）
+  managed_object (objkey, object_class, owner_name, target_sql) AS (
+    SELECT objkey, object_class, owner_name, target_sql
+      FROM regulated_object
+     WHERE object_class IN ('database', 'schema', 'relation', 'routine',
+                            'type', 'language')
+  ),
+  acl_source (objkey, object_class, owner_name, target_sql, colname,
+              grantee, grantor, privilege, grantable) AS (
+    SELECT o.objkey, o.object_class, o.owner_name, o.target_sql, o.colname,
            CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
                   ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
            acl.privilege_type::text, acl.is_grantable
-      FROM pg_catalog.pg_largeobject_metadata m,
-           aclexplode(COALESCE(m.lomacl, acldefault('L', m.lomowner))) AS acl
+      FROM regulated_object o,
+           aclexplode(
+             CASE WHEN o.acl_default_objtype IS NULL THEN o.acl
+                  ELSE COALESCE(o.acl,
+                                acldefault(o.acl_default_objtype, o.owner_oid))
+             END) AS acl
   ),
   -- pg_default_acl 的原始行。**先保留行存在性**，再展开 ACL：空 ACL 展开是零行，
   -- 与「没有这一行」无法区分，因此存在性不能由 aclexplode 的结果反推。
@@ -170,15 +199,16 @@ WITH
   -- pg_default_acl 的 objtype ↔ acldefault 的 objtype。两套编码只有 sequence
   -- 不同名（S vs s），而 acldefault('S', …) 是 FOREIGN SERVER，会把 sequence 的
   -- 内建默认从 SELECT/UPDATE/USAGE 悄悄变成只剩 USAGE。渲染成显式映射表，
-  -- 保证 base 永远不会拿 defaclobjtype 直接去调 acldefault。
-  default_objtype (objtype, acldefault_objtype, schema_scoped) AS (
+  -- 保证 base 永远不会拿 defaclobjtype 直接去调 acldefault；ddl_keyword 同源，
+  -- 收敛阶段不必再从 identity 里反解 objtype。
+  default_objtype (objtype, acldefault_objtype, schema_scoped, ddl_keyword) AS (
     VALUES
-      ('L'::text, 'L'::text, false::boolean),
-      ('S', 's', true),
-      ('T', 'T', true),
-      ('f', 'f', true),
-      ('n', 'n', false),
-      ('r', 'r', true)
+      ('L'::text, 'L'::text, false::boolean, 'LARGE OBJECTS'::text),
+      ('S', 's', true, 'SEQUENCES'),
+      ('T', 'T', true, 'TYPES'),
+      ('f', 'f', true, 'FUNCTIONS'),
+      ('n', 'n', false, 'SCHEMAS'),
+      ('r', 'r', true, 'TABLES')
   ),
   -- 被监管的 default ACL 槽位：受监管的 owner × 六个 objtype × （managed schema
   -- 与 global）。owner 集合动态取自 pg_default_acl 里出现过的 defaclrole，再并上
@@ -236,15 +266,16 @@ WITH
       ) AS composed
      GROUP BY defaclrole, objtype, scope, grantee, grantor, privilege
   ),
-  owner_source (objkey, owner_name) AS (
-    SELECT jsonb_build_array('database', '<current>'), pg_catalog.pg_get_userbyid(d.datdba)::text
+  owner_source (objkey, object_class, owner_name) AS (
+    SELECT jsonb_build_array('database', '<current>'), 'database'::text,
+           pg_catalog.pg_get_userbyid(d.datdba)::text
       FROM pg_catalog.pg_database d WHERE d.datname = current_database()
     UNION ALL
-    SELECT jsonb_build_array('schema', n.nspname),
+    SELECT jsonb_build_array('schema', n.nspname), 'schema',
            pg_catalog.pg_get_userbyid(n.nspowner)::text
       FROM managed_schema n
     UNION ALL
-    SELECT jsonb_build_array('relation', n.nspname, c.relname),
+    SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
            pg_catalog.pg_get_userbyid(c.relowner)::text
       FROM pg_catalog.pg_class c
       JOIN managed_schema n ON n.oid = c.relnamespace
@@ -257,34 +288,35 @@ WITH
                       AS argument(type_oid, ordinality)
                JOIN pg_catalog.pg_type at ON at.oid = argument.type_oid
                JOIN pg_catalog.pg_namespace atn ON atn.oid = at.typnamespace),
-            '[]'::jsonb)),
+            '[]'::jsonb)), 'routine',
            pg_catalog.pg_get_userbyid(p.proowner)::text
       FROM pg_catalog.pg_proc p
       JOIN managed_schema n ON n.oid = p.pronamespace
     UNION ALL
-    SELECT jsonb_build_array('type', n.nspname, t.typname),
+    SELECT jsonb_build_array('type', n.nspname, t.typname), 'type',
            pg_catalog.pg_get_userbyid(t.typowner)::text
       FROM pg_catalog.pg_type t
       JOIN managed_schema n ON n.oid = t.typnamespace
     UNION ALL
-    SELECT jsonb_build_array('largeobject', m.oid::text),
+    SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
            pg_catalog.pg_get_userbyid(m.lomowner)::text
       FROM pg_catalog.pg_largeobject_metadata m
   ),
-  effective_source (objkey, role_name, privileges) AS (
-    SELECT jsonb_build_array('database', '<current>'), pr.role_name,
+  effective_source (objkey, object_class, role_name, privileges) AS (
+    SELECT jsonb_build_array('database', '<current>'), 'database'::text, pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['CONNECT', 'CREATE', 'TEMPORARY']) AS p
              WHERE has_database_privilege(pr.probe_name, current_database(), p))
       FROM probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('schema', n.nspname), pr.role_name,
+    SELECT jsonb_build_array('schema', n.nspname), 'schema', pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['CREATE', 'USAGE']) AS p
              WHERE has_schema_privilege(pr.probe_name, n.oid, p))
       FROM managed_schema n, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('relation', n.nspname, c.relname), pr.role_name,
+    SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
+           pr.role_name,
            CASE WHEN c.relkind = 'S' THEN
              (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
                 FROM unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) AS p
@@ -302,7 +334,7 @@ WITH
     UNION ALL
     -- 列级有效权限：列上的授权不出现在 relacl 里，只看表级会整类漏掉。
     SELECT jsonb_build_array('column', n.nspname, c.relname, a.attname),
-           pr.role_name,
+           'column', pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['INSERT', 'REFERENCES', 'SELECT',
                                 'UPDATE']) AS p
@@ -320,7 +352,7 @@ WITH
                       AS argument(type_oid, ordinality)
                JOIN pg_catalog.pg_type at ON at.oid = argument.type_oid
                JOIN pg_catalog.pg_namespace atn ON atn.oid = at.typnamespace),
-            '[]'::jsonb)), pr.role_name,
+            '[]'::jsonb)), 'routine', pr.role_name,
            CASE WHEN has_function_privilege(pr.probe_name, p.oid, 'EXECUTE')
                 THEN 'EXECUTE' ELSE NULL END
       FROM pg_catalog.pg_proc p
@@ -333,29 +365,63 @@ WITH
                       AS argument(type_oid, ordinality)
                JOIN pg_catalog.pg_type at ON at.oid = argument.type_oid
                JOIN pg_catalog.pg_namespace atn ON atn.oid = at.typnamespace),
-            '[]'::jsonb)), pr.role_name,
+            '[]'::jsonb)), 'denied-routine', pr.role_name,
            CASE WHEN has_function_privilege(pr.probe_name, lp.oid, 'EXECUTE')
                 THEN 'EXECUTE' ELSE NULL END
       FROM denied_routine dr
       JOIN pg_catalog.pg_proc lp ON lp.oid = dr.oid
       JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('type', n.nspname, t.typname), pr.role_name,
+    SELECT jsonb_build_array('type', n.nspname, t.typname), 'type', pr.role_name,
            CASE WHEN has_type_privilege(pr.probe_name, t.oid, 'USAGE')
                 THEN 'USAGE' ELSE NULL END
       FROM pg_catalog.pg_type t
       JOIN managed_schema n ON n.oid = t.typnamespace, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('language', l.lanname), pr.role_name,
+    SELECT jsonb_build_array('language', l.lanname), 'language', pr.role_name,
            CASE WHEN has_language_privilege(pr.probe_name, l.oid, 'USAGE')
                 THEN 'USAGE' ELSE NULL END
       FROM pg_catalog.pg_language l, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('largeobject', m.oid::text), pr.role_name,
+    SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
+           pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['SELECT', 'UPDATE']) AS p
              WHERE has_largeobject_privilege(pr.probe_name, m.oid, p))
       FROM pg_catalog.pg_largeobject_metadata m, probe_role pr
+  ),
+  -- 类型分类：managed 非数组类型的 PUBLIC/app/backup/三个 login 默认无 USAGE，
+  -- owner（migrator）保留必要权限；数组类型只记录委托关系，既不建立也不尝试
+  -- 撤销独立 ACL（PostgreSQL 对数组类型直接拒绝授权与改属操作）。
+  type_class (objkey, class_name, detail) AS (
+    SELECT jsonb_build_array('type', n.nspname, t.typname),
+           CASE
+             WHEN t.typcategory = 'A' AND t.typelem <> 0 THEN 'array'
+             WHEN t.typtype = 'c' AND EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_class rc
+                     WHERE rc.oid = t.typrelid AND rc.relkind <> 'c')
+               THEN 'row'
+             ELSE 'element'
+           END,
+           CASE
+             WHEN t.typcategory = 'A' AND t.typelem <> 0
+               THEN 'class=array delegates-to='
+                      || jsonb_build_array(etn.nspname, et.typname)::text
+             WHEN t.typtype = 'c' AND EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_class rc
+                     WHERE rc.oid = t.typrelid AND rc.relkind <> 'c')
+               THEN 'class=row grantable-directly=t'
+             ELSE 'class=element grantable-directly=t'
+           END
+      FROM pg_catalog.pg_type t
+      JOIN managed_schema n ON n.oid = t.typnamespace
+      LEFT JOIN pg_catalog.pg_type et ON et.oid = t.typelem
+      LEFT JOIN pg_catalog.pg_namespace etn ON etn.oid = et.typnamespace
+  ),
+  large_object (objkey, loid, owner_name) AS (
+    SELECT jsonb_build_array('largeobject', m.oid::text), m.oid,
+           pg_catalog.pg_get_userbyid(m.lomowner)::text
+      FROM pg_catalog.pg_largeobject_metadata m
   )
   SELECT kind, identity, detail
     FROM (
@@ -378,9 +444,9 @@ WITH
       UNION ALL
       -- fail closed：一个本投影不认识的 defaclobjtype 不能静默从 base 里消失。
       -- 它没有可信的 acldefault 参数，因此不参与 default-effective，但必须显式
-      -- 现形，由消费方（R8B 的 verify）判为异常。PostgreSQL 18 的默认权限语句
-      -- 只能写出上面六种 objtype，所以健康库里这一类恒为空——它是版本前向
-      -- 保护，不是已发生过的状态。
+      -- 现形，由消费方（verify/converge 的 fatal preflight）判为异常。
+      -- PostgreSQL 18 的默认权限语句只能写出上面六种 objtype，所以健康库里这一类
+      -- 恒为空——它是版本前向保护，不是已发生过的状态。
       SELECT 'default-unmapped',
              jsonb_build_array(defaclrole, objtype, scope, scope_kind)::text,
              'acldefault-objtype=unknown'
@@ -402,28 +468,11 @@ WITH
       SELECT 'owner', objkey::text, 'owner=' || owner_name
         FROM owner_source
       UNION ALL
-      SELECT 'large-object', jsonb_build_array('largeobject', m.oid::text)::text,
-             'owner=' || pg_catalog.pg_get_userbyid(m.lomowner)
-        FROM pg_catalog.pg_largeobject_metadata m
+      SELECT 'large-object', objkey::text, 'owner=' || owner_name
+        FROM large_object
       UNION ALL
-      -- 策略：managed 非数组类型的 PUBLIC/app/backup/三个 login 默认无 USAGE，
-      -- owner（migrator）保留必要权限；数组类型只记录委托关系，既不建立也不尝试
-      -- 撤销独立 ACL（PostgreSQL 对数组类型直接拒绝授权与改属操作）。
-      SELECT 'type-class', jsonb_build_array('type', n.nspname, t.typname)::text,
-             CASE
-               WHEN t.typcategory = 'A' AND t.typelem <> 0
-                 THEN 'class=array delegates-to='
-                        || jsonb_build_array(etn.nspname, et.typname)::text
-               WHEN t.typtype = 'c' AND EXISTS (
-                      SELECT 1 FROM pg_catalog.pg_class rc
-                       WHERE rc.oid = t.typrelid AND rc.relkind <> 'c')
-                 THEN 'class=row grantable-directly=t'
-               ELSE 'class=element grantable-directly=t'
-             END
-        FROM pg_catalog.pg_type t
-        JOIN managed_schema n ON n.oid = t.typnamespace
-        LEFT JOIN pg_catalog.pg_type et ON et.oid = t.typelem
-        LEFT JOIN pg_catalog.pg_namespace etn ON etn.oid = et.typnamespace
+      SELECT 'type-class', objkey::text, detail
+        FROM type_class
       UNION ALL
       SELECT 'role', jsonb_build_array(role_name)::text, 'class=' || role_class
         FROM probe_role

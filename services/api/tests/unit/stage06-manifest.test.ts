@@ -36,6 +36,7 @@ import {
   defaultAclObjtypeMappings,
   renderAuthorizationProjectionAdapter,
   renderAuthorizationProjectionSql,
+  type DefaultAclObjtypeMapping,
 } from "../../src/database/authorization-projection-sql.js";
 import {
   authorizationManifest,
@@ -540,8 +541,12 @@ test("the default ACL objtype mapping never confuses S (foreign server) with s (
   //    从而低报权限，`S->s/false` 会让 sequence 的 schema 级槽位整类消失。
   const replace = (
     objtype: string,
-    patch: Partial<{ acldefaultObjtype: string; schemaScoped: boolean }>,
-  ) =>
+    patch: Partial<{
+      acldefaultObjtype: string;
+      schemaScoped: boolean;
+      ddlKeyword: string;
+    }>,
+  ): readonly DefaultAclObjtypeMapping[] =>
     defaultAclObjtypeMappings.map((mapping) =>
       mapping.objtype === objtype ? { ...mapping, ...patch } : mapping,
     );
@@ -551,7 +556,12 @@ test("the default ACL objtype mapping never confuses S (foreign server) with s (
       "extra",
       [
         ...defaultAclObjtypeMappings,
-        { objtype: "x", acldefaultObjtype: "x", schemaScoped: false },
+        {
+          objtype: "x",
+          acldefaultObjtype: "x",
+          schemaScoped: false,
+          ddlKeyword: "UNKNOWN",
+        },
       ],
     ],
     ["reordered", [...defaultAclObjtypeMappings].reverse()],
@@ -560,7 +570,12 @@ test("the default ACL objtype mapping never confuses S (foreign server) with s (
     ["wrong scope S->s/false", replace("S", { schemaScoped: false })],
     ["wrong target r->s", replace("r", { acldefaultObjtype: "s" })],
     ["wrong scope n->n/true", replace("n", { schemaScoped: true })],
-  ] as const) {
+    // DDL 关键字配错同样致命：sequence 的默认权限会被改到表上。
+    ["wrong keyword S->TABLES", replace("S", { ddlKeyword: "TABLES" })],
+  ] as const satisfies readonly (readonly [
+    string,
+    readonly DefaultAclObjtypeMapping[],
+  ])[]) {
     assert.throws(
       () => {
         assertDefaultAclObjtypeMappings(broken);
@@ -584,7 +599,7 @@ test("the default ACL objtype mapping never confuses S (foreign server) with s (
     "acldefault must never receive a raw pg_default_acl objtype",
   );
   assert.match(sql, /acldefault\(sl\.acldefault_objtype::"char"/);
-  assert.match(sql, /\n {6}\('S', 's', true\),\n/);
+  assert.match(sql, /\n {6}\('S', 's', true, 'SEQUENCES'\),\n/);
   // 槽位的 schema 维度也由映射表决定，不再是硬编码的 objtype 名单。
   assert.ok(
     !sql.includes("t.objtype IN ('r', 'S', 'f', 'T')"),

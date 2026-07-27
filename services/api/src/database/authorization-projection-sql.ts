@@ -6,12 +6,24 @@ import {
 import { byCodeUnit } from "./stage06-manifest.js";
 
 /**
- * 阶段 09A / M2A（R8A 最终修订）：**只读**的授权 catalog 投影。
+ * 阶段 09A / M2A（R8B）：授权 catalog 的 **canonical projector**。
  *
- * 边界（本轮不变）：不实现 ACL convergence。渲染出的 SQL 是**单条只读 SELECT**，
- * 不含 `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/`set_config` 或任何其他 mutation；
- * 它只观察。单元测试对此有断言。它被设计成后续 verify/converge 可复用的 canonical
- * projector，但本轮**尚未接入**任何阶段。
+ * 本模块被拆成两层，这是 R8B 的结构要求：
+ *
+ *   1. {@link renderAuthorizationProjectorCtes}：**可复用的结构化 projector CTE
+ *      renderer**。它只做**事实采集**——把 catalog 里与授权有关的事实规范化成一组
+ *      具名 CTE（`regulated_object` / `acl_source` / `default_row` /
+ *      `default_raw` / `default_effective` / `owner_source` / `effective_source` /
+ *      `type_class` / `large_object` / `probe_role` …），不含任何期望值、任何策略
+ *      判断、任何 mutation。
+ *   2. {@link renderAuthorizationProjectionSql}：**对外的三列
+ *      `(kind, identity, detail)` 只读 SELECT**，是 R8A 已 Accepted 的可观察性
+ *      产物。它的语义与行集在 R8B **不回归**。
+ *
+ * 同一组 CTE 同时被 `authorization-manifest-sql.ts` 的 verify 与 converge 复用，
+ * 因此「观察」「策略判断」「收敛」三方共享同一套 catalog 事实。**共享的是事实
+ * 采集，不是把动态投影冻结成跨环境快照**：期望值与策略全部留在
+ * `authorization-policy-sql.ts`，本模块一条期望值都没有。
  *
  * ## 五类投影的精确含义（每一类只声称自己实际证明的事）
  *
@@ -38,19 +50,19 @@ import { byCodeUnit } from "./stage06-manifest.js";
  * - **owner**（kind `owner` / `large-object`）：database、managed schema，及其中
  *   全部 relation/sequence/routine/type 与全部 Large Object 的归属。
  * - **role coverage**（kind `role`）：实际参与 effective 探测的角色集合，逐个列出
- *   便于复核覆盖面。它是**覆盖面证据**，不是「允许出现的角色」白名单；R8B 不得
- *   把这些行当成 allowlist 冻结。
+ *   便于复核覆盖面。它是**覆盖面证据**，不是「允许出现的角色」白名单；策略层
+ *   不得把这些行当成 allowlist 冻结。
  *
  * 未覆盖的类别不在此声称覆盖：FDW/foreign server/user mapping、tablespace、
  * event trigger、subscription、publication、parameter ACL 均**不在**本投影内。
  *
- * ## R8B 的边界（本轮先写清，避免下一轮把动态事实冻成静态快照）
+ * ## 环境相关性（策略层必须遵守的边界）
  *
  * 投影结果**必然反映当前环境**：它包含动态枚举的 LOGIN 角色、`pg_default_acl`
- * 里出现过的 owner，以及 Large Object 的 OID。因此 R8B 接入 verify/converge 时：
+ * 里出现过的 owner，以及 Large Object 的 OID。因此消费方：
  *
  * - `role` 行是 coverage 证据，不是允许角色白名单；
- * - 外部角色只能用**策略**匹配（例如「非项目前缀且非 superuser 的 grantee 一律
+ * - 外部角色只能用**策略**匹配（例如「非项目主体且非对象 owner 的 grantee 一律
  *   视为异常」），不能靠逐个登记角色名；
  * - 产品声明禁用 Large Object，因此**任意** LO 对象都按政策判为异常并 fail
  *   closed，只报告、不自动删除未知数据；LO 的 OID 不进入任何固定允许 manifest；
@@ -72,17 +84,26 @@ import { byCodeUnit } from "./stage06-manifest.js";
  * 4. base 里的 `acldefault()` **不能**直接吃 `pg_default_acl.defaclobjtype`：
  *    两者是两套 objtype 编码，见 `defaultAclObjtypeMappings`。
  *
+ * `default_raw` 与 `default_effective` 的分工是**收敛正确性的关键**：真正决定要
+ * 执行哪条 `ALTER DEFAULT PRIVILEGES` 的是 `default_raw`（物理行），
+ * `default_effective` 只用于最终语义验证。反过来从 `default_effective` 猜 DDL 会
+ * 把「内建默认」误当成「需要显式授予的项」。
+ *
  * ## canonical identity 编码
  *
- * identity 不再是未转义的 `#`/`@`/`|` 拼接串——含这些字符（或引号）的合法角色名与
- * 对象名会造成歧义甚至碰撞。改用 **JSON 数组**：结构化、可证明无歧义，且
- * PostgreSQL 与 Node 两侧使用同一表示（见 `encodeProjectionIdentity`）。
+ * identity 不是未转义的 `#`/`@`/`|` 拼接串——含这些字符（或引号）的合法角色名与
+ * 对象名会造成歧义甚至碰撞。使用 **JSON 数组**：结构化、可证明无歧义，且
+ * PostgreSQL 与 Node 两侧使用同一表示（见 `encodeProjectionIdentity`）。消费方
+ * 只能按下标做**结构化**访问（`->` / `->>`），不得用 `split_part`、正则或任何
+ * 字符串拆分反向解析 identity。
  *
- * identity 里也不再出现受 `search_path` / `quote_all_identifiers` 影响的
+ * identity 里也不出现受 `search_path` / `quote_all_identifiers` 影响的
  * `pg_get_function_identity_arguments` 或 `format_type`：routine 的参数类型直接从
  * `pg_proc.proargtypes` → `pg_type` → `pg_namespace` 构造，**始终 schema 限定**，
  * 与任何 GUC 无关。database identity 统一为逻辑键 `<current>`，测试库的随机后缀
- * 不进入 identity。
+ * 不进入 identity。（`regulated_object.target_sql` 里确实用了
+ * `pg_get_function_identity_arguments`，但那是**给 DDL 用的执行目标**，不是
+ * identity，也不进入对外三列投影；converge 在固定 GUC 的会话里使用它。）
  */
 
 const dollarTag = "$meal_agent_authorization_projection$";
@@ -128,6 +149,9 @@ const textArray = (values: readonly string[]): string =>
  *
  * `schemaScoped` 记录该 objtype 能否出现在 `IN SCHEMA` 形式里：PostgreSQL 只允许
  * table/sequence/function/type 带 schema，schema 与 large object 只有全局形式。
+ *
+ * `ddlKeyword` 是 `ALTER DEFAULT PRIVILEGES … ON <keyword>` 里的复数关键字。它
+ * 与 objtype 同源固定，避免收敛阶段再从 identity 字符串里反解一次。
  */
 export interface DefaultAclObjtypeMapping {
   /** `pg_default_acl.defaclobjtype` 的取值。 */
@@ -135,25 +159,60 @@ export interface DefaultAclObjtypeMapping {
   /** 同一对象在 `acldefault()` 里的 objtype。 */
   readonly acldefaultObjtype: string;
   readonly schemaScoped: boolean;
+  /** `ALTER DEFAULT PRIVILEGES … ON <ddlKeyword>` 的关键字。 */
+  readonly ddlKeyword: string;
 }
 
 /** 受监管的六种 default ACL objtype，按 code unit 序固定。 */
 export const defaultAclObjtypeMappings: readonly DefaultAclObjtypeMapping[] =
   Object.freeze([
-    { objtype: "L", acldefaultObjtype: "L", schemaScoped: false },
-    { objtype: "S", acldefaultObjtype: "s", schemaScoped: true },
-    { objtype: "T", acldefaultObjtype: "T", schemaScoped: true },
-    { objtype: "f", acldefaultObjtype: "f", schemaScoped: true },
-    { objtype: "n", acldefaultObjtype: "n", schemaScoped: false },
-    { objtype: "r", acldefaultObjtype: "r", schemaScoped: true },
+    {
+      objtype: "L",
+      acldefaultObjtype: "L",
+      schemaScoped: false,
+      ddlKeyword: "LARGE OBJECTS",
+    },
+    {
+      objtype: "S",
+      acldefaultObjtype: "s",
+      schemaScoped: true,
+      ddlKeyword: "SEQUENCES",
+    },
+    {
+      objtype: "T",
+      acldefaultObjtype: "T",
+      schemaScoped: true,
+      ddlKeyword: "TYPES",
+    },
+    {
+      objtype: "f",
+      acldefaultObjtype: "f",
+      schemaScoped: true,
+      ddlKeyword: "FUNCTIONS",
+    },
+    {
+      objtype: "n",
+      acldefaultObjtype: "n",
+      schemaScoped: false,
+      ddlKeyword: "SCHEMAS",
+    },
+    {
+      objtype: "r",
+      acldefaultObjtype: "r",
+      schemaScoped: true,
+      ddlKeyword: "TABLES",
+    },
   ] as const);
 
 /**
  * canonical 六元组的**逐字文本**。校验只比对这一行：只检查「objtype 集合齐全」
  * 是不够的——把 `S` 映射成 `S`（错误目标）或把 sequence 标成非 schema-scoped
- * （错误作用域）都能通过集合检查，却分别导致低报权限与整类槽位消失。
+ * （错误作用域）都能通过集合检查，却分别导致低报权限与整类槽位消失。DDL 关键字
+ * 同样进签名：`S` 配成 `TABLES` 会让 sequence 的收敛语句打到表上。
  */
-const canonicalObjtypeSignature = "L>L/f,S>s/t,T>T/t,f>f/t,n>n/f,r>r/t";
+const canonicalObjtypeSignature =
+  "L>L/f:LARGE OBJECTS,S>s/t:SEQUENCES,T>T/t:TYPES,f>f/t:FUNCTIONS," +
+  "n>n/f:SCHEMAS,r>r/t:TABLES";
 
 const objtypeSignature = (
   mappings: readonly DefaultAclObjtypeMapping[],
@@ -162,15 +221,15 @@ const objtypeSignature = (
     .map(
       (mapping) =>
         `${mapping.objtype}>${mapping.acldefaultObjtype}/` +
-        `${mapping.schemaScoped ? "t" : "f"}`,
+        `${mapping.schemaScoped ? "t" : "f"}:${mapping.ddlKeyword}`,
     )
     .join(",");
 
 /**
  * 映射表本身 fail closed。任何偏离 canonical 六元组的写法——少一项、多一项、
- * 乱序、重复、映射到错误的 `acldefault` objtype，或标错 schema 作用域——都在渲染
- * 之前抛出，而不是渲染出一段「少了一类默认权限」或「把 sequence 当 FOREIGN
- * SERVER」的 SQL。
+ * 乱序、重复、映射到错误的 `acldefault` objtype、标错 schema 作用域，或配错 DDL
+ * 关键字——都在渲染之前抛出，而不是渲染出一段「少了一类默认权限」「把 sequence
+ * 当 FOREIGN SERVER」或「把 sequence 的默认权限改到表上」的 SQL。
  */
 export const assertDefaultAclObjtypeMappings = (
   mappings: readonly DefaultAclObjtypeMapping[] = defaultAclObjtypeMappings,
@@ -190,8 +249,8 @@ export const assertDefaultAclObjtypeMappings = (
   if (signature !== canonicalObjtypeSignature) {
     throw new AuthorizationManifestError(
       "the acldefault mapping must be exactly the canonical six " +
-        `<defaclobjtype>><acldefault objtype>/<schema-scoped> tuples ` +
-        `${canonicalObjtypeSignature}; found ${signature}`,
+        `<defaclobjtype>><acldefault objtype>/<schema-scoped>:<ddl keyword> ` +
+        `tuples ${canonicalObjtypeSignature}; found ${signature}`,
     );
   }
 };
@@ -216,6 +275,25 @@ export const encodeProjectionIdentity = (
 
 /** 逻辑数据库键：库名随环境不同，不进入 identity。 */
 export const projectionDatabaseKey = "<current>";
+
+/**
+ * 受监管对象的分类标签。策略层按它区分「哪条规则适用」，因此它是 projector 的
+ * **结构化输出**，不由消费方从 identity 字符串里反解。
+ */
+export const projectionObjectClasses = Object.freeze([
+  "column",
+  "database",
+  "denied-routine",
+  "language",
+  "largeobject",
+  "relation",
+  "routine",
+  "schema",
+  "type",
+] as const);
+
+export type ProjectionObjectClass =
+  (typeof projectionObjectClasses)[number];
 
 /** `0` 是 `PUBLIC`，其余取角色名。 */
 const granteeText = (column: string): string =>
@@ -243,8 +321,40 @@ const routineKey = (procAlias: string, schemaExpression: string): string =>
   `jsonb_build_array('routine', ${schemaExpression}, ${procAlias}.proname,
                      ${routineArgumentTypes(procAlias)})`;
 
-/** 单条只读投影：`(kind, identity, detail)`，行序固定。 */
-export const renderAuthorizationProjectionSql = (
+/** DDL 执行目标：`ROUTINE <schema>.<name>(<identity args>)`。 */
+const routineTarget = (procAlias: string, schemaAlias: string): string =>
+  `'ROUTINE ' || quote_ident(${schemaAlias}.nspname) || '.'
+             || quote_ident(${procAlias}.proname) || '('
+             || pg_catalog.pg_get_function_identity_arguments(${procAlias}.oid)
+             || ')'`;
+
+/**
+ * **可复用的结构化 projector CTE renderer**——R8B 的共享事实采集层。
+ *
+ * 返回的是不带前导 `WITH` 的 CTE 列表，调用方拼上 `WITH` 之后即可在自己的
+ * SELECT / DO 块里引用下列具名关系：
+ *
+ * | CTE | 含义 |
+ * | --- | --- |
+ * | `managed_schema` | 三个受管理 schema 的 oid/owner/acl |
+ * | `probe_role` | effective 探测主体：`PUBLIC` + 项目角色 + 全部非 superuser LOGIN |
+ * | `denied_routine` | 20 个 `pg_catalog` Large Object 入口点 |
+ * | `regulated_object` | 受监管对象的统一枚举：identity、分类、owner、DDL 目标、原始 ACL 与 `acldefault` objtype |
+ * | `managed_object` | `regulated_object` 中可以直接 `GRANT` 的子集（不含 column / LO / 入口点） |
+ * | `acl_source` | 规范化直接授权：`(objkey, class, owner, target, colname, grantee, grantor, privilege, grantable)` |
+ * | `default_row` | `pg_default_acl` 的**物理行**（含 `is_empty`） |
+ * | `default_raw` | 物理行展开后的条目——**决定执行哪条 `ALTER DEFAULT PRIVILEGES`** |
+ * | `default_objtype` | objtype 映射表（含 DDL 关键字） |
+ * | `default_owner` / `default_slot` / `default_base` | 有效默认权限的中间层 |
+ * | `default_effective` | 按真实语义叠加出的有效默认权限——**只用于语义验证** |
+ * | `owner_source` | 归属 |
+ * | `effective_source` | `has_*_privilege` 探测结果 |
+ * | `type_class` | 类型分类与数组类型的委托关系 |
+ * | `large_object` | Large Object 的归属 |
+ *
+ * 这一层**没有任何期望值**：它不认识 manifest 的允许项，也不做任何策略判断。
+ */
+export const renderAuthorizationProjectorCtes = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
   assertDefaultAclObjtypeMappings();
@@ -254,8 +364,7 @@ export const renderAuthorizationProjectionSql = (
     projectionDatabaseKey,
   )})`;
 
-  return `WITH
-  managed_schema (nspname, oid, nspowner, nspacl) AS (
+  return `  managed_schema (nspname, oid, nspowner, nspacl) AS (
     SELECT n.nspname::text, n.oid, n.nspowner, n.nspacl
       FROM pg_catalog.pg_namespace n
      WHERE n.nspname = ANY (${managed})
@@ -276,63 +385,71 @@ export const renderAuthorizationProjectionSql = (
       FROM unnest(${denied}) AS lo(identity)
      WHERE to_regprocedure(lo.identity) IS NOT NULL
   ),
-  acl_source (objkey, grantee, grantor, privilege, grantable) AS (
-    SELECT ${databaseKey},
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
-      FROM pg_catalog.pg_database d,
-           aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) AS acl
-     WHERE d.datname = current_database()
+  -- 受监管对象的**统一枚举**。identity、分类、owner、DDL 目标、原始 ACL 与
+  -- acldefault 的 objtype 都在这里一次性确定，下游的 acl_source 与
+  -- managed_object 都从它派生，不再各自重复扫描 catalog。
+  --   * acl_default_objtype 为 NULL 表示该类没有内建默认 ACL（只有列级如此：
+  --     attacl IS NULL 就是「没有列级授权」，不能 COALESCE 成内建默认）。
+  --   * 数组类型不在此枚举内：PostgreSQL 直接拒绝对数组类型授权与改属，
+  --     它们只在 type_class 里记录「向元素类型委托」。
+  regulated_object (objkey, object_class, owner_name, owner_oid, target_sql,
+                    colname, acl, acl_default_objtype) AS (
+    SELECT ${databaseKey}, 'database'::text,
+           pg_catalog.pg_get_userbyid(d.datdba)::text, d.datdba,
+           ('DATABASE ' || quote_ident(current_database()))::text, NULL::text,
+           d.datacl, 'd'::"char"
+      FROM pg_catalog.pg_database d WHERE d.datname = current_database()
     UNION ALL
-    SELECT jsonb_build_array('schema', n.nspname),
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
-      FROM managed_schema n,
-           aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) AS acl
+    SELECT jsonb_build_array('schema', n.nspname), 'schema',
+           pg_catalog.pg_get_userbyid(n.nspowner), n.nspowner,
+           'SCHEMA ' || quote_ident(n.nspname), NULL,
+           n.nspacl, 'n'
+      FROM managed_schema n
     UNION ALL
-    SELECT jsonb_build_array('relation', n.nspname, c.relname),
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+    SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
+           pg_catalog.pg_get_userbyid(c.relowner), c.relowner,
+           CASE WHEN c.relkind = 'S' THEN 'SEQUENCE ' ELSE 'TABLE ' END
+             || quote_ident(n.nspname) || '.' || quote_ident(c.relname), NULL,
+           c.relacl,
+           CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END::"char"
       FROM pg_catalog.pg_class c
-      JOIN managed_schema n ON n.oid = c.relnamespace,
-           aclexplode(COALESCE(c.relacl,
-                               acldefault(CASE WHEN c.relkind = 'S'
-                                               THEN 's' ELSE 'r' END::"char",
-                                          c.relowner))) AS acl
+      JOIN managed_schema n ON n.oid = c.relnamespace
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
     UNION ALL
     SELECT jsonb_build_array('column', n.nspname, c.relname, a.attname),
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+           'column', pg_catalog.pg_get_userbyid(c.relowner), c.relowner,
+           'TABLE ' || quote_ident(n.nspname) || '.' || quote_ident(c.relname),
+           a.attname::text,
+           a.attacl, NULL
       FROM pg_catalog.pg_attribute a
       JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
-      JOIN managed_schema n ON n.oid = c.relnamespace,
-           aclexplode(a.attacl) AS acl
+      JOIN managed_schema n ON n.oid = c.relnamespace
      WHERE a.attnum > 0 AND NOT a.attisdropped
     UNION ALL
-    SELECT ${routineKey("p", "n.nspname")},
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+    SELECT ${routineKey("p", "n.nspname")}, 'routine',
+           pg_catalog.pg_get_userbyid(p.proowner), p.proowner,
+           ${routineTarget("p", "n")}, NULL,
+           p.proacl, 'f'
       FROM pg_catalog.pg_proc p
-      JOIN managed_schema n ON n.oid = p.pronamespace,
-           aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) AS acl
+      JOIN managed_schema n ON n.oid = p.pronamespace
     UNION ALL
     -- 20 个 pg_catalog Large Object 入口点：产品声明禁用 LO，它们的直接 ACL
     -- 同样必须可见。
-    SELECT ${routineKey("lp", "lpn.nspname")},
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+    SELECT ${routineKey("lp", "lpn.nspname")}, 'denied-routine',
+           pg_catalog.pg_get_userbyid(lp.proowner), lp.proowner,
+           ${routineTarget("lp", "lpn")}, NULL,
+           lp.proacl, 'f'
       FROM denied_routine dr
       JOIN pg_catalog.pg_proc lp ON lp.oid = dr.oid
-      JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace,
-           aclexplode(COALESCE(lp.proacl, acldefault('f', lp.proowner))) AS acl
+      JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace
     UNION ALL
-    SELECT jsonb_build_array('type', n.nspname, t.typname),
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
+    SELECT jsonb_build_array('type', n.nspname, t.typname), 'type',
+           pg_catalog.pg_get_userbyid(t.typowner), t.typowner,
+           'TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname),
+           NULL,
+           t.typacl, 'T'
       FROM pg_catalog.pg_type t
-      JOIN managed_schema n ON n.oid = t.typnamespace,
-           aclexplode(COALESCE(t.typacl, acldefault('T', t.typowner))) AS acl
+      JOIN managed_schema n ON n.oid = t.typnamespace
      WHERE NOT (t.typcategory = 'A' AND t.typelem <> 0)
     UNION ALL
     -- language 的隐式 ACL。PostgreSQL 18.4 实测：acldefault 对**受信与非受信
@@ -341,17 +458,38 @@ export const renderAuthorizationProjectionSql = (
     -- 角色、非受信语言同样返回 true。
     -- 所以这里**不能**按 lanpltrusted 过滤：那会让 raw 说「没人有 USAGE」而
     -- effective 说「所有人都有」，两层自相矛盾。
-    SELECT jsonb_build_array('language', l.lanname),
-           ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
-           acl.privilege_type::text, acl.is_grantable
-      FROM pg_catalog.pg_language l,
-           aclexplode(COALESCE(l.lanacl, acldefault('l', l.lanowner))) AS acl
+    SELECT jsonb_build_array('language', l.lanname), 'language',
+           pg_catalog.pg_get_userbyid(l.lanowner), l.lanowner,
+           'LANGUAGE ' || quote_ident(l.lanname), NULL,
+           l.lanacl, 'l'
+      FROM pg_catalog.pg_language l
     UNION ALL
-    SELECT jsonb_build_array('largeobject', m.oid::text),
+    SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
+           pg_catalog.pg_get_userbyid(m.lomowner), m.lomowner,
+           NULL, NULL,
+           m.lomacl, 'L'
+      FROM pg_catalog.pg_largeobject_metadata m
+  ),
+  -- 可以直接作为授权语句目标的对象。列级授权要经由父表加列名，Large Object
+  -- 一律 fail closed 不参与 mutation，入口点只允许 owner 自身，因此三者都不在
+  -- 这里。（本文件仍是纯 SELECT：这里只是把执行目标文本采集成事实。）
+  managed_object (objkey, object_class, owner_name, target_sql) AS (
+    SELECT objkey, object_class, owner_name, target_sql
+      FROM regulated_object
+     WHERE object_class IN ('database', 'schema', 'relation', 'routine',
+                            'type', 'language')
+  ),
+  acl_source (objkey, object_class, owner_name, target_sql, colname,
+              grantee, grantor, privilege, grantable) AS (
+    SELECT o.objkey, o.object_class, o.owner_name, o.target_sql, o.colname,
            ${granteeText("acl.grantee")}, pg_catalog.pg_get_userbyid(acl.grantor),
            acl.privilege_type::text, acl.is_grantable
-      FROM pg_catalog.pg_largeobject_metadata m,
-           aclexplode(COALESCE(m.lomacl, acldefault('L', m.lomowner))) AS acl
+      FROM regulated_object o,
+           aclexplode(
+             CASE WHEN o.acl_default_objtype IS NULL THEN o.acl
+                  ELSE COALESCE(o.acl,
+                                acldefault(o.acl_default_objtype, o.owner_oid))
+             END) AS acl
   ),
   -- pg_default_acl 的原始行。**先保留行存在性**，再展开 ACL：空 ACL 展开是零行，
   -- 与「没有这一行」无法区分，因此存在性不能由 aclexplode 的结果反推。
@@ -375,15 +513,17 @@ export const renderAuthorizationProjectionSql = (
   -- pg_default_acl 的 objtype ↔ acldefault 的 objtype。两套编码只有 sequence
   -- 不同名（S vs s），而 acldefault('S', …) 是 FOREIGN SERVER，会把 sequence 的
   -- 内建默认从 SELECT/UPDATE/USAGE 悄悄变成只剩 USAGE。渲染成显式映射表，
-  -- 保证 base 永远不会拿 defaclobjtype 直接去调 acldefault。
-  default_objtype (objtype, acldefault_objtype, schema_scoped) AS (
+  -- 保证 base 永远不会拿 defaclobjtype 直接去调 acldefault；ddl_keyword 同源，
+  -- 收敛阶段不必再从 identity 里反解 objtype。
+  default_objtype (objtype, acldefault_objtype, schema_scoped, ddl_keyword) AS (
     VALUES
 ${defaultAclObjtypeMappings
   .map(
     (mapping, index) =>
       `      (${literal(mapping.objtype)}${index === 0 ? "::text" : ""}, ` +
       `${literal(mapping.acldefaultObjtype)}${index === 0 ? "::text" : ""}, ` +
-      `${String(mapping.schemaScoped)}${index === 0 ? "::boolean" : ""})`,
+      `${String(mapping.schemaScoped)}${index === 0 ? "::boolean" : ""}, ` +
+      `${literal(mapping.ddlKeyword)}${index === 0 ? "::text" : ""})`,
   )
   .join(",\n")}
   ),
@@ -442,48 +582,50 @@ ${defaultAclObjtypeMappings
       ) AS composed
      GROUP BY defaclrole, objtype, scope, grantee, grantor, privilege
   ),
-  owner_source (objkey, owner_name) AS (
-    SELECT ${databaseKey}, pg_catalog.pg_get_userbyid(d.datdba)::text
+  owner_source (objkey, object_class, owner_name) AS (
+    SELECT ${databaseKey}, 'database'::text,
+           pg_catalog.pg_get_userbyid(d.datdba)::text
       FROM pg_catalog.pg_database d WHERE d.datname = current_database()
     UNION ALL
-    SELECT jsonb_build_array('schema', n.nspname),
+    SELECT jsonb_build_array('schema', n.nspname), 'schema',
            pg_catalog.pg_get_userbyid(n.nspowner)::text
       FROM managed_schema n
     UNION ALL
-    SELECT jsonb_build_array('relation', n.nspname, c.relname),
+    SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
            pg_catalog.pg_get_userbyid(c.relowner)::text
       FROM pg_catalog.pg_class c
       JOIN managed_schema n ON n.oid = c.relnamespace
      WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
     UNION ALL
-    SELECT ${routineKey("p", "n.nspname")},
+    SELECT ${routineKey("p", "n.nspname")}, 'routine',
            pg_catalog.pg_get_userbyid(p.proowner)::text
       FROM pg_catalog.pg_proc p
       JOIN managed_schema n ON n.oid = p.pronamespace
     UNION ALL
-    SELECT jsonb_build_array('type', n.nspname, t.typname),
+    SELECT jsonb_build_array('type', n.nspname, t.typname), 'type',
            pg_catalog.pg_get_userbyid(t.typowner)::text
       FROM pg_catalog.pg_type t
       JOIN managed_schema n ON n.oid = t.typnamespace
     UNION ALL
-    SELECT jsonb_build_array('largeobject', m.oid::text),
+    SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
            pg_catalog.pg_get_userbyid(m.lomowner)::text
       FROM pg_catalog.pg_largeobject_metadata m
   ),
-  effective_source (objkey, role_name, privileges) AS (
-    SELECT ${databaseKey}, pr.role_name,
+  effective_source (objkey, object_class, role_name, privileges) AS (
+    SELECT ${databaseKey}, 'database'::text, pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['CONNECT', 'CREATE', 'TEMPORARY']) AS p
              WHERE has_database_privilege(pr.probe_name, current_database(), p))
       FROM probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('schema', n.nspname), pr.role_name,
+    SELECT jsonb_build_array('schema', n.nspname), 'schema', pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['CREATE', 'USAGE']) AS p
              WHERE has_schema_privilege(pr.probe_name, n.oid, p))
       FROM managed_schema n, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('relation', n.nspname, c.relname), pr.role_name,
+    SELECT jsonb_build_array('relation', n.nspname, c.relname), 'relation',
+           pr.role_name,
            CASE WHEN c.relkind = 'S' THEN
              (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
                 FROM unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) AS p
@@ -501,7 +643,7 @@ ${defaultAclObjtypeMappings
     UNION ALL
     -- 列级有效权限：列上的授权不出现在 relacl 里，只看表级会整类漏掉。
     SELECT jsonb_build_array('column', n.nspname, c.relname, a.attname),
-           pr.role_name,
+           'column', pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['INSERT', 'REFERENCES', 'SELECT',
                                 'UPDATE']) AS p
@@ -512,36 +654,82 @@ ${defaultAclObjtypeMappings
      WHERE a.attnum > 0 AND NOT a.attisdropped
        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
     UNION ALL
-    SELECT ${routineKey("p", "n.nspname")}, pr.role_name,
+    SELECT ${routineKey("p", "n.nspname")}, 'routine', pr.role_name,
            CASE WHEN has_function_privilege(pr.probe_name, p.oid, 'EXECUTE')
                 THEN 'EXECUTE' ELSE NULL END
       FROM pg_catalog.pg_proc p
       JOIN managed_schema n ON n.oid = p.pronamespace, probe_role pr
     UNION ALL
-    SELECT ${routineKey("lp", "lpn.nspname")}, pr.role_name,
+    SELECT ${routineKey("lp", "lpn.nspname")}, 'denied-routine', pr.role_name,
            CASE WHEN has_function_privilege(pr.probe_name, lp.oid, 'EXECUTE')
                 THEN 'EXECUTE' ELSE NULL END
       FROM denied_routine dr
       JOIN pg_catalog.pg_proc lp ON lp.oid = dr.oid
       JOIN pg_catalog.pg_namespace lpn ON lpn.oid = lp.pronamespace, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('type', n.nspname, t.typname), pr.role_name,
+    SELECT jsonb_build_array('type', n.nspname, t.typname), 'type', pr.role_name,
            CASE WHEN has_type_privilege(pr.probe_name, t.oid, 'USAGE')
                 THEN 'USAGE' ELSE NULL END
       FROM pg_catalog.pg_type t
       JOIN managed_schema n ON n.oid = t.typnamespace, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('language', l.lanname), pr.role_name,
+    SELECT jsonb_build_array('language', l.lanname), 'language', pr.role_name,
            CASE WHEN has_language_privilege(pr.probe_name, l.oid, 'USAGE')
                 THEN 'USAGE' ELSE NULL END
       FROM pg_catalog.pg_language l, probe_role pr
     UNION ALL
-    SELECT jsonb_build_array('largeobject', m.oid::text), pr.role_name,
+    SELECT jsonb_build_array('largeobject', m.oid::text), 'largeobject',
+           pr.role_name,
            (SELECT pg_catalog.string_agg(p, ',' ORDER BY p COLLATE "C")
               FROM unnest(ARRAY['SELECT', 'UPDATE']) AS p
              WHERE has_largeobject_privilege(pr.probe_name, m.oid, p))
       FROM pg_catalog.pg_largeobject_metadata m, probe_role pr
-  )
+  ),
+  -- 类型分类：managed 非数组类型的 PUBLIC/app/backup/三个 login 默认无 USAGE，
+  -- owner（migrator）保留必要权限；数组类型只记录委托关系，既不建立也不尝试
+  -- 撤销独立 ACL（PostgreSQL 对数组类型直接拒绝授权与改属操作）。
+  type_class (objkey, class_name, detail) AS (
+    SELECT jsonb_build_array('type', n.nspname, t.typname),
+           CASE
+             WHEN t.typcategory = 'A' AND t.typelem <> 0 THEN 'array'
+             WHEN t.typtype = 'c' AND EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_class rc
+                     WHERE rc.oid = t.typrelid AND rc.relkind <> 'c')
+               THEN 'row'
+             ELSE 'element'
+           END,
+           CASE
+             WHEN t.typcategory = 'A' AND t.typelem <> 0
+               THEN 'class=array delegates-to='
+                      || jsonb_build_array(etn.nspname, et.typname)::text
+             WHEN t.typtype = 'c' AND EXISTS (
+                    SELECT 1 FROM pg_catalog.pg_class rc
+                     WHERE rc.oid = t.typrelid AND rc.relkind <> 'c')
+               THEN 'class=row grantable-directly=t'
+             ELSE 'class=element grantable-directly=t'
+           END
+      FROM pg_catalog.pg_type t
+      JOIN managed_schema n ON n.oid = t.typnamespace
+      LEFT JOIN pg_catalog.pg_type et ON et.oid = t.typelem
+      LEFT JOIN pg_catalog.pg_namespace etn ON etn.oid = et.typnamespace
+  ),
+  large_object (objkey, loid, owner_name) AS (
+    SELECT jsonb_build_array('largeobject', m.oid::text), m.oid,
+           pg_catalog.pg_get_userbyid(m.lomowner)::text
+      FROM pg_catalog.pg_largeobject_metadata m
+  )`;
+};
+
+/**
+ * **对外的三列 `(kind, identity, detail)` 只读投影**，行序固定。
+ *
+ * 这是 R8A 已 Accepted 的可观察性产物：行集与语义在 R8B **不回归**，只是改为
+ * 从共享的结构化 projector CTE 派生。
+ */
+export const renderAuthorizationProjectionSql = (
+  manifest: AuthorizationManifest = authorizationManifest,
+): string => `WITH
+${renderAuthorizationProjectorCtes(manifest)}
   SELECT kind, identity, detail
     FROM (
       SELECT 'acl'::text AS kind,
@@ -563,9 +751,9 @@ ${defaultAclObjtypeMappings
       UNION ALL
       -- fail closed：一个本投影不认识的 defaclobjtype 不能静默从 base 里消失。
       -- 它没有可信的 acldefault 参数，因此不参与 default-effective，但必须显式
-      -- 现形，由消费方（R8B 的 verify）判为异常。PostgreSQL 18 的默认权限语句
-      -- 只能写出上面六种 objtype，所以健康库里这一类恒为空——它是版本前向
-      -- 保护，不是已发生过的状态。
+      -- 现形，由消费方（verify/converge 的 fatal preflight）判为异常。
+      -- PostgreSQL 18 的默认权限语句只能写出上面六种 objtype，所以健康库里这一类
+      -- 恒为空——它是版本前向保护，不是已发生过的状态。
       SELECT 'default-unmapped',
              jsonb_build_array(defaclrole, objtype, scope, scope_kind)::text,
              'acldefault-objtype=unknown'
@@ -587,40 +775,22 @@ ${defaultAclObjtypeMappings
       SELECT 'owner', objkey::text, 'owner=' || owner_name
         FROM owner_source
       UNION ALL
-      SELECT 'large-object', jsonb_build_array('largeobject', m.oid::text)::text,
-             'owner=' || pg_catalog.pg_get_userbyid(m.lomowner)
-        FROM pg_catalog.pg_largeobject_metadata m
+      SELECT 'large-object', objkey::text, 'owner=' || owner_name
+        FROM large_object
       UNION ALL
-      -- 策略：managed 非数组类型的 PUBLIC/app/backup/三个 login 默认无 USAGE，
-      -- owner（migrator）保留必要权限；数组类型只记录委托关系，既不建立也不尝试
-      -- 撤销独立 ACL（PostgreSQL 对数组类型直接拒绝授权与改属操作）。
-      SELECT 'type-class', jsonb_build_array('type', n.nspname, t.typname)::text,
-             CASE
-               WHEN t.typcategory = 'A' AND t.typelem <> 0
-                 THEN 'class=array delegates-to='
-                        || jsonb_build_array(etn.nspname, et.typname)::text
-               WHEN t.typtype = 'c' AND EXISTS (
-                      SELECT 1 FROM pg_catalog.pg_class rc
-                       WHERE rc.oid = t.typrelid AND rc.relkind <> 'c')
-                 THEN 'class=row grantable-directly=t'
-               ELSE 'class=element grantable-directly=t'
-             END
-        FROM pg_catalog.pg_type t
-        JOIN managed_schema n ON n.oid = t.typnamespace
-        LEFT JOIN pg_catalog.pg_type et ON et.oid = t.typelem
-        LEFT JOIN pg_catalog.pg_namespace etn ON etn.oid = et.typnamespace
+      SELECT 'type-class', objkey::text, detail
+        FROM type_class
       UNION ALL
       SELECT 'role', jsonb_build_array(role_name)::text, 'class=' || role_class
         FROM probe_role
     ) AS projection
    ORDER BY kind COLLATE "C", identity COLLATE "C", detail COLLATE "C"`;
-};
 
 export const renderAuthorizationProjectionAdapter = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string =>
   [
-    "-- 阶段 09A / M2A：授权 catalog 的**只读**投影（R8A 最终修订）。",
+    "-- 阶段 09A / M2A：授权 catalog 的**只读**投影（canonical projector 的对外三列）。",
     "--",
     "-- GENERATED FILE — DO NOT EDIT.",
     "-- 事实源： services/api/src/database/authorization-projection-sql.ts",
@@ -629,16 +799,18 @@ export const renderAuthorizationProjectionAdapter = (
     "--",
     "-- 本文件是**单条只读 SELECT**：不含 GRANT / REVOKE / ALTER / SET ROLE /",
     "-- SET / set_config 或任何其他 mutation，因此它既不改数据也不改调用方会话。",
-    "-- 它是后续 verify / converge 共用的 canonical projector，本轮只用于观察与",
-    "-- 反向测试，尚未接入 02/03 的任何阶段。",
+    "-- 它上面那一整段 CTE 是 R8B 的**共享结构化 projector**：verify 与 converge",
+    "-- 复用同一段事实采集，因此观察、策略判断与收敛看到的是同一套 catalog 事实。",
+    "-- 本文件只是它的**只读出口**，不含任何期望值与策略判断。",
     "--",
     "-- 每个 kind 只声称自己实际证明的事：",
     "--   acl               规范化的直接授权语义（NULL ACL 展开为隐式内建默认），",
     "--                     **不是**物理 catalog 里存在的 ACL 行；",
     "--   default-row       pg_default_acl 的**物理行**存在性（含 empty 标志）；",
-    "--   default-global /  物理行展开后的条目；",
+    "--   default-global /  物理行展开后的条目——**决定执行哪条 default DDL**；",
     "--   default-schema",
-    "--   default-effective 按 PostgreSQL 真实语义叠加出的有效默认权限；",
+    "--   default-effective 按 PostgreSQL 真实语义叠加出的有效默认权限，",
+    "--                     **只用于语义验证**，不得据此反推 DDL；",
     "--   default-unmapped  未知 defaclobjtype 的 fail-closed 标记（健康库恒为空）；",
     "--   effective         has_*_privilege 的探测结果（含 PUBLIC 派生与角色继承）；",
     "--   owner /           归属；",
