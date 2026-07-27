@@ -29,9 +29,13 @@ import {
 import {
   encodeProjectionIdentity,
   projectionDatabaseKey,
+  type ProjectionIdentityPart,
 } from "../../src/database/authorization-projection-sql.js";
 import { renderStage06CatalogProjectionSql } from "../../src/database/stage06-manifest-sql.js";
-import { canonicalManifestRows } from "../../src/database/stage06-manifest.js";
+import {
+  byCodeUnit,
+  canonicalManifestRows,
+} from "../../src/database/stage06-manifest.js";
 import { checkReadiness, createPersistence } from "../../src/database/pool.js";
 
 /**
@@ -3766,47 +3770,110 @@ test("the object manifest is stable across session GUCs and catches a post-hando
 
     // 3. handoff 阶段由**整组** owner 判定，不是 database owner 单字段。任何
     //    混合态都必须直接拒绝——单字段判据会被一次局部改动整体带偏。
-    for (const [label, grab, restore, expected] of [
+    //
+    //    每个用例的注入必须是**真正不同**的混合态，并由独立 catalog 查询给出
+    //    「哪些成员已被夺回」的实际集合：两个注入语句相同、只有断言措辞不同的
+    //    用例证明不了任何额外的事。
+    const handoffOwners = async (): Promise<readonly string[]> =>
+      withPool(adminPoolConfig(probe), async (pool) => {
+        const result = await pool.query<{ entry: string }>(
+          `SELECT 'database:' || pg_catalog.pg_get_userbyid(d.datdba) AS entry
+             FROM pg_catalog.pg_database d WHERE d.datname = current_database()
+           UNION ALL
+           SELECT 'schema:' || n.nspname || ':'
+                  || pg_catalog.pg_get_userbyid(n.nspowner)
+             FROM pg_catalog.pg_namespace n
+            WHERE n.nspname IN ('drizzle', 'public')
+           UNION ALL
+           SELECT 'relation:' || pg_catalog.pg_get_userbyid(c.relowner)
+             FROM pg_catalog.pg_class c
+            WHERE c.oid = 'drizzle.__meal_agent_migrations'::regclass
+           UNION ALL
+           SELECT 'type:' || pg_catalog.pg_get_userbyid(t.typowner)
+             FROM pg_catalog.pg_type t
+            WHERE t.oid = 'drizzle.___meal_agent_migrations'::regtype
+           ORDER BY 1`,
+        );
+        return result.rows.map((row) => row.entry);
+      });
+
+    for (const [label, grab, restore, expected, preHandoff] of [
       [
         "only the database owner grabbed back",
-        `ALTER DATABASE ${probe} OWNER TO postgres`,
-        `ALTER DATABASE ${probe} OWNER TO meal_agent_migrator`,
+        [`ALTER DATABASE ${probe} OWNER TO postgres`],
+        [`ALTER DATABASE ${probe} OWNER TO meal_agent_migrator`],
         /owner handoff group is in a mixed state \(meal_agent_migrator,postgres\)/,
+        ["database:postgres"],
       ],
       [
         "only schema drizzle grabbed back",
-        "ALTER SCHEMA drizzle OWNER TO postgres",
-        "ALTER SCHEMA drizzle OWNER TO meal_agent_migrator",
+        ["ALTER SCHEMA drizzle OWNER TO postgres"],
+        ["ALTER SCHEMA drizzle OWNER TO meal_agent_migrator"],
         /entirely pre-handoff or entirely owned by meal_agent_migrator/,
+        ["schema:drizzle:postgres"],
       ],
       [
-        "drizzle schema and ledger split across two owners",
-        "ALTER SCHEMA drizzle OWNER TO postgres",
-        "ALTER SCHEMA drizzle OWNER TO meal_agent_migrator",
+        // 真正的「分裂」：整个 drizzle 子树回到 admin，而 database 与 public
+        // 仍然已交接。上一个用例只夺回 schema，本用例连 ledger 与其数组类型
+        // 一起夺回——两者的实际 owner 集合不同。
+        "the whole drizzle subtree pre-handoff while database and public stay",
+        [
+          "ALTER SCHEMA drizzle OWNER TO postgres",
+          "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO postgres",
+        ],
+        [
+          "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO meal_agent_migrator",
+          "ALTER SCHEMA drizzle OWNER TO meal_agent_migrator",
+        ],
         /owner handoff group is in a mixed state \(meal_agent_migrator,postgres\)/,
+        [
+          "relation:postgres",
+          "schema:drizzle:postgres",
+          "type:postgres",
+        ],
       ],
       [
         "only schema public grabbed back",
-        "ALTER SCHEMA public OWNER TO postgres",
-        "ALTER SCHEMA public OWNER TO meal_agent_migrator",
+        ["ALTER SCHEMA public OWNER TO postgres"],
+        ["ALTER SCHEMA public OWNER TO meal_agent_migrator"],
         /owner handoff group is in a mixed state/,
+        ["schema:public:postgres"],
       ],
       [
         "only the ledger grabbed back",
-        "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO postgres",
-        "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO meal_agent_migrator",
+        ["ALTER TABLE drizzle.__meal_agent_migrations OWNER TO postgres"],
+        [
+          "ALTER TABLE drizzle.__meal_agent_migrations OWNER TO meal_agent_migrator",
+        ],
         /owner handoff group is in a mixed state/,
+        ["relation:postgres", "type:postgres"],
       ],
     ] as const) {
+      const handedOff = await handoffOwners();
       await withPool(adminPoolConfig(probe), async (pool) => {
-        await pool.query(grab);
+        for (const statement of grab) {
+          await pool.query(statement);
+        }
       });
+      // 注入产生的实际混合态：与其它用例逐一不同。
+      assert.deepEqual(
+        (await handoffOwners()).filter((entry) => entry.endsWith(":postgres")),
+        preHandoff,
+        `${label} must inject exactly this mixed-owner set`,
+      );
       const result = await runObjectManifest(probe);
       assert.notEqual(result.code, 0, `post-handoff ${label} grab must fail`);
       assert.match(result.stderr, expected);
       await withPool(adminPoolConfig(probe), async (pool) => {
-        await pool.query(restore);
+        for (const statement of restore) {
+          await pool.query(statement);
+        }
       });
+      assert.deepEqual(
+        await handoffOwners(),
+        handedOff,
+        `${label} must restore the exact owner tuple`,
+      );
       assert.equal((await runObjectManifest(probe)).code, 0);
     }
   } finally {
@@ -4158,60 +4225,745 @@ test("an abnormal grant from an independent grantor is converged and only manife
 });
 
 // ---------------------------------------------------------------------------
-// 阶段 09A / M2A 第八轮 A：**只读**授权 catalog 投影。
+// 阶段 09A / M2A 第八轮 A（最终修订）：**只读**授权 catalog 投影。
 //
 // 本轮不实现 ACL convergence。这些用例只证明一件事：所有权限状态都能被完整、
-// 确定地**观察**出来。注入之后显式清理，并断言对象/owner/ACL 回到原状态；不让
-// 现有 converge 去「修复」这些反例，也不把已知不安全状态写成 Accepted。
+// 确定地**观察**出来。
+//
+// 三条方法学约束（上一版不满足，本版逐条修正）：
+//
+//   1. 投影通过 `pg` 的**三列结构化结果**读取。psql 的 `|` 分隔文本在含 `|`、
+//      引号或换行的合法名字上会错位，而「特殊名称不会错位」正是要证明的事情
+//      之一，因此不能用会被同一问题污染的读法去证明它。
+//   2. 断言按解析后的 `(kind, identity, detail)` 做**严格等值与行数**判断，
+//      不用 `some(row.includes(...))`，也不用截断 identity 前缀——那两种写法会
+//      让 `privs=SELECT` 误配 `privs=SELECT,UPDATE`，也会让 grantor 错误被放过。
+//   3. 清理由**独立 catalog 查询**验证；投影自身回到 baseline 只是附加证据。
 // ---------------------------------------------------------------------------
 
-/** 跑只读投影，返回 `kind|identity|detail` 行。 */
+interface ProjectionRow {
+  readonly kind: string;
+  readonly identity: string;
+  readonly detail: string;
+}
+
+const projectionSqlPath = generatedSql("authorization-projection.generated.sql");
+
+/** 在**既有连接**上执行投影，返回结构化三列。 */
+const projectionOn = async (
+  client: PoolClient,
+): Promise<readonly ProjectionRow[]> => {
+  const sql = await readFile(projectionSqlPath, "utf8");
+  const result = await client.query<ProjectionRow>(sql);
+  return result.rows.map(({ kind, identity, detail }) => ({
+    kind,
+    identity,
+    detail,
+  }));
+};
+
 const authorizationProjection = async (
   database: string = rolesDatabase,
-): Promise<readonly string[]> => {
-  const result = await runCaptured(
-    join(postgresBin, "psql"),
-    [
-      "--no-psqlrc",
-      "--quiet",
-      "--no-password",
-      "--tuples-only",
-      "--no-align",
-      "--field-separator",
-      "|",
-      "--set",
-      "ON_ERROR_STOP=on",
-      "--dbname",
-      database,
-      "--file",
-      generatedSql("authorization-projection.generated.sql"),
-    ],
-    { env: adminEnvironment() },
+): Promise<readonly ProjectionRow[]> =>
+  withPool(adminPoolConfig(database), async (pool) => {
+    const client = await pool.connect();
+    try {
+      return await projectionOn(client);
+    } finally {
+      client.release();
+    }
+  });
+
+const rowsFor = (
+  rows: readonly ProjectionRow[],
+  kind: string,
+  identity: string,
+): readonly ProjectionRow[] =>
+  rows.filter((row) => row.kind === kind && row.identity === identity);
+
+/** 该 `(kind, identity)` 必须**恰好一行**，且 detail 逐字相等。 */
+const assertExactRow = (
+  rows: readonly ProjectionRow[],
+  expected: ProjectionRow,
+  label: string,
+): void => {
+  assert.deepEqual(
+    rowsFor(rows, expected.kind, expected.identity),
+    [expected],
+    `${label}: the projection must contain exactly this row`,
   );
-  assert.equal(
-    result.code,
-    0,
-    `the authorization projection must run read-only: ${result.stderr.slice(0, 400)}`,
-  );
-  return result.stdout.split("\n").filter((line) => line !== "");
 };
+
+const assertNoRow = (
+  rows: readonly ProjectionRow[],
+  kind: string,
+  identity: string,
+  label: string,
+): void => {
+  assert.deepEqual(rowsFor(rows, kind, identity), [], label);
+};
+
+const aclRow = (
+  objectKey: readonly ProjectionIdentityPart[],
+  grantee: string,
+  grantor: string,
+  privilege: string,
+  grantable: boolean,
+): ProjectionRow => ({
+  kind: "acl",
+  identity: encodeProjectionIdentity([objectKey, grantee, grantor, privilege]),
+  detail: `grantable=${grantable ? "t" : "f"}`,
+});
+
+const effectiveRow = (
+  objectKey: readonly ProjectionIdentityPart[],
+  role: string,
+  privileges: readonly string[],
+): ProjectionRow => ({
+  kind: "effective",
+  identity: encodeProjectionIdentity([objectKey, role]),
+  detail: `privs=${privileges.join(",")}`,
+});
+
+const ownerRow = (
+  objectKey: readonly ProjectionIdentityPart[],
+  owner: string,
+): ProjectionRow => ({
+  kind: "owner",
+  identity: encodeProjectionIdentity(objectKey),
+  detail: `owner=${owner}`,
+});
+
+const defaultEffectiveRow = (
+  defaclrole: string,
+  objtype: string,
+  scope: string,
+  grantee: string,
+  grantor: string,
+  privilege: string,
+  grantable: boolean,
+): ProjectionRow => ({
+  kind: "default-effective",
+  identity: encodeProjectionIdentity([
+    defaclrole,
+    objtype,
+    scope,
+    grantee,
+    grantor,
+    privilege,
+  ]),
+  detail: `grantable=${grantable ? "t" : "f"}`,
+});
+
+const defaultPhysicalRow = (
+  defaclrole: string,
+  objtype: string,
+  scope: string,
+  scopeKind: "global" | "schema",
+  empty: boolean,
+): ProjectionRow => ({
+  kind: "default-row",
+  identity: encodeProjectionIdentity([defaclrole, objtype, scope, scopeKind]),
+  detail: `exists=t empty=${empty ? "t" : "f"}`,
+});
+
+/** 某个 `(defaclrole, objtype, scope, grantee)` 在 default-effective 里的权限集合。 */
+const defaultEffectivePrivileges = (
+  rows: readonly ProjectionRow[],
+  defaclrole: string,
+  objtype: string,
+  scope: string,
+  grantee: string,
+): readonly string[] =>
+  rows
+    .filter((row) => row.kind === "default-effective")
+    .flatMap((row) => {
+      const parsed: unknown = JSON.parse(row.identity);
+      if (!Array.isArray(parsed) || parsed.length !== 6) {
+        return [];
+      }
+      const [role, type, rowScope, rowGrantee, , privilege] = parsed as string[];
+      return role === defaclrole &&
+        type === objtype &&
+        rowScope === scope &&
+        rowGrantee === grantee &&
+        privilege !== undefined
+        ? [privilege]
+        : [];
+    })
+    .sort(byCodeUnit);
+
+const migratorRole = "meal_agent_migrator";
+
+const gucSnapshot = async (
+  client: PoolClient,
+): Promise<{ readonly searchPath: string; readonly quoting: string }> => {
+  const searchPath = await client.query<{ search_path: string }>(
+    "SHOW search_path",
+  );
+  const quoting = await client.query<{ quote_all_identifiers: string }>(
+    "SHOW quote_all_identifiers",
+  );
+  return {
+    searchPath: searchPath.rows[0]?.search_path ?? "",
+    quoting: quoting.rows[0]?.quote_all_identifiers ?? "",
+  };
+};
+
+test("the projection is structurally read, round-trips its identities and never touches session GUCs", async () => {
+  await withPool(adminPoolConfig(), async (pool) => {
+    const client = await pool.connect();
+    try {
+      const baseline = await projectionOn(client);
+      assert.ok(baseline.length > 300, "the projection must be non-trivial");
+
+      // 1. 每个 identity 都是合法 JSON 数组，且 Node 侧 encodeProjectionIdentity
+      //    与 PostgreSQL 的 jsonb_build_array(...)::text **逐字节相同**。
+      for (const row of baseline) {
+        const parsed: unknown = JSON.parse(row.identity);
+        assert.ok(
+          Array.isArray(parsed),
+          `identity must be a JSON array: ${row.kind} ${row.identity}`,
+        );
+        assert.equal(
+          encodeProjectionIdentity(parsed as readonly ProjectionIdentityPart[]),
+          row.identity,
+          `Node and PostgreSQL must encode ${row.kind} identically`,
+        );
+        assert.match(
+          row.detail,
+          /^(grantable|privs|owner|exists|class|acldefault-objtype)=/,
+          `unexpected detail shape for ${row.kind} ${row.identity}`,
+        );
+      }
+
+      // 2. 覆盖面：每一个必须存在的 kind 都真的有行（default-row 在内）。
+      const kinds = new Set(baseline.map((row) => row.kind));
+      for (const kind of [
+        "acl",
+        "default-effective",
+        "default-row",
+        "effective",
+        "owner",
+        "role",
+        "type-class",
+      ]) {
+        assert.ok(kinds.has(kind), `projection kind ${kind} must be present`);
+      }
+      // 未知 objtype 是 fail-closed 标记；健康库里恒为空。
+      assert.deepEqual(
+        baseline.filter((row) => row.kind === "default-unmapped"),
+        [],
+        "a healthy database has no unmapped pg_default_acl objtype",
+      );
+
+      // 3. 两组不同的会话 GUC 下，投影逐行相同：identity 不经过
+      //    pg_get_function_identity_arguments / format_type，因此不受 GUC 影响。
+      const underGuc: ProjectionRow[][] = [];
+      for (const [searchPath, quoting] of [
+        ["pg_catalog, public", "on"],
+        ["public, meal_agent_private, drizzle", "off"],
+      ] as const) {
+        await client.query(`SET search_path = ${searchPath}`);
+        await client.query(`SET quote_all_identifiers = ${quoting}`);
+        const before = await gucSnapshot(client);
+        underGuc.push([...(await projectionOn(client))]);
+        // 4. 投影不含任何 SET / set_config，因此调用方会话必须原样保留。
+        assert.deepEqual(
+          await gucSnapshot(client),
+          before,
+          `the projection must not change session GUCs (${searchPath})`,
+        );
+      }
+      assert.deepEqual(
+        underGuc[0],
+        underGuc[1],
+        "the projection must be byte-identical under different session GUCs",
+      );
+      assert.deepEqual(underGuc[0], [...baseline]);
+
+      // 5. language：implicit / raw / effective 三者的真实结果。
+      //    plpgsql 是受信语言且 lanacl IS NULL——物理上没有任何 aclitem，规范化
+      //    语义却是「PUBLIC 与 owner 都有 USAGE」，这正是 acl kind 展开隐式默认
+      //    权限的意义。
+      const languageAcl = await client.query<{ entry: string }>(
+        `SELECT CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+                     ELSE pg_catalog.pg_get_userbyid(acl.grantee)::text END
+                || ':' || acl.privilege_type AS entry
+           FROM pg_catalog.pg_language l,
+                aclexplode(acldefault('l', l.lanowner)) AS acl
+          WHERE l.lanname = 'plpgsql' AND l.lanacl IS NULL`,
+      );
+      assert.deepEqual(
+        languageAcl.rows.map((row) => row.entry).sort(byCodeUnit),
+        ["PUBLIC:USAGE", "postgres:USAGE"],
+        "plpgsql must have a NULL lanacl with implicit PUBLIC USAGE",
+      );
+      assertExactRow(
+        baseline,
+        aclRow(["language", "plpgsql"], "PUBLIC", "postgres", "USAGE", false),
+        "implicit PUBLIC USAGE on plpgsql",
+      );
+      assertExactRow(
+        baseline,
+        effectiveRow(["language", "plpgsql"], "meal_agent_app", ["USAGE"]),
+        "effective USAGE on plpgsql",
+      );
+      // 非受信语言（C）的真实语义与直觉相反：acldefault 与受信语言完全相同，
+      // PUBLIC 同样拿到隐式 USAGE，非受信的限制在 CREATE FUNCTION 时按 superuser
+      // 判定。因此 raw 与 effective 必须**一致地**报告它，任何一层按 lanpltrusted
+      // 过滤都会制造自相矛盾的两层结论。
+      const untrusted = await client.query<{
+        lanacl: string | null;
+        trusted: boolean;
+        implicit: string;
+        app_usage: boolean;
+      }>(
+        `SELECT l.lanacl::text AS lanacl, l.lanpltrusted AS trusted,
+                acldefault('l', l.lanowner)::text AS implicit,
+                has_language_privilege('meal_agent_app', l.oid, 'USAGE')
+                  AS app_usage
+           FROM pg_catalog.pg_language l WHERE l.lanname = 'c'`,
+      );
+      assert.deepEqual(untrusted.rows[0], {
+        lanacl: null,
+        trusted: false,
+        implicit: "{=U/postgres,postgres=U/postgres}",
+        app_usage: true,
+      });
+      assertExactRow(
+        baseline,
+        aclRow(["language", "c"], "PUBLIC", "postgres", "USAGE", false),
+        "an untrusted language still carries implicit PUBLIC USAGE",
+      );
+      assertExactRow(
+        baseline,
+        effectiveRow(["language", "c"], "meal_agent_app", ["USAGE"]),
+        "effective must agree with the implicit ACL of an untrusted language",
+      );
+    } finally {
+      client.release();
+    }
+  });
+});
+
+test("only the database identity is portable; the rest of the projection is environment bound", async () => {
+  const probes = [
+    "meal_agent_stage09a_ident_a",
+    "meal_agent_stage09a_ident_b",
+  ] as const;
+  let largeObjectId = "";
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      for (const probe of probes) {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+        await pool.query(`CREATE DATABASE ${probe}`);
+      }
+    });
+
+    // 两个合法的 meal_agent_<suffix> 数据库：database identity 必须是同一个
+    // 逻辑键，库名不进入 identity。identity 一律解析后按结构比较，不做前缀匹配。
+    for (const probe of probes) {
+      const rows = await authorizationProjection(probe);
+      assertExactRow(
+        rows,
+        ownerRow(["database", projectionDatabaseKey], "postgres"),
+        `${probe} database owner`,
+      );
+      const databaseAcl = rows.filter((row) => {
+        if (row.kind !== "acl") {
+          return false;
+        }
+        const [key] = JSON.parse(row.identity) as readonly unknown[];
+        return Array.isArray(key) && key[0] === "database";
+      });
+      assert.ok(
+        databaseAcl.length > 0,
+        `${probe} must project its database ACL under the logical key`,
+      );
+      for (const row of databaseAcl) {
+        const [key] = JSON.parse(row.identity) as readonly unknown[];
+        assert.deepEqual(
+          key,
+          ["database", projectionDatabaseKey],
+          `${probe} must not put its real database name into the identity`,
+        );
+      }
+      assert.ok(
+        !rows.some((row) => row.identity.includes(probe)),
+        `${probe} must not leak its own database name into any identity`,
+      );
+    }
+
+    // 但**不得**据此声称整份投影跨库固定：往其中一个库里放一个 Large Object，
+    // 它的 identity 带 OID，另一个库根本没有这一行。
+    largeObjectId = await withPool(
+      adminPoolConfig(probes[0]),
+      async (pool) => {
+        const created = await pool.query<{ loid: string }>(
+          "SELECT lo_from_bytea(0, 'stage09a-identity'::bytea)::text AS loid",
+        );
+        const loid = created.rows[0]?.loid;
+        assert.ok(loid !== undefined);
+        return loid;
+      },
+    );
+    const withLargeObject = await authorizationProjection(probes[0]);
+    const withoutLargeObject = await authorizationProjection(probes[1]);
+    assertExactRow(
+      withLargeObject,
+      {
+        kind: "large-object",
+        identity: encodeProjectionIdentity(["largeobject", largeObjectId]),
+        detail: "owner=postgres",
+      },
+      "the large object is visible in the database that owns it",
+    );
+    assert.deepEqual(
+      withoutLargeObject.filter((row) => row.kind === "large-object"),
+      [],
+      "the sibling database has no large object row",
+    );
+    assert.notDeepEqual(
+      withLargeObject,
+      withoutLargeObject,
+      "the projection as a whole is environment bound, not a portable snapshot",
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      for (const probe of probes) {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      }
+    });
+  }
+});
+
+test("default privilege composition matches the ACL of really created objects", async () => {
+  const probe = "meal_agent_stage09a_defaults";
+  const reader = "stage09a_defaults_reader";
+  const schema = "meal_agent_private";
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+      await pool.query(`DROP ROLE IF EXISTS ${reader}`);
+      await pool.query(`CREATE ROLE ${reader} NOLOGIN`);
+    });
+    await mustSucceedCli(
+      "pnpm db:bootstrap (default-acl probe)",
+      await runPnpm("db:bootstrap", adminUrl(probe)),
+    );
+    // owner 交接必须在任何注入之前完成：之后 migrator 才是 public 的 owner，
+    // 「同一个 owner 在两个 scope 下建对象」这件事才成立。
+    await runBootstrap("handoff", probe);
+
+    // ---------------------------------------------------------------------
+    // 1. **非空** global 行**替换**内建默认，而不是与之合并。
+    // ---------------------------------------------------------------------
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      await pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `REVOKE TRUNCATE ON TABLES FROM ${migratorRole}`,
+      );
+      const client = await pool.connect();
+      try {
+        await client.query(`SET ROLE ${migratorRole}`);
+        await client.query(`CREATE TABLE ${schema}.d1 (id int)`);
+      } finally {
+        client.release();
+      }
+    });
+
+    let rows = await authorizationProjection(probe);
+    const realTablePrivileges = await withPool(
+      adminPoolConfig(probe),
+      async (pool) => {
+        const result = await pool.query<{ privilege: string }>(
+          `SELECT p AS privilege
+             FROM unnest(ARRAY['DELETE', 'INSERT', 'MAINTAIN', 'REFERENCES',
+                               'SELECT', 'TRIGGER', 'TRUNCATE', 'UPDATE']) AS p
+            WHERE has_table_privilege($1, '${schema}.d1', p)
+            ORDER BY p COLLATE "C"`,
+          [migratorRole],
+        );
+        return result.rows.map((row) => row.privilege);
+      },
+    );
+    // 独立事实：TRUNCATE 真的没了，MAINTAIN 真的还在。
+    assert.ok(
+      !realTablePrivileges.includes("TRUNCATE"),
+      "the non-empty global row must really remove TRUNCATE",
+    );
+    assert.ok(realTablePrivileges.includes("MAINTAIN"));
+    assert.deepEqual(
+      defaultEffectivePrivileges(rows, migratorRole, "r", schema, migratorRole),
+      realTablePrivileges,
+      "default-effective must equal the privileges of the real new table",
+    );
+    assertExactRow(
+      rows,
+      defaultPhysicalRow(migratorRole, "r", "-", "global", false),
+      "the non-empty global table row exists",
+    );
+
+    // ---------------------------------------------------------------------
+    // 2. **空** global 行等价于「没有行」，但 default-row 仍能区分两者。
+    // ---------------------------------------------------------------------
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      await pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `REVOKE ALL ON FUNCTIONS FROM ${migratorRole}, PUBLIC`,
+      );
+      const client = await pool.connect();
+      try {
+        await client.query(`SET ROLE ${migratorRole}`);
+        await client.query(
+          `CREATE FUNCTION ${schema}.d2() RETURNS int LANGUAGE sql ` +
+            "IMMUTABLE AS $$SELECT 1$$",
+        );
+      } finally {
+        client.release();
+      }
+    });
+
+    rows = await authorizationProjection(probe);
+    const functionFacts = await withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query<{
+        proacl: string | null;
+        owner: string;
+        public_execute: boolean;
+        owner_execute: boolean;
+      }>(
+        `SELECT p.proacl::text AS proacl,
+                pg_catalog.pg_get_userbyid(p.proowner)::text AS owner,
+                has_function_privilege('public', p.oid, 'EXECUTE')
+                  AS public_execute,
+                has_function_privilege($1, p.oid, 'EXECUTE') AS owner_execute
+           FROM pg_catalog.pg_proc p
+           JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = $2 AND p.proname = 'd2'`,
+        [migratorRole, schema],
+      );
+      return result.rows[0];
+    });
+    // 独立事实：新函数落回内建默认——proacl 是 NULL，PUBLIC 仍有 EXECUTE。
+    assert.deepEqual(functionFacts, {
+      proacl: null,
+      owner: migratorRole,
+      public_execute: true,
+      owner_execute: true,
+    });
+    // 物理行**存在且为空**，与「根本没有这一行」在投影里是两条不同的事实。
+    assertExactRow(
+      rows,
+      defaultPhysicalRow(migratorRole, "f", "-", "global", true),
+      "the empty global function row still exists physically",
+    );
+    assertNoRow(
+      rows,
+      "default-row",
+      encodeProjectionIdentity([migratorRole, "T", "-", "global"]),
+      "no type row was ever created, so no physical row may be reported",
+    );
+    // 但两者的**有效**默认权限相同：都落回内建默认。
+    assert.deepEqual(
+      defaultEffectivePrivileges(rows, migratorRole, "f", schema, "PUBLIC"),
+      ["EXECUTE"],
+      "an empty global row must behave exactly like a missing row",
+    );
+    assert.deepEqual(
+      defaultEffectivePrivileges(rows, migratorRole, "T", schema, "PUBLIC"),
+      ["USAGE"],
+      "the missing type row falls back to the builtin default as well",
+    );
+    // 新函数的规范化直接授权与 owner 也必须与真实 catalog 一致。
+    const routineKey: readonly ProjectionIdentityPart[] = [
+      "routine",
+      schema,
+      "d2",
+      [],
+    ];
+    assertExactRow(
+      rows,
+      aclRow(routineKey, "PUBLIC", migratorRole, "EXECUTE", false),
+      "the new function's implicit PUBLIC EXECUTE",
+    );
+    assertExactRow(
+      rows,
+      ownerRow(routineKey, migratorRole),
+      "the new function's owner",
+    );
+
+    // ---------------------------------------------------------------------
+    // 3. **空** global sequence 行：内建默认必须是 sequence 的默认，不是
+    //    FOREIGN SERVER 的。acldefault 的 objtype 是 `s`，pg_default_acl 的是 `S`。
+    // ---------------------------------------------------------------------
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      await pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `REVOKE ALL ON SEQUENCES FROM ${migratorRole}`,
+      );
+      const client = await pool.connect();
+      try {
+        await client.query(`SET ROLE ${migratorRole}`);
+        await client.query(`CREATE SEQUENCE ${schema}.d3`);
+      } finally {
+        client.release();
+      }
+    });
+
+    rows = await authorizationProjection(probe);
+    const realSequencePrivileges = await withPool(
+      adminPoolConfig(probe),
+      async (pool) => {
+        const result = await pool.query<{ privilege: string }>(
+          `SELECT p AS privilege
+             FROM unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) AS p
+            WHERE has_sequence_privilege($1, '${schema}.d3', p)
+            ORDER BY p COLLATE "C"`,
+          [migratorRole],
+        );
+        return result.rows.map((row) => row.privilege);
+      },
+    );
+    assert.deepEqual(
+      realSequencePrivileges,
+      ["SELECT", "UPDATE", "USAGE"],
+      "a sequence created under an empty global row keeps the builtin default",
+    );
+    assertExactRow(
+      rows,
+      defaultPhysicalRow(migratorRole, "S", "-", "global", true),
+      "the empty global sequence row exists",
+    );
+    assert.deepEqual(
+      defaultEffectivePrivileges(rows, migratorRole, "S", schema, migratorRole),
+      realSequencePrivileges,
+      "default-effective must not degrade a sequence to a FOREIGN SERVER",
+    );
+
+    // ---------------------------------------------------------------------
+    // 4. global 非 grantable SELECT + schema `WITH GRANT OPTION`：同一 identity
+    //    只出**一行**，grantable 取真实聚合值。
+    // ---------------------------------------------------------------------
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      await pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `GRANT SELECT ON TABLES TO ${reader}`,
+      );
+      await pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA ${schema} ` +
+          `GRANT SELECT ON TABLES TO ${reader} WITH GRANT OPTION`,
+      );
+      const client = await pool.connect();
+      try {
+        await client.query(`SET ROLE ${migratorRole}`);
+        await client.query(`CREATE TABLE ${schema}.d4 (id int)`);
+        await client.query("CREATE TABLE public.d5 (id int)");
+      } finally {
+        client.release();
+      }
+    });
+
+    rows = await authorizationProjection(probe);
+    const realGrants = await withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query<{ entry: string }>(
+        `SELECT c.relname || ':' || acl.privilege_type || ':'
+                || CASE WHEN acl.is_grantable THEN 't' ELSE 'f' END AS entry
+           FROM pg_catalog.pg_class c,
+                aclexplode(c.relacl) AS acl
+          WHERE c.oid = ANY (ARRAY['${schema}.d4'::regclass,
+                                   'public.d5'::regclass])
+            AND pg_catalog.pg_get_userbyid(acl.grantee) = $1
+          ORDER BY entry`,
+        [reader],
+      );
+      return result.rows.map((row) => row.entry);
+    });
+    // 独立事实：schema 内的新表拿到 grantable SELECT，且**只有一条**；
+    // schema 外的新表只有 global 的非 grantable SELECT。
+    assert.deepEqual(realGrants, ["d4:SELECT:t", "d5:SELECT:f"]);
+    assertExactRow(
+      rows,
+      defaultEffectiveRow(
+        migratorRole,
+        "r",
+        schema,
+        reader,
+        migratorRole,
+        "SELECT",
+        true,
+      ),
+      "the overlay collapses to a single grantable SELECT",
+    );
+    assertExactRow(
+      rows,
+      defaultEffectiveRow(
+        migratorRole,
+        "r",
+        "public",
+        reader,
+        migratorRole,
+        "SELECT",
+        false,
+      ),
+      "a scope without a schema row keeps the non-grantable global SELECT",
+    );
+    // 两条 raw 层事实也必须分别可见，且 schema 层确实带 grant option。
+    assertExactRow(
+      rows,
+      {
+        kind: "default-global",
+        identity: encodeProjectionIdentity([
+          migratorRole,
+          "r",
+          "-",
+          reader,
+          migratorRole,
+          "SELECT",
+        ]),
+        detail: "grantable=f",
+      },
+      "raw global default privilege",
+    );
+    assertExactRow(
+      rows,
+      {
+        kind: "default-schema",
+        identity: encodeProjectionIdentity([
+          migratorRole,
+          "r",
+          schema,
+          reader,
+          migratorRole,
+          "SELECT",
+        ]),
+        detail: "grantable=t",
+      },
+      "raw schema default privilege",
+    );
+    process.stdout.write(
+      "default ACL parity: 4 PostgreSQL 18.4 scenarios matched real objects\n",
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`DROP ROLE IF EXISTS ${reader}`);
+    });
+  }
+});
 
 test("the read-only authorization projection observes every ACL subject", async () => {
   const baseline = await authorizationProjection();
-  const kinds = new Set(baseline.map((row) => row.slice(0, row.indexOf("|"))));
-  for (const kind of [
-    "acl",
-    "default-global",
-    "default-schema",
-    "default-effective",
-    "effective",
-    "owner",
-    "type-class",
-    "role",
-  ]) {
-    assert.ok(kinds.has(kind), `projection kind ${kind} must be present`);
-  }
-  assert.ok(baseline.length > 300, "the projection must be non-trivial");
+  const outsider = "stage09a_r8a_outsider";
+  const inheritor = "stage09a_r8a_inheritor";
+  // 列级反例必须用一个**没有任何表级授权**的角色：inheritor 通过继承拿到了
+  // 表级 SELECT/INSERT，用它证明不了「没有表级授权时列级仍可见」。
+  const columnOnly = "stage09a_r8a_column";
+  const object = (
+    ...parts: readonly string[]
+  ): readonly ProjectionIdentityPart[] => parts;
+  const databaseObject = object("database", projectionDatabaseKey);
 
   const largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
     const result = await pool.query<{ loid: string }>(
@@ -4225,47 +4977,46 @@ test("the read-only authorization projection observes every ACL subject", async 
   try {
     await withPool(adminPoolConfig(), async (pool) => {
       for (const statement of [
-        "CREATE ROLE stage09a_r8a_outsider NOLOGIN",
-        "CREATE ROLE stage09a_r8a_inheritor LOGIN INHERIT",
-        "GRANT USAGE ON SCHEMA public TO stage09a_r8a_outsider",
+        `CREATE ROLE ${outsider} NOLOGIN`,
+        `CREATE ROLE ${inheritor} LOGIN INHERIT`,
+        `CREATE ROLE ${columnOnly} LOGIN`,
+        `GRANT USAGE ON SCHEMA public TO ${outsider}`,
         // 1. 未知 grantee 拿到 database / schema / table / routine / type 权限
-        `GRANT CONNECT ON DATABASE ${rolesDatabase} TO stage09a_r8a_outsider`,
-        "GRANT USAGE ON SCHEMA meal_agent_private TO stage09a_r8a_outsider",
-        "GRANT SELECT ON public.households TO stage09a_r8a_outsider",
+        `GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${outsider}`,
+        `GRANT USAGE ON SCHEMA meal_agent_private TO ${outsider}`,
+        `GRANT SELECT ON public.households TO ${outsider}`,
         "GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() " +
-          "TO stage09a_r8a_outsider",
-        "GRANT USAGE ON TYPE public.users TO stage09a_r8a_outsider",
+          `TO ${outsider}`,
+        `GRANT USAGE ON TYPE public.users TO ${outsider}`,
+        // 2. 只有列级授权，表级什么都没有
+        `GRANT SELECT (display_name) ON public.users TO ${columnOnly}`,
         // 3. WITH GRANT OPTION
-        "GRANT SELECT, INSERT ON public.users TO stage09a_r8a_outsider " +
-          "WITH GRANT OPTION",
+        `GRANT SELECT, INSERT ON public.users TO ${outsider} WITH GRANT OPTION`,
         // 4 + 5. default privilege 叠加与 default grant option
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "GRANT INSERT ON TABLES TO stage09a_r8a_outsider",
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
-          "GRANT SELECT ON TABLES TO stage09a_r8a_outsider",
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `GRANT INSERT ON TABLES TO ${outsider}`,
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA public ` +
+          `GRANT SELECT ON TABLES TO ${outsider}`,
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA public ` +
           "GRANT SELECT ON TABLES TO meal_agent_backup WITH GRANT OPTION",
         // 6. 外部非 superuser LOGIN 通过继承取得权限
-        "GRANT stage09a_r8a_outsider TO stage09a_r8a_inheritor",
+        `GRANT ${outsider} TO ${inheritor}`,
         // 7. 非项目角色拥有的 Large Object 及其 ACL
-        `ALTER LARGE OBJECT ${largeObjectId} OWNER TO stage09a_r8a_outsider`,
+        `ALTER LARGE OBJECT ${largeObjectId} OWNER TO ${outsider}`,
         `GRANT SELECT ON LARGE OBJECT ${largeObjectId} TO meal_agent_app`,
+        `GRANT SELECT ON LARGE OBJECT ${largeObjectId} TO ${outsider}`,
         `GRANT UPDATE ON LARGE OBJECT ${largeObjectId} TO PUBLIC`,
-        "GRANT EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) " +
-          "TO stage09a_r8a_outsider",
+        `GRANT EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) TO ${outsider}`,
         // 8. final 阶段的 relation / routine / type owner 漂移
-        "ALTER TABLE public.sessions OWNER TO stage09a_r8a_outsider",
-        "ALTER FUNCTION meal_agent_private.app_user_id() " +
-          "OWNER TO stage09a_r8a_outsider",
+        `ALTER TABLE public.sessions OWNER TO ${outsider}`,
+        `ALTER FUNCTION meal_agent_private.app_user_id() OWNER TO ${outsider}`,
       ]) {
         await pool.query(statement);
       }
-      // 2. 第三方 grantor 授予一个「权限集合看似合规」的重复 SELECT。
+      // 9. 第三方 grantor 授予一个「权限集合看似合规」的重复 SELECT。
       const client = await pool.connect();
       try {
-        await client.query(
-          "SELECT set_config('role', 'stage09a_r8a_outsider', false)",
-        );
+        await client.query("SELECT set_config('role', $1, false)", [outsider]);
         await client.query("GRANT SELECT ON public.users TO meal_agent_app");
         await client.query(
           "GRANT INSERT ON public.users TO meal_agent_backup WITH GRANT OPTION",
@@ -4276,250 +5027,621 @@ test("the read-only authorization projection observes every ACL subject", async 
     });
 
     const drifted = await authorizationProjection();
-    const sees = (needle: string): boolean =>
-      drifted.some((row) => row.includes(needle));
-    // canonical identity 现在是 JSON 数组，两侧共用 `encodeProjectionIdentity`。
-    const object = (...parts: readonly string[]): readonly string[] => parts;
-    const aclRow = (
-      objectKey: readonly string[],
-      grantee: string,
-      grantor: string,
-      privilege: string,
-      grantable: string,
-    ): string =>
-      `acl|${encodeProjectionIdentity([
-        objectKey,
-        grantee,
-        grantor,
-        privilege,
-      ])}|grantable=${grantable}`;
-    const outsider = "stage09a_r8a_outsider";
-    const inheritor = "stage09a_r8a_inheritor";
-    const migrator = "meal_agent_migrator";
-    const databaseObject = object("database", projectionDatabaseKey);
+    // `ALTER … OWNER TO` 会把 ACL 里旧 owner 的 grantor/grantee 一并改写，因此
+    // 归属漂移之后 app_user_id 的 EXECUTE 由新 owner 授予——这正是必须逐字断言
+    // grantor、而不是截断 identity 的原因。
+    const routineKey: readonly ProjectionIdentityPart[] = [
+      "routine",
+      "meal_agent_private",
+      "app_user_id",
+      [],
+    ];
+    const loEntryPoint: readonly ProjectionIdentityPart[] = [
+      "routine",
+      "pg_catalog",
+      "lo_creat",
+      [["pg_catalog", "int4"]],
+    ];
 
-    const expectations: readonly [string, string][] = [
+    const expectations: readonly [string, ProjectionRow][] = [
       [
         "unknown grantee on the database",
-        aclRow(databaseObject, outsider, migrator, "CONNECT", "f"),
+        aclRow(databaseObject, outsider, migratorRole, "CONNECT", false),
       ],
       [
         "unknown grantee on a managed schema",
-        aclRow(object("schema", "meal_agent_private"), outsider, migrator,
-               "USAGE", "f"),
+        aclRow(
+          object("schema", "meal_agent_private"),
+          outsider,
+          migratorRole,
+          "USAGE",
+          false,
+        ),
       ],
       [
         "unknown grantee on a table",
-        aclRow(object("relation", "public", "households"), outsider, migrator,
-               "SELECT", "f"),
+        aclRow(
+          object("relation", "public", "households"),
+          outsider,
+          migratorRole,
+          "SELECT",
+          false,
+        ),
       ],
       [
-        "unknown grantee on a routine",
-        `acl|${encodeProjectionIdentity([
-          ["routine", "meal_agent_private", "app_user_id", []],
-          outsider,
-        ]).slice(0, -1)}`,
+        "unknown grantee on a routine, granted by the drifted owner",
+        aclRow(routineKey, outsider, outsider, "EXECUTE", false),
       ],
       [
         "unknown grantee on a type",
-        aclRow(object("type", "public", "users"), outsider, migrator, "USAGE",
-               "f"),
+        aclRow(
+          object("type", "public", "users"),
+          outsider,
+          migratorRole,
+          "USAGE",
+          false,
+        ),
       ],
       [
         "third-party grantor duplicating a compliant-looking SELECT",
-        aclRow(object("relation", "public", "users"), "meal_agent_app",
-               outsider, "SELECT", "f"),
+        aclRow(
+          object("relation", "public", "users"),
+          "meal_agent_app",
+          outsider,
+          "SELECT",
+          false,
+        ),
       ],
       [
         "the canonical SELECT is still a separate row",
-        aclRow(object("relation", "public", "users"), "meal_agent_app",
-               migrator, "SELECT", "f"),
+        aclRow(
+          object("relation", "public", "users"),
+          "meal_agent_app",
+          migratorRole,
+          "SELECT",
+          false,
+        ),
       ],
       [
         "WITH GRANT OPTION",
-        aclRow(object("relation", "public", "users"), "meal_agent_backup",
-               outsider, "INSERT", "t"),
+        aclRow(
+          object("relation", "public", "users"),
+          "meal_agent_backup",
+          outsider,
+          "INSERT",
+          true,
+        ),
+      ],
+      [
+        "a column-only grant is visible in the raw ACL",
+        aclRow(
+          object("column", "public", "users", "display_name"),
+          columnOnly,
+          migratorRole,
+          "SELECT",
+          false,
+        ),
+      ],
+      [
+        "a column-only grant is visible in the effective privileges",
+        effectiveRow(
+          object("column", "public", "users", "display_name"),
+          columnOnly,
+          ["SELECT"],
+        ),
       ],
       [
         "raw global default privilege",
-        `default-global|${encodeProjectionIdentity([
-          migrator, "r", "-", outsider, migrator, "INSERT",
-        ])}|grantable=f`,
+        {
+          kind: "default-global",
+          identity: encodeProjectionIdentity([
+            migratorRole,
+            "r",
+            "-",
+            outsider,
+            migratorRole,
+            "INSERT",
+          ]),
+          detail: "grantable=f",
+        },
       ],
       [
         "raw schema default privilege",
-        `default-schema|${encodeProjectionIdentity([
-          migrator, "r", "public", outsider, migrator, "SELECT",
-        ])}|grantable=f`,
+        {
+          kind: "default-schema",
+          identity: encodeProjectionIdentity([
+            migratorRole,
+            "r",
+            "public",
+            outsider,
+            migratorRole,
+            "SELECT",
+          ]),
+          detail: "grantable=f",
+        },
       ],
       [
         "the global default row's existence is preserved separately",
-        `default-row|${encodeProjectionIdentity([
-          migrator, "r", "-", "global",
-        ])}|exists=t empty=f`,
+        defaultPhysicalRow(migratorRole, "r", "-", "global", false),
       ],
       [
         "global INSERT survives the overlay",
-        `default-effective|${encodeProjectionIdentity([
-          migrator, "r", "public", outsider, migrator, "INSERT",
-        ])}|grantable=f`,
+        defaultEffectiveRow(
+          migratorRole,
+          "r",
+          "public",
+          outsider,
+          migratorRole,
+          "INSERT",
+          false,
+        ),
       ],
       [
         "schema SELECT survives the overlay",
-        `default-effective|${encodeProjectionIdentity([
-          migrator, "r", "public", outsider, migrator, "SELECT",
-        ])}|grantable=f`,
+        defaultEffectiveRow(
+          migratorRole,
+          "r",
+          "public",
+          outsider,
+          migratorRole,
+          "SELECT",
+          false,
+        ),
       ],
       [
         "default SELECT WITH GRANT OPTION collapses to one grantable row",
-        `default-effective|${encodeProjectionIdentity([
-          migrator, "r", "public", "meal_agent_backup", migrator, "SELECT",
-        ])}|grantable=t`,
+        defaultEffectiveRow(
+          migratorRole,
+          "r",
+          "public",
+          "meal_agent_backup",
+          migratorRole,
+          "SELECT",
+          true,
+        ),
       ],
       [
         "external LOGIN inheriting privileges",
-        `effective|${encodeProjectionIdentity([
-          object("relation", "public", "households"), inheritor,
-        ])}|privs=SELECT`,
+        effectiveRow(object("relation", "public", "households"), inheritor, [
+          "SELECT",
+        ]),
       ],
       [
         "external LOGIN reaching a large object entry point",
-        `effective|${encodeProjectionIdentity([
-          ["routine", "pg_catalog", "lo_creat", [["pg_catalog", "int4"]]],
-          inheritor,
-        ])}|privs=EXECUTE`,
+        effectiveRow(loEntryPoint, inheritor, ["EXECUTE"]),
       ],
       [
         "a large object owned by a non-project role",
-        `large-object|${encodeProjectionIdentity([
-          "largeobject", largeObjectId,
-        ])}|owner=${outsider}`,
+        {
+          kind: "large-object",
+          identity: encodeProjectionIdentity(["largeobject", largeObjectId]),
+          detail: `owner=${outsider}`,
+        },
       ],
       [
         "large object ACL granted to PUBLIC",
-        aclRow(object("largeobject", largeObjectId), "PUBLIC", outsider,
-               "UPDATE", "f"),
+        aclRow(
+          object("largeobject", largeObjectId),
+          "PUBLIC",
+          outsider,
+          "UPDATE",
+          false,
+        ),
       ],
       [
-        "large object effective privilege for a project role",
-        `effective|${encodeProjectionIdentity([
-          object("largeobject", largeObjectId), "meal_agent_app",
-        ])}|privs=SELECT`,
+        "large object direct privilege for a project role",
+        effectiveRow(object("largeobject", largeObjectId), "meal_agent_app", [
+          "SELECT",
+          "UPDATE",
+        ]),
+      ],
+      [
+        "large object privilege reached through role inheritance",
+        effectiveRow(object("largeobject", largeObjectId), inheritor, [
+          "SELECT",
+          "UPDATE",
+        ]),
       ],
       [
         "relation owner drift",
-        `owner|${encodeProjectionIdentity(
-          object("relation", "public", "sessions"),
-        )}|owner=${outsider}`,
+        ownerRow(object("relation", "public", "sessions"), outsider),
       ],
-      [
-        "routine owner drift",
-        `owner|${encodeProjectionIdentity([
-          "routine", "meal_agent_private", "app_user_id", [],
-        ])}|owner=${outsider}`,
-      ],
+      ["routine owner drift", ownerRow(routineKey, outsider)],
       [
         "type owner drift follows the relation",
-        `owner|${encodeProjectionIdentity(
-          object("type", "public", "sessions"),
-        )}|owner=${outsider}`,
+        ownerRow(object("type", "public", "sessions"), outsider),
       ],
       [
         "array types are flagged as delegating, not independently grantable",
-        `type-class|${encodeProjectionIdentity(
-          object("type", "public", "_households"),
-        )}|class=array delegates-to=${encodeProjectionIdentity([
-          "public", "households",
-        ])}`,
+        {
+          kind: "type-class",
+          identity: encodeProjectionIdentity(
+            object("type", "public", "_households"),
+          ),
+          detail: `class=array delegates-to=${encodeProjectionIdentity([
+            "public",
+            "households",
+          ])}`,
+        },
       ],
       [
         "row types are flagged as directly grantable",
-        `type-class|${encodeProjectionIdentity(
-          object("type", "public", "households"),
-        )}|class=row grantable-directly=t`,
-      ],
-      [
-        "language effective USAGE is probed",
-        `effective|${encodeProjectionIdentity([
-          object("language", "plpgsql"), "meal_agent_app",
-        ])}|privs=USAGE`,
+        {
+          kind: "type-class",
+          identity: encodeProjectionIdentity(
+            object("type", "public", "households"),
+          ),
+          detail: "class=row grantable-directly=t",
+        },
       ],
     ];
     for (const [label, expected] of expectations) {
-      assert.ok(sees(expected), `the projection must observe ${label}: ${expected}`);
+      assertExactRow(drifted, expected, label);
     }
 
-    // row type 的 PUBLIC USAGE 必须可观察；数组类型没有独立 ACL 行，其权限委托
-    // 到元素类型（PostgreSQL 对数组类型直接拒绝 GRANT/REVOKE 与 ALTER OWNER）。
-    // row/element type 的 ACL 必须逐条可观察；数组类型没有独立 ACL 行，其权限
-    // 委托到元素类型（PostgreSQL 对数组类型直接拒绝 GRANT/REVOKE 与 ALTER OWNER）。
-    //
-    // 观察到的事实（本轮只记录，不在此收敛）：全新安装后每个 managed row type 的
-    // typacl 都已经是 {meal_agent_migrator=U/meal_agent_migrator}，也就是
-    // PUBLIC USAGE 早已不在，app/backup/三个 login 对 row type 都没有有效 USAGE。
-    // 这一状态目前并没有被任何 manifest 显式声明过——它属于 R8B 待裁定项。
-    assert.ok(
-      sees(
-        aclRow(object("type", "public", "households"), migrator, migrator,
-               "USAGE", "f"),
-      ),
-      "the row type's own ACL must be observable",
+    // 列级角色**没有**任何表级有效权限：投影对空权限集不产生行，因此这一条只能
+    // 用「该 identity 不存在」表达，不能写成 privs= 空串。
+    assertNoRow(
+      drifted,
+      "effective",
+      encodeProjectionIdentity([
+        object("relation", "public", "users"),
+        columnOnly,
+      ]),
+      "a column-only grantee must have no table-level effective privilege",
     );
-    const arrayTypePrefix = `acl|${encodeProjectionIdentity([
-      object("type", "public", "_households"),
-    ]).slice(0, -1)}`;
-    assert.ok(
-      !drifted.some((row) => row.startsWith(arrayTypePrefix)),
-      "array types must not be projected as independently grantable",
-    );
-    const publicRowTypePrefix = `acl|${encodeProjectionIdentity([
-      object("type", "public", "households"),
-      "PUBLIC",
-    ]).slice(0, -1)}`;
-    const rowTypePublicUsage = drifted.filter((row) =>
-      row.startsWith(publicRowTypePrefix),
+
+    // 独立 catalog 事实：上面每一类断言都必须能被投影之外的查询复现。
+    await withPool(adminPoolConfig(), async (pool) => {
+      const owners = await pool.query<{ entry: string }>(
+        `SELECT 'relation:' || pg_catalog.pg_get_userbyid(c.relowner) AS entry
+           FROM pg_catalog.pg_class c WHERE c.oid = 'public.sessions'::regclass
+         UNION ALL
+         SELECT 'routine:' || pg_catalog.pg_get_userbyid(p.proowner)
+           FROM pg_catalog.pg_proc p
+          WHERE p.oid = 'meal_agent_private.app_user_id()'::regprocedure
+         UNION ALL
+         SELECT 'largeobject:' || pg_catalog.pg_get_userbyid(m.lomowner)
+           FROM pg_catalog.pg_largeobject_metadata m WHERE m.oid = $1
+         ORDER BY 1`,
+        [largeObjectId],
+      );
+      assert.deepEqual(owners.rows.map((row) => row.entry), [
+        `largeobject:${outsider}`,
+        `relation:${outsider}`,
+        `routine:${outsider}`,
+      ]);
+      const effective = await pool.query<{
+        column_only: boolean;
+        table_level: boolean;
+        lo_select: boolean;
+        lo_update: boolean;
+      }>(
+        `SELECT has_column_privilege($1, 'public.users', 'display_name',
+                                     'SELECT') AS column_only,
+                has_table_privilege($1, 'public.users', 'SELECT')
+                  AS table_level,
+                has_largeobject_privilege($2, $3, 'SELECT') AS lo_select,
+                has_largeobject_privilege($2, $3, 'UPDATE') AS lo_update`,
+        [columnOnly, inheritor, largeObjectId],
+      );
+      // 列级授权成立、表级不成立——这正是「只看表级会整类漏掉」的证据；
+      // Large Object 的两项则来自 inheritor 的角色继承与 PUBLIC。
+      assert.deepEqual(effective.rows[0], {
+        column_only: true,
+        table_level: false,
+        lo_select: true,
+        lo_update: true,
+      });
+    });
+
+    // 外部 NOLOGIN 的边界必须写清并断言：raw 直接 ACL 可见，但它**不在** effective
+    // 探测范围内（探测集合 = PUBLIC + 全部非 superuser LOGIN + meal_agent 前缀）。
+    assertNoRow(
+      drifted,
+      "role",
+      encodeProjectionIdentity([outsider]),
+      "an external NOLOGIN role is not an effective probe subject",
     );
     assert.deepEqual(
-      rowTypePublicUsage,
+      drifted.filter(
+        (row) =>
+          row.kind === "effective" &&
+          (JSON.parse(row.identity) as readonly unknown[])[1] === outsider,
+      ),
       [],
-      "the projection must report the row type's PUBLIC USAGE state faithfully; " +
-        "a fresh install currently has none",
+      "an external NOLOGIN role must not appear in effective probes",
     );
+    assertExactRow(
+      drifted,
+      {
+        kind: "role",
+        identity: encodeProjectionIdentity([inheritor]),
+        detail: "class=login",
+      },
+      "every non-superuser LOGIN is probed",
+    );
+    assertExactRow(
+      drifted,
+      {
+        kind: "role",
+        identity: encodeProjectionIdentity(["meal_agent_app"]),
+        detail: "class=nologin",
+      },
+      "project NOLOGIN roles are probed",
+    );
+
+    // 数组类型没有独立 ACL 行：PostgreSQL 直接拒绝对它们授权或改属。
+    // 「哪些是数组类型」取自 type-class 行本身，不按名字前缀猜——`_` 开头的名字
+    // 也可能是一张真实表的行类型（drizzle.__meal_agent_migrations 就是）。
+    const arrayTypes = new Set(
+      drifted
+        .filter(
+          (row) =>
+            row.kind === "type-class" && row.detail.startsWith("class=array"),
+        )
+        .map((row) => row.identity),
+    );
+    assert.ok(arrayTypes.size >= 10, "the managed schemas do have array types");
+    const arrayTypeAcl = drifted.filter((row) => {
+      if (row.kind !== "acl") {
+        return false;
+      }
+      const [key] = JSON.parse(row.identity) as readonly unknown[];
+      return (
+        Array.isArray(key) &&
+        key[0] === "type" &&
+        arrayTypes.has(encodeProjectionIdentity(key as readonly string[]))
+      );
+    });
+    assert.deepEqual(
+      arrayTypeAcl,
+      [],
+      "array types must not be projected as independently grantable",
+    );
+    const arrayGrant = await withPool(adminPoolConfig(), async (pool) =>
+      attempt(pool, ["GRANT USAGE ON TYPE public._households TO PUBLIC"]),
+    );
+    assert.match(
+      arrayGrant ?? "",
+      /cannot set privileges of array types/,
+      "PostgreSQL itself refuses to grant on an array type",
+    );
+
+    // row type 的 PUBLIC USAGE：全新安装后 typacl 已经是
+    // {meal_agent_migrator=U/meal_agent_migrator}，PUBLIC 不在其中。本轮只如实
+    // 报告这一状态，不收敛（R8B 待裁定）。
+    assertExactRow(
+      drifted,
+      aclRow(
+        object("type", "public", "households"),
+        migratorRole,
+        migratorRole,
+        "USAGE",
+        false,
+      ),
+      "the row type's own ACL",
+    );
+    assertNoRow(
+      drifted,
+      "acl",
+      encodeProjectionIdentity([
+        object("type", "public", "households"),
+        "PUBLIC",
+        migratorRole,
+        "USAGE",
+      ]),
+      "a fresh install has no PUBLIC USAGE on the row type",
+    );
+
     process.stdout.write(
       `authorization projection: ${String(expectations.length)} injected ` +
-        `subjects observed across ${String(drifted.length)} canonical rows\n`,
+        `subjects asserted exactly across ${String(drifted.length)} rows\n`,
     );
   } finally {
+    // 1. 核心对象的 owner 恢复**不允许**被吞掉：DROP OWNED BY 会删掉仍归属于
+    //    该角色的对象，所以恢复失败必须立刻暴露，而不是继续往下走。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(
+        `ALTER TABLE public.sessions OWNER TO ${migratorRole}`,
+      );
+      await pool.query(
+        "ALTER FUNCTION meal_agent_private.app_user_id() " +
+          `OWNER TO ${migratorRole}`,
+      );
+    });
+
+    // 2. 独立 catalog 查询确认归属已经回到 migrator，**然后**才允许 DROP OWNED。
+    await withPool(adminPoolConfig(), async (pool) => {
+      const restored = await pool.query<{ entry: string }>(
+        `SELECT 'relation:' || pg_catalog.pg_get_userbyid(c.relowner) AS entry
+           FROM pg_catalog.pg_class c WHERE c.oid = 'public.sessions'::regclass
+         UNION ALL
+         SELECT 'routine:' || pg_catalog.pg_get_userbyid(p.proowner)
+           FROM pg_catalog.pg_proc p
+          WHERE p.oid = 'meal_agent_private.app_user_id()'::regprocedure
+         UNION ALL
+         SELECT 'type:' || pg_catalog.pg_get_userbyid(t.typowner)
+           FROM pg_catalog.pg_type t WHERE t.oid = 'public.sessions'::regtype
+         ORDER BY 1`,
+      );
+      assert.deepEqual(
+        restored.rows.map((row) => row.entry),
+        [
+          `relation:${migratorRole}`,
+          `routine:${migratorRole}`,
+          `type:${migratorRole}`,
+        ],
+        "ownership must be restored before DROP OWNED BY is allowed to run",
+      );
+    });
+
+    // 3. 现在才拆授权、default privilege、成员关系与 Large Object。
     await withPool(adminPoolConfig(), async (pool) => {
       for (const statement of [
-        "ALTER TABLE public.sessions OWNER TO meal_agent_migrator",
-        "ALTER FUNCTION meal_agent_private.app_user_id() " +
-          "OWNER TO meal_agent_migrator",
-        "REVOKE EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) " +
-          "FROM stage09a_r8a_outsider",
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "REVOKE INSERT ON TABLES FROM stage09a_r8a_outsider",
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
-          "REVOKE SELECT ON TABLES FROM stage09a_r8a_outsider",
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `REVOKE INSERT ON TABLES FROM ${outsider}`,
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA public ` +
+          `REVOKE SELECT ON TABLES FROM ${outsider}`,
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} IN SCHEMA public ` +
           "REVOKE GRANT OPTION FOR SELECT ON TABLES FROM meal_agent_backup",
+        `REVOKE EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) FROM ${outsider}`,
+        `REVOKE SELECT (display_name) ON public.users FROM ${columnOnly}`,
         `ALTER LARGE OBJECT ${largeObjectId} OWNER TO postgres`,
         `SELECT lo_unlink(${largeObjectId})`,
-        "REVOKE stage09a_r8a_outsider FROM stage09a_r8a_inheritor",
-        "DROP OWNED BY stage09a_r8a_outsider",
-        "DROP ROLE IF EXISTS stage09a_r8a_outsider",
-        "DROP ROLE IF EXISTS stage09a_r8a_inheritor",
+        `REVOKE ${outsider} FROM ${inheritor}`,
+        `DROP OWNED BY ${outsider}, ${inheritor}, ${columnOnly}`,
+        `DROP ROLE IF EXISTS ${outsider}`,
+        `DROP ROLE IF EXISTS ${inheritor}`,
+        `DROP ROLE IF EXISTS ${columnOnly}`,
       ]) {
-        await pool.query(statement).catch(() => undefined);
+        await pool.query(statement);
       }
     });
 
-    // 注入必须是可逆的：投影回到原状态，本轮不依赖任何 converge 去「修复」它。
-    const restored = await authorizationProjection();
+    // 4. 清理证据由**独立查询**给出，不靠投影自证。
+    await withPool(adminPoolConfig(), async (pool) => {
+      const leftovers = await pool.query<{ what: string; count: string }>(
+        `SELECT 'roles' AS what, count(*)::text AS count
+           FROM pg_catalog.pg_roles WHERE rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
+         UNION ALL
+         SELECT 'memberships', count(*)::text
+           FROM pg_catalog.pg_auth_members a
+           JOIN pg_catalog.pg_roles m ON m.oid = a.member
+           JOIN pg_catalog.pg_roles g ON g.oid = a.roleid
+          WHERE m.rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
+             OR g.rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
+         UNION ALL
+         SELECT 'relation-acl', count(*)::text FROM pg_catalog.pg_class
+          WHERE relacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'column-acl', count(*)::text FROM pg_catalog.pg_attribute
+          WHERE attacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'routine-acl', count(*)::text FROM pg_catalog.pg_proc
+          WHERE proacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'schema-acl', count(*)::text FROM pg_catalog.pg_namespace
+          WHERE nspacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'type-acl', count(*)::text FROM pg_catalog.pg_type
+          WHERE typacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'database-acl', count(*)::text FROM pg_catalog.pg_database
+          WHERE datacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'default-acl', count(*)::text FROM pg_catalog.pg_default_acl
+          WHERE defaclacl::text LIKE '%stage09a\\_r8a\\_%'
+         UNION ALL
+         SELECT 'large-object', count(*)::text
+           FROM pg_catalog.pg_largeobject_metadata WHERE oid = $1
+         UNION ALL
+         SELECT 'large-object-data', count(*)::text
+           FROM pg_catalog.pg_largeobject WHERE loid = $1
+         ORDER BY 1`,
+        [largeObjectId],
+      );
+      assert.deepEqual(
+        leftovers.rows.filter((row) => row.count !== "0"),
+        [],
+        "cleanup must leave no role, grant, default privilege or large object",
+      );
+      // 归属的正向断言：不是「没有 outsider」，而是「确实回到 migrator」。
+      const restored = await pool.query<{ entry: string }>(
+        `SELECT 'sessions:' || pg_catalog.pg_get_userbyid(c.relowner) AS entry
+           FROM pg_catalog.pg_class c WHERE c.oid = 'public.sessions'::regclass
+         UNION ALL
+         SELECT 'app_user_id:' || pg_catalog.pg_get_userbyid(p.proowner)
+           FROM pg_catalog.pg_proc p
+          WHERE p.oid = 'meal_agent_private.app_user_id()'::regprocedure
+         ORDER BY 1`,
+      );
+      assert.deepEqual(restored.rows.map((row) => row.entry), [
+        `app_user_id:${migratorRole}`,
+        `sessions:${migratorRole}`,
+      ]);
+    });
+
+    // 5. 投影回到 baseline 只是**附加**证据。
     assert.deepEqual(
-      restored,
+      await authorizationProjection(),
       baseline,
       "the projection must return to the exact baseline after cleanup",
     );
+  }
+});
+
+test("the projection keeps identities unambiguous for names containing # @ | and quotes", async () => {
+  const probe = "meal_agent_stage09a_odd";
+  const oddRole = 'stage09a#r8a@odd|role"q"';
+  const oddTable = 'stage09a|odd#tbl@x"y"';
+  const quoted = (name: string): string => `"${name.replaceAll('"', '""')}"`;
+  try {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+      await pool.query(`CREATE ROLE ${quoted(oddRole)} NOLOGIN`);
+    });
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      await pool.query(`CREATE TABLE public.${quoted(oddTable)} (id int)`);
+      await pool.query(
+        `GRANT SELECT ON public.${quoted(oddTable)} TO ${quoted(oddRole)}`,
+      );
+    });
+
+    const rows = await authorizationProjection(probe);
+    const tableKey: readonly ProjectionIdentityPart[] = [
+      "relation",
+      "public",
+      oddTable,
+    ];
+    // 1. 三列没有错位：identity 仍是合法 JSON，detail 仍是完整的 grantable=…。
+    assertExactRow(
+      rows,
+      aclRow(tableKey, oddRole, "postgres", "SELECT", false),
+      "a grant to a role whose name contains # @ | and quotes",
+    );
+    assertExactRow(
+      rows,
+      ownerRow(tableKey, "postgres"),
+      "the odd table's owner",
+    );
+
+    // 2. Node 与 PostgreSQL 的编码逐字节相同——包括被 JSON 转义的双引号。
+    const encoded = encodeProjectionIdentity([tableKey, oddRole]);
+    assert.ok(
+      encoded.includes('\\"'),
+      "the identity must carry JSON-escaped quotes rather than raw ones",
+    );
+    const fromDatabase = await withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query<{ identity: string }>(
+        `SELECT jsonb_build_array(
+                  jsonb_build_array('relation', 'public', $1::text), $2::text
+                )::text AS identity`,
+        [oddTable, oddRole],
+      );
+      return result.rows[0]?.identity;
+    });
+    assert.equal(fromDatabase, encoded);
+
+    // 3. identity 不碰撞：换一个只是分隔符位置不同的名字，identity 必须不同。
+    assert.notEqual(
+      encodeProjectionIdentity([["relation", "public", "a|b"], "c"]),
+      encodeProjectionIdentity([["relation", "public", "a"], "b|c"]),
+    );
+  } finally {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`DROP ROLE IF EXISTS ${quoted(oddRole)}`);
+      const cleaned = await pool.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM pg_catalog.pg_roles
+          WHERE rolname LIKE 'stage09a#%'`,
+      );
+      assert.equal(
+        cleaned.rows[0]?.count,
+        "0",
+        "the odd-named role must be gone",
+      );
+    });
   }
 });

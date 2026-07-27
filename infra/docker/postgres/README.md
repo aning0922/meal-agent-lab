@@ -131,6 +131,29 @@ login**——只检查备份角色会漏掉「migration 顺手把某张新表授
 `PUBLIC EXECUTE`。只封堵已有 LO 的对象权限而放着创建入口，等于允许 runtime 自己
 造一个不受 schema ACL 与 RLS 约束的存储面。
 
+## 只读授权投影（R8A，尚未接入本目录的任何阶段）
+
+`generated/authorization-projection.generated.sql` 是**第四个** generated adapter，
+也是 R8A 唯一的新增交付：一段**单条只读 SELECT**，不含 `GRANT`/`REVOKE`/`ALTER`/
+`SET ROLE`/`SET`/`set_config`。它**没有**被 `01`/`02`/`03` 任何一段 SQL 加载，
+`acl` 与 `grants` 的行为在 R8A 保持字节不变；把它接入 verify/converge 是 R8B 的
+工作，尚未开始。
+
+它按五类事实观察目标库，每类只声称自己实际证明的事：**规范化的直接授权语义**
+（`acl`，`NULL` ACL 展开为隐式内建默认，因此不是「物理 ACL 行」）、
+**`pg_default_acl` 物理行**（`default-row`，含 `empty` 标志）、
+**有效权限**（`effective`，`has_*_privilege`，含 `PUBLIC` 派生与角色继承）、
+**归属**（`owner` / `large-object`）与 **role coverage**（`role`，是覆盖面证据，
+不是允许角色白名单）。语义细节与 PostgreSQL 18.4 实测结论见
+[`services/api/README.md`](../../../services/api/README.md)。
+
+类型与 Large Object 的当前策略（R8A 只报告，收敛属于 R8B）：managed 非数组类型由
+owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个 login
+默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立 ACL；产品禁用
+Large Object，R8B 对**任意** LO 对象必须 fail closed，**只报告、不自动删除未知
+数据**，创建/读写入口、项目角色权限与异常 default ACL 必须关闭，LO 的 OID 不进入
+任何固定允许 manifest。
+
 ## 收敛性
 
 每个阶段都可重复执行。`cluster` 阶段每次都把六个项目角色**完整规范化**回基线：
@@ -200,8 +223,10 @@ generated adapter 是**生成文件，禁止手改**。事实源是
 默认值/存储/排序规则、index 与 constraint 的规范化定义、routine 的
 identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path`
 与 `row_security=off`）/正文 `sha256` 摘要、policy 的
-command/roles/permissive/`USING`/`WITH CHECK`、**全部用户 type（含 shell 与
-base）**、trigger、**外键背后内部 constraint trigger 的启用状态**、rule，以及
+command/roles/permissive/`USING`/`WITH CHECK`、**managed schema 内的用户 type**
+（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向
+真实 relation 的行类型，而 `0000` 没有建 shell / base / enum / domain）、trigger、
+**外键背后内部 constraint trigger 的启用状态**、rule，以及
 operator / opclass / opfamily / collation / conversion / 扩展统计 / 文本搜索 /
 extension 这些明确枚举的 namespace 类别——当前 408 条规范化行。它是纯 SQL、只读：
 不匹配时 `RAISE EXCEPTION`，不做任何变更。

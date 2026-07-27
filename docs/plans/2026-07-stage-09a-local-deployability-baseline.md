@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-27 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 第六轮整改完成、待总控复验；M2B—M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 最终修订完成、待总控复验；R8B 未开始；M2B—M5 未开始，且在 M2A 通过复验前禁止进入）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -25,9 +25,9 @@
 - production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
-- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与两个 manifest 的 generated adapter。仍然缺席的是 Compose 拓扑、`infra/environments/` 配置模板、容器 smoke test、备份恢复脚本与部署运行手册。
+- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的**只读**授权投影——投影尚未被任何 bootstrap 阶段加载）。仍然缺席的是 Compose 拓扑、`infra/environments/` 配置模板、容器 smoke test、备份恢复脚本与部署运行手册。
 - 当前总控机器可用 Node.js 24.14.0（M1 镜像内固定为 Node 24.18.0）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有实际 Compose 运行与备份恢复证据前仍不得把本阶段记为完成。
-- **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**；任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
+- **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的：`scripts/stage-environment.ts` 对标准的 `postgres (PostgreSQL) 18.3` 输出直接 fail closed，并有单元测试证明。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
 - 现有 local/weapp-only 依赖审计例外将在 2026-08-08 到期并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
 
@@ -99,6 +99,27 @@ PostgreSQL healthy
 12. 授权状态另立一个 **ledger 感知**的 manifest，按 `(ledger, phase)` 精确描述 `PUBLIC`/app/backup/三个 login 的 catalog ACL、`pg_default_acl` 有效默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE` 授权；至少区分 0000-only 与 0000—0004 两个 ledger，未登记组合 fail closed。恢复/安装流程分为 migration 前 containment 与 migration 后 final ACL，final 阶段必须同时验证 PUBLIC、app 与 backup。所有异常 ACL 按真实 grantor 收敛，再只重建 manifest 允许项；后验同时检查 catalog ACL 与有效权限。产品声明禁用 Large Object 时，必须同时关闭 `lo_create`/`lo_creat`/`lo_from_bytea` 等创建入口的有效 `EXECUTE`。
 13. `meal_agent_private`：`PUBLIC` 无 `USAGE`/`CREATE`；app 只有所需 `USAGE`、无 `CREATE`；backup 与三个 login 无有效访问；按真实 grantor 收敛；缺失任一 managed schema 时在任何 mutation 之前失败。恢复路径上 `drizzle` 出现未知 routine 或 `SECURITY DEFINER` 必须 fail closed，`PUBLIC` 派生的 `EXECUTE` 必须纳入 app/backup 的**有效**权限验证。Large Object 同时处理 `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 的 `defaclobjtype='L'`：当前产品不使用 LO，因此采用「存在项目角色 LO 权限或异常默认权限即收敛并断言为空」，不借此扩展业务能力。数据库级 `PUBLIC` 的跨 grantor ACL 必须**真正收敛**，不能只在后置校验失败后整体回滚。
 
+14. 授权状态的**观察层与收敛层分开推进**：
+    - **R8A（本轮，已完成待复验）**只交付 canonical projector——一段**单条只读
+      SELECT**（第四个 generated adapter），不含任何 mutation，**不接入**
+      `02-acl-baseline.sql` / `03-backup-grants.sql`，两个既有授权 adapter 保持
+      字节不变。它必须证明：identity 为 JSON 数组且 Node 与 PostgreSQL 编码逐字节
+      相同、结果不随 `search_path` / `quote_all_identifiers` 变化且不修改调用方
+      会话、含 `#`/`@`/`|`/引号的合法名字不碰撞也不错位、`pg_default_acl` 的
+      objtype 与 `acldefault()` 的 objtype 分别映射（sequence 是 `S` 与 `s`）、
+      非空 global 行替换内建默认而空行等价于没有行，以及以上每一条都能被**独立
+      catalog 查询**复现。
+    - **R8B（未开始）**才把 projector 接入 verify/converge、去掉
+      `watchedGrantees` 静态名单，并裁定类型与 Large Object 的收敛。R8B **不得**
+      把动态投影冻结成跨 cluster 的固定快照：`role` 行是覆盖面证据而非允许角色
+      白名单，外部角色按策略匹配，任意 LO 对象按政策判为异常且只报告不删数据，
+      LO 的 OID 不进入固定允许 manifest。
+15. 类型与 Large Object 的策略（R8A 只报告，收敛属于 R8B）：managed 非数组类型由
+    owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个
+    login 默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立
+    ACL（PostgreSQL 直接拒绝对数组类型授权与改属）；产品禁用 Large Object，创建/
+    读写入口、项目角色权限与异常 default ACL 必须关闭。
+
 ### M3：配置和 fake 登录边界
 
 1. 在 `infra/environments/` 增加 local-test 配置模板；所有密码、token 和 Secret 保持空值，由未跟踪环境文件或进程环境注入。
@@ -136,8 +157,17 @@ PostgreSQL healthy
    - 合成家庭/库存记录可授权读取；
    - runtime role 仍不能绕过 RLS 或执行 DDL。
    - database owner 为 `meal_agent_migrator`，全部 schema/table/function owner、`SECURITY DEFINER` owner、GRANT 与 RLS 状态和备份前一致。
-5. 本阶段只记录本地演练耗时，不声明生产 RPO/RTO。
-6. SIGTERM 测试必须证明进程在限定时间内真正退出；当前只设置 `process.exitCode` 的超时分支不能作为强制退出证据。
+5. **受支持的恢复 ledger 窗口至少覆盖 N-1**（见
+   [ADR-0005 §2.4](../architecture/decisions/0005-local-private-deployment-baseline.md)）。
+   本阶段不存在第二个 ledger，因此 M4 验证的是同一 ledger 的 round-trip
+   （`0000—0004` 备份 → 恢复 → 仍是 `0000—0004`）；但授权 manifest 必须为窗口内
+   的**上一个已发布 ledger** 保留对应的 containment 状态，删除旧状态等于宣布该
+   窗口的 dump 不再可恢复，属于需要显式决策的破坏性变更。首次出现 `0005` 时，
+   恢复演练必须扩展为 `cluster` → `createdb --owner=meal_agent_migrator` →
+   `pg_restore`（N-1 ledger）→ containment → `db:migrate`（补齐到当前 ledger）
+   → final → 验证。
+6. 本阶段只记录本地演练耗时，不声明生产 RPO/RTO。
+7. SIGTERM 测试必须证明进程在限定时间内真正退出；当前只设置 `process.exitCode` 的超时分支不能作为强制退出证据。
 
 ### M5：门禁、CI 与文档
 
@@ -163,7 +193,7 @@ PostgreSQL healthy
 | # | 必须满足 |
 | --- | --- |
 | 1 | 从干净 checkout 使用一条文档化命令构建并启动，不依赖本机 `node_modules`、`dist` 或全局 pnpm |
-| 2 | PostgreSQL 为 18.x，migration 从空库顺序执行，第二次执行幂等，checksum 漂移 fail closed |
+| 2 | PostgreSQL 固定为 **18.4**（exact patch，`18.3` 被判据直接拒绝且有自动化测试），migration 从空库顺序执行，第二次执行幂等，checksum 漂移 fail closed；Compose 固定的 image digest 必须由真实仓库解析获得，不得编造 |
 | 3 | `/healthz` 只证明进程存活；数据库不可用、migration 缺失或 checksum 不一致时 `/readyz` 返回非 ready |
 | 4 | 原生 PostgreSQL 18 空实例真实完成 `0000 → database/public/drizzle/ledger 权限交接 → migration login SET ROLE 执行 0001—最新`；migration login 自身非 superuser，但 migrator role 的 DDL/BYPASSRLS 高权限被如实记录；API runtime 不能 DDL 或进入 `meal_agent_migrator`，也不持有 bootstrap/migration 凭据 |
 | 5 | PostgreSQL 无 host port；API 只发布到 `127.0.0.1`，无额外 IPv6 listener，宿主非 loopback 地址访问失败；fake 登录拓扑没有公网入口 |
@@ -175,6 +205,7 @@ PostgreSQL healthy
 | 11 | Docker 不可用时门禁明确失败为缺少前置工具，不能降级成静态检查后宣称 Pass |
 | 12 | `git diff --check`、Markdown 本地链接及密钥/真实数据/生成物扫描通过 |
 | 13 | API image 不含客户端构建依赖；依赖例外未过期、未静默扩展，且 external-test 阻断保持生效 |
+| 14 | 受支持的恢复 ledger 窗口**至少覆盖 N-1**：窗口内每个已发布 ledger 都有对应的 containment manifest 状态，删除任一状态必须是显式的破坏性决策；本阶段验证同一 ledger 的 round-trip，`0005` 出现后必须扩展为「`pg_restore`(N-1) → containment → `db:migrate` → final → 验证」的跨-ledger 演练 |
 
 ## 非范围
 
@@ -214,11 +245,15 @@ pnpm docs:links:check
 git diff --check
 ```
 
-M2A 另有两条只读命令，已并入 `pnpm --filter @meal-agent/api check`：
+M2A 另有两条命令，其中只读门禁已并入 `pnpm --filter @meal-agent/api check`：
 
 ```bash
-pnpm --filter @meal-agent/api manifest:check      # 只读门禁，不改文件
-pnpm --filter @meal-agent/api manifest:generate   # 开发期重新生成 adapter
+pnpm --filter @meal-agent/api manifest:check      # 只读门禁，一次校验四个 adapter
+pnpm --filter @meal-agent/api manifest:generate   # 开发期重新生成四个 adapter
 ```
+
+`pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由
+`pnpm stage08:check` 与上面两条命令给出，不得把 `stage08:check` 通过表述为阶段
+09A 通过。
 
 Compose 运行未完成或备份恢复未验证时，只能记录对应里程碑 `未开始`/`未验证`，不能把阶段状态改为已完成。容器引擎已就绪，`Blocked — 缺少本地容器引擎` 不再适用。

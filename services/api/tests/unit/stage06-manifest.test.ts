@@ -32,6 +32,8 @@ import {
   renderAuthorizationVerifySql,
 } from "../../src/database/authorization-manifest-sql.js";
 import {
+  assertDefaultAclObjtypeMappings,
+  defaultAclObjtypeMappings,
   renderAuthorizationProjectionAdapter,
   renderAuthorizationProjectionSql,
 } from "../../src/database/authorization-projection-sql.js";
@@ -479,12 +481,16 @@ test("the authorization projection is deterministic and performs no mutation", (
     assert.ok(!line.trimStart().startsWith("\\"));
   }
 
-  // 覆盖面：所有必须可观察的 kind 都在渲染文本里。
+  // 覆盖面：所有必须可观察的 kind 都在渲染文本里。`default-row` 是**物理行
+  // 存在性**的唯一载体（空 ACL 展开为零行，与「没有这一行」无法区分），
+  // `default-unmapped` 是未知 objtype 的 fail-closed 标记，两者都不可缺席。
   for (const kind of [
     "'acl'",
     // raw 层是 `'default-' || scope_kind`，因此这里断言前缀与叠加层。
     "'default-' || scope_kind",
+    "'default-row'",
     "'default-effective'",
+    "'default-unmapped'",
     "'effective'",
     "'owner'",
     "'large-object'",
@@ -509,4 +515,56 @@ test("the authorization projection is deterministic and performs no mutation", (
   assert.match(adapter, /GENERATED FILE — DO NOT EDIT\./);
   assert.ok(!adapter.includes("/Users/"));
   assert.ok(!/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(adapter));
+});
+
+test("the default ACL objtype mapping never confuses S (foreign server) with s (sequence)", () => {
+  // 1. 映射穷尽六种 pg_default_acl objtype，且**只有** sequence 换字母。
+  assert.deepEqual(
+    defaultAclObjtypeMappings.map(
+      (mapping) => `${mapping.objtype}->${mapping.acldefaultObjtype}`,
+    ),
+    ["L->L", "S->s", "T->T", "f->f", "n->n", "r->r"],
+  );
+  // 2. 只有 table/sequence/function/type 能带 schema；schema 与 large object
+  //    只有全局形式（PostgreSQL 直接拒绝 `IN SCHEMA … ON SCHEMAS`）。
+  assert.deepEqual(
+    defaultAclObjtypeMappings
+      .filter((mapping) => mapping.schemaScoped)
+      .map((mapping) => mapping.objtype),
+    ["S", "T", "f", "r"],
+  );
+  assertDefaultAclObjtypeMappings();
+
+  // 3. 缺一个、多一个、乱序或重复都必须 fail closed，而不是渲染出一段
+  //    「少了一类默认权限」的 SQL。
+  for (const broken of [
+    defaultAclObjtypeMappings.filter((mapping) => mapping.objtype !== "S"),
+    [
+      ...defaultAclObjtypeMappings,
+      { objtype: "x", acldefaultObjtype: "x", schemaScoped: false },
+    ],
+    [...defaultAclObjtypeMappings].reverse(),
+    [...defaultAclObjtypeMappings, ...defaultAclObjtypeMappings],
+  ]) {
+    assert.throws(
+      () => {
+        assertDefaultAclObjtypeMappings(broken);
+      },
+      (error: unknown) => error instanceof AuthorizationManifestError,
+    );
+  }
+
+  // 4. 渲染出的 SQL 必须走映射列，绝不能再把 defaclobjtype 直接喂给 acldefault。
+  const sql = renderAuthorizationProjectionSql();
+  assert.ok(
+    !sql.includes(`acldefault(sl.objtype::"char"`),
+    "acldefault must never receive a raw pg_default_acl objtype",
+  );
+  assert.match(sql, /acldefault\(sl\.acldefault_objtype::"char"/);
+  assert.match(sql, /\n {6}\('S', 's', true\),\n/);
+  // 槽位的 schema 维度也由映射表决定，不再是硬编码的 objtype 名单。
+  assert.ok(
+    !sql.includes("t.objtype IN ('r', 'S', 'f', 'T')"),
+    "schema-scoped slots must come from the mapping, not a hard-coded list",
+  );
 });

@@ -1,10 +1,10 @@
 # 项目状态
 
-最后更新：2026-07-26
+最后更新：2026-07-27
 
 ## 当前结论
 
-阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted，M2A 待总控复验，M2B—M5 未开始；详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted；M2A 的 **R8A 只读 projector 最终修订**已完成、待总控复验；R8B 未开始；M2B—M5 未开始，且在 M2A 通过复验前禁止进入。详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -71,18 +71,23 @@
 
 项目标准 Codex runtime 直接执行 `pnpm stage08:check`，退出码为 `0`；没有临时注入 `rg` 或改写 PATH。当前门禁包含：
 
+下表是 **2026-07-27 阶段 09A / M2A R8A 最终修订之后**的实际计数（阶段 08 收口时为
+contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A 各轮
+新增测试，业务语义未变）：
+
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 12/12 |
-| API HTTP | 6/6 |
-| PostgreSQL migration/RLS/concurrency | 50/50 |
+| API unit | 39/39 |
+| API HTTP | 7/7 |
+| PostgreSQL migration/RLS/concurrency/身份边界 | 108/108 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
 | audit gate 与 transport 反向单测 | 11/11 |
+| generated adapter 只读门禁 | 4/4 逐字节一致 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
-| Markdown links | Pass |
+| Markdown links | 56 files / 147 local links Pass |
 
 标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、1 high、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，不自动跟随 redirect，任何 3xx 都失败；原始响应流和 gzip 解压流分别实施 16 MiB 上限。normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
 
@@ -95,24 +100,51 @@
 | 里程碑 | 状态 |
 | --- | --- |
 | M1 API 容器构建基线 | 总控 **Accepted** |
-| M2A 数据库身份边界 | **第七轮部分完成 + 第八轮 A 只读投影**，待总控复验 |
+| M2A 数据库身份边界 | **R8A 只读 projector 最终修订完成**，待总控复验 |
+| M2A R8B（把 projector 接入 verify/converge） | **未开始** |
 | M2B / M3 / M4 / M5 | **未开始，且在 M2A 通过复验前禁止进入** |
 
-**仍在整改（属于目标设计，尚未实现）**
+**R8A 最终修订实际交付的**（全部属于**可观察性**，不含任何收敛）
+
+- **sequence default ACL 的真实缺陷已修复**：`pg_default_acl.defaclobjtype` 与
+  `acldefault()` 是两套 objtype 编码，sequence 分别是 `S` 与 `s`，而
+  `acldefault('S', …)` 是 FOREIGN SERVER。修复前 projector 把 sequence 的内建
+  默认**低报**为只剩 `USAGE`（PostgreSQL 18.4 实测：真实新 sequence 的
+  `SELECT`/`UPDATE`/`USAGE` 全为 true，修复前投影只给出 `USAGE`）。现在由显式
+  映射表承载，六种 objtype 穷尽，未知 objtype 以 `default-unmapped` fail closed。
+- **default ACL 的三条真实语义已固化为自动化 parity 测试**，每条都由**独立
+  catalog 查询**与真实新建对象复现，不由 projector 自证：非空 global 行替换内建
+  默认；空 global 行等价于没有行，但 `default-row` 仍能区分两者；global 非
+  grantable `SELECT` 叠加 schema `WITH GRANT OPTION` 后恰好一行且 `grantable=t`。
+- **canonical projector 的运行时性质已证明**：三列结构化读取（不再用 psql 的
+  `|` 文本拼接）、每个 identity 都 JSON 往返且 Node 与 PostgreSQL 编码逐字节
+  相同、两组不同 `search_path`/`quote_all_identifiers` 下结果逐行相同且调用方
+  会话 GUC 不被修改、含 `#`/`@`/`|`/引号的合法名字不碰撞也不错位、两个合法
+  `meal_agent_<suffix>` 库的 database identity 都是 `["database", "<current>"]`。
+- **effective 分支反例已补齐**：无表级授权的列级 ACL、language 的
+  implicit/raw/effective、Large Object 的直接与继承权限，以及外部 NOLOGIN 的
+  边界（raw 直接 ACL 可见，但它不在 effective 探测集合内）。
+- **language 的一处错误语义已更正**：`acldefault('l', …)` 对受信与非受信语言完全
+  相同，非受信语言的限制在建函数时按 superuser 判定、不体现在 ACL 上。原先按
+  `lanpltrusted` 过滤 raw 层会让 raw 说「没人有 USAGE」而 effective 说「所有人
+  都有」，两层自相矛盾。
+
+**仍未实现（属于目标设计，收敛归 R8B）**
 
 | 项 | 现状 |
 | --- | --- |
-| ACL 全主体覆盖 | 收敛与断言仍使用 `watchedGrantees` 静态名单。第八轮 A 已交付**只读** canonical projector（动态枚举全部 grantee/grantor），但尚未接入 verify/converge |
-| default privilege | 现有 verify 仍用 `COALESCE(schema, global, builtin)` 冒充叠加语义。只读投影已按 PostgreSQL 18.4 的真实并集语义分三层表达，待接入 |
-| type / Large Object | row type 的 `PUBLIC USAGE`、LO 入口与 LO 归属的收敛策略尚未裁定；只读投影已让三者完整可见 |
+| ACL 全主体覆盖 | 收敛与断言仍使用 `watchedGrantees` 静态名单。canonical projector 动态枚举全部 grantee/grantor，但**尚未接入** verify/converge |
+| default privilege | 现有 verify 仍用 `COALESCE(schema, global, builtin)` 冒充叠加语义，且同样把 `defaclobjtype` 直接喂给 `acldefault`（sequence 低报）。真实并集语义只在只读投影里，待接入 |
+| type / Large Object | 策略已写定：managed 非数组类型由 owner/migrator 保留必要 `USAGE`，`PUBLIC`/app/backup/三个 login 默认无 `USAGE`；数组类型只记录向元素类型委托，不建立也不撤销独立 ACL；任意 LO 对象 R8B 必须 fail closed，只报告不删数据，LO 的 OID 不进固定允许 manifest。**收敛实现属于 R8B，尚未落地** |
 
-**证据边界**：以上只覆盖数据库身份与授权的**可观察性**。Compose、端口发布、secret file、备份恢复与阶段总门禁均未实现，也未取得证据。
+**证据边界**：以上只覆盖数据库身份与授权的**可观察性**。Compose、端口发布、secret file、备份恢复与阶段总门禁均未实现，也未取得证据；`pnpm stage09a:check` 尚未创建。
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」第六轮整改完成、待总控复验（第五轮 `5ed406c` 未通过复验）；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector 最终修订**完成、待总控复验；R8B（把 projector 接入 verify/converge，并裁定类型/Large Object 的收敛）未开始；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过复验前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
-- **两个阶段感知的事实源**。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（含 shell、base 与每张表的行类型/数组类型；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**382 条规范化行**，描述 PUBLIC/app/backup/三个 login 的 catalog ACL、`pg_default_acl` 有效默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要；未登记的 `(ledger, phase)` fail closed。三个 generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
+- **两个阶段感知的事实源**。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**382 条规范化行**，描述 PUBLIC/app/backup/三个 login 的 catalog ACL、`pg_default_acl` 有效默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要；未登记的 `(ledger, phase)` fail closed。③R8A 新增的**只读授权投影**：`services/api/src/database/authorization-projection-sql.ts` 渲染的单条只读 SELECT，是 R8B 要接入的 canonical projector，**当前不被任何 bootstrap 阶段加载**。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
 - **恢复/安装流程分为两个阶段**：`bootstrap.sh acl` 是 containment（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），`bootstrap.sh grants` 是 final（migration 之后建立最终 ACL，并**同时**验证 PUBLIC、app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只重建允许项，后验同时比对 catalog ACL 与 `has_*_privilege` 有效权限。
-- 产品声明禁用 Large Object，因此除 `lomacl` 与 `defaclobjtype='L'` 收敛为空外，还收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）的 `PUBLIC EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
+- 产品声明禁用 Large Object，因此除 `lomacl` 与 `defaclobjtype='L'` 收敛为空外，还收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）的 `PUBLIC EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。R8B 起对**任意** LO 对象一律 fail closed，且只报告、不自动删除未知数据，LO 的 OID 不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
+- 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
 - API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile 与数据库身份隔离已实现；仍缺 Compose 拓扑、Secret 文件注入、备份恢复证据与阶段总门禁。
@@ -134,4 +166,4 @@
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。下一步是总控复验 M2A，然后进入 M2B（Compose 拓扑），并保持所有外部 Deferred 项原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。下一步是总控复验 M2A 的 R8A；复验通过后先做 R8B（把 canonical projector 接入 verify/converge 并落实类型/Large Object 收敛），R8B 通过后才进入 M2B（Compose 拓扑）。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。

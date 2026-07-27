@@ -1,4 +1,4 @@
--- 阶段 09A / M2A：授权 catalog 的**只读**投影（R8A 修订）。
+-- 阶段 09A / M2A：授权 catalog 的**只读**投影（R8A 最终修订）。
 --
 -- GENERATED FILE — DO NOT EDIT.
 -- 事实源： services/api/src/database/authorization-projection-sql.ts
@@ -9,6 +9,21 @@
 -- SET / set_config 或任何其他 mutation，因此它既不改数据也不改调用方会话。
 -- 它是后续 verify / converge 共用的 canonical projector，本轮只用于观察与
 -- 反向测试，尚未接入 02/03 的任何阶段。
+--
+-- 每个 kind 只声称自己实际证明的事：
+--   acl               规范化的直接授权语义（NULL ACL 展开为隐式内建默认），
+--                     **不是**物理 catalog 里存在的 ACL 行；
+--   default-row       pg_default_acl 的**物理行**存在性（含 empty 标志）；
+--   default-global /  物理行展开后的条目；
+--   default-schema
+--   default-effective 按 PostgreSQL 真实语义叠加出的有效默认权限；
+--   default-unmapped  未知 defaclobjtype 的 fail-closed 标记（健康库恒为空）；
+--   effective         has_*_privilege 的探测结果（含 PUBLIC 派生与角色继承）；
+--   owner /           归属；
+--   large-object
+--   type-class        类型分类与数组类型的委托关系；
+--   role              参与 effective 探测的角色集合——**覆盖面证据**，
+--                     不是允许角色白名单。
 
 WITH
   managed_schema (nspname, oid, nspowner, nspacl) AS (
@@ -112,15 +127,18 @@ WITH
            aclexplode(COALESCE(t.typacl, acldefault('T', t.typowner))) AS acl
      WHERE NOT (t.typcategory = 'A' AND t.typelem <> 0)
     UNION ALL
-    -- language 的隐式 ACL：lanacl 为 NULL 时受信语言对 PUBLIC 开放 USAGE，
-    -- 非受信语言只有 owner 可用。两者都用 acldefault 展开，避免漏掉隐式条目。
+    -- language 的隐式 ACL。PostgreSQL 18.4 实测：acldefault 对**受信与非受信
+    -- 语言完全相同**，都是 {=U/owner, owner=U/owner}——非受信语言的限制在建函数
+    -- 时按 superuser 判定，不体现在 ACL 上，因此 has_language_privilege 对任意
+    -- 角色、非受信语言同样返回 true。
+    -- 所以这里**不能**按 lanpltrusted 过滤：那会让 raw 说「没人有 USAGE」而
+    -- effective 说「所有人都有」，两层自相矛盾。
     SELECT jsonb_build_array('language', l.lanname),
            CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
                   ELSE pg_catalog.pg_get_userbyid(acl.grantee) END, pg_catalog.pg_get_userbyid(acl.grantor),
            acl.privilege_type::text, acl.is_grantable
       FROM pg_catalog.pg_language l,
            aclexplode(COALESCE(l.lanacl, acldefault('l', l.lanowner))) AS acl
-     WHERE l.lanacl IS NOT NULL OR l.lanpltrusted
     UNION ALL
     SELECT jsonb_build_array('largeobject', m.oid::text),
            CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
@@ -149,6 +167,19 @@ WITH
            acl.privilege_type::text, acl.is_grantable
       FROM default_row r, aclexplode(r.acl) AS acl
   ),
+  -- pg_default_acl 的 objtype ↔ acldefault 的 objtype。两套编码只有 sequence
+  -- 不同名（S vs s），而 acldefault('S', …) 是 FOREIGN SERVER，会把 sequence 的
+  -- 内建默认从 SELECT/UPDATE/USAGE 悄悄变成只剩 USAGE。渲染成显式映射表，
+  -- 保证 base 永远不会拿 defaclobjtype 直接去调 acldefault。
+  default_objtype (objtype, acldefault_objtype, schema_scoped) AS (
+    VALUES
+      ('L'::text, 'L'::text, false::boolean),
+      ('S', 's', true),
+      ('T', 'T', true),
+      ('f', 'f', true),
+      ('n', 'n', false),
+      ('r', 'r', true)
+  ),
   -- 被监管的 default ACL 槽位：受监管的 owner × 六个 objtype × （managed schema
   -- 与 global）。owner 集合动态取自 pg_default_acl 里出现过的 defaclrole，再并上
   -- canonical 的 migrator——因此不是「硬编码一个 owner + 四个 objtype」。
@@ -159,16 +190,18 @@ WITH
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d
                     WHERE d.defaclrole = r.oid)
   ),
-  default_slot (defaclrole, owner_oid, objtype, scope, schema_scoped) AS (
-    SELECT o.rolname, o.oid, t.objtype, s.scope, s.schema_scoped
+  default_slot (defaclrole, owner_oid, objtype, acldefault_objtype, scope,
+                schema_scoped) AS (
+    SELECT o.rolname, o.oid, t.objtype, t.acldefault_objtype, s.scope,
+           s.schema_scoped
       FROM default_owner o,
-           (SELECT unnest(ARRAY['r', 'S', 'f', 'T', 'n', 'L']) AS objtype) t,
+           default_objtype t,
            (SELECT nspname AS scope, true AS schema_scoped FROM managed_schema
              UNION ALL SELECT '-', false) s
      WHERE s.schema_scoped = false
-        OR t.objtype IN ('r', 'S', 'f', 'T')
+        OR t.schema_scoped
   ),
-  -- base = 非空 global 行则**替换**内建默认；否则内建默认。
+  -- base = 非空 global 行则**替换**内建默认；否则内建默认（按映射后的 objtype）。
   default_base (defaclrole, objtype, scope, grantee, grantor, privilege,
                 grantable) AS (
     SELECT sl.defaclrole, sl.objtype, sl.scope,
@@ -180,7 +213,7 @@ WITH
         ON g.scope_kind = 'global' AND g.defaclrole = sl.defaclrole
        AND g.objtype = sl.objtype AND NOT g.is_empty,
            aclexplode(COALESCE(g.acl,
-                               acldefault(sl.objtype::"char",
+                               acldefault(sl.acldefault_objtype::"char",
                                           sl.owner_oid))) AS acl
   ),
   -- effective = base ⊎ schema 行；同一 (grantee, grantor, privilege) 只出一行，
@@ -342,6 +375,18 @@ WITH
              jsonb_build_array(defaclrole, objtype, scope, scope_kind)::text,
              'exists=t empty=' || CASE WHEN is_empty THEN 't' ELSE 'f' END
         FROM default_row
+      UNION ALL
+      -- fail closed：一个本投影不认识的 defaclobjtype 不能静默从 base 里消失。
+      -- 它没有可信的 acldefault 参数，因此不参与 default-effective，但必须显式
+      -- 现形，由消费方（R8B 的 verify）判为异常。PostgreSQL 18 的默认权限语句
+      -- 只能写出上面六种 objtype，所以健康库里这一类恒为空——它是版本前向
+      -- 保护，不是已发生过的状态。
+      SELECT 'default-unmapped',
+             jsonb_build_array(defaclrole, objtype, scope, scope_kind)::text,
+             'acldefault-objtype=unknown'
+        FROM default_row r
+       WHERE NOT EXISTS (SELECT 1 FROM default_objtype t
+                          WHERE t.objtype = r.objtype)
       UNION ALL
       SELECT 'default-effective',
              jsonb_build_array(defaclrole, objtype, scope, grantee, grantor,

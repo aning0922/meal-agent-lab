@@ -65,9 +65,14 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 
 ### 阶段 09A / M2A 当前状态
 
-M1 已 Accepted；M2A **第七轮部分完成 + 第八轮 A 只读投影**，待总控复验；在复验通过
-之前不进入 M2B。仍在整改的三项是 **ACL 全主体覆盖**、**default privilege 叠加
-语义**与 **type / Large Object 裁定**——下面的「目标设计」与「已实现事实」分开写，
+M1 已 Accepted；M2A 的 **R8A 只读 projector 最终修订**已完成，待总控复验。R8B
+（把 projector 接入 verify/converge）**未开始**；M2B—M5 未开始，且在 M2A 通过
+复验前禁止进入。
+
+R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
+断言阶段。因此 **ACL 全主体覆盖**与 **default privilege 叠加语义**目前只做到
+「能被完整、确定地观察」，收敛仍由旧的 `watchedGrantees` 静态名单与
+`authorization-manifest-sql.ts` 承担。下面的「目标设计」与「已实现事实」分开写，
 不要把前者当成后者。
 
 ### 冻结 0000 的安全 manifest
@@ -86,7 +91,7 @@ ledger）执行完毕后，catalog 中与安全相关的规范化投影——**�
 | `index` / `constraint` | 24 / 163 | 规范化定义（PostgreSQL 18 把 NOT NULL 也登记为约束） |
 | `routine` | 4 | identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path` 与 `row_security=off`）/正文 `sha256` 摘要 |
 | `policy` | 14 | command/roles/permissive/`USING`/`WITH CHECK` |
-| `type` | 10 | managed schema 内的用户 type，含 shell、base 与每张表的行类型/数组类型；`pg_catalog` 等系统 schema 不在范围内 |
+| `type` | 10 | managed schema 内的用户 type。**当前这 10 条全部是每张表的数组类型**（10 张表 → 10 个 `_<表名>` 数组类型），**不含行类型**：投影排除了 `typrelid` 指向真实 relation 的行类型，`0000` 也没有建 shell / base / enum / domain。`pg_catalog` 等系统 schema 不在范围内 |
 | `constraint-trigger` | 60 | 外键背后的内部触发器**启用状态** |
 | `trigger` / `rule` / operator / opclass / opfamily / collation / conversion / statistics / text-search / extension | 0 | 0000 一个都不建，出现即 `unexpected` |
 
@@ -107,8 +112,11 @@ database owner 夺回给 admin——都直接拒绝，因为单字段判据会�
 
 对象 catalog 基线实际绑定 **PostgreSQL 18.4**：约束/索引/表达式的规范化文本、
 PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都由具体 patch
-版本决定。M2B 必须固定 18.4 的 exact image digest，patch 升级要重新 capture
-manifest、重跑 parity 并显式 rebaseline。
+版本决定。判据是 exact-patch 的，`scripts/stage-environment.ts` 对 `18.3` 直接
+fail closed，并有单元测试用标准 `postgres --version` 输出证明这一点。M2B 落
+Compose 时必须**解析真实仓库**得到 18.4 的 exact image digest 再固定，当前文档
+不得写入任何编造的 digest；patch 升级要重新 capture manifest、重跑 parity 并显式
+rebaseline。
 
 [`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
 把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何
@@ -125,8 +133,9 @@ pnpm --filter @meal-agent/api manifest:generate
 pnpm --filter @meal-agent/api manifest:check
 ```
 
-`manifest:check` 已并入 `pnpm --filter @meal-agent/api check`，它一次校验**三个**
-generated adapter。generated 文件带 do-not-edit 标记、manifest 版本与 canonical
+`manifest:check` 已并入 `pnpm --filter @meal-agent/api check`，它一次校验**四个**
+generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 的只读授权投影）。
+generated 文件带 do-not-edit 标记、manifest 版本与 canonical
 digest，不含时间戳、绝对路径、locale 或随机值。「TS manifest ↔ generated SQL
 一致」只是其中一环：数据库测试还在真实 PostgreSQL 18 上执行冻结 `0000`，把 catalog
 的规范化投影与 TypeScript manifest 逐行比对（owner handoff 前后各一次），因此
@@ -158,6 +167,59 @@ app、backup 与三个 login）。两个阶段执行同一段生成的收敛块�
 产品声明禁用 Large Object，因此收敛块还会收回 `pg_catalog` 中 20 个 LO 入口点
 （`lo_create`、`lo_creat`、`lo_from_bytea`、`lo_put` …）的 `PUBLIC EXECUTE`：
 只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的不受约束的存储面。
+
+### 只读授权投影（R8A，尚未接入 verify/converge）
+
+[`src/database/authorization-projection-sql.ts`](src/database/authorization-projection-sql.ts)
+渲染出**单条只读 SELECT**（`generated/authorization-projection.generated.sql`）：
+不含 `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/`set_config`，既不改数据也不改调用
+方会话。它是 R8B 要接入的 canonical projector，**本轮只用于观察与反向测试**。
+
+每个 kind 只声称自己实际证明的事：
+
+| kind | 含义 |
+| --- | --- |
+| `acl` | **规范化的直接授权语义**：`NULL` ACL 按 PostgreSQL 语义展开为隐式内建默认权限。它**不是**「物理 catalog 里存在的 ACL 行」——`relacl IS NULL` 的表物理上一条 aclitem 都没有，投影仍会给出 owner 的内建默认权限。唯一例外是列级 `attacl`：它没有内建默认值 |
+| `default-row` | `pg_default_acl` 的**物理行**存在性（含 `empty` 标志）。空 ACL 展开是零行，与「没有这一行」无法区分，因此存在性只能由这一层承载 |
+| `default-global` / `default-schema` | 物理行展开后的条目 |
+| `default-effective` | 按 PostgreSQL 真实语义叠加出的有效默认权限 |
+| `default-unmapped` | 未知 `defaclobjtype` 的 fail-closed 标记，健康库恒为空 |
+| `effective` | `has_*_privilege` 探测结果，含 `PUBLIC` 派生与角色继承 |
+| `owner` / `large-object` | 归属 |
+| `type-class` | 类型分类与数组类型的委托关系 |
+| `role` | 参与 effective 探测的角色集合——**覆盖面证据，不是允许角色白名单** |
+
+三条由真实 PostgreSQL 18.4 实测确定、并已固化为自动化测试的语义：
+
+1. **非空** global `pg_default_acl` 行**替换**内建默认，而不是与之合并；
+2. **空** global 行等价于「没有行」（新对象落回内建默认），但 `default-row` 仍能
+   区分两者；
+3. `pg_default_acl.defaclobjtype` 与 `acldefault()` 是**两套 objtype 编码**：
+   sequence 在前者是 `S`、在后者是 `s`，而 `acldefault('S', …)` 是
+   **FOREIGN SERVER**（只有 `USAGE`）。直接把 `defaclobjtype` 喂给 `acldefault`
+   会把 sequence 的内建默认从 `SELECT`/`UPDATE`/`USAGE` **低报**成只剩 `USAGE`。
+   现在由显式映射表承载，六种 objtype 穷尽，未知 objtype fail closed。
+
+另一条实测更正：`acldefault('l', owner)` 对**受信与非受信语言完全相同**，都是
+`{=U/owner, owner=U/owner}`；非受信语言的限制在建函数时按 superuser 判定，不体现
+在 ACL 上。因此投影不再按 `lanpltrusted` 过滤 raw 层——否则 raw 说「没人有
+USAGE」而 effective 说「所有人都有」，两层自相矛盾。
+
+类型与 Large Object 的当前策略（R8A 只报告，收敛属于 R8B）：
+
+- **managed 非数组类型**：owner（`meal_agent_migrator`）保留必要 `USAGE`；
+  `PUBLIC`、app、backup 与三个 login 默认无 `USAGE`。全新安装后 row type 的
+  `typacl` 已经是 `{meal_agent_migrator=U/meal_agent_migrator}`，投影如实报告；
+- **数组类型**：只记录「向元素类型委托」，既不建立也不撤销独立 ACL——PostgreSQL
+  对数组类型直接拒绝授权与改属（`cannot set privileges of array types`）；
+- **Large Object**：产品声明禁用。R8B 对**任意** LO 对象必须 fail closed，且
+  **只报告、不自动删除未知数据**；创建/读写入口、项目角色权限与异常 default ACL
+  必须关闭。LO 的 OID 不进入任何固定允许 manifest。
+
+R8B 的边界：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
+出现过的 owner、LO 的 OID），因此**不得**把整份投影冻结成跨 cluster 的固定快照。
+只有 database identity 是可移植的逻辑键 `["database", "<current>"]`；外部角色只能
+用策略匹配，不能逐个登记角色名。
 
 连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
 600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是

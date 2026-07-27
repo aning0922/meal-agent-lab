@@ -67,7 +67,12 @@ export const assertStageNodeVersion = (): void => {
  */
 export const supportedPostgresVersion = "18.4";
 
-const isSupportedPostgres = (version: string): boolean =>
+/**
+ * exact-patch 判据。导出只是为了可测：`postgres --version` 的标准输出形如
+ * `postgres (PostgreSQL) 18.3`，而 18.3 与 18.4 的 catalog 基线不可互换，因此
+ * 必须有一条自动化测试证明 18.3 被拒绝，而不是靠人读这段注释。
+ */
+export const isSupportedPostgres = (version: string): boolean =>
   version.includes(` ${supportedPostgresVersion} `) ||
   version.includes(` ${supportedPostgresVersion}\n`) ||
   version.trimEnd().endsWith(` ${supportedPostgresVersion}`);
