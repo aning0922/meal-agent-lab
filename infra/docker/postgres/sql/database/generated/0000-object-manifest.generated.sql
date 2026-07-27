@@ -53,6 +53,13 @@ BEGIN
         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
        WHERE 'type:' || n.nspname || '.' || t.typname
                = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE 'routine:' || n.nspname || '.' || p.proname || '('
+               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
     ) AS handoff_owners) AS tuple_owners;
   IF owner_states IS NOT NULL THEN
     IF EXISTS (
@@ -77,6 +84,13 @@ BEGIN
         FROM pg_catalog.pg_type t
         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
        WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE 'routine:' || n.nspname || '.' || p.proname || '('
+               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
                = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
     ) AS handoff_owners) AS bad
        WHERE bad.owner_name <> ALL (ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[])
@@ -107,6 +121,13 @@ BEGIN
         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
        WHERE 'type:' || n.nspname || '.' || t.typname
                = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE 'routine:' || n.nspname || '.' || p.proname || '('
+               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
     ) AS handoff_owners) AS a WHERE a.owner_name = 'meal_agent_migrator')
        AND EXISTS (SELECT 1 FROM (SELECT DISTINCT owner_name FROM (
       SELECT pg_catalog.pg_get_userbyid(d.datdba)::text AS owner_name
@@ -129,6 +150,13 @@ BEGIN
         FROM pg_catalog.pg_type t
         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
        WHERE 'type:' || n.nspname || '.' || t.typname
+               = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE 'routine:' || n.nspname || '.' || p.proname || '('
+               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
                = ANY (ARRAY['database:<current>', 'relation:drizzle.__meal_agent_migrations', 'schema:drizzle', 'schema:public', 'type:drizzle.___meal_agent_migrations']::text[])
     ) AS handoff_owners) AS b WHERE b.owner_name <> 'meal_agent_migrator') THEN
       RAISE EXCEPTION

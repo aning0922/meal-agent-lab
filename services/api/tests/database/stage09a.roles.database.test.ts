@@ -3752,14 +3752,12 @@ test("the object manifest is stable across session GUCs and catches a post-hando
       { env: adminEnvironment() },
     );
     assert.equal(restored.code, 0, restored.stderr.slice(0, 300));
+    // 精确断言：SHOW 的两行输出必须**恰好**是调用方设置的值。
     const shown = restored.stdout.split("\n").filter((line) => line !== "");
-    assert.ok(
-      shown.includes("on"),
-      `quote_all_identifiers must be restored, saw: ${restored.stdout}`,
-    );
-    assert.ok(
-      shown.some((line) => line.includes("public")),
-      `search_path must be restored, saw: ${restored.stdout}`,
+    assert.deepEqual(
+      shown,
+      ["on", '"public"'],
+      `both GUCs must be restored exactly, saw: ${JSON.stringify(restored.stdout)}`,
     );
 
     // 3. handoff 阶段由**整组** owner 判定，不是 database owner 单字段。任何
@@ -3772,10 +3770,16 @@ test("the object manifest is stable across session GUCs and catches a post-hando
         /owner handoff group is in a mixed state \(meal_agent_migrator,postgres\)/,
       ],
       [
-        "database owned by admin while schema and ledger are migrator",
-        `ALTER DATABASE ${probe} OWNER TO postgres`,
-        `ALTER DATABASE ${probe} OWNER TO meal_agent_migrator`,
+        "only schema drizzle grabbed back",
+        "ALTER SCHEMA drizzle OWNER TO postgres",
+        "ALTER SCHEMA drizzle OWNER TO meal_agent_migrator",
         /entirely pre-handoff or entirely owned by meal_agent_migrator/,
+      ],
+      [
+        "drizzle schema and ledger split across two owners",
+        "ALTER SCHEMA drizzle OWNER TO postgres",
+        "ALTER SCHEMA drizzle OWNER TO meal_agent_migrator",
+        /owner handoff group is in a mixed state \(meal_agent_migrator,postgres\)/,
       ],
       [
         "only schema public grabbed back",
@@ -4146,5 +4150,285 @@ test("an abnormal grant from an independent grantor is converged and only manife
     });
     await runBootstrap("acl");
     await runBootstrap("grants");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 阶段 09A / M2A 第八轮 A：**只读**授权 catalog 投影。
+//
+// 本轮不实现 ACL convergence。这些用例只证明一件事：所有权限状态都能被完整、
+// 确定地**观察**出来。注入之后显式清理，并断言对象/owner/ACL 回到原状态；不让
+// 现有 converge 去「修复」这些反例，也不把已知不安全状态写成 Accepted。
+// ---------------------------------------------------------------------------
+
+/** 跑只读投影，返回 `kind|identity|detail` 行。 */
+const authorizationProjection = async (
+  database: string = rolesDatabase,
+): Promise<readonly string[]> => {
+  const result = await runCaptured(
+    join(postgresBin, "psql"),
+    [
+      "--no-psqlrc",
+      "--quiet",
+      "--no-password",
+      "--tuples-only",
+      "--no-align",
+      "--field-separator",
+      "|",
+      "--set",
+      "ON_ERROR_STOP=on",
+      "--dbname",
+      database,
+      "--file",
+      generatedSql("authorization-projection.generated.sql"),
+    ],
+    { env: adminEnvironment() },
+  );
+  assert.equal(
+    result.code,
+    0,
+    `the authorization projection must run read-only: ${result.stderr.slice(0, 400)}`,
+  );
+  return result.stdout.split("\n").filter((line) => line !== "");
+};
+
+test("the read-only authorization projection observes every ACL subject", async () => {
+  const baseline = await authorizationProjection();
+  const kinds = new Set(baseline.map((row) => row.slice(0, row.indexOf("|"))));
+  for (const kind of [
+    "acl",
+    "default-global",
+    "default-schema",
+    "default-effective",
+    "effective",
+    "owner",
+    "type-class",
+    "role",
+  ]) {
+    assert.ok(kinds.has(kind), `projection kind ${kind} must be present`);
+  }
+  assert.ok(baseline.length > 300, "the projection must be non-trivial");
+
+  const largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ loid: string }>(
+      "SELECT lo_from_bytea(0, 'stage09a-r8a'::bytea)::text AS loid",
+    );
+    const loid = result.rows[0]?.loid;
+    assert.ok(loid !== undefined);
+    return loid;
+  });
+
+  try {
+    await withPool(adminPoolConfig(), async (pool) => {
+      for (const statement of [
+        "CREATE ROLE stage09a_r8a_outsider NOLOGIN",
+        "CREATE ROLE stage09a_r8a_inheritor LOGIN INHERIT",
+        "GRANT USAGE ON SCHEMA public TO stage09a_r8a_outsider",
+        // 1. 未知 grantee 拿到 database / schema / table / routine / type 权限
+        `GRANT CONNECT ON DATABASE ${rolesDatabase} TO stage09a_r8a_outsider`,
+        "GRANT USAGE ON SCHEMA meal_agent_private TO stage09a_r8a_outsider",
+        "GRANT SELECT ON public.households TO stage09a_r8a_outsider",
+        "GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() " +
+          "TO stage09a_r8a_outsider",
+        "GRANT USAGE ON TYPE public.users TO stage09a_r8a_outsider",
+        // 3. WITH GRANT OPTION
+        "GRANT SELECT, INSERT ON public.users TO stage09a_r8a_outsider " +
+          "WITH GRANT OPTION",
+        // 4 + 5. default privilege 叠加与 default grant option
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "GRANT INSERT ON TABLES TO stage09a_r8a_outsider",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+          "GRANT SELECT ON TABLES TO stage09a_r8a_outsider",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+          "GRANT SELECT ON TABLES TO meal_agent_backup WITH GRANT OPTION",
+        // 6. 外部非 superuser LOGIN 通过继承取得权限
+        "GRANT stage09a_r8a_outsider TO stage09a_r8a_inheritor",
+        // 7. 非项目角色拥有的 Large Object 及其 ACL
+        `ALTER LARGE OBJECT ${largeObjectId} OWNER TO stage09a_r8a_outsider`,
+        `GRANT SELECT ON LARGE OBJECT ${largeObjectId} TO meal_agent_app`,
+        `GRANT UPDATE ON LARGE OBJECT ${largeObjectId} TO PUBLIC`,
+        "GRANT EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) " +
+          "TO stage09a_r8a_outsider",
+        // 8. final 阶段的 relation / routine / type owner 漂移
+        "ALTER TABLE public.sessions OWNER TO stage09a_r8a_outsider",
+        "ALTER FUNCTION meal_agent_private.app_user_id() " +
+          "OWNER TO stage09a_r8a_outsider",
+      ]) {
+        await pool.query(statement);
+      }
+      // 2. 第三方 grantor 授予一个「权限集合看似合规」的重复 SELECT。
+      const client = await pool.connect();
+      try {
+        await client.query(
+          "SELECT set_config('role', 'stage09a_r8a_outsider', false)",
+        );
+        await client.query("GRANT SELECT ON public.users TO meal_agent_app");
+        await client.query(
+          "GRANT INSERT ON public.users TO meal_agent_backup WITH GRANT OPTION",
+        );
+      } finally {
+        client.release();
+      }
+    });
+
+    const drifted = await authorizationProjection();
+    const sees = (needle: string): boolean =>
+      drifted.some((row) => row.includes(needle));
+    const expectations: readonly [string, string][] = [
+      [
+        "unknown grantee on the database",
+        `acl|database:${rolesDatabase}#stage09a_r8a_outsider#meal_agent_migrator#CONNECT|grantable=f`,
+      ],
+      [
+        "unknown grantee on a managed schema",
+        "acl|schema:meal_agent_private#stage09a_r8a_outsider#meal_agent_migrator#USAGE|grantable=f",
+      ],
+      [
+        "unknown grantee on a table",
+        "acl|relation:public.households#stage09a_r8a_outsider#meal_agent_migrator#SELECT|grantable=f",
+      ],
+      [
+        "unknown grantee on a routine",
+        "acl|routine:meal_agent_private.app_user_id()#stage09a_r8a_outsider#",
+      ],
+      [
+        "unknown grantee on a type",
+        "acl|type:public.users#stage09a_r8a_outsider#meal_agent_migrator#USAGE|grantable=f",
+      ],
+      [
+        "third-party grantor duplicating a compliant-looking SELECT",
+        "acl|relation:public.users#meal_agent_app#stage09a_r8a_outsider#SELECT|grantable=f",
+      ],
+      [
+        "the canonical SELECT is still a separate row",
+        "acl|relation:public.users#meal_agent_app#meal_agent_migrator#SELECT|grantable=f",
+      ],
+      [
+        "WITH GRANT OPTION",
+        "acl|relation:public.users#meal_agent_backup#stage09a_r8a_outsider#INSERT|grantable=t",
+      ],
+      [
+        "raw global default privilege",
+        "default-global|meal_agent_migrator#r@-#stage09a_r8a_outsider#meal_agent_migrator#INSERT|grantable=f",
+      ],
+      [
+        "raw schema default privilege",
+        "default-schema|meal_agent_migrator#r@public#stage09a_r8a_outsider#meal_agent_migrator#SELECT|grantable=f",
+      ],
+      [
+        "global INSERT survives the overlay",
+        "default-effective|meal_agent_migrator#r@public#stage09a_r8a_outsider#meal_agent_migrator#INSERT|grantable=f",
+      ],
+      [
+        "schema SELECT survives the overlay",
+        "default-effective|meal_agent_migrator#r@public#stage09a_r8a_outsider#meal_agent_migrator#SELECT|grantable=f",
+      ],
+      [
+        "default SELECT WITH GRANT OPTION",
+        "default-effective|meal_agent_migrator#r@public#meal_agent_backup#meal_agent_migrator#SELECT|grantable=t",
+      ],
+      [
+        "external LOGIN inheriting privileges",
+        "effective|relation:public.households#stage09a_r8a_inheritor|privs=SELECT",
+      ],
+      [
+        "external LOGIN reaching a large object entry point",
+        "effective|routine:pg_catalog.lo_creat(integer)#stage09a_r8a_inheritor|privs=EXECUTE",
+      ],
+      [
+        "a large object owned by a non-project role",
+        `large-object|largeobject:${largeObjectId}|owner=stage09a_r8a_outsider`,
+      ],
+      [
+        "large object ACL granted to PUBLIC",
+        `acl|largeobject:${largeObjectId}#PUBLIC#stage09a_r8a_outsider#UPDATE|grantable=f`,
+      ],
+      [
+        "relation owner drift",
+        "owner|relation:public.sessions|owner=stage09a_r8a_outsider",
+      ],
+      [
+        "routine owner drift",
+        "owner|routine:meal_agent_private.app_user_id()|owner=stage09a_r8a_outsider",
+      ],
+      [
+        "type owner drift follows the relation",
+        "owner|type:public.sessions|owner=stage09a_r8a_outsider",
+      ],
+      [
+        "array types are flagged as delegating, not independently grantable",
+        "type-class|type:public._households|class=array delegates-to=households",
+      ],
+      [
+        "row types are flagged as directly grantable",
+        "type-class|type:public.households|class=row grantable-directly=t",
+      ],
+    ];
+    for (const [label, expected] of expectations) {
+      assert.ok(sees(expected), `the projection must observe ${label}: ${expected}`);
+    }
+
+    // row type 的 PUBLIC USAGE 必须可观察；数组类型没有独立 ACL 行，其权限委托
+    // 到元素类型（PostgreSQL 对数组类型直接拒绝 GRANT/REVOKE 与 ALTER OWNER）。
+    // row/element type 的 ACL 必须逐条可观察；数组类型没有独立 ACL 行，其权限
+    // 委托到元素类型（PostgreSQL 对数组类型直接拒绝 GRANT/REVOKE 与 ALTER OWNER）。
+    //
+    // 观察到的事实（本轮只记录，不在此收敛）：全新安装后每个 managed row type 的
+    // typacl 都已经是 {meal_agent_migrator=U/meal_agent_migrator}，也就是
+    // PUBLIC USAGE 早已不在，app/backup/三个 login 对 row type 都没有有效 USAGE。
+    // 这一状态目前并没有被任何 manifest 显式声明过——它属于 R8B 待裁定项。
+    assert.ok(
+      sees("acl|type:public.households#meal_agent_migrator#meal_agent_migrator#USAGE"),
+      "the row type's own ACL must be observable",
+    );
+    assert.ok(
+      !drifted.some((row) => row.startsWith("acl|type:public._households#")),
+      "array types must not be projected as independently grantable",
+    );
+    const rowTypePublicUsage = drifted.filter((row) =>
+      row.startsWith("acl|type:public.households#PUBLIC#"),
+    );
+    assert.deepEqual(
+      rowTypePublicUsage,
+      [],
+      "the projection must report the row type's PUBLIC USAGE state faithfully; " +
+        "a fresh install currently has none",
+    );
+    process.stdout.write(
+      `authorization projection: ${String(expectations.length)} injected ` +
+        `subjects observed across ${String(drifted.length)} canonical rows\n`,
+    );
+  } finally {
+    await withPool(adminPoolConfig(), async (pool) => {
+      for (const statement of [
+        "ALTER TABLE public.sessions OWNER TO meal_agent_migrator",
+        "ALTER FUNCTION meal_agent_private.app_user_id() " +
+          "OWNER TO meal_agent_migrator",
+        "REVOKE EXECUTE ON FUNCTION pg_catalog.lo_creat(integer) " +
+          "FROM stage09a_r8a_outsider",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+          "REVOKE INSERT ON TABLES FROM stage09a_r8a_outsider",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+          "REVOKE SELECT ON TABLES FROM stage09a_r8a_outsider",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator IN SCHEMA public " +
+          "REVOKE GRANT OPTION FOR SELECT ON TABLES FROM meal_agent_backup",
+        `ALTER LARGE OBJECT ${largeObjectId} OWNER TO postgres`,
+        `SELECT lo_unlink(${largeObjectId})`,
+        "REVOKE stage09a_r8a_outsider FROM stage09a_r8a_inheritor",
+        "DROP OWNED BY stage09a_r8a_outsider",
+        "DROP ROLE IF EXISTS stage09a_r8a_outsider",
+        "DROP ROLE IF EXISTS stage09a_r8a_inheritor",
+      ]) {
+        await pool.query(statement).catch(() => undefined);
+      }
+    });
+
+    // 注入必须是可逆的：投影回到原状态，本轮不依赖任何 converge 去「修复」它。
+    const restored = await authorizationProjection();
+    assert.deepEqual(
+      restored,
+      baseline,
+      "the projection must return to the exact baseline after cleanup",
+    );
   }
 });

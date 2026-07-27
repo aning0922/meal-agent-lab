@@ -169,12 +169,14 @@ identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE`
 
 - 首个受支持的 backup ledger 是 **`0000—0004`**。`0001`—`0003` 的中间态 dump
   从未被产出过，也不声称受支持。
-- 今后每新增一个 migration，都必须为支持窗口内的**旧 ledger** 保留对应的
-  containment manifest 状态；删除旧状态等于宣布该窗口的 dump 不再可恢复，属于
-  需要显式决策的破坏性变更。
-- M4 至少要验证一次「受支持的旧 ledger → 当前 ledger」的完整恢复：
-  `cluster` → `createdb --owner=meal_agent_migrator` → `pg_restore`（旧 ledger）
+- **本阶段（M4）验证的是同一 ledger 的 round-trip**：`0000—0004` 备份 →
+  恢复 → 仍是 `0000—0004`。此刻不存在第二个 ledger，跨-ledger 演练无从谈起。
+- **跨-ledger 门禁在首次出现 `0005` 时启用**：那一刻起，恢复演练必须覆盖
+  `cluster` → `createdb --owner=meal_agent_migrator` → `pg_restore`（`0000—0004`）
   → containment → `db:migrate`（补齐到当前 ledger）→ final → 验证。
+- 支持窗口**至少覆盖上一个已发布 ledger（N-1）**：每新增一个 migration，都必须
+  为窗口内的旧 ledger 保留对应的 containment manifest 状态。删除旧状态等于宣布
+  该窗口的 dump 不再可恢复，属于需要显式决策的破坏性变更。
 
 ### 3. fake 登录需要配置与网络双重防线
 

@@ -22,11 +22,10 @@ import { createHash } from "node:crypto";
  *     `OWNER TO meal_agent_migrator`，因此与阶段无关。
  *   - `handoff-pending`：`public` / `drizzle` schema、drizzle ledger 及其数组类型
  *     在 owner handoff **之前**属于 bootstrap admin 或 `pg_database_owner`，
- *     之后属于 migrator。**handoff 完成之后，这些对象也必须精确是 migrator**——
- *     判定依据是可观察的事实：目标 database 的 owner 是否已经是
- *     `meal_agent_migrator`（handoff 的第一条 mutation 就是 `ALTER DATABASE
- *     ... OWNER TO`，且整段在同一事务内）。因此 `handoff-pending` 不是「永远
- *     放行 admin」，只是如实表达那个有界的过渡态。
+ *     之后属于 migrator。阶段由**整组 owner** 判定（见
+ *     `stage06-manifest-sql.ts` 的 `handoffOwnerTupleSql`）：整组未交接或整组
+ *     属于 migrator 才合法，任何混合态直接拒绝。因此 `handoff-pending` 不是
+ *     「永远放行 admin」，只是如实表达那个有界的过渡态。
  */
 
 /** 关系类型：0000 只建普通表，其余取值用于把「意外出现的对象」如实呈现。 */
@@ -131,8 +130,10 @@ export interface Stage06PolicyEntry {
 }
 
 /**
- * 用户类型：**包含 shell 与 base 类型**。0000 自己不建类型，但每张表的行类型都
- * 会带来一个数组类型，它们同样是真实的 catalog 对象，owner 与属性都算安全面。
+ * managed schema 内的用户类型：**包含 shell 与 base 类型**。0000 自己不建类型，
+ * 但每张表都会带来一个行类型与一个数组类型。当前登记的 10 条**全部是表的数组
+ * 类型**——普通表的行类型被投影里的 `NOT EXISTS (… relkind <> 'c')` 明确排除，
+ * 因为它已经由对应的 `relation` 条目表达。`pg_catalog` 等系统 schema 不在范围内。
  */
 export interface Stage06TypeEntry {
   readonly schema: string;

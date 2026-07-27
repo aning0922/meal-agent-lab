@@ -25,8 +25,10 @@ import {
  * `pg_get_triggerdef` 的输出同时受两个 GUC 影响——
  *   - `search_path` 决定是否省略 schema 限定；
  *   - `quote_all_identifiers` 决定是否给每个标识符加双引号。
- * 两者都在 `DO` 块开头以**事务内**方式固定，块结束即失效，因此同一个数据库在任何
- * 会话里都得到同一份规范化文本。字面量本身不含反斜杠（manifest 侧强制），因此
+ * 两者都在 `DO` 块开头以事务内方式固定，并在块结束时**显式还原**——事务内的
+ * `set_config` 只在事务结束时恢复，而本块是在一个显式事务里被包含进来执行的。
+ * 因此同一个数据库在任何会话里都得到同一份规范化文本，而调用方的会话设置不会被
+ * 悄悄改掉。字面量本身不含反斜杠（manifest 侧强制），因此
  * `standard_conforming_strings` 的取值不影响结果。
  */
 
@@ -89,7 +91,40 @@ export const handoffOwnerTupleSql = (
         JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
        WHERE 'type:' || n.nspname || '.' || t.typname
                = ANY (${sqlTextArray(pending)})
+      UNION ALL
+      SELECT pg_catalog.pg_get_userbyid(p.proowner)::text
+        FROM pg_catalog.pg_proc p
+        JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE 'routine:' || n.nspname || '.' || p.proname || '('
+               || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')'
+               = ANY (${sqlTextArray(pending)})
     ) AS handoff_owners`;
+};
+
+/**
+ * `handoffPendingKeys` 能产生的 kind 集合。owner tuple 查询必须覆盖其中每一个：
+ * 少覆盖一个就意味着那个对象的 owner 不参与阶段判定，而这正是「单字段判据」
+ * 那一类问题的另一种形态——静默漏掉，而不是明确拒绝。
+ */
+export const handoffOwnerTupleKinds: readonly string[] = Object.freeze([
+  "database",
+  "schema",
+  "relation",
+  "routine",
+  "type",
+]);
+
+/** 出现未覆盖的 kind 时立即拒绝，不静默忽略。 */
+const assertHandoffKindsCovered = (manifest: Stage06Manifest): void => {
+  for (const key of handoffPendingKeys(manifest)) {
+    const kind = key.slice(0, key.indexOf(":"));
+    if (!handoffOwnerTupleKinds.includes(kind)) {
+      throw new Stage06ManifestError(
+        `handoff owner tuple does not cover kind ${JSON.stringify(kind)}; ` +
+          "extend handoffOwnerTupleSql before declaring it handoff-pending",
+      );
+    }
+  }
 };
 
 /**
@@ -126,6 +161,7 @@ const ownerExpression = (
 export const renderStage06CatalogProjectionSql = (
   manifest: Stage06Manifest = stage06SecurityManifest,
 ): string => {
+  assertHandoffKindsCovered(manifest);
   const managed = sqlTextArray(managedSchemas(manifest));
   const pending = handoffPendingKeys(manifest);
   const database = sqlLiteral(databaseIdentity);

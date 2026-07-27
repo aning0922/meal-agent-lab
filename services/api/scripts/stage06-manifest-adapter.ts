@@ -5,6 +5,7 @@ import {
   renderAuthorizationConvergeAdapter,
   renderAuthorizationVerifyAdapter,
 } from "../src/database/authorization-manifest-sql.js";
+import { renderAuthorizationProjectionAdapter } from "../src/database/authorization-projection-sql.js";
 import { renderStage06ManifestAdapter } from "../src/database/stage06-manifest-sql.js";
 
 /**
@@ -35,7 +36,10 @@ const generatedFile = (name: string): string =>
     ),
   );
 
-/** 三个 generated adapter：对象 manifest、授权收敛、授权断言。 */
+/**
+ * 四个 generated adapter：对象 manifest、授权收敛、授权断言，以及第八轮 A 新增的
+ * **只读**授权投影。前三个在本轮保持字节不变。
+ */
 export const stage06Adapters: readonly Stage06Adapter[] = Object.freeze([
   {
     includePath: "generated/0000-object-manifest.generated.sql",
@@ -51,6 +55,11 @@ export const stage06Adapters: readonly Stage06Adapter[] = Object.freeze([
     includePath: "generated/authorization-verify.generated.sql",
     absolutePath: generatedFile("authorization-verify.generated.sql"),
     render: renderAuthorizationVerifyAdapter,
+  },
+  {
+    includePath: "generated/authorization-projection.generated.sql",
+    absolutePath: generatedFile("authorization-projection.generated.sql"),
+    render: renderAuthorizationProjectionAdapter,
   },
 ]);
 

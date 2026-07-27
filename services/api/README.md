@@ -63,6 +63,13 @@ meal_agent_migrator`。admin 路径不是 `db:migrate` 的一个 flag：一旦�
 metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完成：`0000`
 失败时整批回滚，不会留下 `drizzle` schema 或空 ledger。
 
+### 阶段 09A / M2A 当前状态
+
+M1 已 Accepted；M2A **第七轮部分完成 + 第八轮 A 只读投影**，待总控复验；在复验通过
+之前不进入 M2B。仍在整改的三项是 **ACL 全主体覆盖**、**default privilege 叠加
+语义**与 **type / Large Object 裁定**——下面的「目标设计」与「已实现事实」分开写，
+不要把前者当成后者。
+
 ### 冻结 0000 的安全 manifest
 
 已经应用过 `0000` 的库（幂等重跑，以及 bootstrap 侧的 owner handoff）不再各自

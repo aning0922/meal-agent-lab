@@ -56,6 +56,22 @@ export const assertStageNodeVersion = (): void => {
   }
 };
 
+/**
+ * 对象 manifest 的 catalog 基线是从**具体 patch 版本**采集并冻结的：
+ * `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 的规范化文本、
+ * PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都可能随 patch
+ * 变化。因此这里 fail closed 到 exact 18.4，而不是宽松的 `18.x`：patch 升级必须
+ * 重新 capture manifest、重跑 parity 并显式 rebaseline。
+ *
+ * M2B 落地 Compose 之后，还要额外登记容器镜像的 exact manifest digest。
+ */
+export const supportedPostgresVersion = "18.4";
+
+const isSupportedPostgres = (version: string): boolean =>
+  version.includes(` ${supportedPostgresVersion} `) ||
+  version.includes(` ${supportedPostgresVersion}\n`) ||
+  version.trimEnd().endsWith(` ${supportedPostgresVersion}`);
+
 export const findPostgres18Bin = async (): Promise<{
   readonly binDirectory: string;
   readonly version: string;
@@ -63,9 +79,10 @@ export const findPostgres18Bin = async (): Promise<{
   const explicit = process.env["PG_BIN"];
   if (explicit !== undefined) {
     const version = await postgresVersionAt(explicit);
-    if (version === undefined || !/\b18\./.test(version)) {
+    if (version === undefined || !isSupportedPostgres(version)) {
       throw new Error(
-        `PG_BIN must contain PostgreSQL 18 binaries; found ${version ?? "an incomplete installation"}`,
+        `PG_BIN must contain PostgreSQL ${supportedPostgresVersion} binaries; ` +
+          `found ${version ?? "an incomplete installation"}`,
       );
     }
     return { binDirectory: explicit, version };
@@ -80,11 +97,13 @@ export const findPostgres18Bin = async (): Promise<{
   ];
   for (const candidate of new Set(candidates)) {
     const version = await postgresVersionAt(candidate);
-    if (version !== undefined && /\b18\./.test(version)) {
+    if (version !== undefined && isSupportedPostgres(version)) {
       return { binDirectory: candidate, version };
     }
   }
   throw new Error(
-    "Stage 06 requires PostgreSQL 18 binaries; install PostgreSQL 18 or set PG_BIN to its bin directory",
+    `Stage 06 requires PostgreSQL ${supportedPostgresVersion} binaries; ` +
+      `install PostgreSQL ${supportedPostgresVersion} or set PG_BIN to its ` +
+      "bin directory",
   );
 };

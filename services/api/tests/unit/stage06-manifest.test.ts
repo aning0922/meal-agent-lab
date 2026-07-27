@@ -32,6 +32,10 @@ import {
   renderAuthorizationVerifySql,
 } from "../../src/database/authorization-manifest-sql.js";
 import {
+  renderAuthorizationProjectionAdapter,
+  renderAuthorizationProjectionSql,
+} from "../../src/database/authorization-projection-sql.js";
+import {
   authorizationManifest,
   authorizationStateKeys,
   AuthorizationManifestError,
@@ -235,7 +239,7 @@ test("every tracked generated adapter matches its manifest byte-for-byte", async
     assert.equal(result.ok, true, `${result.includePath}: ${result.detail}`);
     assert.match(result.detail, /\d+ bytes/);
   }
-  assert.equal(stage06Adapters.length, 3);
+  assert.equal(stage06Adapters.length, 4);
   for (const adapter of stage06Adapters) {
     assert.ok(
       adapter.absolutePath.endsWith(adapter.includePath),
@@ -438,4 +442,71 @@ test("the authorization SQL keeps verify read-only and converge free of DDL", ()
       /set_config\('quote_all_identifiers', 'off', true\)/,
     );
   }
+});
+
+test("the authorization projection is deterministic and performs no mutation", () => {
+  const first = renderAuthorizationProjectionSql();
+  assert.equal(renderAuthorizationProjectionSql(), first);
+
+  // 本轮不实现 convergence：投影必须是纯 SELECT。剥离字符串字面量之后不得出现
+  // 任何权限或结构变更语句。
+  const executable = withoutStringLiterals(first);
+  for (const verb of [
+    "GRANT ",
+    "REVOKE ",
+    "ALTER ",
+    "SET ROLE",
+    "RESET ROLE",
+    "CREATE ",
+    "DROP ",
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "TRUNCATE ",
+    "COMMIT",
+    "ROLLBACK",
+    "SET LOCAL",
+    "SET_CONFIG",
+    "EXECUTE ",
+  ]) {
+    assert.ok(
+      !executable.toUpperCase().includes(verb),
+      `the projection must not contain ${verb.trim()}`,
+    );
+  }
+  // 没有 psql 元命令。
+  for (const line of first.split("\n")) {
+    assert.ok(!line.trimStart().startsWith("\\"));
+  }
+
+  // 覆盖面：所有必须可观察的 kind 都在渲染文本里。
+  for (const kind of [
+    "'acl'",
+    // raw 层是 `'default-' || scope_kind`，因此这里断言前缀与叠加层。
+    "'default-' || scope_kind",
+    "'default-effective'",
+    "'effective'",
+    "'owner'",
+    "'large-object'",
+    "'type-class'",
+    "'role'",
+  ]) {
+    assert.ok(first.includes(kind), `projection must emit ${kind}`);
+  }
+
+  // 动态枚举：不得引用 watchedGrantees 静态名单。
+  for (const watched of authorizationManifest.watchedGrantees) {
+    if (watched === "PUBLIC") {
+      continue;
+    }
+    assert.ok(
+      !first.includes(`'${watched}'`),
+      `the projection must not filter on the static grantee ${watched}`,
+    );
+  }
+
+  const adapter = renderAuthorizationProjectionAdapter();
+  assert.match(adapter, /GENERATED FILE — DO NOT EDIT\./);
+  assert.ok(!adapter.includes("/Users/"));
+  assert.ok(!/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(adapter));
 });

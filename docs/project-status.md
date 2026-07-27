@@ -88,6 +88,26 @@
 
 ## 阶段 09A 计划与下一门禁
 
+### 阶段 09A 当前状态（目标设计 vs 已实现事实）
+
+**已实现的事实**
+
+| 里程碑 | 状态 |
+| --- | --- |
+| M1 API 容器构建基线 | 总控 **Accepted** |
+| M2A 数据库身份边界 | **第七轮部分完成 + 第八轮 A 只读投影**，待总控复验 |
+| M2B / M3 / M4 / M5 | **未开始，且在 M2A 通过复验前禁止进入** |
+
+**仍在整改（属于目标设计，尚未实现）**
+
+| 项 | 现状 |
+| --- | --- |
+| ACL 全主体覆盖 | 收敛与断言仍使用 `watchedGrantees` 静态名单。第八轮 A 已交付**只读** canonical projector（动态枚举全部 grantee/grantor），但尚未接入 verify/converge |
+| default privilege | 现有 verify 仍用 `COALESCE(schema, global, builtin)` 冒充叠加语义。只读投影已按 PostgreSQL 18.4 的真实并集语义分三层表达，待接入 |
+| type / Large Object | row type 的 `PUBLIC USAGE`、LO 入口与 LO 归属的收敛策略尚未裁定；只读投影已让三者完整可见 |
+
+**证据边界**：以上只覆盖数据库身份与授权的**可观察性**。Compose、端口发布、secret file、备份恢复与阶段总门禁均未实现，也未取得证据。
+
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」第六轮整改完成、待总控复验（第五轮 `5ed406c` 未通过复验）；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
 - **两个阶段感知的事实源**。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（含 shell、base 与每张表的行类型/数组类型；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**382 条规范化行**，描述 PUBLIC/app/backup/三个 login 的 catalog ACL、`pg_default_acl` 有效默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要；未登记的 `(ledger, phase)` fail closed。三个 generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
