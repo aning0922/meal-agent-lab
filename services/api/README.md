@@ -51,9 +51,9 @@ pnpm --filter @meal-agent/api db:migrate
 两条命令是**两个独立的入口程序**，都不接受任何参数。`db:bootstrap`
 （`src/database/bootstrap-0000.ts`）语义固定：只应用 `0000_stage_06.sql`、不切换
 role；`db:migrate`（`src/database/migrate.ts`）总是显式 `SET ROLE
-meal_agent_migrator`。admin 路径不再是 `db:migrate` 的一个 flag——只要 flag 存在，
-`pnpm ... db:migrate --bootstrap-0000` 就可能误入 admin 模式。两个入口都在**建立
-连接之前**拒绝任何参数。
+meal_agent_migrator`。admin 路径不是 `db:migrate` 的一个 flag：一旦存在这样的 flag，误敲一次就可能让
+常规迁移进入 admin 模式，因此它被拆成独立入口程序。两个入口都在**建立连接之前**
+拒绝任何参数。
 
 `db:bootstrap` 在执行任何 DDL 之前用真实连接核对目标库名、admin 能力和数据库
 状态。「空库」的判定是严格的：除了没有业务表，也不能有任何用户 schema、
@@ -69,12 +69,28 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 维护一份手写对象清单。唯一事实源是
 [`src/database/stage06-manifest.ts`](src/database/stage06-manifest.ts) 的 typed
 readonly manifest：它描述冻结 `0000`（外加 migration runner 建立的 drizzle
-ledger）执行完毕后，catalog 中与安全相关的规范化投影——三个 managed schema 的
-存在性与「没有多余 schema」、relation 的 `relkind`/owner/RLS/FORCE RLS、index 与
-constraint 的规范化定义、routine 的 identity args/owner/`SECURITY DEFINER`/
-language/`proconfig`（固定 `search_path` 与 `row_security=off` 就在这里）/正文
-`sha256` 摘要、policy 的 command/roles/permissive/`USING`/`WITH CHECK`，以及
-type 与 trigger。当前共 218 条规范化行。
+ledger）执行完毕后，catalog 中与安全相关的规范化投影——**当前共 408 条规范化行**：
+
+| kind | 条数 | 覆盖 |
+| --- | --- | --- |
+| `database` / `schema` | 1 / 3 | 归属，以及「没有多余 schema」 |
+| `relation` | 10 | `relkind`/owner/persistence/RLS/FORCE RLS |
+| `column` | 119 | 序号、类型、NOT NULL、默认值、identity/generated、存储与排序规则 |
+| `index` / `constraint` | 24 / 163 | 规范化定义（PostgreSQL 18 把 NOT NULL 也登记为约束） |
+| `routine` | 4 | identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path` 与 `row_security=off`）/正文 `sha256` 摘要 |
+| `policy` | 14 | command/roles/permissive/`USING`/`WITH CHECK` |
+| `type` | 10 | **全部用户 type，含 shell 与 base**（每张表的数组类型也在内） |
+| `constraint-trigger` | 60 | 外键背后的内部触发器**启用状态** |
+| `trigger` / `rule` / operator / opclass / opfamily / collation / conversion / statistics / text-search / extension | 0 | 0000 一个都不建，出现即 `unexpected` |
+
+`constraint-trigger` 是容易被忽略的一类：`ALTER TABLE … DISABLE TRIGGER ALL` 会
+把外键背后的内部触发器一起置为禁用，从此外键不再强制，而表结构、约束定义与 RLS
+全都看不出任何变化。它们的名字里带 OID，因此按「表 + 约束 + 触发器函数」定位。
+
+owner 判定与 handoff 阶段绑定：`handoff-pending` 只在目标 database 的 owner 还不是
+`meal_agent_migrator` 时才放行 bootstrap admin；handoff 完成之后这些对象必须精确
+属于 migrator。规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers`，
+因此 `pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` 的输出不随会话变化。
 
 [`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
 把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何
@@ -91,11 +107,39 @@ pnpm --filter @meal-agent/api manifest:generate
 pnpm --filter @meal-agent/api manifest:check
 ```
 
-`manifest:check` 已并入 `pnpm --filter @meal-agent/api check`。generated 文件带
-do-not-edit 标记、manifest 版本与 canonical digest，不含时间戳、绝对路径、locale
-或随机值。「TS manifest ↔ generated SQL 一致」只是其中一环：数据库测试还在真实
-PostgreSQL 18 上执行冻结 `0000`，把 catalog 的规范化投影与 TypeScript manifest
-逐行比对（owner handoff 前后各一次），因此 manifest 不可能只是自洽而与事实脱节。
+`manifest:check` 已并入 `pnpm --filter @meal-agent/api check`，它一次校验**三个**
+generated adapter。generated 文件带 do-not-edit 标记、manifest 版本与 canonical
+digest，不含时间戳、绝对路径、locale 或随机值。「TS manifest ↔ generated SQL
+一致」只是其中一环：数据库测试还在真实 PostgreSQL 18 上执行冻结 `0000`，把 catalog
+的规范化投影与 TypeScript manifest 逐行比对（owner handoff 前后各一次），因此
+manifest 不可能只是自洽而与事实脱节。
+
+### ledger 感知的授权 manifest
+
+对象 manifest 只描述冻结 `0000` 之后的**结构**，回答不了「0001—0004 应用之后 app
+应该有哪些表权限」。授权因此另立一个事实源
+[`src/database/authorization-manifest.ts`](src/database/authorization-manifest.ts)，
+按 `(ledger, phase)` 精确描述 `PUBLIC` / `meal_agent_app` / `meal_agent_backup` /
+三个 login 的：
+
+- `grant`：catalog 里的直接授权（含隐式默认 ACL 展开）；
+- `default`：`pg_default_acl` 的**有效**默认权限，按 objtype × schema/global 逐槽位；
+- `effective`：`has_*_privilege` 的**有效**权限——`PUBLIC` 派生与角色继承都算在内；
+- `routine`：受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要，
+  **按 identity 精确匹配，没有 schema 级通配豁免**。
+
+当前登记 4 个状态（`0000` 与 `0000—0004` 两个 ledger × containment / final 两个
+阶段），共 382 条规范化行；未登记的 `(ledger, phase)` 一律 fail closed。
+
+阶段划分对应恢复/安装流程的两个真实时刻：`bootstrap.sh acl` 是 **containment**
+（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），
+`bootstrap.sh grants` 是 **final**（migration 之后建立最终 ACL，并同时验证 PUBLIC、
+app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销
+一切不在 manifest 内的授权，再只重建允许项。
+
+产品声明禁用 Large Object，因此收敛块还会收回 `pg_catalog` 中 20 个 LO 入口点
+（`lo_create`、`lo_creat`、`lo_from_bytea`、`lo_put` …）的 `PUBLIC EXECUTE`：
+只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的不受约束的存储面。
 
 连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
 600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是

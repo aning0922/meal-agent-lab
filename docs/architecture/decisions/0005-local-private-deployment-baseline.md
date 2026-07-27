@@ -78,8 +78,13 @@ migration runner 与 bootstrap 的 owner handoff 都需要回答同一个问题�
 因此：typed readonly manifest 是唯一事实源，确定性 renderer 把它渲染成纯 SQL；
 `migrate.ts` 直接执行内存渲染结果，bootstrap 的 `01-owner-handoff.sql` 在
 mutation 之前、事务之内用相对路径 `\ir` 加载 generated 出的同一段文本。渲染结果
-只读——不匹配时 `RAISE EXCEPTION`，不做任何 ownership/ACL/DDL 变更。PostgreSQL 与
-bootstrap 运行时都不执行 Node，Node 只在开发机/CI 上生成 adapter。
+只读——不匹配时 `RAISE EXCEPTION`，不做任何 ownership/ACL/DDL 变更。
+
+adapter 必须**提前生成**而不能现场渲染，理由是执行环境：PostgreSQL 服务器进程
+不执行 Node；`bootstrap.sh` 的 SQL 阶段只调用 `psql`（只有 `logins` 阶段在缺少
+`setsid` 时会用仓库内的 `no-ctty.mjs` 包装器，那是一个 Node 标准库脚本），而
+`db:bootstrap` / `db:migrate` 本身就是 Node 入口。因此 Node 只在开发机/CI 上生成
+adapter，运行时链路上没有任何一步依赖它现场渲染。
 
 一致性由三道互相独立的锁保证，缺一不可：
 
@@ -92,13 +97,45 @@ bootstrap 运行时都不执行 Node，Node 只在开发机/CI 上生成 adapter
 3. **两个入口一致**：同一批漂移在 `db:bootstrap` 与 `bootstrap.sh handoff` 上
    给出逐字相同的拒绝理由。
 
-manifest 覆盖 schema 存在性与「没有多余 schema」、relation 的
-relkind/owner/`relrowsecurity`/`relforcerowsecurity`、index 与 constraint 的
+manifest 覆盖：database 与 schema 的存在性与归属、「没有多余 schema」、relation 的
+relkind/owner/persistence/`relrowsecurity`/`relforcerowsecurity`、**每一列**的序号
+/类型/NOT NULL/默认值/identity/generated/存储与排序规则、index 与 constraint 的
 规范化定义、routine 的 identity args/prokind/owner/`prosecdef`/language/
-`proconfig`/正文摘要、policy 的 command/roles/permissive/`USING`/`WITH CHECK`，
-以及 type 与 trigger，并强制唯一键、固定排序与重复 identity 拒绝。
+`proconfig`/正文摘要、policy 的 command/roles/permissive/`USING`/`WITH CHECK`、
+**全部用户 type（含 shell 与 base）**、trigger 与**外键背后的内部 constraint
+trigger 启用状态**（`ALTER TABLE … DISABLE TRIGGER ALL` 会让外键静默失效，而表
+结构、约束定义与 RLS 全都看不出变化）、rule，以及 operator / opclass / opfamily /
+collation / conversion / 扩展统计 / 文本搜索四件套 / extension 这些明确枚举的
+namespace 类别，并强制唯一键、固定排序与重复 identity 拒绝。
 
-#### 2.2 私有 schema、恢复路径与 Large Object
+owner 判定与 handoff 阶段绑定：`handoff-pending` 只在「目标 database 的 owner 还
+不是 `meal_agent_migrator`」时才放行 bootstrap admin / `pg_database_owner`；
+handoff 完成之后这些对象必须精确属于 migrator，admin 重新夺回 owner 会被判为漂移。
+规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers`，因此
+`pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` 的输出不随会话变化。
+
+#### 2.2 授权状态由第二个 ledger 感知 manifest 描述
+
+对象 manifest 只描述冻结 `0000` 之后的**结构**，回答不了「0001—0004 应用之后 app
+应该有哪些表权限」。因此授权另立一个 manifest，按 `(ledger, phase)` 精确描述
+`PUBLIC` / app / backup / 三个 login 的 catalog ACL、`pg_default_acl` 的**有效**
+默认权限、`has_*_privilege` 的**有效**权限，以及受控 routine 的
+identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE` 授权。
+未登记的 `(ledger, phase)` 一律 fail closed。
+
+阶段分成两段，对应恢复/安装流程的两个真实时刻：
+
+- **containment**（`02-acl-baseline.sql`）：migration 之前 / `pg_restore` 之后
+  立即收敛。此刻刻意**不**给备份角色任何表级 `SELECT`——migration 期间没有理由
+  存在一份可读全库的授权。
+- **final**（`03-backup-grants.sql`）：migration 之后建立最终 ACL，并且**同时**
+  验证 `PUBLIC`、app、backup 与三个 login，而不是只看备份角色。
+
+两个阶段都执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权
+（含 grant option 与列级授权），再只重建 manifest 允许的项，最后由只读断言块同时
+比对 catalog ACL 与 `has_*_privilege` 有效权限。
+
+#### 2.3 私有 schema、恢复路径与 Large Object
 
 - `meal_agent_private` 是受控 `SECURITY DEFINER` 函数所在的 schema：`PUBLIC` 无
   `USAGE`/`CREATE`，app 只有 `USAGE`（因此不能在其中建对象），backup 与三个
@@ -110,7 +147,11 @@ relkind/owner/`relrowsecurity`/`relforcerowsecurity`、index 与 constraint 的
 - Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此对
   `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 中 `defaclobjtype='L'` 采取
   「存在项目角色或 `PUBLIC` 权限即收敛并断言为空」，不借此扩展任何业务能力；
-  项目角色**拥有** LO 属于异常状态，只报告并失败，不删数据。
+  项目角色**拥有** LO 属于异常状态，只报告并失败，不删数据。**并且**：既然产品
+  声明禁用 LO，就必须同时关闭 `pg_catalog` 的创建/读写入口（`lo_create`、
+  `lo_creat`、`lo_from_bytea`、`lo_put`、`lo_import` 等 20 个函数默认对 `PUBLIC`
+  开放 `EXECUTE`）——只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的
+  不受约束的存储面。
 - 数据库级与 schema 级的 `PUBLIC` 授权可能来自任意第三方 grantor。普通 `REVOKE`
   只撤销「由执行者授予」的那一份，因此必须按真实 grantor 逐条撤销——**真正收敛**，
   而不是等后置校验失败后整体回滚：回滚只让命令失败，权限仍然留在数据库里。

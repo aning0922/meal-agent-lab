@@ -6,7 +6,8 @@ import { Pool, type PoolClient } from "pg";
 
 import { renderStage06ManifestCheckSql } from "./stage06-manifest-sql.js";
 
-const migrationsDirectory = fileURLToPath(
+/** tracked 的 migration 目录。测试用注入 seam 覆盖它，绝不改写 tracked 文件。 */
+export const defaultMigrationsDirectory = fileURLToPath(
   new URL("../../migrations/", import.meta.url),
 );
 
@@ -16,14 +17,16 @@ interface MigrationFile {
   readonly hash: string;
 }
 
-const readMigrations = async (): Promise<readonly MigrationFile[]> => {
-  const names = (await readdir(migrationsDirectory))
+const readMigrations = async (
+  directory: string = defaultMigrationsDirectory,
+): Promise<readonly MigrationFile[]> => {
+  const names = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
     .sort();
 
   return Promise.all(
     names.map(async (name) => {
-      const sql = await readFile(`${migrationsDirectory}/${name}`, "utf8");
+      const sql = await readFile(`${directory}/${name}`, "utf8");
       return {
         name,
         sql,
@@ -143,6 +146,15 @@ export interface ApplyMigrationsOptions {
    * 不会留下 drizzle schema、ledger 或 0000 的任何对象。
    */
   readonly adminBootstrap?: boolean;
+  /**
+   * migration 文件目录。缺省是 tracked 的 `services/api/migrations/`。
+   *
+   * 这是一个**只读注入 seam**：测试需要验证「排在 0000 之前的文件被拒绝」「目标
+   * 文件缺失时零连接零 DDL」这类场景，但绝不能为此删除或改写 tracked migration
+   * ——那会让一次中断的测试留下一个被破坏的仓库。改为把 tracked 文件复制进临时
+   * 目录再指向它。运维入口不暴露这个参数。
+   */
+  readonly migrationsDirectory?: string;
 }
 
 export class MigrationSelectionError extends Error {
@@ -199,6 +211,7 @@ const projectDatabasePattern = /^meal_agent(_[a-z0-9_]+)?$/;
  */
 const assertAdminBootstrapPreflight = async (
   client: PoolClient,
+  migrationsDirectoryInUse: string,
 ): Promise<void> => {
   const identity = await client.query<{
     database: string;
@@ -277,7 +290,7 @@ const assertAdminBootstrapPreflight = async (
         }`,
     );
   }
-  const onDisk = (await readMigrations()).find(
+  const onDisk = (await readMigrations(migrationsDirectoryInUse)).find(
     (migration) => migration.name === stage06Migration,
   );
   if (applied.rows[0]?.hash !== onDisk?.hash) {
@@ -342,7 +355,7 @@ export const applyMigrations = async (
 
   // 选中集合在**建立 Pool 之前**解析：目标文件缺失、重复或会被额外执行时，
   // 直接失败，不产生任何连接或 DDL。
-  const available = await readMigrations();
+  const available = await readMigrations(options.migrationsDirectory);
   let selected: readonly MigrationFile[];
   if (options.exactMigration !== undefined) {
     const matches = available.filter(
@@ -405,7 +418,10 @@ export const applyMigrations = async (
     advisoryLockHeld = true;
     if (atomicWholeRun) {
       // 任何 DDL 之前：核对目标库、admin 能力与数据库状态。
-      await assertAdminBootstrapPreflight(client);
+      await assertAdminBootstrapPreflight(
+        client,
+        options.migrationsDirectory ?? defaultMigrationsDirectory,
+      );
       // 元数据 schema、ledger、0000 与 ledger insert 必须原子：0000 失败后
       // 不得留下 drizzle schema 或空 ledger。
       await client.query("BEGIN");
@@ -501,10 +517,10 @@ export const migrationsAreCurrent = async (
 //
 // 默认命令走安全路径：显式 SET ROLE meal_agent_migrator 应用全部待应用 migration。
 //
-// `--bootstrap-0000` 是唯一的 admin 例外，且是窄而固定的：它只能以 cluster admin
-// 身份（不切换 role）应用冻结的 0000，因为 0000 自身要 CREATE ROLE 并设置
-// BYPASSRLS，此时 meal_agent_migrator 还不存在。该模式不接受任意 role，也不接受
-// 任意 migration 边界。
+// admin 例外是一个**独立入口程序** `db:bootstrap`（src/database/bootstrap-0000.ts），
+// 不是本入口的 flag：它只能以 cluster admin 身份（不切换 role）应用冻结的 0000，
+// 因为 0000 自身要 CREATE ROLE 并设置 BYPASSRLS，此时 meal_agent_migrator 还不
+// 存在。该入口不接受任意 role，也不接受任意 migration 边界，更不接受任何参数。
 // ---------------------------------------------------------------------------
 
 /** `db:bootstrap` 独立入口使用的固定参数，调用方无法改写。 */

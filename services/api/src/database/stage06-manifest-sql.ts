@@ -1,5 +1,6 @@
 import {
   canonicalManifestRows,
+  databaseIdentity,
   handoffPendingKeys,
   managedSchemas,
   manifestDigest,
@@ -20,10 +21,13 @@ import {
  *   3. 确定性：同一 manifest 渲染出逐字节相同的文本，不含时间戳、绝对路径、
  *      locale 相关排序或随机值。
  *
- * 规范化投影必须与 `search_path` 无关：`pg_get_indexdef` / `pg_get_constraintdef`
- * / `pg_get_expr` 会省略「当前 search_path 可见」的 schema 限定，于是同一个数据库
- * 在不同会话里会给出不同文本。`DO` 块开头把 `search_path` 事务内固定为
- * `pg_catalog`，块结束即失效。
+ * 会话稳定性：`pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` /
+ * `pg_get_triggerdef` 的输出同时受两个 GUC 影响——
+ *   - `search_path` 决定是否省略 schema 限定；
+ *   - `quote_all_identifiers` 决定是否给每个标识符加双引号。
+ * 两者都在 `DO` 块开头以**事务内**方式固定，块结束即失效，因此同一个数据库在任何
+ * 会话里都得到同一份规范化文本。字面量本身不含反斜杠（manifest 侧强制），因此
+ * `standard_conforming_strings` 的取值不影响结果。
  */
 
 const dollarTag = "$meal_agent_stage06_manifest$";
@@ -44,16 +48,24 @@ const sqlLiteral = (value: string): string => {
 };
 
 const sqlTextArray = (values: readonly string[]): string =>
-  `ARRAY[${values.map(sqlLiteral).join(", ")}]::text[]`;
+  values.length === 0
+    ? "ARRAY[]::text[]"
+    : `ARRAY[${values.map(sqlLiteral).join(", ")}]::text[]`;
 
 /**
- * owner handoff 之前，`public` / `drizzle` 与 drizzle ledger 合法地属于
- * `pg_database_owner` 或执行 bootstrap 的 admin；之后属于 migrator。这三个取值
- * 归一化为同一个占位符，其余一律按真实 owner 名比较。
+ * handoff 是否已经完成。判定依据是可观察的事实：目标 database 的 owner 是否已经
+ * 是 `meal_agent_migrator`。handoff 的第一条 mutation 就是 `ALTER DATABASE …
+ * OWNER TO`，而且整段在同一事务内，因此这个标志不会停在中间态。
  */
-const transitionalOwners =
-  "ARRAY['meal_agent_migrator', 'pg_database_owner', current_user::text]::text[]";
+const handedOff =
+  "(SELECT pg_catalog.pg_get_userbyid(hd.datdba) = 'meal_agent_migrator'" +
+  " FROM pg_catalog.pg_database hd WHERE hd.datname = current_database())";
 
+/**
+ * owner 归一化。只有**声明为 handoff-pending 的对象**、且 handoff 尚未完成时，
+ * 才把 bootstrap admin / `pg_database_owner` 归一化成占位符；handoff 完成之后
+ * 这些对象必须精确属于 migrator，否则如实报出真实 owner。
+ */
 const ownerExpression = (
   kind: string,
   identityExpression: string,
@@ -63,7 +75,11 @@ const ownerExpression = (
   `CASE
               WHEN ${sqlLiteral(`${kind}:`)} || ${identityExpression}
                      = ANY (${sqlTextArray(pending)})
-                   AND ${ownerExpressionSql} = ANY (${transitionalOwners})
+                   AND (${ownerExpressionSql} = 'meal_agent_migrator'
+                        OR (NOT ${handedOff}
+                            AND ${ownerExpressionSql} = ANY (
+                              ARRAY['pg_database_owner',
+                                    current_user::text]::text[])))
                 THEN 'handoff-pending'
               ELSE ${ownerExpressionSql}
             END`;
@@ -78,17 +94,29 @@ export const renderStage06CatalogProjectionSql = (
 ): string => {
   const managed = sqlTextArray(managedSchemas(manifest));
   const pending = handoffPendingKeys(manifest);
+  const database = sqlLiteral(databaseIdentity);
 
   return `SELECT kind, identity, detail
       FROM (
-        SELECT 'schema'::text AS kind,
-               n.nspname::text AS identity,
-               'owner=' || ${ownerExpression(
+        SELECT 'database'::text AS kind,
+               ${database}::text AS identity,
+               ('owner=' || ${ownerExpression(
+                 "database",
+                 `${database}::text`,
+                 "pg_catalog.pg_get_userbyid(d.datdba)::text",
+                 pending,
+               )})::text AS detail
+          FROM pg_catalog.pg_database d
+         WHERE d.datname = current_database()
+        UNION ALL
+        SELECT 'schema'::text,
+               n.nspname::text,
+               ('owner=' || ${ownerExpression(
                  "schema",
                  "n.nspname::text",
                  "pg_catalog.pg_get_userbyid(n.nspowner)::text",
                  pending,
-               )} AS detail
+               )})::text
           FROM pg_catalog.pg_namespace n
          WHERE n.nspname <> 'information_schema'
            AND n.nspname !~ '^pg_'
@@ -102,6 +130,7 @@ export const renderStage06CatalogProjectionSql = (
                    "pg_catalog.pg_get_userbyid(c.relowner)::text",
                    pending,
                  )}
+                 || ' persistence=' || c.relpersistence::text
                  || ' rls=' || CASE WHEN c.relrowsecurity THEN 't' ELSE 'f' END
                  || ' force='
                  || CASE WHEN c.relforcerowsecurity THEN 't' ELSE 'f' END)::text
@@ -110,9 +139,35 @@ export const renderStage06CatalogProjectionSql = (
          WHERE n.nspname = ANY (${managed})
            AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
         UNION ALL
+        SELECT 'column'::text,
+               (n.nspname || '.' || c.relname || '.' || a.attname)::text,
+               ('attnum=' || a.attnum::text
+                 || ' type=' || pg_catalog.format_type(a.atttypid, a.atttypmod)
+                 || ' notnull=' || CASE WHEN a.attnotnull THEN 't' ELSE 'f' END
+                 || ' identity=' || a.attidentity::text
+                 || ' generated=' || a.attgenerated::text
+                 || ' storage=' || a.attstorage::text
+                 || ' compression=' || a.attcompression::text
+                 || ' collation=' || COALESCE(
+                      (SELECT co.collname::text FROM pg_catalog.pg_collation co
+                        WHERE co.oid = a.attcollation), '')
+                 || ' default=' || COALESCE(
+                      (SELECT pg_catalog.pg_get_expr(ad.adbin, ad.adrelid)
+                         FROM pg_catalog.pg_attrdef ad
+                        WHERE ad.adrelid = c.oid AND ad.adnum = a.attnum),
+                      ''))::text
+          FROM pg_catalog.pg_attribute a
+          JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+          JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = ANY (${managed})
+           AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+           AND a.attnum > 0 AND NOT a.attisdropped
+        UNION ALL
         SELECT 'index'::text,
                (n.nspname || '.' || ci.relname)::text,
                ('table=' || n.nspname || '.' || ct.relname
+                 || ' valid=' || CASE WHEN i.indisvalid THEN 't' ELSE 'f' END
+                 || ' ready=' || CASE WHEN i.indisready THEN 't' ELSE 'f' END
                  || ' def=' || pg_catalog.pg_get_indexdef(i.indexrelid))::text
           FROM pg_catalog.pg_index i
           JOIN pg_catalog.pg_class ci ON ci.oid = i.indexrelid
@@ -121,12 +176,16 @@ export const renderStage06CatalogProjectionSql = (
          WHERE n.nspname = ANY (${managed})
         UNION ALL
         SELECT 'constraint'::text,
-               (n.nspname || '.' || ct.relname || '.' || con.conname)::text,
+               (n.nspname || '.' || COALESCE(ct.relname, tt.typname, '-')
+                 || '.' || con.conname)::text,
                ('contype=' || con.contype::text
+                 || ' validated='
+                 || CASE WHEN con.convalidated THEN 't' ELSE 'f' END
                  || ' def=' || pg_catalog.pg_get_constraintdef(con.oid))::text
           FROM pg_catalog.pg_constraint con
-          JOIN pg_catalog.pg_class ct ON ct.oid = con.conrelid
-          JOIN pg_catalog.pg_namespace n ON n.oid = ct.relnamespace
+          JOIN pg_catalog.pg_namespace n ON n.oid = con.connamespace
+          LEFT JOIN pg_catalog.pg_class ct ON ct.oid = con.conrelid
+          LEFT JOIN pg_catalog.pg_type tt ON tt.oid = con.contypid
          WHERE n.nspname = ANY (${managed})
         UNION ALL
         SELECT 'routine'::text,
@@ -148,6 +207,9 @@ export const renderStage06CatalogProjectionSql = (
                  || ' parallel=' || p.proparallel::text
                  || ' leakproof='
                  || CASE WHEN p.proleakproof THEN 't' ELSE 'f' END
+                 || ' strict='
+                 || CASE WHEN p.proisstrict THEN 't' ELSE 'f' END
+                 || ' set=' || CASE WHEN p.proretset THEN 't' ELSE 'f' END
                  || ' result=' || pg_catalog.pg_get_function_result(p.oid)
                  || ' config='
                  || COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')
@@ -183,23 +245,163 @@ export const renderStage06CatalogProjectionSql = (
         UNION ALL
         SELECT 'type'::text,
                (n.nspname || '.' || t.typname)::text,
-               ('typtype=' || t.typtype::text)::text
+               ('typtype=' || t.typtype::text
+                 || ' owner=' || ${ownerExpression(
+                   "type",
+                   "(n.nspname || '.' || t.typname)::text",
+                   "pg_catalog.pg_get_userbyid(t.typowner)::text",
+                   pending,
+                 )}
+                 || ' category=' || t.typcategory::text
+                 || ' defined=' || CASE WHEN t.typisdefined THEN 't' ELSE 'f' END
+                 || ' len=' || t.typlen::text
+                 || ' byval=' || CASE WHEN t.typbyval THEN 't' ELSE 'f' END
+                 || ' align=' || t.typalign::text
+                 || ' storage=' || t.typstorage::text
+                 || ' notnull=' || CASE WHEN t.typnotnull THEN 't' ELSE 'f' END
+                 || ' delim=' || t.typdelim::text
+                 || ' elem=' || COALESCE(
+                      (SELECT pg_catalog.format_type(t.typelem, NULL)
+                        WHERE t.typelem <> 0), '')
+                 || ' base=' || COALESCE(
+                      (SELECT pg_catalog.format_type(t.typbasetype, t.typtypmod)
+                        WHERE t.typbasetype <> 0), '')
+                 || ' ndims=' || t.typndims::text
+                 || ' collation=' || COALESCE(
+                      (SELECT co.collname::text FROM pg_catalog.pg_collation co
+                        WHERE co.oid = t.typcollation), '')
+                 || ' default=' || COALESCE(t.typdefault, ''))::text
           FROM pg_catalog.pg_type t
           JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
          WHERE n.nspname = ANY (${managed})
-           AND t.typtype IN ('c', 'e', 'd', 'r', 'm')
            AND NOT EXISTS (SELECT 1
                              FROM pg_catalog.pg_class c
                             WHERE c.oid = t.typrelid AND c.relkind <> 'c')
         UNION ALL
         SELECT 'trigger'::text,
                (n.nspname || '.' || ct.relname || '.' || tg.tgname)::text,
-               ('def=' || pg_catalog.pg_get_triggerdef(tg.oid))::text
+               ('enabled=' || tg.tgenabled::text
+                 || ' def=' || pg_catalog.pg_get_triggerdef(tg.oid))::text
           FROM pg_catalog.pg_trigger tg
           JOIN pg_catalog.pg_class ct ON ct.oid = tg.tgrelid
           JOIN pg_catalog.pg_namespace n ON n.oid = ct.relnamespace
          WHERE n.nspname = ANY (${managed})
            AND NOT tg.tgisinternal
+        UNION ALL
+        SELECT 'constraint-trigger'::text,
+               (n.nspname || '.' || ct.relname || '.'
+                 || COALESCE(con.conname, '-') || '#' || fp.proname)::text,
+               ('enabled=' || tg.tgenabled::text
+                 || ' type=' || tg.tgtype::text
+                 || ' deferrable='
+                 || CASE WHEN tg.tgdeferrable THEN 't' ELSE 'f' END
+                 || ' initdeferred='
+                 || CASE WHEN tg.tginitdeferred THEN 't' ELSE 'f' END)::text
+          FROM pg_catalog.pg_trigger tg
+          JOIN pg_catalog.pg_class ct ON ct.oid = tg.tgrelid
+          JOIN pg_catalog.pg_namespace n ON n.oid = ct.relnamespace
+          JOIN pg_catalog.pg_proc fp ON fp.oid = tg.tgfoid
+          LEFT JOIN pg_catalog.pg_constraint con ON con.oid = tg.tgconstraint
+         WHERE n.nspname = ANY (${managed})
+           AND tg.tgisinternal
+        UNION ALL
+        SELECT 'rule'::text,
+               (n.nspname || '.' || ct.relname || '.' || rw.rulename)::text,
+               ('enabled=' || rw.ev_enabled::text
+                 || ' def=' || pg_catalog.pg_get_ruledef(rw.oid))::text
+          FROM pg_catalog.pg_rewrite rw
+          JOIN pg_catalog.pg_class ct ON ct.oid = rw.ev_class
+          JOIN pg_catalog.pg_namespace n ON n.oid = ct.relnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'operator'::text,
+               (n.nspname || '.' || o.oprname || '('
+                 || COALESCE(pg_catalog.format_type(o.oprleft, NULL), '-')
+                 || ',' || COALESCE(pg_catalog.format_type(o.oprright, NULL), '-')
+                 || ')')::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(o.oprowner)::text
+                 || ' kind=' || o.oprkind::text)::text
+          FROM pg_catalog.pg_operator o
+          JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'opclass'::text,
+               (n.nspname || '.' || oc.opcname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(oc.opcowner)::text
+                 || ' default='
+                 || CASE WHEN oc.opcdefault THEN 't' ELSE 'f' END)::text
+          FROM pg_catalog.pg_opclass oc
+          JOIN pg_catalog.pg_namespace n ON n.oid = oc.opcnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'opfamily'::text,
+               (n.nspname || '.' || opf.opfname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(opf.opfowner)::text)::text
+          FROM pg_catalog.pg_opfamily opf
+          JOIN pg_catalog.pg_namespace n ON n.oid = opf.opfnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'collation'::text,
+               (n.nspname || '.' || co.collname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(co.collowner)::text
+                 || ' provider=' || co.collprovider::text
+                 || ' deterministic='
+                 || CASE WHEN co.collisdeterministic THEN 't' ELSE 'f' END)::text
+          FROM pg_catalog.pg_collation co
+          JOIN pg_catalog.pg_namespace n ON n.oid = co.collnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'conversion'::text,
+               (n.nspname || '.' || cv.conname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(cv.conowner)::text
+                 || ' default='
+                 || CASE WHEN cv.condefault THEN 't' ELSE 'f' END)::text
+          FROM pg_catalog.pg_conversion cv
+          JOIN pg_catalog.pg_namespace n ON n.oid = cv.connamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'statistics'::text,
+               (n.nspname || '.' || st.stxname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(st.stxowner)::text)::text
+          FROM pg_catalog.pg_statistic_ext st
+          JOIN pg_catalog.pg_namespace n ON n.oid = st.stxnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'text-search'::text,
+               (n.nspname || '.config:' || tc.cfgname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(tc.cfgowner)::text)::text
+          FROM pg_catalog.pg_ts_config tc
+          JOIN pg_catalog.pg_namespace n ON n.oid = tc.cfgnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'text-search'::text,
+               (n.nspname || '.dictionary:' || td.dictname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(td.dictowner)::text)::text
+          FROM pg_catalog.pg_ts_dict td
+          JOIN pg_catalog.pg_namespace n ON n.oid = td.dictnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'text-search'::text,
+               (n.nspname || '.parser:' || tp.prsname)::text,
+               ''::text
+          FROM pg_catalog.pg_ts_parser tp
+          JOIN pg_catalog.pg_namespace n ON n.oid = tp.prsnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'text-search'::text,
+               (n.nspname || '.template:' || tt.tmplname)::text,
+               ''::text
+          FROM pg_catalog.pg_ts_template tt
+          JOIN pg_catalog.pg_namespace n ON n.oid = tt.tmplnamespace
+         WHERE n.nspname = ANY (${managed})
+        UNION ALL
+        SELECT 'extension'::text,
+               (n.nspname || '.' || ex.extname)::text,
+               ('owner=' || pg_catalog.pg_get_userbyid(ex.extowner)::text
+                 || ' version=' || ex.extversion)::text
+          FROM pg_catalog.pg_extension ex
+          JOIN pg_catalog.pg_namespace n ON n.oid = ex.extnamespace
+         WHERE n.nspname = ANY (${managed})
       ) AS stage06_projection`;
 };
 
@@ -234,6 +436,7 @@ DECLARE
   divergence text;
 BEGIN
   PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
+  PERFORM pg_catalog.set_config('quote_all_identifiers', 'off', true);
 
   WITH expected (kind, identity, detail) AS (
     VALUES
@@ -265,9 +468,11 @@ ${expected}
   -- "missing relation"，而不是它连带的十几条约束。排序完全确定，不依赖 locale。
   ranked_divergences (rank, entry) AS (
     SELECT CASE kind
-             WHEN 'schema' THEN 1 WHEN 'relation' THEN 2 WHEN 'routine' THEN 3
-             WHEN 'policy' THEN 4 WHEN 'trigger' THEN 5 WHEN 'type' THEN 6
-             WHEN 'index' THEN 7 WHEN 'constraint' THEN 8 ELSE 9
+             WHEN 'database' THEN 1 WHEN 'schema' THEN 2 WHEN 'relation' THEN 3
+             WHEN 'routine' THEN 4 WHEN 'policy' THEN 5 WHEN 'column' THEN 6
+             WHEN 'trigger' THEN 7 WHEN 'constraint-trigger' THEN 8
+             WHEN 'rule' THEN 9 WHEN 'type' THEN 10 WHEN 'index' THEN 11
+             WHEN 'constraint' THEN 12 ELSE 13
            END,
            entry
       FROM divergence_rows

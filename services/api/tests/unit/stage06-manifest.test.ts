@@ -21,10 +21,24 @@ import {
   type Stage06Manifest,
 } from "../../src/database/stage06-manifest.js";
 import {
+  checkAllStage06Adapters,
   checkStage06ManifestAdapter,
+  stage06Adapters,
   stage06ManifestAdapterIncludePath,
   stage06ManifestAdapterPath,
 } from "../../scripts/stage06-manifest-adapter.js";
+import {
+  renderAuthorizationConvergeAdapter,
+  renderAuthorizationVerifySql,
+} from "../../src/database/authorization-manifest-sql.js";
+import {
+  authorizationManifest,
+  authorizationStateKeys,
+  AuthorizationManifestError,
+  canonicalAuthorizationRows,
+  defaultAclSlots,
+  type AuthorizationManifest,
+} from "../../src/database/authorization-manifest.js";
 
 /**
  * 阶段 09A / M2A：manifest、renderer 与 generated adapter 门禁的单元测试。
@@ -73,15 +87,23 @@ test("the canonical projection has unique identities and a fixed order", () => {
   const keys = rows.map((row) => `${row.kind}:${row.identity}`);
   assert.equal(new Set(keys).size, keys.length, "identities must be unique");
 
-  const sorted = [...keys].sort((left, right) =>
-    left < right ? -1 : left > right ? 1 : 0,
+  // 排序是 (kind, identity) 的**元组序**，不是拼接字符串序：`constraint` 与
+  // `constraint-trigger` 拼接后会交叉，元组比较才是渲染实际使用的顺序。
+  const sorted = [...rows].sort(
+    (left, right) =>
+      (left.kind < right.kind ? -1 : left.kind > right.kind ? 1 : 0) ||
+      (left.identity < right.identity ? -1 : left.identity > right.identity ? 1 : 0),
   );
-  assert.deepEqual(keys, sorted, "rows must be sorted by kind then identity");
+  assert.deepEqual(
+    rows.map((row) => `${row.kind}|${row.identity}`),
+    sorted.map((row) => `${row.kind}|${row.identity}`),
+    "rows must be sorted by kind then identity",
+  );
 
   // 每个 kind 都必须真的有覆盖，避免「某一类静默变成空集合」。
   const kinds = new Set(rows.map((row) => row.kind));
-  for (const kind of ["schema", "relation", "index", "constraint", "routine",
-    "policy"]) {
+  for (const kind of ["database", "schema", "relation", "column", "index",
+    "constraint", "routine", "policy", "type", "constraint-trigger"]) {
     assert.ok(kinds.has(kind), `kind ${kind} must be covered`);
   }
 
@@ -90,10 +112,13 @@ test("the canonical projection has unique identities and a fixed order", () => {
     "meal_agent_private",
     "public",
   ]);
+  // handoff 过渡态的对象：数据库自身、两个 schema、drizzle ledger 及其数组类型。
   assert.deepEqual(handoffPendingKeys(), [
+    "database:<current>",
     "relation:drizzle.__meal_agent_migrations",
     "schema:drizzle",
     "schema:public",
+    "type:drizzle.___meal_agent_migrations",
   ]);
 });
 
@@ -205,7 +230,19 @@ test("the generated adapter header is stable and free of environment traces", as
   assert.ok(!adapter.includes("\r"));
 });
 
-test("the tracked generated adapter matches the manifest byte-for-byte", async () => {
+test("every tracked generated adapter matches its manifest byte-for-byte", async () => {
+  for (const result of await checkAllStage06Adapters()) {
+    assert.equal(result.ok, true, `${result.includePath}: ${result.detail}`);
+    assert.match(result.detail, /\d+ bytes/);
+  }
+  assert.equal(stage06Adapters.length, 3);
+  for (const adapter of stage06Adapters) {
+    assert.ok(
+      adapter.absolutePath.endsWith(adapter.includePath),
+      `${adapter.absolutePath} must end with ${adapter.includePath}`,
+    );
+  }
+
   const result = await checkStage06ManifestAdapter();
   assert.equal(result.ok, true, result.detail);
 
@@ -243,7 +280,8 @@ test("a stale or hand-edited adapter fails the gate without being rewritten", as
     const editedResult = await checkStage06ManifestAdapter(editedPath);
     assert.equal(editedResult.ok, false);
     assert.match(editedResult.detail, /do not hand-edit/);
-    assert.match(editedResult.detail, /first difference at byte \d+/);
+    assert.match(editedResult.detail, /first difference at character \d+/);
+    assert.match(editedResult.detail, /rendered \d+ bytes, tracked \d+ bytes/);
     assert.equal(await readFile(editedPath, "utf8"), edited, "gate must not write");
     assert.equal((await stat(editedPath)).size, before.size);
 
@@ -254,4 +292,150 @@ test("a stale or hand-edited adapter fails the gate without being rewritten", as
     assert.equal(missingResult.ok, false);
     assert.match(missingResult.detail, /missing/);
   });
+});
+
+test("the authorization manifest is ledger and phase keyed with unique rows", () => {
+  const rows = canonicalAuthorizationRows();
+  assert.ok(rows.length > 200, "the authorization manifest must be non-trivial");
+
+  const keys = rows.map((row) => `${row.state}:${row.kind}:${row.identity}`);
+  assert.equal(new Set(keys).size, keys.length, "identities must be unique");
+  const sorted = [...keys].sort((left, right) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+  assert.deepEqual(keys, sorted, "rows must be sorted");
+
+  // 至少覆盖 0000-only 与当前 0000—0004 两个 ledger，各带两个阶段。
+  const states = authorizationStateKeys();
+  assert.equal(states.length, 4);
+  assert.ok(states.includes("0000_stage_06.sql|containment"));
+  assert.ok(states.includes("0000_stage_06.sql|final"));
+  assert.equal(
+    states.filter((state) => state.endsWith("|final")).length,
+    2,
+    "every ledger must have a final phase",
+  );
+
+  const kinds = new Set(rows.map((row) => row.kind));
+  for (const kind of ["grant", "default", "effective", "routine"]) {
+    assert.ok(kinds.has(kind), `kind ${kind} must be covered`);
+  }
+
+  // 备份角色的表级 SELECT 只属于 final：两个阶段必须真的不同。
+  const backupRelations = (state: string): number =>
+    rows.filter(
+      (row) =>
+        row.state === state &&
+        row.kind === "grant" &&
+        row.identity.startsWith("relation:") &&
+        row.identity.endsWith("#meal_agent_backup"),
+    ).length;
+  assert.equal(backupRelations("0000_stage_06.sql|containment"), 0);
+  assert.ok(backupRelations("0000_stage_06.sql|final") > 0);
+
+  // 默认权限槽位覆盖三个 managed schema 与全局。
+  const slots = defaultAclSlots().map((slot) => `${slot.objtype}@${slot.scope}`);
+  assert.ok(slots.includes("f@global"));
+  assert.ok(slots.includes("r@public"));
+  assert.equal(new Set(slots).size, slots.length);
+});
+
+test("the authorization manifest rejects duplicates, empty and grantable privileges", () => {
+  const [first] = authorizationManifest.states;
+  assert.ok(first !== undefined);
+  const [grant] = first.grants;
+  assert.ok(grant !== undefined);
+
+  const withDuplicateState: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [...authorizationManifest.states, first],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(withDuplicateState),
+    (error: unknown) => error instanceof AuthorizationManifestError,
+  );
+
+  const withEmptyPrivileges: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [{ ...first, grants: [{ ...grant, privileges: [] }] }],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(withEmptyPrivileges),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /empty privilege set/.test(error.message),
+  );
+
+  const withGrantOption: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [{ ...first, grants: [{ ...grant, privileges: ["SELECT*"] }] }],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(withGrantOption),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /grant options are never allowed/.test(error.message),
+  );
+
+  const withUnwatchedGrantee: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [{ ...first, grants: [{ ...grant, grantee: "postgres" }] }],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(withUnwatchedGrantee),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /unwatched grantee/.test(error.message),
+  );
+});
+
+test("the authorization SQL keeps verify read-only and converge free of DDL", () => {
+  const verify = renderAuthorizationVerifySql();
+  const executable = withoutStringLiterals(verify);
+  for (const verb of [
+    "ALTER ",
+    "GRANT ",
+    "REVOKE ",
+    "CREATE ",
+    "DROP ",
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "TRUNCATE ",
+  ]) {
+    assert.ok(
+      !executable.toUpperCase().includes(verb),
+      `the verify block must not contain ${verb.trim()}`,
+    );
+  }
+
+  // 收敛块按设计会改 ACL，但**不得**改归属或创建/删除任何对象。
+  const converge = withoutStringLiterals(renderAuthorizationConvergeAdapter());
+  for (const verb of [
+    "CREATE ",
+    "DROP ",
+    "OWNER TO",
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "TRUNCATE ",
+  ]) {
+    assert.ok(
+      !converge.toUpperCase().includes(verb.toUpperCase()),
+      `the converge block must not contain ${verb.trim()}`,
+    );
+  }
+  // 正向断言必须在**原文**上做：REVOKE / GRANT 都在 format() 的字面量里。
+  const convergeRaw = renderAuthorizationConvergeAdapter();
+  assert.match(convergeRaw, /REVOKE/);
+  assert.match(convergeRaw, /GRANT/);
+
+  // 两段都必须固定会话 GUC，否则 catalog 文本会随会话变化。
+  for (const rendered of [verify, renderAuthorizationConvergeAdapter()]) {
+    assert.match(rendered, /set_config\('search_path', 'pg_catalog', true\)/);
+    assert.match(
+      rendered,
+      /set_config\('quote_all_identifiers', 'off', true\)/,
+    );
+  }
 });

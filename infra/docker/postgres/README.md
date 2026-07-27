@@ -104,6 +104,33 @@ cluster-admin 边界，不伪装成最小权限步骤。
 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`，只有 `public` schema 的 owner 才能
 执行。未做 owner 交接时，migration login 无法应用到 `0002`。
 
+## 授权：containment 与 final 两个阶段
+
+`acl` 与 `grants` 不再各写一份 GRANT/REVOKE 清单。授权的唯一事实源是
+[`services/api/src/database/authorization-manifest.ts`](../../../services/api/src/database/authorization-manifest.ts)，
+它按 `(ledger, phase)` 描述 `PUBLIC`/app/backup/三个 login 的 catalog ACL、
+`pg_default_acl` 的**有效**默认权限、`has_*_privilege` 的**有效**权限，以及受控
+routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要。
+
+| 阶段 | 命令 | 时机 | 备份角色表级 SELECT |
+| --- | --- | --- | --- |
+| containment | `bootstrap.sh acl` | migration 之前 / `pg_restore` 之后 | **无** |
+| final | `bootstrap.sh grants` | migration 之后 | 有（含 default privileges） |
+
+containment 刻意不给备份角色表级 `SELECT`：migration 期间没有理由存在一份可读
+全库的授权。final 阶段才建立最终 ACL，并且**同时验证 PUBLIC、app、backup 与三个
+login**——只检查备份角色会漏掉「migration 顺手把某张新表授给了 PUBLIC」。
+
+两个阶段执行同一段生成的收敛块（`generated/authorization-converge.generated.sql`）：
+按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只
+重建允许项；随后由只读断言块（`generated/authorization-verify.generated.sql`）同时
+比对 catalog ACL 与有效权限。未登记的 `(ledger, phase)` 组合一律 fail closed。
+
+产品声明禁用 Large Object，因此收敛块同时收回 `pg_catalog` 中 20 个 LO 入口点
+（`lo_create` / `lo_creat` / `lo_from_bytea` / `lo_put` / `lo_import` …）的
+`PUBLIC EXECUTE`。只封堵已有 LO 的对象权限而放着创建入口，等于允许 runtime 自己
+造一个不受 schema ACL 与 RLS 约束的存储面。
+
 ## 收敛性
 
 每个阶段都可重复执行。`cluster` 阶段每次都把六个项目角色**完整规范化**回基线：
@@ -168,12 +195,21 @@ generated adapter 是**生成文件，禁止手改**。事实源是
 `services/api` 的 `db:bootstrap` 幂等重跑预检执行的是**同一段文本**，因此两个
 入口对同一批漂移给出逐字相同的拒绝理由。
 
-它覆盖三个 managed schema 的存在性与「没有多余 schema」、relation 的
-`relkind`/owner/`RLS`/`FORCE RLS`、index 与 constraint 的规范化定义、routine 的
+它覆盖 database/schema 归属与「没有多余 schema」、relation 的
+`relkind`/owner/persistence/`RLS`/`FORCE RLS`、**每一列**的序号/类型/NOT NULL/
+默认值/存储/排序规则、index 与 constraint 的规范化定义、routine 的
 identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path`
 与 `row_security=off`）/正文 `sha256` 摘要、policy 的
-command/roles/permissive/`USING`/`WITH CHECK`，以及 type 与 trigger——当前 218 条
-规范化行。它是纯 SQL、只读：不匹配时 `RAISE EXCEPTION`，不做任何变更。
+command/roles/permissive/`USING`/`WITH CHECK`、**全部用户 type（含 shell 与
+base）**、trigger、**外键背后内部 constraint trigger 的启用状态**、rule，以及
+operator / opclass / opfamily / collation / conversion / 扩展统计 / 文本搜索 /
+extension 这些明确枚举的 namespace 类别——当前 408 条规范化行。它是纯 SQL、只读：
+不匹配时 `RAISE EXCEPTION`，不做任何变更。
+
+`handoff-pending` 的 owner 归一化**与阶段绑定**：只有目标 database 的 owner 还不是
+`meal_agent_migrator` 时才放行 bootstrap admin；handoff 完成之后 admin 重新夺回
+`public` 或 ledger 的 owner 会被判为漂移。投影在事务内固定 `search_path` 与
+`quote_all_identifiers`，因此不同会话得到同一份规范化文本。
 
 manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写一份：它是在
 真实 PostgreSQL 18 上执行冻结 `0000` 之后从 catalog 采集并冻结的规范化投影，
