@@ -78,9 +78,9 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 42/42 |
+| API unit | 43/43 |
 | API HTTP | 7/7 |
-| PostgreSQL migration/RLS/concurrency/身份边界 | 108/108 |
+| PostgreSQL migration/RLS/concurrency/身份边界 | 109/109 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
 | audit gate 与 transport 反向单测 | 11/11 |
@@ -134,8 +134,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 项 | 现状 |
 | --- | --- |
 | ACL 全主体覆盖 | 收敛与断言仍使用 `watchedGrantees` 静态名单。canonical projector 已做到目标覆盖面，但**尚未接入** verify/converge |
-| default privilege | 现有 verify 仍用 `COALESCE(schema, global, builtin)` 冒充叠加语义。真实并集语义只在只读投影里，待接入 |
-| `currentDefaultCte` 的 S→s 缺陷 | **已知缺陷，R8B 必须替换**：`authorization-manifest-sql.ts` 的 `currentDefaultCte` 同样把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，因此 sequence 的默认权限被低报为只剩 `USAGE`。它**同时被 converge 与 verify 两个块引用**，替换后必须重新生成并复验 `authorization-converge.generated.sql` 与 `authorization-verify.generated.sql` 两个 adapter。本轮属冻结路径，未改动 |
+| 旧 `currentDefaultCte` 的**整套** default privilege 缺陷 | **已知缺陷，R8B 必须统一替换**。`authorization-manifest-sql.ts` 的 `currentDefaultCte` 有三个互相独立的错误：①用 `COALESCE(schema, global, builtin)` 三选一**冒充叠加语义**，schema 行一旦存在就把 global 行整条丢掉；②把「空 global 行」与「没有这一行」混为一谈——空 ACL 展开是零行，行存在性必须先于 `aclexplode` 判断；③把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的 `S` 被当成 FOREIGN SERVER，默认权限被低报为只剩 `USAGE`。该 CTE **同时被 converge 与 verify 两个块引用**（`authorization-manifest-sql.ts:452` 与 `:522`），因此这三条**同时影响** `bootstrap.sh acl` 的收敛与 `grants` 的断言，不是「只有 verify 受影响」。R8B 必须一次性替换，并重新生成、复验 `authorization-converge.generated.sql` 与 `authorization-verify.generated.sql` 两个 adapter。真实并集语义、行存在性与 `S→s` 映射目前只存在于只读投影里。本轮属冻结路径，未改动 |
 | type / Large Object | **策略已决定，R8B 只负责落实、不再裁定**：managed 非数组类型由 owner/migrator 保留必要 `USAGE`，`PUBLIC`/app/backup/三个 login 默认无 `USAGE`；数组类型只记录向元素类型委托，不建立也不撤销独立 ACL；任意 LO 对象 R8B 必须 fail closed，只报告不删数据，LO 的 OID 不进固定允许 manifest |
 
 **「ACL 全主体覆盖」的准确含义**（避免被读成「枚举了所有角色的所有权限」）：
@@ -152,7 +151,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 
 **证据边界**：以上只覆盖数据库身份与授权的**可观察性**。Compose、端口发布、secret file、备份恢复与阶段总门禁均未实现，也未取得证据；`pnpm stage09a:check` 尚未创建。
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector 最终修订**完成、待总控复验；R8B（把 projector 接入 verify/converge、替换带 S→s 缺陷的 `currentDefaultCte` 并重新生成复验 converge/verify 两个 adapter、落实已决定的类型/Large Object 策略）未开始；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过复验前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector 最终修订**完成、待总控复验；R8B（把 projector 接入 verify/converge、统一替换旧 `currentDefaultCte` 的整套 default privilege 缺陷——COALESCE 伪叠加、空 global 行语义与 S→s——并重新生成、复验 converge 与 verify 两个 adapter、落实已决定的类型/Large Object 策略）未开始；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过复验前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也

@@ -111,10 +111,12 @@ PostgreSQL healthy
       catalog 查询**复现。
     - **R8B（未开始）**才把 projector 接入 verify/converge、去掉
       `watchedGrantees` 静态名单，并**落实**（不是再裁定）下面第 15 条已决定的
-      类型与 Large Object 策略。R8B 还必须替换
-      `authorization-manifest-sql.ts` 的 `currentDefaultCte`：它同样把
-      `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，因此 sequence 的默认
-      权限被低报；该 CTE **同时被 converge 与 verify 两个块引用**，替换后必须
+      类型与 Large Object 策略。R8B 还必须**统一替换**
+      `authorization-manifest-sql.ts` 的 `currentDefaultCte`，它有三个互相独立的
+      错误：`COALESCE(schema, global, builtin)` 三选一冒充叠加语义、把「空 global
+      行」与「没有这一行」混为一谈、把 `pg_default_acl.defaclobjtype` 直接喂给
+      `acldefault`（sequence 的 `S` 被当成 FOREIGN SERVER）。该 CTE **同时被
+      converge 与 verify 两个块引用**，因此这三条同时影响收敛与断言；替换后必须
       重新生成并复验 `authorization-converge.generated.sql` 与
       `authorization-verify.generated.sql`。R8B **不得**把动态投影冻结成跨 cluster
       的固定快照：`role` 行是覆盖面证据而非允许角色白名单，外部角色按策略匹配，

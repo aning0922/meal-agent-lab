@@ -39,10 +39,24 @@ export const supportedPostgresVersion = "18.4";
  * 整串锚定匹配，**不做任何 `includes` / 子串判断**——子串判据会把
  * `psql (PostgreSQL) 18.3 (Ubuntu 18.4-1.pgdg24.04+1)` 误判为 18.4：主版本字段是
  * 18.3，`18.4` 只出现在 vendor suffix 里。版本号也必须恰好是两段，`18.4.1` 或
- * `18.4beta1` 这类形态一律拒绝而不是宽容解析。
+ * `18.4beta1` 这类形态一律拒绝而不是宽容解析。vendor suffix 必须以非空白字符
+ * 开头，因此 `18.4 `（行尾多余空格）也不算合法 banner。
  */
 const bannerPattern =
-  /^(?<tool>[A-Za-z_][A-Za-z0-9_]*) \(PostgreSQL\) (?<version>\d+\.\d+)(?: .*)?$/;
+  /^(?<tool>[A-Za-z_][A-Za-z0-9_]*) \(PostgreSQL\) (?<version>\d+\.\d+)(?: \S.*)?$/;
+
+/**
+ * 只剥掉**一个正常行尾换行**（`\n` 或 `\r\n`），不做 `trim()`。
+ *
+ * `trim()` 会连前导空白与前导空行一起吃掉，于是 `"  psql (PostgreSQL) 18.4"` 或
+ * 一段带前导噪声的输出都能通过——而那已经不是这个可执行文件的标准 banner 了。
+ */
+const stripLineEnding = (banner: string): string => {
+  const withoutNewline = banner.endsWith("\n") ? banner.slice(0, -1) : banner;
+  return withoutNewline.endsWith("\r")
+    ? withoutNewline.slice(0, -1)
+    : withoutNewline;
+};
 
 export interface PostgresBannerResult {
   readonly ok: boolean;
@@ -62,8 +76,8 @@ export const parsePostgresBanner = (
   tool: string,
   banner: string,
 ): PostgresBannerResult => {
-  const trimmed = banner.trim();
-  if (trimmed === "" || trimmed.includes("\n")) {
+  const line = stripLineEnding(banner);
+  if (line === "" || line.includes("\n") || line.includes("\r")) {
     return {
       ok: false,
       detail: `expected a single-line version banner, got ${JSON.stringify(
@@ -71,12 +85,12 @@ export const parsePostgresBanner = (
       )}`,
     };
   }
-  const match = bannerPattern.exec(trimmed);
+  const match = bannerPattern.exec(line);
   if (match?.groups === undefined) {
     return {
       ok: false,
       detail:
-        `expected a PostgreSQL version banner, got ${JSON.stringify(trimmed)}`,
+        `expected a PostgreSQL version banner, got ${JSON.stringify(line)}`,
     };
   }
   const reported = match.groups["tool"];
@@ -84,7 +98,7 @@ export const parsePostgresBanner = (
   if (reported === undefined || version === undefined) {
     return {
       ok: false,
-      detail: `unparsable version banner: ${JSON.stringify(trimmed)}`,
+      detail: `unparsable version banner: ${JSON.stringify(line)}`,
     };
   }
   if (reported !== tool) {
@@ -92,7 +106,7 @@ export const parsePostgresBanner = (
       ok: false,
       detail:
         `banner reports ${JSON.stringify(reported)} but the executable ` +
-        `is ${JSON.stringify(tool)}: ${JSON.stringify(trimmed)}`,
+        `is ${JSON.stringify(tool)}: ${JSON.stringify(line)}`,
     };
   }
   if (version !== supportedPostgresVersion) {
@@ -101,7 +115,7 @@ export const parsePostgresBanner = (
       version,
       detail:
         `expected PostgreSQL ${supportedPostgresVersion}, found ` +
-        `${version}: ${JSON.stringify(trimmed)}`,
+        `${version}: ${JSON.stringify(line)}`,
     };
   }
   return { ok: true, version, detail: "" };

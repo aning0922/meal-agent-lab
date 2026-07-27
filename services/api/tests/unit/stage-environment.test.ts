@@ -46,9 +46,12 @@ test("each standard banner shape is parsed by its major version field", () => {
   for (const tool of requiredPostgresExecutables) {
     for (const text of [
       `${tool} (PostgreSQL) 18.4`,
+      // 正常行尾：单个 \n，以及 Windows 风格的 \r\n。
       `${tool} (PostgreSQL) 18.4\n`,
+      `${tool} (PostgreSQL) 18.4\r\n`,
       `${tool} (PostgreSQL) 18.4 (Homebrew)`,
       `${tool} (PostgreSQL) 18.4 (Debian 18.4-1.pgdg13+1)`,
+      `${tool} (PostgreSQL) 18.4 (Homebrew)\n`,
     ]) {
       const parsed = parsePostgresBanner(tool, text);
       assert.equal(parsed.ok, true, `${tool} must accept ${JSON.stringify(text)}`);
@@ -103,6 +106,43 @@ test("near-miss version fields and non-PostgreSQL banners are refused", () => {
       parsePostgresBanner("psql", text).ok,
       false,
       `must be refused: ${JSON.stringify(text)}`,
+    );
+  }
+});
+
+test("only a normal trailing line ending is tolerated around the banner", () => {
+  // 前导空白与前导空行都必须被拒绝：`trim()` 式的宽容会让「这一行确实是该可执行
+  // 文件打印的标准 banner」这个前提失效，而工具名校验正是建立在这个前提上的。
+  for (const text of [
+    " psql (PostgreSQL) 18.4",
+    "\tpsql (PostgreSQL) 18.4",
+    "\npsql (PostgreSQL) 18.4",
+    "\n\npsql (PostgreSQL) 18.4\n",
+    "\r\npsql (PostgreSQL) 18.4",
+    // 行尾多余空白同样不是正常行尾。
+    "psql (PostgreSQL) 18.4 ",
+    "psql (PostgreSQL) 18.4\t",
+    "psql (PostgreSQL) 18.4 \n",
+    // 两个换行意味着输出不止一行。
+    "psql (PostgreSQL) 18.4\n\n",
+  ]) {
+    assert.equal(
+      parsePostgresBanner("psql", text).ok,
+      false,
+      `leading or trailing noise must be refused: ${JSON.stringify(text)}`,
+    );
+  }
+
+  // 只有「恰好一个行尾换行」被容许。
+  for (const text of [
+    "psql (PostgreSQL) 18.4",
+    "psql (PostgreSQL) 18.4\n",
+    "psql (PostgreSQL) 18.4\r\n",
+  ]) {
+    assert.equal(
+      parsePostgresBanner("psql", text).ok,
+      true,
+      `a normal line ending must be tolerated: ${JSON.stringify(text)}`,
     );
   }
 });

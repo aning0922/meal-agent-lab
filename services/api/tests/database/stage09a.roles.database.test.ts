@@ -5088,6 +5088,156 @@ test("default privilege composition matches the ACL of really created objects", 
   }
 });
 
+/** 一个清理阶段：失败也继续，错误留到最后统一处理。返回是否成功。 */
+type CleanupStage = (label: string, run: () => Promise<void>) => Promise<boolean>;
+
+interface CleanupRecorder {
+  readonly errors: unknown[];
+  readonly stage: CleanupStage;
+}
+
+const createCleanupRecorder = (): CleanupRecorder => {
+  const errors: unknown[] = [];
+  const stage: CleanupStage = async (label, run) => {
+    try {
+      await run();
+      return true;
+    } catch (error) {
+      errors.push(
+        new Error(
+          `cleanup stage ${label} failed: ` +
+            (error instanceof Error ? error.message : String(error)),
+          { cause: error },
+        ),
+      );
+      return false;
+    }
+  };
+  return { errors, stage };
+};
+
+/**
+ * 逐角色清理：先从 `pg_roles` 枚举**实际存在**的角色，再对每个角色分别执行
+ * `DROP OWNED BY` 与 `DROP ROLE`。
+ *
+ * 一条 `DROP OWNED BY a, b, c` 在 `b` 不存在时会整条失败，于是 `a` 与 `c` 的授权
+ * 一并残留；把注入拆成条件分支的用例（只创建部分角色）就会污染后续串行测试。
+ * 因此这里先枚举、再逐个成阶段——一个角色失败不阻止其它角色。
+ */
+const dropInjectedRolesIndividually = async (
+  candidates: readonly string[],
+  stage: CleanupStage,
+): Promise<readonly string[]> => {
+  let existing: readonly string[] = [];
+  await stage("enumerate-roles", async () => {
+    existing = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ rolname: string }>(
+        `SELECT rolname FROM pg_catalog.pg_roles
+          WHERE rolname = ANY ($1::text[]) ORDER BY rolname`,
+        [[...candidates]],
+      );
+      return result.rows.map((row) => row.rolname);
+    });
+  });
+  for (const role of existing) {
+    await stage(`drop-owned-${role}`, async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`DROP OWNED BY ${role}`);
+      });
+    });
+    await stage(`drop-role-${role}`, async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`DROP ROLE IF EXISTS ${role}`);
+      });
+    });
+  }
+  return existing;
+};
+
+/**
+ * 独立 catalog 复查：注入前缀相关的角色、成员关系、七类对象 ACL、default ACL、
+ * 归属与 Large Object 是否都已消失。返回**非零**项，空数组即干净。
+ *
+ * `escapedPrefix` 用 `!` 转义下划线，例如 `stage09a!_r8a!_`。
+ */
+const injectedLeftovers = async (
+  escapedPrefix: string,
+  largeObjectId: string,
+): Promise<readonly { readonly what: string; readonly count: string }[]> =>
+  withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ what: string; count: string }>(
+      `SELECT 'roles' AS what, count(*)::text AS count
+         FROM pg_catalog.pg_roles WHERE rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'memberships', count(*)::text
+         FROM pg_catalog.pg_auth_members a
+         JOIN pg_catalog.pg_roles m ON m.oid = a.member
+         JOIN pg_catalog.pg_roles g ON g.oid = a.roleid
+        WHERE m.rolname LIKE $1 ESCAPE '!' OR g.rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'relation-acl', count(*)::text FROM pg_catalog.pg_class
+        WHERE relacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'column-acl', count(*)::text FROM pg_catalog.pg_attribute
+        WHERE attacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'routine-acl', count(*)::text FROM pg_catalog.pg_proc
+        WHERE proacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'schema-acl', count(*)::text FROM pg_catalog.pg_namespace
+        WHERE nspacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'type-acl', count(*)::text FROM pg_catalog.pg_type
+        WHERE typacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'database-acl', count(*)::text FROM pg_catalog.pg_database
+        WHERE datacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'default-acl', count(*)::text FROM pg_catalog.pg_default_acl
+        WHERE defaclacl::text LIKE $2 ESCAPE '!'
+       UNION ALL
+       SELECT 'owned-relations', count(*)::text
+         FROM pg_catalog.pg_class c
+         JOIN pg_catalog.pg_roles r ON r.oid = c.relowner
+        WHERE r.rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'owned-routines', count(*)::text
+         FROM pg_catalog.pg_proc p
+         JOIN pg_catalog.pg_roles r ON r.oid = p.proowner
+        WHERE r.rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'owned-types', count(*)::text
+         FROM pg_catalog.pg_type t
+         JOIN pg_catalog.pg_roles r ON r.oid = t.typowner
+        WHERE r.rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'owned-schemas', count(*)::text
+         FROM pg_catalog.pg_namespace n
+         JOIN pg_catalog.pg_roles r ON r.oid = n.nspowner
+        WHERE r.rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'owned-large-objects', count(*)::text
+         FROM pg_catalog.pg_largeobject_metadata m
+         JOIN pg_catalog.pg_roles r ON r.oid = m.lomowner
+        WHERE r.rolname LIKE $1 ESCAPE '!'
+       UNION ALL
+       SELECT 'large-object', count(*)::text
+         FROM pg_catalog.pg_largeobject_metadata
+        WHERE $3::text IS NOT NULL AND oid = $3::text::oid
+       UNION ALL
+       SELECT 'large-object-data', count(*)::text
+         FROM pg_catalog.pg_largeobject
+        WHERE $3::text IS NOT NULL AND loid = $3::text::oid
+       ORDER BY 1`,
+      [
+        `${escapedPrefix}%`,
+        `%${escapedPrefix}%`,
+        largeObjectId === "" ? null : largeObjectId,
+      ],
+    );
+    return result.rows.filter((row) => row.count !== "0");
+  });
+
 test("the read-only authorization projection observes every ACL subject", async () => {
   const baseline = await authorizationProjection();
   const outsider = "stage09a_r8a_outsider";
@@ -5104,26 +5254,8 @@ test("the read-only authorization projection observes every ACL subject", async 
   // 失败都必须走同一段清理，否则这个 LO 会留给后续串行用例。
   let largeObjectId = "";
   let bodyError: unknown;
-  const cleanupErrors: unknown[] = [];
-  /** 清理的一个阶段：失败也继续往下走，错误留到最后统一处理。 */
-  const cleanupStage = async (
-    label: string,
-    stage: () => Promise<void>,
-  ): Promise<boolean> => {
-    try {
-      await stage();
-      return true;
-    } catch (error) {
-      cleanupErrors.push(
-        new Error(
-          `cleanup stage ${label} failed: ` +
-            (error instanceof Error ? error.message : String(error)),
-          { cause: error },
-        ),
-      );
-      return false;
-    }
-  };
+  const { errors: cleanupErrors, stage: cleanupStage } =
+    createCleanupRecorder();
 
   try {
     largeObjectId = await withPool(adminPoolConfig(), async (pool) => {
@@ -5604,11 +5736,16 @@ test("the read-only authorization projection observes every ACL subject", async 
   } finally {
     // 1. 核心对象的 owner 恢复**不允许**被吞掉：DROP OWNED BY 会删掉仍归属于
     //    该角色的对象，所以恢复失败必须被记录，并阻止后面的 DROP OWNED。
-    await cleanupStage("restore-owners", async () => {
+    //    两个对象各自成阶段：表恢复失败时函数仍要尝试恢复，反之亦然。
+    await cleanupStage("restore-owner-sessions", async () => {
       await withPool(adminPoolConfig(), async (pool) => {
         await pool.query(
           `ALTER TABLE public.sessions OWNER TO ${migratorRole}`,
         );
+      });
+    });
+    await cleanupStage("restore-owner-app-user-id", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
         await pool.query(
           "ALTER FUNCTION meal_agent_private.app_user_id() " +
             `OWNER TO ${migratorRole}`,
@@ -5678,13 +5815,18 @@ test("the read-only authorization projection observes every ACL subject", async 
       });
     }
 
-    // Large Object 单独成阶段，且只在真的创建成功时执行。
+    // Large Object 的两步各自成阶段：owner 恢复失败（例如角色已被别处删掉）仍
+    // 必须尝试 lo_unlink，否则这个 LO 会留给后续串行用例。
     if (largeObjectId !== "") {
-      await cleanupStage("drop-large-object", async () => {
+      await cleanupStage("restore-large-object-owner", async () => {
         await withPool(adminPoolConfig(), async (pool) => {
           await pool.query(
             `ALTER LARGE OBJECT ${largeObjectId} OWNER TO postgres`,
           );
+        });
+      });
+      await cleanupStage("unlink-large-object", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
           await pool.query(`SELECT lo_unlink(${largeObjectId})`);
         });
       });
@@ -5693,16 +5835,10 @@ test("the read-only authorization projection observes every ACL subject", async 
     // 归属没有确认回到 migrator 时**绝不**执行 DROP OWNED BY：那会连带删除仍
     // 属于注入角色的业务对象。此时宁可把角色留下来由人处理。
     if (ownershipRestored) {
-      await cleanupStage("drop-roles", async () => {
-        await withPool(adminPoolConfig(), async (pool) => {
-          await pool.query(
-            `DROP OWNED BY ${outsider}, ${inheritor}, ${columnOnly}`,
-          );
-          for (const role of [outsider, inheritor, columnOnly]) {
-            await pool.query(`DROP ROLE IF EXISTS ${role}`);
-          }
-        });
-      });
+      await dropInjectedRolesIndividually(
+        [outsider, inheritor, columnOnly],
+        cleanupStage,
+      );
     } else {
       cleanupErrors.push(
         new Error(
@@ -5714,66 +5850,26 @@ test("the read-only authorization projection observes every ACL subject", async 
 
     // 4. 清理证据由**独立查询**给出，不靠投影自证。
     await cleanupStage("verify-clean-catalog", async () => {
-      await withPool(adminPoolConfig(), async (pool) => {
-      const leftovers = await pool.query<{ what: string; count: string }>(
-        `SELECT 'roles' AS what, count(*)::text AS count
-           FROM pg_catalog.pg_roles WHERE rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
-         UNION ALL
-         SELECT 'memberships', count(*)::text
-           FROM pg_catalog.pg_auth_members a
-           JOIN pg_catalog.pg_roles m ON m.oid = a.member
-           JOIN pg_catalog.pg_roles g ON g.oid = a.roleid
-          WHERE m.rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
-             OR g.rolname LIKE 'stage09a!_r8a!_%' ESCAPE '!'
-         UNION ALL
-         SELECT 'relation-acl', count(*)::text FROM pg_catalog.pg_class
-          WHERE relacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'column-acl', count(*)::text FROM pg_catalog.pg_attribute
-          WHERE attacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'routine-acl', count(*)::text FROM pg_catalog.pg_proc
-          WHERE proacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'schema-acl', count(*)::text FROM pg_catalog.pg_namespace
-          WHERE nspacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'type-acl', count(*)::text FROM pg_catalog.pg_type
-          WHERE typacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'database-acl', count(*)::text FROM pg_catalog.pg_database
-          WHERE datacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'default-acl', count(*)::text FROM pg_catalog.pg_default_acl
-          WHERE defaclacl::text LIKE '%stage09a\\_r8a\\_%'
-         UNION ALL
-         SELECT 'large-object', count(*)::text
-           FROM pg_catalog.pg_largeobject_metadata WHERE oid = $1
-         UNION ALL
-         SELECT 'large-object-data', count(*)::text
-           FROM pg_catalog.pg_largeobject WHERE loid = $1
-         ORDER BY 1`,
-        [largeObjectId],
-      );
       assert.deepEqual(
-        leftovers.rows.filter((row) => row.count !== "0"),
+        await injectedLeftovers("stage09a!_r8a!_", largeObjectId),
         [],
         "cleanup must leave no role, grant, default privilege or large object",
       );
       // 归属的正向断言：不是「没有 outsider」，而是「确实回到 migrator」。
-      const restored = await pool.query<{ entry: string }>(
-        `SELECT 'sessions:' || pg_catalog.pg_get_userbyid(c.relowner) AS entry
-           FROM pg_catalog.pg_class c WHERE c.oid = 'public.sessions'::regclass
-         UNION ALL
-         SELECT 'app_user_id:' || pg_catalog.pg_get_userbyid(p.proowner)
-           FROM pg_catalog.pg_proc p
-          WHERE p.oid = 'meal_agent_private.app_user_id()'::regprocedure
-         ORDER BY 1`,
-      );
-      assert.deepEqual(restored.rows.map((row) => row.entry), [
-        `app_user_id:${migratorRole}`,
-        `sessions:${migratorRole}`,
-      ]);
+      await withPool(adminPoolConfig(), async (pool) => {
+        const restored = await pool.query<{ entry: string }>(
+          `SELECT 'sessions:' || pg_catalog.pg_get_userbyid(c.relowner) AS entry
+             FROM pg_catalog.pg_class c WHERE c.oid = 'public.sessions'::regclass
+           UNION ALL
+           SELECT 'app_user_id:' || pg_catalog.pg_get_userbyid(p.proowner)
+             FROM pg_catalog.pg_proc p
+            WHERE p.oid = 'meal_agent_private.app_user_id()'::regprocedure
+           ORDER BY 1`,
+        );
+        assert.deepEqual(restored.rows.map((row) => row.entry), [
+          `app_user_id:${migratorRole}`,
+          `sessions:${migratorRole}`,
+        ]);
       });
     });
 
@@ -5804,6 +5900,96 @@ test("the read-only authorization projection observes every ACL subject", async 
       throw cleanupErrors[0];
     }
   }
+});
+
+test("cleanup drops only the roles that exist and still leaves nothing behind", async () => {
+  // 上一版的清理写成一条 `DROP OWNED BY a, b, c`：注入只创建了其中两个角色时，
+  // 整条语句因为第三个角色不存在而失败，前两个角色的授权与对象全部残留。
+  // 这里就复现那种「部分注入」的形态，并证明逐角色清理不会被缺席的角色带垮。
+  const prefix = "stage09a_partial_";
+  const created = [`${prefix}alpha`, `${prefix}gamma`] as const;
+  const absent = `${prefix}beta`;
+  const { errors, stage } = createCleanupRecorder();
+
+  await withPool(adminPoolConfig(), async (pool) => {
+    for (const role of created) {
+      await pool.query(`DROP ROLE IF EXISTS ${role}`);
+    }
+    await pool.query(`DROP ROLE IF EXISTS ${absent}`);
+    // 只创建两个：beta 故意缺席。
+    for (const role of created) {
+      await pool.query(`CREATE ROLE ${role} NOLOGIN`);
+      await pool.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+      await pool.query(`GRANT SELECT ON public.households TO ${role}`);
+      await pool.query(
+        `GRANT SELECT (display_name) ON public.users TO ${role}`,
+      );
+      await pool.query(
+        `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+          `GRANT SELECT ON TABLES TO ${role}`,
+      );
+    }
+    // 其中一个角色还拥有一个真实对象与一个 Large Object：DROP OWNED BY 必须把
+    // 它们一并带走，否则「无残留」只是没检查到。
+    await pool.query(`CREATE TABLE public.${prefix}owned (id int)`);
+    await pool.query(
+      `ALTER TABLE public.${prefix}owned OWNER TO ${created[0]}`,
+    );
+    const loid = await pool.query<{ loid: string }>(
+      "SELECT lo_from_bytea(0, 'stage09a-partial'::bytea)::text AS loid",
+    );
+    const owned = loid.rows[0]?.loid;
+    assert.ok(owned !== undefined);
+    await pool.query(`ALTER LARGE OBJECT ${owned} OWNER TO ${created[0]}`);
+  });
+
+  // 注入确实生效：先证明「有东西要清理」，否则「无残留」不构成证据。
+  assert.notDeepEqual(await injectedLeftovers(`${prefix.replaceAll("_", "!_")}`, ""), []);
+
+  // 撤销 default privilege（它不属于 DROP OWNED BY 之外的任何一步的副产物，
+  // 但对不存在的角色执行会失败——同样必须逐角色成阶段）。
+  for (const role of [...created, absent]) {
+    await stage(`revoke-default-${role}`, async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(
+          `ALTER DEFAULT PRIVILEGES FOR ROLE ${migratorRole} ` +
+            `REVOKE SELECT ON TABLES FROM ${role}`,
+        );
+      });
+    });
+  }
+  const dropped = await dropInjectedRolesIndividually(
+    [...created, absent],
+    stage,
+  );
+
+  // 只有真实存在的两个角色被枚举出来并逐个删除；缺席的第三个既不报错也不阻塞。
+  assert.deepEqual(dropped, [...created]);
+  assert.deepEqual(
+    errors.map((error) =>
+      error instanceof Error ? error.message.split(":")[0] : String(error),
+    ),
+    [`cleanup stage revoke-default-${absent} failed`],
+    "only the revoke aimed at the absent role may fail, and it must be recorded",
+  );
+
+  // 清理后由独立 catalog 查询复查：角色、成员关系、七类 ACL、default ACL、
+  // 归属与 Large Object 全部为零。
+  assert.deepEqual(
+    await injectedLeftovers(`${prefix.replaceAll("_", "!_")}`, ""),
+    [],
+    "per-role cleanup must leave no role, grant, owned object or large object",
+  );
+  await withPool(adminPoolConfig(), async (pool) => {
+    const table = await pool.query<{ present: string | null }>(
+      `SELECT to_regclass('public.${prefix}owned')::text AS present`,
+    );
+    assert.equal(
+      table.rows[0]?.present,
+      null,
+      "DROP OWNED BY must have taken the owned table with it",
+    );
+  });
 });
 
 test("the projection keeps identities unambiguous for names containing # @ | and quotes", async () => {

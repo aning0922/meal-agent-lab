@@ -80,11 +80,16 @@ R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未
 （`meal_agent` 前缀）与目标库内**全部非 superuser LOGIN**——它不是对集群所有角色的
 枚举，外部 NOLOGIN 角色的直接授权由 raw 层可见但不进入 effective 探测。
 
-**R8B 必须替换的已知缺陷**：`authorization-manifest-sql.ts` 的 `currentDefaultCte`
-同样把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的默认权限因此
-被低报为只剩 `USAGE`。该 CTE **同时被 converge 与 verify 两个块引用**（
-`renderAuthorizationConvergeAdapter` 与 `renderAuthorizationVerifySql`），替换后必须
-重新生成并复验两个 generated adapter。R8A 属冻结路径，未改动它。
+**R8B 必须统一替换的已知缺陷**：`authorization-manifest-sql.ts` 的
+`currentDefaultCte` 有三个互相独立的错误——①`COALESCE(schema, global, builtin)`
+三选一**冒充叠加语义**（schema 行一旦存在就把 global 行整条丢掉）；②把「空 global
+行」与「没有这一行」混为一谈（空 ACL 展开是零行，行存在性必须先于 `aclexplode`
+判断）；③把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的 `S`
+被当成 FOREIGN SERVER，默认权限被低报为只剩 `USAGE`。该 CTE **同时被 converge 与
+verify 两个块引用**（`renderAuthorizationConvergeAdapter` 与
+`renderAuthorizationVerifySql`），所以这三条**同时影响** `bootstrap.sh acl` 的收敛与
+`grants` 的断言，不是只有断言受影响。R8B 必须一次性替换，并重新生成、复验两个
+generated adapter。R8A 属冻结路径，未改动它。
 
 ### 冻结 0000 的安全 manifest
 

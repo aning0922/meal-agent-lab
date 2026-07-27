@@ -147,11 +147,14 @@ login**——只检查备份角色会漏掉「migration 顺手把某张新表授
 不是允许角色白名单）。语义细节与 PostgreSQL 18.4 实测结论见
 [`services/api/README.md`](../../../services/api/README.md)。
 
-**R8B 必须替换的已知缺陷**：`authorization-manifest-sql.ts` 的 `currentDefaultCte`
-把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，sequence 的默认权限被低报为
-只剩 `USAGE`；它**同时被 `authorization-converge.generated.sql` 与
-`authorization-verify.generated.sql` 引用**，替换后两个 adapter 都必须重新生成并
-复验。R8A 属冻结路径，未改动它。
+**R8B 必须统一替换的已知缺陷**：`authorization-manifest-sql.ts` 的
+`currentDefaultCte` 有三个互相独立的错误——`COALESCE(schema, global, builtin)` 三选一
+冒充叠加语义、把「空 global 行」与「没有这一行」混为一谈、把
+`pg_default_acl.defaclobjtype` 直接喂给 `acldefault`（sequence 的 `S` 被当成 FOREIGN
+SERVER，默认权限低报为只剩 `USAGE`）。它**同时被
+`authorization-converge.generated.sql` 与 `authorization-verify.generated.sql`
+引用**，因此这三条同时影响 `acl` 的**收敛**与 `grants` 的**断言**；替换必须一次性
+完成，两个 adapter 都要重新生成并复验。R8A 属冻结路径，未改动它。
 
 类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 负责落实，不再裁定）：managed 非数组类型由
 owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个 login

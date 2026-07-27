@@ -174,10 +174,13 @@ PostgreSQL 18.4 实测确定并已固化为测试的语义：非空 global `pg_d
 内动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色与
 目标库内**全部非 superuser LOGIN**，不是对集群所有角色的枚举。
 
-**R8B 必须替换的已知缺陷**：`authorization-manifest-sql.ts` 的 `currentDefaultCte`
-同样把 `pg_default_acl.defaclobjtype` 直接喂给 `acldefault`，因此 sequence 的默认
-权限被低报为只剩 `USAGE`。它**同时被 converge 与 verify 两个块引用**，替换后必须
-重新生成并复验两个 generated adapter。R8A 属冻结路径，未改动它。
+**R8B 必须统一替换的已知缺陷**：`authorization-manifest-sql.ts` 的
+`currentDefaultCte` 有三个互相独立的错误——`COALESCE(schema, global, builtin)` 三选一
+冒充叠加语义、把「空 global 行」与「没有这一行」混为一谈、把
+`pg_default_acl.defaclobjtype` 直接喂给 `acldefault`（sequence 的 `S` 被当成 FOREIGN
+SERVER）。它**同时被 converge 与 verify 两个块引用**，因此这三条同时影响 containment
+与 final 两个阶段的**收敛**与**断言**，不是只有断言受影响。R8B 必须一次性替换并
+重新生成、复验两个 generated adapter。R8A 属冻结路径，未改动它。
 
 R8B 的边界：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
 出现过的 owner、Large Object 的 OID），因此不得把整份投影冻结成跨 cluster 的固定
