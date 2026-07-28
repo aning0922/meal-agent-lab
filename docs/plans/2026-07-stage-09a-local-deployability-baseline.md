@@ -226,6 +226,19 @@ fail closed，`0000 → handoff → acl → migrate → grants` 的完整链路�
 9. 认证和家庭私有响应增加 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`；不启用 wildcard CORS。
 10. 阶段 09A 不增加反向代理、TLS、域名、登录限流或 WAF。没有真实微信配置时，禁止把 local-test 拓扑改名或表述为 staging/production。
 
+### M3A 实施记录（进行中）
+
+M3 被拆成 **M3A（配置与 Secret file 消费核心）**与 **M3B（环境模板、八份 Secret 的
+生成与交叉一致性、完整 Compose bootstrap 链实证）**两轮。M3A **已开工，尚未复核**，
+覆盖上面第 2、3、6、7、8、9 条的**代码侧**：统一的 Node Secret 来源解析器、
+bootstrap 的 shell Secret file 消费、显式部署维度、真实 code2Session endpoint 收紧、
+中央 logger 脱敏边界与全响应安全头。
+
+M3A **不覆盖**（属于 M3B）：`infra/environments/` 模板（第 1 条）、八份 Secret 的
+生成/派生/交叉一致性预检、database name 与三个 URL/pgpass 的部署级一致性、完整
+Compose bootstrap 链与 `/readyz=200` 实证、容器级 sentinel 扫描，以及宿主全部非
+loopback 地址的动态隔离证明（第 5 条）。M4、M5 未开始。
+
 ### M4：生命周期、备份和恢复
 
 1. 提供明确命令完成：
