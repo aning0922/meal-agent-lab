@@ -14,9 +14,12 @@
 #     secret file，见下方 `secrets:` 与 [`secrets/README.md`](secrets/README.md)。
 #
 # M3A 起，`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 已经**被真正消费**：
-# `services/api/src/config-source.ts` 与 `postgres/secret-source.sh` 实现了同一套
-# 互斥语义与 fail-closed 的文件判据（绝对路径、非 symlink、普通文件、单链接、
-# 属主为当前 EUID、只允许 0600 权限、单行、最多一个末尾 LF）。
+# `services/api/src/config-source.ts` 与 `postgres/secret-source.sh` 的互斥语义与
+# fail-closed 文件判据**按条对齐**（绝对路径、非 symlink、普通文件、单链接、
+# 属主为当前 EUID、只允许 0600 权限、单行、最多一个末尾 LF），但**不是逐字节
+# 等价的同一实现**——机制差异与残留边界见 `postgres/README.md`。
+# 连接串另有专用校验：五个核心字段必须全部显式来自 URL，否则 node-postgres 会
+# 回落到 `PG*` 环境变量。
 # 仍未完成（M3B）：八份 secret 的生成、派生与交叉一致性预检，以及
 # `0000 → handoff → acl → migrate → grants` 整链与 `/readyz=200` 的运行证据。
 # 备份与恢复命令属于 M4，本文件不声明。
@@ -168,8 +171,8 @@ services:
         condition: service_healthy
 
   # 2.2 cluster scope：三个登录角色的 SCRAM 口令。
-  # M3 依赖：bootstrap.sh 目前只读取 MEAL_AGENT_*_PASSWORD 三个 environment
-  # value。本文件不写入明文，因此该服务现在必然 fail closed。
+  # `bootstrap.sh` 经 `secret-source.sh` 消费这三个 `*_FILE`（M3A 已实现）。
+  # 三份口令全部在任何 psql 调用之前解析，任一不合格即 exit 2。
   bootstrap-logins:
     <<: [*hardening, *bootstrap-psql]
     command:
@@ -211,7 +214,7 @@ services:
   # 2.4 database scope：以 cluster admin 原子应用冻结的 0000_stage_06.sql。
   # 这一步必须是 Node（dist/database/bootstrap-0000.js），上一步与下一步必须是
   # psql。三者因此是三个独立容器，本轮不构建同时含 Node 与 psql 的混合高权限
-  # 镜像。M3 依赖：config 侧尚无 DATABASE_URL_FILE，该服务现在 fail closed。
+  # 镜像。`DATABASE_URL_FILE` 由 `src/config-source.ts` 消费（M3A 已实现）。
   bootstrap-schema:
     <<: [*hardening, *api-image]
     command:
@@ -390,7 +393,10 @@ volumes:
 # 现状：
 #   - postgres_superuser_password / postgres_admin_pgpass 走 PostgreSQL 官方
 #     镜像与 libpq 自带的 *_FILE / PGPASSFILE 能力，无需任何代码改动；
-#   - 其余六项（三个登录口令 + 三个连接串）是 M3 才会实现的 `_FILE` 契约。
+#   - 其余六项（三个登录口令 + 三个连接串）的 `_FILE` 消费由 M3A 实现：
+#     连接串走 `services/api/src/config-source.ts`，口令走
+#     `infra/docker/postgres/secret-source.sh`。八份 secret 的生成、属主编排与
+#     交叉一致性预检仍属于 M3B，尚未实现。
 secrets:
   postgres_superuser_password:
     file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/postgres_superuser_password

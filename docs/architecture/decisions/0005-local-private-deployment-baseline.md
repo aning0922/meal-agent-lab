@@ -285,7 +285,8 @@ sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对
 **M3A 实施注记**（implementation complete, pending total-control review，**不是**
 阶段完成证据）：`_FILE` 互斥注入由 `services/api/src/config-source.ts`（API、
 `db:migrate`、`db:bootstrap` 三个入口共用）与 `infra/docker/postgres/secret-source.sh`
-（三对 `MEAL_AGENT_*_PASSWORD`）实现，两侧语义与文件判据逐条一致：绝对路径、
+（三对 `MEAL_AGENT_*_PASSWORD`）实现，两侧的互斥语义与内容判据**按条对齐**
+（不是逐字节等价的同一实现，机制差异见 `infra/docker/postgres/README.md`）：绝对路径、
 非 symlink、普通文件、单链接、属主为当前 EUID、只允许 `0600`、≤4096 字节、非空、
 合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim；两个来源同时出现
 （含内容相同）一律拒绝，选中来源失败时不回落。shell 侧三份口令全部在任何 psql

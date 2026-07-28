@@ -297,6 +297,50 @@ review**——**不是 Accepted**。
    不可能漏掉），并断言不存在任何 `Access-Control-Allow-Origin`。本轮不新增反向
    代理、TLS、WAF 或限流。
 
+#### M3A 首轮总控复验未通过后的定点修订
+
+首轮复验点名四类问题，全部已修，并各自补齐了「修复前会发生什么」的实测对照：
+
+1. **`DATABASE_URL` 的 ambient `PG*` 回落已关闭**。node-postgres 在连接串缺字段
+   时会静默回落：实测 `postgresql://` 让 host/port/user/password/database 五项
+   全部来自 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`；
+   `?host=/tmp` 与 `%2Ftmp` 会把连接目标换成 unix socket，后者还让 port 回落。
+   校验因此放在**三个入口共用的 `resolveDatabaseUrlSource()`** 上，而不是只放在
+   `config.ts`——`db:migrate` 与 `db:bootstrap` 不经过 `loadConfig()`。判据：
+   原始串拒绝 CR/LF/NUL/BOM 与未编码空白；只接受 `postgresql://` / `postgres://`；
+   username/password/hostname/port 必须显式非空；database 必须是单一非空 path
+   segment；拒绝 query、fragment、多 host、Unix socket 与 `options`/`host` 覆盖
+   入口；对百分号解码后的 username/password/database 再查一次 NUL/CR/LF；
+   校验后**返回原始串**，不 trim、不规范化、不重写口令。反例用真实
+   `pg.Client.connectionParameters` 在注入 ambient sentinel 的条件下逐字段验证，
+   direct 与 file 两条来源都覆盖。固定用户、`postgres:5432` 与 database identity
+   仍属于 **M3B**。
+2. **direct 与 file 的内容语义已统一**：非空、≤4096 字节、无 NUL/BOM/CR/LF、不
+   trim、保留前后空格与 `\t`/`:`/`\`/`@`/`/`/`#`/`%`。file 仍允许一个末尾 LF，
+   direct 一个都不允许——多行 direct 口令（尤其 `foo\nfoo`）会被 psql 的
+   `\password` 读成两次相同输入而**静默**设置成 `foo`。三份口令任一失败时 psql
+   调用数仍为 0。
+3. **shell 的文件 TOCTOU 已消除**：`secret-source.sh` 现在只 `open` 一次，用
+   `/dev/fd/N` 取得的 inode 与路径 stat 绑定，内容从**该描述符**复制到 `umask
+   077` 的私有快照，之后全部检查与最终读取只针对快照，再也不碰原路径；快照用后
+   即删并由 EXIT trap 兜底。反向测试用受控 `PATH` 上的 `stat` 包装器做确定性
+   注入：metadata 检查完之后替换路径 → 仍然消费最初已验证的 inode；描述符已取、
+   路径 stat 之前替换 → 以「was replaced while it was being validated」拒绝且
+   psql 调用数为 0。生产脚本没有任何故障注入开关。
+4. **中央 logger 边界已补全**。修复前实测漏网六处：`child()` bindings、printf
+   `%j`、printf `%o`、own enumerable `toJSON`、带引号的
+   `password=' …'` conninfo（各自 LEAKED），以及数组循环引用（直接
+   `RangeError` 栈溢出）。现在 `hooks.logMethod` 在插值**之前**处理全部参数、
+   `child()` 被覆盖且子 logger 继续带着覆盖、canonicalizer 把函数值一律换成占位
+   串、conninfo 采用「看到 `password=` 就删掉其后全部文本」的保守口径、循环防护
+   对象与数组共用且按路径记录、`req` serializer 的 path 再做一次文本脱敏。8 组
+   用例全部扫描**真实 Pino 最终输出**。
+
+两侧解析器的关系表述已统一改为「**按条对齐**」而不是「完全同语义」：Node 侧
+`fstat` 文件描述符，shell 侧用 inode 绑定 + 私有快照；shell 的残留边界（`-f`
+与 `open()` 之间被换成 FIFO 会阻塞，但不会消费被替换的内容）已登记在
+`infra/docker/postgres/README.md`。
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链

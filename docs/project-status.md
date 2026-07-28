@@ -78,7 +78,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 76/76 |
+| API unit | 90/90 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -87,7 +87,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | generated adapter 只读门禁 | 4/4 逐字节一致 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
-| Markdown links | 58 files / 179 local links Pass |
+| Markdown links | 58 files / 180 local links Pass |
 | Compose 拓扑静态门禁 | PASS（10 服务 / 8 secret / 2 网络） |
 | Compose 拓扑变异反向测试 | 15/15 以指定理由捕获，0 漏网 |
 
@@ -118,12 +118,21 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   （有结构性测试断言）。`DATABASE_URL` 与 `DATABASE_URL_FILE` 互斥：两者都缺、
   两者同时出现（**内容相同也拒绝，从不比较取值**）、空 direct、空 `_FILE` 一律
   失败，选中来源失败时**不回落**到另一来源。
+- **连接串的核心字段必须全部来自 URL**：node-postgres 实测会在字段缺失时静默
+  回落到 `PG*` 环境变量（`postgresql://` 会让 host/port/user/password/database
+  五项全部来自环境变量；`?host=/tmp` 与 `%2Ftmp` 会把目标换成 unix socket）。
+  因此 validator 放在**三个入口共用的那一层**：拒绝原始串里的 CR/LF/NUL/BOM 与
+  未编码空白、只接受 `postgresql://`/`postgres://`、要求 username/password/
+  hostname/port 显式非空且 database 是单一 path segment、拒绝 query/fragment/
+  多 host/Unix socket/`options` 覆盖、对百分号解码后的 username/password/database
+  再查一次 NUL/CR/LF，并**原样返回**输入串。真实 `pg.Client.connectionParameters`
+  在注入 ambient sentinel 的条件下逐字段验证。
 - **secret file 判据 fail closed**：绝对路径、`O_NOFOLLOW|O_NONBLOCK` 打开后
   **fstat**（不是先 stat 路径再 open）、普通文件、链接数为 1、属主等于当前
   effective UID、只允许 owner read/write（0600）、≤4096 字节、非空、合法 UTF-8、
   无 NUL、无 BOM、单行、最多移除一个末尾 LF 且**不做 trim**。含空格、`:`、`\`、
   `@`、`/`、`#`、`%` 的取值逐字节保留。错误信息只含变量名、路径与原因。
-- **bootstrap 的 shell 侧同语义**：`infra/docker/postgres/secret-source.sh` 覆盖
+- **bootstrap 的 shell 侧按条对齐**（不是逐字节等价的同一实现，差异见下）：`infra/docker/postgres/secret-source.sh` 覆盖
   三对 `MEAL_AGENT_*_PASSWORD` / `*_FILE`；**三份口令全部在任何 psql 调用之前
   解析**，任一不合格时 psql 调用次数实测为 **0**（22 个失败来源逐条断言）。口令
   不进入 argv、生成 SQL、日志，也不进入 psql 子进程的 environ（`export -n`），
@@ -139,10 +148,14 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   斜杠、query、fragment、空白）全部拒绝。fake adapter 在注入「一调用即抛错」的
   fetch 并替换 `globalThis.fetch` 的条件下，成功与失败两条分支的外部调用次数
   都是 0。**本轮没有接入真实 AppID/AppSecret，也没有调用真实微信服务。**
-- **脱敏落在中央 logger 边界**（`formatters.log` + `hooks.logMethod`），调用方
-  无需主动调用 `redactSensitive`；覆盖任意嵌套层级的连接串/口令/DSN 命名变体、
-  按取值识别的 PostgreSQL 连接串与 libpq conninfo，以及 Error 对象。口令的原值
-  与 URL 百分号编码形态同时消失。
+- **脱敏落在中央 logger 边界**（`hooks.logMethod` + `formatters.log` + `child()`
+  覆盖 + `redact.paths` 四层），调用方无需主动调用 `redactSensitive`；覆盖任意
+  嵌套层级的连接串/口令/DSN 命名变体、按取值识别的 PostgreSQL 连接串与 libpq
+  conninfo（含带引号/空格的形态：看到 `password=` 即删除其后全部文本）、Error 与
+  嵌套 cause、printf `%j`/`%o`/`%s` 参数、`child()` 与孙 logger 的 bindings、
+  own enumerable `toJSON`/`toString`（一律换成占位串，`JSON.stringify` 阶段不再
+  执行任何用户代码），以及对象与数组共用的循环引用防护。口令的原值与 URL 百分号
+  编码形态同时消失。8 组用例全部扫描**真实 Pino 最终输出**。
 - **全部响应**统一携带 `Cache-Control: no-store` 与
   `X-Content-Type-Options: nosniff`（挂在唯一公共出口 `onSend` 上），且不存在
   任何 `Access-Control-Allow-Origin`；liveness、readiness、登录、家庭私有成功
@@ -401,7 +414,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 伪造的 ledger 就能冒充已登记状态。
 
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）implementation complete, pending total-control review**，M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链实证）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；M3A 只覆盖代码侧消费能力，完整 bootstrap 链与全栈启动仍未通过。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
-- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对同语义的 Secret 来源解析器。
+- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
   不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**408 条规范化行**（manifest 版本 2；`grant` 138、`effective` 138、`default-effective` 78、`routine` 40、`default` 14），只登记**固定允许项**：固定授权、`pg_default_acl` 的**物理行**、叠加后的**有效**默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`（结构化 JSON）/正文摘要；未登记的 `(ledger, phase)` fail closed。canonical digest 覆盖全部顶层字段（version、principals、managedSchemas、deniedRoutines、states）。③**canonical projector**：`services/api/src/database/authorization-projection-sql.ts`。它被拆成「可复用的结构化 projector CTE renderer」与「对外三列只读 SELECT」两层；R8B 起前者同时供给 verify 与 converge，后者仍是不被任何 bootstrap 阶段加载的只读观察出口。可移植策略在 `authorization-policy-sql.ts`。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。

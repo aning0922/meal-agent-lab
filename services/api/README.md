@@ -60,7 +60,10 @@ pnpm --filter @meal-agent/api dev
 `O_NOFOLLOW` 打开后 fstat、普通文件、单链接、属主为当前 EUID、只允许 0600、
 ≤4096 字节、非空、合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim），
 与 [`infra/docker/postgres/secret-source.sh`](../../infra/docker/postgres/secret-source.sh)
-逐条一致。文件 I/O **不在** Zod 内：先解析来源拿到字符串，再交给配置 schema 校验
+**按条对齐**（不是逐字节等价的同一实现：Node 侧 `fstat` 文件描述符，shell 侧用
+inode 绑定 + 私有快照，差异与残留边界见
+[`infra/docker/postgres/README.md`](../../infra/docker/postgres/README.md)）。
+文件 I/O **不在** Zod 内：先解析来源拿到字符串，再交给配置 schema 校验
 格式；CLI 参数合法性仍先于 Secret 文件读取与数据库连接。
 
 部署身份是两个**没有默认值**的独立维度：

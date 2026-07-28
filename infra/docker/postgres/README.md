@@ -324,7 +324,15 @@ manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写
 
 [`secret-source.sh`](secret-source.sh) 是
 [`services/api/src/config-source.ts`](../../../services/api/src/config-source.ts)
-的 shell 对应物：同一套互斥语义、同一套文件判据、同一套错误措辞。
+的 shell 对应物：互斥语义、内容判据与错误措辞按条对齐。
+
+**两者并非逐字节等价的同一实现**，差异是已知且有意的：Node 侧用
+`O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 打开后直接 `fstat`；shell 没有可移植的
+`fstat`，改为「只 open 一次 → 用 `/dev/fd/N` 的 inode 与路径 stat 绑定 →
+从该描述符复制到私有快照 → 只读快照」。属主与权限位取自路径 stat（BSD 的
+`/dev/fd/N` 权限位不可信），由 inode 相等绑定到同一个 inode 上。残留边界：
+`-f` 检查与 `open()` 之间路径被换成 FIFO 会让 shell 侧**阻塞**（不会消费被
+替换的内容）；Node 侧因为有 `O_NONBLOCK` 没有这个问题。
 
 | `<NAME>` | `<NAME>_FILE` | 结果 |
 | --- | --- | --- |
