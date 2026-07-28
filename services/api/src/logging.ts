@@ -59,10 +59,13 @@ const isSensitiveKey = (key: string): boolean => {
  * 值却是一整条带口令的连接串。整条连接串一次性替换掉，因此口令的原值与
  * URL 百分号编码形态（`p%40ss`）会**同时**消失——只脱敏原值会漏掉编码形态。
  *
- * libpq 的 key/value conninfo（`host=… password=…`）不是 URL，单独覆盖一次。
+ * libpq 的 key/value conninfo 不是 URL，单独覆盖一次，并且是**保守**的：
+ * `password=' 带空格且被引号包起来的值'` 这类形态无法用一条正则可靠地找到
+ * 结束位置，因此一旦看到 `password=` 就把**其后的全部文本**删掉。宁可多脱敏
+ * 一段无害的尾巴，也不能漏掉一个口令。
  */
 const connectionStringPattern = /postgres(?:ql)?:\/\/\S*/gi;
-const conninfoPasswordPattern = /\bpass(?:word|file)\s*=\s*\S+/gi;
+const conninfoPasswordPattern = /pass(?:word|file)\s*=[\s\S]*$/i;
 
 export const redactText = (value: string): string =>
   value
@@ -72,6 +75,19 @@ export const redactText = (value: string): string =>
 /** Error 归一化后的固定 message：内部细节永远不进入日志。 */
 export const safeErrorMessage = "request failed";
 
+/**
+ * 递归安全化。它同时是**脱敏器**与 **canonicalizer**：返回值一定是由字符串、
+ * 数字、布尔、null、数组和**纯对象**构成的树，因此后续的 `JSON.stringify`
+ * 阶段不可能再执行任何用户代码。
+ *
+ * 具体地：
+ *   - 函数值（包括 own enumerable 的 `toJSON` / `toString`）被替换成占位串，
+ *     否则 `JSON.stringify` 会调用 `toJSON` 把刚刚脱敏掉的取值**重新生成**出来；
+ *   - `Error` 的 `message`/`stack` 是不可枚举属性，按属性递归看不见它们，因此
+ *     显式归一化成与 err serializer 完全相同的安全形状；
+ *   - 循环引用防护对**对象与数组共用**同一个 WeakSet，并且是按**路径**记录
+ *     （递归返回后移除），所以同一个对象作为兄弟节点出现两次不会被误判为循环。
+ */
 export const redactSensitive = (
   value: unknown,
   seen = new WeakSet<object>(),
@@ -79,33 +95,33 @@ export const redactSensitive = (
   if (typeof value === "string") {
     return redactText(value);
   }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSensitive(item, seen));
+  if (typeof value === "function") {
+    return "[Function]";
   }
-
-  // Error 的 message / stack 是不可枚举属性，`Object.entries` 看不到它们，因此
-  // 「按属性递归」会把一条含连接串的错误静默变成 `{}`，既不脱敏也不留信息。
-  // 这里显式归一化成与 err serializer 完全相同的安全形状。
   if (value instanceof Error) {
     return { type: value.name, message: safeErrorMessage };
   }
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  if (seen.has(value)) {
+    return "[Circular]";
+  }
 
-  if (value !== null && typeof value === "object") {
-    if (seen.has(value)) {
-      return "[Circular]";
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => redactSensitive(item, seen));
     }
-    seen.add(value);
-
     return Object.fromEntries(
       Object.entries(value).map(([key, entry]) => [
         key,
         isSensitiveKey(key) ? "[Redacted]" : redactSensitive(entry, seen),
       ]),
     );
+  } finally {
+    seen.delete(value);
   }
-
-  return value;
 };
 
 /**
@@ -124,7 +140,10 @@ const redactLogObject = (
       if (serializedKeys.has(key)) {
         return [key, value];
       }
-      return [key, isSensitiveKey(key) ? "[Redacted]" : redactSensitive(value, seen)];
+      return [
+        key,
+        isSensitiveKey(key) ? "[Redacted]" : redactSensitive(value, seen),
+      ];
     }),
   );
 };
@@ -153,71 +172,110 @@ const safeError = (error: unknown) => {
 };
 
 /**
+ * `child()` 的 bindings 走的是 pino 的 chindings 路径，**不经过**
+ * `formatters.log`——它在建立子 logger 时就被序列化并缓存下来。因此这里覆盖
+ * `child`，让 bindings 也过一遍同一个 canonicalizer，并且让返回的子 logger
+ * 继续带着这个覆盖（否则孙 logger 又会漏掉）。
+ */
+const withRedactedChild = (logger: Logger): Logger => {
+  // pino 的 `child` 是泛型重载，直接 as 会因为 custom-levels 类型参数不兼容而
+  // 报错；这里只需要「bindings 进、Logger 出」这一层契约。
+  const createChild = logger.child.bind(logger) as unknown as (
+    bindings: Record<string, unknown>,
+    options?: unknown,
+  ) => Logger;
+  Object.defineProperty(logger, "child", {
+    configurable: true,
+    enumerable: false,
+    writable: true,
+    value: (bindings: Record<string, unknown>, options?: unknown): Logger =>
+      withRedactedChild(createChild(redactLogObject(bindings ?? {}), options)),
+  });
+  return logger;
+};
+
+/**
  * 阶段 09A / M3A：脱敏落在**中央 logger 边界**，不再依赖每个调用方主动调用
- * `redactSensitive`。
+ * `redactSensitive`。四层各管一段，缺一不可：
  *
- * 两个 hook 分工明确，缺一不可：
- *   - `formatters.log` 处理结构化字段（任意嵌套层级的对象与数组）；
- *   - `hooks.logMethod` 处理**消息串本身**——`logger.info({}, `连接 ${url}`)`
- *     的 message 不会经过 `formatters.log`。
- * 保留原有的 `redact.paths` 作为第三层：它作用在最终对象上，与前两层独立。
+ *   - `hooks.logMethod`：在 pino 做 printf 插值**之前**处理全部参数，因此
+ *     `%s` 的字符串、`%j` / `%o` 的对象都已经安全；
+ *   - `formatters.log`：处理合并对象里任意嵌套层级的结构化字段；
+ *   - `child()` 覆盖：处理子 logger 的 bindings；
+ *   - `redact.paths`：作用在最终对象上的第四层，与前三层独立。
  */
 export const createLogger = (
   level: string,
   stream?: Writable,
 ): Logger =>
-  pino(
-    {
-      level,
-      base: null,
-      formatters: {
-        log: redactLogObject,
-      },
-      hooks: {
-        logMethod(
-          this: Logger,
-          args: Parameters<LogFn>,
-          method: LogFn,
-        ): void {
-          const safe = (args as readonly unknown[]).map((argument) =>
-            typeof argument === "string" ? redactText(argument) : argument,
-          ) as Parameters<LogFn>;
-          method.apply(this, safe);
+  withRedactedChild(
+    pino(
+      {
+        level,
+        base: null,
+        formatters: {
+          log: redactLogObject,
+        },
+        hooks: {
+          logMethod(
+            this: Logger,
+            args: Parameters<LogFn>,
+            method: LogFn,
+          ): void {
+            const safe = (args as readonly unknown[]).map(
+              (argument, index) => {
+                if (typeof argument === "string") {
+                  return redactText(argument);
+                }
+                // 第一个参数如果是 Error，交给 err serializer——它给出的形状比
+                // 通用 canonicalizer 更有信息量（保留具体 type）。
+                if (index === 0 && argument instanceof Error) {
+                  return argument;
+                }
+                return redactSensitive(argument);
+              },
+            ) as Parameters<LogFn>;
+            method.apply(this, safe);
+          },
+        },
+        serializers: {
+          req: (request: {
+            id?: string;
+            method?: string;
+            url?: string;
+            remoteAddress?: string;
+          }) => {
+            const path = request.url?.split("?")[0];
+            return {
+              requestId: request.id,
+              method: request.method,
+              // 请求目标是调用方完全可控的文本，因此它也要过一遍取值脱敏。
+              path: path === undefined ? undefined : redactText(path),
+              remoteAddress: request.remoteAddress,
+            };
+          },
+          res: (response: { statusCode?: number }) => ({
+            statusCode: response.statusCode,
+          }),
+          err: safeError,
+        },
+        redact: {
+          paths: [
+            "req.headers.authorization",
+            "req.headers.cookie",
+            "res.headers.set-cookie",
+            "*.authorization",
+            "*.loginCode",
+            "*.inviteCode",
+            "*.accessToken",
+            "*.providerSubject",
+            "*.providerUnionSubject",
+            "*.wechatAppSecret",
+            "*.dietaryConstraints",
+          ],
+          censor: "[Redacted]",
         },
       },
-      serializers: {
-        req: (request: {
-          id?: string;
-          method?: string;
-          url?: string;
-          remoteAddress?: string;
-        }) => ({
-          requestId: request.id,
-          method: request.method,
-          path: request.url?.split("?")[0],
-          remoteAddress: request.remoteAddress,
-        }),
-        res: (response: { statusCode?: number }) => ({
-          statusCode: response.statusCode,
-        }),
-        err: safeError,
-      },
-      redact: {
-        paths: [
-          "req.headers.authorization",
-          "req.headers.cookie",
-          "res.headers.set-cookie",
-          "*.authorization",
-          "*.loginCode",
-          "*.inviteCode",
-          "*.accessToken",
-          "*.providerSubject",
-          "*.providerUnionSubject",
-          "*.wechatAppSecret",
-          "*.dietaryConstraints",
-        ],
-        censor: "[Redacted]",
-      },
-    },
-    stream,
+      stream,
+    ),
   );
