@@ -10,6 +10,7 @@
  */
 import { fileURLToPath } from "node:url";
 
+import { resolveDatabaseUrlSource } from "../config-source.js";
 import { applyMigrations, bootstrapMigrationOptions } from "./migrate.js";
 
 export class BootstrapCliUsageError extends Error {
@@ -33,13 +34,12 @@ export const parseBootstrapCliArguments = (
 
 // 只有作为脚本直接运行时才执行；被 import 时不产生副作用。
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // 参数校验先于任何连接：非法调用不会建立 Pool，也不会碰数据库。
+  // 与 db:migrate 完全相同的顺序：参数校验 → Secret 来源解析 → 数据库连接。
+  // 非法调用既不读 Secret 文件也不建立 Pool；连接串来源由三个 Node 入口共用的
+  // resolveDatabaseUrlSource 判定（DATABASE_URL 与 DATABASE_URL_FILE 互斥）。
   parseBootstrapCliArguments(process.argv.slice(2));
 
-  const databaseUrl = process.env["DATABASE_URL"];
-  if (databaseUrl === undefined || databaseUrl === "") {
-    throw new Error("DATABASE_URL is required");
-  }
+  const databaseUrl = resolveDatabaseUrlSource().value;
 
   await applyMigrations(databaseUrl, bootstrapMigrationOptions);
 }

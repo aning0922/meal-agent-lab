@@ -209,6 +209,10 @@ export const startE2eStack = async (
         env: {
           ...process.env,
           NODE_ENV: 'test',
+          // M3A：部署阶段与暴露级别没有默认值，栈必须显式声明它是
+          // loopback 上的 local-test，fake adapter 才被允许。
+          DEPLOYMENT_STAGE: 'local-test',
+          DEPLOYMENT_EXPOSURE: 'loopback',
           HOST: '127.0.0.1',
           PORT: String(apiPort),
           LOG_LEVEL: 'silent',

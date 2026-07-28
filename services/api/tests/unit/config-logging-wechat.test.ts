@@ -13,23 +13,41 @@ import {
 import { FakeWechatAdapter } from "../../src/wechat/fake.js";
 import { RealWechatAdapter } from "../../src/wechat/real.js";
 
+// local-test 是唯一允许 fake adapter 的部署身份（见 deployment-boundaries 测试）。
 const baseEnvironment = {
   NODE_ENV: "test",
+  DEPLOYMENT_STAGE: "local-test",
+  DEPLOYMENT_EXPOSURE: "loopback",
   DATABASE_URL: "postgresql://localhost/meal_agent",
   WECHAT_ADAPTER: "fake",
+};
+
+// 真实 adapter 只能出现在非 local-test 的部署身份上：local-test 携带 AppID 或
+// AppSecret 本身就必须 fail closed，而真实 adapter 又必须有这两个值。
+const realEnvironment = {
+  NODE_ENV: "test",
+  DEPLOYMENT_STAGE: "staging",
+  DEPLOYMENT_EXPOSURE: "private-network",
+  DATABASE_URL: "postgresql://localhost/meal_agent",
+  WECHAT_ADAPTER: "real",
+  WECHAT_APP_ID: "configured-at-runtime",
+  WECHAT_APP_SECRET: "configured-at-runtime",
 };
 
 test("config validates Node service settings and requires real WeChat credentials together", () => {
   const fake = loadConfig(baseEnvironment);
   assert.equal(fake.port, 3000);
   assert.equal(fake.wechatAdapter, "fake");
+  assert.equal(fake.deploymentStage, "local-test");
+  assert.equal(fake.deploymentExposure, "loopback");
   assert.equal(fake.sessionAbsoluteTtlDays, 30);
   assert.equal(fake.sessionIdleTtlDays, 7);
 
   assert.throws(() =>
     loadConfig({
-      ...baseEnvironment,
-      WECHAT_ADAPTER: "real",
+      ...realEnvironment,
+      WECHAT_APP_ID: undefined,
+      WECHAT_APP_SECRET: undefined,
     }),
   );
   assert.throws(() =>
@@ -40,19 +58,17 @@ test("config validates Node service settings and requires real WeChat credential
     }),
   );
 
-  const real = loadConfig({
-    ...baseEnvironment,
-    WECHAT_ADAPTER: "real",
-    WECHAT_APP_ID: "configured-at-runtime",
-    WECHAT_APP_SECRET: "configured-at-runtime",
-  });
+  const real = loadConfig(realEnvironment);
   assert.equal(real.wechatAdapter, "real");
+  assert.equal(real.deploymentStage, "staging");
 });
 
 test("config refuses to start without an explicit WeChat adapter choice", () => {
   assert.throws(() =>
     loadConfig({
       NODE_ENV: "test",
+      DEPLOYMENT_STAGE: "local-test",
+      DEPLOYMENT_EXPOSURE: "loopback",
       DATABASE_URL: "postgresql://localhost/meal_agent",
     }),
   );
@@ -67,6 +83,8 @@ test("production rejects the fake WeChat adapter, including a missing adapter", 
   assert.throws(() =>
     loadConfig({
       NODE_ENV: "production",
+      DEPLOYMENT_STAGE: "production",
+      DEPLOYMENT_EXPOSURE: "public",
       DATABASE_URL: "postgresql://localhost/meal_agent",
     }),
   );
@@ -78,21 +96,19 @@ test("production rejects the fake WeChat adapter, including a missing adapter", 
   );
 
   const production = loadConfig({
-    ...baseEnvironment,
+    ...realEnvironment,
     NODE_ENV: "production",
-    WECHAT_ADAPTER: "real",
-    WECHAT_APP_ID: "configured-at-runtime",
-    WECHAT_APP_SECRET: "configured-at-runtime",
+    DEPLOYMENT_STAGE: "production",
+    DEPLOYMENT_EXPOSURE: "public",
   });
   assert.equal(production.wechatAdapter, "real");
 
   assert.throws(() =>
     loadConfig({
-      ...baseEnvironment,
+      ...realEnvironment,
       NODE_ENV: "production",
-      WECHAT_ADAPTER: "real",
-      WECHAT_APP_ID: "configured-at-runtime",
-      WECHAT_APP_SECRET: "configured-at-runtime",
+      DEPLOYMENT_STAGE: "production",
+      DEPLOYMENT_EXPOSURE: "public",
       WECHAT_CODE2SESSION_URL: "http://api.weixin.qq.com/sns/jscode2session",
     }),
   );

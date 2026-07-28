@@ -949,6 +949,8 @@ test("re-running the migration CLI is idempotent and checksum drift still fails 
 test("readiness runs under the real runtime login and leaves no role or transaction behind", async () => {
   const config = loadConfig({
     NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
     DATABASE_URL: runtimeLoginUrl(),
     WECHAT_ADAPTER: "fake",
   });
@@ -1162,6 +1164,8 @@ test("deliberate privilege drift is converged back to the exact baseline by re-r
   // 收敛之后 readiness 仍然通过，数据仍在。
   const config = loadConfig({
     NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
     DATABASE_URL: runtimeLoginUrl(),
     WECHAT_ADAPTER: "fake",
   });

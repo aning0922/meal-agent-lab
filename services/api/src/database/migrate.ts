@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { Pool, type PoolClient } from "pg";
 
+import { resolveDatabaseUrlSource } from "../config-source.js";
 import { byUtf8Bytes } from "./authorization-identity.js";
 import { renderStage06ManifestCheckSql } from "./stage06-manifest-sql.js";
 
@@ -568,11 +569,12 @@ export const parseMigrationCliArguments = (argv: readonly string[]): void => {
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // 参数校验先于任何连接：非法调用不会建立 Pool，也不会碰数据库。
+  // 顺序是判据的一部分，不能调换：
+  //   1. CLI 参数合法性——非法调用不读 Secret 文件，也不建立 Pool；
+  //   2. Secret 来源解析——DATABASE_URL 与 DATABASE_URL_FILE 互斥，文件走 fail
+  //      closed 的安全判据；三个 Node 入口共用 resolveDatabaseUrlSource；
+  //   3. 才是数据库连接。
   parseMigrationCliArguments(process.argv.slice(2));
-  const databaseUrl = process.env["DATABASE_URL"];
-  if (databaseUrl === undefined || databaseUrl === "") {
-    throw new Error("DATABASE_URL is required");
-  }
+  const databaseUrl = resolveDatabaseUrlSource().value;
   await applyMigrations(databaseUrl);
 }

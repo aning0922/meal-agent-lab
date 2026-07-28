@@ -92,6 +92,8 @@ export const generateOpenApiDocument =
   async (): Promise<OpenAPIV3.Document> => {
     const config = loadConfig({
       NODE_ENV: "test",
+      DEPLOYMENT_STAGE: "local-test",
+      DEPLOYMENT_EXPOSURE: "loopback",
       HOST: "127.0.0.1",
       PORT: "3000",
       LOG_LEVEL: "silent",

@@ -81,6 +81,8 @@ const operations = {
 
 const config = loadConfig({
   NODE_ENV: "test",
+  DEPLOYMENT_STAGE: "local-test",
+  DEPLOYMENT_EXPOSURE: "loopback",
   LOG_LEVEL: "info",
   DATABASE_URL: "postgresql://localhost/not-used",
   WECHAT_ADAPTER: "fake",
@@ -126,6 +128,8 @@ test("readiness fails closed as 503 when the database itself is unreachable", as
   const dsnSentinel = "readiness_unreachable_sentinel";
   const unreachable = loadConfig({
     NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
     LOG_LEVEL: "info",
     DATABASE_URL: `postgresql://readiness_probe@127.0.0.1:1/${dsnSentinel}`,
     WECHAT_ADAPTER: "fake",
