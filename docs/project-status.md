@@ -267,6 +267,39 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   admin / migration / backup 凭据，门禁立即失败（已用两次变异实测）——对应阶段
   09A 验收门禁第 4 条「API runtime 不持有 bootstrap/migration 凭据」。
 
+**M2B 首轮总控复核 Not Accepted 后的定点修订**（仍为 implementation complete,
+pending total-control review，未自行 Accepted）
+
+- **handoff 的真实挂载阻断已修**：`bootstrap.sh handoff` 固定按
+  `${script_directory}/../../../services/api/migrations/0000_stage_06.sql` 求冻结
+  `0000` 的磁盘 sha256，容器内即 `/services/api/migrations/0000_stage_06.sql`；
+  首轮只挂了 `/opt/meal-agent/bootstrap`，该文件根本不存在。现在**只给
+  `bootstrap-handoff`** 追加这**一个文件**的只读 bind，并在同一处重述 anchor 的
+  bootstrap 挂载（服务级 `volumes` 会整体覆盖 anchor，不做深合并）。实测：容器内
+  按同一相对路径解析得到的 sha256 与宿主一致
+  （`6db9bdac…b27a`），写入被只读文件系统拒绝，`/services/api/migrations/` 内只有
+  这 1 个文件；`bootstrap-acl` 看不到它；真实 `bootstrap.sh handoff` 已越过文件
+  检查，止于数据库层（凭据待 M3）。
+- **数据库 identity 暂时固定**：`createdb`/`handoff`/`acl`/`grants` 的数据库名
+  一律是字面量 `meal_agent`，不再有 `MEAL_AGENT_DATABASE` 插值；`createdb` 的
+  argv 精确固定并用 `--` 结束选项解析。门禁用三个投毒值重解析配置并要求输出
+  逐字节不变——修订前 `MEAL_AGENT_DATABASE=--host=evil` 会把参数变成
+  `["acl","--dbname","--host=evil"]`。数据库名可配置能力归 M3（届时先由统一配置
+  schema 校验 `^meal_agent(_[a-z0-9_]+)?$` 与 63 字节上限，再同时生成 URL 与
+  Compose 参数）。
+- **静态门禁加固**：十个服务的 image/user/profile/entrypoint/command/networks/
+  挂载/depends_on/environment **逐项固定**；三个 API 镜像服务必须声明 build（缺失
+  即失败，不再 `continue`）；secret 检查升级为 source + target + 对应
+  `*_FILE`/`PGPASSFILE` 路径的**精确映射**；仓库内判断改用 `path.relative` 而非
+  裸 `startsWith`（相邻同前缀目录不再能绕过）；`git ls-files` 非零退出不再被当作
+  「未跟踪」静默通过，仓库外 secret 目录作为显式分支处理。
+- **worktree 资源隔离**：删除 network 与 volume 的显式全局 `name`，改由 Compose
+  project scope 命名，`--project-name`/`-p` 可覆盖。门禁用两个 project name 解析
+  配置并要求 network 与 volume 的真实名称无交集。
+- **变异测试 27 项全部以指定理由捕获、0 漏网**，含总控点名的五项：删除 API
+  build、修改 `bootstrap-acl` command、交换 API/migrate 的 `DATABASE_URL_FILE`、
+  删除或扩大 handoff 的 `0000` 挂载、bind source 指向与仓库同前缀的相邻目录。
+
 **M2B 的边界**：**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
 `services/api/src/config.ts` 目前只接受 `DATABASE_URL`，
 `infra/docker/postgres/bootstrap.sh` 目前只接受 `MEAL_AGENT_*_PASSWORD` 三个
@@ -308,7 +341,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
-- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile 与数据库身份隔离已实现；仍缺 Compose 拓扑、Secret 文件注入、备份恢复证据与阶段总门禁。
+- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离与 local-test Compose 拓扑已实现（M2B 待总控复核）；仍缺 Secret 文件注入（M3）、全栈启动与备份恢复证据（M4）以及阶段总门禁（M5）。
 - 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。
 - GitHub `origin` 与 `main` upstream 已配置，仓库已有 CI workflow；当前只确认配置存在，没有在本次规划中读取或伪造远端 run Pass。
 

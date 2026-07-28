@@ -177,6 +177,27 @@ PostgreSQL healthy
    runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败（验收门禁
    第 4 条）。
 
+首轮总控复核 **Not Accepted**，已按点名事项定点修订（仍待复核）：
+
+7. **handoff 的真实挂载阻断已修**：`bootstrap.sh handoff` 固定按
+   `${script_directory}/../../../services/api/migrations/0000_stage_06.sql` 求
+   冻结 `0000` 的磁盘 sha256，容器内即 `/services/api/migrations/0000_stage_06.sql`；
+   首轮该文件不存在。现在**只给 `bootstrap-handoff`** 追加这一个文件的只读 bind，
+   并在同处重述 anchor 的 bootstrap 挂载（服务级 `volumes` 整体覆盖 anchor）。
+   实测容器内 sha256 与宿主一致，`/services/api/migrations/` 只可见这 1 个文件，
+   `bootstrap-acl` 看不到它，真实 handoff 已越过文件检查止于数据库层。
+8. **数据库 identity 暂时固定为 `meal_agent`**：删除 `MEAL_AGENT_DATABASE` 插值，
+   `createdb` argv 精确固定并用 `--` 结束选项解析。修订前
+   `MEAL_AGENT_DATABASE=--host=evil` 会把参数变成
+   `["acl","--dbname","--host=evil"]`。可配置能力归 M3（先由统一配置 schema 校验
+   `^meal_agent(_[a-z0-9_]+)?$` 与 63 字节上限，再同时生成 URL 与 Compose 参数）。
+9. **静态门禁加固**：十个服务逐项固定 entrypoint/command 等；API 镜像服务缺
+   `build` 即失败；secret 升级为 source + target + `*_FILE`/`PGPASSFILE` 精确
+   映射；仓库内判断改用 `path.relative`；`git ls-files` 非零退出不再静默通过。
+10. **worktree 资源隔离**：network 与 volume 改为 project scope 命名，
+    `--project-name` 可覆盖，门禁用两个 project name 证明真实名称无交集。
+11. **变异测试 27 项全部以指定理由捕获、0 漏网**。
+
 **边界（不得写成 Pass）**：**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
 `config.ts` 只接受 `DATABASE_URL`，`bootstrap.sh` 只接受三个
 `MEAL_AGENT_*_PASSWORD` environment value；M2B 不写入临时明文，也不修改 M1/M2A

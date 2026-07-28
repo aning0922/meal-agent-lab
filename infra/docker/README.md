@@ -12,7 +12,7 @@
 本机浏览器 / 客户端 / SSH tunnel
   └─ 127.0.0.1:<host port>
        └─ api（非 root 10001:10001，容器内 HOST=0.0.0.0）
-            └─ meal-agent-local-test-internal（internal: true）
+            └─ <project>_internal（internal: true）
                  └─ postgres 18.4（named volume、healthcheck、无 host port）
 
 postgres healthy
@@ -21,10 +21,10 @@ postgres healthy
        └─ api 只在 migrate 成功退出后启动
 ```
 
-两张网络的分工是刻意的：`meal-agent-local-test-internal` 声明 `internal: true`，
-Compose 因此不为它接入网关——挂在上面的 postgres 与全部一次性任务既没有 host
-port，也没有出站路径。`meal-agent-local-test-edge` 只承载 api 的那一个 loopback
-publish。
+两张网络的分工是刻意的：`internal` 声明 `internal: true`，Compose 因此不为它接入
+网关——挂在上面的 postgres 与全部一次性任务既没有 host port，也没有出站路径。
+`edge` 只承载 api 的那一个 loopback publish。两张网络与数据卷的真实名称都由
+Compose 的 project scope 决定（`<project>_internal` 等），见下方「并行 worktree」。
 
 ## 服务
 
@@ -114,21 +114,67 @@ docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap u
 docker compose --file infra/docker/compose.local-test.yaml up -d api
 ```
 
-`MEAL_AGENT_API_HOST_PORT` 可以改 host 端口，`MEAL_AGENT_DATABASE` 可以改目标
-数据库名，`MEAL_AGENT_SECRETS_DIR` 可以把 secret 目录移到仓库之外。host publish
-地址固定为 `127.0.0.1`，不接受变量覆盖。
+`MEAL_AGENT_API_HOST_PORT` 可以改 host 端口，`MEAL_AGENT_SECRETS_DIR` 可以把
+secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不接受变量覆盖。
+
+**数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
+直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
+选项）。可配置能力归 M3——届时先由统一配置 schema 校验
+`^meal_agent(_[a-z0-9_]+)?$` 与 63 字节上限，再同时生成连接 URL 与 Compose 参数。
+`createdb` 的 argv 因此精确固定，并用 `--` 结束选项解析。
+
+### 并行 worktree
+
+网络与卷**不写死全局 name**，真实名称由 Compose 的 project scope 决定（默认取
+Compose 文件里的 `name:`）。因此**多个 worktree 同时起栈时必须各自指定不同的
+project name**，否则会抢占同一张网络和同一个数据卷：
+
+```bash
+docker compose --file infra/docker/compose.local-test.yaml --project-name meal-agent-wt-a up -d postgres
+```
+
+### handoff 独有的挂载
+
+`bootstrap.sh handoff` 需要冻结 `0000` 的磁盘 sha256，并且固定按
+`${script_directory}/../../../services/api/migrations/0000_stage_06.sql` 解析——
+`script_directory` 是 `/opt/meal-agent/bootstrap`，因此容器内的绝对路径是
+`/services/api/migrations/0000_stage_06.sql`。`bootstrap-handoff` 因此比其它
+bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/` 目录，也不给
+其它服务。注意服务级 `volumes` 会**整体覆盖** anchor 的 `volumes`（YAML merge key
+不做深合并），所以 `bootstrap-handoff` 必须同时重述 `/opt/meal-agent/bootstrap`
+那一条。
 
 ## 静态门禁
 
 [`check-compose-topology.mjs`](check-compose-topology.mjs) 断言的是
 `docker compose config` **解析后**的配置：anchor、profile 与变量插值都已展开。
-它覆盖服务集合与 profile 边界、一次性任务顺序、镜像固定、容器权限与逃逸面、
-挂载、端口发布、网络隔离、健康检查依赖，以及「Compose 里不出现口令或完整连接
-串、secret 文件未被 Git 跟踪且不可被 group/world 读取」。凭据按**最小权限**逐条
-固定：`api` 只拿 runtime 连接串，`migrate` 只拿 migration 连接串，
-`bootstrap-schema` 只拿 admin 连接串，`bootstrap-logins` 是唯一接触三个登录口令
-的服务；api 一旦被塞进 admin / migration / backup 凭据即失败。Docker CLI 缺失时
-它以「缺少前置工具」失败退出，不降级成纯文本检查后宣称通过。
+它对十个服务的 image、user、profile、**entrypoint、command**、networks、挂载、
+`depends_on` 与 environment **逐项固定**，另外覆盖：
+
+- 镜像固定与来源——PostgreSQL 必须是那一个 exact tag + digest；三个 API 镜像
+  服务**必须**声明 build 且精确指向 monorepo 根与 `services/api/Dockerfile`，
+  build 缺失即失败；
+- 容器逃逸面——privileged、host pid/ipc/uts/cgroup/userns/network、unconfined
+  `security_opt`、`cap_add`、device 透传、root 用户一律拒绝；
+- 挂载——Docker socket 拒绝，bind 必须只读，仓库内判断用 `path.relative`
+  而不是裸 `startsWith`（与仓库同前缀的相邻目录不能绕过），数据库必须是 named
+  volume，`bootstrap-handoff` 的两条挂载逐条精确匹配；
+- 端口与网络——`postgres` 与全部一次性任务不得发布端口，`api` 只能有一个
+  `127.0.0.1` 的 tcp 发布，`internal` 网络必须 `internal: true`；
+- 数据库 identity——用三个投毒值重解析配置并要求输出逐字节不变，因此
+  `MEAL_AGENT_DATABASE` 无法改写任何数据库参数；
+- project scope——network 与 volume 不得写死全局 name，且两个不同 project name
+  解析出的真实名称必须无交集；
+- 凭据最小权限与 **secret ↔ 环境变量精确映射**——每个服务的 secret source、
+  容器内 target 与指向它的 `*_FILE` / `PGPASSFILE` 路径三者必须一一对应；`api`
+  只拿 runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败；
+- Secret 边界——Compose 里不出现口令或完整连接串；secret 文件必须未被 Git
+  跟踪（`git ls-files` 非零退出不会被当作「未跟踪」静默放过）且不可被
+  group/world 读取，仓库之外的 secret 目录作为显式分支处理；
+- 健康检查只依赖镜像已有能力，不得引用 curl/wget/包管理器。
+
+Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前置工具 / 无法判定」
+失败退出，不降级成纯文本检查后宣称通过。
 
 把它并入 `pnpm stage09a:check` 属于 M5；M3 会再补运行期 Secret 与暴露级别断言。
 
