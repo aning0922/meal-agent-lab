@@ -84,6 +84,17 @@ const passwords = {
   backup: syntheticPassword(),
 } as const;
 
+/**
+ * cluster superuser 的合成口令。
+ *
+ * M3A 起 `DATABASE_URL` 必须显式写明 username/password/host/port/database，
+ * 否则 node-postgres 会回落到 `PG*` 环境变量。因此 `db:bootstrap` 的 admin 连接
+ * 不能再走「Unix socket + trust + 无口令」的连接串，必须是一条完整的 TCP URL。
+ * 给 superuser 设置口令之后，admin 走的也是 TCP `scram-sha-256`——这比原来的
+ * socket trust **更强**，「口令认证成立」的证据不再被任何 trust 规则稀释。
+ */
+const superuserPassword = syntheticPassword();
+
 let clusterRoot = "";
 let dataDirectory = "";
 let socketDirectory = "";
@@ -177,13 +188,17 @@ const loginUrl = (role: string, password: string): string =>
   `postgresql://${role}:${password}@127.0.0.1:${String(port)}/${rolesDatabase}`;
 
 /**
- * 管理员连接串走 Unix socket：pg_hba 对所有 TCP 登录强制 scram-sha-256，
- * 而 initdb 创建的 postgres 超级用户没有口令。这样「口令认证成立」的证据
- * 不会被任何 host trust 规则稀释。
+ * 管理员连接串走 TCP + `scram-sha-256`，与三个 login 完全同一条路径。
+ *
+ * 这里**不能**再用 `postgresql://postgres@/db?host=<socket>&port=<n>` 那种形态：
+ * M3A 的连接串校验要求 username/password/host/port/database 五项全部显式来自
+ * URL，并且拒绝 query（`?host=` 正是覆盖连接目标的入口之一）与 Unix socket。
+ * superuser 的口令在集群启动后由 psql 的 `\password` 在客户端生成 SCRAM
+ * verifier，因此明文既不进入 argv 也不进入服务端语句日志。
  */
 const adminUrl = (database: string = rolesDatabase): string =>
-  `postgresql://postgres@/${database}` +
-  `?host=${encodeURIComponent(socketDirectory)}&port=${String(port)}`;
+  // base64url 口令只含 [A-Za-z0-9_-]，无需再做百分号编码。
+  `postgresql://postgres:${superuserPassword}@127.0.0.1:${String(port)}/${database}`;
 
 const migrationLoginUrl = (): string =>
   loginUrl("meal_agent_migration_login", passwords.migration);
@@ -447,6 +462,35 @@ before(async () => {
     { env: environment },
   );
   clusterStarted = true;
+
+  // 0. superuser 的 SCRAM 口令。走 local socket（trust）建立，之后 admin 的
+  //    `db:bootstrap` 就能用一条完整的 TCP 连接串——五个核心字段全部来自 URL，
+  //    不依赖任何 `PG*` 环境变量。口令由 psql 的 `\password` 在**客户端**生成
+  //    verifier，因此即使 `log_statement=all` 也不会把明文写进服务端日志；
+  //    `no-ctty.mjs` 负责让 `\password` 回落到 stdin 而不是阻塞在 /dev/tty。
+  await mustSucceed(
+    "psql \\password postgres",
+    process.execPath,
+    [
+      join(repositoryRoot, "infra/docker/postgres/no-ctty.mjs"),
+      join(postgresBin, "psql"),
+      "--no-psqlrc",
+      "--quiet",
+      "--no-password",
+      "--set",
+      "ON_ERROR_STOP=on",
+      "--dbname",
+      "postgres",
+      "--command",
+      "SET password_encryption = 'scram-sha-256';",
+      "--command",
+      "\\password postgres",
+    ],
+    {
+      env: adminEnvironment(),
+      stdin: `${superuserPassword}\n${superuserPassword}\n`,
+    },
+  );
 
   // 1. cluster scope 角色基线。**在目标库存在之前**首次执行——这是 pristine
   //    集群上的首次证据，不是角色已存在后的幂等重跑。

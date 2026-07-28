@@ -65,6 +65,14 @@ if (mode !== "migration" && mode !== "test") {
 }
 
 /**
+ * 这个一次性集群用 trust 认证（见下面的 `--auth-local` / `--auth-host`），因此
+ * 口令根本不会被校验。之所以仍然写进连接串：`DATABASE_URL` 的校验要求五个核心
+ * 字段全部显式来自 URL，否则 node-postgres 会回落到宿主的 `PG*` 环境变量。
+ * 这是一个**合成占位值**，不是任何真实凭据。
+ */
+const trustClusterPassword = "synthetic-trust-cluster-password";
+
+/**
  * stage08 门禁沿用单账号 bootstrap/admin 路径：这些一次性库没有做 owner
  * 交接，冻结的 0000 还要自己 CREATE ROLE 并设置 BYPASSRLS，因此迁移必须由
  * cluster admin 执行，不能先切换到 meal_agent_migrator。
@@ -126,7 +134,9 @@ try {
     environment,
   );
 
-  const databaseUrl = `postgresql://postgres@127.0.0.1:${port}/meal_agent_test`;
+  const databaseUrl =
+    `postgresql://postgres:${trustClusterPassword}@127.0.0.1:${port}` +
+    "/meal_agent_test";
   await applyMigrations(databaseUrl, adminMigration);
 
   if (mode === "migration") {
@@ -173,7 +183,9 @@ try {
       [incrementalDatabase],
       environment,
     );
-    const incrementalUrl = `postgresql://postgres@127.0.0.1:${port}/${incrementalDatabase}`;
+    const incrementalUrl =
+      `postgresql://postgres:${trustClusterPassword}@127.0.0.1:${port}` +
+      `/${incrementalDatabase}`;
 
     await applyMigrations(incrementalUrl, {
       ...adminMigration,

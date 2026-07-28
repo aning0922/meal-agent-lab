@@ -194,7 +194,11 @@ export const startE2eStack = async (
       environment
     )
 
-    const databaseUrl = `postgresql://postgres@127.0.0.1:${databasePort}/meal_agent_stage07_e2e`
+    // 这个一次性集群用 trust 认证，口令不会被校验；补一个**合成**口令是为了让
+    // 连接串写明全部五个核心字段，从而不依赖宿主的 PG* 环境变量。
+    const databaseUrl =
+      `postgresql://postgres:synthetic-trust-cluster-password@127.0.0.1:${databasePort}` +
+      `/meal_agent_stage07_e2e`
     // 端到端栈沿用单账号 bootstrap/admin 路径：这个一次性库没有做 owner 交接，
     // 冻结的 0000 还要自己 CREATE ROLE 并设置 BYPASSRLS，因此迁移必须由 cluster
     // admin 执行，不能先切换到 meal_agent_migrator。真实的 migration login

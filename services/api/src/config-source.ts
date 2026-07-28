@@ -177,6 +177,56 @@ const assertSecretFileDescriptor = (
   return stats.size;
 };
 
+/**
+ * 取值内容的共同判据，direct 与 file **两条来源都要过**。
+ *
+ * `subject` 只用于错误措辞（direct 是变量名，file 是路径），因此两条来源给出的
+ * 拒绝理由结构一致但能指向正确的位置。绝不包含取值本身。
+ *
+ * 这一层不做任何 trim：前后空格、tab、`:`、`\`、`@`、`/`、`#`、`%` 都必须逐字节
+ * 保留。file 来源允许在**调用本函数之前**移除一个末尾 LF，那是文件格式惯例；
+ * direct 来源没有这个惯例，任何 LF 都是错误。
+ */
+const assertSecretContent = (
+  variable: string,
+  subject: string,
+  value: string,
+  maximumBytes: number,
+): void => {
+  if (value === "") {
+    throw new SecretSourceError(variable, `${subject} is empty`);
+  }
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > maximumBytes) {
+    throw new SecretSourceError(
+      variable,
+      `${subject} is ${String(bytes)} bytes; the limit is ` +
+        `${String(maximumBytes)}`,
+    );
+  }
+  if (value.includes("\u0000")) {
+    throw new SecretSourceError(variable, `${subject} contains a NUL byte`);
+  }
+  if (value.includes("\uFEFF")) {
+    throw new SecretSourceError(
+      variable,
+      `${subject} contains a byte order mark`,
+    );
+  }
+  if (value.includes("\n")) {
+    throw new SecretSourceError(
+      variable,
+      `${subject} must contain a single line`,
+    );
+  }
+  if (value.includes("\r")) {
+    throw new SecretSourceError(
+      variable,
+      `${subject} contains a carriage return (CRLF line endings are rejected)`,
+    );
+  }
+};
+
 const decodeSecretBytes = (
   variable: string,
   path: string,
@@ -345,6 +395,8 @@ export const resolveSecretSource = (
     );
   }
 
+  const maximumBytes = options.maximumBytes ?? maximumSecretFileBytes;
+
   if (directPresent) {
     const value = environment[variable] ?? "";
     if (value === "") {
@@ -354,6 +406,13 @@ export const resolveSecretSource = (
           `credential and must not fall back to ${fileVariable}`,
       );
     }
+    // direct 与 file 的**内容**判据必须一致，否则「换个注入方式」就能绕过它。
+    // 唯一的差别是末尾 LF：file 允许一个（文件格式惯例），direct 一个都不允许。
+    //
+    // 多行 direct 尤其危险：`foo\nfoo` 喂给 psql 的 `\password` 会被读成两次
+    // 相同输入，于是口令被**静默**设置成 `foo`——部署以为自己设了一个更长的
+    // 口令，实际生效的是它的第一行。
+    assertSecretContent(variable, variable, value, maximumBytes);
     return { variable, fileVariable, origin: "environment", value };
   }
 
@@ -361,15 +420,195 @@ export const resolveSecretSource = (
   const value = readSecretFile(
     fileVariable,
     environment[fileVariable] ?? "",
-    options.maximumBytes,
+    maximumBytes,
   );
   return { variable, fileVariable, origin: "file", value };
+};
+
+// ---------------------------------------------------------------------------
+// PostgreSQL 连接串的专用校验
+//
+// 存在的唯一理由：**node-postgres 会在连接串缺字段时静默回落到 `PG*` 环境变量**。
+// 实测（`pg` 8.22）在 `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE` 都有值时：
+//
+//   postgresql://                          → 五个核心字段全部来自 PG* 环境变量
+//   postgresql://u:p@h:5432/db?host=/tmp   → host 变成 unix socket `/tmp`
+//   postgresql://u:p@%2Ftmp/db             → host 变成 `/tmp`，port 回落到 PGPORT
+//
+// 于是「secret file 注入了连接串」这件事本身并不能保证连接目标来自那份 secret。
+// 因此把校验放在**三个入口共用的这一层**，而不是只放在 `config.ts`：`db:migrate`
+// 与 `db:bootstrap` 不经过 `loadConfig()`，只修 `config.ts` 会漏掉两个高权限入口。
+//
+// 本轮只保证「核心字段必须显式来自 URL」。把用户名固定为某个角色、把 host/port
+// 固定为 `postgres:5432`、把 database identity 固定为 `meal_agent*`，属于 M3B。
+// ---------------------------------------------------------------------------
+
+/**
+ * 原始串里绝不允许出现的字符：C0 控制符（含 NUL/CR/LF）、DEL、BOM，以及**未编码**
+ * 的空白。它们要么会被 URL 解析器静默吃掉或改写，要么会在后续拼接中改变语义；
+ * 合法连接串里出现这些字符时一律应当百分号编码。
+ */
+const forbiddenRawUrlCharacter = /[\u0000-\u0020\u007F\uFEFF]|\s/u;
+
+const postgresUrlPrefixes = ["postgresql://", "postgres://"] as const;
+
+/** 百分号解码后仍然不允许出现的字符（解码是攻击者可控的还原点）。 */
+const forbiddenDecodedCharacter = /[\u0000\r\n]/u;
+
+const decodeUrlComponent = (
+  variable: string,
+  field: string,
+  value: string,
+): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new SecretSourceError(
+      variable,
+      `the connection URL has a malformed percent-encoded ${field}`,
+    );
+  }
+};
+
+/**
+ * 校验一条 PostgreSQL 连接串，**返回原始串**：不 trim、不规范化、不重写口令。
+ * 返回值与输入逐字节相同，因此百分号编码的口令原样交给 `pg`。
+ */
+export const assertPostgresConnectionUrl = (
+  variable: string,
+  raw: string,
+): string => {
+  if (forbiddenRawUrlCharacter.test(raw)) {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL contains a control character, a byte order mark " +
+        "or unencoded whitespace",
+    );
+  }
+  if (!postgresUrlPrefixes.some((prefix) => raw.startsWith(prefix))) {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL must start with postgresql:// or postgres://",
+    );
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    // 多 host（`h1:5432,h2:5432`）等形态在这里就被解析器拒绝。
+    throw new SecretSourceError(
+      variable,
+      "the connection URL is not a valid URL",
+    );
+  }
+
+  // 五个核心字段必须**显式非空**。任何一个缺失都会让 pg 回落到 PG* 环境变量。
+  const required: readonly [string, string, string][] = [
+    ["username", url.username, "PGUSER"],
+    ["password", url.password, "PGPASSWORD"],
+    ["hostname", url.hostname, "PGHOST"],
+    ["port", url.port, "PGPORT"],
+  ];
+  for (const [field, value, environmentVariable] of required) {
+    if (value === "") {
+      throw new SecretSourceError(
+        variable,
+        `the connection URL has no explicit ${field}; node-postgres would ` +
+          `fall back to ${environmentVariable}`,
+      );
+    }
+  }
+
+  if (!/^[0-9]+$/.test(url.port)) {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL port must be decimal digits",
+    );
+  }
+  const port = Number(url.port);
+  if (port < 1 || port > 65_535) {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL port must be between 1 and 65535",
+    );
+  }
+
+  // database 必须是**恰好一个**非空 path segment。`/` 会让 pg 回落到 PGDATABASE，
+  // `/a/b` 不是一个合法的库名，`postgresql:///var/run/postgresql` 是 unix socket。
+  const segments = url.pathname.split("/");
+  if (segments.length !== 2 || segments[0] !== "" || segments[1] === "") {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL must name exactly one database as a single path " +
+        "segment; node-postgres would otherwise fall back to PGDATABASE",
+    );
+  }
+  const database = segments[1] ?? "";
+
+  if (url.search !== "") {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL must not carry a query string; parameters such as " +
+        "?host= and ?options= override the connection target",
+    );
+  }
+  if (url.hash !== "") {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL must not carry a fragment",
+    );
+  }
+
+  // hostname 必须是一个真正的网络主机名：`%2Ftmp`（解码后 `/tmp`）是 unix socket
+  // 目录，逗号是多 host 语法。两者都会把连接目标换成别的东西。
+  const hostname = decodeUrlComponent(variable, "hostname", url.hostname);
+  if (hostname.includes("/") || hostname.startsWith(".")) {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL host must be a network host, not a Unix socket path",
+    );
+  }
+  if (hostname.includes(",")) {
+    throw new SecretSourceError(
+      variable,
+      "the connection URL must name exactly one host",
+    );
+  }
+
+  // 百分号解码之后再查一次：编码形态可以把 NUL/CR/LF 藏过原始串的检查。
+  for (const [field, value] of [
+    ["username", url.username],
+    ["password", url.password],
+    ["database", database],
+  ] as const) {
+    if (forbiddenDecodedCharacter.test(decodeUrlComponent(variable, field, value))) {
+      throw new SecretSourceError(
+        variable,
+        `the connection URL ${field} decodes to a value containing NUL, CR ` +
+          "or LF",
+      );
+    }
+  }
+
+  // 原样返回：调用方拿到的仍是 secret 里那一份字节。
+  return raw;
 };
 
 /**
  * 三个 Node 入口的共用调用点。它存在的意义是让「API、db:migrate、db:bootstrap
  * 共用同一条规则」成为**结构上**成立的事实，而不是三处各写一遍后靠约定维持。
+ *
+ * 来源解析（互斥 + 文件安全判据）与连接串校验都在这里完成，因此两条来源
+ * （direct 与 file）走的是**同一个** validator。
  */
 export const resolveDatabaseUrlSource = (
   environment: NodeJS.ProcessEnv = process.env,
-): SecretSource => resolveSecretSource("DATABASE_URL", environment);
+): SecretSource => {
+  const source = resolveSecretSource("DATABASE_URL", environment);
+  assertPostgresConnectionUrl(
+    source.origin === "file" ? source.fileVariable : source.variable,
+    source.value,
+  );
+  return source;
+};

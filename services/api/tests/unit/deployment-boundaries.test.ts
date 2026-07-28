@@ -21,7 +21,8 @@ import { RealWechatAdapter, type FetchLike } from "../../src/wechat/real.js";
  * 方式。
  */
 
-const databaseUrl = "postgresql://localhost/meal_agent";
+const databaseUrl =
+  "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent";
 
 const localTest = {
   NODE_ENV: "test",

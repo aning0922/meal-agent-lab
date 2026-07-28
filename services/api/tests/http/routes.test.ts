@@ -84,7 +84,8 @@ const config = loadConfig({
   DEPLOYMENT_STAGE: "local-test",
   DEPLOYMENT_EXPOSURE: "loopback",
   LOG_LEVEL: "info",
-  DATABASE_URL: "postgresql://localhost/not-used",
+  DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/not-used",
   WECHAT_ADAPTER: "fake",
 });
 
@@ -131,7 +132,8 @@ test("readiness fails closed as 503 when the database itself is unreachable", as
     DEPLOYMENT_STAGE: "local-test",
     DEPLOYMENT_EXPOSURE: "loopback",
     LOG_LEVEL: "info",
-    DATABASE_URL: `postgresql://readiness_probe@127.0.0.1:1/${dsnSentinel}`,
+    DATABASE_URL:
+      `postgresql://readiness_probe:synthetic-not-a-real-password@127.0.0.1:1/${dsnSentinel}`,
     WECHAT_ADAPTER: "fake",
   });
   let logs = "";

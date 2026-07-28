@@ -18,7 +18,8 @@ const baseEnvironment = {
   NODE_ENV: "test",
   DEPLOYMENT_STAGE: "local-test",
   DEPLOYMENT_EXPOSURE: "loopback",
-  DATABASE_URL: "postgresql://localhost/meal_agent",
+  DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
   WECHAT_ADAPTER: "fake",
 };
 
@@ -28,7 +29,8 @@ const realEnvironment = {
   NODE_ENV: "test",
   DEPLOYMENT_STAGE: "staging",
   DEPLOYMENT_EXPOSURE: "private-network",
-  DATABASE_URL: "postgresql://localhost/meal_agent",
+  DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
   WECHAT_ADAPTER: "real",
   WECHAT_APP_ID: "configured-at-runtime",
   WECHAT_APP_SECRET: "configured-at-runtime",
@@ -69,12 +71,14 @@ test("config refuses to start without an explicit WeChat adapter choice", () => 
       NODE_ENV: "test",
       DEPLOYMENT_STAGE: "local-test",
       DEPLOYMENT_EXPOSURE: "loopback",
-      DATABASE_URL: "postgresql://localhost/meal_agent",
+      DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
     }),
   );
   assert.throws(() =>
     loadConfig({
-      DATABASE_URL: "postgresql://localhost/meal_agent",
+      DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
     }),
   );
 });
@@ -85,7 +89,8 @@ test("production rejects the fake WeChat adapter, including a missing adapter", 
       NODE_ENV: "production",
       DEPLOYMENT_STAGE: "production",
       DEPLOYMENT_EXPOSURE: "public",
-      DATABASE_URL: "postgresql://localhost/meal_agent",
+      DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
     }),
   );
   assert.throws(() =>

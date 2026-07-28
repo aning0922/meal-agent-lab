@@ -398,3 +398,171 @@ test("bash -x never traces a password value", () => {
   assert.equal(tracedDirect.status, 0, tracedDirect.output);
   assertNoSentinel(tracedDirect.output, "the xtrace output for direct values");
 });
+
+test("direct values obey exactly the same content rules as files", () => {
+  // 多行 direct 是这一组里最重要的一条：`foo\nfoo` 交给 psql 的 `\password`
+  // 会被读成两次相同输入，于是口令被**静默**设置成 `foo`。必须在任何 psql
+  // 调用之前拒绝，而不是让它「看起来成功」。
+  const cases: readonly [string, string, RegExp][] = [
+    ["two identical lines", `foo\nfoo`, /must contain a single line/],
+    ["embedded newline", `${passwords.backup}\nsecond`, /must contain a single line/],
+    ["trailing newline", `${passwords.backup}\n`, /must contain a single line/],
+    ["carriage return", `${passwords.backup}\r`, /carriage return/],
+    ["CRLF", `${passwords.backup}\r\n`, /carriage return|single line/],
+    ["byte order mark", `\uFEFF${passwords.backup}`, /byte order mark/],
+    ["oversized", "x".repeat(4097), /the limit is 4096/],
+  ];
+
+  for (const [label, value, expected] of cases) {
+    const result = runLogins({
+      MEAL_AGENT_MIGRATION_PASSWORD: passwords.migration,
+      MEAL_AGENT_RUNTIME_PASSWORD: passwords.runtime,
+      MEAL_AGENT_BACKUP_PASSWORD: value,
+    });
+    assert.notEqual(result.status, 0, `${label} must fail: ${result.output}`);
+    assert.match(result.output, expected, `${label} must explain itself`);
+    assert.equal(
+      result.psqlCalls,
+      0,
+      `${label} must not reach psql (got ${String(result.psqlCalls)} calls)`,
+    );
+    assertNoSentinel(result.output, `the ${label} failure output`);
+  }
+
+  // 反面：direct 同样不做任何 trim。
+  const preserved = " p@ss:w#rd/100%\\back\t ";
+  const kept = runLogins({
+    MEAL_AGENT_MIGRATION_PASSWORD: preserved,
+    MEAL_AGENT_RUNTIME_PASSWORD: passwords.runtime,
+    MEAL_AGENT_BACKUP_PASSWORD: passwords.backup,
+  });
+  assert.equal(kept.status, 0, kept.output);
+  assert.equal(
+    kept.log.includes(`STDIN\t${stdinDigest(preserved)}`),
+    true,
+    "a direct value must reach psql byte-for-byte",
+  );
+});
+
+/**
+ * 受控的 `stat` 包装器：转发给真实 stat，并在被问到指定对象之后把目标路径
+ * 替换掉。它只存在于测试的 PATH 上——生产脚本里没有任何故障注入开关。
+ *
+ * 两个注入点对应两种不同的攻击时刻：
+ *   - `SWAP_ON_FD`：描述符已经取到、路径 stat 还没做 → 身份绑定必须发现不一致；
+ *   - `SWAP_ON_PATH`：metadata 已经全部检查完 → 必须仍然消费最初那个 inode。
+ */
+const statWrapperDirectory = join(workspace, "stat-wrapper");
+mkdirSync(statWrapperDirectory, { recursive: true });
+writeFileSync(
+  join(statWrapperDirectory, "stat"),
+  [
+    "#!/usr/bin/env bash",
+    "set -u",
+    'real="/usr/bin/stat"',
+    "# 一次性：源文件被移走之后就不会再触发。",
+    'swap() {',
+    '  if [ -e "$MEAL_AGENT_TEST_SWAP_FROM" ]; then',
+    '    mv -f "$MEAL_AGENT_TEST_SWAP_FROM" "$MEAL_AGENT_TEST_SWAP_TO"',
+    "  fi",
+    "}",
+    "# 第 N 次被问到某一类对象之后才动手，因此注入点在时间上是确定的。",
+    'armed() {',
+    '  local seen',
+    '  seen=$(( $(cat "$MEAL_AGENT_TEST_SWAP_COUNTER" 2>/dev/null || echo 0) + 1 ))',
+    '  printf "%s" "$seen" > "$MEAL_AGENT_TEST_SWAP_COUNTER"',
+    '  [ "$seen" -eq "${MEAL_AGENT_TEST_SWAP_AT:-1}" ]',
+    "}",
+    'saw_fd="no"',
+    'saw_target="no"',
+    'for argument in "$@"; do',
+    '  case "$argument" in',
+    '    /dev/fd/*) saw_fd="yes" ;;',
+    '    "$MEAL_AGENT_TEST_SWAP_TO") saw_target="yes" ;;',
+    "  esac",
+    "done",
+    '"$real" "$@"',
+    'status=$?',
+    'if [ "${MEAL_AGENT_TEST_SWAP_ON:-}" = "fd" ] && [ "$saw_fd" = "yes" ] && armed; then swap; fi',
+    'if [ "${MEAL_AGENT_TEST_SWAP_ON:-}" = "path" ] && [ "$saw_target" = "yes" ] && armed; then swap; fi',
+    'exit "$status"',
+  ].join("\n"),
+);
+chmodSync(join(statWrapperDirectory, "stat"), 0o755);
+
+let swapRun = 0;
+const runWithPathSwap = (
+  swapOn: "fd" | "path",
+  original: string,
+  replacement: string,
+): LoginsResult => {
+  swapRun += 1;
+  const target = join(workspace, `swap-target-${swapOn}-${String(swapRun)}`);
+  writeFileSync(target, original);
+  chmodSync(target, 0o600);
+  const counter = join(workspace, `swap-counter-${String(swapRun)}`);
+  return runLogins({
+    PATH: `${statWrapperDirectory}:${process.env["PATH"] ?? ""}`,
+    MEAL_AGENT_TEST_SWAP_ON: swapOn,
+    MEAL_AGENT_TEST_SWAP_FROM: replacement,
+    MEAL_AGENT_TEST_SWAP_TO: target,
+    MEAL_AGENT_TEST_SWAP_COUNTER: counter,
+    // 三份口令都走文件，因此 `/dev/fd/*` 的 stat 依次是 migration、runtime、
+    // backup；第 3 次正是 backup 取到描述符、还没做路径 stat 的那一刻。
+    // 路径 stat 只会问到 backup 的目标路径一次，因此第 1 次即可。
+    MEAL_AGENT_TEST_SWAP_AT: swapOn === "fd" ? "3" : "1",
+    MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretFile(passwords.migration),
+    MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+    MEAL_AGENT_BACKUP_PASSWORD_FILE: target,
+  });
+};
+
+test("replacing the path after its metadata was checked cannot swap the content", () => {
+  const replacementValue = "REPLACEMENT-PASSWORD-SENTINEL";
+
+  // 1. metadata 全部检查完之后替换：必须仍然消费最初已验证的那个 inode。
+  const afterMetadata = runWithPathSwap(
+    "path",
+    passwords.backup,
+    secretFile(replacementValue),
+  );
+  assert.equal(afterMetadata.status, 0, afterMetadata.output);
+  assert.equal(afterMetadata.psqlCalls, 6);
+  assert.equal(
+    afterMetadata.log.includes(`STDIN\t${stdinDigest(passwords.backup)}`),
+    true,
+    "the originally validated inode must be the one that is consumed",
+  );
+  assert.equal(
+    afterMetadata.log.includes(`STDIN\t${stdinDigest(replacementValue)}`),
+    false,
+    "the replacement content must never reach psql",
+  );
+  assert.equal(afterMetadata.log.includes(replacementValue), false);
+
+  // 2. 描述符已取、路径 stat 之前替换：身份绑定必须发现 inode 不一致。
+  const duringValidation = runWithPathSwap(
+    "fd",
+    passwords.backup,
+    secretFile(replacementValue),
+  );
+  assert.notEqual(duringValidation.status, 0, duringValidation.output);
+  assert.match(
+    duringValidation.output,
+    /was replaced while it was being validated/,
+  );
+  assert.equal(duringValidation.psqlCalls, 0);
+
+  // 3. 换成 symlink 与弱权限文件同样不能被消费。
+  const symlinkReplacement = join(workspace, "swap-symlink");
+  if (!existsSync(symlinkReplacement)) {
+    symlinkSync(secretFile(replacementValue), symlinkReplacement);
+  }
+  const weakReplacement = secretFile(replacementValue, 0o644);
+  for (const replacement of [symlinkReplacement, weakReplacement]) {
+    const swapped = runWithPathSwap("fd", passwords.backup, replacement);
+    assert.notEqual(swapped.status, 0, swapped.output);
+    assert.equal(swapped.psqlCalls, 0);
+    assert.equal(swapped.log.includes(replacementValue), false);
+  }
+});
