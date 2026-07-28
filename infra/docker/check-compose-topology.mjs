@@ -412,15 +412,17 @@ const declaredTopLevelSection = (section) => {
     if (line.trim() === '') {
       continue
     }
-    // 回到第 0 列（下一个顶层键或顶层注释）即本 section 结束。
+    // 注释不结束 mapping，**零列注释也不结束**：YAML 的 mapping 只由下一个
+    // 零列声明终止。把零列注释当成 section 结束，会让它后面的声明整段逃出扫描。
+    if (line.trimStart().startsWith('#')) {
+      continue
+    }
+    // 只有零列、非注释、非空的下一个顶层声明才结束本 section。
     if (!line.startsWith(' ')) {
       break
     }
     // 更深的缩进是值，不是声明。
     if (!line.startsWith('  ') || line.startsWith('   ')) {
-      continue
-    }
-    if (line.trimStart().startsWith('#')) {
       continue
     }
     const match = canonicalBareKey.exec(line)
