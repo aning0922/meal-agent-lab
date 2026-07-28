@@ -8,15 +8,16 @@
 // anchor、profile、变量插值和默认值都已经展开，因此这里检查的就是 Compose 真正
 // 会交给 Docker 的东西。
 //
-// Docker CLI 缺失时本脚本以「缺少前置工具」失败退出，不降级成纯文本检查后宣称
-// 通过（阶段 09A 验收门禁 #11）。
+// Docker CLI 或 git 缺失、或它们非零退出时，本脚本一律以「缺少前置工具 / 无法
+// 判定」失败退出，不降级成纯文本检查后宣称通过（阶段 09A 验收门禁 #11）。
 //
-// 覆盖范围是 M2B 自己的边界：镜像固定、端口发布、网络隔离、容器权限、一次性
-// 任务的显式调用与顺序，以及「Compose 里不出现口令或完整连接串」。
+// 覆盖范围是 M2B 自己的边界：十个服务的 entrypoint/command 逐项固定、镜像固定、
+// 端口发布、网络隔离、容器权限、挂载、一次性任务的显式调用与顺序、凭据的最小
+// 权限与 secret↔环境变量精确映射，以及数据库 identity 不可被环境变量改写。
 // 运行期动态门禁（非 loopback 访问、镜像/日志 Secret 扫描）属于 M3 与 M5。
 import { spawnSync } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -33,62 +34,314 @@ const apiDockerfile = 'services/api/Dockerfile'
 const apiContainerPort = 3000
 const apiHostIp = '127.0.0.1'
 const apiUser = '10001:10001'
+const postgresUser = '999:999'
 const bootstrapProfile = 'bootstrap'
+// M2B 固定数据库 identity。可配置能力归 M3：届时由统一配置 schema 先校验
+// ^meal_agent(_[a-z0-9_]+)?$ 与 63 字节上限，再同时生成 URL 与 Compose 参数。
+const databaseName = 'meal_agent'
+
+const bootstrapEntrypoint = ['/opt/meal-agent/bootstrap/bootstrap.sh']
+const bootstrapMount = {
+  type: 'bind',
+  source: resolve(composeDirectory, 'postgres'),
+  target: '/opt/meal-agent/bootstrap',
+  read_only: true
+}
+// bootstrap.sh handoff 固定按 `${script_directory}/../../../services/api/
+// migrations/0000_stage_06.sql` 解析冻结 0000 的磁盘 sha256；script_directory 是
+// /opt/meal-agent/bootstrap，因此容器内绝对路径恰好是下面这一个**文件**。
+const handoffStage06Mount = {
+  type: 'bind',
+  source: resolve(repositoryRoot, 'services/api/migrations/0000_stage_06.sql'),
+  target: '/services/api/migrations/0000_stage_06.sql',
+  read_only: true
+}
+const postgresDataMount = {
+  type: 'volume',
+  source: 'postgres-data',
+  target: '/var/lib/postgresql'
+}
+
+const secretPath = (name) => `/run/secrets/${name}`
+const pgClusterEnvironment = {
+  PGHOST: 'postgres',
+  PGPORT: '5432',
+  PGUSER: 'postgres',
+  PGDATABASE: 'postgres',
+  PGCONNECT_TIMEOUT: '10',
+  PGPASSFILE: secretPath('postgres_admin_pgpass')
+}
+const psqlSecretEnvironment = { PGPASSFILE: secretPath('postgres_admin_pgpass') }
+
+// 每个服务的**逐项**预期。entrypoint/command 为 null 表示沿用镜像自身的定义。
+// `secretEnv` 把 secret 的挂载点与真正指向它的环境变量绑在一起：改名、改路径、
+// 或把凭据换给别的服务都会失败。
+const expectations = {
+  postgres: {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [],
+    entrypoint: null,
+    command: null,
+    networks: ['internal'],
+    mounts: [postgresDataMount],
+    publishes: false,
+    secretEnv: {
+      POSTGRES_PASSWORD_FILE: secretPath('postgres_superuser_password')
+    },
+    environment: {
+      POSTGRES_PASSWORD_FILE: secretPath('postgres_superuser_password'),
+      POSTGRES_HOST_AUTH_METHOD: 'scram-sha-256',
+      POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256 --auth-local=scram-sha-256'
+    },
+    dependsOn: {}
+  },
+  'bootstrap-cluster': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: bootstrapEntrypoint,
+    command: ['cluster', '--maintenance-db', 'postgres'],
+    networks: ['internal'],
+    mounts: [bootstrapMount],
+    publishes: false,
+    secretEnv: psqlSecretEnvironment,
+    environment: pgClusterEnvironment,
+    dependsOn: { postgres: 'service_healthy' }
+  },
+  'bootstrap-logins': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: bootstrapEntrypoint,
+    command: ['logins', '--maintenance-db', 'postgres'],
+    networks: ['internal'],
+    mounts: [bootstrapMount],
+    publishes: false,
+    secretEnv: {
+      ...psqlSecretEnvironment,
+      MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretPath('meal_agent_migration_password'),
+      MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretPath('meal_agent_runtime_password'),
+      MEAL_AGENT_BACKUP_PASSWORD_FILE: secretPath('meal_agent_backup_password')
+    },
+    environment: {
+      ...pgClusterEnvironment,
+      MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretPath('meal_agent_migration_password'),
+      MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretPath('meal_agent_runtime_password'),
+      MEAL_AGENT_BACKUP_PASSWORD_FILE: secretPath('meal_agent_backup_password')
+    },
+    dependsOn: { 'bootstrap-cluster': 'service_completed_successfully' }
+  },
+  'bootstrap-createdb': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: ['createdb'],
+    // `--` 结束选项解析：数据库名之后的一切都不可能被当成连接选项。
+    command: ['--no-password', '--', databaseName],
+    networks: ['internal'],
+    mounts: [bootstrapMount],
+    publishes: false,
+    secretEnv: psqlSecretEnvironment,
+    environment: pgClusterEnvironment,
+    dependsOn: { 'bootstrap-logins': 'service_completed_successfully' }
+  },
+  'bootstrap-schema': {
+    image: apiImage,
+    user: apiUser,
+    profiles: [bootstrapProfile],
+    entrypoint: null,
+    command: ['node', '/app/dist/database/bootstrap-0000.js'],
+    networks: ['internal'],
+    mounts: [],
+    publishes: false,
+    secretEnv: {
+      DATABASE_URL_FILE: secretPath('meal_agent_admin_database_url')
+    },
+    environment: {
+      DATABASE_URL_FILE: secretPath('meal_agent_admin_database_url')
+    },
+    dependsOn: { 'bootstrap-createdb': 'service_completed_successfully' }
+  },
+  'bootstrap-handoff': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: bootstrapEntrypoint,
+    command: ['handoff', '--dbname', databaseName],
+    networks: ['internal'],
+    // 服务级 volumes 整体覆盖 anchor，因此这里必须**同时**有两条。
+    mounts: [bootstrapMount, handoffStage06Mount],
+    publishes: false,
+    secretEnv: psqlSecretEnvironment,
+    environment: pgClusterEnvironment,
+    dependsOn: { 'bootstrap-schema': 'service_completed_successfully' }
+  },
+  'bootstrap-acl': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: bootstrapEntrypoint,
+    command: ['acl', '--dbname', databaseName],
+    networks: ['internal'],
+    mounts: [bootstrapMount],
+    publishes: false,
+    secretEnv: psqlSecretEnvironment,
+    environment: pgClusterEnvironment,
+    dependsOn: { 'bootstrap-handoff': 'service_completed_successfully' }
+  },
+  'bootstrap-grants': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: bootstrapEntrypoint,
+    command: ['grants', '--dbname', databaseName],
+    networks: ['internal'],
+    mounts: [bootstrapMount],
+    publishes: false,
+    secretEnv: psqlSecretEnvironment,
+    environment: pgClusterEnvironment,
+    dependsOn: { migrate: 'service_completed_successfully' }
+  },
+  migrate: {
+    image: apiImage,
+    user: apiUser,
+    profiles: [],
+    entrypoint: null,
+    command: ['node', '/app/dist/database/migrate.js'],
+    networks: ['internal'],
+    mounts: [],
+    publishes: false,
+    secretEnv: {
+      DATABASE_URL_FILE: secretPath('meal_agent_migration_database_url')
+    },
+    environment: {
+      DATABASE_URL_FILE: secretPath('meal_agent_migration_database_url')
+    },
+    dependsOn: { postgres: 'service_healthy' }
+  },
+  api: {
+    image: apiImage,
+    user: apiUser,
+    profiles: [],
+    entrypoint: null,
+    // 沿用镜像的 CMD（node /app/dist/index.js），不在 Compose 里另起启动命令。
+    command: null,
+    networks: ['edge', 'internal'],
+    mounts: [],
+    publishes: true,
+    secretEnv: {
+      DATABASE_URL_FILE: secretPath('meal_agent_runtime_database_url')
+    },
+    environment: {
+      NODE_ENV: 'development',
+      HOST: '0.0.0.0',
+      PORT: String(apiContainerPort),
+      LOG_LEVEL: 'info',
+      WECHAT_ADAPTER: 'fake',
+      DATABASE_APP_ROLE: 'meal_agent_app',
+      DATABASE_URL_FILE: secretPath('meal_agent_runtime_database_url')
+    },
+    dependsOn: {
+      postgres: 'service_healthy',
+      migrate: 'service_completed_successfully'
+    }
+  }
+}
+const serviceOrder = Object.keys(expectations).sort()
 const defaultServices = ['api', 'migrate', 'postgres']
-const bootstrapServices = [
-  'bootstrap-cluster',
-  'bootstrap-logins',
-  'bootstrap-createdb',
-  'bootstrap-schema',
-  'bootstrap-handoff',
-  'bootstrap-acl',
-  'bootstrap-grants'
-]
 const apiImageServices = ['api', 'migrate', 'bootstrap-schema']
 
 const failures = []
 const fail = (message) => {
   failures.push(message)
 }
+const abort = (message) => {
+  process.stderr.write(`${message}\n`)
+  process.exit(1)
+}
+// 对象按键排序后再比较（Compose 输出的键序不稳定），数组保持顺序——argv 与
+// 挂载顺序是语义的一部分，不能被规范化掉。
+const canonical = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(canonical)
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical(value[key])])
+    )
+  }
+  return value
+}
+const same = (actual, expected) =>
+  JSON.stringify(canonical(actual ?? null)) ===
+  JSON.stringify(canonical(expected ?? null))
 
-const runCompose = (args) => {
+const runCompose = (args, environmentOverrides = {}) => {
   const result = spawnSync(
     'docker',
     ['compose', '--file', composeFile, ...args],
-    { cwd: composeDirectory, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }
+    {
+      cwd: composeDirectory,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, ...environmentOverrides }
+    }
   )
   if (result.error !== undefined) {
-    process.stderr.write(
+    abort(
       `compose topology check is missing a prerequisite tool: ` +
-        `failed to run docker (${result.error.message})\n`
+        `failed to run docker (${result.error.message})`
     )
-    process.exit(1)
   }
   if (result.status !== 0) {
-    process.stderr.write(
+    abort(
       `compose topology check failed to resolve the configuration ` +
         `(docker compose ${args.join(' ')} exit=${String(result.status)}): ` +
-        `${result.stderr.trim() || '(no stderr)'}\n`
+        `${result.stderr.trim() || '(no stderr)'}`
     )
-    process.exit(1)
   }
   return result.stdout
 }
 
-const runGit = (args) => {
-  const result = spawnSync('git', args, {
+// git 的非零退出**不能**被当作「未跟踪」静默通过：无法判定即失败。
+const gitTracks = (path) => {
+  const result = spawnSync('git', ['ls-files', '--error-unmatch', '--', path], {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024
   })
   if (result.error !== undefined) {
-    process.stderr.write(
+    abort(
       `compose topology check is missing a prerequisite tool: ` +
-        `failed to run git (${result.error.message})\n`
+        `failed to run git (${result.error.message})`
     )
-    process.exit(1)
   }
-  return result.stdout
+  if (result.status === 0) {
+    return true
+  }
+  // 1 = 该路径未被跟踪，是唯一可接受的非零退出。
+  if (result.status === 1) {
+    return false
+  }
+  abort(
+    `compose topology check could not determine whether ${path} is tracked ` +
+      `(git ls-files exit=${String(result.status)}): ` +
+      `${result.stderr.trim() || '(no stderr)'}`
+  )
+  return true
+}
+
+// 严格的仓库内判断：裸 startsWith 会让「与仓库同前缀的相邻目录」蒙混过关。
+const insideRepository = (path) => {
+  const absolute = resolve(path)
+  if (absolute === repositoryRoot) {
+    return true
+  }
+  const rel = relative(repositoryRoot, absolute)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
 }
 
 const resolved = JSON.parse(
@@ -100,11 +353,10 @@ const serviceNames = Object.keys(services).sort()
 // --------------------------------------------------------------------------
 // 1. 服务集合与显式调用边界
 // --------------------------------------------------------------------------
-const expectedServices = [...defaultServices, ...bootstrapServices].sort()
-if (serviceNames.join(',') !== expectedServices.join(',')) {
+if (!same(serviceNames, serviceOrder)) {
   fail(
     `unexpected service set: got [${serviceNames.join(', ')}], ` +
-      `expected [${expectedServices.join(', ')}]`
+      `expected [${serviceOrder.join(', ')}]`
   )
 }
 
@@ -115,79 +367,149 @@ const activeByDefault = runCompose(['config', '--services'])
   .map((line) => line.trim())
   .filter(Boolean)
   .sort()
-if (activeByDefault.join(',') !== [...defaultServices].sort().join(',')) {
+if (!same(activeByDefault, [...defaultServices].sort())) {
   fail(
     `default profile must contain exactly [${defaultServices.join(', ')}], ` +
       `got [${activeByDefault.join(', ')}]`
   )
 }
 
-for (const name of bootstrapServices) {
-  const profiles = services[name]?.profiles ?? []
-  if (profiles.length !== 1 || profiles[0] !== bootstrapProfile) {
+// --------------------------------------------------------------------------
+// 2. 逐服务固定：镜像、用户、profile、entrypoint、command、网络、挂载、
+//    depends_on、环境与 secret 映射
+// --------------------------------------------------------------------------
+const normalizeMount = (mount) => {
+  if (mount.type === 'bind') {
+    return {
+      type: 'bind',
+      source: resolve(String(mount.source ?? '')),
+      target: mount.target,
+      read_only: mount.read_only === true
+    }
+  }
+  return {
+    type: mount.type,
+    source: mount.source,
+    target: mount.target
+  }
+}
+
+for (const name of serviceOrder) {
+  const service = services[name]
+  if (service === undefined) {
+    fail(`${name}: service is missing from the resolved configuration`)
+    continue
+  }
+  const expected = expectations[name]
+
+  if (service.image !== expected.image) {
+    fail(`${name}: expected image ${expected.image}, got ${service.image ?? '(none)'}`)
+  }
+  if (service.user !== expected.user) {
+    fail(`${name}: expected user ${expected.user}, got ${service.user ?? '(none)'}`)
+  }
+  if (!same((service.profiles ?? []).slice().sort(), expected.profiles.slice().sort())) {
     fail(
-      `${name}: one-shot bootstrap job must be gated by exactly the ` +
-        `"${bootstrapProfile}" profile, got [${profiles.join(', ')}]`
+      `${name}: expected profiles [${expected.profiles.join(', ')}], ` +
+        `got [${(service.profiles ?? []).join(', ')}]`
     )
   }
-}
-for (const name of defaultServices) {
-  const profiles = services[name]?.profiles ?? []
-  if (profiles.length > 0) {
-    fail(`${name}: must not be profile-gated, got [${profiles.join(', ')}]`)
-  }
-}
-
-// --------------------------------------------------------------------------
-// 2. 一次性任务的顺序
-// --------------------------------------------------------------------------
-const dependsOn = (name, dependency) =>
-  services[name]?.depends_on?.[dependency]?.condition
-
-const expectedOrder = [
-  ['bootstrap-cluster', 'postgres', 'service_healthy'],
-  ['bootstrap-logins', 'bootstrap-cluster', 'service_completed_successfully'],
-  ['bootstrap-createdb', 'bootstrap-logins', 'service_completed_successfully'],
-  ['bootstrap-schema', 'bootstrap-createdb', 'service_completed_successfully'],
-  ['bootstrap-handoff', 'bootstrap-schema', 'service_completed_successfully'],
-  ['bootstrap-acl', 'bootstrap-handoff', 'service_completed_successfully'],
-  ['bootstrap-grants', 'migrate', 'service_completed_successfully'],
-  ['migrate', 'postgres', 'service_healthy'],
-  // API 只能在 migration 成功之后启动，并且数据库必须已经 healthy。
-  ['api', 'migrate', 'service_completed_successfully'],
-  ['api', 'postgres', 'service_healthy']
-]
-for (const [name, dependency, condition] of expectedOrder) {
-  const actual = dependsOn(name, dependency)
-  if (actual !== condition) {
+  if (!same(service.entrypoint ?? null, expected.entrypoint)) {
     fail(
-      `${name}: expected depends_on.${dependency}.condition=${condition}, ` +
-        `got ${actual ?? '(none)'}`
+      `${name}: expected entrypoint ${JSON.stringify(expected.entrypoint)}, ` +
+        `got ${JSON.stringify(service.entrypoint ?? null)}`
     )
   }
+  if (!same(service.command ?? null, expected.command)) {
+    fail(
+      `${name}: expected command ${JSON.stringify(expected.command)}, ` +
+        `got ${JSON.stringify(service.command ?? null)}`
+    )
+  }
+  if (!same(Object.keys(service.networks ?? {}).sort(), expected.networks)) {
+    fail(
+      `${name}: expected networks [${expected.networks.join(', ')}], ` +
+        `got [${Object.keys(service.networks ?? {}).join(', ')}]`
+    )
+  }
+
+  const actualMounts = (service.volumes ?? []).map(normalizeMount)
+  const expectedMounts = expected.mounts.map(normalizeMount)
+  if (!same(actualMounts, expectedMounts)) {
+    fail(
+      `${name}: mount set drifted: got ${JSON.stringify(actualMounts)}, ` +
+        `expected ${JSON.stringify(expectedMounts)}`
+    )
+  }
+
+  const actualDependsOn = Object.fromEntries(
+    Object.entries(service.depends_on ?? {}).map(([key, value]) => [
+      key,
+      value.condition
+    ])
+  )
+  if (!same(actualDependsOn, expected.dependsOn)) {
+    fail(
+      `${name}: depends_on drifted: got ${JSON.stringify(actualDependsOn)}, ` +
+        `expected ${JSON.stringify(expected.dependsOn)}`
+    )
+  }
+
+  const actualEnvironment = Object.fromEntries(
+    Object.entries(service.environment ?? {}).map(([key, value]) => [
+      key,
+      value === null ? '' : String(value)
+    ])
+  )
+  if (!same(actualEnvironment, expected.environment)) {
+    fail(
+      `${name}: environment drifted: got ${JSON.stringify(actualEnvironment)}, ` +
+        `expected ${JSON.stringify(expected.environment)}`
+    )
+  }
+
+  // secret 的挂载点必须与真正指向它的 *_FILE / PGPASSFILE 精确对应。
+  const mountedSecrets = Object.fromEntries(
+    (service.secrets ?? []).map((entry) => [entry.source, entry.target])
+  )
+  const referencedSecrets = Object.fromEntries(
+    Object.entries(expected.secretEnv).map(([key, target]) => [
+      target.replace('/run/secrets/', ''),
+      target
+    ])
+  )
+  if (!same(mountedSecrets, referencedSecrets)) {
+    fail(
+      `${name}: secret mount↔environment mapping drifted: mounted ` +
+        `${JSON.stringify(mountedSecrets)}, referenced ` +
+        `${JSON.stringify(referencedSecrets)}`
+    )
+  }
+  for (const [key, target] of Object.entries(expected.secretEnv)) {
+    if (actualEnvironment[key] !== target) {
+      fail(
+        `${name}: ${key} must point at ${target}, got ` +
+          `${actualEnvironment[key] ?? '(none)'}`
+      )
+    }
+  }
+}
+
+// API runtime 绝不能持有 admin / migration / backup 凭据（验收门禁 #4）。
+for (const entry of services.api?.secrets ?? []) {
+  if (/admin|migration|backup/.test(entry.source)) {
+    fail(`api: runtime must never receive the ${entry.source} credential`)
+  }
 }
 
 // --------------------------------------------------------------------------
-// 3. 镜像固定
+// 3. 镜像固定与 API 构建来源
 // --------------------------------------------------------------------------
 const digestPattern = /@sha256:[0-9a-f]{64}$/
-for (const name of serviceNames) {
-  const image = services[name].image
-  if (typeof image !== 'string' || image === '') {
-    fail(`${name}: must declare an explicit image`)
+for (const name of serviceOrder) {
+  const image = services[name]?.image ?? ''
+  if (image === apiImage) {
     continue
-  }
-  if (apiImageServices.includes(name)) {
-    if (image !== apiImage) {
-      fail(`${name}: expected the API image ${apiImage}, got ${image}`)
-    }
-    continue
-  }
-  if (image !== pinnedPostgresImage) {
-    fail(
-      `${name}: expected the pinned PostgreSQL image ${pinnedPostgresImage}, ` +
-        `got ${image}`
-    )
   }
   if (!digestPattern.test(image)) {
     fail(`${name}: image must pin an immutable sha256 digest, got ${image}`)
@@ -197,11 +519,12 @@ for (const name of serviceNames) {
   }
 }
 
-// API 镜像必须由已 Accepted 的 Dockerfile 从 monorepo 根上下文构建；
-// M2B 不得 fork 出第二个服务端镜像定义。
+// 三个 API 镜像服务都必须声明 build，且精确指向 monorepo 根上下文与已 Accepted
+// 的 Dockerfile。build 缺失即失败——不能因为「没写 build」就跳过检查。
 for (const name of apiImageServices) {
-  const build = services[name].build
+  const build = services[name]?.build
   if (build === undefined) {
+    fail(`${name}: must declare a build stanza pinning ${apiDockerfile}`)
     continue
   }
   if (resolve(build.context ?? '') !== repositoryRoot) {
@@ -222,8 +545,8 @@ for (const name of apiImageServices) {
 // 4. 容器权限与逃逸面
 // --------------------------------------------------------------------------
 const hostModes = ['pid', 'ipc', 'uts', 'cgroup', 'userns_mode', 'network_mode']
-for (const name of serviceNames) {
-  const service = services[name]
+for (const name of serviceOrder) {
+  const service = services[name] ?? {}
 
   if (service.privileged === true) {
     fail(`${name}: privileged containers are not allowed`)
@@ -248,30 +571,24 @@ for (const name of serviceNames) {
     }
   }
 
-  const capDrop = service.cap_drop ?? []
-  if (!capDrop.includes('ALL')) {
+  if (!(service.cap_drop ?? []).includes('ALL')) {
     fail(`${name}: cap_drop must include ALL`)
   }
   const capAdd = service.cap_add ?? []
   if (capAdd.length > 0) {
     fail(`${name}: cap_add must stay empty, got [${capAdd.join(', ')}]`)
   }
-
   if ((service.devices ?? []).length > 0) {
     fail(`${name}: device passthrough is not allowed`)
   }
-
   if (service.restart !== 'no') {
     fail(`${name}: restart must be "no", got ${service.restart ?? '(none)'}`)
   }
-
   if (service.read_only !== true) {
     fail(`${name}: read_only root filesystem must be enabled`)
   }
-
-  const user = service.user
-  if (user === undefined || ['0', 'root', '0:0'].includes(user)) {
-    fail(`${name}: must run as an explicit non-root user, got ${user ?? '(none)'}`)
+  if (['0', 'root', '0:0'].includes(service.user ?? '')) {
+    fail(`${name}: must not run as root`)
   }
 
   const logging = service.logging ?? {}
@@ -282,20 +599,8 @@ for (const name of serviceNames) {
   if (loggingOptions['max-size'] === undefined || loggingOptions['max-file'] === undefined) {
     fail(`${name}: logging must set both max-size and max-file (bounded local rotation)`)
   }
-}
 
-if (apiImageServices.some((name) => services[name].user !== apiUser)) {
-  fail(
-    `API-image services must declare user ${apiUser} to match the accepted ` +
-      `Dockerfile baseline`
-  )
-}
-
-// --------------------------------------------------------------------------
-// 5. 挂载：无 Docker socket、无数据库 bind mount
-// --------------------------------------------------------------------------
-for (const name of serviceNames) {
-  for (const mount of services[name].volumes ?? []) {
+  for (const mount of service.volumes ?? []) {
     const source = String(mount.source ?? '')
     if (/docker\.sock/.test(source) || /docker\.sock/.test(String(mount.target ?? ''))) {
       fail(`${name}: mounting the Docker socket is not allowed (${source})`)
@@ -304,116 +609,132 @@ for (const name of serviceNames) {
       if (mount.read_only !== true) {
         fail(`${name}: bind mount ${source} must be read-only`)
       }
-      if (!resolve(source).startsWith(repositoryRoot)) {
+      if (!insideRepository(source)) {
         fail(`${name}: bind mount ${source} must stay inside the repository`)
       }
     }
   }
 }
 
-const postgresMounts = services.postgres?.volumes ?? []
-if (postgresMounts.some((mount) => mount.type === 'bind')) {
+if ((services.postgres?.volumes ?? []).some((mount) => mount.type === 'bind')) {
   fail('postgres: the database must use a named volume, never a host bind mount')
 }
-if (!postgresMounts.some((mount) => mount.type === 'volume')) {
-  fail('postgres: the database must persist through a named volume')
-}
 
 // --------------------------------------------------------------------------
-// 6. 端口发布
+// 5. 端口发布
 // --------------------------------------------------------------------------
-if ((services.postgres?.ports ?? []).length > 0) {
-  fail('postgres: must not publish any host port')
-}
-for (const name of bootstrapServices) {
-  if ((services[name].ports ?? []).length > 0) {
-    fail(`${name}: one-shot jobs must not publish host ports`)
+for (const name of serviceOrder) {
+  const ports = services[name]?.ports ?? []
+  if (!expectations[name].publishes) {
+    if (ports.length > 0) {
+      fail(`${name}: must not publish any host port`)
+    }
+    continue
   }
-}
-if ((services.migrate?.ports ?? []).length > 0) {
-  fail('migrate: one-shot jobs must not publish host ports')
-}
-
-const apiPorts = services.api?.ports ?? []
-if (apiPorts.length !== 1) {
-  fail(`api: expected exactly one published port, got ${apiPorts.length}`)
-} else {
-  const [port] = apiPorts
+  if (ports.length !== 1) {
+    fail(`${name}: expected exactly one published port, got ${ports.length}`)
+    continue
+  }
+  const [port] = ports
   if (port.host_ip !== apiHostIp) {
     fail(
-      `api: host publish address must be exactly ${apiHostIp}, ` +
+      `${name}: host publish address must be exactly ${apiHostIp}, ` +
         `got ${port.host_ip ?? '(unqualified)'}`
     )
   }
   if (Number(port.target) !== apiContainerPort) {
-    fail(`api: container port must be ${apiContainerPort}, got ${port.target}`)
+    fail(`${name}: container port must be ${apiContainerPort}, got ${port.target}`)
   }
   if ((port.protocol ?? 'tcp') !== 'tcp') {
-    fail(`api: published port must be tcp, got ${port.protocol}`)
+    fail(`${name}: published port must be tcp, got ${port.protocol}`)
   }
   if (!/^[0-9]+$/.test(String(port.published))) {
-    fail(`api: published host port must be a single number, got ${port.published}`)
+    fail(`${name}: published host port must be a single number, got ${port.published}`)
   }
-}
-
-// HOST=0.0.0.0 只允许作为容器内部监听事实存在。
-if (services.api?.environment?.HOST !== '0.0.0.0') {
-  fail(
-    `api: HOST must be 0.0.0.0 inside the container, got ` +
-      `${services.api?.environment?.HOST ?? '(none)'}`
-  )
-}
-if (String(services.api?.environment?.PORT) !== String(apiContainerPort)) {
-  fail(`api: PORT must be ${apiContainerPort} inside the container`)
 }
 
 // --------------------------------------------------------------------------
-// 7. 网络隔离
+// 6. 网络隔离与 project scope 命名
 // --------------------------------------------------------------------------
 const networks = resolved.networks ?? {}
 if (networks.internal?.internal !== true) {
   fail('networks.internal must set internal: true (no gateway, no host port)')
 }
-const internalOnly = ['postgres', 'migrate', ...bootstrapServices]
-for (const name of internalOnly) {
-  const attached = Object.keys(services[name]?.networks ?? {}).sort()
-  if (attached.join(',') !== 'internal') {
-    fail(`${name}: must attach only to the internal network, got [${attached.join(', ')}]`)
+// 网络与卷不得写死全局 name：并行 worktree 必须能靠 project name 互相隔离。
+for (const [key, definition] of Object.entries(networks)) {
+  const expectedName = `${resolved.name}_${key}`
+  if (definition.name !== expectedName) {
+    fail(
+      `networks.${key}: name must be project-scoped (${expectedName}), ` +
+        `got ${definition.name ?? '(none)'}`
+    )
   }
 }
-const apiNetworks = Object.keys(services.api?.networks ?? {}).sort()
-if (apiNetworks.join(',') !== 'edge,internal') {
-  fail(`api: expected networks [edge, internal], got [${apiNetworks.join(', ')}]`)
-}
-
-// --------------------------------------------------------------------------
-// 8. 健康检查
-// --------------------------------------------------------------------------
-const postgresHealth = services.postgres?.healthcheck?.test ?? []
-if (postgresHealth[0] !== 'CMD' || postgresHealth[1] !== 'pg_isready') {
-  fail('postgres: healthcheck must use the image-provided pg_isready via CMD')
-}
-
-const apiHealth = services.api?.healthcheck?.test ?? []
-if (apiHealth[0] !== 'CMD' || apiHealth[1] !== 'node') {
-  fail('api: healthcheck must use the image-provided node binary via CMD')
-}
-const apiHealthText = apiHealth.join(' ')
-for (const forbidden of ['curl', 'wget', 'apt', 'apt-get', 'apk', 'npm', 'pnpm', 'yarn']) {
-  if (new RegExp(`(^|[^a-z])${forbidden}([^a-z]|$)`).test(apiHealthText)) {
-    fail(`api: healthcheck must not depend on ${forbidden} (nothing is installed at runtime)`)
+for (const [key, definition] of Object.entries(resolved.volumes ?? {})) {
+  const expectedName = `${resolved.name}_${key}`
+  if (definition.name !== expectedName) {
+    fail(
+      `volumes.${key}: name must be project-scoped (${expectedName}), ` +
+        `got ${definition.name ?? '(none)'}`
+    )
   }
 }
 
+// 两个不同 project name 必须解析出互不相同的 network 与 volume 真实名称。
+const probeNames = ['meal-agent-m2b-probe-alpha', 'meal-agent-m2b-probe-beta']
+const probes = probeNames.map((project) =>
+  JSON.parse(runCompose(['--project-name', project, 'config', '--format', 'json']))
+)
+for (const [index, probe] of probes.entries()) {
+  if (probe.name !== probeNames[index]) {
+    fail(`--project-name ${probeNames[index]} was not honoured (got ${probe.name})`)
+  }
+}
+const probeIdentifiers = probes.map((probe) =>
+  [
+    ...Object.values(probe.networks ?? {}).map((n) => n.name),
+    ...Object.values(probe.volumes ?? {}).map((v) => v.name)
+  ].sort()
+)
+for (const identifier of probeIdentifiers[0]) {
+  if (probeIdentifiers[1].includes(identifier)) {
+    fail(
+      `network/volume ${identifier} is shared across project names; ` +
+        `parallel worktrees would collide`
+    )
+  }
+}
+
 // --------------------------------------------------------------------------
-// 9. Secret 边界
+// 7. 数据库 identity 不可被环境变量改写
+// --------------------------------------------------------------------------
+const baseline = runCompose(['--profile', bootstrapProfile, 'config'])
+for (const poison of ['evil', '--host=evil', 'meal_agent postgres']) {
+  const poisoned = runCompose(['--profile', bootstrapProfile, 'config'], {
+    MEAL_AGENT_DATABASE: poison
+  })
+  if (poisoned !== baseline) {
+    fail(
+      `database identity is influenced by MEAL_AGENT_DATABASE=${poison}; ` +
+        `M2B pins it to ${databaseName} and defers configurability to M3`
+    )
+  }
+}
+for (const name of ['bootstrap-createdb', 'bootstrap-handoff', 'bootstrap-acl', 'bootstrap-grants']) {
+  if (!(services[name]?.command ?? []).includes(databaseName)) {
+    fail(`${name}: must operate on the pinned database ${databaseName}`)
+  }
+}
+
+// --------------------------------------------------------------------------
+// 8. Secret 边界
 // --------------------------------------------------------------------------
 const secretKeyPattern = /(PASSWORD|PASSWD|SECRET|TOKEN|DSN)$/
 const connectionStringPattern = /^postgres(ql)?:\/\//i
 const credentialsInUrlPattern = /:\/\/[^/\s]*:[^/\s]*@/
 
-for (const name of serviceNames) {
-  for (const [key, rawValue] of Object.entries(services[name].environment ?? {})) {
+for (const name of serviceOrder) {
+  for (const [key, rawValue] of Object.entries(services[name]?.environment ?? {})) {
     const value = rawValue === null ? '' : String(rawValue)
     if (secretKeyPattern.test(key)) {
       fail(`${name}: ${key} must not carry a value in Compose; use a secret file`)
@@ -427,52 +748,17 @@ for (const name of serviceNames) {
   }
 }
 
-// 每个服务只能拿到它那一步需要的凭据。API runtime 尤其不得持有 bootstrap 或
-// migration 凭据（阶段 09A 验收门禁 #4）。
-const expectedSecrets = {
-  api: ['meal_agent_runtime_database_url'],
-  migrate: ['meal_agent_migration_database_url'],
-  'bootstrap-schema': ['meal_agent_admin_database_url'],
-  postgres: ['postgres_superuser_password'],
-  'bootstrap-cluster': ['postgres_admin_pgpass'],
-  'bootstrap-createdb': ['postgres_admin_pgpass'],
-  'bootstrap-handoff': ['postgres_admin_pgpass'],
-  'bootstrap-acl': ['postgres_admin_pgpass'],
-  'bootstrap-grants': ['postgres_admin_pgpass'],
-  'bootstrap-logins': [
-    'meal_agent_backup_password',
-    'meal_agent_migration_password',
-    'meal_agent_runtime_password',
-    'postgres_admin_pgpass'
-  ]
-}
-for (const name of serviceNames) {
-  const granted = (services[name].secrets ?? [])
-    .map((entry) => entry.source)
-    .sort()
-  const expected = [...(expectedSecrets[name] ?? [])].sort()
-  if (granted.join(',') !== expected.join(',')) {
-    fail(
-      `${name}: least-privilege secret set drifted: got ` +
-        `[${granted.join(', ')}], expected [${expected.join(', ')}]`
-    )
-  }
-}
-const apiSecrets = (services.api?.secrets ?? []).map((entry) => entry.source)
-for (const forbidden of apiSecrets.filter((source) => /admin|migration|backup/.test(source))) {
-  fail(`api: runtime must never receive the ${forbidden} credential`)
-}
-
-// 每个 secret 都必须指向未跟踪的文件：Compose 只声明路径，不声明值。
 for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
   const file = definition.file
   if (typeof file !== 'string' || file === '') {
     fail(`secret ${name}: must be backed by a file`)
     continue
   }
-  const tracked = runGit(['ls-files', '--', file]).trim()
-  if (tracked !== '') {
-    fail(`secret ${name}: ${file} is tracked by git; secrets must stay untracked`)
+  // 仓库外的 secret 目录是显式支持的分支：它不可能被 Git 跟踪，因此只检查权限。
+  if (insideRepository(file)) {
+    if (gitTracks(file)) {
+      fail(`secret ${name}: ${file} is tracked by git; secrets must stay untracked`)
+    }
   }
   if (existsSync(file)) {
     const mode = statSync(file).mode & 0o777
@@ -482,6 +768,24 @@ for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
           `(mode ${mode.toString(8).padStart(3, '0')}); use chmod 600`
       )
     }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 9. 健康检查
+// --------------------------------------------------------------------------
+const postgresHealth = services.postgres?.healthcheck?.test ?? []
+if (postgresHealth[0] !== 'CMD' || postgresHealth[1] !== 'pg_isready') {
+  fail('postgres: healthcheck must use the image-provided pg_isready via CMD')
+}
+const apiHealth = services.api?.healthcheck?.test ?? []
+if (apiHealth[0] !== 'CMD' || apiHealth[1] !== 'node') {
+  fail('api: healthcheck must use the image-provided node binary via CMD')
+}
+const apiHealthText = apiHealth.join(' ')
+for (const forbidden of ['curl', 'wget', 'apt', 'apt-get', 'apk', 'npm', 'pnpm', 'yarn']) {
+  if (new RegExp(`(^|[^a-z])${forbidden}([^a-z]|$)`).test(apiHealthText)) {
+    fail(`api: healthcheck must not depend on ${forbidden} (nothing is installed at runtime)`)
   }
 }
 
@@ -499,5 +803,5 @@ if (failures.length > 0) {
 process.stdout.write(
   `Compose topology check PASS (${serviceNames.length} services, ` +
     `${Object.keys(resolved.secrets ?? {}).length} secret files, ` +
-    `${Object.keys(networks).length} networks)\n`
+    `${Object.keys(networks).length} networks, project scope ${resolved.name})\n`
 )
