@@ -2,7 +2,7 @@
 
 - 日期：2026-07-26（2026-07-27 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）In Progress**；M3—M5 未开始）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -25,7 +25,7 @@
 - production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
-- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的**只读**授权投影——投影尚未被任何 bootstrap 阶段加载）。仍然缺席的是 Compose 拓扑、`infra/environments/` 配置模板、容器 smoke test、备份恢复脚本与部署运行手册。
+- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`。仍然缺席的是 `infra/environments/` 配置模板、secret file 的 `_FILE` 读取实现、容器 smoke test、备份恢复脚本与部署运行手册。
 - 当前总控机器可用 Node.js 24.14.0（M1 镜像内固定为 Node 24.18.0）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有实际 Compose 运行与备份恢复证据前仍不得把本阶段记为完成。
 - **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），五个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
@@ -144,6 +144,45 @@ PostgreSQL healthy
     login 默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立
     ACL（PostgreSQL 直接拒绝对数组类型授权与改属）；产品禁用 Large Object，创建/
     读写入口、项目角色权限与异常 default ACL 必须关闭。
+
+### M2B 实施记录（Compose 拓扑）
+
+已实现并取得实测证据，**待项目总控复核**。落点：
+[`infra/docker/compose.local-test.yaml`](../../infra/docker/compose.local-test.yaml)、
+[`infra/docker/check-compose-topology.mjs`](../../infra/docker/check-compose-topology.mjs)、
+[`infra/docker/README.md`](../../infra/docker/README.md)、
+[`infra/docker/secrets/`](../../infra/docker/secrets/README.md)。
+
+1. **十个服务**：`postgres`、七个 `bootstrap-*` 一次性任务、`migrate`、`api`。
+   默认 profile 恰好是 `postgres`/`migrate`/`api`，bootstrap 全部由 `bootstrap`
+   profile 显式调用，`docker compose up` 与普通重启不会再次执行它们（实测）。
+2. **PostgreSQL** 固定 `18.4-bookworm` + `sha256:1961f96e…9296`（`docker buildx
+   imagetools inspect` 解析真实仓库所得的 OCI index 摘要，内含 `linux/amd64` 与
+   `linux/arm64/v8`）；named volume、healthcheck、只在 `internal: true` 网络上、
+   不声明 `ports`。实测 6 秒达到 healthy，容器内五个工具 banner 与
+   `server_version` 均为 18.4，`docker inspect` 证明没有 PublishedPort。
+3. **API** 继续使用已 Accepted 的 `services/api/Dockerfile`（镜像仍为
+   `10001:10001`），host publish 精确为 `127.0.0.1:<port>:3000`，容器内
+   `HOST=0.0.0.0`，healthcheck 只用镜像自带的 `node`。实测宿主只出现一个
+   `127.0.0.1:3000` 监听套接字，IPv6 loopback 与 LAN 地址均不可达。
+4. **bootstrap 拆成七个容器**：M2A 的安装顺序在 psql 与 Node 之间来回切换，
+   单容器必须同时具备两者。本轮不构建混合高权限镜像，改为每阶段一个只用现成
+   镜像的一次性容器，顺序由 `service_completed_successfully` 固定。
+5. **无 privileged / host network / Docker socket / 数据库 bind mount**；统一
+   `read_only` 根文件系统、`cap_drop: [ALL]`、`no-new-privileges`、非 root 用户、
+   有界 json-file 日志轮转。静态门禁经 16 项变异测试，全部捕获、0 项漏网。
+6. **Compose 中没有口令或完整连接串**。`POSTGRES_PASSWORD_FILE` 与 `PGPASSFILE`
+   走镜像与 libpq 自带能力；`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE`
+   是本轮**声明**的 M3 契约。凭据按最小权限逐条固定并由静态门禁断言：`api` 只拿
+   runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败（验收门禁
+   第 4 条）。
+
+**边界（不得写成 Pass）**：**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
+`config.ts` 只接受 `DATABASE_URL`，`bootstrap.sh` 只接受三个
+`MEAL_AGENT_*_PASSWORD` environment value；M2B 不写入临时明文，也不修改 M1/M2A
+已冻结的实现，因此 `api`、`migrate`、`bootstrap-schema`、`bootstrap-logins` 当前
+fail closed，`0000 → handoff → acl → migrate → grants` 的完整链路、备份恢复与
+阶段总门禁尚未取得运行证据。备份/恢复服务属于 M4，本轮不在 Compose 中声明。
 
 ### M3：配置和 fake 登录边界
 
@@ -277,8 +316,14 @@ pnpm --filter @meal-agent/api manifest:check      # 只读门禁，一次校验�
 pnpm --filter @meal-agent/api manifest:generate   # 开发期重新生成四个 adapter
 ```
 
+M2B 另有一条命令，尚未并入任何聚合脚本（并入 `stage09a:check` 属于 M5）：
+
+```bash
+node infra/docker/check-compose-topology.mjs   # 解析后 Compose 配置的静态门禁
+```
+
 `pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由
-`pnpm stage08:check` 与上面两条命令给出，不得把 `stage08:check` 通过表述为阶段
-09A 通过。
+`pnpm stage08:check` 与上面三条命令给出，不得把 `stage08:check` 通过表述为阶段
+09A 通过，也不得把 M2B 的静态断言与 postgres 单服务启动表述为全栈通过。
 
 Compose 运行未完成或备份恢复未验证时，只能记录对应里程碑 `未开始`/`未验证`，不能把阶段状态改为已完成。容器引擎已就绪，`Blocked — 缺少本地容器引擎` 不再适用。

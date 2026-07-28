@@ -124,8 +124,11 @@ docker compose --file infra/docker/compose.local-test.yaml up -d api
 `docker compose config` **解析后**的配置：anchor、profile 与变量插值都已展开。
 它覆盖服务集合与 profile 边界、一次性任务顺序、镜像固定、容器权限与逃逸面、
 挂载、端口发布、网络隔离、健康检查依赖，以及「Compose 里不出现口令或完整连接
-串、secret 文件未被 Git 跟踪且不可被 group/world 读取」。Docker CLI 缺失时它以
-「缺少前置工具」失败退出，不降级成纯文本检查后宣称通过。
+串、secret 文件未被 Git 跟踪且不可被 group/world 读取」。凭据按**最小权限**逐条
+固定：`api` 只拿 runtime 连接串，`migrate` 只拿 migration 连接串，
+`bootstrap-schema` 只拿 admin 连接串，`bootstrap-logins` 是唯一接触三个登录口令
+的服务；api 一旦被塞进 admin / migration / backup 凭据即失败。Docker CLI 缺失时
+它以「缺少前置工具」失败退出，不降级成纯文本检查后宣称通过。
 
 把它并入 `pnpm stage09a:check` 属于 M5；M3 会再补运行期 Secret 与暴露级别断言。
 

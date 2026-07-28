@@ -146,9 +146,10 @@ PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都�
 不做任何 `includes` / 子串判断），五个都必须是 exact 18.4。混装会被拒绝：任一工具
 是 18.3、banner 报的是别的工具名、或缺失/不可执行，即使 `postgres` 自己是 18.4 也
 失败；`psql (PostgreSQL) 18.3 (Ubuntu 18.4-1…)` 这种「主版本 18.3、vendor suffix
-含 18.4」的形态也会被拒绝。M2B 落 Compose 时必须**解析真实仓库**得到 18.4 的
-exact image digest 再固定，当前文档不得写入任何编造的 digest；patch 升级要重新
-capture manifest、重跑 parity 并显式 rebaseline。
+含 18.4」的形态也会被拒绝。M2B 已按此要求解析真实仓库并在
+[`infra/docker/compose.local-test.yaml`](../../infra/docker/compose.local-test.yaml)
+固定 18.4 的 exact image digest（容器内五个 banner 实测均为 18.4）；patch 升级要
+重新 capture manifest、重跑 parity 并显式 rebaseline。
 
 [`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
 把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何

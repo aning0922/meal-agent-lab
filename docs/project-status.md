@@ -208,11 +208,80 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 - 未覆盖的对象类别也不声称覆盖：FDW/foreign server/user mapping、tablespace、
   event trigger、subscription、publication、parameter ACL 均不在投影内。
 
+**M2B 实际交付的**（实现完成，待总控复核）
+
+- **拓扑**：[`infra/docker/compose.local-test.yaml`](../infra/docker/compose.local-test.yaml)
+  共十个服务——`postgres`、七个只能显式调用的 `bootstrap-*` 一次性任务、
+  `migrate` 与 `api`。默认 profile **恰好**是 `postgres`/`migrate`/`api`，因此
+  `docker compose up` 与任何普通重启都不会再次执行 bootstrap（实测：重启
+  `postgres` 之后项目内仍然只有一个容器）。说明见
+  [`infra/docker/README.md`](../infra/docker/README.md)。
+- **bootstrap 拆成七个容器而不是一个**：M2A 的安装顺序在 `bootstrap.sh`（psql）
+  与 `db:bootstrap`（Node）之间来回切换，单个 bootstrap 容器必须同时具备 Node
+  与 psql。本轮**不**为此构建混合高权限镜像，而是让每个阶段用现成镜像各起一个
+  一次性容器，由 `depends_on: service_completed_successfully` 固定顺序；恢复路径
+  （M4）因此可以只复用其中的 `cluster` / `logins` / `acl`。
+- **PostgreSQL 镜像固定**：exact tag `18.4-bookworm` + OCI image index digest
+  `sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296`，由
+  `docker buildx imagetools inspect` **解析真实镜像仓库**取得，不是猜测、搜索
+  结果或本地未推送镜像的 RepoDigest。index 内含 `linux/amd64`
+  （`sha256:16fa100a…`）与 `linux/arm64/v8`（`sha256:5803d5d7…`）。容器内
+  `createdb`/`initdb`/`pg_ctl`/`postgres`/`psql` 五个 banner 与
+  `current_setting('server_version')` 全部为 **18.4**。
+- **数据库无 host 端口**（实测）：`docker inspect` 的 `HostConfig.PortBindings`
+  为 `{}`，`NetworkSettings.Ports` 为 `{"5432/tcp":null}`——只 expose、未
+  publish；宿主没有 5432 监听套接字。数据库落在 named volume 上，**没有**任何
+  宿主目录 bind mount。
+- **postgres 真实达到 healthy**（实测）：在 `read_only` 根文件系统、
+  `user 999:999`、`cap_drop: [ALL]`、`no-new-privileges` 与 `internal: true`
+  网络下 6 秒内 healthy，重启后 6 秒再次 healthy；TCP 与 local 登录都强制
+  `scram-sha-256`，`pg_authid` 中持有 `SCRAM-SHA-256$` verifier。
+- **API 只绑定 IPv4 loopback**（实测）：容器的 `HostConfig.PortBindings` 恰好是
+  `{"3000/tcp":[{"HostIp":"127.0.0.1","HostPort":"3000"}]}`。用**同一个 api
+  服务定义**（`--service-ports`）跑一个最小 HTTP listener 时，宿主只出现
+  **一个** `TCP 127.0.0.1:3000 (LISTEN)` 套接字：`127.0.0.1:3000` 返回 200，
+  `[::1]:3000` 与宿主 LAN 地址均连接失败。（本机另有一个 TUN 接口对**任意**
+  端口都返回 empty reply，对照未占用端口结果逐字相同，且该地址上没有任何监听
+  进程，因此与本拓扑无关。）针对真实 API 进程的动态非 loopback 门禁属于 M3。
+- **容器逃逸面**（实测 + 静态断言）：全拓扑无 privileged、无
+  `network_mode: host`、无 host pid/ipc/uts/cgroup/userns、无 Docker socket、
+  无数据库 bind mount；唯一的 bind 是只读挂载仓库内的 M2A bootstrap 资产。
+  统一 `read_only` 根文件系统、`cap_drop: [ALL]`、`cap_add` 为空、
+  `no-new-privileges:true`、非 root 用户、`restart: "no"` 与有界 json-file 日志
+  轮转。API 镜像仍是 `10001:10001`，M2B 不修改已 Accepted 的 Dockerfile。
+- **静态门禁**：[`infra/docker/check-compose-topology.mjs`](../infra/docker/check-compose-topology.mjs)
+  断言 `docker compose config` **解析后**的配置。它自身经过 16 项变异测试——
+  数据库发布端口、未限定的 `3000:3000`、明文连接串、明文口令、privileged、
+  `network_mode: host`、Docker socket、丢失 digest、bootstrap 脱离 profile、
+  api 不再等待 migration、数据库改成 bind mount、`internal` 丢失、加回
+  capability、healthcheck 依赖 curl、root 用户、日志失去轮转——**16 项全部被
+  捕获，0 项漏网**。Docker CLI 缺失时它以「缺少前置工具」失败退出，不降级成
+  纯文本检查后宣称通过。并入 `pnpm stage09a:check` 属于 M5。
+- **Compose 中没有凭据**：解析后的配置与 `docker inspect` 的 `Config.Env` 里
+  都不存在口令或完整连接串，只有 secret file 路径。`POSTGRES_PASSWORD_FILE` 与
+  `PGPASSFILE` 走镜像与 libpq 自带能力；`DATABASE_URL_FILE` 与
+  `MEAL_AGENT_*_PASSWORD_FILE` 是本轮**声明**的 M3 契约。
+- **凭据按最小权限分配**（静态断言，逐条固定每个服务的 secret 集合）：`api` 只
+  拿 runtime 连接串，`migrate` 只拿 migration 连接串，`bootstrap-schema` 只拿
+  admin 连接串，`bootstrap-logins` 是唯一接触三个登录口令的服务。api 一旦被塞进
+  admin / migration / backup 凭据，门禁立即失败（已用两次变异实测）——对应阶段
+  09A 验收门禁第 4 条「API runtime 不持有 bootstrap/migration 凭据」。
+
+**M2B 的边界**：**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
+`services/api/src/config.ts` 目前只接受 `DATABASE_URL`，
+`infra/docker/postgres/bootstrap.sh` 目前只接受 `MEAL_AGENT_*_PASSWORD` 三个
+environment value。M2B 既不为了让它们跑起来而写入临时明文，也不修改 M1/M2A 已
+冻结的实现，因此 `api`、`migrate`、`bootstrap-schema` 与 `bootstrap-logins` 当前
+fail closed（实测：`api` 容器以 `DATABASE_URL` 缺失的 `ZodError` 退出）。
+`0000 → handoff → acl → migrate → grants` 的完整链路、备份恢复与阶段总门禁因此
+**尚未取得运行证据**，不得记为 Pass。
+
 **证据边界**：数据库身份与授权这条线，R8B 之后已经同时覆盖**观察、策略判断与
 收敛**三层——canonical projector 采集事实，可移植策略判定允许项，收敛按真实
-grantor 执行并由只读断言复验（R8A 当时只交付其中的观察层）。仍然**未覆盖**的是
-本阶段的其余部分：Compose 拓扑、端口发布、secret file 注入、备份恢复与阶段总门禁
-均未实现，也未取得证据；`pnpm stage09a:check` 尚未创建。
+grantor 执行并由只读断言复验（R8A 当时只交付其中的观察层）。M2B 之后，Compose
+拓扑、镜像固定、端口发布与容器隔离已有实测证据。仍然**未覆盖**的是：secret file
+注入与暴露级别配置（M3）、全栈启动、备份恢复（M4）与阶段总门禁（M5）；
+`pnpm stage09a:check` 尚未创建。
 
 **Large Object 的口径**（两句都不可省略）：只要目标库里存在**任意**真实 LO
 对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，并且
@@ -230,7 +299,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 伪造的 ledger 就能冒充已登记状态。
 
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）In Progress**；M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
-- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
+- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
   不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**408 条规范化行**（manifest 版本 2；`grant` 138、`effective` 138、`default-effective` 78、`routine` 40、`default` 14），只登记**固定允许项**：固定授权、`pg_default_acl` 的**物理行**、叠加后的**有效**默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`（结构化 JSON）/正文摘要；未登记的 `(ledger, phase)` fail closed。canonical digest 覆盖全部顶层字段（version、principals、managedSchemas、deniedRoutines、states）。③**canonical projector**：`services/api/src/database/authorization-projection-sql.ts`。它被拆成「可复用的结构化 projector CTE renderer」与「对外三列只读 SELECT」两层；R8B 起前者同时供给 verify 与 converge，后者仍是不被任何 bootstrap 阶段加载的只读观察出口。可移植策略在 `authorization-policy-sql.ts`。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。

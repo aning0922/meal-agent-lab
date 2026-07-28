@@ -318,8 +318,10 @@ manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写
 - 口令为空字符串时服务端会**清空**该角色口令并且 psql 仍退出 0，因此设置后强制
   回查 `pg_authid`，确认三个角色都真的持有 SCRAM verifier。
 
-本目录不含任何真实凭据。Compose 服务、端口发布、secret file 注入和备份恢复生命
-周期分别属于 M2B、M3 和 M4，本轮不实现。
+本目录不含任何真实凭据。M2B 已把上面的阶段包装成 Compose 一次性任务，见
+[`../README.md`](../README.md)：每个阶段一个只用现成镜像的容器，因此不需要同时
+含 Node 与 psql 的混合高权限镜像。secret file 的 `_FILE` 读取（包括本脚本的三个
+`MEAL_AGENT_*_PASSWORD`）属于 M3，备份恢复生命周期属于 M4，均尚未实现。
 
 ## 验证
 

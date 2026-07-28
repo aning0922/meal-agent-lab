@@ -123,10 +123,12 @@ GUC。
 对象 catalog 基线实际绑定 **PostgreSQL 18.4**，且判据是 exact-patch 的，并覆盖
 整套工具链：`createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个按标准 banner 的
 主版本字段锚定解析，五个都必须是 18.4；混装（例如只有 server 是 18.4）与 `18.3`
-一律拒绝，并有自动化测试。M2B 落 Compose 时
-必须**解析真实镜像仓库**得到 18.4 的 exact image digest 再固定——在此之前任何文档
-都不得写入编造的 digest；patch 升级必须重新 capture manifest、重跑 parity 并显式
-rebaseline。
+一律拒绝，并有自动化测试。M2B 已按此要求**解析真实镜像仓库**固定 18.4 的 exact
+image digest：`docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296`，
+由 `docker buildx imagetools inspect` 取得的 OCI image index 摘要，内含
+`linux/amd64` 与 `linux/arm64/v8`，容器内五个工具的 banner 均为 18.4。它不是猜测、
+搜索结果或本地未推送镜像的 RepoDigest。patch 升级必须重新 capture manifest、重跑
+parity 并显式 rebaseline，不能只改 tag 或 digest。
 
 #### 2.2 授权状态由第二个 ledger 感知 manifest 描述
 
