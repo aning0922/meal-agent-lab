@@ -183,7 +183,18 @@ bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/
 - Secret 边界——Compose 里不出现口令或完整连接串；secret 文件必须未被 Git
   跟踪（`git ls-files` 非零退出不会被当作「未跟踪」静默放过）且不可被
   group/world 读取，仓库之外的 secret 目录作为显式分支处理；
+- **部署身份（M3A）**——`api` 必须显式声明 `DEPLOYMENT_STAGE: local-test` 与
+  `DEPLOYMENT_EXPOSURE: loopback`（config.ts 没有默认值，因此「删掉」和「改成
+  别的值」是两种不同的篡改，两种都失败）；fake adapter 只允许出现在
+  local-test + loopback + 非 production 上；只有 `api` 可以携带部署身份；全拓扑
+  不得出现 `WECHAT_APP_ID` / `WECHAT_APP_SECRET`；
 - 健康检查只依赖镜像已有能力，不得引用 curl/wget/包管理器。
+
+[`check-compose-topology-mutations.mjs`](check-compose-topology-mutations.mjs) 是
+上面那条门禁**自身的反向测试**：它临时改写 tracked 的 compose 文件再运行门禁，
+要求每一项变异都**以指定理由**失败（只失败不够——一条无关报错也能让脚本变绿）。
+它在文件不干净时拒绝运行，每次变异后立即写回原始字节，并在结束时逐字节复核。
+当前 **15 项全部以指定理由捕获、0 漏网**。
 
 Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前置工具 / 无法判定」
 失败退出，不降级成纯文本检查后宣称通过。
@@ -192,19 +203,19 @@ Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前�
 
 ## 当前状态与边界
 
-M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。阶段 09A 仍为 In Progress，
-下一项是 **M3（配置与 Secret file 消费）**，M4、M5 未开始；
+M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
+消费核心）implementation complete, pending total-control review**。阶段 09A 仍为
+In Progress，M3B、M4、M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 仍为 `Proposed`。
 
-**该 Accepted 只覆盖 Compose 拓扑本身**：Secret 注入、完整 bootstrap 链
+**M2B 的 Accepted 只覆盖 Compose 拓扑本身**：完整 bootstrap 链
 （`0000 → handoff → acl → migrate → grants`）与全栈启动**尚未通过**，不得记为
 Pass。
 
-`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 是本拓扑**声明**的 M3 契约：
-`services/api/src/config.ts` 目前只接受 `DATABASE_URL`，`postgres/bootstrap.sh`
-目前只接受 `MEAL_AGENT_*_PASSWORD` 三个 environment value。M2B 不为了让这些
-服务跑起来而写入临时明文，也不修改 M1/M2A 已冻结的实现，因此 `api`、`migrate`、
-`bootstrap-schema` 与 `bootstrap-logins` 现在会 fail closed。
+`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的
+契约；**M3A 已实现消费**：`services/api/src/config-source.ts` 与
+`postgres/secret-source.sh` 提供同一套互斥语义与 fail-closed 的文件判据。整链
+运行证据、八份 Secret 的生成与交叉一致性预检属于 **M3B**，仍未取得。
 
-备份与恢复命令属于 M4，本拓扑不声明。`infra/environments/` 配置模板属于 M3。
+备份与恢复命令属于 M4，本拓扑不声明。`infra/environments/` 配置模板属于 M3B。

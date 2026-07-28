@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-27 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；下一项是 M3「配置与 Secret file 消费」，M4、M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」implementation complete, pending total-control review**；M3B、M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -25,7 +25,7 @@
 - production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
-- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`。仍然缺席的是 `infra/environments/` 配置模板、secret file 的 `_FILE` 读取实现、容器 smoke test、备份恢复脚本与部署运行手册。
+- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现（`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh`）、显式部署维度与响应安全边界。仍然缺席的是 `infra/environments/` 配置模板、八份 Secret 的生成与交叉一致性预检、容器 smoke test、备份恢复脚本与部署运行手册。
 - 当前总控机器可用 Node.js 24.14.0（M1 镜像内固定为 Node 24.18.0）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有实际 Compose 运行与备份恢复证据前仍不得把本阶段记为完成。
 - **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），五个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
@@ -200,12 +200,13 @@ PostgreSQL healthy
 11. **变异测试 27 项全部以指定理由捕获、0 漏网**。
 
 **边界（M2B 的 Accepted 只覆盖拓扑本身，不得写成 Pass）**：**拓扑已验证；
-Secret 注入、完整 bootstrap 链与全栈启动尚未通过，属于 M3。**
-`config.ts` 只接受 `DATABASE_URL`，`bootstrap.sh` 只接受三个
-`MEAL_AGENT_*_PASSWORD` environment value；M2B 不写入临时明文，也不修改 M1/M2A
-已冻结的实现，因此 `api`、`migrate`、`bootstrap-schema`、`bootstrap-logins` 当前
-fail closed，`0000 → handoff → acl → migrate → grants` 的完整链路、备份恢复与
-阶段总门禁尚未取得运行证据。备份/恢复服务属于 M4，本轮不在 Compose 中声明。
+完整 bootstrap 链与全栈启动尚未通过。**M2B 落地时 `config.ts` 只接受
+`DATABASE_URL`、`bootstrap.sh` 只接受三个 `MEAL_AGENT_*_PASSWORD` environment
+value，因此 `api`、`migrate`、`bootstrap-schema`、`bootstrap-logins` 当时必然
+fail closed。**M3A 之后 `_FILE` 契约已被真正消费**（见下面的 M3A 实施记录），
+但 `0000 → handoff → acl → migrate → grants` 的完整链路、备份恢复与阶段总门禁
+**仍未取得运行证据**，属于 M3B 与 M4。备份/恢复服务属于 M4，本轮不在 Compose
+中声明。
 
 ### M3：配置和 fake 登录边界
 
@@ -226,18 +227,82 @@ fail closed，`0000 → handoff → acl → migrate → grants` 的完整链路�
 9. 认证和家庭私有响应增加 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`；不启用 wildcard CORS。
 10. 阶段 09A 不增加反向代理、TLS、域名、登录限流或 WAF。没有真实微信配置时，禁止把 local-test 拓扑改名或表述为 staging/production。
 
-### M3A 实施记录（进行中）
+### M3A 实施记录（实现完成，待总控复核）
 
 M3 被拆成 **M3A（配置与 Secret file 消费核心）**与 **M3B（环境模板、八份 Secret 的
-生成与交叉一致性、完整 Compose bootstrap 链实证）**两轮。M3A **已开工，尚未复核**，
-覆盖上面第 2、3、6、7、8、9 条的**代码侧**：统一的 Node Secret 来源解析器、
-bootstrap 的 shell Secret file 消费、显式部署维度、真实 code2Session endpoint 收紧、
-中央 logger 脱敏边界与全响应安全头。
+生成与交叉一致性、完整 Compose bootstrap 链实证）**两轮。M3A 覆盖上面第 2、3、6、
+7、8、9 条的**代码侧**，状态是 **implementation complete, pending total-control
+review**——**不是 Accepted**。
 
-M3A **不覆盖**（属于 M3B）：`infra/environments/` 模板（第 1 条）、八份 Secret 的
-生成/派生/交叉一致性预检、database name 与三个 URL/pgpass 的部署级一致性、完整
-Compose bootstrap 链与 `/readyz=200` 实证、容器级 sentinel 扫描，以及宿主全部非
-loopback 地址的动态隔离证明（第 5 条）。M4、M5 未开始。
+1. **统一的 Node Secret 来源解析器**
+   [`services/api/src/config-source.ts`](../../services/api/src/config-source.ts)
+   是唯一事实源，由三个入口共用：`loadConfig()`、`db:migrate`、`db:bootstrap`
+   都调用同一个 `resolveDatabaseUrlSource()`，三处都不再直接读
+   `process.env["DATABASE_URL"]`（有结构性测试断言这一点）。真值表：
+
+   | `DATABASE_URL` | `DATABASE_URL_FILE` | 结果 |
+   | --- | --- | --- |
+   | 未设置 | 未设置 | 拒绝 |
+   | 非空 | 未设置 | 采用进程环境 |
+   | 空 | 未设置 | 拒绝 |
+   | 未设置 | 非空 | 采用文件 |
+   | 未设置 | 空 | 拒绝 |
+   | 已出现 | 已出现 | 拒绝：冲突，**不比较内容**，相同也拒绝 |
+
+   「已出现」只看变量是否是字符串，空字符串同样算已出现；选中来源失败时**不**
+   回落到另一来源。文件判据 fail closed：绝对路径、`O_NOFOLLOW|O_NONBLOCK` 打开
+   后 **fstat**（而不是先 stat 路径再 open）、普通文件、链接数为 1、属主等于当前
+   effective UID、权限只允许 owner read/write（0600，因此 group/world 位、owner
+   执行位与 setuid/setgid/sticky 全部拒绝）、≤4096 字节、非空、合法 UTF-8、无
+   NUL、无 BOM、单行、最多移除**一个**末尾 LF 且**不做 trim**。CLI 参数合法性仍
+   先于 Secret 文件读取与数据库连接。文件 I/O **不在** Zod 内：先解析来源拿到
+   字符串，再交给配置 schema 校验格式。错误信息只含变量名、路径与原因。
+
+2. **PostgreSQL bootstrap 的 Secret file 消费**
+   [`infra/docker/postgres/secret-source.sh`](../../infra/docker/postgres/secret-source.sh)
+   是上面那份实现的 shell 对应物，语义、判据与错误措辞一致，覆盖
+   `MEAL_AGENT_{MIGRATION,RUNTIME,BACKUP}_PASSWORD` 三对来源。direct 形式保留给
+   非 Compose 的本地测试，Compose 只走 `*_FILE`。**三份口令全部在任何 psql 调用
+   之前解析**，任一不合格即 `exit 2`；反向测试用受控假 psql 逐例断言此时 psql
+   调用次数为 **0**。口令只经 `$(< file)` 与 `printf -v` 流转，解析后立即
+   `export -n`，因此不进入 argv、生成 SQL、日志，也不进入 psql 子进程的 environ；
+   每次间接展开前关闭 `xtrace`，`bash -x` 下同样不泄漏。用完即 `unset`。
+   `bootstrap.sh` 只增加这一段来源边界，M2A 的 ownership/ACL 流程一字未改。
+
+3. **显式部署策略**：`DEPLOYMENT_STAGE`（`local-test`/`staging`/`production`）与
+   `DEPLOYMENT_EXPOSURE`（`loopback`/`private-network`/`public`）**都没有默认值**。
+   fake adapter 只在 `local-test` + `loopback` + 非 production 三者同时成立时被
+   接受——27 个组合的穷尽测试里只有 2 个通过。`local-test` 携带非空 AppID 或
+   AppSecret 必须在启动前失败，因此 `local-test` 与真实 adapter 在结构上互斥。
+   `NODE_ENV` 与两个部署维度是三条**互相独立**的防线，任何一条都不替另一条放行。
+   Compose 的 `api` 固定 `local-test` + `loopback`，静态门禁另立一节断言它，并有
+   可重复的变异反向测试。
+
+4. **真实 code2Session endpoint 收紧**为逐字节相同的
+   `https://api.weixin.qq.com/sns/jscode2session`，配置层与 adapter 层各判一次。
+   HTTP/WS、相似域名与子域名、`/sns/userinfo`、显式端口（含 `:443`）、尾斜杠、
+   重复斜杠、大小写变体、query、fragment、userinfo 与前后空白共 24 个反例逐条被
+   拒绝。fake adapter 在注入「一调用即抛错」的 fetch **并且**替换
+   `globalThis.fetch` 的条件下，证明成功与失败两条分支的外部调用次数都是 0。
+   本轮不接入任何真实 AppID/AppSecret，也没有调用真实微信服务。
+
+5. **日志与 HTTP 安全边界**：脱敏移到中央 logger 边界
+   （`formatters.log` 处理结构化字段、`hooks.logMethod` 处理消息串），不再依赖
+   调用方主动调用 `redactSensitive`。覆盖任意嵌套层级的 `databaseUrl` /
+   `database_url` / `connectionString` / `connection-string` / `password` /
+   `dbPassword` / `dsn` 等命名变体，以及**按取值**识别的 PostgreSQL 连接串与
+   libpq conninfo，因此口令的原值与 URL 百分号编码形态同时消失；Error 对象被
+   归一化成固定安全形状。全部响应统一携带 `Cache-Control: no-store` 与
+   `X-Content-Type-Options: nosniff`（挂在唯一公共出口 `onSend` 上，因此新增路由
+   不可能漏掉），并断言不存在任何 `Access-Control-Allow-Origin`。本轮不新增反向
+   代理、TLS、WAF 或限流。
+
+M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
+（第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
+URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
+（`0000 → handoff → acl → migrate → grants`）与 `/readyz=200` 实证、
+`config`/`inspect`/`history`/`logs` 的容器级 sentinel 扫描，以及宿主全部非
+loopback 地址的动态隔离证明（第 5 条）。**M4、M5 未开始。**
 
 ### M4：生命周期、备份和恢复
 
@@ -352,11 +417,15 @@ pnpm --filter @meal-agent/api manifest:check      # 只读门禁，一次校验�
 pnpm --filter @meal-agent/api manifest:generate   # 开发期重新生成四个 adapter
 ```
 
-M2B 另有一条命令，尚未并入任何聚合脚本（并入 `stage09a:check` 属于 M5）：
+M2B 与 M3A 另有两条命令，尚未并入任何聚合脚本（并入 `stage09a:check` 属于 M5）：
 
 ```bash
-node infra/docker/check-compose-topology.mjs   # 解析后 Compose 配置的静态门禁
+node infra/docker/check-compose-topology.mjs             # 解析后 Compose 配置的静态门禁
+node infra/docker/check-compose-topology-mutations.mjs   # 上一条门禁自身的变异反向测试
 ```
+
+变异反向测试会**临时改写** tracked 的 `compose.local-test.yaml` 再运行门禁；它在
+文件不干净时拒绝运行，每次变异后立即写回原始字节，并在结束时逐字节复核还原结果。
 
 `pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由
 `pnpm stage08:check` 与上面三条命令给出，不得把 `stage08:check` 通过表述为阶段

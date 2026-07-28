@@ -164,8 +164,11 @@ catalog → 共享结构化 projector CTE → 公开只读 projection adapter / 
 （object + grantee + grantor + privilege + grantable）判定，固定允许授权的 canonical
 grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验收落点
 `5e480803`）；**M2B（Compose 拓扑）也已由总控 Accepted，验收落点 `d0f2219`**。
-阶段 09A 仍在进行（下一项是 M3 配置与 Secret file 消费，M4、M5 未开始），Secret
-注入、完整 bootstrap 链与全栈启动都尚未通过，本 ADR 因此保持 `Proposed`。
+**M3A（配置与 Secret file 消费核心）implementation complete, pending
+total-control review**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
+§4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
+[§4 的实施注记](#4-secret日志与镜像边界)）。阶段 09A 仍在进行（M3B、M4、M5 未
+开始），完整 bootstrap 链与全栈启动尚未通过，本 ADR 因此保持 `Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
 PostgreSQL 语义展开为隐式内建默认，因此它不是「物理 ACL 行」）、
@@ -278,6 +281,20 @@ sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对
 - 日志脱敏覆盖 database URL、connection string、password、DSN、token、微信 Secret 和既有隐私字段；
 - 镜像、运行日志、解析后的 Compose 配置和 tracked files 均执行 sentinel/Secret 扫描；
 - 私有和认证响应使用 `Cache-Control: no-store`，响应增加 `X-Content-Type-Options: nosniff`，不启用 wildcard CORS。
+
+**M3A 实施注记**（implementation complete, pending total-control review，**不是**
+阶段完成证据）：`_FILE` 互斥注入由 `services/api/src/config-source.ts`（API、
+`db:migrate`、`db:bootstrap` 三个入口共用）与 `infra/docker/postgres/secret-source.sh`
+（三对 `MEAL_AGENT_*_PASSWORD`）实现，两侧语义与文件判据逐条一致：绝对路径、
+非 symlink、普通文件、单链接、属主为当前 EUID、只允许 `0600`、≤4096 字节、非空、
+合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim；两个来源同时出现
+（含内容相同）一律拒绝，选中来源失败时不回落。shell 侧三份口令全部在任何 psql
+调用之前解析，任一不合格时 psql 调用次数实测为 0。日志脱敏移到中央 logger 边界，
+覆盖 database URL、connection string、password、DSN 的命名变体与按取值识别的
+连接串/conninfo，口令的原值与 URL 编码形态同时消失；全部响应统一携带
+`Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何
+`Access-Control-Allow-Origin`。**仍未取得**：八份 Secret 的生成与交叉一致性预检、
+完整 bootstrap 链与全栈启动、镜像/日志/容器级 sentinel 扫描（M3B 与 M5）。
 
 ### 5. 运行、迁移和恢复均需有界
 

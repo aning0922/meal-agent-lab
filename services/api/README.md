@@ -28,13 +28,58 @@ Node.js 24 + Fastify 5 模块化单体，使用 PostgreSQL 18、Drizzle schema �
 
 ## 本地运行
 
-复制 `.env.example` 到本机未提交配置并提供 `DATABASE_URL`。开发环境可以显式使用 fake adapter；不得写入真实密钥。
+复制 `.env.example` 到本机未提交配置。必须显式声明 `DEPLOYMENT_STAGE` 与
+`DEPLOYMENT_EXPOSURE`（两者都**没有默认值**），并提供 `DATABASE_URL` 或
+`DATABASE_URL_FILE`（二者互斥）。开发环境可以显式使用 fake adapter；不得写入真实
+密钥——`local-test` 携带非空 AppID/AppSecret 会在启动前失败。
 
 ```bash
 pnpm --filter @meal-agent/api environment:check
 pnpm --filter @meal-agent/api db:migrate
 pnpm --filter @meal-agent/api dev
 ```
+
+### 配置来源与部署身份（阶段 09A / M3A）
+
+连接串由 [`src/config-source.ts`](src/config-source.ts) 解析，**三个入口共用同一个**
+`resolveDatabaseUrlSource()`：`loadConfig()`、`db:migrate`、`db:bootstrap`。三处都
+不再直接读 `process.env["DATABASE_URL"]`。
+
+| `DATABASE_URL` | `DATABASE_URL_FILE` | 结果 |
+| --- | --- | --- |
+| 未设置 | 未设置 | 拒绝 |
+| 非空 | 未设置 | 采用进程环境 |
+| 空 | 未设置 | 拒绝 |
+| 未设置 | 非空 | 采用文件 |
+| 未设置 | 空 | 拒绝 |
+| 已出现 | 已出现 | 拒绝：冲突，**不比较内容**，相同也拒绝 |
+
+「已出现」只看变量是否是字符串——空字符串同样算已出现，否则 `DATABASE_URL=` 会
+被当成「没设置」，于是一个歧义配置被静默降级成合法的 file-only 注入。选中来源
+失败时**不回落**到另一来源。secret file 的判据是 fail closed 的（绝对路径、
+`O_NOFOLLOW` 打开后 fstat、普通文件、单链接、属主为当前 EUID、只允许 0600、
+≤4096 字节、非空、合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim），
+与 [`infra/docker/postgres/secret-source.sh`](../../infra/docker/postgres/secret-source.sh)
+逐条一致。文件 I/O **不在** Zod 内：先解析来源拿到字符串，再交给配置 schema 校验
+格式；CLI 参数合法性仍先于 Secret 文件读取与数据库连接。
+
+部署身份是两个**没有默认值**的独立维度：
+
+- `DEPLOYMENT_STAGE`：`local-test` / `staging` / `production`；
+- `DEPLOYMENT_EXPOSURE`：`loopback` / `private-network` / `public`。
+
+fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同时成立时被
+接受；`local-test` 携带非空 `WECHAT_APP_ID` 或 `WECHAT_APP_SECRET` 必须在启动前
+失败，因此 `local-test` 与真实 adapter 在结构上互斥。`NODE_ENV` 与两个部署维度是
+三条**互相独立**的防线，任何一条都不替另一条放行。真实 code2Session endpoint 收紧
+为逐字节相同的 `https://api.weixin.qq.com/sns/jscode2session`，配置层与 adapter 层
+各判一次；端口（含 `:443`）、尾斜杠、query、fragment、userinfo、相似域名与子域名
+全部拒绝。
+
+日志脱敏落在**中央 logger 边界**（`formatters.log` + `hooks.logMethod`），调用方
+无需主动调用 `redactSensitive`；覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
+取值识别的 PostgreSQL 连接串与 libpq conninfo，以及 Error 对象。全部响应统一携带
+`Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，不启用任何 CORS。
 
 ### 数据库身份与迁移入口
 
@@ -68,9 +113,9 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点
 `ca65275`。**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点
 `5e480803`。**M2B（Compose 拓扑）已由项目总控 Accepted**，验收落点 `d0f2219`；
-下一项是 **M3（配置与 Secret file 消费）**，M4、M5 未开始。阶段 09A 仍为
-In Progress，Secret 注入与全栈启动尚未通过。
-ADR-0005 保持 `Proposed`。
+**M3A（配置与 Secret file 消费核心）implementation complete, pending
+total-control review**；M3B、M4、M5 未开始。阶段 09A 仍为 In Progress，完整
+bootstrap 链与全栈启动尚未通过。ADR-0005 保持 `Proposed`。
 
 R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
 断言阶段。R8B 把它接入了 verify 与 converge，结构是：

@@ -292,9 +292,11 @@ manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写
 每个 phase 的参数语法是精确的：不相关的 option、重复 option、缺 value 和多余
 位置参数一律拒绝，不静默忽略也不「最后一个覆盖」。
 
-连接参数走标准 `PG*` 环境变量。`logins` 阶段要求三个非空密码环境变量
-（`MEAL_AGENT_MIGRATION_PASSWORD`、`MEAL_AGENT_RUNTIME_PASSWORD`、
-`MEAL_AGENT_BACKUP_PASSWORD`）。
+连接参数走标准 `PG*` 环境变量。`logins` 阶段需要三个口令，每个都由一对**互斥**
+的来源提供（阶段 09A / M3A）：`MEAL_AGENT_MIGRATION_PASSWORD`、
+`MEAL_AGENT_RUNTIME_PASSWORD`、`MEAL_AGENT_BACKUP_PASSWORD`，或它们各自的
+`*_FILE`。Compose 只提供 `*_FILE`；直接的环境变量形式保留给非 Compose 的本地
+测试。判据见下一节。
 
 ## 口令处理
 
@@ -318,10 +320,38 @@ manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写
 - 口令为空字符串时服务端会**清空**该角色口令并且 psql 仍退出 0，因此设置后强制
   回查 `pg_authid`，确认三个角色都真的持有 SCRAM verifier。
 
+### Secret 来源解析（M3A）
+
+[`secret-source.sh`](secret-source.sh) 是
+[`services/api/src/config-source.ts`](../../../services/api/src/config-source.ts)
+的 shell 对应物：同一套互斥语义、同一套文件判据、同一套错误措辞。
+
+| `<NAME>` | `<NAME>_FILE` | 结果 |
+| --- | --- | --- |
+| 未设置 | 未设置 | 拒绝 |
+| 非空 | 未设置 | 采用进程环境 |
+| 空 | 未设置 | 拒绝 |
+| 未设置 | 非空 | 采用文件 |
+| 未设置 | 空 | 拒绝 |
+| 已出现 | 已出现 | 拒绝：冲突，**不比较内容**，相同也拒绝 |
+
+「已出现」只看变量是否被设置，空字符串同样算已出现；选中来源失败时**不**回落。
+文件判据：绝对路径、非 symlink、普通文件、链接数为 1、属主等于当前 EUID、
+权限只允许 owner read/write（0600）、≤4096 字节、非空、无 NUL、合法 UTF-8、
+无 BOM、无 CR、最多一个末尾 LF 且**不做 trim**。GNU 与 BSD 的 `stat` 各有一条
+分支，两者都不可用时判定为「无法验证」而拒绝，不降级成跳过检查。
+
+**三份口令全部在任何 psql 调用之前解析**：任一不合格即 `exit 2`，此时该阶段的
+psql 调用次数为 **0**（反向测试逐例断言）。取值只经 `$(< file)` 与 `printf -v`
+流转，解析后立即 `export -n`，因此不进入 argv、生成 SQL、日志，也不进入 psql
+子进程的 environ；每次间接展开前关闭 xtrace，`bash -x` 下同样不泄漏；用完即
+`unset`。反向测试见
+[`bootstrap-secret-source.test.ts`](../../../services/api/tests/unit/bootstrap-secret-source.test.ts)。
+
 本目录不含任何真实凭据。M2B 已把上面的阶段包装成 Compose 一次性任务，见
 [`../README.md`](../README.md)：每个阶段一个只用现成镜像的容器，因此不需要同时
-含 Node 与 psql 的混合高权限镜像。secret file 的 `_FILE` 读取（包括本脚本的三个
-`MEAL_AGENT_*_PASSWORD`）属于 M3，备份恢复生命周期属于 M4，均尚未实现。
+含 Node 与 psql 的混合高权限镜像。八份 Secret 的生成与交叉一致性预检属于 M3B，
+备份恢复生命周期属于 M4，均尚未实现。
 
 ## 验证
 
