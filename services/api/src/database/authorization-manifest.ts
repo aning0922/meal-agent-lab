@@ -1734,11 +1734,25 @@ const manifestData: AuthorizationManifest = {
 export const authorizationManifest: AuthorizationManifest =
   deepFreeze(manifestData);
 
-/** `(ledger, phase)` 的稳定 key：ledger 用逗号连接，再接阶段。 */
+/**
+ * `(ledger, phase)` 的稳定 key，编码是**结构化 JSON**
+ * `[[按 C 序排序的 migration 文件名], phase]`。
+ *
+ * 为什么不能拼接：`join(",")` + `"|" + phase` 是有歧义的。一个**完全合法**的
+ * 文件名 `0000_stage_06.sql,0001_stage_08.sql` 拼出来的 key 与两个文件
+ * `0000_stage_06.sql` + `0001_stage_08.sql` 完全相同——两个语义上不同的 ledger
+ * 会被判成同一个已登记状态，于是 exact-ledger 这条 fail-closed 判据被绕过。
+ * 结构化编码里每个元素各自 JSON 引号包裹，分隔符不可能被数据伪造。
+ *
+ * PostgreSQL 侧用 `jsonb_build_array(jsonb_agg(name ORDER BY name COLLATE "C"),
+ * phase)::text` 得到**逐字节相同**的文本（jsonb 的元素间分隔符同样是 `, `），
+ * 因此两侧比较的是同一个 key，不需要任何反解。
+ */
 export const authorizationStateKey = (
   ledger: readonly string[],
   phase: AuthorizationPhase,
-): string => `${[...ledger].sort(byCodeUnit).join(",")}|${phase}`;
+): string =>
+  encodeProjectionIdentity([[...ledger].sort(byCodeUnit), phase]);
 
 export interface AuthorizationCanonicalRow {
   readonly state: string;

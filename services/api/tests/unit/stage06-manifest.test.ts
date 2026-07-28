@@ -54,6 +54,7 @@ import {
 import {
   authorizationDigest,
   authorizationManifest,
+  authorizationStateKey,
   authorizationStateKeys,
   AuthorizationManifestError,
   canonicalAuthorizationRows,
@@ -337,10 +338,15 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
   // 至少覆盖 0000-only 与当前 0000—0004 两个 ledger，各带两个阶段。
   const states = authorizationStateKeys();
   assert.equal(states.length, 4);
-  assert.ok(states.includes("0000_stage_06.sql|containment"));
-  assert.ok(states.includes("0000_stage_06.sql|final"));
+  // state identity 是结构化 JSON [[sorted names], phase]，不是拼接串。
+  assert.ok(
+    states.includes(authorizationStateKey(["0000_stage_06.sql"], "containment")),
+  );
+  assert.ok(
+    states.includes(authorizationStateKey(["0000_stage_06.sql"], "final")),
+  );
   assert.equal(
-    states.filter((state) => state.endsWith("|final")).length,
+    states.filter((state) => state.endsWith(String.raw`, "final"]`)).length,
     2,
     "every ledger must have a final phase",
   );
@@ -374,8 +380,13 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
         row.identity.startsWith('[["relation"') &&
         row.identity.endsWith('"meal_agent_backup"]'),
     ).length;
-  assert.equal(backupRelations("0000_stage_06.sql|containment"), 0);
-  assert.ok(backupRelations("0000_stage_06.sql|final") > 0);
+  assert.equal(
+    backupRelations(authorizationStateKey(["0000_stage_06.sql"], "containment")),
+    0,
+  );
+  assert.ok(
+    backupRelations(authorizationStateKey(["0000_stage_06.sql"], "final")) > 0,
+  );
 
   // `defaults` 是 pg_default_acl 的**物理行**，`defaultEffective` 才是叠加结果。
   // 两者必须真的不同：物理行只有少数几条，有效默认权限覆盖全部槽位。
@@ -958,7 +969,7 @@ test("a newly registered empty state changes the canonical digest", () => {
   );
   assert.match(
     canonicalAuthorizationText(withEmptyState),
-    /^<manifest>\|states\|\[\]\|.*0005_future\.sql\|final/mu,
+    /^<manifest>\|states\|\[\]\|.*0005_future\.sql/mu,
   );
 });
 
@@ -1122,4 +1133,129 @@ test("every exported renderer refuses a manifest that fails the unified validato
       `${name} must still render the real manifest`,
     );
   }
+});
+
+test("the state identity is structural and cannot be forged by a comma in a filename", () => {
+  // 旧编码是 `names.join(",") + "|" + phase`，它有歧义：一个**完全合法**的
+  // migration 文件名里带逗号，就能拼出与两个真实文件完全相同的 key，于是
+  // exact-ledger 这条 fail-closed 判据被一条数据绕过。结构化编码里每个元素各自
+  // 由 JSON 引号包裹，分隔符不可能被数据伪造。
+  const legacyKey = (ledger: readonly string[], phase: string): string =>
+    `${[...ledger].sort().join(",")}|${phase}`;
+
+  const collisions: readonly [string, readonly string[], readonly string[]][] = [
+    [
+      "five files vs a merged 0000/0001 filename",
+      [
+        "0000_stage_06.sql",
+        "0001_stage_08.sql",
+        "0002_stage_08_audit_closeout.sql",
+        "0003_stage_08_secondary_closeout.sql",
+        "0004_stage_08_final_closeout.sql",
+      ],
+      [
+        "0000_stage_06.sql,0001_stage_08.sql",
+        "0002_stage_08_audit_closeout.sql",
+        "0003_stage_08_secondary_closeout.sql",
+        "0004_stage_08_final_closeout.sql",
+      ],
+    ],
+    [
+      "two files vs one comma-bearing filename",
+      ["0000_stage_06.sql", "a.sql", "b.sql"],
+      ["0000_stage_06.sql", "a.sql,b.sql"],
+    ],
+  ];
+
+  for (const [label, left, right] of collisions) {
+    // 1. 旧编码确实会碰撞——这不是假想的风险。
+    assert.equal(
+      legacyKey(left, "final"),
+      legacyKey(right, "final"),
+      `the legacy encoding must really collide for: ${label}`,
+    );
+    // 2. 结构化编码不会。
+    assert.notEqual(
+      authorizationStateKey(left, "final"),
+      authorizationStateKey(right, "final"),
+      `the structural state identity must differ for: ${label}`,
+    );
+    // 3. identity 是 [[sorted names], phase] 的 JSON，可结构化解析回来。
+    for (const ledger of [left, right]) {
+      const parsed = JSON.parse(
+        authorizationStateKey(ledger, "final"),
+      ) as [readonly string[], string];
+      assert.deepEqual(parsed[0], [...ledger].sort());
+      assert.equal(parsed[1], "final");
+    }
+  }
+
+  // 4. phase 也参与结构，不靠分隔符区分。
+  assert.notEqual(
+    authorizationStateKey(["0000_stage_06.sql"], "final"),
+    authorizationStateKey(["0000_stage_06.sql"], "containment"),
+  );
+
+  // 5. digest 必须跟着变：把已登记的五文件 ledger 换成合并文件名之后，两份
+  //    manifest 的 canonical digest 不可以相同。
+  const [firstState] = authorizationManifest.states;
+  assert.ok(firstState !== undefined);
+  const merged: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: authorizationManifest.states.map((state) =>
+      state.ledger.length === 5
+        ? {
+            ...state,
+            ledger: [
+              "0000_stage_06.sql,0001_stage_08.sql",
+              "0002_stage_08_audit_closeout.sql",
+              "0003_stage_08_secondary_closeout.sql",
+              "0004_stage_08_final_closeout.sql",
+            ],
+          }
+        : state,
+    ),
+  };
+  assert.notEqual(
+    authorizationDigest(merged),
+    authorizationDigest(),
+    "a merged ledger filename must change the canonical digest",
+  );
+});
+
+test("the complete preflight statement precedes the first mutation in the converge block", () => {
+  // 结构证据（与「快照没变」互补）：快照只能证明**没有已提交的 mutation**，
+  // 证明不了「进程内一步都没执行过」。这里直接在渲染文本上定位：完整的 preflight
+  // 语句——包括它的 RAISE——必须整段排在**第一个** mutation 循环 / EXECUTE 之前。
+  const converge = renderAuthorizationConvergeSql();
+
+  const preflightStart = converge.indexOf("preflight_problem (rank, kind, entry)");
+  assert.ok(preflightStart > 0, "the preflight CTE must be present");
+  const preflightRaiseIndex = converge.indexOf(
+    "authorization preflight failed for state",
+  );
+  assert.ok(preflightRaiseIndex > preflightStart);
+  const preflightEnd = converge.indexOf("END IF;", preflightRaiseIndex);
+  assert.ok(preflightEnd > preflightRaiseIndex, "the preflight must fail closed");
+
+  // 第一个真正会改状态的东西：收敛动作循环，以及它里面的 EXECUTE。
+  const firstLoop = converge.indexOf("FOR row_record IN");
+  const firstExecute = converge.indexOf("EXECUTE format(");
+  assert.ok(firstLoop > 0 && firstExecute > 0);
+  assert.ok(
+    preflightEnd < firstLoop,
+    "the whole preflight statement must precede the first mutation loop",
+  );
+  assert.ok(
+    preflightEnd < firstExecute,
+    "the whole preflight statement must precede the first EXECUTE",
+  );
+  // preflight 自己不含任何 EXECUTE：它是一条只读语句。
+  assert.equal(
+    converge.slice(preflightStart, preflightEnd).includes("EXECUTE format("),
+    false,
+    "the preflight statement must not execute anything",
+  );
+  // verify block 里根本没有 mutation 循环。
+  assert.equal(renderAuthorizationVerifySql().includes("EXECUTE format("), false);
 });

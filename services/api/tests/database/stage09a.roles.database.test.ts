@@ -31,6 +31,7 @@ import {
   projectionDatabaseKey,
   type ProjectionIdentityPart,
 } from "../../src/database/authorization-projection-sql.js";
+import { authorizationStateKey } from "../../src/database/authorization-manifest.js";
 import { renderStage06CatalogProjectionSql } from "../../src/database/stage06-manifest-sql.js";
 import {
   byCodeUnit,
@@ -508,15 +509,63 @@ async function mustSucceedCli(label: string, result: RunResult): Promise<void> {
 }
 
 after(async () => {
+  // 全局收尾同样 fail closed。两条底线：
+  //
+  // 1. `pg_ctl stop` 的**退出码与异常都要检查**——`.catch(() => undefined)` 会把
+  //    「集群没停住」变成静默成功；
+  // 2. **没有确认停住就绝不删 data directory**。对着一个仍在运行的 postmaster
+  //    `rm -rf` 它的数据目录，会留下一个还在写文件的孤儿进程，后续测试与本机
+  //    环境都可能被它污染；宁可保留目录并让收尾失败。
+  const failures: Error[] = [];
+  let stopped = !clusterStarted;
   if (clusterStarted) {
-    await runCaptured(
-      join(postgresBin, "pg_ctl"),
-      ["-D", dataDirectory, "-m", "immediate", "-w", "stop"],
-      { env: { ...process.env, LC_ALL: process.env["LC_ALL"] ?? "C" } },
-    ).catch(() => undefined);
+    try {
+      const stop = await runCaptured(
+        join(postgresBin, "pg_ctl"),
+        ["-D", dataDirectory, "-m", "immediate", "-w", "stop"],
+        { env: { ...process.env, LC_ALL: process.env["LC_ALL"] ?? "C" } },
+      );
+      if (stop.code === 0) {
+        stopped = true;
+      } else {
+        failures.push(
+          new Error(
+            `pg_ctl stop exited ${String(stop.code)}: ` +
+              stop.stderr.slice(0, 400),
+          ),
+        );
+      }
+    } catch (error) {
+      failures.push(
+        new Error("pg_ctl stop could not be executed", { cause: error }),
+      );
+    }
   }
   if (clusterRoot !== "") {
-    await rm(clusterRoot, { recursive: true, force: true });
+    if (stopped) {
+      try {
+        await rm(clusterRoot, { recursive: true, force: true });
+      } catch (error) {
+        failures.push(
+          new Error(`could not remove ${clusterRoot}`, { cause: error }),
+        );
+      }
+    } else {
+      failures.push(
+        new Error(
+          `refusing to remove the cluster directory ${clusterRoot}: pg_ctl ` +
+            "stop was not confirmed, so the postmaster may still be running",
+        ),
+      );
+    }
+  }
+  if (failures.length > 0) {
+    process.stderr.write(
+      `\n[global cleanup failed] ${failures
+        .map((failure) => failure.message)
+        .join("; ")}\n`,
+    );
+    throw new AggregateError(failures, "global cluster cleanup failed");
   }
 });
 
@@ -3220,13 +3269,21 @@ test("a restore-style SECURITY DEFINER routine in drizzle fails both baselines c
   // 恢复路径不跑 0000，对象全部来自 dump：dump 可以把任意函数带进 drizzle。
   // 这类函数默认带 PUBLIC EXECUTE，于是 app 与 backup 会**派生**出以 migrator
   // 身份执行的能力。基线必须 fail closed，而不是只看直接授权后放行。
-  await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
-    await client.query(
-      "CREATE FUNCTION drizzle.stage09a_restored_backdoor() RETURNS text " +
-        "LANGUAGE sql SECURITY DEFINER AS $$SELECT current_user::text$$",
-    );
-  });
-  try {
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("restored routine", async () => {
+      await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+        await client.query(
+          "DROP FUNCTION IF EXISTS drizzle.stage09a_restored_backdoor()",
+        );
+      });
+    });
+    cleanup.push("baseline", restoreBaseline);
+    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+      await client.query(
+        "CREATE FUNCTION drizzle.stage09a_restored_backdoor() RETURNS text " +
+          "LANGUAGE sql SECURITY DEFINER AS $$SELECT current_user::text$$",
+      );
+    });
     // 0. 基线的 default privileges 已经收回了「migrator 新建函数默认给 PUBLIC
     //    EXECUTE」，所以刚建好时还没有派生权限。
     const beforeRestoreGrant = await withPool(
@@ -3327,15 +3384,7 @@ test("a restore-style SECURITY DEFINER routine in drizzle fails both baselines c
         );
       });
     }
-  } finally {
-    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
-      await client.query(
-        "DROP FUNCTION IF EXISTS drizzle.stage09a_restored_backdoor()",
-      );
-    });
-    await runBootstrap("acl");
-    await runBootstrap("grants");
-  }
+  });
 });
 
 test("any large object fails both baselines closed before a single mutation", async () => {
@@ -3372,10 +3421,18 @@ test("any large object fails both baselines closed before a single mutation", as
   await withFailureSafeCleanup(async (cleanup) => {
       // 清理只发生在 finally，而且每一类残留各自独立登记：LO、无关 ACL 漂移、
       // 合成角色、基线各失败一次都不会阻断其余步骤，也都不会被吞掉。
-          cleanup.push("large objects", async () => {
+      // Large Object 逐 OID 独立成阶段：一个 lo_unlink 失败不能让其余 OID
+      // 跟着残留。阶段在**创建之后立刻**登记（见下面的创建循环），这里先登记
+      // 一个兜底阶段，覆盖「创建循环本身中途抛错」的情形。
+      cleanup.push("large objects (sweep)", async () => {
         await withPool(adminPoolConfig(), async (pool) => {
-          for (const loid of largeObjectIds) {
-            await pool.query(`SELECT lo_unlink(${loid})`);
+          const remaining = await pool.query<{ loid: string }>(
+            `SELECT m.oid::text AS loid FROM pg_largeobject_metadata m
+              WHERE m.oid::text = ANY ($1::text[])`,
+            [[...largeObjectIds]],
+          );
+          for (const row of remaining.rows) {
+            await pool.query(`SELECT lo_unlink(${row.loid})`);
           }
         });
       });
@@ -3397,6 +3454,19 @@ test("any large object fails both baselines closed before a single mutation", as
           const loid = created.rows[0]?.loid;
           assert.ok(loid !== undefined);
           largeObjectIds.push(loid);
+          // 创建成功之后**立刻**登记这一个 OID 的清理阶段；它按 OID 幂等——
+          // 对象已经不在时直接返回。
+          cleanup.push(`large object ${loid}`, async () => {
+            await withPool(adminPoolConfig(), async (unlinkPool) => {
+              const present = await unlinkPool.query(
+                "SELECT 1 FROM pg_largeobject_metadata WHERE oid = $1::oid",
+                [loid],
+              );
+              if (present.rowCount !== 0) {
+                await unlinkPool.query(`SELECT lo_unlink(${loid})`);
+              }
+            });
+          });
           await pool.query(`ALTER LARGE OBJECT ${loid} OWNER TO ${owner}`);
         }
         // 一处**无关的** ACL 漂移：LO 存在时它必须原样不动，证明失败发生在任何
@@ -4260,31 +4330,30 @@ test("a private routine is matched by identity, owner, SECURITY DEFINER, proconf
     ],
   ];
 
-  try {
+  await withFailureSafeCleanup(async (outer) => {
+    outer.push("baseline", restoreBaseline);
     assert.equal((await runAuthorizationVerify("final")).code, 0);
     for (const [label, inject, revert, expected] of cases) {
-      // 每个 case 自己 finally 复原：正文断言失败时也不会把漂移留给后续测试。
-      try {
+      // 每个 case 走一次包装器：清理在注入之前登记（幂等——revert 对「注入没
+      // 发生」同样成立），因此正文断言失败时漂移也不会留给后续测试。
+      await withFailureSafeCleanup(async (cleanup) => {
+        cleanup.push(`revert ${label}`, async () => {
+          await adminStatements([revert]);
+        });
         await withPool(adminPoolConfig(), async (pool) => {
           await pool.query(inject);
         });
         const result = await runAuthorizationVerify("final");
         assert.notEqual(result.code, 0, `must reject: ${label}`);
         assert.match(result.stderr, expected, `wrong detail for: ${label}`);
-      } finally {
-        await withPool(adminPoolConfig(), async (pool) => {
-          await pool.query(revert).catch(() => undefined);
-        });
-      }
+      });
       assert.equal(
         (await runAuthorizationVerify("final")).code,
         0,
         `state must be clean again after ${label}`,
       );
     }
-  } finally {
-    await restoreBaseline();
-  }
+  });
 });
 
 test("large object creation entry points are closed for the runtime login", async () => {
@@ -6424,18 +6493,20 @@ class AuthorizationCleanupError extends Error {
 /**
  * **真正 failure-safe 的测试包装器。**
  *
- * 语义（四条必须同时成立，缺一条都会让串行测试互相污染或掩盖真实失败）：
+ * 语义（五条必须同时成立，缺一条都会让串行测试互相污染或掩盖真实失败）：
  *
  * 1. 正文抛错时**捕获**，不让它跳过清理；
- * 2. finally 里执行**全部**清理阶段——一个阶段失败不阻断后面的阶段；
- * 3. 正文失败时**正文错误保持主因**：原样重抛同一个 Error 对象，清理失败作为
- *    非枚举属性 `cleanupFailures` 附加上去。**不改写 message**——手工拼接
- *    message 只是把附加信息伪装成主因，既无法被断言区分，也会掩盖堆栈；
- * 4. 正文成功、清理失败时抛出 {@link AuthorizationCleanupError}。
- *
- * 清理阶段在**注入之后立刻登记**，因此正文在任何一步中断都有对应的兜底；每个
- * 阶段都必须幂等，而且**不允许** `catch(() => undefined)` 吞掉关键失败——吞掉
- * 之后残留会静默传染给后续测试。
+ * 2. finally 里按**登记顺序（FIFO）**执行**全部**清理阶段——先登记的先跑，
+ *    一个阶段失败不阻断后面的阶段。顺序本身就是语义：先删 Large Object 才能
+ *    删掉拥有它的角色，先撤注入才能恢复基线，最后才复核零残留；
+ * 3. 清理阶段**预登记**：每一步都在**注入之前或注入之后立刻**登记，因此正文在
+ *    任何一步中断都有对应的兜底。这要求每个阶段**幂等**——它必须能面对「注入
+ *    根本没发生」和「注入已经发生」两种状态，而且不允许 `catch(() => undefined)`
+ *    吞掉关键失败（吞掉之后残留会静默传染给后续测试）；
+ * 4. 正文失败时**正文错误保持主因**：原样重抛同一个 Error 对象，清理失败挂在
+ *    标准 `cause` 上并写入 stderr。**不改写 message**——手工拼接 message 只是把
+ *    附注伪装成主因，既无法被断言区分，也会掩盖堆栈；
+ * 5. 正文成功、清理失败时抛出 {@link AuthorizationCleanupError}。
  */
 const withFailureSafeCleanup = async (
   operation: (cleanup: CleanupCollector) => Promise<void>,
@@ -6451,12 +6522,29 @@ const withFailureSafeCleanup = async (
   }
   const failures = await collector.drainErrors();
   if (bodyFailed) {
-    if (failures.length > 0 && bodyError instanceof Error) {
-      Object.defineProperty(bodyError, "cleanupFailures", {
-        value: failures,
-        enumerable: false,
-        configurable: true,
-      });
+    if (failures.length > 0) {
+      const summary = failures.map((failure) => failure.message).join("; ");
+      // 附加信息必须**看得见**：普通 reporter 只打印被抛出的那个错误，因此
+      // 一方面挂到标准 `cause` 上（node:test 会连带打印 cause 链），另一方面
+      // 直接写 stderr，保证即使 reporter 不展开 cause 也不会丢。
+      process.stderr.write(
+        `\n[cleanup also failed while the body was failing] ${summary}\n`,
+      );
+      if (bodyError instanceof Error) {
+        Object.defineProperty(bodyError, "cleanupFailures", {
+          value: failures,
+          enumerable: false,
+          configurable: true,
+        });
+        if (bodyError.cause === undefined) {
+          Object.defineProperty(bodyError, "cause", {
+            value: new AggregateError(failures, "cleanup also failed"),
+            enumerable: false,
+            configurable: true,
+            writable: true,
+          });
+        }
+      }
     }
     throw bodyError;
   }
@@ -6581,6 +6669,33 @@ const adminStatements = async (
   });
 };
 
+/**
+ * 删除 probe 数据库，并**独立查询 `pg_database`** 精确断言它已经不存在。
+ *
+ * `DROP DATABASE IF EXISTS` 成功返回不等于「库真的没了」：连接还在时它会直接
+ * 报错，而 `.catch(() => undefined)` 又会把报错吞掉。因此这里既不吞错，也不靠
+ * 命令的返回值下结论——删完再查一次 catalog。按 probe 名幂等：库本来就不在时
+ * 直接通过。
+ */
+const dropProbeDatabase = async (probe: string): Promise<void> => {
+  assert.ok(
+    probe.startsWith("meal_agent_stage09a_"),
+    `refusing to drop a database outside the probe namespace: ${probe}`,
+  );
+  await withPool(adminPoolConfig("postgres"), async (pool) => {
+    await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+    const remaining = await pool.query(
+      "SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1",
+      [probe],
+    );
+    assert.equal(
+      remaining.rowCount,
+      0,
+      `the probe database ${probe} must no longer exist`,
+    );
+  });
+};
+
 /** 把基线恢复到 final 阶段，两个入口的退出码都必须为 0。 */
 const restoreBaseline = async (): Promise<void> => {
   await runBootstrap("acl");
@@ -6695,7 +6810,8 @@ test("containment and final round-trip through the real acl and grants entries",
   // 恢复/安装流程真正会走的顺序：acl → grants → acl → grants。containment 阶段
   // 刻意不给备份角色任何表级 SELECT；final 阶段精确建立；切回 containment 时
   // 必须**精确删除**刚建立的那一批，而不是留着或多删。
-  try {
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("baseline", restoreBaseline);
     await runBootstrap("acl");
     const containment = await rawAuthorizationSnapshot();
     assert.equal((await runAuthorizationVerify("containment")).code, 0);
@@ -6733,13 +6849,12 @@ test("containment and final round-trip through the real acl and grants entries",
       final,
       "switching forward again must rebuild exactly the final baseline",
     );
-  } finally {
-    await restoreBaseline();
-  }
+  });
 });
 
 test("each converge phase is idempotent under an independent catalog snapshot", async () => {
-  try {
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("baseline", restoreBaseline);
     for (const phase of ["acl", "grants"] as const) {
       await runBootstrap(phase);
       const first = await rawAuthorizationSnapshot();
@@ -6758,9 +6873,7 @@ test("each converge phase is idempotent under an independent catalog snapshot", 
         0,
       );
     }
-  } finally {
-    await restoreBaseline();
-  }
+  });
 });
 
 test("acl and grants both fail before any mutation and report the same problems", async () => {
@@ -6873,7 +6986,10 @@ test("all four registered states converge, verify clean and stay put on a second
   const probe = "meal_agent_stage09a_states";
   const probeMigrationUrl = `postgresql://meal_agent_migration_login:${passwords.migration}@127.0.0.1:${String(port)}/${probe}`;
   const observed: string[] = [];
-  try {
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("probe database", async () => {
+      await dropProbeDatabase(probe);
+    });
     await mustSucceed("createdb", join(postgresBin, "createdb"), [probe], {
       env: adminEnvironment(),
     });
@@ -6922,11 +7038,7 @@ test("all four registered states converge, verify clean and stay put on a second
     process.stdout.write(
       `authorization states settled: ${observed.join(", ")}\n`,
     );
-  } finally {
-    await withPool(adminPoolConfig("postgres"), async (pool) => {
-      await pool.query(`DROP DATABASE IF EXISTS ${probe}`).catch(() => undefined);
-    });
-  }
+  });
 });
 
 test("a role created after the adapters were generated is still discovered and converged", async () => {
@@ -7869,9 +7981,7 @@ test("an unknown ledger and a missing schema stop all entry points before any mu
   const probe = "meal_agent_stage09a_missing_both";
   await withFailureSafeCleanup(async (cleanup) => {
     cleanup.push("probe database", async () => {
-      await withPool(adminPoolConfig("postgres"), async (pool) => {
-        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
-      });
+      await dropProbeDatabase(probe);
     });
     await mustSucceed("createdb", join(postgresBin, "createdb"), [probe], {
       env: adminEnvironment(),
@@ -7954,12 +8064,22 @@ test("a predefined-role over-reach blocks both entry points while a fixable drif
         public_drift: boolean;
       }>(
         `SELECT has_table_privilege($1, 'public.users', 'SELECT') AS inherited,
+                -- acl_backed 必须覆盖**继承闭包**并且只看 SELECT：只比对
+                -- 「授给了这个角色自己或 PUBLIC」会漏掉「授给了它经 INHERIT
+                -- 继承到的某个角色」，那种情况其实**是**可以靠撤销 aclitem 修复
+                -- 的，不该被算成 predefined-role 越权。pg_has_role(..., 'USAGE')
+                -- 正是继承闭包的判据。
                 EXISTS (SELECT 1 FROM pg_class c
                           JOIN pg_namespace n ON n.oid = c.relnamespace,
                              aclexplode(c.relacl) AS acl
                          WHERE n.nspname = 'public' AND c.relname = 'users'
+                           AND acl.privilege_type = 'SELECT'
                            AND (acl.grantee = 0
-                                OR pg_catalog.pg_get_userbyid(acl.grantee) = $1))
+                                OR pg_catalog.pg_get_userbyid(acl.grantee) = $1
+                                OR pg_catalog.pg_has_role(
+                                     $1,
+                                     pg_catalog.pg_get_userbyid(acl.grantee),
+                                     'USAGE')))
                   AS acl_backed,
                 EXISTS (SELECT 1 FROM pg_class c
                           JOIN pg_namespace n ON n.oid = c.relnamespace,
@@ -7975,9 +8095,42 @@ test("a predefined-role over-reach blocks both entry points while a fixable drif
     assert.equal(
       reality?.acl_backed,
       false,
-      "and it must not be backed by any aclitem - that is what makes it unfixable",
+      "no aclitem in the inherited-role closure grants it SELECT - that is " +
+        "exactly what makes it unfixable by an ACL mutation",
     );
     assert.equal(reality?.public_drift, true, "the fixable drift must be real");
+
+    // 三件事在每个入口之后都独立复核：membership 还在、继承来的有效权限还在、
+    // 那条本来可收敛的 PUBLIC 漂移也还在。
+    const observeAfterEntry = async (): Promise<{
+      membership: boolean;
+      inherited: boolean;
+      drift: boolean;
+    }> =>
+      withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{
+          membership: boolean;
+          inherited: boolean;
+          drift: boolean;
+        }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_auth_members a
+                            JOIN pg_roles m ON m.oid = a.member
+                            JOIN pg_roles g ON g.oid = a.roleid
+                           WHERE m.rolname = $1
+                             AND g.rolname = 'pg_read_all_data') AS membership,
+                  has_table_privilege($1, 'public.users', 'SELECT') AS inherited,
+                  EXISTS (SELECT 1 FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace,
+                               aclexplode(c.relacl) AS acl
+                           WHERE n.nspname = 'public' AND c.relname = 'households'
+                             AND acl.grantee = 0
+                             AND acl.privilege_type = 'SELECT') AS drift`,
+          [login],
+        );
+        const row = result.rows[0];
+        assert.ok(row !== undefined);
+        return row;
+      });
 
     const before = await rawAuthorizationSnapshot();
     for (const phase of ["acl", "grants"] as const) {
@@ -7992,26 +8145,32 @@ test("a predefined-role over-reach blocks both entry points while a fixable drif
         new RegExp(`role ${login} reaches .* through role membership`),
         refused.stderr.slice(0, 500),
       );
-      // 快照在**每一个**入口之后都必须原样不动。
+      // 快照在**每一个**入口之后都与注入后完全相同：这条命令**没有提交任何
+      // mutation**。（它证明的是「没有已提交的变更」，不是「进程内一步都没执行
+      // 过」——后者由 renderer 的结构单测证明：完整 preflight 语句排在第一个
+      // mutation 循环之前。）
       assert.equal(
         await rawAuthorizationSnapshot(),
         before,
+        `${phase} must leave no committed mutation behind`,
+      );
+      const observed = await observeAfterEntry();
+      assert.equal(
+        observed.membership,
+        true,
+        `${phase} must not have touched the membership`,
+      );
+      assert.equal(
+        observed.inherited,
+        true,
+        `${phase} must not have removed the inherited effective privilege`,
+      );
+      assert.equal(
+        observed.drift,
+        true,
         `${phase} must not have converged the fixable drift`,
       );
     }
-    // 独立复核：那条本来可收敛的 PUBLIC 授权仍然一字未动。
-    const still = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ present: boolean }>(
-        `SELECT EXISTS (SELECT 1 FROM pg_class c
-                          JOIN pg_namespace n ON n.oid = c.relnamespace,
-                             aclexplode(c.relacl) AS acl
-                         WHERE n.nspname = 'public' AND c.relname = 'households'
-                           AND acl.grantee = 0
-                           AND acl.privilege_type = 'SELECT') AS present`,
-      );
-      return result.rows[0]?.present;
-    });
-    assert.equal(still, true, "the fixable drift must survive untouched");
 
     // 解除继承之后，同一条漂移必须被正常收敛掉——证明它一直都是可收敛的。
     await withPool(adminPoolConfig(), async (pool) => {
@@ -8019,5 +8178,97 @@ test("a predefined-role over-reach blocks both entry points while a fixable drif
     });
     await runBootstrap("grants");
     assert.equal((await runAuthorizationVerify("final")).code, 0);
+  });
+});
+
+test("a comma-bearing ledger filename cannot forge a registered state identity", async () => {
+  // exact-ledger 的 fail-closed 判据依赖 state identity 的**无歧义**。旧编码
+  // （`names.join(",") + "|" + phase`）里，把 0000 与 0001 合并成一个**合法**
+  // 文件名 `0000_stage_06.sql,0001_stage_08.sql` 得到的 key 与五个真实文件完全
+  // 相同——数据库侧只要有人这样写一行 ledger，就能冒充一个已登记状态。
+  //
+  // 结构化编码 `[[sorted names], phase]` 让每个文件名各自 JSON 引号包裹，因此
+  // 伪造不出来；这里在真实 PostgreSQL 上验证：Node 与数据库现场算出的 identity
+  // 逐字节相同，而伪造的 ledger 会在**任何 mutation 之前**被拒绝。
+  const realLedger = [
+    "0000_stage_06.sql",
+    "0001_stage_08.sql",
+    "0002_stage_08_audit_closeout.sql",
+    "0003_stage_08_secondary_closeout.sql",
+    "0004_stage_08_final_closeout.sql",
+  ];
+  const forgedName = "0000_stage_06.sql,0001_stage_08.sql";
+
+  // 1. 数据库现场算出的 identity 与 Node 侧逐字节相同。
+  const live = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ identity: string }>(
+      `SELECT jsonb_build_array(
+                COALESCE((SELECT jsonb_agg(name ORDER BY name COLLATE "C")
+                            FROM drizzle.__meal_agent_migrations),
+                         '[]'::jsonb),
+                'final')::text AS identity`,
+    );
+    return result.rows[0]?.identity;
+  });
+  assert.equal(
+    live,
+    authorizationStateKey(realLedger, "final"),
+    "PostgreSQL and Node must produce byte-identical state identities",
+  );
+
+  // 2. 旧的拼接编码确实会碰撞；结构化编码不会。
+  const legacy = (names: readonly string[]): string =>
+    `${[...names].sort().join(",")}|final`;
+  const forgedLedger = [
+    forgedName,
+    "0002_stage_08_audit_closeout.sql",
+    "0003_stage_08_secondary_closeout.sql",
+    "0004_stage_08_final_closeout.sql",
+  ];
+  assert.equal(legacy(realLedger), legacy(forgedLedger));
+  assert.notEqual(
+    authorizationStateKey(realLedger, "final"),
+    authorizationStateKey(forgedLedger, "final"),
+  );
+
+  // 3. 真正把伪造的 ledger 写进数据库：四个入口都必须在任何 mutation 之前拒绝，
+  //    并且同时注入的一处可收敛漂移必须原封不动。
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("forged ledger row", async () => {
+      await adminStatements([
+        `DELETE FROM drizzle.__meal_agent_migrations WHERE name = '${forgedName}'`,
+      ]);
+    });
+    cleanup.push("unrelated acl drift", async () => {
+      await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
+    });
+    cleanup.push("baseline", restoreBaseline);
+
+    await adminStatements([
+      "GRANT SELECT ON public.households TO PUBLIC",
+      `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
+       VALUES ('${forgedName}', repeat('0', 64))`,
+    ]);
+    const before = await rawAuthorizationSnapshot();
+
+    for (const phase of ["containment", "final"] as const) {
+      const verified = await runAuthorizationVerify(phase);
+      assert.notEqual(verified.code, 0, `verify ${phase} must refuse`);
+      assert.match(
+        verified.stderr,
+        /unregistered \(ledger, phase\) state/u,
+        verified.stderr.slice(0, 400),
+      );
+    }
+    for (const phase of ["acl", "grants"] as const) {
+      const refused = await bootstrap(phase);
+      assert.notEqual(refused.code, 0, `${phase} must refuse`);
+      assert.match(refused.stderr, /unregistered \(ledger, phase\) state/u);
+    }
+    assert.equal(
+      await rawAuthorizationSnapshot(),
+      before,
+      "a forged ledger must leave no committed mutation behind",
+    );
   });
 });

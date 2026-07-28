@@ -59,24 +59,32 @@ const verifyTag = "$meal_agent_authorization_verify$";
 const sessionPreamble = `  PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
   PERFORM pg_catalog.set_config('quote_all_identifiers', 'off', true);`;
 
-/** 从 ledger 与 GUC 解析 state key；未登记组合 fail closed。 */
+/**
+ * 从 ledger 与 GUC 解析 state key；未登记组合 fail closed。
+ *
+ * state key 是**结构化 JSON** `[[按 C 序排序的 migration 文件名], phase]`，与
+ * Node 侧的 `authorizationStateKey` 逐字节相同。绝不能用 `string_agg(name, ',')`
+ * 再接 `'|' || phase`：一个合法文件名 `0000_stage_06.sql,0001_stage_08.sql` 拼出
+ * 来的 key 与两个真实文件的 key 完全一样，exact-ledger 就被一条数据绕过了。
+ */
 const stateResolution = (manifest: AuthorizationManifest): string => `
   IF to_regclass('drizzle.__meal_agent_migrations') IS NULL THEN
     RAISE EXCEPTION
       'authorization manifest: the migration ledger is missing; the database '
       'is not in a state this baseline can reason about';
   END IF;
-  SELECT COALESCE(
-           pg_catalog.string_agg(name, ',' ORDER BY name COLLATE "C"), '')
-    INTO ledger_signature
-    FROM drizzle.__meal_agent_migrations;
   acl_phase := current_setting('meal_agent.acl_phase');
   IF acl_phase NOT IN ('containment', 'final') THEN
     RAISE EXCEPTION
       'authorization manifest: unknown phase %; expected containment or final',
       acl_phase;
   END IF;
-  state_key := ledger_signature || '|' || acl_phase;
+  SELECT jsonb_build_array(
+           COALESCE((SELECT jsonb_agg(name ORDER BY name COLLATE "C")
+                       FROM drizzle.__meal_agent_migrations),
+                    '[]'::jsonb),
+           acl_phase)::text
+    INTO state_key;
   IF NOT (state_key = ANY (${policyTextArray(
     authorizationStateKeys(manifest),
   )})) THEN
@@ -87,7 +95,6 @@ const stateResolution = (manifest: AuthorizationManifest): string => `
   END IF;`;
 
 const declarations = `DECLARE
-  ledger_signature text;
   acl_phase text;
   state_key text;
   problem_count integer;

@@ -78,9 +78,9 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 47/47 |
+| API unit | 49/49 |
 | API HTTP | 7/7 |
-| PostgreSQL migration/RLS/concurrency/身份边界 | 124/124 |
+| PostgreSQL migration/RLS/concurrency/身份边界 | 125/125 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
 | audit gate 与 transport 反向单测 | 11/11 |
@@ -207,7 +207,23 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 - 未覆盖的对象类别也不声称覆盖：FDW/foreign server/user mapping、tablespace、
   event trigger、subscription、publication、parameter ACL 均不在投影内。
 
-**证据边界**：以上只覆盖数据库身份与授权的**可观察性**。Compose、端口发布、secret file、备份恢复与阶段总门禁均未实现，也未取得证据；`pnpm stage09a:check` 尚未创建。
+**证据边界**：数据库身份与授权这条线，R8B 之后已经同时覆盖**观察、策略判断与
+收敛**三层——canonical projector 采集事实，可移植策略判定允许项，收敛按真实
+grantor 执行并由只读断言复验（R8A 当时只交付其中的观察层）。仍然**未覆盖**的是
+本阶段的其余部分：Compose 拓扑、端口发布、secret file 注入、备份恢复与阶段总门禁
+均未实现，也未取得证据；`pnpm stage09a:check` 尚未创建。
+
+**Large Object 的口径**（两句都不可省略）：只要目标库里存在**任意**真实 LO
+对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，并且
+**绝不修改 `lomacl`**、绝不改 `lomowner`、绝不改 LO 数据、绝不解除链接——只报告
+OID 与 owner。只有在**确实零 LO** 时，收敛才处理 `pg_default_acl` 中
+`defaclobjtype = 'L'` 的异常默认权限与 20 个 `pg_catalog` LO 入口函数上除函数
+owner 之外的 `EXECUTE`。
+
+**exact-ledger 的 state identity 是结构化的**：`[[按 C 序排序的 migration 文件名],
+phase]`，Node 与 PostgreSQL 现场逐字节相同。旧的 `join(",") + "|" + phase` 拼接
+有歧义——一个合法文件名 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个
+真实文件完全相同，一行伪造的 ledger 就能冒充已登记状态。
 
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 实现完成、待总控复验**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体待验收**；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过验收前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
