@@ -74,7 +74,7 @@ const postgresTmpfs = [
 ]
 
 // 顶层 secret 的 backing file 身份：secret name → 期望文件名。
-// 六项与 secret 同名，只有 pgpass 因为 libpq 的惯用扩展名而不同。
+// 八项里七项与 secret 同名，只有 pgpass 因为 libpq 的惯用扩展名而不同。
 const expectedSecretFiles = {
   postgres_superuser_password: 'postgres_superuser_password',
   postgres_admin_pgpass: 'postgres_admin.pgpass',
@@ -88,8 +88,13 @@ const expectedSecretFiles = {
 const expectedNetworkKeys = ['edge', 'internal']
 const expectedVolumeKeys = ['postgres-data']
 // Compose 把相对的 secret 目录按 compose 文件所在目录解析。
+// `${VAR:-./secrets}` 对**未设置与空字符串一视同仁**，都回落到 ./secrets——
+// 空字符串绝不能被当成「目录就是 compose 目录本身」。
 const secretsDirectoryFor = (override) =>
-  resolve(composeDirectory, override ?? './secrets')
+  resolve(
+    composeDirectory,
+    override === undefined || override === '' ? './secrets' : override
+  )
 
 const secretPath = (name) => `/run/secrets/${name}`
 const pgClusterEnvironment = {
@@ -318,7 +323,17 @@ const same = (actual, expected) =>
   JSON.stringify(canonical(actual ?? null)) ===
   JSON.stringify(canonical(expected ?? null))
 
+// environmentOverrides 里显式的 undefined 表示**删除**该变量，用来区分
+// 「未设置」与「设为空字符串」。
 const runCompose = (args, environmentOverrides = {}) => {
+  const environment = { ...process.env }
+  for (const [key, value] of Object.entries(environmentOverrides)) {
+    if (value === undefined) {
+      delete environment[key]
+    } else {
+      environment[key] = value
+    }
+  }
   const result = spawnSync(
     'docker',
     ['compose', '--file', composeFile, ...args],
@@ -326,7 +341,7 @@ const runCompose = (args, environmentOverrides = {}) => {
       cwd: composeDirectory,
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
-      env: { ...process.env, ...environmentOverrides }
+      env: environment
     }
   )
   if (result.error !== undefined) {
@@ -378,27 +393,44 @@ const gitTracks = (path) => {
 // 同样如此），因此「新增一个没人用的声明」在解析后的配置里根本不可见。要让这类
 // 声明也失败，只能读源文件的顶层键。其余全部断言仍然只看解析后的配置。
 const composeSource = readFileSync(composeFile, 'utf8')
-const declaredTopLevelKeys = (section) => {
+
+// 这三个 section **只允许** canonical bare key 写法。扫描是 fail closed 的：
+// 二级缩进上任何非空、非注释且不符合该文法的声明行都会报错，而不是被静默
+// 忽略——`"spare": {}`、`'spare': {}`、`<<: *alias` 都属于合法 YAML，但用
+// 正则扫描无法可靠理解，所以只能拒绝，不能当作「这里没有键」。
+const canonicalBareKey = /^ {2}([a-z0-9][a-z0-9_.-]*):(?:\s|$)/
+const declaredTopLevelSection = (section) => {
   const lines = composeSource.split('\n')
   const start = lines.indexOf(`${section}:`)
   if (start === -1) {
-    return []
+    return { found: false, keys: [], problems: [] }
   }
   const keys = []
+  const problems = []
   for (let index = start + 1; index < lines.length; index += 1) {
     const line = lines[index]
     if (line.trim() === '') {
       continue
     }
-    if (!line.startsWith(' ') && !line.startsWith('#')) {
+    // 回到第 0 列（下一个顶层键或顶层注释）即本 section 结束。
+    if (!line.startsWith(' ')) {
       break
     }
-    const match = /^ {2}([A-Za-z0-9_.-]+):/.exec(line)
-    if (match !== null) {
-      keys.push(match[1])
+    // 更深的缩进是值，不是声明。
+    if (!line.startsWith('  ') || line.startsWith('   ')) {
+      continue
     }
+    if (line.trimStart().startsWith('#')) {
+      continue
+    }
+    const match = canonicalBareKey.exec(line)
+    if (match === null) {
+      problems.push(`line ${index + 1}: ${line.trim()}`)
+      continue
+    }
+    keys.push(match[1])
   }
-  return keys.sort()
+  return { found: true, keys: keys.sort(), problems }
 }
 
 // 严格的仓库内判断：裸 startsWith 会让「与仓库同前缀的相邻目录」蒙混过关。
@@ -409,6 +441,50 @@ const insideRepository = (path) => {
   }
   const rel = relative(repositoryRoot, absolute)
   return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+// --------------------------------------------------------------------------
+// 0. 顶层声明的源码扫描（**先于**任何 docker 调用）
+// --------------------------------------------------------------------------
+// 源文件侧覆盖「多出一个没人用的声明」，解析后侧覆盖「被引用的声明被删掉或
+// 改名」，两侧缺一不可。这一段刻意排在最前面：非 canonical 的声明语法一旦出现，
+// 后续所有基于正则的源码判断都不再可信，因此立即 fail closed，不给
+// `docker compose config` 的 schema 校验抢先给出别的理由的机会。
+const declaredSectionProblems = []
+for (const [section, expectedKeys] of [
+  ['networks', expectedNetworkKeys],
+  ['volumes', expectedVolumeKeys],
+  ['secrets', Object.keys(expectedSecretFiles).sort()]
+]) {
+  const declared = declaredTopLevelSection(section)
+  if (!declared.found) {
+    declaredSectionProblems.push(
+      `declared top-level ${section} section is missing from the compose source`
+    )
+    continue
+  }
+  for (const problem of declared.problems) {
+    declaredSectionProblems.push(
+      `declared top-level ${section} uses a non-canonical declaration ` +
+        `(${problem}); this section only accepts canonical bare keys so the ` +
+        `source scan can never silently miss a declaration`
+    )
+  }
+  if (!same(declared.keys, expectedKeys)) {
+    fail(
+      `declared top-level ${section} drifted: got [${declared.keys.join(', ')}], ` +
+        `expected [${expectedKeys.join(', ')}] ` +
+        `(unreferenced declarations are pruned from the resolved config, ` +
+        `so this one is read from the compose source)`
+    )
+  }
+}
+if (declaredSectionProblems.length > 0) {
+  process.stderr.write('Compose topology check FAIL\n')
+  for (const message of declaredSectionProblems) {
+    process.stderr.write(`  - ${message}\n`)
+  }
+  process.exit(1)
 }
 
 const resolved = JSON.parse(
@@ -725,23 +801,6 @@ for (const name of serviceOrder) {
 // 6. 网络隔离与 project scope 命名
 // --------------------------------------------------------------------------
 const networks = resolved.networks ?? {}
-// 顶层 networks / volumes 逐项固定。源文件侧覆盖「多出一个没人用的声明」，
-// 解析后侧覆盖「被引用的声明被删掉或改名」，两侧缺一不可。
-for (const [section, expectedKeys] of [
-  ['networks', expectedNetworkKeys],
-  ['volumes', expectedVolumeKeys],
-  ['secrets', Object.keys(expectedSecretFiles).sort()]
-]) {
-  const declared = declaredTopLevelKeys(section)
-  if (!same(declared, expectedKeys)) {
-    fail(
-      `declared top-level ${section} drifted: got [${declared.join(', ')}], ` +
-        `expected [${expectedKeys.join(', ')}] ` +
-        `(unreferenced declarations are pruned from the resolved config, ` +
-        `so this one is read from the compose source)`
-    )
-  }
-}
 if (!same(Object.keys(networks).sort(), expectedNetworkKeys)) {
   fail(
     `top-level networks drifted: got [${Object.keys(networks).join(', ')}], ` +
@@ -874,19 +933,43 @@ const assertSecretFiles = (definitions, directory, label) => {
     }
   }
 }
-const defaultSecretsDirectory = secretsDirectoryFor(
-  process.env['MEAL_AGENT_SECRETS_DIR']
-)
-assertSecretFiles(resolved.secrets ?? {}, defaultSecretsDirectory, 'effective directory')
+// 两条分支都**显式**指定 MEAL_AGENT_SECRETS_DIR，因此结果与调用 checker 时的
+// 宿主环境无关：预先导出了该变量也不会让默认分支变成在测 override。
+const resolveSecretsWith = (override) =>
+  JSON.parse(
+    runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'], {
+      MEAL_AGENT_SECRETS_DIR: override
+    })
+  ).secrets ?? {}
 
-// MEAL_AGENT_SECRETS_DIR 覆盖也必须落在同一套 name → filename 映射上。
+// 分支一：空字符串必须与「未设置」语义完全一致，回落到 <compose 目录>/secrets/，
+// 而**不是**把 compose 目录本身当成 secret 目录。
+const unsetSecrets = resolveSecretsWith(undefined)
+const emptySecrets = resolveSecretsWith('')
+for (const name of Object.keys(expectedSecretFiles)) {
+  const emptyFile = emptySecrets[name]?.file
+  const unsetFile = unsetSecrets[name]?.file
+  if (emptyFile !== unsetFile) {
+    fail(
+      `MEAL_AGENT_SECRETS_DIR='' must resolve identically to leaving it unset; ` +
+        `secret ${name} resolved to ${emptyFile ?? '(none)'} when empty but ` +
+        `${unsetFile ?? '(none)'} when unset`
+    )
+  }
+}
+assertSecretFiles(
+  emptySecrets,
+  secretsDirectoryFor(''),
+  "default fallback (MEAL_AGENT_SECRETS_DIR='')"
+)
+
+// 分支二：显式的非空 override 必须落在同一套 name → filename 映射上。
 const secretsProbeDirectory = resolve(composeDirectory, 'm2b-secrets-probe')
-const probedSecrets = JSON.parse(
-  runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'], {
-    MEAL_AGENT_SECRETS_DIR: secretsProbeDirectory
-  })
-).secrets ?? {}
-assertSecretFiles(probedSecrets, secretsProbeDirectory, 'MEAL_AGENT_SECRETS_DIR override')
+assertSecretFiles(
+  resolveSecretsWith(secretsProbeDirectory),
+  secretsProbeDirectory,
+  'MEAL_AGENT_SECRETS_DIR override'
+)
 
 for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
   const file = definition.file

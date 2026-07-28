@@ -171,10 +171,12 @@ bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/
   容器内 target 与指向它的 `*_FILE` / `PGPASSFILE` 路径三者必须一一对应；`api`
   只拿 runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败；
 - **顶层 secret 的 backing file 身份**——八个 secret 的 name → 文件名映射逐项
-  固定（只有 `postgres_admin_pgpass` 对应 `postgres_admin.pgpass`，其余六项与
-  secret 同名），解析后的绝对路径必须等于 effective secret 目录 + 期望文件名；
-  默认目录与 `MEAL_AGENT_SECRETS_DIR` 覆盖两条路径都会校验，**只比路径、
-  不读取内容**；
+  固定（只有 `postgres_admin_pgpass` 对应 `postgres_admin.pgpass`，其余七项与
+  secret 同名），解析后的绝对路径必须等于 effective secret 目录 + 期望文件名。
+  默认分支显式用 `MEAL_AGENT_SECRETS_DIR=''` 解析并要求回落到
+  `<compose 目录>/secrets/`，override 分支显式用一个非空 probe 目录解析；两条
+  路径都不依赖调用时的宿主环境，并且额外断言「空字符串」与「未设置」解析结果
+  完全一致。全程**只比路径、不读取内容**；
 - **tmpfs 与挂载可写性**——每个服务的 tmpfs 逐项固定（`postgres` 额外持有
   `/var/run/postgresql:mode=0700,uid=999,gid=999`），bind 与 volume **都**比较
   `read_only`，数据卷被改成只读会被发现；
