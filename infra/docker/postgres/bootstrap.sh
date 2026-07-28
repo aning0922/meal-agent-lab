@@ -45,11 +45,16 @@
 #   8. 验证       readiness / owner / GRANT / RLS / checksum
 # 恢复路径**不**运行 0000，也**不**运行 handoff。
 #
-# 连接参数走标准 PG* 环境变量。`logins` 阶段需要三个非空密码环境变量，
-# 它们只经环境与 stdin 传递，并由 psql 的 \password 在客户端生成 SCRAM verifier：
-#   MEAL_AGENT_MIGRATION_PASSWORD
-#   MEAL_AGENT_RUNTIME_PASSWORD
-#   MEAL_AGENT_BACKUP_PASSWORD
+# 连接参数走标准 PG* 环境变量。`logins` 阶段需要三个口令，每个都由一对**互斥**
+# 的来源提供（阶段 09A / M3A，判据见 secret-source.sh）：
+#   MEAL_AGENT_MIGRATION_PASSWORD / MEAL_AGENT_MIGRATION_PASSWORD_FILE
+#   MEAL_AGENT_RUNTIME_PASSWORD   / MEAL_AGENT_RUNTIME_PASSWORD_FILE
+#   MEAL_AGENT_BACKUP_PASSWORD    / MEAL_AGENT_BACKUP_PASSWORD_FILE
+#
+# Compose 只提供 `*_FILE`；直接的环境变量形式保留给非 Compose 的本地测试。
+# 三份口令**全部**在任何 psql 调用之前解析完毕：任意一份不合格就 exit 2，
+# 因此该阶段的 psql 调用次数恒为 0。取值只经 stdin 传给 psql 的 \password，
+# 由它在客户端生成 SCRAM verifier，绝不进入 argv、SQL 文本或日志。
 
 set -euo pipefail
 
@@ -128,6 +133,14 @@ script_directory="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 sql_directory="${script_directory}/sql"
 psql_binary="${PSQL:-psql}"
 
+# Secret 来源解析器（`<NAME>` 与 `<NAME>_FILE` 互斥）。缺失即失败，不降级。
+if [ ! -f "${script_directory}/secret-source.sh" ]; then
+  echo "bootstrap: cannot find secret-source.sh next to bootstrap.sh" >&2
+  exit 2
+fi
+# shellcheck source=./secret-source.sh
+. "${script_directory}/secret-source.sh"
+
 # cluster scope 连 maintenance DB；database scope 连目标库。
 case "$phase" in
   cluster|logins)
@@ -171,14 +184,6 @@ run_sql() {
     --file "$1"
 }
 
-require_password() {
-  # 只检查是否为空，绝不打印取值。
-  if [ -z "${!1:-}" ]; then
-    echo "bootstrap: environment variable $1 must be set and non-empty" >&2
-    exit 2
-  fi
-}
-
 case "$phase" in
   cluster)
     run_sql "${sql_directory}/cluster/00-preflight.sql"
@@ -186,13 +191,15 @@ case "$phase" in
     ;;
 
   logins)
-    # xtrace 必须在**第一次间接展开 Secret 之前**关闭：require_password 用
-    # ${!name} 读取口令变量，开着 set -x 时会把取值打进 stderr。
+    # xtrace 必须在**第一次间接展开 Secret 之前**关闭：解析器用 ${!name} 读取
+    # 口令变量，开着 set -x 时会把取值打进 stderr。
     previous_options="$-"
     set +x
-    require_password MEAL_AGENT_MIGRATION_PASSWORD
-    require_password MEAL_AGENT_RUNTIME_PASSWORD
-    require_password MEAL_AGENT_BACKUP_PASSWORD
+    # 三份口令全部在任何 psql 调用之前解析：任一来源缺失、冲突、文件权限不对
+    # 或内容不合法都会在这里 exit 2，此时 psql 调用次数为 0。
+    meal_agent_resolve_secret MEAL_AGENT_MIGRATION_PASSWORD
+    meal_agent_resolve_secret MEAL_AGENT_RUNTIME_PASSWORD
+    meal_agent_resolve_secret MEAL_AGENT_BACKUP_PASSWORD
     run_sql "${sql_directory}/cluster/00-preflight.sql"
     run_sql "${sql_directory}/cluster/02-login-preflight.sql"
 
@@ -257,10 +264,15 @@ case "$phase" in
       printf '%s\n%s\n' "${!password_variable}" "${!password_variable}" \
         | set_password "$role_name"
     done
-    # 用完立即清除进程环境中的口令，并恢复原来的 xtrace 设置。
+    # 用完立即清除口令与它们的来源变量，并恢复原来的 xtrace 设置。
+    # 解析器已经 unset 过 `*_FILE`，这里再写一遍是为了让「用完即清」在阅读
+    # bootstrap.sh 时是自证的，而不必回到 secret-source.sh 才能确认。
     unset MEAL_AGENT_MIGRATION_PASSWORD
     unset MEAL_AGENT_RUNTIME_PASSWORD
     unset MEAL_AGENT_BACKUP_PASSWORD
+    unset MEAL_AGENT_MIGRATION_PASSWORD_FILE || true
+    unset MEAL_AGENT_RUNTIME_PASSWORD_FILE || true
+    unset MEAL_AGENT_BACKUP_PASSWORD_FILE || true
     case "$previous_options" in *x*) set -x ;; esac
 
     # 强制后置校验：\password 在口令为空时会让服务端**清空**口令并且仍然退出 0。
