@@ -384,7 +384,7 @@ volumes:
 # 现状：
 #   - postgres_superuser_password / postgres_admin_pgpass 走 PostgreSQL 官方
 #     镜像与 libpq 自带的 *_FILE / PGPASSFILE 能力，无需任何代码改动；
-#   - 其余四项是 M3 才会实现的 `_FILE` 契约。
+#   - 其余六项（三个登录口令 + 三个连接串）是 M3 才会实现的 `_FILE` 契约。
 secrets:
   postgres_superuser_password:
     file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/postgres_superuser_password

@@ -245,7 +245,9 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   进程，因此与本拓扑无关。）针对真实 API 进程的动态非 loopback 门禁属于 M3。
 - **容器逃逸面**（实测 + 静态断言）：全拓扑无 privileged、无
   `network_mode: host`、无 host pid/ipc/uts/cgroup/userns、无 Docker socket、
-  无数据库 bind mount；唯一的 bind 是只读挂载仓库内的 M2A bootstrap 资产。
+  无数据库 bind mount。全拓扑只有**两类只读仓库 bind**：M2A 的 bootstrap 资产
+  目录，以及**仅 `bootstrap-handoff` 可见**的那一个 exact `0000` 文件；数据库
+  数据落在 named volume 上，没有任何 host bind。
   统一 `read_only` 根文件系统、`cap_drop: [ALL]`、`cap_add` 为空、
   `no-new-privileges:true`、非 root 用户、`restart: "no"` 与有界 json-file 日志
   轮转。API 镜像仍是 `10001:10001`，M2B 不修改已 Accepted 的 Dockerfile。
@@ -296,9 +298,22 @@ pending total-control review，未自行 Accepted）
 - **worktree 资源隔离**：删除 network 与 volume 的显式全局 `name`，改由 Compose
   project scope 命名，`--project-name`/`-p` 可覆盖。门禁用两个 project name 解析
   配置并要求 network 与 volume 的真实名称无交集。
-- **变异测试 27 项全部以指定理由捕获、0 漏网**，含总控点名的五项：删除 API
-  build、修改 `bootstrap-acl` command、交换 API/migrate 的 `DATABASE_URL_FILE`、
-  删除或扩大 handoff 的 `0000` 挂载、bind source 指向与仓库同前缀的相邻目录。
+- **顶层 secret / 挂载 / tmpfs 的机械收口**：八个顶层 secret 的
+  name → 文件名映射逐项固定（只有 `postgres_admin_pgpass` 对应
+  `postgres_admin.pgpass`），解析后的绝对路径必须等于 effective secret 目录 +
+  期望文件名，默认目录与 `MEAL_AGENT_SECRETS_DIR` 覆盖两条路径都校验且**只比
+  路径、不读内容**；顶层 `networks`/`volumes`/`secrets` 键集合逐项固定；每个
+  服务的 tmpfs 进入 expectation；bind 与 volume **都**比较 `read_only`，数据卷
+  被改成只读会被发现。其中「新增一个没人引用的顶层声明」是**唯一**从 Compose
+  源文本判定的一条——`docker compose config` 会把未被引用的顶层
+  network/volume/secret 直接裁掉（`--no-normalize` 同样如此），解析后的配置对它
+  结构性失明，脚本里对此有显式注释。
+- **变异测试 41 项全部以指定理由捕获、0 漏网**（27 项回归 + 14 项本轮新增），
+  含总控先后点名的九项：删除 API build、修改 `bootstrap-acl` command、交换
+  API/migrate 的 `DATABASE_URL_FILE`、删除或扩大 handoff 的 `0000` 挂载、
+  bind source 指向与仓库同前缀的相邻目录、把 runtime 连接串指向 admin 文件、
+  数据卷改成只读、删除 `/var/run/postgresql` tmpfs、修改该 tmpfs 的
+  mode/uid/gid。
 
 **M2B 的边界**：**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
 `services/api/src/config.ts` 目前只接受 `DATABASE_URL`，

@@ -86,7 +86,9 @@ API 镜像由已 Accepted 的 [`services/api/Dockerfile`](../../services/api/Doc
 所有服务统一 `read_only` 根文件系统、`cap_drop: [ALL]`、
 `no-new-privileges:true`、非 root 用户、`restart: "no"` 与有界的 json-file 日志
 轮转。全拓扑不使用 privileged、`network_mode: host`、Docker socket，也没有任何
-宿主目录数据库 bind mount——唯一的 bind 是只读挂载仓库内 M2A bootstrap 资产。
+宿主目录数据库 bind mount。全拓扑只有**两类只读仓库 bind**：M2A 的 bootstrap
+资产目录，以及**仅 `bootstrap-handoff` 可见**的那一个 exact `0000` 文件；数据库
+数据落在 named volume 上，没有任何 host bind。
 
 PostgreSQL 直接以镜像自带的 `postgres`(999:999) 运行，因此 entrypoint 不需要 root，
 也不需要 `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` 去降权；TCP 与 local 登录都强制
@@ -168,6 +170,14 @@ bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/
 - 凭据最小权限与 **secret ↔ 环境变量精确映射**——每个服务的 secret source、
   容器内 target 与指向它的 `*_FILE` / `PGPASSFILE` 路径三者必须一一对应；`api`
   只拿 runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败；
+- **顶层 secret 的 backing file 身份**——八个 secret 的 name → 文件名映射逐项
+  固定（只有 `postgres_admin_pgpass` 对应 `postgres_admin.pgpass`，其余六项与
+  secret 同名），解析后的绝对路径必须等于 effective secret 目录 + 期望文件名；
+  默认目录与 `MEAL_AGENT_SECRETS_DIR` 覆盖两条路径都会校验，**只比路径、
+  不读取内容**；
+- **tmpfs 与挂载可写性**——每个服务的 tmpfs 逐项固定（`postgres` 额外持有
+  `/var/run/postgresql:mode=0700,uid=999,gid=999`），bind 与 volume **都**比较
+  `read_only`，数据卷被改成只读会被发现；
 - Secret 边界——Compose 里不出现口令或完整连接串；secret 文件必须未被 Git
   跟踪（`git ls-files` 非零退出不会被当作「未跟踪」静默放过）且不可被
   group/world 读取，仓库之外的 secret 目录作为显式分支处理；

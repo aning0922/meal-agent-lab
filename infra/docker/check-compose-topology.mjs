@@ -16,7 +16,7 @@
 // 权限与 secret↔环境变量精确映射，以及数据库 identity 不可被环境变量改写。
 // 运行期动态门禁（非 loopback 访问、镜像/日志 Secret 扫描）属于 M3 与 M5。
 import { spawnSync } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -56,11 +56,40 @@ const handoffStage06Mount = {
   target: '/services/api/migrations/0000_stage_06.sql',
   read_only: true
 }
+// 数据库数据卷必须是**可写**的 named volume：把它设成只读会让 PostgreSQL 起不来，
+// 因此这里按显式的 read_only: false 比较，而不是「没写 read_only 就算过」。
 const postgresDataMount = {
   type: 'volume',
   source: 'postgres-data',
-  target: '/var/lib/postgresql'
+  target: '/var/lib/postgresql',
+  read_only: false
 }
+
+// 只读根文件系统下的可写临时目录。逐服务固定：删、增、改任一项都必须失败。
+const defaultTmpfs = ['/tmp:mode=1777,size=16m']
+const postgresTmpfs = [
+  '/tmp:mode=1777,size=64m',
+  // PostgreSQL 的 unix socket 目录，必须归 postgres(999) 且不对外开放。
+  '/var/run/postgresql:mode=0700,uid=999,gid=999,size=16m'
+]
+
+// 顶层 secret 的 backing file 身份：secret name → 期望文件名。
+// 六项与 secret 同名，只有 pgpass 因为 libpq 的惯用扩展名而不同。
+const expectedSecretFiles = {
+  postgres_superuser_password: 'postgres_superuser_password',
+  postgres_admin_pgpass: 'postgres_admin.pgpass',
+  meal_agent_migration_password: 'meal_agent_migration_password',
+  meal_agent_runtime_password: 'meal_agent_runtime_password',
+  meal_agent_backup_password: 'meal_agent_backup_password',
+  meal_agent_admin_database_url: 'meal_agent_admin_database_url',
+  meal_agent_migration_database_url: 'meal_agent_migration_database_url',
+  meal_agent_runtime_database_url: 'meal_agent_runtime_database_url'
+}
+const expectedNetworkKeys = ['edge', 'internal']
+const expectedVolumeKeys = ['postgres-data']
+// Compose 把相对的 secret 目录按 compose 文件所在目录解析。
+const secretsDirectoryFor = (override) =>
+  resolve(composeDirectory, override ?? './secrets')
 
 const secretPath = (name) => `/run/secrets/${name}`
 const pgClusterEnvironment = {
@@ -85,6 +114,7 @@ const expectations = {
     command: null,
     networks: ['internal'],
     mounts: [postgresDataMount],
+    tmpfs: postgresTmpfs,
     publishes: false,
     secretEnv: {
       POSTGRES_PASSWORD_FILE: secretPath('postgres_superuser_password')
@@ -104,6 +134,7 @@ const expectations = {
     command: ['cluster', '--maintenance-db', 'postgres'],
     networks: ['internal'],
     mounts: [bootstrapMount],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
     environment: pgClusterEnvironment,
@@ -117,6 +148,7 @@ const expectations = {
     command: ['logins', '--maintenance-db', 'postgres'],
     networks: ['internal'],
     mounts: [bootstrapMount],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: {
       ...psqlSecretEnvironment,
@@ -141,6 +173,7 @@ const expectations = {
     command: ['--no-password', '--', databaseName],
     networks: ['internal'],
     mounts: [bootstrapMount],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
     environment: pgClusterEnvironment,
@@ -154,6 +187,7 @@ const expectations = {
     command: ['node', '/app/dist/database/bootstrap-0000.js'],
     networks: ['internal'],
     mounts: [],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: {
       DATABASE_URL_FILE: secretPath('meal_agent_admin_database_url')
@@ -172,6 +206,7 @@ const expectations = {
     networks: ['internal'],
     // 服务级 volumes 整体覆盖 anchor，因此这里必须**同时**有两条。
     mounts: [bootstrapMount, handoffStage06Mount],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
     environment: pgClusterEnvironment,
@@ -185,6 +220,7 @@ const expectations = {
     command: ['acl', '--dbname', databaseName],
     networks: ['internal'],
     mounts: [bootstrapMount],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
     environment: pgClusterEnvironment,
@@ -198,6 +234,7 @@ const expectations = {
     command: ['grants', '--dbname', databaseName],
     networks: ['internal'],
     mounts: [bootstrapMount],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
     environment: pgClusterEnvironment,
@@ -211,6 +248,7 @@ const expectations = {
     command: ['node', '/app/dist/database/migrate.js'],
     networks: ['internal'],
     mounts: [],
+    tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: {
       DATABASE_URL_FILE: secretPath('meal_agent_migration_database_url')
@@ -229,6 +267,7 @@ const expectations = {
     command: null,
     networks: ['edge', 'internal'],
     mounts: [],
+    tmpfs: defaultTmpfs,
     publishes: true,
     secretEnv: {
       DATABASE_URL_FILE: secretPath('meal_agent_runtime_database_url')
@@ -334,6 +373,34 @@ const gitTracks = (path) => {
   return true
 }
 
+// **本文件唯一读取 Compose 源文本的地方**，有明确理由：`docker compose config`
+// 会把**未被任何服务引用**的顶层 network / volume / secret 直接裁掉（`--no-normalize`
+// 同样如此），因此「新增一个没人用的声明」在解析后的配置里根本不可见。要让这类
+// 声明也失败，只能读源文件的顶层键。其余全部断言仍然只看解析后的配置。
+const composeSource = readFileSync(composeFile, 'utf8')
+const declaredTopLevelKeys = (section) => {
+  const lines = composeSource.split('\n')
+  const start = lines.indexOf(`${section}:`)
+  if (start === -1) {
+    return []
+  }
+  const keys = []
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line.trim() === '') {
+      continue
+    }
+    if (!line.startsWith(' ') && !line.startsWith('#')) {
+      break
+    }
+    const match = /^ {2}([A-Za-z0-9_.-]+):/.exec(line)
+    if (match !== null) {
+      keys.push(match[1])
+    }
+  }
+  return keys.sort()
+}
+
 // 严格的仓库内判断：裸 startsWith 会让「与仓库同前缀的相邻目录」蒙混过关。
 const insideRepository = (path) => {
   const absolute = resolve(path)
@@ -378,21 +445,15 @@ if (!same(activeByDefault, [...defaultServices].sort())) {
 // 2. 逐服务固定：镜像、用户、profile、entrypoint、command、网络、挂载、
 //    depends_on、环境与 secret 映射
 // --------------------------------------------------------------------------
-const normalizeMount = (mount) => {
-  if (mount.type === 'bind') {
-    return {
-      type: 'bind',
-      source: resolve(String(mount.source ?? '')),
-      target: mount.target,
-      read_only: mount.read_only === true
-    }
-  }
-  return {
-    type: mount.type,
-    source: mount.source,
-    target: mount.target
-  }
-}
+// bind 与 volume **都**保留 read_only：可写/只读是语义的一部分，
+// 「没写 read_only」不等于「不必比较」——数据卷被改成只读必须被发现。
+const normalizeMount = (mount) => ({
+  type: mount.type,
+  source:
+    mount.type === 'bind' ? resolve(String(mount.source ?? '')) : mount.source,
+  target: mount.target,
+  read_only: mount.read_only === true
+})
 
 for (const name of serviceOrder) {
   const service = services[name]
@@ -439,6 +500,13 @@ for (const name of serviceOrder) {
     fail(
       `${name}: mount set drifted: got ${JSON.stringify(actualMounts)}, ` +
         `expected ${JSON.stringify(expectedMounts)}`
+    )
+  }
+
+  if (!same(service.tmpfs ?? [], expected.tmpfs)) {
+    fail(
+      `${name}: tmpfs drifted: got ${JSON.stringify(service.tmpfs ?? [])}, ` +
+        `expected ${JSON.stringify(expected.tmpfs)}`
     )
   }
 
@@ -657,6 +725,36 @@ for (const name of serviceOrder) {
 // 6. 网络隔离与 project scope 命名
 // --------------------------------------------------------------------------
 const networks = resolved.networks ?? {}
+// 顶层 networks / volumes 逐项固定。源文件侧覆盖「多出一个没人用的声明」，
+// 解析后侧覆盖「被引用的声明被删掉或改名」，两侧缺一不可。
+for (const [section, expectedKeys] of [
+  ['networks', expectedNetworkKeys],
+  ['volumes', expectedVolumeKeys],
+  ['secrets', Object.keys(expectedSecretFiles).sort()]
+]) {
+  const declared = declaredTopLevelKeys(section)
+  if (!same(declared, expectedKeys)) {
+    fail(
+      `declared top-level ${section} drifted: got [${declared.join(', ')}], ` +
+        `expected [${expectedKeys.join(', ')}] ` +
+        `(unreferenced declarations are pruned from the resolved config, ` +
+        `so this one is read from the compose source)`
+    )
+  }
+}
+if (!same(Object.keys(networks).sort(), expectedNetworkKeys)) {
+  fail(
+    `top-level networks drifted: got [${Object.keys(networks).join(', ')}], ` +
+      `expected [${expectedNetworkKeys.join(', ')}]`
+  )
+}
+if (!same(Object.keys(resolved.volumes ?? {}).sort(), expectedVolumeKeys)) {
+  fail(
+    `top-level volumes drifted: got ` +
+      `[${Object.keys(resolved.volumes ?? {}).join(', ')}], ` +
+      `expected [${expectedVolumeKeys.join(', ')}]`
+  )
+}
 if (networks.internal?.internal !== true) {
   fail('networks.internal must set internal: true (no gateway, no host port)')
 }
@@ -748,10 +846,51 @@ for (const name of serviceOrder) {
   }
 }
 
+// 顶层 secret 集合逐项固定：增加、删除或改名都必须失败。
+const secretNames = Object.keys(resolved.secrets ?? {}).sort()
+const expectedSecretNames = Object.keys(expectedSecretFiles).sort()
+if (!same(secretNames, expectedSecretNames)) {
+  fail(
+    `top-level secrets drifted: got [${secretNames.join(', ')}], ` +
+      `expected [${expectedSecretNames.join(', ')}]`
+  )
+}
+
+// 每个 secret 的 backing file 身份必须精确：effective 目录 + 期望文件名。
+// 只比较路径，绝不读取或输出文件内容。
+const assertSecretFiles = (definitions, directory, label) => {
+  for (const [name, expectedFilename] of Object.entries(expectedSecretFiles)) {
+    const file = definitions[name]?.file
+    if (typeof file !== 'string' || file === '') {
+      fail(`secret ${name}: must be backed by a file (${label})`)
+      continue
+    }
+    const expectedFile = resolve(directory, expectedFilename)
+    if (resolve(file) !== expectedFile) {
+      fail(
+        `secret ${name}: backing file must be ${expectedFile} (${label}), ` +
+          `got ${resolve(file)}`
+      )
+    }
+  }
+}
+const defaultSecretsDirectory = secretsDirectoryFor(
+  process.env['MEAL_AGENT_SECRETS_DIR']
+)
+assertSecretFiles(resolved.secrets ?? {}, defaultSecretsDirectory, 'effective directory')
+
+// MEAL_AGENT_SECRETS_DIR 覆盖也必须落在同一套 name → filename 映射上。
+const secretsProbeDirectory = resolve(composeDirectory, 'm2b-secrets-probe')
+const probedSecrets = JSON.parse(
+  runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'], {
+    MEAL_AGENT_SECRETS_DIR: secretsProbeDirectory
+  })
+).secrets ?? {}
+assertSecretFiles(probedSecrets, secretsProbeDirectory, 'MEAL_AGENT_SECRETS_DIR override')
+
 for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
   const file = definition.file
   if (typeof file !== 'string' || file === '') {
-    fail(`secret ${name}: must be backed by a file`)
     continue
   }
   // 仓库外的 secret 目录是显式支持的分支：它不可能被 Git 跟踪，因此只检查权限。
