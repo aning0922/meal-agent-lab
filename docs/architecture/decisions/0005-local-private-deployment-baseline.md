@@ -155,12 +155,13 @@ identity/owner/`SECURITY DEFINER`/`proconfig`/正文摘要与允许的 `EXECUTE`
 projector：`authorization-projection-sql.ts` 渲染出的**单条只读 SELECT**（第四个
 generated adapter），不含任何 mutation，也**尚未接入** `02-acl-baseline.sql` /
 `03-backup-grants.sql`。R8A 已由项目总控 **Accepted**（验收落点 `ca65275`）。
-R8B（**实现完成，待总控复验**）把它接入了 verify/converge，结构是「PostgreSQL
+R8B（总控 **Accepted**）把它接入了 verify/converge，结构是「PostgreSQL
 catalog → 共享结构化 projector CTE → 公开只读 projection adapter / verify 的可移植
 策略匹配器 / converge 的可移植策略匹配器」：**共享的是事实采集**，不是把动态投影
 冻结成跨环境快照。`watchedGrantees` 静态名单已删除，收敛与断言按完整元组
 （object + grantee + grantor + privilege + grantable）判定，固定允许授权的 canonical
-grantor 恒为 `meal_agent_migrator`。M2A 在总控验收通过之前仍为待验收，本 ADR 保持
+grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验收落点
+`5e480803`）；阶段 09A 仍在进行（下一项是 M2B Compose 拓扑），本 ADR 因此保持
 `Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按

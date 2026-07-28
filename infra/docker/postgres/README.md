@@ -149,7 +149,7 @@ ACL、default privilege 的物理行与有效叠加，以及 `has_*_privilege` �
    对象权限而放着创建入口，等于允许 runtime 自己造一个不受 schema ACL 与 RLS
    约束的存储面。
 
-## canonical projector（R8A Accepted；R8B 已接入 verify/converge，待总控复验）
+## canonical projector（R8A Accepted；R8B 已接入 verify/converge，同样 Accepted）
 
 `generated/authorization-projection.generated.sql` 是**第四个** generated adapter：
 一段**单条只读 SELECT**，不含 `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/

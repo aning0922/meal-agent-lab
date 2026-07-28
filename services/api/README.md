@@ -66,8 +66,9 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 ### 阶段 09A / M2A 当前状态
 
 M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点
-`ca65275`。**R8B 实现完成，待总控复验**；**M2A 整体待验收**；M2B—M5 未开始，且在
-M2A 通过验收前禁止进入。ADR-0005 保持 `Proposed`。
+`ca65275`。**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点
+`5e480803`。下一项是 **M2B（Compose 拓扑）**，尚未开始；M3—M5 未开始。
+ADR-0005 保持 `Proposed`。
 
 R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
 断言阶段。R8B 把它接入了 verify 与 converge，结构是：
