@@ -1,0 +1,385 @@
+# 阶段 09A / M2B：local-test 单机 Compose 拓扑。
+#
+#   本机浏览器 / 客户端 / SSH tunnel
+#     └─ 127.0.0.1:<host port>
+#          └─ api（非 root 10001:10001，容器内 HOST=0.0.0.0）
+#               └─ meal-agent-local-test-internal（internal: true，无 host port）
+#                    └─ postgres 18.4（named volume，healthcheck，不发布端口）
+#
+# 边界（与 ADR-0005 §1、§3、§4 一致）：
+#   - PostgreSQL 固定 exact tag + 多架构 manifest digest，永不声明 ports；
+#   - API 的 host publish 精确为 127.0.0.1:<port>:3000，没有第二个 listener；
+#   - 不使用 privileged、network_mode: host、Docker socket、数据库 bind mount；
+#   - 本文件不含任何口令或完整连接串的 environment value。凭据一律走
+#     secret file，见下方 `secrets:` 与 [`secrets/README.md`](secrets/README.md)。
+#
+# 尚未实现（M3）：`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 是本文件
+# **声明的契约**，`services/api/src/config.ts` 与 `postgres/bootstrap.sh` 目前
+# 只接受同名的 environment value。因此 api / migrate / bootstrap-schema /
+# bootstrap-logins 现在会 fail closed（缺少凭据即退出），这是刻意的：本轮不为了
+# 让它们跑起来而写入临时明文，也不修改 M1/M2A 已冻结的实现。
+# 备份与恢复命令属于 M4，本文件不声明。
+name: meal-agent-local-test
+
+# --------------------------------------------------------------------------
+# 公共片段
+# --------------------------------------------------------------------------
+
+# 所有服务共享的运行时收紧项。
+x-hardening: &hardening
+  # 一次性任务与本地测试栈都不做自动重启：失败必须可见，而不是循环重试。
+  restart: "no"
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # 本地日志有界，避免长时间运行把宿主磁盘写满。
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+# 以 API 镜像运行的服务（api、migrate、bootstrap-schema）共享的部分。
+# 镜像由已 Accepted 的 services/api/Dockerfile 构建，本文件不改其安全基线：
+# 这里显式重述的 user / ENTRYPOINT 与镜像 Config 完全一致，只是让
+# `docker compose config` 单独可审。
+x-api-image: &api-image
+  image: meal-agent-api:stage09a-local-test
+  build:
+    context: ../..
+    dockerfile: services/api/Dockerfile
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:mode=1777,size=16m
+  networks:
+    - internal
+
+# 以 PostgreSQL 镜像运行的 cluster-admin 一次性任务共享的部分。
+# 它们只需要 psql 与仓库内的 bootstrap 脚本，不需要 Node。
+x-bootstrap-psql: &bootstrap-psql
+  image: docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+  user: "999:999"
+  read_only: true
+  # exec form，不经过任何 shell：数据库名等参数是独立的 argv 元素，
+  # 因此变量插值不会变成命令注入面。bootstrap.sh 自带 `set -euo pipefail`。
+  entrypoint:
+    - /opt/meal-agent/bootstrap/bootstrap.sh
+  volumes:
+    # 只读挂载仓库内已 Accepted 的 M2A bootstrap 资产；不挂载任何数据库目录。
+    - type: bind
+      source: ./postgres
+      target: /opt/meal-agent/bootstrap
+      read_only: true
+  tmpfs:
+    - /tmp:mode=1777,size=16m
+  networks:
+    - internal
+  profiles:
+    - bootstrap
+
+# cluster scope（连 maintenance 库，不要求目标库存在）的连接参数。
+# 全部是非敏感的标准 PG* 变量；口令走 PGPASSFILE 指向的 secret file。
+x-pg-cluster-env: &pg-cluster-env
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGUSER: postgres
+  PGDATABASE: postgres
+  PGCONNECT_TIMEOUT: "10"
+  PGPASSFILE: /run/secrets/postgres_admin_pgpass
+
+services:
+  # ------------------------------------------------------------------------
+  # 1. PostgreSQL 18.4
+  # ------------------------------------------------------------------------
+  postgres:
+    <<: *hardening
+    # exact patch tag + 多架构 manifest index digest，二者同时固定。
+    # digest 由本机 `docker buildx imagetools inspect` 解析真实仓库获得，
+    # 覆盖 linux/amd64 与 linux/arm64/v8；容器内五个工具的 banner 均为 18.4。
+    # 不使用 latest / 18 / 18.4 等浮动标签，也不提供可被覆盖的 ARG。
+    image: docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+    # 直接以镜像自带的 postgres(999:999) 运行：entrypoint 因此不需要 root，
+    # 也不需要 CAP_SETUID/CAP_SETGID/CAP_CHOWN 去 gosu 降权。
+    user: "999:999"
+    environment:
+      # 口令只经 secret file 传入，不作为 environment value 出现。
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      # TCP 登录强制 SCRAM，与 M2A 数据库测试集群的口径一致。
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    secrets:
+      - postgres_superuser_password
+    # 刻意不声明 ports：数据库只在 internal network 内可达。
+    networks:
+      - internal
+    volumes:
+      # named volume，不是宿主目录 bind mount。
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /var/run/postgresql:mode=0700,uid=999,gid=999,size=16m
+    healthcheck:
+      # 走 TCP：initdb 期间的临时服务器只监听 unix socket，因此这条不会误报
+      # healthy。--quiet 保证健康检查日志里不出现连接细节。
+      test:
+        - CMD
+        - pg_isready
+        - --host=127.0.0.1
+        - --port=5432
+        - --username=postgres
+        - --dbname=postgres
+        - --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+
+  # ------------------------------------------------------------------------
+  # 2. bootstrap：只能显式调用的一次性 cluster-admin 任务
+  # ------------------------------------------------------------------------
+  # 全部挂在 `bootstrap` profile 下，因此 `docker compose up` 与任何普通重启
+  # 都不会再次执行它们。阶段顺序与 infra/docker/postgres/README.md 的全新安装
+  # 顺序逐条对应，便于 M4 的恢复路径只复用其中的 cluster / logins / acl。
+  #
+  # 用法（全新安装）：
+  #   docker compose --profile bootstrap up bootstrap-acl
+  #   docker compose up migrate
+  #   docker compose --profile bootstrap up bootstrap-grants
+  #   docker compose up -d api
+
+  # 2.1 cluster scope：六个角色、role config 与 membership。早于 createdb。
+  bootstrap-cluster:
+    <<: [*hardening, *bootstrap-psql]
+    command:
+      - cluster
+      - --maintenance-db
+      - postgres
+    environment: *pg-cluster-env
+    secrets:
+      - postgres_admin_pgpass
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 2.2 cluster scope：三个登录角色的 SCRAM 口令。
+  # M3 依赖：bootstrap.sh 目前只读取 MEAL_AGENT_*_PASSWORD 三个 environment
+  # value。本文件不写入明文，因此该服务现在必然 fail closed。
+  bootstrap-logins:
+    <<: [*hardening, *bootstrap-psql]
+    command:
+      - logins
+      - --maintenance-db
+      - postgres
+    environment:
+      <<: *pg-cluster-env
+      MEAL_AGENT_MIGRATION_PASSWORD_FILE: /run/secrets/meal_agent_migration_password
+      MEAL_AGENT_RUNTIME_PASSWORD_FILE: /run/secrets/meal_agent_runtime_password
+      MEAL_AGENT_BACKUP_PASSWORD_FILE: /run/secrets/meal_agent_backup_password
+    secrets:
+      - postgres_admin_pgpass
+      - meal_agent_migration_password
+      - meal_agent_runtime_password
+      - meal_agent_backup_password
+    depends_on:
+      bootstrap-cluster:
+        condition: service_completed_successfully
+
+  # 2.3 创建目标数据库（owner 仍是 admin；owner 交接在 2.5）。
+  bootstrap-createdb:
+    <<: [*hardening, *bootstrap-psql]
+    entrypoint:
+      - createdb
+    command:
+      - --no-password
+      - ${MEAL_AGENT_DATABASE:-meal_agent}
+    environment: *pg-cluster-env
+    secrets:
+      - postgres_admin_pgpass
+    depends_on:
+      bootstrap-logins:
+        condition: service_completed_successfully
+
+  # 2.4 database scope：以 cluster admin 原子应用冻结的 0000_stage_06.sql。
+  # 这一步必须是 Node（dist/database/bootstrap-0000.js），上一步与下一步必须是
+  # psql。三者因此是三个独立容器，本轮不构建同时含 Node 与 psql 的混合高权限
+  # 镜像。M3 依赖：config 侧尚无 DATABASE_URL_FILE，该服务现在 fail closed。
+  bootstrap-schema:
+    <<: [*hardening, *api-image]
+    command:
+      - node
+      - /app/dist/database/bootstrap-0000.js
+    environment:
+      DATABASE_URL_FILE: /run/secrets/meal_agent_admin_database_url
+    secrets:
+      - meal_agent_admin_database_url
+    profiles:
+      - bootstrap
+    depends_on:
+      bootstrap-createdb:
+        condition: service_completed_successfully
+
+  # 2.5 database scope：0000-only 的 owner 交接。仅全新安装路径。
+  bootstrap-handoff:
+    <<: [*hardening, *bootstrap-psql]
+    command:
+      - handoff
+      - --dbname
+      - ${MEAL_AGENT_DATABASE:-meal_agent}
+    environment: *pg-cluster-env
+    secrets:
+      - postgres_admin_pgpass
+    depends_on:
+      bootstrap-schema:
+        condition: service_completed_successfully
+
+  # 2.6 database scope：containment 阶段 ACL 基线。全新安装与恢复共用。
+  bootstrap-acl:
+    <<: [*hardening, *bootstrap-psql]
+    command:
+      - acl
+      - --dbname
+      - ${MEAL_AGENT_DATABASE:-meal_agent}
+    environment: *pg-cluster-env
+    secrets:
+      - postgres_admin_pgpass
+    depends_on:
+      bootstrap-handoff:
+        condition: service_completed_successfully
+
+  # 2.7 database scope：final 阶段备份角色补授。必须在 migrate 之后。
+  bootstrap-grants:
+    <<: [*hardening, *bootstrap-psql]
+    command:
+      - grants
+      - --dbname
+      - ${MEAL_AGENT_DATABASE:-meal_agent}
+    environment: *pg-cluster-env
+    secrets:
+      - postgres_admin_pgpass
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # ------------------------------------------------------------------------
+  # 3. migrate：可重复运行的一次性 migration 任务
+  # ------------------------------------------------------------------------
+  # 不在 bootstrap profile 内：它按 ledger 幂等，重复执行只会补齐缺口。
+  # 等锁与连接超时由 migrate.ts 的 migrationLimits 约束，因此是有界的。
+  # 凭据是 migration login，绝不进入 api 服务。
+  migrate:
+    <<: [*hardening, *api-image]
+    command:
+      - node
+      - /app/dist/database/migrate.js
+    environment:
+      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url
+    secrets:
+      - meal_agent_migration_database_url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ------------------------------------------------------------------------
+  # 4. api
+  # ------------------------------------------------------------------------
+  api:
+    <<: [*hardening, *api-image]
+    # HOST=0.0.0.0 只表示容器内部监听；host 侧的暴露边界由下面的 ports 决定。
+    environment:
+      # 镜像内 NODE_ENV=production，而 production 会拒绝 fake adapter。
+      # local-test 因此显式降级为 development + fake 合成身份。
+      # 独立的「部署暴露级别」配置属于 M3。
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: "3000"
+      LOG_LEVEL: info
+      WECHAT_ADAPTER: fake
+      DATABASE_APP_ROLE: meal_agent_app
+      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url
+    secrets:
+      - meal_agent_runtime_database_url
+    ports:
+      # host_ip 固定为 IPv4 loopback，不可由变量覆盖；只有这一个 listener，
+      # 没有 IPv6、没有未限定的 3000:3000。
+      - host_ip: 127.0.0.1
+        target: 3000
+        published: "${MEAL_AGENT_API_HOST_PORT:-3000}"
+        protocol: tcp
+        mode: host
+    networks:
+      # edge 只承载上面这个 loopback publish；数据库流量仍走 internal。
+      - internal
+      - edge
+    healthcheck:
+      # 只用镜像已有的 node（Node 24 自带 fetch），不临时安装 curl/wget。
+      # /healthz 只证明进程存活，readiness 由 /readyz 单独承担。
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+# --------------------------------------------------------------------------
+# 网络
+# --------------------------------------------------------------------------
+networks:
+  # 数据库与全部一次性任务只在这张 internal 网络上：Compose 不为它接入网关，
+  # 因此这些容器既没有 host port，也没有出站路径。
+  internal:
+    name: meal-agent-local-test-internal
+    driver: bridge
+    internal: true
+  # 仅供 api 的 127.0.0.1 publish 使用。
+  edge:
+    name: meal-agent-local-test-edge
+    driver: bridge
+
+# --------------------------------------------------------------------------
+# 卷
+# --------------------------------------------------------------------------
+volumes:
+  postgres-data:
+    name: meal-agent-local-test-postgres-data
+
+# --------------------------------------------------------------------------
+# Secret file 契约
+# --------------------------------------------------------------------------
+# 全部指向未跟踪目录（默认 infra/docker/secrets/，被该目录的 .gitignore 排除）。
+# 本文件只声明路径，不声明值；解析后的 Compose 配置与 docker inspect 里因此
+# 不会出现任何口令或完整连接串。
+#
+# 现状：
+#   - postgres_superuser_password / postgres_admin_pgpass 走 PostgreSQL 官方
+#     镜像与 libpq 自带的 *_FILE / PGPASSFILE 能力，无需任何代码改动；
+#   - 其余四项是 M3 才会实现的 `_FILE` 契约。
+secrets:
+  postgres_superuser_password:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/postgres_superuser_password
+  postgres_admin_pgpass:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/postgres_admin.pgpass
+  meal_agent_migration_password:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/meal_agent_migration_password
+  meal_agent_runtime_password:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/meal_agent_runtime_password
+  meal_agent_backup_password:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/meal_agent_backup_password
+  meal_agent_admin_database_url:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/meal_agent_admin_database_url
+  meal_agent_migration_database_url:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/meal_agent_migration_database_url
+  meal_agent_runtime_database_url:
+    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/meal_agent_runtime_database_url
