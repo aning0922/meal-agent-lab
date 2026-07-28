@@ -36,9 +36,21 @@ const apiHostIp = '127.0.0.1'
 const apiUser = '10001:10001'
 const postgresUser = '999:999'
 const bootstrapProfile = 'bootstrap'
-// M2B 固定数据库 identity。可配置能力归 M3：届时由统一配置 schema 先校验
+// M2B 固定数据库 identity。可配置能力归 M3B：届时由统一配置 schema 先校验
 // ^meal_agent(_[a-z0-9_]+)?$ 与 63 字节上限，再同时生成 URL 与 Compose 参数。
 const databaseName = 'meal_agent'
+
+// M3A 固定的部署身份。它们在 config.ts 里**没有默认值**，因此 Compose 必须显式
+// 声明；三者同时成立才允许 fake adapter，任何一项被删除或改成 staging /
+// production / private-network / public 都必须让本门禁失败。
+const pinnedDeployment = {
+  NODE_ENV: 'development',
+  DEPLOYMENT_STAGE: 'local-test',
+  DEPLOYMENT_EXPOSURE: 'loopback',
+  WECHAT_ADAPTER: 'fake'
+}
+// 这套拓扑使用合成身份，因此任何服务都不得携带真实微信凭据。
+const forbiddenWechatCredentialKeys = ['WECHAT_APP_ID', 'WECHAT_APP_SECRET']
 
 const bootstrapEntrypoint = ['/opt/meal-agent/bootstrap/bootstrap.sh']
 const bootstrapMount = {
@@ -279,6 +291,8 @@ const expectations = {
     },
     environment: {
       NODE_ENV: 'development',
+      DEPLOYMENT_STAGE: pinnedDeployment.DEPLOYMENT_STAGE,
+      DEPLOYMENT_EXPOSURE: pinnedDeployment.DEPLOYMENT_EXPOSURE,
       HOST: '0.0.0.0',
       PORT: String(apiContainerPort),
       LOG_LEVEL: 'info',
@@ -990,6 +1004,77 @@ for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
       fail(
         `secret ${name}: ${file} is group/world accessible ` +
           `(mode ${mode.toString(8).padStart(3, '0')}); use chmod 600`
+      )
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
+// 8b. 部署身份与暴露级别（M3A）
+// --------------------------------------------------------------------------
+// `DEPLOYMENT_STAGE` / `DEPLOYMENT_EXPOSURE` 在 config.ts 里没有默认值，因此
+// 「被删掉」与「被改成别的值」是两种不同的篡改，两种都必须在这里失败——只靠
+// 上面第 2 节的 environment 全等比较也能捕获，但那条失败理由是「environment
+// 漂移」，读起来看不出安全含义。这一节给出显式理由。
+const apiEnvironment = Object.fromEntries(
+  Object.entries(services.api?.environment ?? {}).map(([key, value]) => [
+    key,
+    value === null ? '' : String(value)
+  ])
+)
+for (const [key, expectedValue] of Object.entries(pinnedDeployment)) {
+  if (apiEnvironment[key] === undefined) {
+    fail(
+      `api: ${key} must be declared explicitly (config.ts has no default; ` +
+        `omitting it makes the deployment identity a guess)`
+    )
+    continue
+  }
+  if (apiEnvironment[key] !== expectedValue) {
+    fail(
+      `api: ${key} must be ${expectedValue} in the local-test topology, ` +
+        `got ${apiEnvironment[key]}`
+    )
+  }
+}
+// 与 config.ts 完全相同的判据，在 Compose 层再执行一次：fake adapter 只允许
+// 出现在 local-test + loopback + 非 production 上。
+if (apiEnvironment['WECHAT_ADAPTER'] === 'fake') {
+  if (apiEnvironment['DEPLOYMENT_STAGE'] !== 'local-test') {
+    fail(
+      `api: the fake WeChat adapter is only allowed at DEPLOYMENT_STAGE ` +
+        `local-test, got ${apiEnvironment['DEPLOYMENT_STAGE'] ?? '(none)'}`
+    )
+  }
+  if (apiEnvironment['DEPLOYMENT_EXPOSURE'] !== 'loopback') {
+    fail(
+      `api: the fake WeChat adapter is only allowed at DEPLOYMENT_EXPOSURE ` +
+        `loopback, got ${apiEnvironment['DEPLOYMENT_EXPOSURE'] ?? '(none)'}`
+    )
+  }
+  if (apiEnvironment['NODE_ENV'] === 'production') {
+    fail('api: the fake WeChat adapter is not allowed with NODE_ENV=production')
+  }
+}
+// 部署身份只属于 API：把它塞给 migrate 或 bootstrap-* 会让「这套部署是什么」
+// 出现第二个、可能互相矛盾的事实源。
+for (const name of serviceOrder) {
+  if (name === 'api') {
+    continue
+  }
+  for (const key of ['DEPLOYMENT_STAGE', 'DEPLOYMENT_EXPOSURE']) {
+    if ((services[name]?.environment ?? {})[key] !== undefined) {
+      fail(`${name}: must not declare ${key}; only api carries the deployment identity`)
+    }
+  }
+}
+// local-test 使用合成身份，因此整套拓扑不得出现真实微信凭据。
+for (const name of serviceOrder) {
+  for (const key of forbiddenWechatCredentialKeys) {
+    if ((services[name]?.environment ?? {})[key] !== undefined) {
+      fail(
+        `${name}: ${key} must not appear in the local-test topology; ` +
+          `it uses synthetic identities only`
       )
     }
   }

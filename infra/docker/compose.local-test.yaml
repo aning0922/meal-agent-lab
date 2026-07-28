@@ -13,11 +13,12 @@
 #   - 本文件不含任何口令或完整连接串的 environment value。凭据一律走
 #     secret file，见下方 `secrets:` 与 [`secrets/README.md`](secrets/README.md)。
 #
-# 尚未实现（M3）：`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 是本文件
-# **声明的契约**，`services/api/src/config.ts` 与 `postgres/bootstrap.sh` 目前
-# 只接受同名的 environment value。因此 api / migrate / bootstrap-schema /
-# bootstrap-logins 现在会 fail closed（缺少凭据即退出），这是刻意的：本轮不为了
-# 让它们跑起来而写入临时明文，也不修改 M1/M2A 已冻结的实现。
+# M3A 起，`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 已经**被真正消费**：
+# `services/api/src/config-source.ts` 与 `postgres/secret-source.sh` 实现了同一套
+# 互斥语义与 fail-closed 的文件判据（绝对路径、非 symlink、普通文件、单链接、
+# 属主为当前 EUID、只允许 0600 权限、单行、最多一个末尾 LF）。
+# 仍未完成（M3B）：八份 secret 的生成、派生与交叉一致性预检，以及
+# `0000 → handoff → acl → migrate → grants` 整链与 `/readyz=200` 的运行证据。
 # 备份与恢复命令属于 M4，本文件不声明。
 name: meal-agent-local-test
 
@@ -312,8 +313,13 @@ services:
     environment:
       # 镜像内 NODE_ENV=production，而 production 会拒绝 fake adapter。
       # local-test 因此显式降级为 development + fake 合成身份。
-      # 独立的「部署暴露级别」配置属于 M3。
       NODE_ENV: development
+      # M3A：部署身份与暴露级别是两个**没有默认值**的独立维度，与 NODE_ENV
+      # 互相不覆盖。config.ts 只在 local-test + loopback + 非 production 三者
+      # 同时成立时才接受 fake adapter；把任意一项改成 staging / production /
+      # private-network / public，API 都会在启动前失败。
+      DEPLOYMENT_STAGE: local-test
+      DEPLOYMENT_EXPOSURE: loopback
       HOST: 0.0.0.0
       PORT: "3000"
       LOG_LEVEL: info

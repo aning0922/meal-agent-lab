@@ -485,3 +485,91 @@ test("request logging excludes login code and issued token values", async () => 
     await app.close();
   }
 });
+
+test("every response carries the fixed security headers and no wildcard CORS", async () => {
+  // 家庭私有的成功响应也必须覆盖到，因此这里给出一个符合契约的空分页。
+  const privateOperations = {
+    ...operations,
+    listHouseholds: async () => ({
+      items: [],
+      pageInfo: { nextCursor: null, hasMore: false },
+    }),
+  } satisfies NonNullable<BuildAppOptions["operations"]>;
+
+  const app = await buildApp({
+    config,
+    operations: privateOperations,
+    readiness: async () => false,
+  });
+  try {
+    const cases: readonly [string, number, Awaited<ReturnType<typeof app.inject>>][] =
+      [
+        ["liveness", 200, await app.inject({ method: "GET", url: "/healthz" })],
+        ["readiness", 503, await app.inject({ method: "GET", url: "/readyz" })],
+        [
+          "login",
+          200,
+          await app.inject({
+            method: "POST",
+            url: "/api/v1/auth/wechat/exchange",
+            payload: { loginCode: "header-boundary-login-code" },
+          }),
+        ],
+        [
+          "household-private success",
+          200,
+          await app.inject({
+            method: "GET",
+            url: "/api/v1/households",
+            headers: { authorization: `Bearer ${token}` },
+          }),
+        ],
+        [
+          "household-private problem",
+          400,
+          await app.inject({
+            method: "GET",
+            url: "/api/v1/households/not-a-household-id/members",
+            headers: { authorization: `Bearer ${token}` },
+          }),
+        ],
+        [
+          "validation problem",
+          400,
+          await app.inject({
+            method: "POST",
+            url: "/api/v1/auth/wechat/exchange",
+            payload: { loginCode: "" },
+          }),
+        ],
+        [
+          "not found problem",
+          404,
+          await app.inject({ method: "GET", url: "/api/v1/not-a-route" }),
+        ],
+      ];
+
+    for (const [label, expectedStatus, response] of cases) {
+      assert.equal(response.statusCode, expectedStatus, `${label}: ${response.body}`);
+      assert.equal(
+        response.headers["cache-control"],
+        "no-store",
+        `${label} must not be cacheable`,
+      );
+      assert.equal(
+        response.headers["x-content-type-options"],
+        "nosniff",
+        `${label} must forbid MIME sniffing`,
+      );
+      // 阶段 09A 不启用 CORS，因此绝不能出现 wildcard 允许来源。
+      assert.equal(
+        response.headers["access-control-allow-origin"],
+        undefined,
+        `${label} must not enable CORS`,
+      );
+      assert.equal(response.headers["access-control-allow-credentials"], undefined);
+    }
+  } finally {
+    await app.close();
+  }
+});

@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import { AppError } from "../errors.js";
 import type { WechatAdapter, WechatIdentity } from "./adapter.js";
+import {
+  isOfficialWechatCode2SessionUrl,
+  officialWechatCode2SessionUrlMessage,
+} from "./endpoint.js";
 
 export type FetchLike = (
   input: string | URL | globalThis.Request,
@@ -11,10 +15,11 @@ export type FetchLike = (
 const realWechatConfigSchema = z.strictObject({
   appId: z.string().min(1),
   appSecret: z.string().min(1),
-  endpoint: z.url().refine(
-    (value) => new URL(value).protocol === "https:",
-    { message: "WeChat code2Session endpoint must use HTTPS" },
-  ),
+  // 与 config.ts 同一个判据，在 adapter 边界再执行一次：AppID/AppSecret 会作为
+  // query 参数发到这个地址，因此「送去哪台服务器」不能只由上游配置层保证。
+  endpoint: z.string().refine(isOfficialWechatCode2SessionUrl, {
+    message: officialWechatCode2SessionUrlMessage,
+  }),
 });
 type RealWechatConfig = z.infer<typeof realWechatConfigSchema>;
 
