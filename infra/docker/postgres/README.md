@@ -136,10 +136,18 @@ ACL、default privilege 的物理行与有效叠加，以及 `has_*_privilege` �
 真实变更，权限本身也仍留在数据库里。`acl` 与 `grants` 因此对同一批漂移给出**逐字
 相同**的问题清单。
 
-产品声明禁用 Large Object，因此收敛块同时收回 `pg_catalog` 中 20 个 LO 入口点
-（`lo_create` / `lo_creat` / `lo_from_bytea` / `lo_put` / `lo_import` …）的
-`PUBLIC EXECUTE`。只封堵已有 LO 的对象权限而放着创建入口，等于允许 runtime 自己
-造一个不受 schema ACL 与 RLS 约束的存储面。
+产品声明禁用 Large Object。R8B 起顺序是**先判定、后收敛**：
+
+1. 目标库里出现**任意** `pg_largeobject_metadata` 对象时，两个阶段都在**任何
+   ACL / default ACL mutation 之前** fail closed。此时**绝不**修改 `lomacl`、
+   **绝不**解除链接、**绝不**接管归属、**绝不**删除数据——只报告 OID 与 owner，
+   而且 OID 不进入任何固定允许集合。
+2. 只有在**确实没有** Large Object 时，收敛才会处理与 LO 相关的权限面：
+   `pg_default_acl` 中 `defaclobjtype = 'L'` 的异常默认权限，以及 20 个
+   `pg_catalog` LO 入口点（`lo_create` / `lo_creat` / `lo_from_bytea` /
+   `lo_put` / `lo_import` …）上除函数 owner 之外的 `EXECUTE`。只封堵已有 LO 的
+   对象权限而放着创建入口，等于允许 runtime 自己造一个不受 schema ACL 与 RLS
+   约束的存储面。
 
 ## canonical projector（R8A Accepted；R8B 已接入 verify/converge，待总控复验）
 
@@ -184,7 +192,8 @@ PostgreSQL 会直接把行删掉，那一行永远造不出来。
 
 类型与 Large Object 的策略**已决定**，R8B 已落实：managed 非数组类型只保留
 owner/`meal_agent_migrator` 的 `USAGE`，`PUBLIC`、app、backup 与三个 login 无
-`USAGE`；数组类型只记录向元素类型的委托，既不进入收敛目标也不该有独立 ACL；产品
+`USAGE`——这一条同时落在对象 ACL 与 `T@global` 的默认权限物理行上，因此新建类型
+**出生即干净**；数组类型只记录向元素类型的委托，既不进入收敛目标也不该有独立 ACL；产品
 禁用 Large Object，**任意** LO 对象在任何 mutation 之前 fail closed，**只报告、不
 解除链接、不删数据、不接管归属、不改 `lomacl`**，LO 的 OID 不进入任何固定允许集合。
 

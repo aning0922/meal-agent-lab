@@ -1,3 +1,4 @@
+import { projectionDatabaseKey as databaseKeyLiteral } from "./authorization-identity.js";
 import {
   authorizationManifest,
   AuthorizationManifestError,
@@ -256,44 +257,18 @@ export const assertDefaultAclObjtypeMappings = (
 };
 
 /**
- * canonical identity 的 **Node 侧**编码，必须与 PostgreSQL `jsonb_build_array(...)
- * ::text` 的输出逐字节相同：JSON 数组、元素间 `, `（逗号加一个空格）。
- * 数据库测试用含 `#`、`@`、`|`、引号的名字证明两侧一致。
+ * canonical identity 的编码只有**一份实现**，在
+ * [`authorization-identity.ts`](./authorization-identity.ts)：manifest（期望值）与
+ * projector（观察）都从那里取，两份实现必然会独立漂移。这里只做转出，方便调用方
+ * 按 projector 的入口引用。
  */
-export type ProjectionIdentityPart = string | readonly ProjectionIdentityPart[];
-
-export const encodeProjectionIdentity = (
-  parts: readonly ProjectionIdentityPart[],
-): string =>
-  `[${parts
-    .map((part) =>
-      typeof part === "string"
-        ? JSON.stringify(part)
-        : encodeProjectionIdentity(part),
-    )
-    .join(", ")}]`;
-
-/** 逻辑数据库键：库名随环境不同，不进入 identity。 */
-export const projectionDatabaseKey = "<current>";
-
-/**
- * 受监管对象的分类标签。策略层按它区分「哪条规则适用」，因此它是 projector 的
- * **结构化输出**，不由消费方从 identity 字符串里反解。
- */
-export const projectionObjectClasses = Object.freeze([
-  "column",
-  "database",
-  "denied-routine",
-  "language",
-  "largeobject",
-  "relation",
-  "routine",
-  "schema",
-  "type",
-] as const);
-
-export type ProjectionObjectClass =
-  (typeof projectionObjectClasses)[number];
+export {
+  encodeProjectionIdentity,
+  projectionDatabaseKey,
+  projectionObjectClasses,
+  type ProjectionIdentityPart,
+  type ProjectionObjectClass,
+} from "./authorization-identity.js";
 
 /** `0` 是 `PUBLIC`，其余取角色名。 */
 const granteeText = (column: string): string =>
@@ -363,8 +338,11 @@ export const renderAuthorizationProjectorCtes = (
   const managed = textArray([...manifest.managedSchemas].sort(byCodeUnit));
   const denied = textArray([...manifest.deniedRoutines].sort(byCodeUnit));
   const databaseKey = `jsonb_build_array('database', ${literal(
-    projectionDatabaseKey,
+    databaseKeyLiteral,
   )})`;
+  // canonical owner 来自 manifest，不在这里硬编码：换一个 owner 名字时投影必须
+  // 跟着走，否则 default 槽位会静默漏掉真正的 owner。
+  const owner = literal(manifest.principals.owner);
 
   return `  managed_schema (nspname, oid, nspowner, nspacl) AS (
     SELECT n.nspname::text, n.oid, n.nspowner, n.nspacl
@@ -535,7 +513,7 @@ ${defaultAclObjtypeMappings
   default_owner (rolname, oid) AS (
     SELECT r.rolname::text, r.oid
       FROM pg_catalog.pg_roles r
-     WHERE r.rolname = 'meal_agent_migrator'
+     WHERE r.rolname = ${owner}
         OR EXISTS (SELECT 1 FROM pg_catalog.pg_default_acl d
                     WHERE d.defaclrole = r.oid)
   ),
@@ -698,7 +676,9 @@ ${defaultAclObjtypeMappings
     SELECT ${routineKey("p", "n.nspname")},
            pg_catalog.pg_get_userbyid(p.proowner)::text,
            p.prosecdef,
-           COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')::text,
+           -- proconfig 用结构化 JSON 数组：设置值本身可以含分隔符，拼接串
+           -- 在那一刻就不可反解也不可比较。Node 侧用同一份 identity 编码。
+           COALESCE(to_jsonb(p.proconfig), '[]'::jsonb)::text,
            pg_catalog.encode(
              pg_catalog.sha256(
                pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex')::text

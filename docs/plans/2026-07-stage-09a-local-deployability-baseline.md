@@ -131,7 +131,15 @@ PostgreSQL healthy
     - 「ACL 全主体覆盖」的准确含义：**normalized raw ACL** 在受监管对象类别内
       动态枚举全部 grantee 与 grantor；**effective** 只覆盖 `PUBLIC`、项目角色与
       目标库内全部非 superuser LOGIN，不是对集群所有角色的枚举。
-15. 类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 已落实，不再裁定）：managed 非数组类型由
+15. 类型与 Large Object 的策略**已决定**（R8A 只报告，R8B 已落实，不再裁定）。落实
+    要点：类型策略同时落在**对象 ACL 与 `T@global` 的 default privilege 物理行**
+    上，因此新建 enum / domain / composite **出生即干净**；`language` 的内建 owner
+    与 `PUBLIC USAGE` 是**必需项**（owner 动态取自 catalog）；**任意** Large Object
+    在任何 ACL / default ACL mutation 之前 fail closed，只报告、绝不先改 `lomacl`
+    或删数据，只有在确实没有 LO 时收敛才处理 `defaclobjtype = 'L'` 与 20 个入口点
+    的多余 `EXECUTE`。另外，`pg_default_acl` 只保护**创建窗口**：新增 migration 创建
+    relation 或 sequence 时，必须同时新增 ledger 状态并登记该对象的固定授权，
+    exact-ledger 不因默认权限而放宽。managed 非数组类型由
     owner/`meal_agent_migrator` 保留必要 `USAGE`，`PUBLIC`、app、backup 与三个
     login 默认无 `USAGE`；数组类型只记录向元素类型的委托，不建立也不撤销独立
     ACL（PostgreSQL 直接拒绝对数组类型授权与改属）；产品禁用 Large Object，创建/

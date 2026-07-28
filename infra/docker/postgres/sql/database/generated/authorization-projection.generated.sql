@@ -408,7 +408,9 @@ WITH
             '[]'::jsonb)),
            pg_catalog.pg_get_userbyid(p.proowner)::text,
            p.prosecdef,
-           COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')::text,
+           -- proconfig 用结构化 JSON 数组：设置值本身可以含分隔符，拼接串
+           -- 在那一刻就不可反解也不可比较。Node 侧用同一份 identity 编码。
+           COALESCE(to_jsonb(p.proconfig), '[]'::jsonb)::text,
            pg_catalog.encode(
              pg_catalog.sha256(
                pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex')::text

@@ -1,7 +1,7 @@
+import { assertRenderableValue } from "./authorization-identity.js";
 import {
   authorizationDigest,
   authorizationManifest,
-  authorizationManifestVersion,
   AuthorizationManifestError,
   authorizationStateKeys,
   type AuthorizationManifest,
@@ -55,16 +55,23 @@ import {
 const convergeTag = "$meal_agent_authorization_converge$";
 const verifyTag = "$meal_agent_authorization_verify$";
 
+/**
+ * 渲染前的最后一道守卫，与 manifest / policy / projection 共用同一实现：任何
+ * SQL token（引号、分号、注释标记、反斜杠、换行）以及三个 dollar-quote 标签都会
+ * 在渲染之前被拒绝。标签尤其致命——值里出现收敛块的 dollar-quote 标签就能提前
+ * 关闭整个 `DO` 块，把后面的文本变成可执行语句。
+ */
 const assertRenderable = (manifest: AuthorizationManifest): void => {
-  for (const forbidden of [convergeTag, verifyTag]) {
-    if (
-      manifest.managedSchemas.some((schema) => schema.includes(forbidden)) ||
-      manifest.deniedRoutines.some((routine) => routine.includes(forbidden))
-    ) {
-      throw new AuthorizationManifestError(
-        "a manifest value cannot be rendered as a deterministic SQL literal",
-      );
-    }
+  const { owner, grantees, logins, memberships } = manifest.principals;
+  for (const value of [
+    owner,
+    ...grantees,
+    ...logins,
+    ...memberships.flatMap((entry) => [entry.member, entry.granted]),
+    ...manifest.managedSchemas,
+    ...manifest.deniedRoutines,
+  ]) {
+    assertRenderableValue("manifest value", value);
   }
 };
 
@@ -179,6 +186,19 @@ ${shared}
                               AND s.grantee = g.grantee
                               AND s.privilege = g.privilege
                               AND s.grantor = ${owner}
+                              AND NOT s.grantable)
+        UNION ALL
+        -- language 的必需授权（内建 owner 与 PUBLIC USAGE）缺失时以 language
+        -- owner 的身份补回：grantor 必须是 owner，否则下一轮立刻又是漂移。
+        SELECT 2, 'acl-grant', r.owner_name, r.target_sql, NULL, r.privilege,
+               ${granteeSql("r.grantee")}, NULL, NULL, NULL, NULL, NULL,
+               r.objkey::text
+          FROM required_language_grants r
+         WHERE NOT EXISTS (SELECT 1 FROM acl_source s
+                            WHERE s.objkey = r.objkey
+                              AND s.grantee = r.grantee
+                              AND s.grantor = r.owner_name
+                              AND s.privilege = r.privilege
                               AND NOT s.grantable)
         UNION ALL
         -- 非 canonical owner 的默认权限条目一律是漂移：逐条撤销。撤空之后剩下
@@ -401,6 +421,18 @@ ${renderAuthorizationSharedCtes(manifest)},
                           AND s.grantor = ${owner}
                           AND NOT s.grantable)
     UNION ALL
+    SELECT 3, 'grant',
+           'missing language grant '
+             || jsonb_build_array(r.objkey, r.grantee, r.owner_name,
+                                  r.privilege)::text
+      FROM required_language_grants r
+     WHERE NOT EXISTS (SELECT 1 FROM acl_source s
+                        WHERE s.objkey = r.objkey
+                          AND s.grantee = r.grantee
+                          AND s.grantor = r.owner_name
+                          AND s.privilege = r.privilege
+                          AND NOT s.grantable)
+    UNION ALL
     -- pg_default_acl 的**物理行**：它决定实际执行哪条默认权限语句。
     SELECT 4, 'default',
            'unexpected default privilege '
@@ -490,9 +522,7 @@ ${renderAuthorizationSharedCtes(manifest)},
   IF divergence_count > 0 THEN
     RAISE EXCEPTION
       'authorization manifest does not match state % '
-      '(% divergence(s), manifest version ${String(
-        authorizationManifestVersion,
-      )}): %',
+      '(% divergence(s), manifest version ${String(manifest.version)}): %',
       state_key, divergence_count,
       divergence || CASE WHEN divergence_count > 8 THEN '; ...' ELSE '' END;
   END IF;

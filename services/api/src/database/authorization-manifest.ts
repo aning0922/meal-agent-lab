@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 
 import {
+  assertRenderableValue,
+  defaultObjtypeRules,
   encodeProjectionIdentity,
   globalDefaultScope,
   grantableObjectClasses,
+  objectClassPrivileges,
   type ProjectionIdentityPart,
 } from "./authorization-identity.js";
 import { byCodeUnit } from "./stage06-manifest.js";
@@ -337,6 +340,9 @@ const manifestData: AuthorizationManifest = {
           privileges: ["USAGE"] },
       ],
       defaults: [
+        { objtype: "T", scope: "-",
+          grantee: "meal_agent_migrator",
+          privileges: ["USAGE"] },
         { objtype: "f", scope: "-",
           grantee: "meal_agent_migrator",
           privileges: ["EXECUTE"] },
@@ -358,25 +364,13 @@ const manifestData: AuthorizationManifest = {
           grantee: "meal_agent_migrator",
           privileges: ["SELECT","UPDATE","USAGE"] },
         { objtype: "T", scope: "-",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "-",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "drizzle",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "drizzle",
           grantee: "meal_agent_migrator",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "meal_agent_private",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "meal_agent_private",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "public",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "public",
           grantee: "meal_agent_migrator",
@@ -619,6 +613,9 @@ const manifestData: AuthorizationManifest = {
         { objtype: "S", scope: "public",
           grantee: "meal_agent_backup",
           privileges: ["SELECT"] },
+        { objtype: "T", scope: "-",
+          grantee: "meal_agent_migrator",
+          privileges: ["USAGE"] },
         { objtype: "f", scope: "-",
           grantee: "meal_agent_migrator",
           privileges: ["EXECUTE"] },
@@ -649,25 +646,13 @@ const manifestData: AuthorizationManifest = {
           grantee: "meal_agent_migrator",
           privileges: ["SELECT","UPDATE","USAGE"] },
         { objtype: "T", scope: "-",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "-",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "drizzle",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "drizzle",
           grantee: "meal_agent_migrator",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "meal_agent_private",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "meal_agent_private",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "public",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "public",
           grantee: "meal_agent_migrator",
@@ -1055,6 +1040,9 @@ const manifestData: AuthorizationManifest = {
           privileges: ["USAGE"] },
       ],
       defaults: [
+        { objtype: "T", scope: "-",
+          grantee: "meal_agent_migrator",
+          privileges: ["USAGE"] },
         { objtype: "f", scope: "-",
           grantee: "meal_agent_migrator",
           privileges: ["EXECUTE"] },
@@ -1076,25 +1064,13 @@ const manifestData: AuthorizationManifest = {
           grantee: "meal_agent_migrator",
           privileges: ["SELECT","UPDATE","USAGE"] },
         { objtype: "T", scope: "-",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "-",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "drizzle",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "drizzle",
           grantee: "meal_agent_migrator",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "meal_agent_private",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "meal_agent_private",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "public",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "public",
           grantee: "meal_agent_migrator",
@@ -1527,6 +1503,9 @@ const manifestData: AuthorizationManifest = {
         { objtype: "S", scope: "public",
           grantee: "meal_agent_backup",
           privileges: ["SELECT"] },
+        { objtype: "T", scope: "-",
+          grantee: "meal_agent_migrator",
+          privileges: ["USAGE"] },
         { objtype: "f", scope: "-",
           grantee: "meal_agent_migrator",
           privileges: ["EXECUTE"] },
@@ -1557,25 +1536,13 @@ const manifestData: AuthorizationManifest = {
           grantee: "meal_agent_migrator",
           privileges: ["SELECT","UPDATE","USAGE"] },
         { objtype: "T", scope: "-",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "-",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "drizzle",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "drizzle",
           grantee: "meal_agent_migrator",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "meal_agent_private",
-          grantee: "PUBLIC",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "meal_agent_private",
           grantee: "meal_agent_migrator",
-          privileges: ["USAGE"] },
-        { objtype: "T", scope: "public",
-          grantee: "PUBLIC",
           privileges: ["USAGE"] },
         { objtype: "T", scope: "public",
           grantee: "meal_agent_migrator",
@@ -1780,10 +1747,23 @@ export interface AuthorizationCanonicalRow {
   readonly detail: string;
 }
 
-const forbiddenCharacters = /[\\\r\n\u0000]/u;
+/**
+ * 渲染守卫：manifest 里的每一个**标量**最终都会被拼进高权限 SQL（收敛块会
+ * `SET LOCAL ROLE`、`GRANT`、`REVOKE`、`ALTER DEFAULT PRIVILEGES`），因此在这里
+ * 就用**全体 renderer 共用**的 {@link assertRenderableValue} 拒绝任何 SQL token。
+ */
+const assertRenderable = (field: string, value: string): string =>
+  assertRenderableValue(field, value);
 
-const assertRenderable = (field: string, value: string): string => {
-  if (forbiddenCharacters.test(value)) {
+/**
+ * 规范化行的 identity 与 detail 是**聚合出来的 JSON**，本来就含双引号，因此这一层
+ * 只做结构字符检查；单个标识符（角色名 / schema 名 / 权限名 / objtype / scope /
+ * identity 的每一段）在更早的位置已经过了完整的 SQL token 守卫。
+ */
+const structurallyForbidden = /[\\\r\n\u0000]/u;
+
+const assertComposable = (field: string, value: string): string => {
+  if (structurallyForbidden.test(value)) {
     throw new AuthorizationManifestError(
       `${field} contains a character that cannot be rendered deterministically`,
     );
@@ -1791,18 +1771,51 @@ const assertRenderable = (field: string, value: string): string => {
   return value;
 };
 
-const privilegeList = (privileges: readonly string[]): string => {
+/** identity 的每一段都要过同一道守卫，嵌套的参数类型也不例外。 */
+const assertRenderableIdentity = (
+  field: string,
+  parts: readonly ProjectionIdentityPart[],
+): string => {
+  for (const part of parts) {
+    if (typeof part === "string") {
+      assertRenderableValue(field, part);
+    } else {
+      assertRenderableIdentity(field, part);
+    }
+  }
+  return encodeProjectionIdentity(parts);
+};
+
+const privilegeList = (
+  privileges: readonly string[],
+  allowed: readonly string[],
+  context: string,
+): string => {
   if (privileges.length === 0) {
     throw new AuthorizationManifestError(
       "an entry must not declare an empty privilege set; omit the entry instead",
     );
   }
+  const seen = new Set<string>();
   for (const privilege of privileges) {
+    assertRenderableValue(`${context} privilege`, privilege);
     if (privilege.endsWith("*")) {
       throw new AuthorizationManifestError(
         `grant options are never allowed: ${privilege}`,
       );
     }
+    if (!allowed.includes(privilege)) {
+      throw new AuthorizationManifestError(
+        `privilege ${JSON.stringify(privilege)} is not valid for ${context}; ` +
+          `expected one of ${allowed.join(", ")}`,
+      );
+    }
+    if (seen.has(privilege)) {
+      throw new AuthorizationManifestError(
+        `duplicate privilege ${JSON.stringify(privilege)} for ${context}`,
+      );
+    }
+    seen.add(privilege);
   }
   return [...privileges].sort(byCodeUnit).join(",");
 };
@@ -1816,27 +1829,37 @@ const assertDefaultSlot = (
   manifest: AuthorizationManifest,
   objtype: string,
   scope: string,
-): void => {
-  if (!["L", "S", "T", "f", "n", "r"].includes(objtype)) {
+): readonly string[] => {
+  assertRenderableValue("default privilege objtype", objtype);
+  assertRenderableValue("default privilege scope", scope);
+  const rule = defaultObjtypeRules[objtype];
+  if (rule === undefined) {
     throw new AuthorizationManifestError(
       `unknown default privilege objtype ${JSON.stringify(objtype)}`,
     );
   }
-  if (
-    scope !== globalDefaultScope &&
-    !manifest.managedSchemas.includes(scope)
-  ) {
+  if (scope === globalDefaultScope) {
+    return rule.privileges;
+  }
+  if (!manifest.managedSchemas.includes(scope)) {
     throw new AuthorizationManifestError(
       `default privilege scope ${JSON.stringify(scope)} is neither global ` +
         "nor a managed schema",
     );
   }
+  if (!rule.schemaScoped) {
+    throw new AuthorizationManifestError(
+      `default privilege objtype ${JSON.stringify(objtype)} has no schema ` +
+        `scope; ${JSON.stringify(scope)} is not a legal slot`,
+    );
+  }
+  return rule.privileges;
 };
 
 /** 固定允许授权只可能落在四类对象上；其余类别由策略判定，不得登记允许项。 */
 const assertGrantableObject = (
   object: readonly ProjectionIdentityPart[],
-): string => {
+): readonly string[] => {
   const [objectClass] = object;
   if (
     typeof objectClass !== "string" ||
@@ -1848,7 +1871,13 @@ const assertGrantableObject = (
         "object are decided by policy",
     );
   }
-  return encodeProjectionIdentity(object);
+  const privileges = objectClassPrivileges[objectClass];
+  if (privileges === undefined) {
+    throw new AuthorizationManifestError(
+      `no privilege allowlist for object class ${objectClass}`,
+    );
+  }
+  return privileges;
 };
 
 /**
@@ -1866,10 +1895,10 @@ export const canonicalAuthorizationRows = (
     detail: string,
   ): void => {
     rows.push({
-      state: assertRenderable("state", state),
-      kind: assertRenderable("kind", kind),
-      identity: assertRenderable("identity", identity),
-      detail: assertRenderable("detail", detail),
+      state: assertComposable("state", state),
+      kind: assertComposable("kind", kind),
+      identity: assertComposable("identity", identity),
+      detail: assertComposable("detail", detail),
     });
   };
 
@@ -1897,12 +1926,19 @@ export const canonicalAuthorizationRows = (
             "managed schemas",
         );
       }
+      for (const setting of entry.config) {
+        assertRenderableValue("routine proconfig", setting);
+      }
       push(
         key,
         "routine",
-        encodeProjectionIdentity(entry.object),
-        `owner=${entry.owner} secdef=${entry.securityDefiner ? "t" : "f"} ` +
-          `config=${entry.config.join("|")} body=${entry.bodyDigest}`,
+        assertRenderableIdentity("routine identity", entry.object),
+        `owner=${assertRenderable("routine owner", entry.owner)} ` +
+          `secdef=${entry.securityDefiner ? "t" : "f"} ` +
+          // proconfig 用结构化 JSON 数组，不用 `|` 拼接：设置值本身可以包含
+          // 分隔符，拼接串在那一刻就会变得不可反解也不可比较。
+          `config=${encodeProjectionIdentity(entry.config)} ` +
+          `body=${assertRenderable("routine body digest", entry.bodyDigest)}`,
       );
     }
     for (const entry of state.grants) {
@@ -1912,30 +1948,43 @@ export const canonicalAuthorizationRows = (
             "principal; external roles are never allowed a fixed grant",
         );
       }
+      const grantPrivileges = assertGrantableObject(entry.object);
+      assertRenderableIdentity("grant object", entry.object);
       push(
         key,
         "grant",
         encodeProjectionIdentity([entry.object, entry.grantee]),
-        `privs=${privilegeList(entry.privileges)}`,
+        `privs=${privilegeList(
+          entry.privileges,
+          grantPrivileges,
+          `grant on ${String(entry.object[0])}`,
+        )}`,
       );
-      assertGrantableObject(entry.object);
     }
     for (const entry of state.defaults) {
-      assertDefaultSlot(manifest, entry.objtype, entry.scope);
+      const allowed = assertDefaultSlot(manifest, entry.objtype, entry.scope);
       push(
         key,
         "default",
         encodeProjectionIdentity([entry.objtype, entry.scope, entry.grantee]),
-        `privs=${privilegeList(entry.privileges)}`,
+        `privs=${privilegeList(
+          entry.privileges,
+          allowed,
+          `default privilege ${entry.objtype}@${entry.scope}`,
+        )}`,
       );
     }
     for (const entry of state.defaultEffective) {
-      assertDefaultSlot(manifest, entry.objtype, entry.scope);
+      const allowed = assertDefaultSlot(manifest, entry.objtype, entry.scope);
       push(
         key,
         "default-effective",
         encodeProjectionIdentity([entry.objtype, entry.scope, entry.grantee]),
-        `privs=${privilegeList(entry.privileges)}`,
+        `privs=${privilegeList(
+          entry.privileges,
+          allowed,
+          `default privilege ${entry.objtype}@${entry.scope}`,
+        )}`,
       );
     }
     for (const entry of state.effective) {
@@ -1945,13 +1994,18 @@ export const canonicalAuthorizationRows = (
             "project principal; external roles are matched by policy",
         );
       }
+      const effectivePrivileges = assertGrantableObject(entry.object);
+      assertRenderableIdentity("effective object", entry.object);
       push(
         key,
         "effective",
         encodeProjectionIdentity([entry.object, entry.role]),
-        `privs=${privilegeList(entry.privileges)}`,
+        `privs=${privilegeList(
+          entry.privileges,
+          effectivePrivileges,
+          `effective on ${String(entry.object[0])}`,
+        )}`,
       );
-      assertGrantableObject(entry.object);
     }
   }
 
@@ -1982,12 +2036,55 @@ export const canonicalAuthorizationRows = (
   return rows;
 };
 
+/**
+ * manifest 的**顶层**字段同样进 digest。只对 states 取摘要是不够的：改掉
+ * `principals.owner`、`managedSchemas` 或 `deniedRoutines` 会实质改变策略与
+ * 生成结果，却不会动任何一条 state 行——digest 必须跟着变，否则 generated
+ * adapter 的 canonical digest 会静默说谎。
+ */
+const canonicalManifestHeader = (
+  manifest: AuthorizationManifest,
+): readonly string[] => {
+  const { owner, grantees, logins, memberships } = manifest.principals;
+  return [
+    `<manifest>|version|[]|${String(manifest.version)}`,
+    `<manifest>|owner|[]|${assertRenderable("principals.owner", owner)}`,
+    `<manifest>|grantees|[]|${encodeProjectionIdentity(
+      [...grantees].map((value) => assertRenderable("grantee", value)).sort(byCodeUnit),
+    )}`,
+    `<manifest>|logins|[]|${encodeProjectionIdentity(
+      [...logins].map((value) => assertRenderable("login", value)).sort(byCodeUnit),
+    )}`,
+    `<manifest>|memberships|[]|${encodeProjectionIdentity(
+      [...memberships]
+        .map((entry) => [
+          assertRenderable("membership member", entry.member),
+          assertRenderable("membership granted", entry.granted),
+        ])
+        .sort((left, right) => byCodeUnit(left.join(","), right.join(","))),
+    )}`,
+    `<manifest>|managedSchemas|[]|${encodeProjectionIdentity(
+      [...manifest.managedSchemas]
+        .map((value) => assertRenderable("managed schema", value))
+        .sort(byCodeUnit),
+    )}`,
+    `<manifest>|deniedRoutines|[]|${encodeProjectionIdentity(
+      [...manifest.deniedRoutines]
+        .map((value) => assertRenderable("denied routine", value))
+        .sort(byCodeUnit),
+    )}`,
+  ];
+};
+
 export const canonicalAuthorizationText = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string =>
-  `${canonicalAuthorizationRows(manifest)
-    .map((row) => `${row.state}|${row.kind}|${row.identity}|${row.detail}`)
-    .join("\n")}\n`;
+  `${[
+    ...canonicalManifestHeader(manifest),
+    ...canonicalAuthorizationRows(manifest).map(
+      (row) => `${row.state}|${row.kind}|${row.identity}|${row.detail}`,
+    ),
+  ].join("\n")}\n`;
 
 export const authorizationDigest = (
   manifest: AuthorizationManifest = authorizationManifest,

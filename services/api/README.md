@@ -201,7 +201,18 @@ manifest 不可能只是自洽而与事实脱节。
 两侧都不再用 `#`/`@`/`|` 拼接串，也不允许 `split_part` 反解。
 
 当前 manifest 版本为 **2**，登记 4 个状态（`0000` 与 `0000—0004` 两个 ledger ×
-containment / final 两个阶段）；未登记的 `(ledger, phase)` 一律 fail closed。
+containment / final 两个阶段），共 **408 条规范化行**（`grant` 138、`effective`
+138、`default-effective` 78、`routine` 40、`default` 14）；未登记的
+`(ledger, phase)` 一律 fail closed。canonical digest 覆盖**全部顶层字段**——
+`version`、`principals`（owner / grantees / logins / memberships）、
+`managedSchemas`、`deniedRoutines` 与 `states`，改动其中任何一项都会改变
+generated adapter 头部的 digest。
+
+**exact-ledger 不因默认权限而放宽**：`pg_default_acl` 只保护**创建窗口**——它决定
+新对象出生时带什么权限，不代表那个对象已经被登记。任何新增 migration 一旦创建
+relation 或 sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对象的固定
+授权；否则新对象会以「未登记对象」的身份进入策略判定，收敛会把默认权限带来的
+授权当作漂移撤掉。
 
 阶段划分对应恢复/安装流程的两个真实时刻：`bootstrap.sh acl` 是 **containment**
 （migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），
@@ -233,8 +244,16 @@ app、backup 与三个 login）。两个阶段执行同一段生成的收敛块�
   错误 grantor 与可再授予一律是漂移；
 - 20 个 `pg_catalog` LO 入口点只允许**函数 owner** 的 `EXECUTE`，因此 `PUBLIC`、
   项目角色与全部非 superuser LOGIN 都无法有效到达；
-- **任意** Large Object 一律 fail closed：**只报告，不解除链接、不删数据、不接管
-  归属、不改 `lomacl`**，OID 也不进入任何固定允许集合。
+- `language` 的内建 owner 与 `PUBLIC USAGE` 是**必需项**而不只是允许项：owner 从
+  catalog 现取（不写死角色名），缺失时 verify 拒绝、converge 以 language owner 的
+  身份恢复；
+- **任意** Large Object 在**任何 ACL / default ACL mutation 之前** fail closed：
+  **只报告，不解除链接、不删数据、不接管归属、不改 `lomacl`**，OID 也不进入任何
+  固定允许集合。只有在确实没有 LO 时，收敛才会处理 `defaclobjtype = 'L'` 的异常
+  默认权限与 20 个入口点的多余 `EXECUTE`；
+- 外部角色经**外部 NOLOGIN 或 predefined role**（如 `pg_read_all_data`）拿到受监管
+  有效权限时，同样在任何 mutation 之前 fail closed：database scope 按设计不修改
+  membership，这类越权不可能靠 ACL mutation 修好，只能先跑 cluster role baseline。
 
 ### canonical projector 与只读授权投影
 
@@ -285,8 +304,10 @@ USAGE」而 effective 说「所有人都有」，两层自相矛盾。
 测试证明）：
 
 - **managed 非数组类型**：owner（`meal_agent_migrator`）保留必要 `USAGE`；
-  `PUBLIC`、app、backup 与三个 login 默认无 `USAGE`。全新安装后 row type 的
-  `typacl` 已经是 `{meal_agent_migrator=U/meal_agent_migrator}`，投影如实报告；
+  `PUBLIC`、app、backup 与三个 login 无 `USAGE`。这一条同时落在**两层**：
+  对象 ACL 由收敛保证，而 `T@global` 的 `pg_default_acl` 物理行把 `PUBLIC` 的
+  内建 `TYPES USAGE` 去掉，因此新建的 enum / domain / composite **出生时**就只有
+  owner 的 `USAGE`——不需要「先漂移、再收敛一次」；
 - **数组类型**：只记录「向元素类型委托」，既不建立也不撤销独立 ACL——PostgreSQL
   对数组类型直接拒绝授权与改属（`cannot set privileges of array types`）；
 - **Large Object**：产品声明禁用。**任意** LO 对象（不限于项目角色拥有的）在任何

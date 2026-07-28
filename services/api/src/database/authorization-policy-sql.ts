@@ -1,4 +1,7 @@
-import { encodeProjectionIdentity } from "./authorization-identity.js";
+import {
+  assertRenderableValue,
+  encodeProjectionIdentity,
+} from "./authorization-identity.js";
 import {
   authorizationManifest,
   authorizationStateKey,
@@ -49,6 +52,9 @@ const unrenderable = (value: string): boolean =>
   );
 
 export const policyLiteral = (value: string): string => {
+  // 结构化 identity 与 detail 里合法地带引号（JSON 编码的产物），因此它们只过
+  // 结构字符检查；单个标识符（角色名 / schema 名 / 权限名 / objtype / scope）
+  // 由 manifest 侧的共用守卫在更早的位置拒绝 SQL token。
   if (unrenderable(value)) {
     throw new AuthorizationManifestError(
       "a policy value cannot be rendered as a deterministic SQL literal",
@@ -56,6 +62,10 @@ export const policyLiteral = (value: string): string => {
   }
   return `'${value.replaceAll("'", "''")}'`;
 };
+
+/** 单个标识符走全体 renderer 共用的守卫。 */
+export const policyIdentifier = (field: string, value: string): string =>
+  policyLiteral(assertRenderableValue(field, value));
 
 export const policyTextArray = (values: readonly string[]): string =>
   values.length === 0
@@ -158,7 +168,8 @@ export const renderAuthorizationPolicyCtes = (
         policyLiteral(encodeProjectionIdentity(entry.object)),
         policyLiteral(
           `owner=${entry.owner} secdef=${entry.securityDefiner ? "t" : "f"} ` +
-            `config=${entry.config.join("|")} body=${entry.bodyDigest}`,
+            `config=${encodeProjectionIdentity(entry.config)} ` +
+            `body=${entry.bodyDigest}`,
         ),
       ]);
     }
@@ -330,6 +341,18 @@ ${renderValues(
                           AND ad.objtype = b.objtype
                           AND ad.scope = b.scope)
   ),
+  -- language 的**必需**授权：PostgreSQL 内建默认给出 owner 与 PUBLIC 的
+  -- USAGE，两条都是运行所需（plpgsql 没有 PUBLIC USAGE 时，任何非 owner 角色
+  -- 都无法执行 plpgsql 函数）。它们是动态登记的——owner 从 catalog 现取，
+  -- 不写死角色名——因此缺失时 verify 拒绝、converge 以 language owner 的身份
+  -- 恢复。
+  required_language_grants (objkey, target_sql, owner_name, grantee,
+                           privilege) AS (
+    SELECT o.objkey, o.target_sql, o.owner_name, required.grantee, 'USAGE'::text
+      FROM regulated_object o,
+           LATERAL (VALUES ('PUBLIC'::text), (o.owner_name)) AS required(grantee)
+     WHERE o.object_class = 'language'
+  ),
   effective_actual (objkey, object_class, role_name, privileges) AS (
     SELECT objkey, object_class, role_name, privileges
       FROM effective_source
@@ -342,6 +365,26 @@ ${renderValues(
       FROM effective_actual
      WHERE object_class IN ('database', 'schema', 'relation', 'routine')
        AND role_name <> ${policyLiteral(owner)}
+  ),
+  -- **继承而来**的有效权限：既没有授予 PUBLIC、也没有授予该角色自己，却仍然
+  -- 探测得到——只可能来自角色成员关系（外部 NOLOGIN、项目角色，或 pg_read_all_data
+  -- 之类的 predefined role）。ACL 阶段按设计**不修改 membership**，因此这一类
+  -- 越权不可能靠 ACL mutation 修好，必须在任何 mutation 之前 fail closed。
+  -- 数组类型除外：它们没有独立 ACL，有效权限完全委托给元素类型，而元素类型
+  -- 本身在 acl_source 里。
+  inherited_effective (objkey, object_class, role_name, privilege) AS (
+    SELECT e.objkey, e.object_class, e.role_name, granted.privilege
+      FROM effective_actual e,
+           LATERAL unnest(e.privileges) AS granted(privilege)
+     WHERE e.object_class IN ('database', 'schema', 'relation', 'routine',
+                              'type', 'denied-routine', 'largeobject')
+       AND NOT EXISTS (SELECT 1 FROM type_class tc
+                        WHERE tc.objkey = e.objkey AND tc.class_name = 'array')
+       AND NOT EXISTS (SELECT 1 FROM acl_source a
+                        WHERE a.objkey = e.objkey
+                          AND a.privilege = granted.privilege
+                          AND (a.grantee = 'PUBLIC'
+                               OR a.grantee = e.role_name))
   )`;
 };
 
@@ -502,6 +545,45 @@ ${renderAuthorizationSharedCtes(manifest)},
       JOIN canonical_membership cm ON cm.member_name = rm.member_name
                                   AND cm.granted_name = rm.granted_name
      WHERE rm.admin_option OR rm.inherit_option OR NOT rm.set_option
+    UNION ALL
+    -- pg_auth_members 的键是 (roleid, member, grantor)：同一条 canonical 边可以
+    -- 由**两个不同 grantor** 各存在一行。逐 pair 计数因此是必要的——只检查
+    -- 「这条边在不在」会把重复边当成正常。
+    SELECT 9, 'membership',
+           'role membership ' || rm.member_name || ' in ' || rm.granted_name
+             || ' is recorded ' || count(*)::text || ' time(s) by grantor(s) '
+             || pg_catalog.string_agg(rm.grantor_name, ','
+                                      ORDER BY rm.grantor_name COLLATE "C")
+             || '; run the cluster role baseline first'
+      FROM role_membership rm
+      JOIN canonical_membership cm ON cm.member_name = rm.member_name
+                                  AND cm.granted_name = rm.granted_name
+     GROUP BY rm.member_name, rm.granted_name
+    HAVING count(*) <> 1
+    UNION ALL
+    -- 图的**总数**也必须精确：多一条越界边、少一条 canonical 边都在这里现形。
+    SELECT 9, 'membership',
+           'the project role membership graph has ' || graph.total::text
+             || ' edge(s), expected exactly ' || graph.expected::text
+             || '; run the cluster role baseline first'
+      FROM (SELECT (SELECT count(*) FROM role_membership rm
+                     WHERE EXISTS (SELECT 1 FROM project_role pr
+                                    WHERE pr.role_name = rm.granted_name)
+                        OR EXISTS (SELECT 1 FROM project_role pr
+                                    WHERE pr.role_name = rm.member_name))
+                     AS total,
+                   (SELECT count(*) FROM canonical_membership) AS expected)
+             AS graph
+     WHERE graph.total <> graph.expected
+    UNION ALL
+    -- 继承而来的越权：ACL 阶段不改 membership，因此这一类只能 fail closed。
+    SELECT 10, 'effective',
+           'role ' || ie.role_name || ' reaches ' || ie.objkey::text
+             || ' with ' || ie.privilege
+             || ' through role membership rather than through a grant; the '
+             || 'database ACL phase never changes membership - run the cluster '
+             || 'role baseline first'
+      FROM inherited_effective ie
   )
   SELECT (SELECT count(*) FROM preflight_problem)::integer,
          (SELECT pg_catalog.string_agg(pg_catalog.left(entry, 400), '; '

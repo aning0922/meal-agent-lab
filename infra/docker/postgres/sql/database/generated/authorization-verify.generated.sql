@@ -7,7 +7,7 @@
 -- 重新生成： pnpm --filter @meal-agent/api manifest:generate
 -- 门禁： pnpm --filter @meal-agent/api manifest:check（内存渲染逐字节比对，不会自动改写本文件）
 -- manifest version: 2
--- canonical manifest digest: sha256:3b3ec14f1b62b3273f7700f528bf6c57c7eb2c165ac2177cebf52865b5195336
+-- canonical manifest digest: sha256:cfc315ca1e573b6c782a745e9ce7191a08e848290453bfff1860104d9e3501a7
 --
 -- 本文件是纯只读 SQL：不匹配时 RAISE EXCEPTION，不做任何变更。
 -- 调用方必须先设置 GUC meal_agent.acl_phase（containment 或 final）。
@@ -430,7 +430,9 @@ BEGIN
             '[]'::jsonb)),
            pg_catalog.pg_get_userbyid(p.proowner)::text,
            p.prosecdef,
-           COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')::text,
+           -- proconfig 用结构化 JSON 数组：设置值本身可以含分隔符，拼接串
+           -- 在那一刻就不可反解也不可比较。Node 侧用同一份 identity 编码。
+           COALESCE(to_jsonb(p.proconfig), '[]'::jsonb)::text,
            pg_catalog.encode(
              pg_catalog.sha256(
                pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex')::text
@@ -849,13 +851,17 @@ BEGIN
   -- 固定允许的 pg_default_acl **物理行**条目：它决定要执行哪条默认权限语句。
   allowed_default (state, objtype, scope, grantee, privilege) AS (
       VALUES
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, 'f'::text, '-'::text, 'meal_agent_migrator'::text, 'EXECUTE'::text),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, 'T'::text, '-'::text, 'meal_agent_migrator'::text, 'USAGE'::text),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'public', 'meal_agent_backup', 'SELECT'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', '-', 'meal_agent_migrator', 'USAGE'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'r', 'drizzle', 'meal_agent_backup', 'SELECT'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'r', 'public', 'meal_agent_backup', 'SELECT'),
+        ('0000_stage_06.sql|containment', 'T', '-', 'meal_agent_migrator', 'USAGE'),
         ('0000_stage_06.sql|containment', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql|final', 'S', 'public', 'meal_agent_backup', 'SELECT'),
+        ('0000_stage_06.sql|final', 'T', '-', 'meal_agent_migrator', 'USAGE'),
         ('0000_stage_06.sql|final', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql|final', 'r', 'drizzle', 'meal_agent_backup', 'SELECT'),
         ('0000_stage_06.sql|final', 'r', 'public', 'meal_agent_backup', 'SELECT')
@@ -868,13 +874,9 @@ BEGIN
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'S', 'drizzle', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -891,13 +893,9 @@ BEGIN
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'public', 'meal_agent_backup', ARRAY['SELECT']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -915,13 +913,9 @@ BEGIN
         ('0000_stage_06.sql|containment', 'S', 'drizzle', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql|containment', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -938,13 +932,9 @@ BEGIN
         ('0000_stage_06.sql|final', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql|final', 'S', 'public', 'meal_agent_backup', ARRAY['SELECT']::text[]),
         ('0000_stage_06.sql|final', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql|final', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -962,46 +952,46 @@ BEGIN
   -- fail closed——恢复路径可以把任意 SECURITY DEFINER 函数带进 drizzle。
   allowed_routine (state, objkey, detail) AS (
       VALUES
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]'::jsonb, 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'::text),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=search_path=pg_catalog, public body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=search_path=pg_catalog, public body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a')
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]'::jsonb, 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'::text),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=["search_path=pg_catalog, public"] body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=["search_path=pg_catalog, public"] body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a')
   ),
   -- 直接授权的策略判定。privilege_allowed **不含** grantable 判断：一条本身允许、
   -- 只是多带了可再授予标志的授权只应收回该标志，而不是把 owner 自己的权限
@@ -1106,6 +1096,18 @@ BEGIN
                           AND ad.objtype = b.objtype
                           AND ad.scope = b.scope)
   ),
+  -- language 的**必需**授权：PostgreSQL 内建默认给出 owner 与 PUBLIC 的
+  -- USAGE，两条都是运行所需（plpgsql 没有 PUBLIC USAGE 时，任何非 owner 角色
+  -- 都无法执行 plpgsql 函数）。它们是动态登记的——owner 从 catalog 现取，
+  -- 不写死角色名——因此缺失时 verify 拒绝、converge 以 language owner 的身份
+  -- 恢复。
+  required_language_grants (objkey, target_sql, owner_name, grantee,
+                           privilege) AS (
+    SELECT o.objkey, o.target_sql, o.owner_name, required.grantee, 'USAGE'::text
+      FROM regulated_object o,
+           LATERAL (VALUES ('PUBLIC'::text), (o.owner_name)) AS required(grantee)
+     WHERE o.object_class = 'language'
+  ),
   effective_actual (objkey, object_class, role_name, privileges) AS (
     SELECT objkey, object_class, role_name, privileges
       FROM effective_source
@@ -1118,6 +1120,26 @@ BEGIN
       FROM effective_actual
      WHERE object_class IN ('database', 'schema', 'relation', 'routine')
        AND role_name <> 'meal_agent_migrator'
+  ),
+  -- **继承而来**的有效权限：既没有授予 PUBLIC、也没有授予该角色自己，却仍然
+  -- 探测得到——只可能来自角色成员关系（外部 NOLOGIN、项目角色，或 pg_read_all_data
+  -- 之类的 predefined role）。ACL 阶段按设计**不修改 membership**，因此这一类
+  -- 越权不可能靠 ACL mutation 修好，必须在任何 mutation 之前 fail closed。
+  -- 数组类型除外：它们没有独立 ACL，有效权限完全委托给元素类型，而元素类型
+  -- 本身在 acl_source 里。
+  inherited_effective (objkey, object_class, role_name, privilege) AS (
+    SELECT e.objkey, e.object_class, e.role_name, granted.privilege
+      FROM effective_actual e,
+           LATERAL unnest(e.privileges) AS granted(privilege)
+     WHERE e.object_class IN ('database', 'schema', 'relation', 'routine',
+                              'type', 'denied-routine', 'largeobject')
+       AND NOT EXISTS (SELECT 1 FROM type_class tc
+                        WHERE tc.objkey = e.objkey AND tc.class_name = 'array')
+       AND NOT EXISTS (SELECT 1 FROM acl_source a
+                        WHERE a.objkey = e.objkey
+                          AND a.privilege = granted.privilege
+                          AND (a.grantee = 'PUBLIC'
+                               OR a.grantee = e.role_name))
   ),
   preflight_problem (rank, kind, entry) AS (
     -- 1. managed schema 必须齐全：缺任何一个都说明这不是一个可以安全收敛的
@@ -1252,6 +1274,45 @@ BEGIN
       JOIN canonical_membership cm ON cm.member_name = rm.member_name
                                   AND cm.granted_name = rm.granted_name
      WHERE rm.admin_option OR rm.inherit_option OR NOT rm.set_option
+    UNION ALL
+    -- pg_auth_members 的键是 (roleid, member, grantor)：同一条 canonical 边可以
+    -- 由**两个不同 grantor** 各存在一行。逐 pair 计数因此是必要的——只检查
+    -- 「这条边在不在」会把重复边当成正常。
+    SELECT 9, 'membership',
+           'role membership ' || rm.member_name || ' in ' || rm.granted_name
+             || ' is recorded ' || count(*)::text || ' time(s) by grantor(s) '
+             || pg_catalog.string_agg(rm.grantor_name, ','
+                                      ORDER BY rm.grantor_name COLLATE "C")
+             || '; run the cluster role baseline first'
+      FROM role_membership rm
+      JOIN canonical_membership cm ON cm.member_name = rm.member_name
+                                  AND cm.granted_name = rm.granted_name
+     GROUP BY rm.member_name, rm.granted_name
+    HAVING count(*) <> 1
+    UNION ALL
+    -- 图的**总数**也必须精确：多一条越界边、少一条 canonical 边都在这里现形。
+    SELECT 9, 'membership',
+           'the project role membership graph has ' || graph.total::text
+             || ' edge(s), expected exactly ' || graph.expected::text
+             || '; run the cluster role baseline first'
+      FROM (SELECT (SELECT count(*) FROM role_membership rm
+                     WHERE EXISTS (SELECT 1 FROM project_role pr
+                                    WHERE pr.role_name = rm.granted_name)
+                        OR EXISTS (SELECT 1 FROM project_role pr
+                                    WHERE pr.role_name = rm.member_name))
+                     AS total,
+                   (SELECT count(*) FROM canonical_membership) AS expected)
+             AS graph
+     WHERE graph.total <> graph.expected
+    UNION ALL
+    -- 继承而来的越权：ACL 阶段不改 membership，因此这一类只能 fail closed。
+    SELECT 10, 'effective',
+           'role ' || ie.role_name || ' reaches ' || ie.objkey::text
+             || ' with ' || ie.privilege
+             || ' through role membership rather than through a grant; the '
+             || 'database ACL phase never changes membership - run the cluster '
+             || 'role baseline first'
+      FROM inherited_effective ie
   )
   SELECT (SELECT count(*) FROM preflight_problem)::integer,
          (SELECT pg_catalog.string_agg(pg_catalog.left(entry, 400), '; '
@@ -1652,7 +1713,9 @@ BEGIN
             '[]'::jsonb)),
            pg_catalog.pg_get_userbyid(p.proowner)::text,
            p.prosecdef,
-           COALESCE(pg_catalog.array_to_string(p.proconfig, '|'), '')::text,
+           -- proconfig 用结构化 JSON 数组：设置值本身可以含分隔符，拼接串
+           -- 在那一刻就不可反解也不可比较。Node 侧用同一份 identity 编码。
+           COALESCE(to_jsonb(p.proconfig), '[]'::jsonb)::text,
            pg_catalog.encode(
              pg_catalog.sha256(
                pg_catalog.convert_to(p.prosrc, 'UTF8')), 'hex')::text
@@ -2071,13 +2134,17 @@ BEGIN
   -- 固定允许的 pg_default_acl **物理行**条目：它决定要执行哪条默认权限语句。
   allowed_default (state, objtype, scope, grantee, privilege) AS (
       VALUES
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, 'f'::text, '-'::text, 'meal_agent_migrator'::text, 'EXECUTE'::text),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, 'T'::text, '-'::text, 'meal_agent_migrator'::text, 'USAGE'::text),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'public', 'meal_agent_backup', 'SELECT'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', '-', 'meal_agent_migrator', 'USAGE'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'r', 'drizzle', 'meal_agent_backup', 'SELECT'),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'r', 'public', 'meal_agent_backup', 'SELECT'),
+        ('0000_stage_06.sql|containment', 'T', '-', 'meal_agent_migrator', 'USAGE'),
         ('0000_stage_06.sql|containment', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql|final', 'S', 'public', 'meal_agent_backup', 'SELECT'),
+        ('0000_stage_06.sql|final', 'T', '-', 'meal_agent_migrator', 'USAGE'),
         ('0000_stage_06.sql|final', 'f', '-', 'meal_agent_migrator', 'EXECUTE'),
         ('0000_stage_06.sql|final', 'r', 'drizzle', 'meal_agent_backup', 'SELECT'),
         ('0000_stage_06.sql|final', 'r', 'public', 'meal_agent_backup', 'SELECT')
@@ -2090,13 +2157,9 @@ BEGIN
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'S', 'drizzle', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -2113,13 +2176,9 @@ BEGIN
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'public', 'meal_agent_backup', ARRAY['SELECT']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -2137,13 +2196,9 @@ BEGIN
         ('0000_stage_06.sql|containment', 'S', 'drizzle', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|containment', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|containment', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql|containment', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -2160,13 +2215,9 @@ BEGIN
         ('0000_stage_06.sql|final', 'S', 'meal_agent_private', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
         ('0000_stage_06.sql|final', 'S', 'public', 'meal_agent_backup', ARRAY['SELECT']::text[]),
         ('0000_stage_06.sql|final', 'S', 'public', 'meal_agent_migrator', ARRAY['SELECT', 'UPDATE', 'USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', '-', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', '-', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', 'drizzle', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', 'drizzle', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', 'meal_agent_private', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', 'meal_agent_private', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
-        ('0000_stage_06.sql|final', 'T', 'public', 'PUBLIC', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'T', 'public', 'meal_agent_migrator', ARRAY['USAGE']::text[]),
         ('0000_stage_06.sql|final', 'f', '-', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
         ('0000_stage_06.sql|final', 'f', 'drizzle', 'meal_agent_migrator', ARRAY['EXECUTE']::text[]),
@@ -2184,46 +2235,46 @@ BEGIN
   -- fail closed——恢复路径可以把任意 SECURITY DEFINER 函数带进 drizzle。
   allowed_routine (state, objkey, detail) AS (
       VALUES
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]'::jsonb, 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'::text),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=search_path=pg_catalog, public body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=search_path=pg_catalog, public body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
-        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config= body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
-        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=search_path=pg_catalog, public|row_security=off body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a')
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment'::text, '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]'::jsonb, 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'::text),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=["search_path=pg_catalog, public"] body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|containment', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "add_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"], ["pg_catalog", "jsonb"], ["pg_catalog", "bool"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8b3b8383eaafef2859c7c6c400fea4560397e2e791398f34eb3d92c983b84d19'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "confirm_person_profile_link", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=d8bd3080b2b718d97dd351aa88cabb64d887a05f70188c42875bd93598455ff4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "create_person_profile_link_request", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=340b7dafbb3538c8f7be9b75680eee66ac11d95cb7bb63c7eacecc1f0dd181b4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_active_owner", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=2f6eaefdd9503cc95274b27a06bd2c026510ccef5b7d5ee1e39c493856a12b1c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "materialize_person_profile_link_requests", [["pg_catalog", "uuid"], ["pg_catalog", "uuid"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=49c69edb63ba9c79f1cebedfa662a79008307ef7ff58c654b90b3fa0a5f5802d'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "owns_profile", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=8a6ca11f5b63ddd757d2ab4ee55bd6d8eeafa0b86109e48d57804f7beb983d56'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "redeem_household_invite", [["pg_catalog", "bpchar"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=9f114cec5f9c266b441cb4225ca188bd3069bbcc80b2dbb7d066725a3e3013b2'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "remove_person_profile_constraint", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=bda888f524207ddd8ecb1875ed75cff298b4c8e57d27e869370f55cf92702e2a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "stage08_constraints_are_safe", [["pg_catalog", "jsonb"]]]', 'owner=meal_agent_migrator secdef=f config=["search_path=pg_catalog, public"] body=aaee625351184de80262214f2f0b048e1941afac9200ffd5c54b8956c71f250a'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_membership_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=73fd5f37faf85bef8803c3902375365d9f3d2eb5ced6d318813a911864b35df4'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "transition_person_profile_status", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5dabf7d1671c857717fd8a18d72ea7961ab6f582965f6177dcdb697d2f14988c'),
+        ('0000_stage_06.sql,0001_stage_08.sql,0002_stage_08_audit_closeout.sql,0003_stage_08_secondary_closeout.sql,0004_stage_08_final_closeout.sql|final', '["routine", "meal_agent_private", "update_person_profile_fields", [["pg_catalog", "uuid"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "text"], ["pg_catalog", "bool"], ["pg_catalog", "int4"], ["pg_catalog", "bool"], ["pg_catalog", "numeric"], ["pg_catalog", "bool"], ["pg_catalog", "text"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=44e6d5df0e195097d4a782ae2b4a0fd6e9eb6e2e74d570910ab075e804af1cc9'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql|containment', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_household_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e819902d79596d6c78928edad3ee0958ccb5776d8b5b8f4428b2449703e13246'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "app_user_id", []]', 'owner=meal_agent_migrator secdef=f config=[] body=e3aed6cdba18c19ee29c76279c780af119a11fddd9c9a1737c57684553871c5a'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "has_active_membership", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=07ed8a19a0ee1b8b9d03a6113c3f02b0c0e4a756755ca08bd791cdb19f73cf6b'),
+        ('0000_stage_06.sql|final', '["routine", "meal_agent_private", "is_household_creator", [["pg_catalog", "uuid"]]]', 'owner=meal_agent_migrator secdef=t config=["search_path=pg_catalog, public", "row_security=off"] body=5ff25647b8bfcdb0cdca164f011c959e2aeae10f7ce85d97fc420689dfe01a7a')
   ),
   -- 直接授权的策略判定。privilege_allowed **不含** grantable 判断：一条本身允许、
   -- 只是多带了可再授予标志的授权只应收回该标志，而不是把 owner 自己的权限
@@ -2328,6 +2379,18 @@ BEGIN
                           AND ad.objtype = b.objtype
                           AND ad.scope = b.scope)
   ),
+  -- language 的**必需**授权：PostgreSQL 内建默认给出 owner 与 PUBLIC 的
+  -- USAGE，两条都是运行所需（plpgsql 没有 PUBLIC USAGE 时，任何非 owner 角色
+  -- 都无法执行 plpgsql 函数）。它们是动态登记的——owner 从 catalog 现取，
+  -- 不写死角色名——因此缺失时 verify 拒绝、converge 以 language owner 的身份
+  -- 恢复。
+  required_language_grants (objkey, target_sql, owner_name, grantee,
+                           privilege) AS (
+    SELECT o.objkey, o.target_sql, o.owner_name, required.grantee, 'USAGE'::text
+      FROM regulated_object o,
+           LATERAL (VALUES ('PUBLIC'::text), (o.owner_name)) AS required(grantee)
+     WHERE o.object_class = 'language'
+  ),
   effective_actual (objkey, object_class, role_name, privileges) AS (
     SELECT objkey, object_class, role_name, privileges
       FROM effective_source
@@ -2340,6 +2403,26 @@ BEGIN
       FROM effective_actual
      WHERE object_class IN ('database', 'schema', 'relation', 'routine')
        AND role_name <> 'meal_agent_migrator'
+  ),
+  -- **继承而来**的有效权限：既没有授予 PUBLIC、也没有授予该角色自己，却仍然
+  -- 探测得到——只可能来自角色成员关系（外部 NOLOGIN、项目角色，或 pg_read_all_data
+  -- 之类的 predefined role）。ACL 阶段按设计**不修改 membership**，因此这一类
+  -- 越权不可能靠 ACL mutation 修好，必须在任何 mutation 之前 fail closed。
+  -- 数组类型除外：它们没有独立 ACL，有效权限完全委托给元素类型，而元素类型
+  -- 本身在 acl_source 里。
+  inherited_effective (objkey, object_class, role_name, privilege) AS (
+    SELECT e.objkey, e.object_class, e.role_name, granted.privilege
+      FROM effective_actual e,
+           LATERAL unnest(e.privileges) AS granted(privilege)
+     WHERE e.object_class IN ('database', 'schema', 'relation', 'routine',
+                              'type', 'denied-routine', 'largeobject')
+       AND NOT EXISTS (SELECT 1 FROM type_class tc
+                        WHERE tc.objkey = e.objkey AND tc.class_name = 'array')
+       AND NOT EXISTS (SELECT 1 FROM acl_source a
+                        WHERE a.objkey = e.objkey
+                          AND a.privilege = granted.privilege
+                          AND (a.grantee = 'PUBLIC'
+                               OR a.grantee = e.role_name))
   ),
   default_effective_actual (objtype, scope, grantee, privileges, grantable) AS (
     SELECT objtype, scope, grantee,
@@ -2450,6 +2533,18 @@ BEGIN
                           AND s.grantee = g.grantee
                           AND s.privilege = g.privilege
                           AND s.grantor = 'meal_agent_migrator'
+                          AND NOT s.grantable)
+    UNION ALL
+    SELECT 3, 'grant',
+           'missing language grant '
+             || jsonb_build_array(r.objkey, r.grantee, r.owner_name,
+                                  r.privilege)::text
+      FROM required_language_grants r
+     WHERE NOT EXISTS (SELECT 1 FROM acl_source s
+                        WHERE s.objkey = r.objkey
+                          AND s.grantee = r.grantee
+                          AND s.grantor = r.owner_name
+                          AND s.privilege = r.privilege
                           AND NOT s.grantable)
     UNION ALL
     -- pg_default_acl 的**物理行**：它决定实际执行哪条默认权限语句。

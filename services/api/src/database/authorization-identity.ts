@@ -64,3 +64,127 @@ export const grantableObjectClasses = Object.freeze([
 
 /** `pg_default_acl` 里 global 作用域在投影中的 scope 取值。 */
 export const globalDefaultScope = "-";
+
+/**
+ * 所有 renderer **共用**的渲染守卫。
+ *
+ * 三个 renderer（projection / policy / manifest-sql）都会把 manifest 里的值原样
+ * 拼进高权限 SQL：收敛块会 `SET LOCAL ROLE`、`GRANT`、`REVOKE`、`ALTER DEFAULT
+ * PRIVILEGES`。因此值里出现的任何 SQL token 都必须在**渲染之前**被拒绝，而不是
+ * 指望某一层恰好做了转义——三层各写一份守卫，迟早会有一层漏掉。
+ *
+ * 拒绝的内容：
+ *
+ * - 会破坏文本结构的字符：反斜杠、CR、LF、NUL；
+ * - 会终止或注入语句的 token：单引号、双引号、分号、`--`、`/*`、`*` + `/`；
+ * - 三个 dollar-quote 标签（一旦出现在值里就能提前关闭 `DO` 块）。
+ *
+ * 合法的项目角色名、schema 名、对象名、权限名与 objtype 都不含这些 token，因此
+ * 这条守卫不会误伤真实数据；catalog 里**观察到**的奇怪名字不走这里——它们经
+ * `jsonb_build_array` 与 `quote_ident` 在运行时处理，R8A 的特殊字符 identity
+ * 证据因此不受影响。
+ */
+export const authorizationDollarQuoteTags = Object.freeze([
+  "$meal_agent_authorization_converge$",
+  "$meal_agent_authorization_verify$",
+  "$meal_agent_authorization_projection$",
+] as const);
+
+const forbiddenRenderTokens: readonly string[] = Object.freeze([
+  "\\",
+  "\r",
+  "\n",
+  String.fromCharCode(0),
+  "'",
+  '"',
+  ";",
+  "--",
+  "/*",
+  "*/",
+  ...authorizationDollarQuoteTags,
+]);
+
+export class AuthorizationRenderError extends Error {
+  public constructor(detail: string) {
+    super(`authorization renderer: ${detail}`);
+    this.name = "AuthorizationRenderError";
+  }
+}
+
+export const assertRenderableValue = (field: string, value: string): string => {
+  for (const token of forbiddenRenderTokens) {
+    if (value.includes(token)) {
+      throw new AuthorizationRenderError(
+        `${field} contains ${JSON.stringify(token)}, which cannot be rendered ` +
+          `into a privileged SQL statement: ${JSON.stringify(value)}`,
+      );
+    }
+  }
+  return value;
+};
+
+/**
+ * 每类受监管对象**精确**的权限集合。收敛块会把这些名字直接拼进 `GRANT` /
+ * `REVOKE`，因此它们必须是穷尽的固定枚举，而不是「看起来像权限名就放行」。
+ *
+ * `relation` 是 table 与 sequence 的并集：manifest 的对象键不区分二者，而
+ * PostgreSQL 会在语句层拒绝不适用的组合。
+ */
+export const objectClassPrivileges: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  database: Object.freeze(["CONNECT", "CREATE", "TEMPORARY"]),
+  schema: Object.freeze(["CREATE", "USAGE"]),
+  relation: Object.freeze([
+    "DELETE",
+    "INSERT",
+    "MAINTAIN",
+    "REFERENCES",
+    "SELECT",
+    "TRIGGER",
+    "TRUNCATE",
+    "UPDATE",
+    "USAGE",
+  ]),
+  routine: Object.freeze(["EXECUTE"]),
+});
+
+/**
+ * 每种 `pg_default_acl.defaclobjtype` 精确的权限集合，以及它能否带 schema 作用域。
+ * PostgreSQL 只允许 table/sequence/function/type 出现在 `IN SCHEMA` 形式里；
+ * schema 与 large object 只有全局形式。
+ */
+export const defaultObjtypeRules: Readonly<
+  Record<string, { readonly privileges: readonly string[]; readonly schemaScoped: boolean }>
+> = Object.freeze({
+  L: Object.freeze({
+    privileges: Object.freeze(["SELECT", "UPDATE"]),
+    schemaScoped: false,
+  }),
+  S: Object.freeze({
+    privileges: Object.freeze(["SELECT", "UPDATE", "USAGE"]),
+    schemaScoped: true,
+  }),
+  T: Object.freeze({ privileges: Object.freeze(["USAGE"]), schemaScoped: true }),
+  f: Object.freeze({
+    privileges: Object.freeze(["EXECUTE"]),
+    schemaScoped: true,
+  }),
+  n: Object.freeze({
+    privileges: Object.freeze(["CREATE", "USAGE"]),
+    schemaScoped: false,
+  }),
+  r: Object.freeze({
+    privileges: Object.freeze([
+      "DELETE",
+      "INSERT",
+      "MAINTAIN",
+      "REFERENCES",
+      "SELECT",
+      "TRIGGER",
+      "TRUNCATE",
+      "UPDATE",
+    ]),
+    schemaScoped: true,
+  }),
+});

@@ -206,16 +206,21 @@ Large Object 的策略见 §2.3，**已决定**，R8B 已落实。
   `SECURITY DEFINER`）必须 fail closed；routine 权限按**有效权限**验证，把
   `GRANT EXECUTE ... TO PUBLIC` 派生给 app/backup 的那一份也算在内。
 - **managed 非数组类型**：owner（`meal_agent_migrator`）保留必要 `USAGE`；
-  `PUBLIC`、app、backup 与三个 login 默认无 `USAGE`。全新安装后表行类型的
-  `typacl` 已经是 `{meal_agent_migrator=U/meal_agent_migrator}`。
+  `PUBLIC`、app、backup 与三个 login 无 `USAGE`。R8B 把这一条同时落在两层：
+  对象 ACL 由收敛保证，`T@global` 的 `pg_default_acl` 物理行去掉 `PUBLIC` 的内建
+  `TYPES USAGE`，因此新建 enum / domain / composite **出生即干净**。
+- **language**：PostgreSQL 内建的 owner 与 `PUBLIC USAGE` 是**必需项**——owner 从
+  catalog 动态取得，缺失时 verify 拒绝、converge 以 language owner 的身份恢复。
 - **数组类型**只记录「向元素类型委托」，既不建立也不撤销独立 ACL：PostgreSQL 对
   数组类型直接拒绝授权与改属（`cannot set privileges of array types`）。
 - Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此对
   `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 中 `defaclobjtype='L'` 采取
   「存在项目角色或 `PUBLIC` 权限即收敛并断言为空」，不借此扩展任何业务能力。
-  R8B 起对**任意** LO 对象（不限于项目角色拥有的）一律在任何 mutation 之前 fail
-  closed：**只报告、不自动删除未知数据**，不解除链接、不接管归属、不改 `lomacl`，
-  LO 的 OID 也不进入任何固定允许 manifest。**并且**：既然产品
+  R8B 起对**任意** LO 对象（不限于项目角色拥有的）一律在任何 ACL / default ACL
+  mutation 之前 fail closed：**只报告、不自动删除未知数据**，不解除链接、不接管
+  归属、不改 `lomacl`，LO 的 OID 也不进入任何固定允许 manifest。只有在**确实
+  没有** LO 时，收敛才会处理 `defaclobjtype = 'L'` 的异常默认权限与 20 个入口点
+  上多余的 `EXECUTE`。**并且**：既然产品
   声明禁用 LO，就必须同时关闭 `pg_catalog` 的创建/读写入口（`lo_create`、
   `lo_creat`、`lo_from_bytea`、`lo_put`、`lo_import` 等 20 个函数默认对 `PUBLIC`
   开放 `EXECUTE`）——只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的
@@ -223,6 +228,14 @@ Large Object 的策略见 §2.3，**已决定**，R8B 已落实。
 - 数据库级与 schema 级的 `PUBLIC` 授权可能来自任意第三方 grantor。普通 `REVOKE`
   只撤销「由执行者授予」的那一份，因此必须按真实 grantor 逐条撤销——**真正收敛**，
   而不是等后置校验失败后整体回滚：回滚只让命令失败，权限仍然留在数据库里。
+
+#### 2.3.1 exact-ledger 不因默认权限而放宽
+
+`pg_default_acl` 只保护**创建窗口**：它决定新对象出生时带什么权限，**不代表**那个
+对象已经被授权 manifest 登记。因此任何新增 migration 一旦创建 relation 或
+sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对象的固定授权——否则新
+对象会以「未登记对象」的身份进入策略判定，收敛会把默认权限带来的授权当作漂移
+撤掉。默认权限与 exact-ledger 是互补的两层，不能互相顶替。
 
 #### 2.4 恢复契约与受支持的 ledger 窗口
 

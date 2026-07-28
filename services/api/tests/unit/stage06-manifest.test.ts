@@ -32,6 +32,11 @@ import {
   renderAuthorizationVerifySql,
 } from "../../src/database/authorization-manifest-sql.js";
 import {
+  assertRenderableValue,
+  authorizationDollarQuoteTags,
+  AuthorizationRenderError,
+} from "../../src/database/authorization-identity.js";
+import {
   assertDefaultAclObjtypeMappings,
   defaultAclObjtypeMappings,
   renderAuthorizationProjectionAdapter,
@@ -39,6 +44,7 @@ import {
   type DefaultAclObjtypeMapping,
 } from "../../src/database/authorization-projection-sql.js";
 import {
+  authorizationDigest,
   authorizationManifest,
   authorizationStateKeys,
   AuthorizationManifestError,
@@ -696,4 +702,196 @@ test("the default ACL objtype mapping never confuses S (foreign server) with s (
     !sql.includes("t.objtype IN ('r', 'S', 'f', 'T')"),
     "schema-scoped slots must come from the mapping, not a hard-coded list",
   );
+});
+
+test("the shared render guard rejects SQL tokens, wrong privileges, wrong scopes and DO tags", () => {
+  // 三个 renderer 都会把 manifest 里的标量原样拼进**高权限** SQL（收敛块会
+  // SET LOCAL ROLE / GRANT / REVOKE / ALTER DEFAULT PRIVILEGES），因此守卫必须
+  // 只有一份、并且在渲染之前就拒绝。
+  for (const token of [
+    "meal_agent'app",
+    'meal_agent"app',
+    "meal_agent;app",
+    "meal_agent--app",
+    "meal_agent/*app",
+    "meal_agent*/app",
+    "meal_agent\\app",
+    "meal_agent\napp",
+  ]) {
+    assert.throws(
+      () => {
+        assertRenderableValue("role", token);
+      },
+      (error: unknown) =>
+        error instanceof AuthorizationRenderError &&
+        /cannot be rendered into a privileged SQL statement/.test(error.message),
+      `the guard must reject ${JSON.stringify(token)}`,
+    );
+  }
+  // dollar-quote 标签尤其致命：值里出现它就能提前关闭整个 DO 块。
+  for (const tag of authorizationDollarQuoteTags) {
+    assert.throws(
+      () => {
+        assertRenderableValue("role", `meal_agent_${tag}_app`);
+      },
+      (error: unknown) => error instanceof AuthorizationRenderError,
+      `the guard must reject the ${tag} dollar-quote tag`,
+    );
+    // 同一道守卫也必须挡住经由 manifest 顶层字段注入的标签。
+    const poisoned: AuthorizationManifest = {
+      ...authorizationManifest,
+      managedSchemas: [...authorizationManifest.managedSchemas, `x${tag}x`],
+    };
+    assert.throws(
+      () => renderAuthorizationConvergeAdapter(poisoned),
+      (error: unknown) => error instanceof AuthorizationRenderError,
+    );
+    assert.throws(
+      () => renderAuthorizationVerifySql(poisoned),
+      (error: unknown) => error instanceof AuthorizationRenderError,
+    );
+  }
+
+  const [first] = authorizationManifest.states;
+  assert.ok(first !== undefined);
+  const [grant] = first.grants;
+  assert.ok(grant !== undefined);
+
+  // 权限必须落在**该对象类别**的精确 allowlist 里。
+  const wrongPrivilege: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [
+      {
+        ...first,
+        grants: [
+          {
+            object: ["relation", "public", "users"],
+            grantee: "meal_agent_app",
+            privileges: ["EXECUTE"],
+          },
+        ],
+      },
+    ],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(wrongPrivilege),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /is not valid for grant on relation/.test(error.message),
+  );
+
+  // objtype × scope 的**组合**必须合法：schema 与 large object 没有 schema 作用域。
+  for (const [objtype, scope, pattern] of [
+    ["n", "public", /has no schema scope/],
+    ["L", "public", /has no schema scope/],
+    ["x", "-", /unknown default privilege objtype/],
+    ["r", "not_a_schema", /neither global nor a managed schema/],
+  ] as const) {
+    const wrongScope: AuthorizationManifest = {
+      ...authorizationManifest,
+      states: [
+        {
+          ...first,
+          defaults: [
+            { objtype, scope, grantee: "meal_agent_migrator", privileges: ["USAGE"] },
+          ],
+        },
+      ],
+    };
+    assert.throws(
+      () => canonicalAuthorizationRows(wrongScope),
+      (error: unknown) =>
+        error instanceof AuthorizationManifestError && pattern.test(error.message),
+      `${objtype}@${scope} must be rejected`,
+    );
+  }
+
+  // 默认权限的权限名同样按 objtype 精确校验。
+  const wrongDefaultPrivilege: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [
+      {
+        ...first,
+        defaults: [
+          { objtype: "T", scope: "-", grantee: "meal_agent_migrator", privileges: ["SELECT"] },
+        ],
+      },
+    ],
+  };
+  assert.throws(
+    () => canonicalAuthorizationRows(wrongDefaultPrivilege),
+    (error: unknown) =>
+      error instanceof AuthorizationManifestError &&
+      /is not valid for default privilege T@-/.test(error.message),
+  );
+});
+
+test("the canonical digest covers every top-level manifest field", () => {
+  const baseline = authorizationDigest();
+  const variants: readonly [string, AuthorizationManifest][] = [
+    [
+      "owner",
+      {
+        ...authorizationManifest,
+        principals: { ...authorizationManifest.principals, owner: "other_owner" },
+      },
+    ],
+    [
+      "managedSchemas",
+      {
+        ...authorizationManifest,
+        managedSchemas: [...authorizationManifest.managedSchemas, "extra_schema"],
+      },
+    ],
+    [
+      "deniedRoutines",
+      {
+        ...authorizationManifest,
+        deniedRoutines: [
+          ...authorizationManifest.deniedRoutines,
+          "pg_catalog.lo_extra(oid)",
+        ],
+      },
+    ],
+    [
+      "logins",
+      {
+        ...authorizationManifest,
+        principals: {
+          ...authorizationManifest.principals,
+          logins: [...authorizationManifest.principals.logins].reverse(),
+        },
+      },
+    ],
+    [
+      "memberships",
+      {
+        ...authorizationManifest,
+        principals: {
+          ...authorizationManifest.principals,
+          memberships: [
+            ...authorizationManifest.principals.memberships,
+            { member: "meal_agent_runtime_login", granted: "meal_agent_backup" },
+          ],
+        },
+      },
+    ],
+    ["version", { ...authorizationManifest, version: 99 }],
+  ];
+  for (const [field, variant] of variants) {
+    if (field === "logins") {
+      // 顺序变化不应改变 digest：header 按 C 序规范化。
+      assert.equal(
+        authorizationDigest(variant),
+        baseline,
+        "reordering must not change the digest",
+      );
+      continue;
+    }
+    assert.notEqual(
+      authorizationDigest(variant),
+      baseline,
+      `changing ${field} must change the canonical digest`,
+    );
+  }
 });
