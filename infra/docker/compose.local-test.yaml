@@ -194,9 +194,12 @@ services:
     <<: [*hardening, *bootstrap-psql]
     entrypoint:
       - createdb
+    # argv 精确固定，数据库名是字面量而不是插值；`--` 结束选项解析，因此
+    # 任何形如 `--host=…` 的值都只能被当作数据库名，不会变成连接选项。
     command:
       - --no-password
-      - ${MEAL_AGENT_DATABASE:-meal_agent}
+      - --
+      - meal_agent
     environment: *pg-cluster-env
     secrets:
       - postgres_admin_pgpass
@@ -229,8 +232,24 @@ services:
     command:
       - handoff
       - --dbname
-      - ${MEAL_AGENT_DATABASE:-meal_agent}
+      - meal_agent
     environment: *pg-cluster-env
+    # 服务级 volumes **整体覆盖** anchor 的 volumes（YAML merge key 不做深合并），
+    # 因此这里必须重述 anchor 的只读 bootstrap 挂载，再加 handoff 独有的那一个。
+    volumes:
+      - type: bind
+        source: ./postgres
+        target: /opt/meal-agent/bootstrap
+        read_only: true
+      # handoff 需要冻结 0000 的磁盘 sha256，而 bootstrap.sh 固定按
+      # `${script_directory}/../../../services/api/migrations/0000_stage_06.sql`
+      # 解析——script_directory 是 /opt/meal-agent/bootstrap，因此容器内的绝对
+      # 路径恰好是 /services/api/migrations/0000_stage_06.sql。
+      # 只挂**这一个文件**：不暴露整个 migrations 目录，也不给其它 bootstrap 服务。
+      - type: bind
+        source: ../../services/api/migrations/0000_stage_06.sql
+        target: /services/api/migrations/0000_stage_06.sql
+        read_only: true
     secrets:
       - postgres_admin_pgpass
     depends_on:
@@ -243,7 +262,7 @@ services:
     command:
       - acl
       - --dbname
-      - ${MEAL_AGENT_DATABASE:-meal_agent}
+      - meal_agent
     environment: *pg-cluster-env
     secrets:
       - postgres_admin_pgpass
@@ -257,7 +276,7 @@ services:
     command:
       - grants
       - --dbname
-      - ${MEAL_AGENT_DATABASE:-meal_agent}
+      - meal_agent
     environment: *pg-cluster-env
     secrets:
       - postgres_admin_pgpass
@@ -336,24 +355,24 @@ services:
 # --------------------------------------------------------------------------
 # 网络
 # --------------------------------------------------------------------------
+# 刻意**不**声明显式全局 name：网络与卷的真实名称由 Compose 的 project scope
+# 决定（默认取上面的 `name:`，可由 `--project-name` / `-p` 覆盖）。写死全局 name
+# 会让并行 worktree 抢占同一张网络和同一个数据卷。
 networks:
   # 数据库与全部一次性任务只在这张 internal 网络上：Compose 不为它接入网关，
   # 因此这些容器既没有 host port，也没有出站路径。
   internal:
-    name: meal-agent-local-test-internal
     driver: bridge
     internal: true
   # 仅供 api 的 127.0.0.1 publish 使用。
   edge:
-    name: meal-agent-local-test-edge
     driver: bridge
 
 # --------------------------------------------------------------------------
 # 卷
 # --------------------------------------------------------------------------
 volumes:
-  postgres-data:
-    name: meal-agent-local-test-postgres-data
+  postgres-data: {}
 
 # --------------------------------------------------------------------------
 # Secret file 契约
