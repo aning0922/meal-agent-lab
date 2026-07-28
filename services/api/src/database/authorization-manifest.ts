@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   assertRenderableValue,
+  byUtf8Bytes,
   defaultObjtypeRules,
   encodeProjectionIdentity,
   globalDefaultScope,
@@ -1752,7 +1753,9 @@ export const authorizationStateKey = (
   ledger: readonly string[],
   phase: AuthorizationPhase,
 ): string =>
-  encodeProjectionIdentity([[...ledger].sort(byCodeUnit), phase]);
+  // 排序必须是 **UTF-8 字节序**，与 PostgreSQL 现场的 `ORDER BY name COLLATE "C"`
+  // 逐字节一致；JavaScript 默认的 UTF-16 码元序对补充平面字符会给出不同顺序。
+  encodeProjectionIdentity([[...ledger].sort(byUtf8Bytes), phase]);
 
 export interface AuthorizationCanonicalRow {
   readonly state: string;

@@ -221,9 +221,12 @@ OID 与 owner。只有在**确实零 LO** 时，收敛才处理 `pg_default_acl`
 owner 之外的 `EXECUTE`。
 
 **exact-ledger 的 state identity 是结构化的**：`[[按 C 序排序的 migration 文件名],
-phase]`，Node 与 PostgreSQL 现场逐字节相同。旧的 `join(",") + "|" + phase` 拼接
-有歧义——一个合法文件名 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个
-真实文件完全相同，一行伪造的 ledger 就能冒充已登记状态。
+phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份：Node 侧的 ledger
+排序与 migration 文件排序共用同一个 **UTF-8 字节序** comparator，PostgreSQL 现场
+用等价的 `ORDER BY name COLLATE "C"`（JavaScript 默认的 UTF-16 码元序对补充平面
+字符会给出不同顺序）。旧的 `join(",") + "|" + phase` 拼接有歧义——一个合法文件名
+`0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
+伪造的 ledger 就能冒充已登记状态。
 
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 实现完成、待总控复验**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体待验收**；M2B（Compose 拓扑）、M3（配置与 Secret）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始，且在 M2A 通过验收前禁止进入。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口。
@@ -231,7 +234,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。旧的 `join(",") + "|" + 
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
   不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**408 条规范化行**（manifest 版本 2；`grant` 138、`effective` 138、`default-effective` 78、`routine` 40、`default` 14），只登记**固定允许项**：固定授权、`pg_default_acl` 的**物理行**、叠加后的**有效**默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`（结构化 JSON）/正文摘要；未登记的 `(ledger, phase)` fail closed。canonical digest 覆盖全部顶层字段（version、principals、managedSchemas、deniedRoutines、states）。③**canonical projector**：`services/api/src/database/authorization-projection-sql.ts`。它被拆成「可复用的结构化 projector CTE renderer」与「对外三列只读 SELECT」两层；R8B 起前者同时供给 verify 与 converge，后者仍是不被任何 bootstrap 阶段加载的只读观察出口。可移植策略在 `authorization-policy-sql.ts`。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
 - **恢复/安装流程分为两个阶段**：`bootstrap.sh acl` 是 containment（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），`bootstrap.sh grants` 是 final（migration 之后建立最终 ACL，并**同时**验证 PUBLIC、app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只重建允许项，后验同时比对 catalog ACL 与 `has_*_privilege` 有效权限。
-- 产品声明禁用 Large Object，因此除 `lomacl` 与 `defaclobjtype='L'` 收敛为空外，还收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）的 `PUBLIC EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。R8B 起对**任意** LO 对象一律 fail closed，且只报告、不自动删除未知数据，LO 的 OID 不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
+- 产品声明禁用 Large Object，收敛口径与上面的「Large Object 的口径」完全一致：**只有在目标库确实零真实 LO 时**，收敛才把 `pg_default_acl` 中 `defaclobjtype='L'` 的多余默认权限收敛为空，并收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）上除函数 owner 之外的 `EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。一旦库里存在**任意**真实 LO 对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，只报告 OID 与 owner——**绝不修改它的 `lomacl`**、绝不改归属、绝不改数据、绝不解除链接，LO 的 OID 也不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。

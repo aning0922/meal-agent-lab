@@ -11,6 +11,22 @@
  * 字符串拆分反向解析 identity。
  */
 
+/**
+ * **UTF-8 字节序**比较——与 PostgreSQL 的 `COLLATE "C"` 逐字节等价。
+ *
+ * 为什么不能用 JavaScript 的默认字符串比较：`<` / `Array#sort` 比的是 **UTF-16
+ * 码元**。对补充平面字符（U+10000 及以上，用代理对表示），两种顺序会真的分叉：
+ * U+FFFD 的 UTF-8 是 `EF BF BD`、U+10000 是 `F0 90 80 80`，字节序里 U+FFFD 在
+ * 前；而 UTF-16 码元序里 U+10000 的高位代理 `D800` 小于 `FFFD`，顺序正好相反。
+ *
+ * exact-ledger 的 state identity 由「排序后的 migration 文件名」构成，而
+ * PostgreSQL 现场用 `ORDER BY name COLLATE "C"` 排。两侧一旦用不同的序，同一批
+ * 文件就会算出不同的 identity——已登记状态会被判成未登记，或者更糟，反过来。
+ * 因此 Node 侧的 ledger 排序与 migration 文件排序都必须走这一个 comparator。
+ */
+export const byUtf8Bytes = (left: string, right: string): number =>
+  Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+
 export type ProjectionIdentityPart = string | readonly ProjectionIdentityPart[];
 
 /**

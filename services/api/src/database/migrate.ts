@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { Pool, type PoolClient } from "pg";
 
+import { byUtf8Bytes } from "./authorization-identity.js";
 import { renderStage06ManifestCheckSql } from "./stage06-manifest-sql.js";
 
 /** tracked 的 migration 目录。测试用注入 seam 覆盖它，绝不改写 tracked 文件。 */
@@ -22,7 +23,10 @@ const readMigrations = async (
 ): Promise<readonly MigrationFile[]> => {
   const names = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
-    .sort();
+    // 与 exact-ledger 的 state identity 共用同一个 **UTF-8 字节序** comparator：
+    // 应用顺序、写进 ledger 的顺序与 identity 的排序必须是同一个序，否则补充
+    // 平面字符会让三者互相错位。
+    .sort(byUtf8Bytes);
 
   return Promise.all(
     names.map(async (name) => {

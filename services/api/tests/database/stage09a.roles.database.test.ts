@@ -31,6 +31,7 @@ import {
   projectionDatabaseKey,
   type ProjectionIdentityPart,
 } from "../../src/database/authorization-projection-sql.js";
+import { byUtf8Bytes } from "../../src/database/authorization-identity.js";
 import { authorizationStateKey } from "../../src/database/authorization-manifest.js";
 import { renderStage06CatalogProjectionSql } from "../../src/database/stage06-manifest-sql.js";
 import {
@@ -3421,20 +3422,14 @@ test("any large object fails both baselines closed before a single mutation", as
   await withFailureSafeCleanup(async (cleanup) => {
       // 清理只发生在 finally，而且每一类残留各自独立登记：LO、无关 ACL 漂移、
       // 合成角色、基线各失败一次都不会阻断其余步骤，也都不会被吞掉。
-      // Large Object 逐 OID 独立成阶段：一个 lo_unlink 失败不能让其余 OID
-      // 跟着残留。阶段在**创建之后立刻**登记（见下面的创建循环），这里先登记
-      // 一个兜底阶段，覆盖「创建循环本身中途抛错」的情形。
-      cleanup.push("large objects (sweep)", async () => {
-        await withPool(adminPoolConfig(), async (pool) => {
-          const remaining = await pool.query<{ loid: string }>(
-            `SELECT m.oid::text AS loid FROM pg_largeobject_metadata m
-              WHERE m.oid::text = ANY ($1::text[])`,
-            [[...largeObjectIds]],
-          );
-          for (const row of remaining.rows) {
-            await pool.query(`SELECT lo_unlink(${row.loid})`);
-          }
-        });
+      // Large Object 是外层 FIFO 的**第一个**阶段，它内部再套一个 failure-safe
+      // collector 逐 OID 独立执行：一个 OID 的 lo_unlink 失败不阻断其余 OID，
+      // 全部 OID 都尝试过之后这一个阶段才结束（失败则整体抛出）。**不能**把
+      // per-OID 阶段登记到外层 collector 上——外层的 synthetic role / baseline /
+      // residue 早已登记，追加进去只会排到 residue **之后**，于是零残留复核会在
+      // LO 还在的时候先跑。
+      cleanup.push("large objects", async () => {
+        await unlinkLargeObjectsIndividually(largeObjectIds);
       });
       cleanup.push("unrelated acl drift", async () => {
         await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
@@ -3453,20 +3448,9 @@ test("any large object fails both baselines closed before a single mutation", as
           );
           const loid = created.rows[0]?.loid;
           assert.ok(loid !== undefined);
+          // OID 一创建就进入这个数组，上面登记的 LO 阶段按数组内容逐个清理，
+          // 因此「创建循环中途抛错」同样被覆盖。
           largeObjectIds.push(loid);
-          // 创建成功之后**立刻**登记这一个 OID 的清理阶段；它按 OID 幂等——
-          // 对象已经不在时直接返回。
-          cleanup.push(`large object ${loid}`, async () => {
-            await withPool(adminPoolConfig(), async (unlinkPool) => {
-              const present = await unlinkPool.query(
-                "SELECT 1 FROM pg_largeobject_metadata WHERE oid = $1::oid",
-                [loid],
-              );
-              if (present.rowCount !== 0) {
-                await unlinkPool.query(`SELECT lo_unlink(${loid})`);
-              }
-            });
-          });
           await pool.query(`ALTER LARGE OBJECT ${loid} OWNER TO ${owner}`);
         }
         // 一处**无关的** ACL 漂移：LO 存在时它必须原样不动，证明失败发生在任何
@@ -6670,6 +6654,42 @@ const adminStatements = async (
 };
 
 /**
+ * 逐个 OID 解除 Large Object 链接：**嵌套**一个 failure-safe collector，一个 OID
+ * 失败不阻断其余 OID，全部尝试完毕后再把失败一起抛出。
+ *
+ * 按 OID 幂等：对象已经不在时直接跳过，因此它同样适用于「创建循环只跑了一半」。
+ * 返回实际尝试过的 OID 顺序，供故障反例断言执行顺序与 continue-on-failure。
+ */
+const unlinkLargeObjectsIndividually = async (
+  largeObjectIds: readonly string[],
+  attempted: string[] = [],
+): Promise<readonly string[]> => {
+  const perObject = new CleanupCollector();
+  for (const loid of largeObjectIds) {
+    perObject.push(`large object ${loid}`, async () => {
+      attempted.push(loid);
+      await withPool(adminPoolConfig(), async (pool) => {
+        const present = await pool.query(
+          "SELECT 1 FROM pg_largeobject_metadata WHERE oid = $1::oid",
+          [loid],
+        );
+        if (present.rowCount !== 0) {
+          await pool.query(`SELECT lo_unlink(${loid})`);
+        }
+      });
+    });
+  }
+  const failures = await perObject.drainErrors();
+  if (failures.length > 0) {
+    throw new AggregateError(
+      failures,
+      `${String(failures.length)} large object(s) could not be unlinked`,
+    );
+  }
+  return attempted;
+};
+
+/**
  * 删除 probe 数据库，并**独立查询 `pg_database`** 精确断言它已经不存在。
  *
  * `DROP DATABASE IF EXISTS` 成功返回不等于「库真的没了」：连接还在时它会直接
@@ -8181,15 +8201,70 @@ test("a predefined-role over-reach blocks both entry points while a fixable drif
   });
 });
 
+test("the ledger sort order is byte-identical between Node and PostgreSQL", async () => {
+  // exact-ledger 的 state identity 由「排序后的 migration 文件名」构成，Node 侧
+  // 用共享的 UTF-8 字节序 comparator 排，PostgreSQL 现场用 `ORDER BY name
+  // COLLATE "C"` 排。两者必须逐字节一致——否则同一批文件会算出两个 identity。
+  //
+  // JavaScript 默认的字符串比较是 **UTF-16 码元序**，对补充平面字符与
+  // UTF-8 字节序真的分叉：U+FFFD 的 UTF-8 是 EF BF BD、U+10000 是 F0 90 80 80，
+  // 字节序里 U+FFFD 在前；码元序里 U+10000 的高位代理 D800 小于 FFFD，顺序相反。
+  const supplementary = "a\u{10000}.sql";
+  const replacement = "a�.sql";
+  const cases: readonly (readonly string[])[] = [
+    // 指定必须覆盖的一组。
+    [supplementary, "a.sql"],
+    // 真正能分辨两种序的一组：默认 sort 会把它排反。
+    [supplementary, replacement, "a.sql"],
+    // 现有 ledger 加上补充平面字符。
+    ["0000_stage_06.sql", supplementary, replacement],
+  ];
+
+  // 默认的 UTF-16 码元序确实与字节序不同——这不是假想的风险。
+  assert.notDeepEqual(
+    [supplementary, replacement].slice().sort(),
+    [supplementary, replacement].slice().sort(byUtf8Bytes),
+    "the default sort must really differ from UTF-8 byte order",
+  );
+
+  for (const names of cases) {
+    const live = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ sorted: string; identity: string }>(
+        // 与 generated adapter 里完全相同的表达式，只是数据来自 unnest 而不是
+        // ledger 表——因此这既验证排序，也验证最终 identity 的编码。
+        `SELECT COALESCE((SELECT jsonb_agg(name ORDER BY name COLLATE "C")
+                            FROM unnest($1::text[]) AS t(name)),
+                         '[]'::jsonb)::text AS sorted,
+                jsonb_build_array(
+                  COALESCE((SELECT jsonb_agg(name ORDER BY name COLLATE "C")
+                              FROM unnest($1::text[]) AS t(name)),
+                           '[]'::jsonb),
+                  'final')::text AS identity`,
+        [[...names]],
+      );
+      return result.rows[0];
+    });
+    assert.equal(
+      live?.sorted,
+      encodeProjectionIdentity([...names].sort(byUtf8Bytes)),
+      `the sorted ledger must match byte-for-byte for ${JSON.stringify(names)}`,
+    );
+    assert.equal(
+      live?.identity,
+      authorizationStateKey(names, "final"),
+      `the state identity must match byte-for-byte for ${JSON.stringify(names)}`,
+    );
+  }
+});
+
 test("a comma-bearing ledger filename cannot forge a registered state identity", async () => {
   // exact-ledger 的 fail-closed 判据依赖 state identity 的**无歧义**。旧编码
   // （`names.join(",") + "|" + phase`）里，把 0000 与 0001 合并成一个**合法**
   // 文件名 `0000_stage_06.sql,0001_stage_08.sql` 得到的 key 与五个真实文件完全
-  // 相同——数据库侧只要有人这样写一行 ledger，就能冒充一个已登记状态。
+  // 相同——数据库里只要真的这样写 ledger，就能冒充一个已登记状态。
   //
-  // 结构化编码 `[[sorted names], phase]` 让每个文件名各自 JSON 引号包裹，因此
-  // 伪造不出来；这里在真实 PostgreSQL 上验证：Node 与数据库现场算出的 identity
-  // 逐字节相同，而伪造的 ledger 会在**任何 mutation 之前**被拒绝。
+  // 因此这里**真的**把 0000/0001 两行删掉、换成一行合并文件名，构成一个在旧编码
+  // 下与已登记状态碰撞的四行 ledger，再证明四个入口全部在 mutation 之前拒绝。
   const realLedger = [
     "0000_stage_06.sql",
     "0001_stage_08.sql",
@@ -8197,60 +8272,104 @@ test("a comma-bearing ledger filename cannot forge a registered state identity",
     "0003_stage_08_secondary_closeout.sql",
     "0004_stage_08_final_closeout.sql",
   ];
-  const forgedName = "0000_stage_06.sql,0001_stage_08.sql";
-
-  // 1. 数据库现场算出的 identity 与 Node 侧逐字节相同。
-  const live = await withPool(adminPoolConfig(), async (pool) => {
-    const result = await pool.query<{ identity: string }>(
-      `SELECT jsonb_build_array(
-                COALESCE((SELECT jsonb_agg(name ORDER BY name COLLATE "C")
-                            FROM drizzle.__meal_agent_migrations),
-                         '[]'::jsonb),
-                'final')::text AS identity`,
-    );
-    return result.rows[0]?.identity;
-  });
-  assert.equal(
-    live,
-    authorizationStateKey(realLedger, "final"),
-    "PostgreSQL and Node must produce byte-identical state identities",
-  );
-
-  // 2. 旧的拼接编码确实会碰撞；结构化编码不会。
-  const legacy = (names: readonly string[]): string =>
-    `${[...names].sort().join(",")}|final`;
+  const mergedName = "0000_stage_06.sql,0001_stage_08.sql";
   const forgedLedger = [
-    forgedName,
+    mergedName,
     "0002_stage_08_audit_closeout.sql",
     "0003_stage_08_secondary_closeout.sql",
     "0004_stage_08_final_closeout.sql",
   ];
-  assert.equal(legacy(realLedger), legacy(forgedLedger));
-  assert.notEqual(
-    authorizationStateKey(realLedger, "final"),
-    authorizationStateKey(forgedLedger, "final"),
+  const legacy = (names: readonly string[]): string =>
+    `${[...names].sort().join(",")}|final`;
+  assert.equal(
+    legacy(realLedger),
+    legacy(forgedLedger),
+    "the forged ledger must really collide under the legacy join encoding",
   );
 
-  // 3. 真正把伪造的 ledger 写进数据库：四个入口都必须在任何 mutation 之前拒绝，
-  //    并且同时注入的一处可收敛漂移必须原封不动。
+  // 原始的 0000/0001 两行：删除前完整保存，清理时按原样恢复。
+  const original = await withPool(adminPoolConfig(), async (pool) => {
+    const result = await pool.query<{ name: string; hash: string }>(
+      `SELECT name, hash FROM drizzle.__meal_agent_migrations
+        WHERE name IN ('0000_stage_06.sql', '0001_stage_08.sql')
+        ORDER BY name`,
+    );
+    return result.rows;
+  });
+  assert.equal(original.length, 2, "both ledger rows must exist up front");
+
   await withFailureSafeCleanup(async (cleanup) => {
-    cleanup.push("forged ledger row", async () => {
-      await adminStatements([
-        `DELETE FROM drizzle.__meal_agent_migrations WHERE name = '${forgedName}'`,
-      ]);
+    cleanup.push("restore the real ledger", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(
+          "DELETE FROM drizzle.__meal_agent_migrations WHERE name = $1",
+          [mergedName],
+        );
+        for (const row of original) {
+          await pool.query(
+            `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
+             VALUES ($1, $2)
+             ON CONFLICT (name) DO UPDATE SET hash = EXCLUDED.hash`,
+            [row.name, row.hash],
+          );
+        }
+        const restored = await pool.query<{ name: string }>(
+          `SELECT name FROM drizzle.__meal_agent_migrations ORDER BY name COLLATE "C"`,
+        );
+        assert.deepEqual(
+          restored.rows.map((entry) => entry.name),
+          realLedger,
+          "the real ledger must be restored exactly",
+        );
+      });
     });
     cleanup.push("unrelated acl drift", async () => {
       await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
     });
     cleanup.push("baseline", restoreBaseline);
 
-    await adminStatements([
-      "GRANT SELECT ON public.households TO PUBLIC",
-      `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
-       VALUES ('${forgedName}', repeat('0', 64))`,
-    ]);
-    const before = await rawAuthorizationSnapshot();
+    // 注入：一处可收敛的 ACL 漂移 + 真正被伪造的 ledger。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query("GRANT SELECT ON public.households TO PUBLIC");
+      await pool.query(
+        `DELETE FROM drizzle.__meal_agent_migrations
+          WHERE name IN ('0000_stage_06.sql', '0001_stage_08.sql')`,
+      );
+      await pool.query(
+        `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
+         VALUES ($1, repeat('0', 64))`,
+        [mergedName],
+      );
+    });
 
+    // 1. 数据库现场算出的 identity 恰好等于 forged ledger 的 Node identity——
+    //    两侧对同一批（被伪造的）文件名给出同一个结构化 key。
+    const live = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ identity: string; names: string }>(
+        `SELECT jsonb_build_array(
+                  COALESCE((SELECT jsonb_agg(name ORDER BY name COLLATE "C")
+                              FROM drizzle.__meal_agent_migrations),
+                           '[]'::jsonb),
+                  'final')::text AS identity,
+                (SELECT count(*)::text FROM drizzle.__meal_agent_migrations)
+                  AS names`,
+      );
+      return result.rows[0];
+    });
+    assert.equal(live?.names, "4", "the forged ledger must really have four rows");
+    assert.equal(
+      live?.identity,
+      authorizationStateKey(forgedLedger, "final"),
+      "PostgreSQL must compute exactly the forged ledger identity",
+    );
+    // 而它与已登记的五文件 identity 不同——伪造没有得逞。
+    assert.notEqual(
+      live?.identity,
+      authorizationStateKey(realLedger, "final"),
+    );
+
+    // 2. 四个入口都必须在任何 mutation 之前拒绝。
+    const before = await rawAuthorizationSnapshot();
     for (const phase of ["containment", "final"] as const) {
       const verified = await runAuthorizationVerify(phase);
       assert.notEqual(verified.code, 0, `verify ${phase} must refuse`);
@@ -8264,11 +8383,76 @@ test("a comma-bearing ledger filename cannot forge a registered state identity",
       const refused = await bootstrap(phase);
       assert.notEqual(refused.code, 0, `${phase} must refuse`);
       assert.match(refused.stderr, /unregistered \(ledger, phase\) state/u);
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        before,
+        `${phase} must leave no committed mutation behind`,
+      );
     }
-    assert.equal(
-      await rawAuthorizationSnapshot(),
-      before,
-      "a forged ledger must leave no committed mutation behind",
-    );
+
+    // 3. 注入的可收敛漂移一字未动。
+    const drift = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ present: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_class c
+                          JOIN pg_namespace n ON n.oid = c.relnamespace,
+                             aclexplode(c.relacl) AS acl
+                         WHERE n.nspname = 'public' AND c.relname = 'households'
+                           AND acl.grantee = 0
+                           AND acl.privilege_type = 'SELECT') AS present`,
+      );
+      return result.rows[0]?.present;
+    });
+    assert.equal(drift, true, "the fixable drift must survive untouched");
   });
+
+  // 清理之后基线必须重新干净——恢复的是**原样**的 ledger，不是近似值。
+  assert.equal((await runAuthorizationVerify("final")).code, 0);
+});
+
+test("large object cleanup attempts every OID before the later stages run", async () => {
+  // 故障反例：LO 清理必须是外层 FIFO 的**第一个**阶段，内部逐 OID 独立执行。
+  // 一个 OID 失败不得阻止其余 OID，也不得让 synthetic role / baseline / residue
+  // 提前跑到 LO 还在的时候。
+  const order: string[] = [];
+  const attempted: string[] = [];
+  const missingOid = "999999999"; // 不存在：按 OID 幂等的分支
+  const brokenOid = "not-an-oid"; // 让这一个 OID 的清理真的抛错
+
+  const failures = await (async () => {
+    const collector = new CleanupCollector();
+    collector.push("large objects", async () => {
+      order.push("large objects");
+      await unlinkLargeObjectsIndividually(
+        [missingOid, brokenOid, missingOid],
+        attempted,
+      );
+    });
+    collector.push("synthetic role", async () => {
+      order.push("synthetic role");
+    });
+    collector.push("baseline", async () => {
+      order.push("baseline");
+    });
+    collector.push("residue", async () => {
+      order.push("residue");
+    });
+    return collector.drainErrors();
+  })();
+
+  // 1. 三个 OID 全部被尝试过——坏掉的那个没有阻断后面的 OID。
+  assert.deepEqual(attempted, [missingOid, brokenOid, missingOid]);
+  // 2. 外层顺序：LO 阶段在最前，residue 在最后。
+  assert.deepEqual(order, [
+    "large objects",
+    "synthetic role",
+    "baseline",
+    "residue",
+  ]);
+  // 3. 坏掉的 OID 让 LO 阶段整体失败，但只失败一次、且不影响后续阶段。
+  assert.equal(failures.length, 1);
+  assert.match(failures[0]?.message ?? "", /cleanup stage large objects failed/u);
+  assert.match(
+    failures[0]?.message ?? "",
+    /1 large object\(s\) could not be unlinked/u,
+  );
 });
