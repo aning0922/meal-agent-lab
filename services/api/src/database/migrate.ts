@@ -281,8 +281,11 @@ const assertAdminBootstrapPreflight = async (
     return;
   }
 
+  // ledger 名称顺序统一用 `COLLATE "C"`：它与 Node 侧的 byUtf8Bytes 逐字节等价，
+  // 而不带 COLLATE 时排序取决于数据库的 locale，同一批文件可能给出别的顺序。
   const applied = await client.query<{ name: string; hash: string }>(
-    "SELECT name, hash FROM drizzle.__meal_agent_migrations ORDER BY name",
+    `SELECT name, hash FROM drizzle.__meal_agent_migrations
+      ORDER BY name COLLATE "C"`,
   );
   if (applied.rows.length !== 1 || applied.rows[0]?.name !== stage06Migration) {
     throw new MigrationPreflightError(
@@ -373,9 +376,13 @@ export const applyMigrations = async (
             `(${String(matches.length)} matches)`,
       );
     }
-    // 精确一个文件：字典序上更早的文件也不会被这条路径执行。
+    // 精确一个文件：排在它**之前**的文件也不会被这条路径执行。这里的「之前」
+    // 必须与 readMigrations 的应用顺序、ledger 的 `COLLATE "C"` 顺序是**同一个**
+    // UTF-8 字节序；用 JavaScript 默认的 `<`（UTF-16 码元序）会让补充平面字符
+    // 骗过这道检查——一个字节序上更早的文件会被判成「更晚」而不被报告。
+    const exact = String(options.exactMigration);
     const earlier = available.filter(
-      (migration) => migration.name < String(options.exactMigration),
+      (migration) => byUtf8Bytes(migration.name, exact) < 0,
     );
     if (earlier.length > 0) {
       throw new MigrationSelectionError(
@@ -388,7 +395,11 @@ export const applyMigrations = async (
     selected = matches;
   } else if (options.onlyThrough !== undefined) {
     const bound = options.onlyThrough;
-    selected = available.filter((migration) => migration.name <= bound);
+    // 上界比较同样走同一个 UTF-8 字节序 comparator：默认的 `<=` 是 UTF-16 码元
+    // 序，会把字节序上**超出**上界的补充平面文件误判成「在界内」并执行它。
+    selected = available.filter(
+      (migration) => byUtf8Bytes(migration.name, bound) <= 0,
+    );
   } else {
     selected = available;
   }
@@ -500,10 +511,12 @@ export const migrationsAreCurrent = async (
   client: PoolClient,
 ): Promise<boolean> => {
   const migrations = await readMigrations();
+  // 逐位比对的前提是两侧同序：磁盘侧是 byUtf8Bytes，ledger 侧必须是等价的
+  // `COLLATE "C"`，否则 locale 一变就会把「已是最新」误判成「不是最新」。
   const result = await client.query<{ name: string; hash: string }>(
     `SELECT name, hash
      FROM drizzle.__meal_agent_migrations
-     ORDER BY name`,
+     ORDER BY name COLLATE "C"`,
   );
 
   return (

@@ -8287,16 +8287,39 @@ test("a comma-bearing ledger filename cannot forge a registered state identity",
     "the forged ledger must really collide under the legacy join encoding",
   );
 
-  // 原始的 0000/0001 两行：删除前完整保存，清理时按原样恢复。
-  const original = await withPool(adminPoolConfig(), async (pool) => {
-    const result = await pool.query<{ name: string; hash: string }>(
-      `SELECT name, hash FROM drizzle.__meal_agent_migrations
-        WHERE name IN ('0000_stage_06.sql', '0001_stage_08.sql')
-        ORDER BY name`,
-    );
-    return result.rows;
-  });
+  // 原始的 0000/0001 两行：删除前保存**完整三元组**（含 applied_at），清理时按
+  // 原样恢复。applied_at 用 UTC 微秒渲染，既与会话 TimeZone / DateStyle 无关，
+  // 也不损失 timestamptz 的精度——恢复必须是原值，不能重新取 clock_timestamp()。
+  interface LedgerRow {
+    readonly name: string;
+    readonly hash: string;
+    readonly applied_at: string;
+  }
+  const ledgerRows = async (
+    where: string,
+  ): Promise<readonly LedgerRow[]> =>
+    withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<LedgerRow>(
+        `SELECT name, hash,
+                to_char(applied_at AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD HH24:MI:SS.US') AS applied_at
+           FROM drizzle.__meal_agent_migrations
+          WHERE ${where}
+          ORDER BY name COLLATE "C"`,
+      );
+      return result.rows;
+    });
+  const original = await ledgerRows(
+    "name IN ('0000_stage_06.sql', '0001_stage_08.sql')",
+  );
   assert.equal(original.length, 2, "both ledger rows must exist up front");
+  for (const row of original) {
+    assert.match(
+      row.applied_at,
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/u,
+      "applied_at must be captured at full microsecond precision",
+    );
+  }
 
   await withFailureSafeCleanup(async (cleanup) => {
     cleanup.push("restore the real ledger", async () => {
@@ -8306,18 +8329,29 @@ test("a comma-bearing ledger filename cannot forge a registered state identity",
           [mergedName],
         );
         for (const row of original) {
+          // 三个字段一起写回。applied_at 显式给值，绝不让它落到列默认的
+          // clock_timestamp()——那样恢复出来的是一条「看着像」原行的新行。
           await pool.query(
-            `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
-             VALUES ($1, $2)
-             ON CONFLICT (name) DO UPDATE SET hash = EXCLUDED.hash`,
-            [row.name, row.hash],
+            `INSERT INTO drizzle.__meal_agent_migrations
+                    (name, hash, applied_at)
+             VALUES ($1, $2, ($3 || '+00')::timestamptz)
+             ON CONFLICT (name) DO UPDATE
+               SET hash = EXCLUDED.hash, applied_at = EXCLUDED.applied_at`,
+            [row.name, row.hash, row.applied_at],
           );
         }
-        const restored = await pool.query<{ name: string }>(
-          `SELECT name FROM drizzle.__meal_agent_migrations ORDER BY name COLLATE "C"`,
+        // 独立重新查询完整三元组，与删除前的快照逐字段 deepEqual。
+        const restored = await ledgerRows(
+          "name IN ('0000_stage_06.sql', '0001_stage_08.sql')",
         );
         assert.deepEqual(
-          restored.rows.map((entry) => entry.name),
+          restored,
+          original,
+          "name, hash and applied_at must all be restored to the original values",
+        );
+        const everything = await ledgerRows("true");
+        assert.deepEqual(
+          everything.map((entry) => entry.name),
           realLedger,
           "the real ledger must be restored exactly",
         );
@@ -8455,4 +8489,176 @@ test("large object cleanup attempts every OID before the later stages run", asyn
     failures[0]?.message ?? "",
     /1 large object\(s\) could not be unlinked/u,
   );
+});
+
+test("migration selection bounds follow UTF-8 byte order, not UTF-16 code units", async () => {
+  // migration 的**选择**边界与 ledger 的 identity 必须是同一个序。这里用两个真的
+  // 能分辨两种序的文件名：
+  //   a.sql          61 2E …
+  //   a�.sql    61 EF BF BD …   （UTF-16 码元 FFFD）
+  //   a\u{10000}.sql 61 F0 90 80 80 … （UTF-16 代理对 D800 DC00）
+  // UTF-8 字节序：a.sql < a�.sql < a𐀀.sql
+  // UTF-16 码元序：a.sql < a𐀀.sql < a�.sql   ← 中间两个正好互换
+  const ascii = "a.sql";
+  const replacement = "a�.sql";
+  const supplementary = "a\u{10000}.sql";
+
+  // 前提断言：两种序对这一对文件名确实分叉，否则下面的反例是空的。
+  assert.deepEqual(
+    [supplementary, replacement].sort(byUtf8Bytes),
+    [replacement, supplementary],
+    "UTF-8 byte order must put U+FFFD before U+10000",
+  );
+  assert.deepEqual(
+    [supplementary, replacement].sort(),
+    [supplementary, replacement],
+    "the default UTF-16 order must put U+10000 first — that is the trap",
+  );
+
+  const probe = "meal_agent_stage09a_unicode";
+  const trackedBefore = await readdir(defaultMigrationsDirectory);
+  const all = join(clusterRoot, "migrations-unicode-all");
+  const pair = join(clusterRoot, "migrations-unicode-pair");
+  const tableOf: Readonly<Record<string, string>> = {
+    [ascii]: "unicode_ascii",
+    [replacement]: "unicode_replacement",
+    [supplementary]: "unicode_supplementary",
+  };
+  const writeMigrations = async (
+    directory: string,
+    names: readonly string[],
+  ): Promise<void> => {
+    await rm(directory, { recursive: true, force: true });
+    await mkdir(directory, { recursive: true });
+    for (const name of names) {
+      await writeFile(
+        join(directory, name),
+        `CREATE TABLE public.${String(tableOf[name])} (id int);\n`,
+        "utf8",
+      );
+    }
+    // readdir 必须原样读回这三个名字：文件系统的 Unicode 规范化不得改写它们，
+    // 否则下面的顺序反例测的就不是我们写下的字节。
+    assert.deepEqual(
+      (await readdir(directory)).sort(byUtf8Bytes),
+      [...names].sort(byUtf8Bytes),
+    );
+  };
+
+  const resetProbe = async (): Promise<void> => {
+    await withPool(adminPoolConfig("postgres"), async (pool) => {
+      await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      await pool.query(`CREATE DATABASE ${probe}`);
+    });
+  };
+  const presentTables = async (): Promise<readonly string[]> =>
+    withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query<{ relname: string }>(
+        `SELECT c.relname FROM pg_class c
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind = 'r'
+          ORDER BY c.relname COLLATE "C"`,
+      );
+      return result.rows.map((row) => row.relname);
+    });
+  // 应用顺序由 applied_at 还原：非原子路径下每条 migration 各自提交，
+  // clock_timestamp() 因此严格递增。这里额外断言时间戳**两两不同**——否则
+  // `name COLLATE "C"` 的兜底次序会替真实的应用顺序作答，反例就失效了。
+  const appliedOrder = async (): Promise<readonly string[]> =>
+    withPool(adminPoolConfig(probe), async (pool) => {
+      const result = await pool.query<{ name: string; stamp: string }>(
+        `SELECT name,
+                to_char(applied_at AT TIME ZONE 'UTC',
+                        'YYYY-MM-DD HH24:MI:SS.US') AS stamp
+           FROM drizzle.__meal_agent_migrations
+          ORDER BY applied_at, name COLLATE "C"`,
+      );
+      const stamps = result.rows.map((row) => row.stamp);
+      assert.equal(
+        new Set(stamps).size,
+        stamps.length,
+        "applied_at must be distinct so the order really is the applied order",
+      );
+      return result.rows.map((row) => row.name);
+    });
+
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("probe database", async () => {
+      await withPool(adminPoolConfig("postgres"), async (pool) => {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      });
+    });
+    cleanup.push("sandboxes", async () => {
+      await rm(all, { recursive: true, force: true });
+      await rm(pair, { recursive: true, force: true });
+    });
+    cleanup.push("tracked migrations", async () => {
+      assert.deepEqual(
+        (await readdir(defaultMigrationsDirectory)).sort(byUtf8Bytes),
+        [...trackedBefore].sort(byUtf8Bytes),
+        "no test may add or remove a tracked migration",
+      );
+    });
+
+    await writeMigrations(all, [ascii, replacement, supplementary]);
+    await writeMigrations(pair, [replacement, supplementary]);
+
+    // 1. onlyThrough 的上界是 UTF-8 字节序的上界：a𐀀.sql 在字节序上**超出**
+    //    a�.sql，不得被选中。UTF-16 码元序会把它判成「在界内」并执行。
+    await resetProbe();
+    await applyMigrations(adminUrl(probe), {
+      role: null,
+      onlyThrough: replacement,
+      migrationsDirectory: all,
+    });
+    assert.deepEqual(
+      await presentTables(),
+      ["unicode_ascii", "unicode_replacement"],
+      "onlyThrough must not reach past the UTF-8 upper bound",
+    );
+    assert.deepEqual(await appliedOrder(), [ascii, replacement]);
+
+    // 2. 无上界时三个文件全部应用，且**应用顺序**就是 UTF-8 字节序；
+    //    UTF-16 码元序会给出 [a.sql, a𐀀.sql, a�.sql]。
+    await resetProbe();
+    await applyMigrations(adminUrl(probe), {
+      role: null,
+      migrationsDirectory: all,
+    });
+    assert.deepEqual(
+      await appliedOrder(),
+      [ascii, replacement, supplementary],
+      "migrations must be applied in UTF-8 byte order",
+    );
+
+    // 3. exactMigration 的 earlier 判定用的是同一个序：a�.sql 在字节序上排在
+    //    a𐀀.sql **之前**，必须被报出来并让整条 admin 路径在任何 DDL 之前失败。
+    //    UTF-16 码元序下 a�.sql 会被判成「更晚」，于是这条路径会静默执行。
+    await resetProbe();
+    const refused = await applyMigrations(adminUrl(probe), {
+      role: null,
+      exactMigration: supplementary,
+      migrationsDirectory: pair,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    assert.ok(refused instanceof Error, "the earlier file must be refused");
+    assert.match(refused.message, /migration selection: /u);
+    assert.ok(
+      refused.message.includes(replacement),
+      `the refusal must name the earlier file: ${refused.message}`,
+    );
+    assert.ok(
+      refused.message.includes("sort before it"),
+      refused.message,
+    );
+    await withPool(adminPoolConfig(probe), async (pool) => {
+      const trace = await pool.query<{ drizzle: string | null }>(
+        "SELECT to_regnamespace('drizzle')::text AS drizzle",
+      );
+      assert.equal(trace.rows[0]?.drizzle, null, "no DDL may have run");
+    });
+    assert.deepEqual(await presentTables(), []);
+  });
 });
