@@ -163,8 +163,9 @@ catalog → 共享结构化 projector CTE → 公开只读 projection adapter / 
 冻结成跨环境快照。`watchedGrantees` 静态名单已删除，收敛与断言按完整元组
 （object + grantee + grantor + privilege + grantable）判定，固定允许授权的 canonical
 grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验收落点
-`5e480803`）；阶段 09A 仍在进行（M2B Compose 拓扑 In Progress），本 ADR 因此保持
-`Proposed`。
+`5e480803`）；**M2B（Compose 拓扑）也已由总控 Accepted，验收落点 `d0f2219`**。
+阶段 09A 仍在进行（下一项是 M3 配置与 Secret file 消费，M4、M5 未开始），Secret
+注入、完整 bootstrap 链与全栈启动都尚未通过，本 ADR 因此保持 `Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
 PostgreSQL 语义展开为隐式内建默认，因此它不是「物理 ACL 行」）、

@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-27 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）In Progress**；M3—M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；下一项是 M3「配置与 Secret file 消费」，M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -147,7 +147,7 @@ PostgreSQL healthy
 
 ### M2B 实施记录（Compose 拓扑）
 
-已实现并取得实测证据，**待项目总控复核**。落点：
+已实现并取得实测证据，**已由项目总控 Accepted，验收落点 `d0f2219`**。落点：
 [`infra/docker/compose.local-test.yaml`](../../infra/docker/compose.local-test.yaml)、
 [`infra/docker/check-compose-topology.mjs`](../../infra/docker/check-compose-topology.mjs)、
 [`infra/docker/README.md`](../../infra/docker/README.md)、
@@ -177,7 +177,8 @@ PostgreSQL healthy
    runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败（验收门禁
    第 4 条）。
 
-首轮总控复核 **Not Accepted**，已按点名事项定点修订（仍待复核）：
+首轮总控复核 **Not Accepted**，按点名事项定点修订后**已由总控 Accepted，验收
+落点 `d0f2219`**：
 
 7. **handoff 的真实挂载阻断已修**：`bootstrap.sh handoff` 固定按
    `${script_directory}/../../../services/api/migrations/0000_stage_06.sql` 求
@@ -198,7 +199,8 @@ PostgreSQL healthy
     `--project-name` 可覆盖，门禁用两个 project name 证明真实名称无交集。
 11. **变异测试 27 项全部以指定理由捕获、0 漏网**。
 
-**边界（不得写成 Pass）**：**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
+**边界（M2B 的 Accepted 只覆盖拓扑本身，不得写成 Pass）**：**拓扑已验证；
+Secret 注入、完整 bootstrap 链与全栈启动尚未通过，属于 M3。**
 `config.ts` 只接受 `DATABASE_URL`，`bootstrap.sh` 只接受三个
 `MEAL_AGENT_*_PASSWORD` environment value；M2B 不写入临时明文，也不修改 M1/M2A
 已冻结的实现，因此 `api`、`migrate`、`bootstrap-schema`、`bootstrap-logins` 当前

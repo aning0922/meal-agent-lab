@@ -190,9 +190,16 @@ Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前�
 
 把它并入 `pnpm stage09a:check` 属于 M5；M3 会再补运行期 Secret 与暴露级别断言。
 
-## 当前边界
+## 当前状态与边界
 
-**拓扑已验证，完整 Secret 注入与全栈启动待 M3。**
+M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。阶段 09A 仍为 In Progress，
+下一项是 **M3（配置与 Secret file 消费）**，M4、M5 未开始；
+[ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
+仍为 `Proposed`。
+
+**该 Accepted 只覆盖 Compose 拓扑本身**：Secret 注入、完整 bootstrap 链
+（`0000 → handoff → acl → migrate → grants`）与全栈启动**尚未通过**，不得记为
+Pass。
 
 `DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 是本拓扑**声明**的 M3 契约：
 `services/api/src/config.ts` 目前只接受 `DATABASE_URL`，`postgres/bootstrap.sh`
