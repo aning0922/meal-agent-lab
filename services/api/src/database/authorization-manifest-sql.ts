@@ -1,9 +1,8 @@
-import { assertRenderableValue } from "./authorization-identity.js";
 import {
   authorizationDigest,
   authorizationManifest,
-  AuthorizationManifestError,
   authorizationStateKeys,
+  validateAuthorizationManifest,
   type AuthorizationManifest,
 } from "./authorization-manifest.js";
 import {
@@ -55,25 +54,7 @@ import {
 const convergeTag = "$meal_agent_authorization_converge$";
 const verifyTag = "$meal_agent_authorization_verify$";
 
-/**
- * 渲染前的最后一道守卫，与 manifest / policy / projection 共用同一实现：任何
- * SQL token（引号、分号、注释标记、反斜杠、换行）以及三个 dollar-quote 标签都会
- * 在渲染之前被拒绝。标签尤其致命——值里出现收敛块的 dollar-quote 标签就能提前
- * 关闭整个 `DO` 块，把后面的文本变成可执行语句。
- */
-const assertRenderable = (manifest: AuthorizationManifest): void => {
-  const { owner, grantees, logins, memberships } = manifest.principals;
-  for (const value of [
-    owner,
-    ...grantees,
-    ...logins,
-    ...memberships.flatMap((entry) => [entry.member, entry.granted]),
-    ...manifest.managedSchemas,
-    ...manifest.deniedRoutines,
-  ]) {
-    assertRenderableValue("manifest value", value);
-  }
-};
+
 
 const sessionPreamble = `  PERFORM pg_catalog.set_config('search_path', 'pg_catalog', true);
   PERFORM pg_catalog.set_config('quote_all_identifiers', 'off', true);`;
@@ -120,7 +101,7 @@ const declarations = `DECLARE
 export const renderAuthorizationConvergeSql = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
-  assertRenderable(manifest);
+  validateAuthorizationManifest(manifest);
   const owner = policyLiteral(manifest.principals.owner);
   const shared = renderAuthorizationSharedCtes(manifest);
   return `DO ${convergeTag}
@@ -293,7 +274,7 @@ ${convergeTag};
 export const renderAuthorizationVerifySql = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
-  assertRenderable(manifest);
+  validateAuthorizationManifest(manifest);
   const owner = policyLiteral(manifest.principals.owner);
   return `DO ${verifyTag}
 ${declarations}
@@ -535,7 +516,9 @@ const adapterHeader = (
   manifest: AuthorizationManifest,
   title: string,
   nature: string,
-): readonly string[] => [
+): readonly string[] => {
+  validateAuthorizationManifest(manifest);
+  return [
   `-- 阶段 09A / M2A：${title}`,
   "--",
   "-- GENERATED FILE — DO NOT EDIT.",
@@ -550,8 +533,9 @@ const adapterHeader = (
   "--",
   `-- ${nature}`,
   "-- 调用方必须先设置 GUC meal_agent.acl_phase（containment 或 final）。",
-  "",
-];
+    "",
+  ];
+};
 
 export const renderAuthorizationConvergeAdapter = (
   manifest: AuthorizationManifest = authorizationManifest,

@@ -213,14 +213,16 @@ Large Object 的策略见 §2.3，**已决定**，R8B 已落实。
   catalog 动态取得，缺失时 verify 拒绝、converge 以 language owner 的身份恢复。
 - **数组类型**只记录「向元素类型委托」，既不建立也不撤销独立 ACL：PostgreSQL 对
   数组类型直接拒绝授权与改属（`cannot set privileges of array types`）。
-- Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此对
-  `pg_largeobject_metadata.lomacl` 与 `pg_default_acl` 中 `defaclobjtype='L'` 采取
-  「存在项目角色或 `PUBLIC` 权限即收敛并断言为空」，不借此扩展任何业务能力。
-  R8B 起对**任意** LO 对象（不限于项目角色拥有的）一律在任何 ACL / default ACL
-  mutation 之前 fail closed：**只报告、不自动删除未知数据**，不解除链接、不接管
-  归属、不改 `lomacl`，LO 的 OID 也不进入任何固定允许 manifest。只有在**确实
-  没有** LO 时，收敛才会处理 `defaclobjtype = 'L'` 的异常默认权限与 20 个入口点
-  上多余的 `EXECUTE`。**并且**：既然产品
+- Large Object 不受 schema ACL 与 RLS 约束，当前产品不使用它。R8B 起的口径是
+  **先判定、后收敛**，两句都不可省略：
+  1. 只要目标库里存在**任意** LO 对象（不限于项目角色拥有的），两个阶段都在
+     **任何 ACL / default ACL mutation 之前** fail closed，且**绝不**修改
+     `lomowner` / `lomacl` / LO 数据，也**绝不**解除链接——只报告 OID 与 owner，
+     OID 不进入任何固定允许 manifest；
+  2. 只有在**确实一个 LO 都没有**时，收敛才处理 `pg_default_acl` 中
+     `defaclobjtype = 'L'` 的异常默认权限与 20 个入口点上多余的 `EXECUTE`。
+  「存在 LO 权限就地收敛」是 R8A 之前的旧口径，已经作废——它会在收敛过程中改写
+  一份来历不明的数据的权限。**并且**：既然产品
   声明禁用 LO，就必须同时关闭 `pg_catalog` 的创建/读写入口（`lo_create`、
   `lo_creat`、`lo_from_bytea`、`lo_put`、`lo_import` 等 20 个函数默认对 `PUBLIC`
   开放 `EXECUTE`）——只封堵已有 LO 的对象权限，等于允许 runtime 自己造一个新的

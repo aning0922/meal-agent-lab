@@ -2,6 +2,7 @@ import { projectionDatabaseKey as databaseKeyLiteral } from "./authorization-ide
 import {
   authorizationManifest,
   AuthorizationManifestError,
+  validateAuthorizationManifest,
   type AuthorizationManifest,
 } from "./authorization-manifest.js";
 import { byCodeUnit } from "./stage06-manifest.js";
@@ -334,6 +335,7 @@ const routineTarget = (procAlias: string, schemaAlias: string): string =>
 export const renderAuthorizationProjectorCtes = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
+  validateAuthorizationManifest(manifest);
   assertDefaultAclObjtypeMappings();
   const managed = textArray([...manifest.managedSchemas].sort(byCodeUnit));
   const denied = textArray([...manifest.deniedRoutines].sort(byCodeUnit));
@@ -739,7 +741,9 @@ ${defaultAclObjtypeMappings
  * 从共享的结构化 projector CTE 派生。
  */
 export const renderAuthorizationProjectionSql = (
-  manifest: AuthorizationManifest = authorizationManifest,
+  manifest: AuthorizationManifest = validateAuthorizationManifest(
+    authorizationManifest,
+  ),
 ): string => `WITH
 ${renderAuthorizationProjectorCtes(manifest)}
   SELECT kind, identity, detail
@@ -800,8 +804,9 @@ ${renderAuthorizationProjectorCtes(manifest)}
 
 export const renderAuthorizationProjectionAdapter = (
   manifest: AuthorizationManifest = authorizationManifest,
-): string =>
-  [
+): string => {
+  validateAuthorizationManifest(manifest);
+  return [
     "-- 阶段 09A / M2A：授权 catalog 的**只读**投影（canonical projector 的对外三列）。",
     "--",
     "-- GENERATED FILE — DO NOT EDIT.",
@@ -834,3 +839,4 @@ export const renderAuthorizationProjectionAdapter = (
     `${renderAuthorizationProjectionSql(manifest)};`,
     "",
   ].join("\n");
+};

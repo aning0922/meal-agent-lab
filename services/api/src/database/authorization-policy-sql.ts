@@ -7,6 +7,7 @@ import {
   authorizationStateKey,
   AuthorizationManifestError,
   projectRoles,
+  validateAuthorizationManifest,
   type AuthorizationManifest,
 } from "./authorization-manifest.js";
 import { renderAuthorizationProjectorCtes } from "./authorization-projection-sql.js";
@@ -115,6 +116,7 @@ const renderValues = (
 export const renderAuthorizationPolicyCtes = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
+  validateAuthorizationManifest(manifest);
   const { owner, grantees, logins, memberships } = manifest.principals;
   const grantRows: string[][] = [];
   const effectiveRows: string[][] = [];
@@ -390,7 +392,9 @@ ${renderValues(
 
 /** 共享事实层 + 策略层，供 verify 与 converge 的每条语句直接拼在 `WITH` 之后。 */
 export const renderAuthorizationSharedCtes = (
-  manifest: AuthorizationManifest = authorizationManifest,
+  manifest: AuthorizationManifest = validateAuthorizationManifest(
+    authorizationManifest,
+  ),
 ): string =>
   `${renderAuthorizationProjectorCtes(manifest)},\n${renderAuthorizationPolicyCtes(manifest)}`;
 
@@ -406,6 +410,7 @@ export const renderAuthorizationSharedCtes = (
 export const renderAuthorizationPreflightStatement = (
   manifest: AuthorizationManifest = authorizationManifest,
 ): string => {
+  validateAuthorizationManifest(manifest);
   const { owner } = manifest.principals;
   const managed = policyTextArray(
     [...manifest.managedSchemas].sort(byCodeUnit),

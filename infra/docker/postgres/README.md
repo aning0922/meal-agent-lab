@@ -214,10 +214,14 @@ owner/`meal_agent_migrator` 的 `USAGE`，`PUBLIC`、app、backup 与三个 logi
   grantor 授予的授权会残留。**`PUBLIC` 也是如此**——数据库级与 schema 级的
   `PUBLIC` 授权按真实 grantor 逐条 `SET LOCAL ROLE` 后撤销，是**真正撤销**，
   而不是等后置校验失败再整体回滚（回滚只让命令失败，权限仍留在库里）；
-- Large Object 不受 schema ACL 与 RLS 约束。当前产品不使用 LO，因此
-  `pg_largeobject_metadata.lomacl` 中指向项目角色或 `PUBLIC` 的权限、以及
-  `pg_default_acl` 中 `defaclobjtype = 'L'` 的非 owner 默认权限一律收敛并断言为
-  空；项目角色**拥有** LO 属于异常状态，只报告并失败，不删数据；
+- Large Object 不受 schema ACL 与 RLS 约束，当前产品不使用它。顺序是**先判定、
+  后收敛**：只要目标库里存在**任意**一个 `pg_largeobject_metadata` 行（不论 owner
+  是 cluster admin、外部角色还是项目角色），两个阶段都在**任何 ACL / default ACL
+  mutation 之前** fail closed，并且**绝不**修改 `lomowner`、**绝不**修改
+  `lomacl`、**绝不**改动 LO 数据、**绝不**解除链接——只报告 OID 与 owner。
+  只有在**确实一个 LO 都没有**时，收敛才会处理与 LO 相关的权限面：
+  `pg_default_acl` 中 `defaclobjtype = 'L'` 的异常默认权限，以及 20 个
+  `pg_catalog` LO 入口点上除函数 owner 之外的 `EXECUTE`；
 - routine 权限按**有效权限**（`has_function_privilege`）验证而不是只看直接
   grantee：`GRANT EXECUTE ... TO PUBLIC` 会派生给每个角色，恢复路径带进来的这类
   授权只查直接授权是看不见的。`public` 与 `drizzle` 中不允许存在任何 routine，

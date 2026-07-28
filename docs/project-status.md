@@ -78,9 +78,9 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 45/45 |
+| API unit | 47/47 |
 | API HTTP | 7/7 |
-| PostgreSQL migration/RLS/concurrency/身份边界 | 122/122 |
+| PostgreSQL migration/RLS/concurrency/身份边界 | 124/124 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
 | audit gate 与 transport 反向单测 | 11/11 |
@@ -164,6 +164,16 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   被拒）。
 - **exact-ledger 不放宽**：`pg_default_acl` 只保护创建窗口；新增 migration 创建
   relation 或 sequence 时，必须同时新增 ledger 状态并登记该对象的固定授权。
+- **统一校验入口**：`validateAuthorizationManifest()` 是唯一、公开、完整的校验
+  入口，**每一个**导出的 renderer（projection / policy / shared / preflight /
+  converge / verify 与两个 adapter）都在渲染之前调用它，没有任何 raw renderer
+  旁路能绕过 canonicalizer。它校验受支持的正安全整数版本、全部会进入 SQL 的
+  标量（privilege / identity / routine / ledger / phase / principal / schema），
+  并要求 `defaults` 与 `defaultEffective` 的 grantee 必须属于 owner 或已登记的
+  项目主体——外部角色一律 fail closed。
+- **digest 覆盖 state key 集合**：新增一个五类数组全空的 `(ledger, phase)` 一行
+  内容都不产生，但它实质放宽了 fail-closed 判定，因此 canonical digest 必须
+  跟着变。
 - **mutation 前致命前置条件**：未登记 ledger/phase、managed schema 缺失、项目角色
   缺失、owner 漂移、登录角色拥有对象、routine 指纹漂移/未知 routine、manifest 要求的
   对象缺失、未知 `defaclobjtype`、任意 Large Object，以及无法由 ACL mutation 修复的

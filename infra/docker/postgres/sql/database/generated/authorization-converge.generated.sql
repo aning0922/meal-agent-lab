@@ -7,7 +7,7 @@
 -- 重新生成： pnpm --filter @meal-agent/api manifest:generate
 -- 门禁： pnpm --filter @meal-agent/api manifest:check（内存渲染逐字节比对，不会自动改写本文件）
 -- manifest version: 2
--- canonical manifest digest: sha256:cfc315ca1e573b6c782a745e9ce7191a08e848290453bfff1860104d9e3501a7
+-- canonical manifest digest: sha256:26746db11b6d6837415725b8c838a28b710245209e6f16aac5679cd131bfd1d5
 --
 -- 本文件会修改 ACL：这是它的职责。它不改 ownership，也不建任何对象；全部致命前置条件先于任何 mutation 执行。
 -- 调用方必须先设置 GUC meal_agent.acl_phase（containment 或 final）。

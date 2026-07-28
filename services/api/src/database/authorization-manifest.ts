@@ -1856,6 +1856,30 @@ const assertDefaultSlot = (
   return rule.privileges;
 };
 
+/**
+ * 默认权限的 grantee 只能是 canonical owner 或登记过的项目主体。
+ *
+ * 外部角色**必须** fail closed：`pg_default_acl` 决定的是**未来每一个新对象**的
+ * 出生权限，一条写错的 grantee 会持续地把权限发给一个本基线根本不认识的角色，
+ * 而且新对象一旦创建就已经带着它——收敛只能事后追平，追不回创建瞬间。
+ */
+const assertDefaultGrantee = (
+  manifest: AuthorizationManifest,
+  kind: string,
+  grantee: string,
+): string => {
+  assertRenderableValue(`${kind} grantee`, grantee);
+  const { owner, grantees } = manifest.principals;
+  if (grantee !== owner && !grantees.includes(grantee)) {
+    throw new AuthorizationManifestError(
+      `${kind} grantee ${JSON.stringify(grantee)} is neither the canonical ` +
+        "owner nor a project principal; external roles are never allowed a " +
+        "default privilege",
+    );
+  }
+  return grantee;
+};
+
 /** 固定允许授权只可能落在四类对象上；其余类别由策略判定，不得登记允许项。 */
 const assertGrantableObject = (
   object: readonly ProjectionIdentityPart[],
@@ -1962,6 +1986,7 @@ export const canonicalAuthorizationRows = (
       );
     }
     for (const entry of state.defaults) {
+      assertDefaultGrantee(manifest, "default", entry.grantee);
       const allowed = assertDefaultSlot(manifest, entry.objtype, entry.scope);
       push(
         key,
@@ -1975,6 +2000,7 @@ export const canonicalAuthorizationRows = (
       );
     }
     for (const entry of state.defaultEffective) {
+      assertDefaultGrantee(manifest, "default-effective", entry.grantee);
       const allowed = assertDefaultSlot(manifest, entry.objtype, entry.scope);
       push(
         key,
@@ -2073,6 +2099,14 @@ const canonicalManifestHeader = (
         .map((value) => assertRenderable("denied routine", value))
         .sort(byCodeUnit),
     )}`,
+    // **已登记的 state key 集合本身**进 digest。只把 state 的内容行摘要进去是
+    // 不够的：新增一个五类数组全空的 `(ledger, phase)` 一行都不产生，却实质
+    // 改变了「哪些组合被允许通过 fail-closed 判定」——digest 必须跟着变。
+    `<manifest>|states|[]|${encodeProjectionIdentity(
+      authorizationStateKeys(manifest).map((key) =>
+        assertComposable("state key", key),
+      ),
+    )}`,
   ];
 };
 
@@ -2100,6 +2134,136 @@ export const authorizationStateKeys = (
   manifest.states
     .map((state) => authorizationStateKey(state.ledger, state.phase))
     .sort(byCodeUnit);
+
+/** 受支持的 manifest 版本。渲染器只接受这些版本。 */
+export const supportedAuthorizationManifestVersions: readonly number[] =
+  Object.freeze([2]);
+
+const assertRenderableList = (
+  field: string,
+  values: readonly string[],
+): readonly string[] => {
+  if (values.length === 0) {
+    throw new AuthorizationManifestError(`${field} must not be empty`);
+  }
+  const seen = new Set<string>();
+  for (const value of values) {
+    assertRenderableValue(field, value);
+    if (seen.has(value)) {
+      throw new AuthorizationManifestError(
+        `${field} contains the duplicate entry ${JSON.stringify(value)}`,
+      );
+    }
+    seen.add(value);
+  }
+  return values;
+};
+
+/**
+ * **唯一的、公开的、完整的 manifest 校验入口。**
+ *
+ * 每一个导出的 renderer——projection / policy / shared / preflight / converge /
+ * verify 以及两个 adapter——都在渲染**之前**调用它。理由很直接：这些 renderer 把
+ * manifest 里的值拼进会 `SET LOCAL ROLE` / `GRANT` / `REVOKE` /
+ * `ALTER DEFAULT PRIVILEGES` 的高权限 SQL。只要有**一个** renderer 能绕过校验，
+ * 那条路径就是整套守卫的缺口，因此这里不留「raw renderer 直接渲染」的旁路：
+ * 校验最终会走到 {@link canonicalAuthorizationRows}，也就是同一个 canonicalizer。
+ *
+ * 覆盖面：
+ *
+ * - `version`：必须是**受支持的正安全整数**。非数字、非整数、非有限、负数、
+ *   零、以及任何能带换行/引号/分号注入的伪造值都在这里被拒绝；
+ * - `principals`：owner / grantees / logins / memberships 的每一个角色名都过
+ *   共用渲染守卫；owner 不得同时是固定 grantee；logins 必须是 grantees 的子集；
+ *   membership 的两端必须都是已登记的项目角色；
+ * - `managedSchemas` / `deniedRoutines`：非空、无重复、逐个过渲染守卫；
+ * - 每个 state 的 `ledger` 文件名与 `phase`；
+ * - 其余全部字段（privilege、identity、routine 指纹、default 槽位与 grantee、
+ *   effective 主体、唯一键、排序）由 canonicalizer 承担。
+ */
+export const validateAuthorizationManifest = (
+  manifest: AuthorizationManifest = authorizationManifest,
+): AuthorizationManifest => {
+  const { version } = manifest;
+  if (
+    typeof version !== "number" ||
+    !Number.isSafeInteger(version) ||
+    version <= 0
+  ) {
+    throw new AuthorizationManifestError(
+      `version must be a positive safe integer, got ${JSON.stringify(version)}`,
+    );
+  }
+  // 版本号会被 `String(...)` 直接拼进 SQL 的 RAISE 文本；即使类型是 number，
+  // 也用同一道守卫兜住任何绕过类型系统的伪造值。
+  assertRenderableValue("manifest version", String(version));
+  if (!supportedAuthorizationManifestVersions.includes(version)) {
+    throw new AuthorizationManifestError(
+      `unsupported manifest version ${String(version)}; supported: ` +
+        supportedAuthorizationManifestVersions.map(String).join(", "),
+    );
+  }
+
+  const { owner, grantees, logins, memberships } = manifest.principals;
+  assertRenderableValue("principals.owner", owner);
+  assertRenderableList("principals.grantees", grantees);
+  assertRenderableList("principals.logins", logins);
+  if (grantees.includes(owner)) {
+    throw new AuthorizationManifestError(
+      "the canonical owner must not be registered as a fixed grantee; its " +
+        "privileges follow from ownership and are matched by policy",
+    );
+  }
+  for (const login of logins) {
+    if (!grantees.includes(login)) {
+      throw new AuthorizationManifestError(
+        `login ${JSON.stringify(login)} is not a registered project principal`,
+      );
+    }
+  }
+  const known = new Set([owner, ...grantees]);
+  const membershipKeys = new Set<string>();
+  for (const entry of memberships) {
+    assertRenderableValue("membership member", entry.member);
+    assertRenderableValue("membership granted", entry.granted);
+    for (const role of [entry.member, entry.granted]) {
+      if (!known.has(role)) {
+        throw new AuthorizationManifestError(
+          `membership references ${JSON.stringify(role)}, which is not a ` +
+            "project role",
+        );
+      }
+    }
+    const key = `${entry.member}->${entry.granted}`;
+    if (membershipKeys.has(key)) {
+      throw new AuthorizationManifestError(`duplicate membership ${key}`);
+    }
+    membershipKeys.add(key);
+  }
+
+  assertRenderableList("managedSchemas", manifest.managedSchemas);
+  assertRenderableList("deniedRoutines", manifest.deniedRoutines);
+
+  if (manifest.states.length === 0) {
+    throw new AuthorizationManifestError("the manifest must register a state");
+  }
+  for (const state of manifest.states) {
+    if (state.phase !== "containment" && state.phase !== "final") {
+      throw new AuthorizationManifestError(
+        `unknown phase ${JSON.stringify(state.phase)}`,
+      );
+    }
+    assertRenderableList(
+      `ledger of state ${authorizationStateKey(state.ledger, state.phase)}`,
+      state.ledger,
+    );
+  }
+
+  // 最后交给 canonicalizer：privilege allowlist、identity 分段守卫、default 槽位
+  // 与 grantee、effective 主体、唯一键与排序都在那里，renderer 因此不可能绕过。
+  canonicalAuthorizationRows(manifest);
+  return manifest;
+};
 
 /** 六个项目角色：owner + 五个受精确验证的主体（不含 `PUBLIC`）。 */
 export const projectRoles = (

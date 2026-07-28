@@ -29,8 +29,15 @@ import {
 } from "../../scripts/stage06-manifest-adapter.js";
 import {
   renderAuthorizationConvergeAdapter,
+  renderAuthorizationConvergeSql,
+  renderAuthorizationVerifyAdapter,
   renderAuthorizationVerifySql,
 } from "../../src/database/authorization-manifest-sql.js";
+import {
+  renderAuthorizationPolicyCtes,
+  renderAuthorizationPreflightStatement,
+  renderAuthorizationSharedCtes,
+} from "../../src/database/authorization-policy-sql.js";
 import {
   assertRenderableValue,
   authorizationDollarQuoteTags,
@@ -41,6 +48,7 @@ import {
   defaultAclObjtypeMappings,
   renderAuthorizationProjectionAdapter,
   renderAuthorizationProjectionSql,
+  renderAuthorizationProjectorCtes,
   type DefaultAclObjtypeMapping,
 } from "../../src/database/authorization-projection-sql.js";
 import {
@@ -49,6 +57,8 @@ import {
   authorizationStateKeys,
   AuthorizationManifestError,
   canonicalAuthorizationRows,
+  canonicalAuthorizationText,
+  validateAuthorizationManifest,
   type AuthorizationManifest,
 } from "../../src/database/authorization-manifest.js";
 
@@ -830,10 +840,10 @@ test("the canonical digest covers every top-level manifest field", () => {
   const baseline = authorizationDigest();
   const variants: readonly [string, AuthorizationManifest][] = [
     [
-      "owner",
+      "deniedRoutines order-insensitive control",
       {
         ...authorizationManifest,
-        principals: { ...authorizationManifest.principals, owner: "other_owner" },
+        deniedRoutines: [...authorizationManifest.deniedRoutines].reverse(),
       },
     ],
     [
@@ -879,12 +889,12 @@ test("the canonical digest covers every top-level manifest field", () => {
     ["version", { ...authorizationManifest, version: 99 }],
   ];
   for (const [field, variant] of variants) {
-    if (field === "logins") {
+    if (field.includes("order-insensitive") || field === "logins") {
       // 顺序变化不应改变 digest：header 按 C 序规范化。
       assert.equal(
         authorizationDigest(variant),
         baseline,
-        "reordering must not change the digest",
+        `reordering ${field} must not change the digest`,
       );
       continue;
     }
@@ -892,6 +902,224 @@ test("the canonical digest covers every top-level manifest field", () => {
       authorizationDigest(variant),
       baseline,
       `changing ${field} must change the canonical digest`,
+    );
+  }
+
+  // owner 同样进 digest，但换掉它会让全部 default privilege 的 grantee 变成
+  // 「既不是 owner 也不是项目主体」——那是 fail closed 的场景，不是「digest 变了」
+  // 的场景。因此这里直接断言两件事：canonical 文本确实带 owner 行，且伪造 owner
+  // 会被拒绝。
+  assert.match(
+    canonicalAuthorizationText(),
+    /^<manifest>\|owner\|\[\]\|meal_agent_migrator$/mu,
+  );
+  assert.throws(
+    () =>
+      authorizationDigest({
+        ...authorizationManifest,
+        principals: {
+          ...authorizationManifest.principals,
+          owner: "other_owner",
+        },
+      }),
+    (error: unknown) => error instanceof AuthorizationManifestError,
+  );
+});
+
+test("a newly registered empty state changes the canonical digest", () => {
+  // 五类数组全空的 state 一行内容都不产生，却实质改变了「哪些 (ledger, phase)
+  // 组合能通过 fail-closed 判定」。digest 因此必须包含**已登记 state key 的集合
+  // 本身**，否则 generated adapter 头部的 digest 会对一次真实的策略放宽保持沉默。
+  const baseline = authorizationDigest();
+  const withEmptyState: AuthorizationManifest = {
+    ...authorizationManifest,
+    states: [
+      ...authorizationManifest.states,
+      {
+        ledger: ["0000_stage_06.sql", "0005_future.sql"],
+        phase: "final",
+        routines: [],
+        grants: [],
+        defaults: [],
+        defaultEffective: [],
+        effective: [],
+      },
+    ],
+  };
+  // 空 state 确实一行都不产生。
+  assert.equal(
+    canonicalAuthorizationRows(withEmptyState).length,
+    canonicalAuthorizationRows().length,
+  );
+  assert.notEqual(
+    authorizationDigest(withEmptyState),
+    baseline,
+    "registering an empty state must still change the digest",
+  );
+  assert.match(
+    canonicalAuthorizationText(withEmptyState),
+    /^<manifest>\|states\|\[\]\|.*0005_future\.sql\|final/mu,
+  );
+});
+
+test("every exported renderer refuses a manifest that fails the unified validator", () => {
+  // 每一个导出的 renderer 都会把 manifest 拼进高权限 SQL，因此**每一个**都必须
+  // 在渲染之前走同一道 validateAuthorizationManifest()。这里逐个证明：没有任何
+  // 一条 raw renderer 旁路能绕过 canonicalizer 校验。
+  const renderers: readonly [string, (manifest: AuthorizationManifest) => string][] =
+    [
+      ["projector ctes", renderAuthorizationProjectorCtes],
+      ["projection sql", renderAuthorizationProjectionSql],
+      ["projection adapter", renderAuthorizationProjectionAdapter],
+      ["policy ctes", renderAuthorizationPolicyCtes],
+      ["shared ctes", renderAuthorizationSharedCtes],
+      ["preflight", renderAuthorizationPreflightStatement],
+      ["converge sql", renderAuthorizationConvergeSql],
+      ["verify sql", renderAuthorizationVerifySql],
+      ["converge adapter", renderAuthorizationConvergeAdapter],
+      ["verify adapter", renderAuthorizationVerifyAdapter],
+    ];
+
+  const [first] = authorizationManifest.states;
+  assert.ok(first !== undefined);
+  const [grant] = first.grants;
+  assert.ok(grant !== undefined);
+
+  const poisoned: readonly [string, AuthorizationManifest][] = [
+    [
+      "malicious privilege",
+      {
+        ...authorizationManifest,
+        states: [
+          {
+            ...first,
+            grants: [
+              {
+                ...grant,
+                privileges: ["SELECT; DROP TABLE users"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "malicious identity",
+      {
+        ...authorizationManifest,
+        states: [
+          {
+            ...first,
+            grants: [
+              {
+                ...grant,
+                object: ["relation", "public", "users'; SELECT 1 --"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "unsupported version",
+      { ...authorizationManifest, version: 9999 },
+    ],
+    [
+      "non-integer version",
+      { ...authorizationManifest, version: 2.5 },
+    ],
+    [
+      "negative version",
+      { ...authorizationManifest, version: -2 },
+    ],
+    [
+      // 版本号被伪造成带换行的字符串（绕过类型系统）：拼进 RAISE 文本就会
+      // 把后面的内容变成新的一行。
+      "version newline injection",
+      {
+        ...authorizationManifest,
+        version: "2\nRAISE NOTICE 'injected'" as unknown as number,
+      },
+    ],
+    [
+      "external default grantee",
+      {
+        ...authorizationManifest,
+        states: [
+          {
+            ...first,
+            defaults: [
+              {
+                objtype: "r",
+                scope: "public",
+                grantee: "stage09a_outsider",
+                privileges: ["SELECT"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "external default-effective grantee",
+      {
+        ...authorizationManifest,
+        states: [
+          {
+            ...first,
+            defaultEffective: [
+              {
+                objtype: "r",
+                scope: "public",
+                grantee: "stage09a_outsider",
+                privileges: ["SELECT"],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      "membership pointing at an unknown role",
+      {
+        ...authorizationManifest,
+        principals: {
+          ...authorizationManifest.principals,
+          memberships: [
+            ...authorizationManifest.principals.memberships,
+            { member: "stage09a_outsider", granted: "meal_agent_app" },
+          ],
+        },
+      },
+    ],
+  ];
+
+  for (const [label, manifest] of poisoned) {
+    // 校验入口本身拒绝。
+    assert.throws(
+      () => validateAuthorizationManifest(manifest),
+      (error: unknown) =>
+        error instanceof AuthorizationManifestError ||
+        error instanceof AuthorizationRenderError,
+      `validateAuthorizationManifest must reject: ${label}`,
+    );
+    // 每一个 renderer 也必须拒绝——没有旁路。
+    for (const [name, render] of renderers) {
+      assert.throws(
+        () => render(manifest),
+        (error: unknown) =>
+          error instanceof AuthorizationManifestError ||
+          error instanceof AuthorizationRenderError,
+        `${name} must refuse to render: ${label}`,
+      );
+    }
+  }
+
+  // 正例：合法 manifest 全部 renderer 都能渲染出非空文本。
+  for (const [name, render] of renderers) {
+    assert.ok(
+      render(authorizationManifest).length > 0,
+      `${name} must still render the real manifest`,
     );
   }
 });

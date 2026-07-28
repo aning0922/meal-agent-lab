@@ -3369,97 +3369,93 @@ test("any large object fails both baselines closed before a single mutation", as
       return JSON.stringify({ objects: objects.rows, unrelated: unrelated.rows });
     });
 
-  try {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`CREATE ROLE ${externalOwner} NOLOGIN`);
-      for (const owner of ["postgres", externalOwner, "meal_agent_migrator"]) {
-        const created = await pool.query<{ loid: string }>(
-          "SELECT lo_from_bytea(0, $1::bytea)::text AS loid",
-          [Buffer.from(`${sentinel}:${owner}`, "utf8")],
-        );
-        const loid = created.rows[0]?.loid;
-        assert.ok(loid !== undefined);
-        largeObjectIds.push(loid);
-        await pool.query(`ALTER LARGE OBJECT ${loid} OWNER TO ${owner}`);
-      }
-      // 一处**无关的** ACL 漂移：LO 存在时它必须原样不动，证明失败发生在任何
-      // mutation 之前，而不是「改到一半再回滚」。
-      await pool.query("GRANT SELECT ON public.households TO PUBLIC");
-    });
-
-    const before = await catalogSnapshot();
-
-    for (const phase of ["acl", "grants"] as const) {
-      const result = await bootstrap(phase);
-      assert.notEqual(result.code, 0, `${phase} must refuse any large object`);
-      assert.match(
-        result.stderr,
-        /authorization preflight failed .*large object \d+ owned by /u,
-        `${phase} must report the large object before mutating`,
-      );
-      for (const loid of largeObjectIds) {
-        assert.ok(
-          result.stderr.includes(`large object ${loid} owned by `),
-          `${phase} must report large object ${loid}`,
-        );
-      }
-    }
-    for (const phase of ["containment", "final"] as const) {
-      const verified = await runAuthorizationVerify(phase);
-      assert.notEqual(verified.code, 0, `verify ${phase} must fail closed`);
-      assert.match(verified.stderr, /large object \d+ owned by /u);
-    }
-
-    assert.equal(
-      await catalogSnapshot(),
-      before,
-      "owner, lomacl, large object data and the unrelated ACL drift must all " +
-        "be byte-identical: the baseline only reports",
-    );
-
-    // 入口点仍然对 PUBLIC、项目角色与全部非 superuser LOGIN 关闭。
-    for (const [url, role] of [
-      [runtimeLoginUrl(), "meal_agent_app"],
-      [backupLoginUrl(), "meal_agent_backup"],
-    ] as const) {
-      await withPool(url, async (pool) => {
-        for (const loid of largeObjectIds) {
-          for (const statement of [
-            `SELECT lo_put(${loid}, 0, 'tampered'::bytea)`,
-            `SELECT lo_get(${loid})`,
-            `UPDATE pg_largeobject SET data = 'x'::bytea WHERE loid = ${loid}`,
-          ]) {
-            assert.match(
-              String(await attempt(pool, [statement], role)),
-              /permission denied|must be owner/iu,
-              `${role} must not reach large object ${loid}`,
-            );
+  await withFailureSafeCleanup(async (cleanup) => {
+      // 清理只发生在 finally，而且每一类残留各自独立登记：LO、无关 ACL 漂移、
+      // 合成角色、基线各失败一次都不会阻断其余步骤，也都不会被吞掉。
+          cleanup.push("large objects", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          for (const loid of largeObjectIds) {
+            await pool.query(`SELECT lo_unlink(${loid})`);
           }
-        }
+        });
       });
-    }
-  } finally {
-    // 清理只发生在 finally，而且每一类残留各自独立登记：LO、无关 ACL 漂移、
-    // 合成角色、基线各失败一次都不会阻断其余步骤，也都不会被吞掉。
-    const cleanup = new CleanupCollector();
-    cleanup.push("large objects", async () => {
+      cleanup.push("unrelated acl drift", async () => {
+        await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
+      });
+      cleanup.push("synthetic role", async () => {
+        await dropSyntheticRole(externalOwner);
+      });
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
       await withPool(adminPoolConfig(), async (pool) => {
-        for (const loid of largeObjectIds) {
-          await pool.query(`SELECT lo_unlink(${loid})`);
+        await pool.query(`CREATE ROLE ${externalOwner} NOLOGIN`);
+        for (const owner of ["postgres", externalOwner, "meal_agent_migrator"]) {
+          const created = await pool.query<{ loid: string }>(
+            "SELECT lo_from_bytea(0, $1::bytea)::text AS loid",
+            [Buffer.from(`${sentinel}:${owner}`, "utf8")],
+          );
+          const loid = created.rows[0]?.loid;
+          assert.ok(loid !== undefined);
+          largeObjectIds.push(loid);
+          await pool.query(`ALTER LARGE OBJECT ${loid} OWNER TO ${owner}`);
         }
+        // 一处**无关的** ACL 漂移：LO 存在时它必须原样不动，证明失败发生在任何
+        // mutation 之前，而不是「改到一半再回滚」。
+        await pool.query("GRANT SELECT ON public.households TO PUBLIC");
       });
-    });
-    cleanup.push("unrelated acl drift", async () => {
-      await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
-    });
-    cleanup.push("synthetic role", async () => {
-      await dropSyntheticRole(externalOwner);
-    });
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+
+      const before = await catalogSnapshot();
+
+      for (const phase of ["acl", "grants"] as const) {
+        const result = await bootstrap(phase);
+        assert.notEqual(result.code, 0, `${phase} must refuse any large object`);
+        assert.match(
+          result.stderr,
+          /authorization preflight failed .*large object \d+ owned by /u,
+          `${phase} must report the large object before mutating`,
+        );
+        for (const loid of largeObjectIds) {
+          assert.ok(
+            result.stderr.includes(`large object ${loid} owned by `),
+            `${phase} must report large object ${loid}`,
+          );
+        }
+      }
+      for (const phase of ["containment", "final"] as const) {
+        const verified = await runAuthorizationVerify(phase);
+        assert.notEqual(verified.code, 0, `verify ${phase} must fail closed`);
+        assert.match(verified.stderr, /large object \d+ owned by /u);
+      }
+
+      assert.equal(
+        await catalogSnapshot(),
+        before,
+        "owner, lomacl, large object data and the unrelated ACL drift must all " +
+          "be byte-identical: the baseline only reports",
+      );
+
+      // 入口点仍然对 PUBLIC、项目角色与全部非 superuser LOGIN 关闭。
+      for (const [url, role] of [
+        [runtimeLoginUrl(), "meal_agent_app"],
+        [backupLoginUrl(), "meal_agent_backup"],
+      ] as const) {
+        await withPool(url, async (pool) => {
+          for (const loid of largeObjectIds) {
+            for (const statement of [
+              `SELECT lo_put(${loid}, 0, 'tampered'::bytea)`,
+              `SELECT lo_get(${loid})`,
+              `UPDATE pg_largeobject SET data = 'x'::bytea WHERE loid = ${loid}`,
+            ]) {
+              assert.match(
+                String(await attempt(pool, [statement], role)),
+                /permission denied|must be owner/iu,
+                `${role} must not reach large object ${loid}`,
+              );
+            }
+          }
+        });
+      }
+  });
 });
 
 test("a database-level PUBLIC grant from an independent grantor is converged, not rolled back", async () => {
@@ -6396,15 +6392,85 @@ class CleanupCollector {
    * 绝不吞掉。
    */
   public async drain(): Promise<readonly string[]> {
+    return (await this.drainErrors()).map((error) => error.message);
+  }
+
+  /** 与 {@link drain} 同一次执行，只是保留 Error 对象供包装器附加到正文错误上。 */
+  public async drainErrors(): Promise<readonly Error[]> {
     const { errors, stage } = createCleanupRecorder();
     for (const step of this.steps) {
       await stage(step.label, step.run);
     }
     return errors.map((error) =>
-      error instanceof Error ? error.message : String(error),
+      error instanceof Error ? error : new Error(String(error)),
     );
   }
 }
+
+/** 清理阶段失败时抛出的独立错误类型，便于测试精确断言。 */
+class AuthorizationCleanupError extends Error {
+  public readonly failures: readonly Error[];
+
+  public constructor(failures: readonly Error[]) {
+    super(
+      `cleanup failed (${String(failures.length)} stage(s)): ` +
+        failures.map((failure) => failure.message).join("; "),
+    );
+    this.name = "AuthorizationCleanupError";
+    this.failures = failures;
+  }
+}
+
+/**
+ * **真正 failure-safe 的测试包装器。**
+ *
+ * 语义（四条必须同时成立，缺一条都会让串行测试互相污染或掩盖真实失败）：
+ *
+ * 1. 正文抛错时**捕获**，不让它跳过清理；
+ * 2. finally 里执行**全部**清理阶段——一个阶段失败不阻断后面的阶段；
+ * 3. 正文失败时**正文错误保持主因**：原样重抛同一个 Error 对象，清理失败作为
+ *    非枚举属性 `cleanupFailures` 附加上去。**不改写 message**——手工拼接
+ *    message 只是把附加信息伪装成主因，既无法被断言区分，也会掩盖堆栈；
+ * 4. 正文成功、清理失败时抛出 {@link AuthorizationCleanupError}。
+ *
+ * 清理阶段在**注入之后立刻登记**，因此正文在任何一步中断都有对应的兜底；每个
+ * 阶段都必须幂等，而且**不允许** `catch(() => undefined)` 吞掉关键失败——吞掉
+ * 之后残留会静默传染给后续测试。
+ */
+const withFailureSafeCleanup = async (
+  operation: (cleanup: CleanupCollector) => Promise<void>,
+): Promise<void> => {
+  const collector = new CleanupCollector();
+  let bodyError: unknown;
+  let bodyFailed = false;
+  try {
+    await operation(collector);
+  } catch (error) {
+    bodyError = error;
+    bodyFailed = true;
+  }
+  const failures = await collector.drainErrors();
+  if (bodyFailed) {
+    if (failures.length > 0 && bodyError instanceof Error) {
+      Object.defineProperty(bodyError, "cleanupFailures", {
+        value: failures,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    throw bodyError;
+  }
+  if (failures.length > 0) {
+    throw new AuthorizationCleanupError(failures);
+  }
+};
+
+/** 读取包装器附加在正文错误上的清理失败列表。 */
+const cleanupFailuresOf = (error: unknown): readonly Error[] => {
+  const attached = (error as { cleanupFailures?: unknown } | null)
+    ?.cleanupFailures;
+  return Array.isArray(attached) ? (attached as readonly Error[]) : [];
+};
 
 /** 合成对象的统一前缀：清理只允许碰这个命名空间。 */
 const syntheticPrefix = "stage09a_";
@@ -6753,7 +6819,16 @@ test("acl and grants both fail before any mutation and report the same problems"
   ];
 
   for (const testCase of cases) {
-    try {
+    await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("injected drift", async () => {
+        await adminStatements([testCase.revert]);
+      });
+      cleanup.push("unrelated acl drift", async () => {
+        await adminStatements([
+          "REVOKE SELECT ON public.households FROM PUBLIC",
+        ]);
+      });
+      cleanup.push("baseline", restoreBaseline);
       await withPool(adminPoolConfig(), async (pool) => {
         await pool.query("GRANT SELECT ON public.households TO PUBLIC");
         await pool.query(testCase.inject);
@@ -6782,20 +6857,7 @@ test("acl and grants both fail before any mutation and report the same problems"
         before,
         `nothing may change before the preflight fails: ${testCase.label}`,
       );
-    } finally {
-      const cleanup = new CleanupCollector();
-      cleanup.push("injected drift", async () => {
-        await adminStatements([testCase.revert]);
-      });
-      cleanup.push("unrelated acl drift", async () => {
-        await adminStatements([
-          "REVOKE SELECT ON public.households FROM PUBLIC",
-        ]);
-      });
-      cleanup.push("baseline", restoreBaseline);
-      const failures = await cleanup.drain();
-      assert.deepEqual(failures, [], `cleanup failed for ${testCase.label}`);
-    }
+    });
     assert.equal(
       (await runAuthorizationVerify("final")).code,
       0,
@@ -6885,45 +6947,41 @@ test("a role created after the adapters were generated is still discovered and c
     );
   }
 
-  try {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`CREATE ROLE ${stranger} LOGIN NOSUPERUSER`);
-      await pool.query(`GRANT USAGE ON SCHEMA public TO ${stranger}`);
-      await pool.query(`GRANT SELECT ON public.users TO ${stranger}`);
-      await pool.query(`GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${stranger}`);
-    });
+  await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("synthetic role", async () => {
+        await dropSyntheticRole(stranger);
+      });
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`CREATE ROLE ${stranger} LOGIN NOSUPERUSER`);
+        await pool.query(`GRANT USAGE ON SCHEMA public TO ${stranger}`);
+        await pool.query(`GRANT SELECT ON public.users TO ${stranger}`);
+        await pool.query(`GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${stranger}`);
+      });
 
-    const verified = await runAuthorizationVerify("final");
-    assert.notEqual(verified.code, 0, "a late role must not pass unnoticed");
-    assert.ok(
-      verified.stderr.includes(stranger),
-      `the divergence must name the late role: ${verified.stderr.slice(0, 400)}`,
-    );
-
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-    const remaining = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ count: string }>(
-        `SELECT (
-           has_schema_privilege($1, 'public', 'USAGE')::int
-           + has_table_privilege($1, 'public.users', 'SELECT')::int
-           + has_database_privilege($1, current_database(), 'CONNECT')::int
-         )::text AS count`,
-        [stranger],
+      const verified = await runAuthorizationVerify("final");
+      assert.notEqual(verified.code, 0, "a late role must not pass unnoticed");
+      assert.ok(
+        verified.stderr.includes(stranger),
+        `the divergence must name the late role: ${verified.stderr.slice(0, 400)}`,
       );
-      return result.rows[0]?.count;
-    });
-    assert.equal(remaining, "0", "the late role must retain nothing");
-  } finally {
-    const cleanup = new CleanupCollector();
-    cleanup.push("synthetic role", async () => {
-      await dropSyntheticRole(stranger);
-    });
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+      const remaining = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ count: string }>(
+          `SELECT (
+             has_schema_privilege($1, 'public', 'USAGE')::int
+             + has_table_privilege($1, 'public.users', 'SELECT')::int
+             + has_database_privilege($1, current_database(), 'CONNECT')::int
+           )::text AS count`,
+          [stranger],
+        );
+        return result.rows[0]?.count;
+      });
+      assert.equal(remaining, "0", "the late role must retain nothing");
+  });
 });
 
 test("unknown grantees, third-party grantors, duplicates and grant options converge in every class", async () => {
@@ -6934,99 +6992,95 @@ test("unknown grantees, third-party grantors, duplicates and grant options conve
   const thirdParty = "stage09a_matrix_grantor";
   const sequence = "meal_agent_private.stage09a_matrix_seq";
   let before = "";
-  try {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`CREATE ROLE ${stranger} LOGIN NOSUPERUSER`);
-      await pool.query(`CREATE ROLE ${thirdParty} NOLOGIN`);
-    });
-    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
-      await client.query(`CREATE SEQUENCE ${sequence}`);
-    });
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-    before = await rawAuthorizationSnapshot();
-
-    await withPool(adminPoolConfig(), async (pool) => {
-      // 未知 grantee，覆盖八类。
-      await pool.query(
-        `GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${stranger}`,
-      );
-      await pool.query(`GRANT USAGE, CREATE ON SCHEMA public TO ${stranger}`);
-      await pool.query(`GRANT SELECT, UPDATE ON public.users TO ${stranger}`);
-      await pool.query(`GRANT SELECT (id) ON public.households TO ${stranger}`);
-      await pool.query(`GRANT SELECT, USAGE ON SEQUENCE ${sequence} TO ${stranger}`);
-      await pool.query(
-        `GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() TO ${stranger}`,
-      );
-      await pool.query(`GRANT USAGE ON TYPE public.users TO ${stranger}`);
-      await pool.query(`GRANT USAGE ON LANGUAGE plpgsql TO ${stranger}`);
-      // 可再授予标志加在一条**本来就合规**的授权上。
-      await pool.query(
-        "GRANT SELECT ON public.users TO meal_agent_app WITH GRANT OPTION",
-      );
-      // 第三方 grantor 重复授予一条本来就合规的权限。它需要 schema USAGE 才能
-      // 解析表名——那一份同样是漂移，同样必须被收敛掉。
-      await pool.query(`GRANT USAGE ON SCHEMA public TO ${thirdParty}`);
-      await pool.query(
-        `GRANT SELECT ON public.users TO ${thirdParty} WITH GRANT OPTION`,
-      );
-      const client = await pool.connect();
-      try {
-        await client.query("SELECT set_config('role', $1, false)", [thirdParty]);
-        await client.query("GRANT SELECT ON public.users TO meal_agent_app");
-      } finally {
-        client.release();
+  await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("synthetic sequence", async () => {
+        await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+          await client.query(`DROP SEQUENCE IF EXISTS ${sequence}`);
+        });
+      });
+      for (const role of [stranger, thirdParty]) {
+        cleanup.push(`synthetic role ${role}`, async () => {
+          await dropSyntheticRole(role);
+        });
       }
-    });
-
-    const duplicated = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ grantor: string }>(
-        `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
-           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
-                aclexplode(c.relacl) AS acl
-          WHERE n.nspname = 'public' AND c.relname = 'users'
-            AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_app'
-            AND acl.privilege_type = 'SELECT'
-          ORDER BY 1`,
-      );
-      return result.rows.map((row) => row.grantor);
-    });
-    assert.deepEqual(
-      duplicated,
-      ["meal_agent_migrator", thirdParty],
-      "the duplicate must genuinely come from a second grantor",
-    );
-
-    const verified = await runAuthorizationVerify("final");
-    assert.notEqual(verified.code, 0);
-    await runBootstrap("grants");
-    assert.equal(
-      (await runAuthorizationVerify("final")).code,
-      0,
-      "every class must converge back to the baseline",
-    );
-    assert.equal(
-      await rawAuthorizationSnapshot(),
-      before,
-      "the independent catalog snapshot must return to the exact baseline",
-    );
-  } finally {
-    const cleanup = new CleanupCollector();
-    cleanup.push("synthetic sequence", async () => {
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`CREATE ROLE ${stranger} LOGIN NOSUPERUSER`);
+        await pool.query(`CREATE ROLE ${thirdParty} NOLOGIN`);
+      });
       await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
-        await client.query(`DROP SEQUENCE IF EXISTS ${sequence}`);
+        await client.query(`CREATE SEQUENCE ${sequence}`);
       });
-    });
-    for (const role of [stranger, thirdParty]) {
-      cleanup.push(`synthetic role ${role}`, async () => {
-        await dropSyntheticRole(role);
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+      before = await rawAuthorizationSnapshot();
+
+      await withPool(adminPoolConfig(), async (pool) => {
+        // 未知 grantee，覆盖八类。
+        await pool.query(
+          `GRANT CONNECT ON DATABASE ${rolesDatabase} TO ${stranger}`,
+        );
+        await pool.query(`GRANT USAGE, CREATE ON SCHEMA public TO ${stranger}`);
+        await pool.query(`GRANT SELECT, UPDATE ON public.users TO ${stranger}`);
+        await pool.query(`GRANT SELECT (id) ON public.households TO ${stranger}`);
+        await pool.query(`GRANT SELECT, USAGE ON SEQUENCE ${sequence} TO ${stranger}`);
+        await pool.query(
+          `GRANT EXECUTE ON FUNCTION meal_agent_private.app_user_id() TO ${stranger}`,
+        );
+        await pool.query(`GRANT USAGE ON TYPE public.users TO ${stranger}`);
+        await pool.query(`GRANT USAGE ON LANGUAGE plpgsql TO ${stranger}`);
+        // 可再授予标志加在一条**本来就合规**的授权上。
+        await pool.query(
+          "GRANT SELECT ON public.users TO meal_agent_app WITH GRANT OPTION",
+        );
+        // 第三方 grantor 重复授予一条本来就合规的权限。它需要 schema USAGE 才能
+        // 解析表名——那一份同样是漂移，同样必须被收敛掉。
+        await pool.query(`GRANT USAGE ON SCHEMA public TO ${thirdParty}`);
+        await pool.query(
+          `GRANT SELECT ON public.users TO ${thirdParty} WITH GRANT OPTION`,
+        );
+        const client = await pool.connect();
+        try {
+          await client.query("SELECT set_config('role', $1, false)", [thirdParty]);
+          await client.query("GRANT SELECT ON public.users TO meal_agent_app");
+        } finally {
+          client.release();
+        }
       });
-    }
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+
+      const duplicated = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ grantor: string }>(
+          `SELECT pg_catalog.pg_get_userbyid(acl.grantor) AS grantor
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace,
+                  aclexplode(c.relacl) AS acl
+            WHERE n.nspname = 'public' AND c.relname = 'users'
+              AND pg_catalog.pg_get_userbyid(acl.grantee) = 'meal_agent_app'
+              AND acl.privilege_type = 'SELECT'
+            ORDER BY 1`,
+        );
+        return result.rows.map((row) => row.grantor);
+      });
+      assert.deepEqual(
+        duplicated,
+        ["meal_agent_migrator", thirdParty],
+        "the duplicate must genuinely come from a second grantor",
+      );
+
+      const verified = await runAuthorizationVerify("final");
+      assert.notEqual(verified.code, 0);
+      await runBootstrap("grants");
+      assert.equal(
+        (await runAuthorizationVerify("final")).code,
+        0,
+        "every class must converge back to the baseline",
+      );
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        before,
+        "the independent catalog snapshot must return to the exact baseline",
+      );
+  });
 });
 
 test("external logins are covered directly, through inheritance and by exclusion", async () => {
@@ -7036,159 +7090,155 @@ test("external logins are covered directly, through inheritance and by exclusion
   const login = "stage09a_ext_login";
   const nologin = "stage09a_ext_group";
   const superuser = "stage09a_ext_super";
-  try {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`CREATE ROLE ${login} LOGIN NOSUPERUSER`);
-      await pool.query(`CREATE ROLE ${nologin} NOLOGIN`);
-      await pool.query(`CREATE ROLE ${superuser} LOGIN SUPERUSER`);
-    });
-
-    // 1. 外部 LOGIN 的直接授权。
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`GRANT SELECT ON public.users TO ${login}`);
-    });
-    let verified = await runAuthorizationVerify("final");
-    assert.notEqual(verified.code, 0, "a direct external grant must be caught");
-    assert.ok(verified.stderr.includes(login));
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-
-    // 2. 外部 NOLOGIN 的直接授权由 raw ACL 层捕获，即使它不在 effective 探测
-    //    集合内。
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`GRANT SELECT ON public.users TO ${nologin}`);
-    });
-    verified = await runAuthorizationVerify("final");
-    assert.notEqual(verified.code, 0, "a NOLOGIN grant must be caught by raw ACL");
-    assert.match(
-      verified.stderr,
-      new RegExp(
-        `unexpected grant ${keyPrefixPattern(
-          ["relation", "public", "users"],
-          nologin,
-        )}`,
-      ),
-    );
-
-    // 3. 同一份授权经继承落到外部 LOGIN 上时，ACL 阶段按设计不改 membership，
-    //    因此它是**任何 mutation 之前**的致命前置条件，而不是一条可收敛的漂移。
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`GRANT ${nologin} TO ${login} WITH INHERIT TRUE`);
-    });
-    verified = await runAuthorizationVerify("final");
-    assert.notEqual(verified.code, 0);
-    assert.match(
-      verified.stderr,
-      new RegExp(
-        `role ${login} reaches ${keyPattern("relation", "public", "users")} ` +
-          "with SELECT through role membership rather than through a grant",
-      ),
-      `inheritance must fail closed: ${verified.stderr.slice(0, 500)}`,
-    );
-    const beforeInheritance = await rawAuthorizationSnapshot();
-    const inheritedAcl = await bootstrap("acl");
-    assert.notEqual(inheritedAcl.code, 0, "acl must refuse before mutating");
-    assert.equal(
-      await rawAuthorizationSnapshot(),
-      beforeInheritance,
-      "nothing may change while inherited over-reach is unresolved",
-    );
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`REVOKE ${nologin} FROM ${login}`);
-    });
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-
-    // 3b. predefined role 同理：pg_read_all_data 不经任何 aclitem 就给出表读取
-    //     权限，ACL mutation 根本修不了它。
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`GRANT pg_read_all_data TO ${login} WITH INHERIT TRUE`);
-    });
-    const beforePredefined = await rawAuthorizationSnapshot();
-    for (const phase of ["acl", "grants"] as const) {
-      const refused = await bootstrap(phase);
-      assert.notEqual(refused.code, 0, `${phase} must refuse a predefined role`);
-      assert.match(
-        refused.stderr,
-        new RegExp(`role ${login} reaches .* through role membership`),
-      );
-    }
-    assert.equal(
-      await rawAuthorizationSnapshot(),
-      beforePredefined,
-      "a predefined-role grant must not trigger any mutation",
-    );
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`REVOKE pg_read_all_data FROM ${login}`);
-    });
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-
-    // 4. 异常 membership 进入 app：ACL 层修不了它，必须在 mutation 之前 fail
-    //    closed 并指向 cluster role baseline。
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`GRANT meal_agent_app TO ${login} WITH INHERIT TRUE`);
-    });
-    const acl = await bootstrap("acl");
-    assert.notEqual(acl.code, 0);
-    assert.match(
-      acl.stderr,
-      new RegExp(
-        `unexpected role membership ${login} in meal_agent_app; ` +
-          "run the cluster role baseline first",
-      ),
-    );
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`REVOKE meal_agent_app FROM ${login}`);
-    });
-
-    // 5. superuser 对照：它拥有一切权限，但**不在**探测集合内，因此基线保持
-    //    干净——这正是「effective 不是对集群所有角色的枚举」的准确含义。
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-    const superuserReach = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ reachable: boolean; probed: boolean }>(
-        `SELECT has_table_privilege($1, 'public.users', 'SELECT') AS reachable,
-                EXISTS (SELECT 1 FROM pg_roles r
-                         WHERE r.rolname = $1 AND NOT r.rolsuper) AS probed`,
-        [superuser],
-      );
-      return result.rows[0];
-    });
-    assert.equal(superuserReach?.reachable, true);
-    assert.equal(superuserReach?.probed, false);
-  } finally {
-    const cleanup = new CleanupCollector();
-    cleanup.push("memberships", async () => {
-      await withPool(adminPoolConfig(), async (pool) => {
-        for (const [member, granted] of [
-          [login, "meal_agent_app"],
-          [login, nologin],
-          [login, "pg_read_all_data"],
-        ] as const) {
-          const present = await pool.query(
-            `SELECT 1 FROM pg_auth_members a
-               JOIN pg_roles m ON m.oid = a.member
-               JOIN pg_roles g ON g.oid = a.roleid
-              WHERE m.rolname = $1 AND g.rolname = $2`,
-            [member, granted],
-          );
-          if (present.rowCount !== 0) {
-            await pool.query(`REVOKE ${granted} FROM ${member}`);
+  await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("memberships", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          for (const [member, granted] of [
+            [login, "meal_agent_app"],
+            [login, nologin],
+            [login, "pg_read_all_data"],
+          ] as const) {
+            const present = await pool.query(
+              `SELECT 1 FROM pg_auth_members a
+                 JOIN pg_roles m ON m.oid = a.member
+                 JOIN pg_roles g ON g.oid = a.roleid
+                WHERE m.rolname = $1 AND g.rolname = $2`,
+              [member, granted],
+            );
+            if (present.rowCount !== 0) {
+              await pool.query(`REVOKE ${granted} FROM ${member}`);
+            }
           }
-        }
+        });
       });
-    });
-    for (const role of [login, nologin, superuser]) {
-      cleanup.push(`synthetic role ${role}`, async () => {
-        await dropSyntheticRole(role);
+      for (const role of [login, nologin, superuser]) {
+        cleanup.push(`synthetic role ${role}`, async () => {
+          await dropSyntheticRole(role);
+        });
+      }
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`CREATE ROLE ${login} LOGIN NOSUPERUSER`);
+        await pool.query(`CREATE ROLE ${nologin} NOLOGIN`);
+        await pool.query(`CREATE ROLE ${superuser} LOGIN SUPERUSER`);
       });
-    }
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+
+      // 1. 外部 LOGIN 的直接授权。
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`GRANT SELECT ON public.users TO ${login}`);
+      });
+      let verified = await runAuthorizationVerify("final");
+      assert.notEqual(verified.code, 0, "a direct external grant must be caught");
+      assert.ok(verified.stderr.includes(login));
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+      // 2. 外部 NOLOGIN 的直接授权由 raw ACL 层捕获，即使它不在 effective 探测
+      //    集合内。
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`GRANT SELECT ON public.users TO ${nologin}`);
+      });
+      verified = await runAuthorizationVerify("final");
+      assert.notEqual(verified.code, 0, "a NOLOGIN grant must be caught by raw ACL");
+      assert.match(
+        verified.stderr,
+        new RegExp(
+          `unexpected grant ${keyPrefixPattern(
+            ["relation", "public", "users"],
+            nologin,
+          )}`,
+        ),
+      );
+
+      // 3. 同一份授权经继承落到外部 LOGIN 上时，ACL 阶段按设计不改 membership，
+      //    因此它是**任何 mutation 之前**的致命前置条件，而不是一条可收敛的漂移。
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`GRANT ${nologin} TO ${login} WITH INHERIT TRUE`);
+      });
+      verified = await runAuthorizationVerify("final");
+      assert.notEqual(verified.code, 0);
+      assert.match(
+        verified.stderr,
+        new RegExp(
+          `role ${login} reaches ${keyPattern("relation", "public", "users")} ` +
+            "with SELECT through role membership rather than through a grant",
+        ),
+        `inheritance must fail closed: ${verified.stderr.slice(0, 500)}`,
+      );
+      const beforeInheritance = await rawAuthorizationSnapshot();
+      const inheritedAcl = await bootstrap("acl");
+      assert.notEqual(inheritedAcl.code, 0, "acl must refuse before mutating");
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        beforeInheritance,
+        "nothing may change while inherited over-reach is unresolved",
+      );
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`REVOKE ${nologin} FROM ${login}`);
+      });
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+      // 3b. predefined role 同理：pg_read_all_data 不经任何 aclitem 就给出表读取
+      //     权限，ACL mutation 根本修不了它。
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`GRANT pg_read_all_data TO ${login} WITH INHERIT TRUE`);
+      });
+      const beforePredefined = await rawAuthorizationSnapshot();
+      for (const phase of ["acl", "grants"] as const) {
+        const refused = await bootstrap(phase);
+        assert.notEqual(refused.code, 0, `${phase} must refuse a predefined role`);
+        assert.match(
+          refused.stderr,
+          new RegExp(`role ${login} reaches .* through role membership`),
+        );
+      }
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        beforePredefined,
+        "a predefined-role grant must not trigger any mutation",
+      );
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`REVOKE pg_read_all_data FROM ${login}`);
+      });
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+      // 4. 异常 membership 进入 app：ACL 层修不了它，必须在 mutation 之前 fail
+      //    closed 并指向 cluster role baseline。
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`GRANT meal_agent_app TO ${login} WITH INHERIT TRUE`);
+      });
+      const acl = await bootstrap("acl");
+      assert.notEqual(acl.code, 0);
+      assert.match(
+        acl.stderr,
+        new RegExp(
+          `unexpected role membership ${login} in meal_agent_app; ` +
+            "run the cluster role baseline first",
+        ),
+      );
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`REVOKE meal_agent_app FROM ${login}`);
+      });
+
+      // 5. superuser 对照：它拥有一切权限，但**不在**探测集合内，因此基线保持
+      //    干净——这正是「effective 不是对集群所有角色的枚举」的准确含义。
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+      const superuserReach = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ reachable: boolean; probed: boolean }>(
+          `SELECT has_table_privilege($1, 'public.users', 'SELECT') AS reachable,
+                  EXISTS (SELECT 1 FROM pg_roles r
+                           WHERE r.rolname = $1 AND NOT r.rolsuper) AS probed`,
+          [superuser],
+        );
+        return result.rows[0];
+      });
+      assert.equal(superuserReach?.reachable, true);
+      assert.equal(superuserReach?.probed, false);
+  });
 });
 
 /** `pg_default_acl` 的物理行，直接从 catalog 读出（不经过 projector）。 */
@@ -7216,98 +7266,94 @@ test("empty global default rows and default grant options converge to the exact 
     baseline.some((entry) => entry.startsWith("meal_agent_migrator f -")),
     "the baseline must already carry the global FUNCTIONS row",
   );
-  try {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "REVOKE EXECUTE ON FUNCTIONS FROM meal_agent_migrator",
+  await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("synthetic objects", async () => {
+        await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+          await client.query(
+            "DROP FUNCTION IF EXISTS public.stage09a_default_probe()",
+          );
+          await client.query("DROP SEQUENCE IF EXISTS public.stage09a_default_seq");
+        });
+      });
+      cleanup.push("default acl", async () => {
+        // 默认权限是独立的一类残留：即使上一步失败，它也必须被单独收敛回基线。
+        await runBootstrap("grants");
+      });
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(
+          "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+            "REVOKE EXECUTE ON FUNCTIONS FROM meal_agent_migrator",
+        );
+        await pool.query(
+          "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+            "REVOKE ALL ON SEQUENCES FROM meal_agent_migrator",
+        );
+        await pool.query(
+          "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
+            "IN SCHEMA public GRANT SELECT ON TABLES TO meal_agent_backup " +
+            "WITH GRANT OPTION",
+        );
+      });
+      const injected = await defaultRowSnapshot();
+      assert.ok(
+        injected.includes("meal_agent_migrator f - {}"),
+        `the FUNCTIONS row must really be empty: ${injected.join(" | ")}`,
       );
-      await pool.query(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "REVOKE ALL ON SEQUENCES FROM meal_agent_migrator",
+      assert.ok(
+        injected.includes("meal_agent_migrator S - {}"),
+        `the SEQUENCES row must really be empty: ${injected.join(" | ")}`,
       );
-      await pool.query(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE meal_agent_migrator " +
-          "IN SCHEMA public GRANT SELECT ON TABLES TO meal_agent_backup " +
-          "WITH GRANT OPTION",
+      assert.ok(
+        injected.some((entry) => entry.includes("r public") && entry.includes("*")),
+        "the schema row must really carry a grant option",
       );
-    });
-    const injected = await defaultRowSnapshot();
-    assert.ok(
-      injected.includes("meal_agent_migrator f - {}"),
-      `the FUNCTIONS row must really be empty: ${injected.join(" | ")}`,
-    );
-    assert.ok(
-      injected.includes("meal_agent_migrator S - {}"),
-      `the SEQUENCES row must really be empty: ${injected.join(" | ")}`,
-    );
-    assert.ok(
-      injected.some((entry) => entry.includes("r public") && entry.includes("*")),
-      "the schema row must really carry a grant option",
-    );
-    assert.notEqual(
-      (await runAuthorizationVerify("final")).code,
-      0,
-      "the injected default privilege state must be rejected",
-    );
+      assert.notEqual(
+        (await runAuthorizationVerify("final")).code,
+        0,
+        "the injected default privilege state must be rejected",
+      );
 
-    await runBootstrap("grants");
-    assert.deepEqual(
-      await defaultRowSnapshot(),
-      baseline,
-      "the physical default rows must return to the exact baseline",
-    );
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
+      await runBootstrap("grants");
+      assert.deepEqual(
+        await defaultRowSnapshot(),
+        baseline,
+        "the physical default rows must return to the exact baseline",
+      );
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
 
-    // 语义验证：新建的真实对象必须落到收敛后的默认权限上。
-    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
-      await client.query(
-        "CREATE FUNCTION public.stage09a_default_probe() RETURNS int " +
-          "LANGUAGE sql AS $$SELECT 1$$",
-      );
-      await client.query("CREATE SEQUENCE public.stage09a_default_seq");
-    });
-    const created = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{
-        public_execute: boolean;
-        backup_sequence: boolean;
-        owner_sequence: boolean;
-      }>(
-        `SELECT has_function_privilege('public',
-                  'public.stage09a_default_probe()'::regprocedure, 'EXECUTE')
-                  AS public_execute,
-                has_sequence_privilege('meal_agent_backup',
-                  'public.stage09a_default_seq', 'SELECT') AS backup_sequence,
-                has_sequence_privilege('meal_agent_migrator',
-                  'public.stage09a_default_seq', 'USAGE') AS owner_sequence`,
-      );
-      return result.rows[0];
-    });
-    // f@global 的物理行确实生效：新函数没有 PUBLIC EXECUTE。
-    assert.equal(created?.public_execute, false);
-    // S@public 的 schema 行确实生效，而且 owner 的内建 USAGE 没有被误删——
-    // 把 defaclobjtype 的 S 直接喂给 acldefault 会把这一条低报掉。
-    assert.equal(created?.backup_sequence, true);
-    assert.equal(created?.owner_sequence, true);
-  } finally {
-    const cleanup = new CleanupCollector();
-    cleanup.push("synthetic objects", async () => {
+      // 语义验证：新建的真实对象必须落到收敛后的默认权限上。
       await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
         await client.query(
-          "DROP FUNCTION IF EXISTS public.stage09a_default_probe()",
+          "CREATE FUNCTION public.stage09a_default_probe() RETURNS int " +
+            "LANGUAGE sql AS $$SELECT 1$$",
         );
-        await client.query("DROP SEQUENCE IF EXISTS public.stage09a_default_seq");
+        await client.query("CREATE SEQUENCE public.stage09a_default_seq");
       });
-    });
-    cleanup.push("default acl", async () => {
-      // 默认权限是独立的一类残留：即使上一步失败，它也必须被单独收敛回基线。
-      await runBootstrap("grants");
-    });
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+      const created = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{
+          public_execute: boolean;
+          backup_sequence: boolean;
+          owner_sequence: boolean;
+        }>(
+          `SELECT has_function_privilege('public',
+                    'public.stage09a_default_probe()'::regprocedure, 'EXECUTE')
+                    AS public_execute,
+                  has_sequence_privilege('meal_agent_backup',
+                    'public.stage09a_default_seq', 'SELECT') AS backup_sequence,
+                  has_sequence_privilege('meal_agent_migrator',
+                    'public.stage09a_default_seq', 'USAGE') AS owner_sequence`,
+        );
+        return result.rows[0];
+      });
+      // f@global 的物理行确实生效：新函数没有 PUBLIC EXECUTE。
+      assert.equal(created?.public_execute, false);
+      // S@public 的 schema 行确实生效，而且 owner 的内建 USAGE 没有被误删——
+      // 把 defaclobjtype 的 S 直接喂给 acldefault 会把这一条低报掉。
+      assert.equal(created?.backup_sequence, true);
+      assert.equal(created?.owner_sequence, true);
+  });
 });
 
 test("managed types keep only the owner, arrays are never targeted and runtime CRUD still works", async () => {
@@ -7318,193 +7364,273 @@ test("managed types keep only the owner, arrays are never targeted and runtime C
     "public.stage09a_domain",
     "public.stage09a_composite",
   ];
-  try {
-    await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
-      await client.query(
-        "CREATE TYPE public.stage09a_enum AS ENUM ('a', 'b')",
-      );
-      await client.query("CREATE DOMAIN public.stage09a_domain AS text");
-      await client.query(
-        "CREATE TYPE public.stage09a_composite AS (first_column int)",
-      );
-    });
+  await withFailureSafeCleanup(async (cleanup) => {
+      for (const name of created) {
+        cleanup.push(`synthetic type ${name}`, async () => {
+          await asRole(
+            migrationLoginUrl(),
+            "meal_agent_migrator",
+            async (client) => {
+              await client.query(
+                name.includes("domain")
+                  ? `DROP DOMAIN IF EXISTS ${name}`
+                  : `DROP TYPE IF EXISTS ${name}`,
+              );
+            },
+          );
+        });
+      }
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
+      await asRole(migrationLoginUrl(), "meal_agent_migrator", async (client) => {
+        await client.query(
+          "CREATE TYPE public.stage09a_enum AS ENUM ('a', 'b')",
+        );
+        await client.query("CREATE DOMAIN public.stage09a_domain AS text");
+        await client.query(
+          "CREATE TYPE public.stage09a_composite AS (first_column int)",
+        );
+      });
 
-    // T@global 的物理默认行已经把 PUBLIC 的内建 TYPES USAGE 去掉，因此新类型
-    // **出生时**就只有 owner 的 USAGE——不需要再 converge 一次。这正是 R8B 的
-    // 类型策略必须落在 default privilege 层、而不只是每轮收敛一次的原因。
-    const born = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ subject: string; usage: boolean }>(
-        `SELECT subject,
-                has_type_privilege(subject, 'public.stage09a_enum', 'USAGE')
-                  AS usage
-           FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
-                             'meal_agent_backup_login',
-                             'meal_agent_migration_login',
-                             'meal_agent_runtime_login',
-                             'meal_agent_migrator']) AS subject
-          ORDER BY subject`,
-      );
-      return result.rows;
-    });
-    for (const row of born) {
-      assert.equal(
-        row.usage,
-        row.subject === "meal_agent_migrator",
-        `a newly created type must be born clean for ${row.subject}`,
-      );
-    }
-    assert.equal(
-      (await runAuthorizationVerify("final")).code,
-      0,
-      "creating enum / domain / composite must not create any drift at all",
-    );
-
-    await runBootstrap("grants");
-    assert.equal((await runAuthorizationVerify("final")).code, 0);
-
-    const usage = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{
-        subject: string;
-        element: boolean;
-        array_type: boolean;
-      }>(
-        `SELECT subject,
-                has_type_privilege(subject, 'public.stage09a_enum', 'USAGE')
-                  AS element,
-                has_type_privilege(subject, 'public._stage09a_enum', 'USAGE')
-                  AS array_type
-           FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
-                             'meal_agent_backup_login',
-                             'meal_agent_migration_login',
-                             'meal_agent_runtime_login',
-                             'meal_agent_migrator']) AS subject
-          ORDER BY subject`,
-      );
-      return result.rows;
-    });
-    for (const row of usage) {
-      const expected = row.subject === "meal_agent_migrator";
-      assert.equal(row.element, expected, `element USAGE for ${row.subject}`);
-      // 数组类型没有独立 ACL：它的有效权限完全委托给元素类型。
-      assert.equal(row.array_type, expected, `array USAGE for ${row.subject}`);
-    }
-
-    // 数组类型上的 ACL 语句被 PostgreSQL 直接拒绝——因此收敛绝不能把它们当成
-    // 目标，否则每一轮都会炸。
-    const arrayGrant = await withPool(adminPoolConfig(), async (pool) =>
-      attempt(pool, [
-        "GRANT USAGE ON TYPE public._stage09a_enum TO meal_agent_app",
-      ]),
-    );
-    assert.match(String(arrayGrant), /cannot set privileges of array types/iu);
-    const arrayOwner = await withPool(adminPoolConfig(), async (pool) =>
-      attempt(pool, ["ALTER TYPE public._stage09a_enum OWNER TO postgres"]),
-    );
-    assert.match(String(arrayOwner), /cannot alter array type/iu);
-    const arrayAcl = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM pg_type t
-           JOIN pg_namespace n ON n.oid = t.typnamespace
-          WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
-            AND t.typcategory = 'A' AND t.typelem <> 0
-            AND t.typacl IS NOT NULL`,
-      );
-      return result.rows[0]?.count;
-    });
-    assert.equal(arrayAcl, "0", "no array type may carry its own ACL");
-
-    // runtime CRUD 不受影响：撤掉行类型的 PUBLIC USAGE 不影响表上的 DML。
-    await withPool(runtimeLoginUrl(), async (pool) => {
-      for (const relation of [
-        "public.users",
-        "public.households",
-        "public.memberships",
-        "public.inventory_lots",
-        "drizzle.__meal_agent_migrations",
-      ]) {
+      // T@global 的物理默认行已经把 PUBLIC 的内建 TYPES USAGE 去掉，因此新类型
+      // **出生时**就只有 owner 的 USAGE——不需要再 converge 一次。这正是 R8B 的
+      // 类型策略必须落在 default privilege 层、而不只是每轮收敛一次的原因。
+      const born = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ subject: string; usage: boolean }>(
+          `SELECT subject,
+                  has_type_privilege(subject, 'public.stage09a_enum', 'USAGE')
+                    AS usage
+             FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
+                               'meal_agent_backup_login',
+                               'meal_agent_migration_login',
+                               'meal_agent_runtime_login',
+                               'meal_agent_migrator']) AS subject
+            ORDER BY subject`,
+        );
+        return result.rows;
+      });
+      for (const row of born) {
         assert.equal(
-          await attempt(
-            pool,
-            [`SELECT count(*) FROM ${relation}`],
-            "meal_agent_app",
-          ),
-          undefined,
-          `the app role must still read ${relation}`,
+          row.usage,
+          row.subject === "meal_agent_migrator",
+          `a newly created type must be born clean for ${row.subject}`,
         );
       }
       assert.equal(
-        await attempt(
-          pool,
-          [
-            "SELECT set_config('meal_agent.user_id', $$018f0900-0000-7000-8000-0000000000a1$$, true)",
-            "SELECT set_config('meal_agent.household_id', $$018f0900-0000-7000-8000-000000000001$$, true)",
-            "INSERT INTO users (id, status, display_name, locale, created_at, " +
-              "updated_at, version) VALUES " +
-              "($$018f0900-0000-7000-8000-0000000000b1$$, 'active', " +
-              "$$合成用户-type$$, 'zh-CN', now(), now(), 0)",
-          ],
-          "meal_agent_app",
-        ),
-        undefined,
-        "the app role must still write through its own grants",
+        (await runAuthorizationVerify("final")).code,
+        0,
+        "creating enum / domain / composite must not create any drift at all",
       );
-    });
-  } finally {
-    const cleanup = new CleanupCollector();
-    for (const name of created) {
-      cleanup.push(`synthetic type ${name}`, async () => {
-        await asRole(
-          migrationLoginUrl(),
-          "meal_agent_migrator",
-          async (client) => {
-            await client.query(
-              name.includes("domain")
-                ? `DROP DOMAIN IF EXISTS ${name}`
-                : `DROP TYPE IF EXISTS ${name}`,
-            );
-          },
+
+      await runBootstrap("grants");
+      assert.equal((await runAuthorizationVerify("final")).code, 0);
+
+      const usage = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{
+          subject: string;
+          element: boolean;
+          array_type: boolean;
+        }>(
+          `SELECT subject,
+                  has_type_privilege(subject, 'public.stage09a_enum', 'USAGE')
+                    AS element,
+                  has_type_privilege(subject, 'public._stage09a_enum', 'USAGE')
+                    AS array_type
+             FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
+                               'meal_agent_backup_login',
+                               'meal_agent_migration_login',
+                               'meal_agent_runtime_login',
+                               'meal_agent_migrator']) AS subject
+            ORDER BY subject`,
+        );
+        return result.rows;
+      });
+      for (const row of usage) {
+        const expected = row.subject === "meal_agent_migrator";
+        assert.equal(row.element, expected, `element USAGE for ${row.subject}`);
+        // 数组类型没有独立 ACL：它的有效权限完全委托给元素类型。
+        assert.equal(row.array_type, expected, `array USAGE for ${row.subject}`);
+      }
+
+      // 数组类型上的 ACL 语句被 PostgreSQL 直接拒绝——因此收敛绝不能把它们当成
+      // 目标，否则每一轮都会炸。
+      const arrayGrant = await withPool(adminPoolConfig(), async (pool) =>
+        attempt(pool, [
+          "GRANT USAGE ON TYPE public._stage09a_enum TO meal_agent_app",
+        ]),
+      );
+      assert.match(String(arrayGrant), /cannot set privileges of array types/iu);
+      const arrayOwner = await withPool(adminPoolConfig(), async (pool) =>
+        attempt(pool, ["ALTER TYPE public._stage09a_enum OWNER TO postgres"]),
+      );
+      assert.match(String(arrayOwner), /cannot alter array type/iu);
+      const arrayAcl = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ count: string }>(
+          `SELECT count(*)::text AS count FROM pg_type t
+             JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname IN ('public', 'drizzle', 'meal_agent_private')
+              AND t.typcategory = 'A' AND t.typelem <> 0
+              AND t.typacl IS NOT NULL`,
+        );
+        return result.rows[0]?.count;
+      });
+      assert.equal(arrayAcl, "0", "no array type may carry its own ACL");
+
+      // runtime CRUD 不受影响：撤掉行类型的 PUBLIC USAGE 不影响表上的 DML。
+      await withPool(runtimeLoginUrl(), async (pool) => {
+        for (const relation of [
+          "public.users",
+          "public.households",
+          "public.memberships",
+          "public.inventory_lots",
+          "drizzle.__meal_agent_migrations",
+        ]) {
+          assert.equal(
+            await attempt(
+              pool,
+              [`SELECT count(*) FROM ${relation}`],
+              "meal_agent_app",
+            ),
+            undefined,
+            `the app role must still read ${relation}`,
+          );
+        }
+        assert.equal(
+          await attempt(
+            pool,
+            [
+              "SELECT set_config('meal_agent.user_id', $$018f0900-0000-7000-8000-0000000000a1$$, true)",
+              "SELECT set_config('meal_agent.household_id', $$018f0900-0000-7000-8000-000000000001$$, true)",
+              "INSERT INTO users (id, status, display_name, locale, created_at, " +
+                "updated_at, version) VALUES " +
+                "($$018f0900-0000-7000-8000-0000000000b1$$, 'active', " +
+                "$$合成用户-type$$, 'zh-CN', now(), now(), 0)",
+            ],
+            "meal_agent_app",
+          ),
+          undefined,
+          "the app role must still write through its own grants",
         );
       });
-    }
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+  });
 });
 
-test("the staged cleanup collector prefers the body error and never swallows a cleanup failure", async () => {
-  // 故障注入：清理本身失败时必须**被看见**。正文失败时它附加在正文错误后面，
-  // 正文成功时它让测试失败——两种情况都不允许静默通过。
+test("the failure-safe wrapper keeps the body error primary while a cleanup stage also fails", async () => {
+  // **真实**故障注入，不靠手工拼 Error.message：整段都走生产用的
+  // `withFailureSafeCleanup`，正文真的抛错、清理阶段真的抛错，然后断言包装器
+  // 抛出的**就是正文那个 Error 对象本身**（引用相等），清理失败以非枚举属性
+  // 附加。手工改 message 只会把附注伪装成主因，断言也就分辨不出两者。
   const order: string[] = [];
-  const collector = new CleanupCollector();
-  collector.push("first", async () => {
-    order.push("first");
-  });
-  collector.push("broken", async () => {
-    order.push("broken");
-    throw new Error("injected cleanup failure");
-  });
-  collector.push("after-broken", async () => {
-    order.push("after-broken");
-  });
-  const failures = await collector.drain();
-  // 登记顺序执行，且失败的一步不阻断后面的步骤。
-  assert.deepEqual(order, ["first", "broken", "after-broken"]);
-  assert.equal(failures.length, 1);
-  assert.match(failures[0] ?? "", /cleanup stage broken failed/u);
-  assert.match(failures[0] ?? "", /injected cleanup failure/u);
+  const bodyError = new Error("stage09a synthetic body failure");
+  const injected = new Error("stage09a synthetic cleanup failure");
 
-  // 正文错误优先：清理失败只作为附注，不取代真正的失败原因。
-  const bodyError = new Error("body failed first");
-  const alsoFailing = new CleanupCollector();
-  alsoFailing.push("broken", async () => {
-    throw new Error("cleanup failed too");
+  // 1. 正文失败 + 清理失败：正文错误保持主因，清理失败作为附加信息。
+  let thrown: unknown;
+  try {
+    await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("first", async () => {
+        order.push("first");
+      });
+      cleanup.push("broken", async () => {
+        order.push("broken");
+        throw injected;
+      });
+      cleanup.push("after-broken", async () => {
+        order.push("after-broken");
+      });
+      throw bodyError;
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.equal(thrown, bodyError, "the body error must stay the primary cause");
+  assert.equal(
+    (thrown as Error).message,
+    "stage09a synthetic body failure",
+    "the wrapper must not rewrite the body message",
+  );
+  // 全部清理阶段都执行过，且失败的一步没有阻断后面的步骤。
+  assert.deepEqual(order, ["first", "broken", "after-broken"]);
+  const attached = cleanupFailuresOf(thrown);
+  assert.equal(attached.length, 1);
+  assert.match(attached[0]?.message ?? "", /cleanup stage broken failed/u);
+  assert.match(
+    attached[0]?.message ?? "",
+    /stage09a synthetic cleanup failure/u,
+  );
+
+  // 2. 正文成功 + 清理失败：必须抛出清理错误，绝不静默通过。
+  let cleanupOnly: unknown;
+  try {
+    await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("broken", async () => {
+        throw injected;
+      });
+    });
+  } catch (error) {
+    cleanupOnly = error;
+  }
+  assert.ok(
+    cleanupOnly instanceof AuthorizationCleanupError,
+    "a cleanup-only failure must surface as AuthorizationCleanupError",
+  );
+  assert.equal((cleanupOnly as AuthorizationCleanupError).failures.length, 1);
+
+  // 3. 正文成功 + 清理成功：不抛任何东西。
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("clean", async () => {
+      order.push("clean");
+    });
   });
-  const alsoFailures = await alsoFailing.drain();
-  bodyError.message = `${bodyError.message}\n[cleanup also failed] ${alsoFailures.join("; ")}`;
-  assert.match(bodyError.message, /^body failed first/u);
-  assert.match(bodyError.message, /cleanup also failed.*cleanup failed too/su);
+  assert.deepEqual(order, ["first", "broken", "after-broken", "clean"]);
+});
+
+test("a real cleanup stage failure surfaces even when the body already failed", async () => {
+  // 与上一条的区别：这一条**真的动数据库**。正文注入一处可收敛漂移之后故意
+  // 断言失败，同时让一个清理阶段执行一条注定失败的语句——包装器必须仍然把
+  // 剩余清理跑完（漂移被撤掉、基线恢复），并且抛出的仍是正文的断言错误。
+  let thrown: unknown;
+  try {
+    await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("unrelated acl drift", async () => {
+        await adminStatements([
+          "REVOKE SELECT ON public.households FROM PUBLIC",
+        ]);
+      });
+      cleanup.push("deliberately broken stage", async () => {
+        await adminStatements([
+          "SELECT stage09a_this_function_does_not_exist()",
+        ]);
+      });
+      cleanup.push("baseline", restoreBaseline);
+      await adminStatements(["GRANT SELECT ON public.households TO PUBLIC"]);
+      assert.equal(
+        (await runAuthorizationVerify("final")).code,
+        0,
+        "stage09a deliberate body failure",
+      );
+    });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof assert.AssertionError, "the body error must win");
+  assert.match(
+    (thrown as Error).message,
+    /stage09a deliberate body failure/u,
+    "the body message must not be rewritten",
+  );
+  const attached = cleanupFailuresOf(thrown);
+  assert.equal(attached.length, 1, "exactly the broken stage must be reported");
+  assert.match(
+    attached[0]?.message ?? "",
+    /cleanup stage deliberately broken stage failed/u,
+  );
+  // 关键：坏掉的那一步没有阻断后面的阶段——漂移确实被撤掉、基线确实恢复了。
+  assert.equal(
+    (await runAuthorizationVerify("final")).code,
+    0,
+    "the remaining cleanup stages must still have run",
+  );
 });
 
 test("the built-in language grants are required, not merely tolerated", async () => {
@@ -7544,78 +7670,74 @@ test("the built-in language grants are required, not merely tolerated", async ()
     `${languageOwner}/${languageOwner}/USAGE/f`,
   ]);
 
-  const cleanup = new CleanupCollector();
-  try {
-    for (const missing of ["PUBLIC", languageOwner]) {
-      await adminStatements([
-        `REVOKE USAGE ON LANGUAGE sql FROM ${missing === "PUBLIC" ? "PUBLIC" : missing}`,
-      ]);
-      const after = await languageTuple();
-      assert.equal(
-        after.length,
-        1,
-        `revoking ${missing} must really remove the tuple`,
-      );
-      const verified = await runAuthorizationVerify("final");
-      assert.notEqual(
-        verified.code,
-        0,
-        `a missing language grant for ${missing} must be rejected`,
-      );
-      assert.match(
-        verified.stderr,
-        new RegExp(
-          `missing language grant ${keyPrefixPattern(
-            ["language", "sql"],
-            missing,
-          )}`,
-        ),
-        verified.stderr.slice(0, 400),
-      );
-      if (missing === "PUBLIC") {
-        // effective 层同时塌陷：非 owner 角色再也拿不到 USAGE。
-        const reach = await withPool(adminPoolConfig(), async (pool) => {
-          const result = await pool.query<{ usage: boolean }>(
-            `SELECT has_language_privilege('meal_agent_app', 'sql', 'USAGE')
-                      AS usage`,
-          );
-          return result.rows[0]?.usage;
-        });
-        assert.equal(reach, false);
-      }
+  await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("language baseline", async () => {
+        await runBootstrap("grants");
+        assert.deepEqual(await languageTuple(), baseline);
+      });
+      cleanup.push("baseline", restoreBaseline);
+      for (const missing of ["PUBLIC", languageOwner]) {
+        await adminStatements([
+          `REVOKE USAGE ON LANGUAGE sql FROM ${missing === "PUBLIC" ? "PUBLIC" : missing}`,
+        ]);
+        const after = await languageTuple();
+        assert.equal(
+          after.length,
+          1,
+          `revoking ${missing} must really remove the tuple`,
+        );
+        const verified = await runAuthorizationVerify("final");
+        assert.notEqual(
+          verified.code,
+          0,
+          `a missing language grant for ${missing} must be rejected`,
+        );
+        assert.match(
+          verified.stderr,
+          new RegExp(
+            `missing language grant ${keyPrefixPattern(
+              ["language", "sql"],
+              missing,
+            )}`,
+          ),
+          verified.stderr.slice(0, 400),
+        );
+        if (missing === "PUBLIC") {
+          // effective 层同时塌陷：非 owner 角色再也拿不到 USAGE。
+          const reach = await withPool(adminPoolConfig(), async (pool) => {
+            const result = await pool.query<{ usage: boolean }>(
+              `SELECT has_language_privilege('meal_agent_app', 'sql', 'USAGE')
+                        AS usage`,
+            );
+            return result.rows[0]?.usage;
+          });
+          assert.equal(reach, false);
+        }
 
-      await runBootstrap("grants");
-      assert.deepEqual(
-        await languageTuple(),
-        baseline,
-        `converge must restore the exact tuple after removing ${missing}`,
-      );
-      assert.equal((await runAuthorizationVerify("final")).code, 0);
-    }
-    // effective 完整回到基线：每个探测主体都重新拿到 USAGE。
-    const restored = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ subject: string; usage: boolean }>(
-        `SELECT subject, has_language_privilege(subject, 'sql', 'USAGE') AS usage
-           FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
-                             'meal_agent_backup_login',
-                             'meal_agent_migration_login',
-                             'meal_agent_runtime_login']) AS subject
-          ORDER BY subject`,
-      );
-      return result.rows;
-    });
-    for (const row of restored) {
-      assert.equal(row.usage, true, `${row.subject} must regain language USAGE`);
-    }
-  } finally {
-    cleanup.push("language baseline", async () => {
-      await runBootstrap("grants");
-      assert.deepEqual(await languageTuple(), baseline);
-    });
-    cleanup.push("baseline", restoreBaseline);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+        await runBootstrap("grants");
+        assert.deepEqual(
+          await languageTuple(),
+          baseline,
+          `converge must restore the exact tuple after removing ${missing}`,
+        );
+        assert.equal((await runAuthorizationVerify("final")).code, 0);
+      }
+      // effective 完整回到基线：每个探测主体都重新拿到 USAGE。
+      const restored = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ subject: string; usage: boolean }>(
+          `SELECT subject, has_language_privilege(subject, 'sql', 'USAGE') AS usage
+             FROM unnest(ARRAY['public', 'meal_agent_app', 'meal_agent_backup',
+                               'meal_agent_backup_login',
+                               'meal_agent_migration_login',
+                               'meal_agent_runtime_login']) AS subject
+            ORDER BY subject`,
+        );
+        return result.rows;
+      });
+      for (const row of restored) {
+        assert.equal(row.usage, true, `${row.subject} must regain language USAGE`);
+      }
+  });
 });
 
 test("a canonical membership recorded twice by different grantors fails closed", async () => {
@@ -7623,91 +7745,95 @@ test("a canonical membership recorded twice by different grantors fails closed",
   // 两个不同 grantor 各存在一行。只检查「这条边在不在」会把重复边当成正常，
   // 因此逐 pair 计数与图的总数都必须精确。
   const secondGrantor = "stage09a_membership_admin";
-  const cleanup = new CleanupCollector();
-  try {
-    await withPool(adminPoolConfig(), async (pool) => {
-      await pool.query(`CREATE ROLE ${secondGrantor} NOLOGIN`);
-      await pool.query(
-        `GRANT meal_agent_app TO ${secondGrantor} WITH ADMIN OPTION`,
-      );
-      const client = await pool.connect();
-      try {
-        await client.query("SELECT set_config('role', $1, false)", [
-          secondGrantor,
-        ]);
-        await client.query(
-          "GRANT meal_agent_app TO meal_agent_runtime_login",
-        );
-      } finally {
-        client.release();
-      }
-    });
-
-    const duplicated = await withPool(adminPoolConfig(), async (pool) => {
-      const result = await pool.query<{ grantor: string }>(
-        `SELECT gr.rolname AS grantor
-           FROM pg_auth_members a
-           JOIN pg_roles m ON m.oid = a.member
-           JOIN pg_roles g ON g.oid = a.roleid
-           JOIN pg_roles gr ON gr.oid = a.grantor
-          WHERE m.rolname = 'meal_agent_runtime_login'
-            AND g.rolname = 'meal_agent_app'
-          ORDER BY 1`,
-      );
-      return result.rows.map((row) => row.grantor);
-    });
-    assert.equal(
-      duplicated.length,
-      2,
-      `the canonical pair must really be duplicated: ${duplicated.join(",")}`,
-    );
-
-    const before = await rawAuthorizationSnapshot();
-    for (const phase of ["acl", "grants"] as const) {
-      const refused = await bootstrap(phase);
-      assert.notEqual(refused.code, 0, `${phase} must refuse a duplicate edge`);
-      assert.match(
-        refused.stderr,
-        /role membership meal_agent_runtime_login in meal_agent_app is recorded 2 time\(s\) by grantor\(s\) /u,
-        refused.stderr.slice(0, 500),
-      );
-      assert.match(
-        refused.stderr,
-        /the project role membership graph has \d+ edge\(s\), expected exactly 3/u,
-      );
-    }
-    assert.equal(
-      await rawAuthorizationSnapshot(),
-      before,
-      "a duplicated membership must not trigger any mutation",
-    );
-  } finally {
-    cleanup.push("duplicate edge", async () => {
-      await withPool(adminPoolConfig(), async (pool) => {
-        await pool.query(
-          `REVOKE meal_agent_app FROM meal_agent_runtime_login GRANTED BY ${secondGrantor}`,
-        );
+  await withFailureSafeCleanup(async (cleanup) => {
+      cleanup.push("duplicate edge", async () => {
+        await withPool(adminPoolConfig(), async (pool) => {
+          await pool.query(
+            `REVOKE meal_agent_app FROM meal_agent_runtime_login GRANTED BY ${secondGrantor}`,
+          );
+        });
       });
-    });
-    cleanup.push("admin edge", async () => {
-      await adminStatements([`REVOKE meal_agent_app FROM ${secondGrantor}`]);
-    });
-    cleanup.push("synthetic role", async () => {
-      await dropSyntheticRole(secondGrantor);
-    });
-    cleanup.push("baseline", restoreBaseline);
-    cleanup.push("residue", assertNoSyntheticResidue);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+      cleanup.push("admin edge", async () => {
+        await adminStatements([`REVOKE meal_agent_app FROM ${secondGrantor}`]);
+      });
+      cleanup.push("synthetic role", async () => {
+        await dropSyntheticRole(secondGrantor);
+      });
+      cleanup.push("baseline", restoreBaseline);
+      cleanup.push("residue", assertNoSyntheticResidue);
+      await withPool(adminPoolConfig(), async (pool) => {
+        await pool.query(`CREATE ROLE ${secondGrantor} NOLOGIN`);
+        await pool.query(
+          `GRANT meal_agent_app TO ${secondGrantor} WITH ADMIN OPTION`,
+        );
+        const client = await pool.connect();
+        try {
+          await client.query("SELECT set_config('role', $1, false)", [
+            secondGrantor,
+          ]);
+          await client.query(
+            "GRANT meal_agent_app TO meal_agent_runtime_login",
+          );
+        } finally {
+          client.release();
+        }
+      });
+
+      const duplicated = await withPool(adminPoolConfig(), async (pool) => {
+        const result = await pool.query<{ grantor: string }>(
+          `SELECT gr.rolname AS grantor
+             FROM pg_auth_members a
+             JOIN pg_roles m ON m.oid = a.member
+             JOIN pg_roles g ON g.oid = a.roleid
+             JOIN pg_roles gr ON gr.oid = a.grantor
+            WHERE m.rolname = 'meal_agent_runtime_login'
+              AND g.rolname = 'meal_agent_app'
+            ORDER BY 1`,
+        );
+        return result.rows.map((row) => row.grantor);
+      });
+      assert.equal(
+        duplicated.length,
+        2,
+        `the canonical pair must really be duplicated: ${duplicated.join(",")}`,
+      );
+
+      const before = await rawAuthorizationSnapshot();
+      for (const phase of ["acl", "grants"] as const) {
+        const refused = await bootstrap(phase);
+        assert.notEqual(refused.code, 0, `${phase} must refuse a duplicate edge`);
+        assert.match(
+          refused.stderr,
+          /role membership meal_agent_runtime_login in meal_agent_app is recorded 2 time\(s\) by grantor\(s\) /u,
+          refused.stderr.slice(0, 500),
+        );
+        assert.match(
+          refused.stderr,
+          /the project role membership graph has \d+ edge\(s\), expected exactly 3/u,
+        );
+      }
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        before,
+        "a duplicated membership must not trigger any mutation",
+      );
+  });
 });
 
 test("an unknown ledger and a missing schema stop all entry points before any mutation", async () => {
   // 四个入口（两个 verify 阶段 + acl + grants）都必须在**任何 mutation 之前**
   // 拒绝未登记的 ledger；每一轮都先注入一处无关的、本来可收敛的漂移，失败之后
   // 它必须原封不动地留着。
-  const cleanup = new CleanupCollector();
-  try {
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("ledger row", async () => {
+      await adminStatements([
+        "DELETE FROM drizzle.__meal_agent_migrations WHERE name = '9999_unregistered.sql'",
+      ]);
+    });
+    cleanup.push("unrelated acl drift", async () => {
+      await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
+    });
+    cleanup.push("baseline", restoreBaseline);
     await adminStatements([
       "GRANT SELECT ON public.households TO PUBLIC",
       `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
@@ -7736,25 +7862,17 @@ test("an unknown ledger and a missing schema stop all entry points before any mu
       before,
       "an unknown ledger must not trigger any mutation from any entry point",
     );
-  } finally {
-    cleanup.push("ledger row", async () => {
-      await adminStatements([
-        "DELETE FROM drizzle.__meal_agent_migrations WHERE name = '9999_unregistered.sql'",
-      ]);
-    });
-    cleanup.push("unrelated acl drift", async () => {
-      await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
-    });
-    cleanup.push("baseline", restoreBaseline);
-    const failures = await cleanup.drain();
-    assert.deepEqual(failures, [], "cleanup must not leave anything behind");
-  }
+  });
 
   // 缺 managed schema：同样两个入口都必须在 mutation 之前失败。用独立 probe 库，
   // 因为删 schema 会破坏主库。
   const probe = "meal_agent_stage09a_missing_both";
-  const probeCleanup = new CleanupCollector();
-  try {
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("probe database", async () => {
+      await withPool(adminPoolConfig("postgres"), async (pool) => {
+        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+      });
+    });
     await mustSucceed("createdb", join(postgresBin, "createdb"), [probe], {
       env: adminEnvironment(),
     });
@@ -7784,13 +7902,122 @@ test("an unknown ledger and a missing schema stop all entry points before any mu
       before,
       "a missing managed schema must not trigger any mutation",
     );
-  } finally {
-    probeCleanup.push("probe database", async () => {
-      await withPool(adminPoolConfig("postgres"), async (pool) => {
-        await pool.query(`DROP DATABASE IF EXISTS ${probe}`);
+  });
+});
+
+test("a predefined-role over-reach blocks both entry points while a fixable drift stays untouched", async () => {
+  // 组合反例：**同时**存在两类问题——
+  //   (a) 外部 LOGIN 经 predefined role `pg_read_all_data` 拿到受监管有效权限，
+  //       它不经任何 aclitem，ACL mutation 根本修不了；
+  //   (b) 一处**本来完全可以收敛**的 ACL 漂移（PUBLIC 的表级 SELECT）。
+  //
+  // 正确行为是：两个入口都在**任何 mutation 之前**失败，(b) 因此**一个字节都
+  // 没被改过**。如果实现是「先改一部分、再靠事务回滚」，独立快照就会在这里对不
+  // 上——回滚只让命令失败，中途已经产生过真实变更。
+  const login = "stage09a_predefined_login";
+  await withFailureSafeCleanup(async (cleanup) => {
+    cleanup.push("membership", async () => {
+      await withPool(adminPoolConfig(), async (pool) => {
+        const present = await pool.query(
+          `SELECT 1 FROM pg_auth_members a
+             JOIN pg_roles m ON m.oid = a.member
+             JOIN pg_roles g ON g.oid = a.roleid
+            WHERE m.rolname = $1 AND g.rolname = 'pg_read_all_data'`,
+          [login],
+        );
+        if (present.rowCount !== 0) {
+          await pool.query(`REVOKE pg_read_all_data FROM ${login}`);
+        }
       });
     });
-    const failures = await probeCleanup.drain();
-    assert.deepEqual(failures, [], "the probe database must be gone");
-  }
+    cleanup.push("fixable acl drift", async () => {
+      await adminStatements(["REVOKE SELECT ON public.households FROM PUBLIC"]);
+    });
+    cleanup.push("synthetic role", async () => {
+      await dropSyntheticRole(login);
+    });
+    cleanup.push("baseline", restoreBaseline);
+    cleanup.push("residue", assertNoSyntheticResidue);
+
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`CREATE ROLE ${login} LOGIN NOSUPERUSER`);
+      await pool.query(`GRANT pg_read_all_data TO ${login} WITH INHERIT TRUE`);
+      await pool.query("GRANT SELECT ON public.households TO PUBLIC");
+    });
+
+    // 两类问题都真的存在：继承的读取权限来自 predefined role，没有任何 aclitem
+    // 把它授给这个角色或 PUBLIC；而 PUBLIC 的表级 SELECT 是一条真实的 aclitem。
+    const reality = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{
+        inherited: boolean;
+        acl_backed: boolean;
+        public_drift: boolean;
+      }>(
+        `SELECT has_table_privilege($1, 'public.users', 'SELECT') AS inherited,
+                EXISTS (SELECT 1 FROM pg_class c
+                          JOIN pg_namespace n ON n.oid = c.relnamespace,
+                             aclexplode(c.relacl) AS acl
+                         WHERE n.nspname = 'public' AND c.relname = 'users'
+                           AND (acl.grantee = 0
+                                OR pg_catalog.pg_get_userbyid(acl.grantee) = $1))
+                  AS acl_backed,
+                EXISTS (SELECT 1 FROM pg_class c
+                          JOIN pg_namespace n ON n.oid = c.relnamespace,
+                             aclexplode(c.relacl) AS acl
+                         WHERE n.nspname = 'public' AND c.relname = 'households'
+                           AND acl.grantee = 0
+                           AND acl.privilege_type = 'SELECT') AS public_drift`,
+        [login],
+      );
+      return result.rows[0];
+    });
+    assert.equal(reality?.inherited, true, "the predefined role must grant read");
+    assert.equal(
+      reality?.acl_backed,
+      false,
+      "and it must not be backed by any aclitem - that is what makes it unfixable",
+    );
+    assert.equal(reality?.public_drift, true, "the fixable drift must be real");
+
+    const before = await rawAuthorizationSnapshot();
+    for (const phase of ["acl", "grants"] as const) {
+      const refused = await bootstrap(phase);
+      assert.notEqual(
+        refused.code,
+        0,
+        `${phase} must refuse while the over-reach stands`,
+      );
+      assert.match(
+        refused.stderr,
+        new RegExp(`role ${login} reaches .* through role membership`),
+        refused.stderr.slice(0, 500),
+      );
+      // 快照在**每一个**入口之后都必须原样不动。
+      assert.equal(
+        await rawAuthorizationSnapshot(),
+        before,
+        `${phase} must not have converged the fixable drift`,
+      );
+    }
+    // 独立复核：那条本来可收敛的 PUBLIC 授权仍然一字未动。
+    const still = await withPool(adminPoolConfig(), async (pool) => {
+      const result = await pool.query<{ present: boolean }>(
+        `SELECT EXISTS (SELECT 1 FROM pg_class c
+                          JOIN pg_namespace n ON n.oid = c.relnamespace,
+                             aclexplode(c.relacl) AS acl
+                         WHERE n.nspname = 'public' AND c.relname = 'households'
+                           AND acl.grantee = 0
+                           AND acl.privilege_type = 'SELECT') AS present`,
+      );
+      return result.rows[0]?.present;
+    });
+    assert.equal(still, true, "the fixable drift must survive untouched");
+
+    // 解除继承之后，同一条漂移必须被正常收敛掉——证明它一直都是可收敛的。
+    await withPool(adminPoolConfig(), async (pool) => {
+      await pool.query(`REVOKE pg_read_all_data FROM ${login}`);
+    });
+    await runBootstrap("grants");
+    assert.equal((await runAuthorizationVerify("final")).code, 0);
+  });
 });
