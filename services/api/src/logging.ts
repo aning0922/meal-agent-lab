@@ -78,23 +78,49 @@ const conninfoPasswordProbe = /pass(?:word|file)\s*=/i;
  * 解码只用于**判断**，绝不把解码结果写进日志；一旦判定命中就把整条字符串
  * 换掉——无法把解码后的位置映射回原串，因此只能保守地整体替换。
  */
+/**
+ * 单轮解码。整串 `decodeURIComponent` 在遇到 `%ZZ` 这种畸形前缀时会**整条抛错**，
+ * 于是「畸形前缀 + 合法编码连接串」就能骗过探测。因此抛错时回落到逐个
+ * `%XX` 的宽松解码：能解的解开，解不开的原样留下。
+ */
+const decodePercentEncodingOnce = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value.replace(/%[0-9A-Fa-f]{2}/g, (sequence) => {
+      try {
+        return decodeURIComponent(sequence);
+      } catch {
+        return sequence;
+      }
+    });
+  }
+};
+
+/** 重复解码的**硬上界**：多重编码要跟到底，但绝不允许出现无界循环。 */
+const maximumDecodeRounds = 4;
+
 const containsEncodedConnectionSecret = (value: string): boolean => {
   if (!value.includes("%")) {
     return false;
   }
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(value);
-  } catch {
-    // 不是规范的百分号编码，按原样判断即可。
-    return false;
+  let current = value;
+  for (let round = 0; round < maximumDecodeRounds; round += 1) {
+    const decoded = decodePercentEncodingOnce(current);
+    if (decoded === current) {
+      // 收敛：再解也不会变。正常含百分号的文本（`100% done`、`50%25`）在这里
+      // 最多走一到两轮就退出，不会转圈。
+      return false;
+    }
+    if (
+      connectionStringProbe.test(decoded) ||
+      conninfoPasswordProbe.test(decoded)
+    ) {
+      return true;
+    }
+    current = decoded;
   }
-  if (decoded === value) {
-    return false;
-  }
-  return (
-    connectionStringProbe.test(decoded) || conninfoPasswordProbe.test(decoded)
-  );
+  return false;
 };
 
 export const redactText = (value: string): string => {
@@ -241,11 +267,13 @@ const hardenChildOptions = (options: unknown): unknown => {
   }
 
   // 子 logger 的 formatters 会**替换**父 logger 的同名 formatter，因此这里必须
-  // 显式补回我们的那一层，而不是依赖继承。
+  // 显式补回我们的那一层，而不是依赖继承。三个入口都要包：`level` 的返回值同样
+  // 会被合并进最终输出，`customLevels` + `formatters.level` 是一条完整的注入路径。
   const formatters = source["formatters"];
   if (formatters !== null && typeof formatters === "object") {
     const provided = formatters as Record<string, unknown>;
     const next: Record<string, unknown> = { ...provided };
+
     const log = provided["log"];
     next["log"] =
       typeof log === "function"
@@ -257,6 +285,7 @@ const hardenChildOptions = (options: unknown): unknown => {
               >,
             )
         : redactLogObject;
+
     const bindings = provided["bindings"];
     if (typeof bindings === "function") {
       next["bindings"] = (input: Record<string, unknown>) =>
@@ -266,6 +295,18 @@ const hardenChildOptions = (options: unknown): unknown => {
           ) as Record<string, unknown>,
         );
     }
+
+    const level = provided["level"];
+    if (typeof level === "function") {
+      next["level"] = (label: string, number: number) =>
+        redactLogObject(
+          (level as (label: string, number: number) => object)(
+            label,
+            number,
+          ) as Record<string, unknown>,
+        );
+    }
+
     hardened["formatters"] = next;
   }
 
@@ -277,7 +318,12 @@ const hardenChildOptions = (options: unknown): unknown => {
 
   // redact.censor 的返回值直接进入输出；函数与字符串两种形态都要过一遍。
   const redact = source["redact"];
-  if (redact !== null && typeof redact === "object" && !Array.isArray(redact)) {
+  if (redact !== undefined && !Array.isArray(redact)) {
+    if (redact === null || typeof redact !== "object") {
+      throw new Error(
+        "logger child redact must be an array of paths or an options object",
+      );
+    }
     const next = { ...(redact as Record<string, unknown>) };
     const censor = next["censor"];
     if (typeof censor === "function") {
@@ -290,6 +336,14 @@ const hardenChildOptions = (options: unknown): unknown => {
         );
     } else if (typeof censor === "string") {
       next["censor"] = redactText(censor);
+    } else if (censor !== undefined) {
+      // Pino 的契约只有「字符串」与「(value, path) => any」两种 censor。别的形态
+      // （对象、数组、数字…）会被原样当成替换值写进输出，而我们无法在这里对一个
+      // 未知形态做等价包装——因此 fail closed，绝不透传。
+      throw new Error(
+        "logger child redact.censor must be a string or a function; " +
+          `received ${typeof censor}`,
+      );
     }
     hardened["redact"] = next;
   }
@@ -306,9 +360,19 @@ const hardenChildOptions = (options: unknown): unknown => {
  * 返回的子 logger 要继续带着这套覆盖，否则孙 logger 就漏了。
  */
 const hardenLogger = (logger: Logger): Logger => {
-  // pino 的 `child` 是泛型重载，直接 as 会因为 custom-levels 类型参数不兼容而
-  // 报错；这里只需要「bindings 进、Logger 出」这一层契约。
-  const createChild = logger.child.bind(logger) as unknown as (
+  // pino 的 `child()` 用 `Object.create(this)` 建子 logger，因此子 logger 通过
+  // **原型链**继承这里安装的两个覆盖——只要覆盖内部用**动态 `this`**，每一层
+  // 操作的就都是它自己那个实例。
+  //
+  // 反过来，用 `bind(logger)` 把 root 绑死会同时坏掉三件事（都已实测）：
+  // grandchild 从 root 而不是 parent 派生（丢掉 parent bindings）、
+  // `child.setBindings()` 改的是 **root**、root 的输出里出现子 logger 的 binding。
+  // 因此这里刻意不 bind，也不逐层重新安装。
+  //
+  // `child` 是泛型重载，直接 as 会因为 custom-levels 类型参数不兼容而报错；
+  // 这里只需要「bindings 进、Logger 出」这一层契约。
+  const inheritedChild = logger.child as unknown as (
+    this: Logger,
     bindings: Record<string, unknown>,
     options?: unknown,
   ) => Logger;
@@ -316,24 +380,32 @@ const hardenLogger = (logger: Logger): Logger => {
     configurable: true,
     enumerable: false,
     writable: true,
-    value: (bindings: Record<string, unknown>, options?: unknown): Logger =>
-      hardenLogger(
-        createChild(
-          redactLogObject(bindings ?? {}),
-          hardenChildOptions(options),
-        ),
-      ),
+    value: function (
+      this: Logger,
+      bindings: Record<string, unknown>,
+      options?: unknown,
+    ): Logger {
+      return inheritedChild.call(
+        this,
+        redactLogObject(bindings ?? {}),
+        hardenChildOptions(options),
+      );
+    },
   });
 
-  const replaceBindings = logger.setBindings.bind(logger) as (
+  const inheritedSetBindings = logger.setBindings as unknown as (
+    this: Logger,
     bindings: Record<string, unknown>,
   ) => void;
   Object.defineProperty(logger, "setBindings", {
     configurable: true,
     enumerable: false,
     writable: true,
-    value: (bindings: Record<string, unknown>): void => {
-      replaceBindings(redactLogObject(bindings ?? {}));
+    value: function (
+      this: Logger,
+      bindings: Record<string, unknown>,
+    ): void {
+      inheritedSetBindings.call(this, redactLogObject(bindings ?? {}));
     },
   });
 

@@ -405,3 +405,261 @@ test("request logging keeps method, redacted path, remote address and status", a
   assert.ok(response, "a request-completed entry must exist");
   assert.equal(response["statusCode"], 200);
 });
+
+/**
+ * 以**运行时**形态调用 `child()`。本文件里有几组用例刻意传入不符合 Pino 类型
+ * 契约的 options（那正是被测行为），静态类型挡在这里没有意义。
+ */
+const childWithOptions = (
+  logger: ReturnType<typeof createLogger>,
+  bindings: Record<string, unknown>,
+  options: unknown,
+): ReturnType<typeof createLogger> =>
+  (
+    logger.child as unknown as (
+      childBindings: Record<string, unknown>,
+      childOptions: unknown,
+    ) => ReturnType<typeof createLogger>
+  )(bindings, options);
+
+/** 解析捕获到的 NDJSON，并剥掉每行都有的 level/time/msg。 */
+const bindingsOf = (
+  output: string,
+): readonly { msg: string; bindings: Record<string, unknown> }[] =>
+  output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      const { level: _level, time: _time, msg, ...bindings } = parsed;
+      return { msg: String(msg), bindings };
+    });
+
+test("child and grandchild loggers stay isolated from root", () => {
+  const capture = capturingLogger();
+
+  const child = capture.logger.child({ layer: "child", note: dsn });
+  const grandchild = child.child({ layer2: "grandchild", note2: encodedDsn });
+
+  capture.logger.info("root-1");
+  child.info("child-1");
+  grandchild.info("grandchild-1");
+
+  child.setBindings({ layer: "child-updated" });
+  child.info("child-2");
+  capture.logger.info("root-2");
+  const laterGrandchild = child.child({ layer3: "later" });
+  laterGrandchild.info("later-grandchild");
+
+  grandchild.setBindings({ layer2: "grandchild-updated" });
+  grandchild.info("grandchild-2");
+  child.info("child-3");
+  capture.logger.info("root-3");
+
+  const entries = new Map(
+    bindingsOf(capture.output()).map((entry) => [entry.msg, entry.bindings]),
+  );
+  const at = (msg: string): Record<string, unknown> => {
+    const value = entries.get(msg);
+    assert.ok(value, `${msg} must have been emitted`);
+    return value;
+  };
+
+  // 1. child 继承 root bindings（root 没有额外 binding，因此 child 只有自己的）。
+  assert.equal(at("child-1")["layer"], "child");
+  // 2. grandchild 同时继承 root、parent 与自己的 bindings。
+  assert.equal(at("grandchild-1")["layer"], "child");
+  assert.equal(at("grandchild-1")["layer2"], "grandchild");
+  // 3. child.setBindings 只改 child 及其**之后**建立的后代。
+  assert.equal(at("child-2")["layer"], "child-updated");
+  assert.equal(at("later-grandchild")["layer"], "child-updated");
+  assert.equal(at("later-grandchild")["layer3"], "later");
+  // 4. grandchild.setBindings 不改 parent 与 root。
+  assert.equal(at("grandchild-2")["layer2"], "grandchild-updated");
+  assert.equal(at("child-3")["layer"], "child-updated");
+  assert.equal(at("child-3")["layer2"], undefined);
+  // 5. root 的输出里不得出现任何子 logger 的 binding。
+  for (const msg of ["root-1", "root-2", "root-3"]) {
+    assert.deepEqual(
+      at(msg),
+      {},
+      `${msg} must not inherit any child binding`,
+    );
+  }
+  // 6. binding 里的 Secret 仍然被脱敏。
+  assertClean(capture.output(), "logger isolation");
+});
+
+test("customLevels with a level formatter cannot inject a secret", () => {
+  const capture = capturingLogger();
+
+  const audited = childWithOptions(
+    capture.logger,
+    { component: "audit" },
+    {
+      customLevels: { audit: 35 },
+      formatters: {
+        level: (label: string, number: number) => ({
+          level: number,
+          levelLabel: label,
+          leaked: dsn,
+          leakedText: `password='${quoted}'`,
+        }),
+      },
+    },
+  ) as ReturnType<typeof createLogger> & { audit: (message: string) => void };
+
+  audited.audit("custom level line");
+  audited.info("standard level line");
+
+  assertClean(capture.output(), "customLevels + formatters.level");
+  assert.equal(capture.output().includes("audit"), true);
+});
+
+test("child redact.censor shapes outside the Pino contract fail closed", () => {
+  const capture = capturingLogger();
+  for (const censor of [
+    { leaked: dsn },
+    [dsn],
+    42,
+    true,
+  ]) {
+    assert.throws(
+      () =>
+        childWithOptions(
+          capture.logger,
+          { component: "censor" },
+          { redact: { paths: ["secretish"], censor } },
+        ),
+      /redact\.censor must be a string or a function/,
+      `censor ${JSON.stringify(censor)} must be rejected`,
+    );
+  }
+  assert.throws(
+    () =>
+      childWithOptions(
+        capture.logger,
+        { component: "censor" },
+        { redact: "not-an-object" },
+      ),
+    /redact must be an array of paths or an options object/,
+  );
+  // 合法形态仍然可用（并且仍然被包装）。
+  const stringCensor = childWithOptions(
+    capture.logger,
+    { component: "ok" },
+    { redact: { paths: ["secretish"], censor: "[hidden]" } },
+  );
+  stringCensor.info({ secretish: dsn }, "string censor");
+  const pathsOnly = childWithOptions(capture.logger, { component: "ok2" }, {
+    redact: ["secretish"],
+  });
+  pathsOnly.info({ secretish: dsn }, "paths only");
+  assertClean(capture.output(), "valid censor shapes");
+});
+
+test("percent-encoded connection secrets are found through bounded re-decoding", () => {
+  const capture = capturingLogger();
+  const conninfo = `host=db user=app password='${quoted}'`;
+
+  const encodedForms: readonly [string, string][] = [
+    ["single encoding", encodeURIComponent(dsn)],
+    ["double encoding", encodeURIComponent(encodeURIComponent(dsn))],
+    [
+      "triple encoding",
+      encodeURIComponent(encodeURIComponent(encodeURIComponent(dsn))),
+    ],
+    ["malformed %ZZ prefix", `%ZZ${encodeURIComponent(dsn)}`],
+    [
+      "malformed prefix then double encoding",
+      `%ZZ${encodeURIComponent(encodeURIComponent(dsn))}`,
+    ],
+    ["encoded conninfo", encodeURIComponent(conninfo)],
+    ["double-encoded conninfo", encodeURIComponent(encodeURIComponent(conninfo))],
+    ["encoded inside a longer path", `/api/v1/x/${encodeURIComponent(dsn)}/y`],
+  ];
+
+  const started = Date.now();
+  for (const [label, value] of encodedForms) {
+    capture.logger.info({ note: value }, `encoded ${label}`);
+    capture.logger.info({}, `interpolated ${value}`);
+  }
+
+  // 正常含百分号的文本不得被无界重复解码，也不得被误伤。
+  const benign = ["100% done", "50%25 complete", "%", "%%%%", "a%b%c"];
+  for (const value of benign) {
+    capture.logger.info({ progress: value }, "benign percent text");
+  }
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 2_000, `re-decoding must stay bounded, took ${String(elapsed)}ms`);
+
+  assertClean(capture.output(), "percent-encoded forms");
+  for (const value of benign) {
+    assert.equal(
+      capture.output().includes(value),
+      true,
+      `${value} is harmless and must survive`,
+    );
+  }
+});
+
+test("the real Fastify request log rejects encoded connection secrets", async () => {
+  const capture = capturingLogger();
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: capture.logger,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  try {
+    // 请求目标完全由调用方控制：单重、双重与畸形前缀三种编码都要在**最终
+    // Pino 输出**上被拦住，而不只是在 helper 的单测里。
+    for (const encodedTarget of [
+      encodeURIComponent(dsn),
+      encodeURIComponent(encodeURIComponent(dsn)),
+      `%ZZ${encodeURIComponent(dsn)}`,
+      encodeURIComponent(`host=db password='${quoted}'`),
+    ]) {
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/not-a-route/${encodedTarget}`,
+      });
+    }
+  } finally {
+    await app.close();
+  }
+
+  assertClean(capture.output(), "encoded request targets");
+
+  // 脱敏不能靠把请求信息一起丢掉来「通过」。
+  const entries = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const request = entries.find((entry) => entry["req"] !== undefined)?.[
+    "req"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(request);
+  assert.equal(request["method"], "GET");
+  assert.equal(typeof request["path"], "string");
+  assert.equal(typeof request["remoteAddress"], "string");
+  const response = entries.find((entry) => entry["res"] !== undefined)?.[
+    "res"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(response);
+  assert.equal(response["statusCode"], 404);
+});
