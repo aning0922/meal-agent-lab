@@ -942,8 +942,22 @@ test("a stalled copy that ignores TERM is killed together with its descendants",
 });
 
 // ---------------------------------------------------------------------------
-// 外部信号：状态机、调用方 trap 语义、并发信号裁决
+// 外部信号：证据必须来自实现，不能来自测试自己的清理
 // ---------------------------------------------------------------------------
+//
+// 这一组与 `infra/docker/postgres/signal-matrix.sh` 分工明确：
+//
+//   - 矩阵负责**语义广度**（四种调用方处置 × 三个信号 × starting/terminating 两个
+//     窗口 × first-wins × EXIT trap 链式执行），并在 macOS/bash 3.2 与钉住 digest
+//     的 Debian/bash 5.2 两侧各跑一遍，由 `bootstrap-signal-matrix.test.ts` 纳入门禁；
+//   - 这里负责**这个测试进程才能拿到的证据**：FIFO 读端是否真的没了
+//     （`O_WRONLY|O_NONBLOCK` 必然 `ENXIO`）、psql 调用次数是否为 0、真实
+//     bootstrap.sh 的输出里是否有 sentinel，以及 harness 自身的 failure-safe。
+//
+// 最要紧的一条纪律：**断言先于清理**。所有关于「实现留下了什么」的观察都在
+// `finally` 之前完成并冻结；`finally` 只是兜底，不改变被测事实。上一轮不是这样：
+// 清理在 `runSignalScenario` 返回**之前**就 SIGKILL 掉了整棵子树，于是用例后面
+// 那句 `processIsGone(...)` 证明的其实是「测试自己把它杀了」。
 
 const secretSourceScript = join(
   repositoryRoot,
@@ -965,6 +979,11 @@ writeFileSync(
     "  trap '' TERM INT HUP",
     '  printf "%s" "$$" > "$MEAL_AGENT_TEST_SIGNAL_HEAD"',
     '  printf "%s" "$PPID" > "$MEAL_AGENT_TEST_SIGNAL_WORKER"',
+    "  # 交出 bootstrap 的 stdout/stderr。不这么做的话，「受控子树还活着」与",
+    "  # 「管道还没关」就永远绑在一起：任何清理缺陷都只会表现成 harness 的 12 秒",
+    "  # 硬上界，掩盖掉「进程确实泄漏了」这个真正要证明的事实。断开之后，两件事",
+    "  # 才是各自独立、各自可断言的。",
+    "  exec > /dev/null 2>&1",
     "  # 真实的 FIFO reader：read-write 打开不会阻塞，但只要本进程活着，",
     "  # 以 O_WRONLY|O_NONBLOCK 打开该 FIFO 就不会 ENXIO。",
     '  exec 7<> "$MEAL_AGENT_TEST_SIGNAL_FIFO"',
@@ -978,44 +997,97 @@ writeFileSync(
 );
 chmodSync(join(signalWrapperDirectory, "head"), 0o755);
 
-/**
- * 调用方驱动脚本：在 source 之前就装好自己的 TERM/INT/HUP trap，并把 source
- * 前后的 `trap -p` 都打出来。
- *
- * bootstrap.sh 自己不装这三个 trap，所以「调用方原有 trap 被真正还回去」这件事
- * 只能由这样一个显式的调用方来证明。三个退出码 71/72/73 互不相同，因此断言看到
- * 的是**哪一个** handler 跑了，而不只是「进程死了」。
- */
-const signalDriver = join(workspace, "signal-driver.sh");
-writeFileSync(
-  signalDriver,
-  [
-    "#!/usr/bin/env bash",
-    "set -u",
-    "trap 'echo CALLER-TRAP-TERM >&2; exit 71' TERM",
-    "trap 'echo CALLER-TRAP-INT >&2; exit 72' INT",
-    "trap 'echo CALLER-TRAP-HUP >&2; exit 73' HUP",
-    'echo TRAPS-BEFORE-BEGIN',
-    "trap -p TERM INT HUP",
-    'echo TRAPS-BEFORE-END',
-    // shellcheck source=/dev/null
-    'source "$MEAL_AGENT_SECRET_SOURCE"',
-    "meal_agent_resolve_secret MEAL_AGENT_RUNTIME_PASSWORD",
-    'echo "RESOLVED ${#MEAL_AGENT_RUNTIME_PASSWORD}"',
-    'echo TRAPS-AFTER-BEGIN',
-    "trap -p TERM INT HUP",
-    'echo TRAPS-AFTER-END',
-    "exit 0",
-  ].join("\n"),
-);
-chmodSync(signalDriver, 0o755);
-
 const readPidFile = (path: string): number | undefined => {
   if (!existsSync(path)) {
     return undefined;
   }
   const value = Number(readFileSync(path, "utf8").trim());
   return Number.isInteger(value) && value > 0 ? value : undefined;
+};
+
+interface ProcessRow {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly pgid: number;
+}
+
+/** 一次进程表快照。`ps -A -o pid=,ppid=,pgid=` 在 macOS 与 Linux 上写法相同。 */
+const processTable = (): readonly ProcessRow[] => {
+  const result = spawnSync("ps", ["-A", "-o", "pid=,ppid=,pgid="], {
+    encoding: "utf8",
+  });
+  if (result.status !== 0 || typeof result.stdout !== "string") {
+    return [];
+  }
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number))
+    .filter(
+      (parts): parts is [number, number, number] =>
+        parts.length === 3 && parts.every((n) => Number.isInteger(n)),
+    )
+    .map(([pid, ppid, pgid]) => ({ pid, ppid, pgid }));
+};
+
+/** 从 root 出发广度优先枚举当前还活着的后代。 */
+const descendantsOf = (root: number): readonly ProcessRow[] => {
+  const table = processTable();
+  const byParent = new Map<number, ProcessRow[]>();
+  for (const row of table) {
+    const bucket = byParent.get(row.ppid);
+    if (bucket === undefined) {
+      byParent.set(row.ppid, [row]);
+    } else {
+      bucket.push(row);
+    }
+  }
+  const found: ProcessRow[] = [];
+  const queue = [root];
+  const seen = new Set<number>([root]);
+  while (queue.length > 0) {
+    for (const child of byParent.get(queue.shift() as number) ?? []) {
+      if (seen.has(child.pid)) {
+        continue;
+      }
+      seen.add(child.pid);
+      found.push(child);
+      queue.push(child.pid);
+    }
+  }
+  return found;
+};
+
+const pause = async (ms: number): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+};
+
+/** 有界确认一个 PID 真的消失了。实现可以慢一点回收，但不能无限期。 */
+const awaitGone = async (pid: number, budgetMs: number): Promise<boolean> => {
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    if (processIsGone(pid)) {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    await pause(25);
+  }
+};
+
+/** FIFO 是否还有读端。只要还有一个 reader 活着，这次 open 就不会 ENXIO。 */
+const fifoHasReader = (fifo: string): boolean => {
+  try {
+    closeSync(
+      openSync(fifo, openConstants.O_WRONLY | openConstants.O_NONBLOCK),
+    );
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENXIO") {
+      return false;
+    }
+    throw error;
+  }
 };
 
 /**
@@ -1063,29 +1135,33 @@ const withHardCap = async <T>(work: Promise<T>, label: string): Promise<T> => {
 interface SignalScenario {
   /** 文件名前缀，必须逐个用例唯一。 */
   readonly slot: string;
-  /** 依次投递的信号；第二个用来落进 TERM→KILL 之间那 0.2s 的清理窗口。 */
+  /** 依次投递的信号。 */
   readonly signals: readonly NodeJS.Signals[];
-  /** 两个信号之间的间隔。 */
-  readonly gapMs?: number;
+  /**
+   * 第二个信号落在哪里。`terminating` 由**实现暴露的 marker** 决定，不是猜时间：
+   * 实现进入 TERM→KILL 之间的窗口时创建 marker 文件并有界等待 release 文件。
+   */
+  readonly secondSignalWindow?: "terminating";
   /** true 走调用方驱动脚本（自带 trap），false 走 bootstrap.sh。 */
   readonly callerTraps: boolean;
   /** false 时不挂 stall wrapper，用于「正常完成后 trap 仍被还回去」。 */
   readonly stall: boolean;
 }
 
+/**
+ * 已经**冻结**的观察结果。每一项都在 finally 之前采集完毕，因此它描述的是实现
+ * 留下的状态，而不是清理之后的状态。
+ */
 interface SignalOutcome {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
   readonly output: string;
   readonly log: string;
   readonly leftovers: readonly string[];
-  readonly fifo: string;
-  readonly pids: {
-    readonly bootstrap: number;
-    readonly worker: number | undefined;
-    readonly head: number | undefined;
-    readonly sleep: number | undefined;
-  };
+  readonly fifoReaderSurvived: boolean;
+  readonly stillAlive: readonly string[];
+  readonly recorded: readonly string[];
+  readonly residualDescendants: readonly number[];
 }
 
 const runSignalScenario = async (
@@ -1093,6 +1169,8 @@ const runSignalScenario = async (
 ): Promise<SignalOutcome> => {
   const temporaryDirectory = join(workspace, `${scenario.slot}-tmp`);
   mkdirSync(temporaryDirectory, { recursive: true });
+  const markerDirectory = join(workspace, `${scenario.slot}-markers`);
+  mkdirSync(markerDirectory, { recursive: true });
   const fifo = join(workspace, `${scenario.slot}.fifo`);
   if (!existsSync(fifo)) {
     execFileSync("mkfifo", [fifo]);
@@ -1102,6 +1180,22 @@ const runSignalScenario = async (
   const sleepFile = join(workspace, `${scenario.slot}.sleep.pid`);
   const logPath = join(workspace, `${scenario.slot}.psql.log`);
   writeFileSync(logPath, "");
+
+  /**
+   * 在等待期间持续累积「见过的后代与它们的真实 pgid」。
+   *
+   * hard-cap 在 worker 把自己的 PID 写进文件**之前**就到期时，PID 文件是空的，
+   * 而 worker 在 `set -m` 下是**独立**进程组的组长——它的 pgid 既不是 bootstrap
+   * 的，也无从从文件里读到。这份持续快照就是那种情况下唯一能收干净的依据。
+   */
+  const observedPids = new Set<number>();
+  const observedGroups = new Set<number>();
+  const sampleDescendants = (root: number): void => {
+    for (const row of descendantsOf(root)) {
+      observedPids.add(row.pid);
+      observedGroups.add(row.pgid);
+    }
+  };
 
   const basePath = process.env["PATH"] ?? "";
   const child = spawn(
@@ -1121,6 +1215,11 @@ const runSignalScenario = async (
         PSQL: fakePsql,
         MEAL_AGENT_FAKE_PSQL_LOG: logPath,
         MEAL_AGENT_SECRET_SOURCE: secretSourceScript,
+        // 只有需要精确投递的用例才打开窗口 marker；其余用例保持生产形态（未设置
+        // 时实现里那两个函数是纯空操作）。
+        ...(scenario.secondSignalWindow === undefined
+          ? {}
+          : { MEAL_AGENT_SECRET_WINDOW_MARKER_DIR: markerDirectory }),
         MEAL_AGENT_TEST_SIGNAL_MARKER: join(
           workspace,
           `${scenario.slot}.marker`,
@@ -1149,6 +1248,7 @@ const runSignalScenario = async (
   );
   const groupLeader = bootstrapPid as number;
   liveSignalGroups.add(groupLeader);
+  observedGroups.add(groupLeader);
 
   let output = "";
   child.stdout.on("data", (chunk) => {
@@ -1175,22 +1275,58 @@ const runSignalScenario = async (
         if (scenario.stall) {
           // 等三层 PID 全部出现再发信号，否则测的可能是「还没来得及起来」。
           while (readPidFile(sleepFile) === undefined) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
+            sampleDescendants(groupLeader);
+            await pause(25);
           }
+          sampleDescendants(groupLeader);
+
           // 只有 reader 还在时，以 O_WRONLY|O_NONBLOCK 打开 FIFO 才不会 ENXIO。
-          closeSync(
-            openSync(fifo, openConstants.O_WRONLY | openConstants.O_NONBLOCK),
+          // 这是「实现清理之前确实有一个读端」的正向证据。
+          assert.equal(
+            fifoHasReader(fifo),
+            true,
+            `${scenario.slot}: the stalled head must hold the FIFO open before the signal`,
           );
+
           for (const [index, signal] of scenario.signals.entries()) {
-            if (index > 0) {
-              await new Promise((resolve) =>
-                setTimeout(resolve, scenario.gapMs ?? 0),
-              );
+            if (index > 0 && scenario.secondSignalWindow === "terminating") {
+              // 确定地落进 terminating：实现在 TERM 已发、KILL 未发时创建
+              // marker 并有界等待 release。等到 marker 才发第二个信号。
+              while (!existsSync(join(markerDirectory, "terminating"))) {
+                await pause(10);
+              }
             }
             process.kill(groupLeader, signal);
           }
+          if (scenario.secondSignalWindow === "terminating") {
+            writeFileSync(join(markerDirectory, "terminating.release"), "");
+          }
         }
         const result = await closed;
+
+        // --- 观察窗口：全部在 finally 之前完成，结果冻结进 outcome -----------
+        const recorded: string[] = [];
+        const stillAlive: string[] = [];
+        for (const [label, path] of [
+          ["worker", workerFile],
+          ["head", headFile],
+          ["sleep", sleepFile],
+        ] as const) {
+          const pid = readPidFile(path);
+          if (pid === undefined) {
+            continue;
+          }
+          recorded.push(label);
+          observedPids.add(pid);
+          // 有界确认：父进程退出之后实现仍可能在回收，但必须有界。
+          if (!(await awaitGone(pid, 3_000))) {
+            stillAlive.push(`${label} ${String(pid)}`);
+          }
+        }
+        if (!(await awaitGone(groupLeader, 3_000))) {
+          stillAlive.push(`bootstrap ${String(groupLeader)}`);
+        }
+
         return {
           ...result,
           output,
@@ -1198,37 +1334,40 @@ const runSignalScenario = async (
           leftovers: readdirSync(temporaryDirectory).filter((entry) =>
             entry.startsWith("meal-agent-secret."),
           ),
-          fifo,
-          pids: {
-            bootstrap: groupLeader,
-            worker: readPidFile(workerFile),
-            head: readPidFile(headFile),
-            sleep: readPidFile(sleepFile),
-          },
+          fifoReaderSurvived: fifoHasReader(fifo),
+          stillAlive,
+          recorded,
+          residualDescendants: descendantsOf(groupLeader).map((row) => row.pid),
         };
       })(),
       `${scenario.slot}: the external signal case`,
     );
   } finally {
-    // 有界清理，**即使上面的 PID 等待失败也照做**：整组只按真实 PGID 收两个
-    // ——bootstrap（detached 让它成为组长）与 worker（`set -m` 让 pgid == pid）；
-    // head 与 sleep 不是组长，因此只按单个 PID 收，绝不拿它们的 PID 当 PGID。
-    for (const pgid of [groupLeader, readPidFile(workerFile)]) {
-      if (pgid !== undefined) {
-        try {
-          process.kill(-pgid, "SIGKILL");
-        } catch {
-          // 进程组已经消失。
-        }
+    // 兜底清理。它排在**全部观察之后**，因此不可能替实现把断言弄绿。
+    //
+    // hard-cap 路径也必须能收干净：worker 的 pgid 可能从来没被写进文件，所以这里
+    // 用等待期间持续采样得到的**真实 pgid** 集合，而不是只认 PID 文件。
+    sampleDescendants(groupLeader);
+    for (const pgid of observedGroups) {
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        // 进程组已经消失。
       }
     }
-    for (const pid of [readPidFile(headFile), readPidFile(sleepFile)]) {
-      if (pid !== undefined) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // 已经退出。
-        }
+    const worker = readPidFile(workerFile);
+    if (worker !== undefined) {
+      try {
+        process.kill(-worker, "SIGKILL");
+      } catch {
+        // 进程组已经消失。
+      }
+    }
+    for (const pid of observedPids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // 已经退出。
       }
     }
     liveSignalGroups.delete(groupLeader);
@@ -1238,34 +1377,26 @@ const runSignalScenario = async (
 };
 
 const assertControlledSubtreeGone = (outcome: SignalOutcome): void => {
-  for (const [label, pid] of [
-    ["bootstrap", outcome.pids.bootstrap],
-    ["worker", outcome.pids.worker],
-    ["head", outcome.pids.head],
-    ["sleep", outcome.pids.sleep],
-  ] as const) {
-    assert.equal(pid !== undefined, true, `${label} pid was never recorded`);
-    assert.equal(
-      processIsGone(pid as number),
-      true,
-      `${label} ${String(pid)} must be gone after the signal cleanup`,
-    );
-  }
-
-  // 没有残留的 FIFO reader：只要还有 reader 活着，这次 open 就不会 ENXIO。
-  assert.throws(
-    () => {
-      closeSync(
-        openSync(
-          outcome.fifo,
-          openConstants.O_WRONLY | openConstants.O_NONBLOCK,
-        ),
-      );
-    },
-    (error: unknown) => (error as NodeJS.ErrnoException).code === "ENXIO",
+  assert.deepEqual(
+    [...outcome.recorded].sort(),
+    ["head", "sleep", "worker"],
+    "all three controlled layers must have recorded themselves",
+  );
+  assert.deepEqual(
+    outcome.stillAlive,
+    [],
+    "the implementation must have collected the whole controlled subtree",
+  );
+  assert.deepEqual(
+    outcome.residualDescendants,
+    [],
+    "no descendant of bootstrap may survive",
+  );
+  assert.equal(
+    outcome.fifoReaderSurvived,
+    false,
     "no FIFO reader may survive the signal cleanup",
   );
-
   assert.equal(
     outcome.log.split("\n").filter((line) => line.startsWith("ARGV")).length,
     0,
@@ -1299,14 +1430,14 @@ for (const [signal, slot] of [
   });
 }
 
-test("a second signal during cleanup is registered, not re-entered", async () => {
-  // HUP 落在 TERM→KILL 之间那 0.2s 的清理窗口里。实现按**先到者胜**裁决：
-  // TERM 是 winner，HUP 只被登记然后丢弃，因此退出语义仍然是 SIGTERM。
-  // 这条断言就是 first-wins 的可执行定义——换成 last-wins 它会立刻失败。
+test("a second signal lands inside the terminating window and loses", async () => {
+  // HUP 的投递点由**实现暴露的 marker** 决定：TERM 已发、KILL 未发。上一轮是
+  // 「sleep 100ms 然后但愿它落在 0.2s 窗口里」，那种绿证明不了任何事。
+  // 裁决是先到者胜，因此退出语义仍然是 SIGTERM。
   const outcome = await runSignalScenario({
     slot: "signal-term-then-hup",
     signals: ["SIGTERM", "SIGHUP"],
-    gapMs: 100,
+    secondSignalWindow: "terminating",
     callerTraps: false,
     stall: true,
   });
@@ -1316,38 +1447,148 @@ test("a second signal during cleanup is registered, not re-entered", async () =>
     "SIGTERM",
     `first-wins: the winner must stay SIGTERM, got ${String(outcome.signal)} / ${String(outcome.code)}`,
   );
-  // 第二个信号没有让父进程提前退出，也没有重入清理：受控子树照样全部消失。
   assertControlledSubtreeGone(outcome);
 });
 
-for (const [signal, slot, expectedCode, marker] of [
-  ["SIGTERM", "signal-caller-term", 71, "CALLER-TRAP-TERM"],
-  ["SIGINT", "signal-caller-int", 72, "CALLER-TRAP-INT"],
-  ["SIGHUP", "signal-caller-hup", 73, "CALLER-TRAP-HUP"],
-] as const) {
-  test(`the caller's own ${signal} trap is restored and really runs`, async () => {
-    const outcome = await runSignalScenario({
-      slot,
-      signals: [signal],
-      callerTraps: true,
-      stall: true,
-    });
+test("the hard cap still collects a worker whose pid file never appeared", async () => {
+  // 反过来验证 harness 自己：worker 在**记录自己之前**就被拦住时，PID 文件是空的，
+  // 而 worker 在 `set -m` 下是独立进程组的组长。这条用例证明兜底清理不依赖 PID
+  // 文件——它用的是等待期间持续采样得到的真实 pgid，并在最后有界确认无残留。
+  const temporaryDirectory = join(workspace, "signal-nopid-tmp");
+  mkdirSync(temporaryDirectory, { recursive: true });
+  const logPath = join(workspace, "signal-nopid.psql.log");
+  writeFileSync(logPath, "");
+  // 直接把 FIFO 当 `*_FILE` 传是没用的：粗筛的 `-f` 会在起 worker 之前就拒掉它。
+  // 这里复用已有的 stat wrapper，在粗筛之后、`open()` 之前把常规文件换成无写端的
+  // FIFO——worker 因此**确实存在**、卡在 `exec 9<` 上，而且永远走不到复制阶段，
+  // 也就永远不会写出任何 PID 文件。
+  const target = join(workspace, "signal-nopid-target");
+  writeFileSync(target, passwords.migration);
+  chmodSync(target, 0o600);
 
-    // 调用方的 handler 真的跑了：既有它的 marker，也有它自己的退出码。
+  const child = spawn(
+    "bash",
+    [bootstrapScript, "logins", "--maintenance-db", "postgres"],
+    {
+      detached: true,
+      env: {
+        PATH: `${fifoWrapperDirectory}:${process.env["PATH"] ?? ""}`,
+        HOME: process.env["HOME"] ?? "",
+        TMPDIR: temporaryDirectory,
+        PSQL: fakePsql,
+        MEAL_AGENT_FAKE_PSQL_LOG: logPath,
+        MEAL_AGENT_TEST_MODE: "fifo",
+        MEAL_AGENT_TEST_TARGET: target,
+        MEAL_AGENT_TEST_MARKER: join(workspace, "signal-nopid-marker"),
+        MEAL_AGENT_MIGRATION_PASSWORD_FILE: target,
+        MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+        MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const groupLeader = child.pid as number;
+  assert.equal(
+    Number.isInteger(groupLeader) && groupLeader > 0,
+    true,
+    "spawn must report a positive integer pid",
+  );
+  liveSignalGroups.add(groupLeader);
+
+  const observedGroups = new Set<number>([groupLeader]);
+  const observedPids = new Set<number>();
+  try {
+    // 等 worker 真的存在（它是 bootstrap 的后代，且自成进程组）。
+    const deadline = Date.now() + 5_000;
+    let sawSeparateGroup = false;
+    while (Date.now() < deadline) {
+      for (const row of descendantsOf(groupLeader)) {
+        observedPids.add(row.pid);
+        observedGroups.add(row.pgid);
+        if (row.pgid !== groupLeader) {
+          sawSeparateGroup = true;
+        }
+      }
+      if (sawSeparateGroup) {
+        break;
+      }
+      await pause(25);
+    }
     assert.equal(
-      outcome.output.includes(marker),
+      sawSeparateGroup,
       true,
-      `the caller's ${signal} handler must run; output: ${outcome.output}`,
+      "the worker must run in its own process group",
     );
     assert.equal(
-      outcome.code,
-      expectedCode,
-      `the caller's exit code must win; got ${String(outcome.code)} / ${String(outcome.signal)}`,
+      existsSync(join(workspace, "signal-nopid.worker.pid")),
+      false,
+      "this case is only meaningful while no pid file exists",
     );
-    assert.equal(outcome.signal, null);
-    assertControlledSubtreeGone(outcome);
-  });
-}
+  } finally {
+    for (const pgid of observedGroups) {
+      try {
+        process.kill(-pgid, "SIGKILL");
+      } catch {
+        // 已经消失。
+      }
+    }
+    for (const pid of observedPids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // 已经退出。
+      }
+    }
+    liveSignalGroups.delete(groupLeader);
+    child.stdout.destroy();
+    child.stderr.destroy();
+  }
+
+  // 有界确认：兜底清理之后一个后代都不剩。
+  const deadline = Date.now() + 5_000;
+  let residual = descendantsOf(groupLeader).map((row) => row.pid);
+  while (residual.length > 0 && Date.now() < deadline) {
+    await pause(25);
+    residual = descendantsOf(groupLeader).map((row) => row.pid);
+  }
+  assert.deepEqual(
+    residual,
+    [],
+    "the pgid-based fallback cleanup must leave nothing behind",
+  );
+});
+
+/**
+ * 调用方驱动脚本：在 source 之前就装好自己的 TERM/INT/HUP 与 EXIT trap，并把
+ * 解析结束后的 `trap -p` 打出来。
+ *
+ * 更宽的处置矩阵（default / exit / return / ignore × 三个信号 × 两个窗口）由
+ * `infra/docker/postgres/signal-matrix.sh` 覆盖，并在钉住 digest 的容器里也跑
+ * 一遍；这里只保留「归还」这一条，用来和上面那些真实 bootstrap.sh 的用例共用
+ * 同一套 failure-safe harness。
+ */
+const signalDriver = join(workspace, "signal-driver.sh");
+writeFileSync(
+  signalDriver,
+  [
+    "#!/usr/bin/env bash",
+    "set -u",
+    "trap 'echo CALLER-EXIT-MARKER >&2' EXIT",
+    "trap 'echo CALLER-TRAP-TERM >&2; exit 71' TERM",
+    "trap 'echo CALLER-TRAP-INT >&2; exit 72' INT",
+    "trap 'echo CALLER-TRAP-HUP >&2; exit 73' HUP",
+    // shellcheck source=/dev/null
+    'source "$MEAL_AGENT_SECRET_SOURCE"',
+    "meal_agent_resolve_secret MEAL_AGENT_RUNTIME_PASSWORD",
+    'echo "RESOLVED ${#MEAL_AGENT_RUNTIME_PASSWORD}"',
+    "echo TRAPS-AFTER-BEGIN",
+    "trap -p TERM INT HUP",
+    "trap -p EXIT",
+    "echo TRAPS-AFTER-END",
+    "exit 0",
+  ].join("\n"),
+);
+chmodSync(signalDriver, 0o755);
 
 test("the caller's traps are still restored after a normal completion", async () => {
   const outcome = await runSignalScenario({
@@ -1368,18 +1609,29 @@ test("the caller's traps are still restored after a normal completion", async ()
     true,
     outcome.output,
   );
-  // 解析结束后，调用方原有的三个 trap 一个不少地回到原位。
+  // 解析结束后，调用方原有的四个 trap 一个不少地回到原位。
   const lines = outcome.output.split("\n");
   const begin = lines.indexOf("TRAPS-AFTER-BEGIN");
   const end = lines.indexOf("TRAPS-AFTER-END");
   assert.equal(begin >= 0 && end > begin, true, outcome.output);
   const restored = lines.slice(begin + 1, end).join("\n");
-  for (const fragment of ["exit 71", "exit 72", "exit 73"]) {
+  for (const fragment of [
+    "exit 71",
+    "exit 72",
+    "exit 73",
+    "CALLER-EXIT-MARKER",
+  ]) {
     assert.equal(
       restored.includes(fragment),
       true,
       `the caller trap containing "${fragment}" must be restored; got ${restored}`,
     );
   }
+  // 我们的链式 EXIT handler 必须已经交还，不能赖在调用方的 EXIT 处置上。
+  assert.equal(
+    restored.includes("meal_agent_run_exit_trap"),
+    false,
+    `the chained EXIT handler must be handed back; got ${restored}`,
+  );
   assertNoSentinel(outcome.output, "the normal-completion driver output");
 });
