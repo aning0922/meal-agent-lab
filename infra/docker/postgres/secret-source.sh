@@ -93,57 +93,126 @@ meal_agent_discard_snapshot() {
 trap 'meal_agent_discard_snapshot' EXIT
 
 # ---------------------------------------------------------------------------
-# worker 进程组的统一清理
+# worker 状态机与统一清理
 # ---------------------------------------------------------------------------
 # 内部 5 秒超时与**外部信号**（TERM/INT/HUP）共用同一段清理逻辑：只 kill worker
 # 这一个 PID 会把被拖住的后代（复制阶段的 head、它派生的 sleep）留成孤儿，继续
 # 持有描述符。worker 由 `set -m` 放进独立进程组，因此这里对**整个进程组**动手。
+#
+# 状态机（`meal_agent_worker_state`）：
+#
+#   idle         没有受控子进程。
+#   starting     trap 已经装好，但 worker 的 PID 还不知道——也就是 `( … ) &` 与
+#                `worker=$!` 之间那一小段。这个状态必须存在：如果先起 worker 再
+#                装 trap，那个窗口里来的 TERM 会按**默认处置**直接杀掉父进程，
+#                刚 fork 出来的整棵受控子树就被留成孤儿。因此顺序改成「先装
+#                trap、后起 worker」，窗口里来的信号只登记，拿到 PID 之后立刻收尾。
+#   running      PID 已知，父进程正在做有界等待。
+#   terminating  正在清理。此时再来的信号**只登记 pending**，既不重入清理，也不
+#                让父进程提前退出——否则第二个 TERM 会在 KILL/wait 还没做完时就
+#                把父进程带走，受控子树重新变成孤儿。
+#
+# PID 一直保留到 TERM、KILL、wait 三步**全部**完成才清空。提前清空（上一轮的写法）
+# 会让清理期间的第二个信号看到「没有 worker」，于是跳过清理直接退出。
+#
+# 并发信号的裁决是**先到者胜**（first-wins）：第一个信号成为 winner，决定最终重
+# 投的信号与退出语义；之后到达的只记进 `meal_agent_pending_signal` 并被**刻意
+# 丢弃**。理由是退出码必须确定，且对应「真正中断这次读取的那个信号」；last-wins
+# 会让退出码取决于清理耗时这种与调用方无关的偶然因素。用例
+# `external TERM followed by HUP` 就是按 first-wins 断言 143 的。
 meal_agent_worker_pid=""
+meal_agent_worker_state="idle"
+meal_agent_signal_winner=""
+meal_agent_pending_signal=""
 meal_agent_saved_signal_traps=""
+meal_agent_signal_traps_installed=""
 
 meal_agent_terminate_worker_group() {
   if [ -z "$meal_agent_worker_pid" ]; then
+    meal_agent_worker_state="idle"
     return 0
   fi
+  meal_agent_worker_state="terminating"
   local worker="$meal_agent_worker_pid"
-  meal_agent_worker_pid=""
+  local reaped=0
   # 整段包在 stderr 重定向里：被杀死的后台作业会让 shell 打印一行 "Terminated"
   # 通知，那不是 bootstrap 的诊断信息。
   {
     kill -TERM -- "-$worker" 2> /dev/null ||
       kill -TERM "$worker" 2> /dev/null || true
-    sleep 0.2
+    sleep 0.2 || true
     kill -KILL -- "-$worker" 2> /dev/null ||
       kill -KILL "$worker" 2> /dev/null || true
-    wait "$worker" || true
+    # `wait` 会被信号打断而提前返回，那一刻 PID 还没真正被回收。只要进程还在就
+    # 继续等；KILL 已经发过了，所以循环必然很快收敛，上界只是防御性的。
+    while [ "$reaped" -lt 100 ]; do
+      wait "$worker" 2> /dev/null && break
+      kill -0 "$worker" 2> /dev/null || break
+      reaped=$((reaped + 1))
+    done
   } 2> /dev/null
+  # TERM、KILL、wait 三步都做完了，PID 到这里才清空。
+  meal_agent_worker_pid=""
+  meal_agent_worker_state="idle"
 }
 
-# 外部信号：先收干净受控子树与快照，再以**正确的信号退出语义**结束——恢复默认
-# 处置后用同一个信号自杀，调用方看到的是 128+signo，而不是一个普通退出码。
-meal_agent_handle_signal() {
-  local signal="$1"
+# 外部信号：先收干净受控子树与快照，再把**调用方原有的** trap 全部还回去，最后
+# 重新投递决胜信号。三种处置因此都拿到真语义——调用方装了 handler 就跑 handler，
+# 没装就走默认处置（128+signo），显式 `trap '' SIG` 就真的什么都不发生。
+meal_agent_abort_on_signal() {
+  local signal="$meal_agent_signal_winner"
   meal_agent_terminate_worker_group
   meal_agent_discard_snapshot
-  trap - "$signal"
-  kill -"$signal" $$
+  meal_agent_restore_signal_traps
+  kill -"$signal" "$$"
+  # 能走到这里只有两种情况：调用方**忽略**了这个信号，或者它的 handler 自己
+  # 返回了。受控子树与快照都已经收掉，秘密没有读成——绝不能装作读到了，因此
+  # 返回失败，由调用点走 meal_agent_secret_fail。
+  return 1
 }
 
-# 只在 worker 活跃期间接管这三个信号，并保存调用方原有的 trap。bootstrap.sh 自身
-# 目前没有设置它们，但这里不能假设——覆盖必须是**临时**的。
+# 只在 worker 活跃期间接管这三个信号。覆盖必须是**临时**的：安装前用 `trap -p`
+# 把调用方原有的设置整段存下来，结束时原样 eval 回去。bootstrap.sh 自身目前没有
+# 设置它们，但这里不能假设。
 meal_agent_install_signal_traps() {
   meal_agent_saved_signal_traps="$(trap -p TERM INT HUP)"
+  meal_agent_signal_traps_installed="yes"
   trap 'meal_agent_handle_signal TERM' TERM
   trap 'meal_agent_handle_signal INT' INT
   trap 'meal_agent_handle_signal HUP' HUP
 }
 
+# 幂等。`meal_agent_abort_on_signal` 已经还过一次之后，超时路径不能再 `trap - …`
+# 一遍——那会把刚刚还回去的调用方 trap 又清掉。
 meal_agent_restore_signal_traps() {
+  if [ -z "$meal_agent_signal_traps_installed" ]; then
+    return 0
+  fi
+  meal_agent_signal_traps_installed=""
   trap - TERM INT HUP
   if [ -n "$meal_agent_saved_signal_traps" ]; then
     eval "$meal_agent_saved_signal_traps"
   fi
   meal_agent_saved_signal_traps=""
+}
+
+# trap 里**只登记**，清理一律回到主流程去做。
+#
+# 理由是可预测性：bash 只在命令边界分发 trap，在一个 handler 内部再
+# `kill -SIG $$` 去触发调用方的 handler，会让「调用方 handler 到底什么时候跑」
+# 变成依赖 bash 版本的嵌套 trap 细节。登记 + 主流程收尾则在哪个 bash 上都一样。
+#
+# 主流程的三个检查点：worker 拿到 PID 之后、有界等待的每一轮、以及正常完成之后。
+# 三个点合起来覆盖了 worker 活跃期的全部时间，因此信号既不会丢，也不会在
+# `starting` 窗口里按默认处置把父进程带走。
+meal_agent_handle_signal() {
+  local signal="$1"
+  if [ -n "$meal_agent_signal_winner" ]; then
+    # 已经有 winner 了（清理可能正在进行）：只登记，不重入、不提前退出。
+    meal_agent_pending_signal="$signal"
+    return 0
+  fi
+  meal_agent_signal_winner="$signal"
 }
 
 meal_agent_secret_fail() {
@@ -415,6 +484,15 @@ meal_agent_read_secret_file() {
   # 没有它的话，超时只能 kill worker 这一个 PID，而 `head` 这类后代会被留下来
   # 继续持有描述符（实测：worker gone、被阻塞的 head 仍 ALIVE）。有了进程组，
   # 下面的 `kill -- -$worker` 才能把**整棵**受控子树一起收掉。
+  # 顺序不可颠倒：**先装 trap，后起 worker**。反过来的话，`&` 与 `worker=$!`
+  # 之间来的 TERM 会按默认处置直接杀掉父进程，刚 fork 出来的整棵受控子树就成了
+  # 孤儿。`starting` 状态覆盖的正是这一段。
+  meal_agent_worker_pid=""
+  meal_agent_signal_winner=""
+  meal_agent_pending_signal=""
+  meal_agent_worker_state="starting"
+  meal_agent_install_signal_traps
+
   previous_options="$-"
   set -m
   (
@@ -423,25 +501,51 @@ meal_agent_read_secret_file() {
   ) &
   worker=$!
   case "$previous_options" in *m*) ;; *) set +m ;; esac
-
-  # worker 活跃期间接管 TERM/INT/HUP：内部超时与外部信号共用同一段清理。
   meal_agent_worker_pid="$worker"
-  meal_agent_install_signal_traps
+  meal_agent_worker_state="running"
+
+  # `starting` 窗口里登记下来的信号，在拿到 PID 之后第一时间收尾。
+  if [ -n "$meal_agent_signal_winner" ]; then
+    meal_agent_abort_on_signal || true
+    meal_agent_restore_signal_traps
+    meal_agent_secret_fail "$name" \
+      "$path read was interrupted by a signal before it could complete"
+  fi
 
   waited=0
   while [ ! -e "$status_file" ]; do
+    if [ -n "$meal_agent_signal_winner" ]; then
+      # 信号只是被 trap 登记下来，清理在**这里**做：收掉整个 worker 进程组、
+      # 删快照、把调用方原有 trap 还回去，再重投决胜信号。
+      meal_agent_abort_on_signal || true
+      # 还能走到这一行，说明调用方**忽略**了那个信号（或它的 handler 返回了）。
+      # 秘密没有读成，绝不能继续往下走。
+      meal_agent_secret_fail "$name" \
+        "$path read was interrupted by a signal before it could complete"
+    fi
     if [ "$waited" -ge "$meal_agent_secret_open_deadline_ticks" ]; then
       meal_agent_terminate_worker_group
       meal_agent_restore_signal_traps
       meal_agent_secret_fail "$name" \
         "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; open() on a non-regular file such as a FIFO, or a stalled read, would otherwise block without a bound"
     fi
-    sleep 0.05
+    sleep 0.05 || true
     waited=$((waited + 1))
   done
   wait "$worker" 2> /dev/null || true
   meal_agent_worker_pid=""
+  meal_agent_worker_state="idle"
   meal_agent_restore_signal_traps
+
+  # 信号也可能正好落在「worker 已经自然结束、函数还没返回」这一小段里。此时没有
+  # 子树要收，但调用方仍然要求中止——快照删掉，把信号重新投递给**已经恢复**的
+  # 调用方处置，绝不静默吞掉。
+  if [ -n "$meal_agent_signal_winner" ]; then
+    meal_agent_discard_snapshot
+    kill -"$meal_agent_signal_winner" "$$"
+    meal_agent_secret_fail "$name" \
+      "$path read was interrupted by a signal before it could complete"
+  fi
 
   status="$(cat "$status_file")"
   if [ "$status" != "0" ]; then
