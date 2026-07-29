@@ -82,6 +82,41 @@ meal_agent_secret_value=""
 meal_agent_secret_origin=""
 meal_agent_snapshot_dir=""
 
+# ---------------------------------------------------------------------------
+# 状态窗口标记（只为可复现的信号测试而存在）
+# ---------------------------------------------------------------------------
+# 信号必须能被**确定地**投递到 `starting` 与 `terminating` 这两个窗口里。靠
+# "sleep 100ms 然后但愿它落在 0.2s 窗口内" 那种猜测，绿了也证明不了任何事。
+#
+# 因此这里留两个观察点：进入窗口时创建一个 marker 文件，然后**有界**等待一个
+# release 文件。没有设置 `MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 时两个函数都是
+# 纯空操作——不 stat、不写、不 sleep，生产路径上完全不存在这段行为。等待还有
+# 5 秒硬上界，即使有人误设了这个变量也只会慢，不会挂死。
+#
+# 这个变量不出现在任何 Compose 文件、Dockerfile 或 bootstrap 调用里；拓扑门禁
+# 会保证这一点。
+meal_agent_mark_window() {
+  if [ -z "${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR:-}" ]; then
+    return 0
+  fi
+  : > "${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR}/$1" 2> /dev/null || true
+}
+
+meal_agent_await_window_release() {
+  if [ -z "${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR:-}" ]; then
+    return 0
+  fi
+  local release="${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR}/$1.release"
+  local waited=0
+  while [ ! -e "$release" ]; do
+    if [ "$waited" -ge 100 ]; then
+      return 0
+    fi
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+}
+
 meal_agent_discard_snapshot() {
   if [ -n "$meal_agent_snapshot_dir" ]; then
     rm -rf -- "$meal_agent_snapshot_dir"
@@ -89,8 +124,66 @@ meal_agent_discard_snapshot() {
   fi
 }
 
-# failure-safe：无论正常退出、失败退出还是被信号打断，快照都不会留在磁盘上。
-trap 'meal_agent_discard_snapshot' EXIT
+# ---------------------------------------------------------------------------
+# EXIT trap：保存 → 链式执行 → 归还
+# ---------------------------------------------------------------------------
+# 这个文件是被 `source` 进 bootstrap.sh 的，因此一句裸的 `trap '…' EXIT` 会把
+# **调用方自己的** EXIT 处置整条换掉——它的清理、它的收尾日志，全部静默消失。
+# 上一轮就是这么写的。
+#
+# 现在：进入 `meal_agent_resolve_secret` 时保存调用方原有的 EXIT 命令，安装一个
+# 链式 handler（先删快照，再原样执行调用方那一段），解析结束时把 EXIT 处置**还
+# 回去**。快照只在解析期间存在，因此安全网也只需要覆盖这一段。
+meal_agent_caller_exit_command=""
+meal_agent_exit_trap_installed=""
+
+meal_agent_capture_exit_trap() {
+  local line quoted
+  line="$(trap -p EXIT)"
+  if [ -z "$line" ]; then
+    meal_agent_caller_exit_command=""
+    return 0
+  fi
+  # `trap -p` 打印的是 bash 自己的**可重入引用**形式（`trap -- 'CMD' EXIT`），
+  # 所以让 bash 再解一次引用就能拿回原始命令，不必自己写反转义。含单引号与换行
+  # 的命令都实测能原样还原。
+  #
+  # 注意：这里不能写成 `trap -p EXIT | …`。带管道时 `trap -p` 跑在管道的子
+  # shell 里，报告的不是父 shell 的处置（实测 SIGINT 会整条丢失）。
+  quoted="${line#trap -- }"
+  quoted="${quoted% EXIT}"
+  eval "meal_agent_caller_exit_command=$quoted"
+}
+
+meal_agent_run_exit_trap() {
+  local status=$?
+  meal_agent_discard_snapshot
+  if [ -n "$meal_agent_caller_exit_command" ]; then
+    eval "$meal_agent_caller_exit_command"
+  fi
+  return "$status"
+}
+
+meal_agent_install_exit_trap() {
+  if [ -n "$meal_agent_exit_trap_installed" ]; then
+    return 0
+  fi
+  meal_agent_capture_exit_trap
+  meal_agent_exit_trap_installed="yes"
+  trap 'meal_agent_run_exit_trap' EXIT
+}
+
+meal_agent_restore_exit_trap() {
+  if [ -z "$meal_agent_exit_trap_installed" ]; then
+    return 0
+  fi
+  meal_agent_exit_trap_installed=""
+  trap - EXIT
+  if [ -n "$meal_agent_caller_exit_command" ]; then
+    trap "$meal_agent_caller_exit_command" EXIT
+  fi
+  meal_agent_caller_exit_command=""
+}
 
 # ---------------------------------------------------------------------------
 # worker 状态机与统一清理
@@ -124,7 +217,9 @@ meal_agent_worker_pid=""
 meal_agent_worker_state="idle"
 meal_agent_signal_winner=""
 meal_agent_pending_signal=""
-meal_agent_saved_signal_traps=""
+meal_agent_saved_trap_TERM=""
+meal_agent_saved_trap_INT=""
+meal_agent_saved_trap_HUP=""
 meal_agent_signal_traps_installed=""
 
 meal_agent_terminate_worker_group() {
@@ -135,11 +230,14 @@ meal_agent_terminate_worker_group() {
   meal_agent_worker_state="terminating"
   local worker="$meal_agent_worker_pid"
   local reaped=0
+  meal_agent_mark_window terminating
   # 整段包在 stderr 重定向里：被杀死的后台作业会让 shell 打印一行 "Terminated"
   # 通知，那不是 bootstrap 的诊断信息。
   {
     kill -TERM -- "-$worker" 2> /dev/null ||
       kill -TERM "$worker" 2> /dev/null || true
+    # 测试用观察点：TERM 已发出、KILL 还没发，正处在 terminating 窗口正中。
+    meal_agent_await_window_release terminating
     sleep 0.2 || true
     kill -KILL -- "-$worker" 2> /dev/null ||
       kill -KILL "$worker" 2> /dev/null || true
@@ -163,11 +261,16 @@ meal_agent_abort_on_signal() {
   local signal="$meal_agent_signal_winner"
   meal_agent_terminate_worker_group
   meal_agent_discard_snapshot
-  meal_agent_restore_signal_traps
+  # 先压住另外两个，再只把 winner 那一个还给调用方，最后重投。整个重投窗口里
+  # 只有 winner 的处置是活的。
+  meal_agent_suppress_losing_signals "$signal"
+  meal_agent_restore_one_signal_trap "$signal"
   kill -"$signal" "$$"
-  # 能走到这里只有两种情况：调用方**忽略**了这个信号，或者它的 handler 自己
-  # 返回了。受控子树与快照都已经收掉，秘密没有读成——绝不能装作读到了，因此
-  # 返回失败，由调用点走 meal_agent_secret_fail。
+  # 能走到这里只有两种情况：调用方**忽略**了这个信号（`trap '' SIG`），或者它的
+  # handler 自己返回了。winner 已经投递完毕，抑制期结束——把另外两个也还回去。
+  meal_agent_restore_signal_traps
+  # 受控子树与快照都已经收掉，秘密没有读成——绝不能装作读到了，因此返回失败，
+  # 由调用点走 meal_agent_secret_fail。
   return 1
 }
 
@@ -175,11 +278,51 @@ meal_agent_abort_on_signal() {
 # 把调用方原有的设置整段存下来，结束时原样 eval 回去。bootstrap.sh 自身目前没有
 # 设置它们，但这里不能假设。
 meal_agent_install_signal_traps() {
-  meal_agent_saved_signal_traps="$(trap -p TERM INT HUP)"
+  # 幂等。没有这个保护的话，第二次安装会把**我们自己的** handler 当成「调用方
+  # 原有的处置」存进去，归还之后调用方就永远拿不回自己的 trap 了。restore 那一侧
+  # 早就有对称的保护，这一侧不能缺。
+  if [ -n "$meal_agent_signal_traps_installed" ]; then
+    return 0
+  fi
+  # 逐个保存，而不是 `trap -p TERM INT HUP` 一把抓：后面要能**只归还其中一个**。
+  meal_agent_saved_trap_TERM="$(trap -p TERM)"
+  meal_agent_saved_trap_INT="$(trap -p INT)"
+  meal_agent_saved_trap_HUP="$(trap -p HUP)"
   meal_agent_signal_traps_installed="yes"
   trap 'meal_agent_handle_signal TERM' TERM
   trap 'meal_agent_handle_signal INT' INT
   trap 'meal_agent_handle_signal HUP' HUP
+}
+
+# 只归还**一个**信号的调用方处置。
+meal_agent_restore_one_signal_trap() {
+  local signal="$1" saved=""
+  case "$signal" in
+    TERM) saved="$meal_agent_saved_trap_TERM" ;;
+    INT) saved="$meal_agent_saved_trap_INT" ;;
+    HUP) saved="$meal_agent_saved_trap_HUP" ;;
+    *) return 0 ;;
+  esac
+  trap - "$signal"
+  if [ -n "$saved" ]; then
+    eval "$saved"
+  fi
+}
+
+# 把**除 winner 以外**的信号换成「只登记 pending、什么都不做」的抑制 handler。
+#
+# 这是 first-wins 从「概率性」变成「结构性」的关键。上一轮的写法是「恢复全部三
+# 个 trap，然后重投 winner」，那两条语句之间存在一个真实窗口：我们的 handler 已
+# 经卸掉、调用方的处置已经装回去，落在窗口里的 loser 会命中调用方的 handler 或
+# 默认处置，于是**loser 决定了退出语义**。现在 loser 在 winner 投递完成之前一直
+# 被压着。
+meal_agent_suppress_losing_signals() {
+  local winner="$1" signal=""
+  for signal in TERM INT HUP; do
+    if [ "$signal" != "$winner" ]; then
+      trap "meal_agent_pending_signal=$signal" "$signal"
+    fi
+  done
 }
 
 # 幂等。`meal_agent_abort_on_signal` 已经还过一次之后，超时路径不能再 `trap - …`
@@ -189,11 +332,12 @@ meal_agent_restore_signal_traps() {
     return 0
   fi
   meal_agent_signal_traps_installed=""
-  trap - TERM INT HUP
-  if [ -n "$meal_agent_saved_signal_traps" ]; then
-    eval "$meal_agent_saved_signal_traps"
-  fi
-  meal_agent_saved_signal_traps=""
+  meal_agent_restore_one_signal_trap TERM
+  meal_agent_restore_one_signal_trap INT
+  meal_agent_restore_one_signal_trap HUP
+  meal_agent_saved_trap_TERM=""
+  meal_agent_saved_trap_INT=""
+  meal_agent_saved_trap_HUP=""
 }
 
 # trap 里**只登记**，清理一律回到主流程去做。
@@ -492,6 +636,9 @@ meal_agent_read_secret_file() {
   meal_agent_pending_signal=""
   meal_agent_worker_state="starting"
   meal_agent_install_signal_traps
+  # 测试用观察点：trap 已装好、worker 还没起，正处在 starting 窗口里。
+  meal_agent_mark_window starting
+  meal_agent_await_window_release starting
 
   previous_options="$-"
   set -m
@@ -525,6 +672,15 @@ meal_agent_read_secret_file() {
     fi
     if [ "$waited" -ge "$meal_agent_secret_open_deadline_ticks" ]; then
       meal_agent_terminate_worker_group
+      # 清理本身要花掉 TERM→KILL 之间那 0.2s，信号完全可能正好落在这一段里。
+      # 不在这里重新检查一次就会把它**吞掉**：trap 只负责登记，主流程如果直接
+      # restore + fail，调用方的处置就永远不会生效，退出码也变成 2 而不是信号
+      # 语义。因此这里与有界等待的每一轮走同一条统一收尾路径。
+      if [ -n "$meal_agent_signal_winner" ]; then
+        meal_agent_abort_on_signal || true
+        meal_agent_secret_fail "$name" \
+          "$path read was interrupted by a signal before it could complete"
+      fi
       meal_agent_restore_signal_traps
       meal_agent_secret_fail "$name" \
         "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; open() on a non-regular file such as a FIFO, or a stalled read, would otherwise block without a bound"
@@ -535,17 +691,19 @@ meal_agent_read_secret_file() {
   wait "$worker" 2> /dev/null || true
   meal_agent_worker_pid=""
   meal_agent_worker_state="idle"
-  meal_agent_restore_signal_traps
 
   # 信号也可能正好落在「worker 已经自然结束、函数还没返回」这一小段里。此时没有
-  # 子树要收，但调用方仍然要求中止——快照删掉，把信号重新投递给**已经恢复**的
-  # 调用方处置，绝不静默吞掉。
+  # 子树要收，但调用方仍然要求中止，绝不能静默吞掉。
+  #
+  # 这里必须走**同一条** meal_agent_abort_on_signal，不能自己写一遍「restore 完
+  # 再 kill」：那正是 loser 竞态的形状，而且它是与 abort_on_signal **相互独立**的
+  # 第二个出口——只修其中一个，另一个照样漏。
   if [ -n "$meal_agent_signal_winner" ]; then
-    meal_agent_discard_snapshot
-    kill -"$meal_agent_signal_winner" "$$"
+    meal_agent_abort_on_signal || true
     meal_agent_secret_fail "$name" \
       "$path read was interrupted by a signal before it could complete"
   fi
+  meal_agent_restore_signal_traps
 
   status="$(cat "$status_file")"
   if [ "$status" != "0" ]; then
@@ -571,6 +729,10 @@ meal_agent_resolve_secret() {
   local previous_options="$-"
   # 第一次间接展开之前关闭 xtrace：`${!name}` 在 `set -x` 下会把取值打进 stderr。
   set +x
+
+  # 快照只在这一段里存在，安全网也只覆盖这一段。调用方原有的 EXIT trap 被保存
+  # 下来链式执行，结束时归还。
+  meal_agent_install_exit_trap
 
   local file_name="${name}_FILE"
   local direct_set="no"
@@ -624,6 +786,7 @@ meal_agent_resolve_secret() {
   unset "$file_name"
   meal_agent_secret_value=""
   meal_agent_discard_snapshot
+  meal_agent_restore_exit_trap
 
   case "$previous_options" in *x*) set -x ;; esac
 }
