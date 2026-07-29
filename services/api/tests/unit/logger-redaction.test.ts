@@ -246,3 +246,162 @@ test("cycles in both objects and arrays are handled without recursion", () => {
   // 兄弟节点被完整展开两次，而不是第二次退化成 [Circular]。
   assert.equal(output.split("[Redacted]").length - 1 >= 2, true);
 });
+
+test("setBindings goes through the canonicalizer on root, child and grandchild", () => {
+  const capture = capturingLogger();
+
+  capture.logger.setBindings({ databaseUrl: dsn, component: "root" });
+  capture.logger.info("root after setBindings");
+
+  const child = capture.logger.child({ stage: "handoff" });
+  child.setBindings({ note: encodedDsn, component: "child" });
+  child.info("child after setBindings");
+
+  const grandchild = child.child({ stage: "acl" });
+  grandchild.setBindings({
+    migration: { connectionString: dsn },
+    component: "grandchild",
+  });
+  grandchild.info("grandchild after setBindings");
+
+  assertClean(capture.output(), "setBindings");
+  for (const marker of ["root", "child", "grandchild"]) {
+    assert.equal(
+      capture.output().includes(marker),
+      true,
+      `${marker} bindings must still be emitted`,
+    );
+  }
+});
+
+test("child options cannot reintroduce a secret after redaction", () => {
+  const capture = capturingLogger();
+
+  // 1. serializers：子 logger 的 serializer 在 canonicalizer 之后运行。
+  const withSerializer = capture.logger.child(
+    { component: "serializer" },
+    {
+      serializers: {
+        payload: () => ({ leaked: dsn }),
+      },
+    },
+  );
+  withSerializer.info({ payload: { harmless: true } }, "child serializer");
+
+  // 2. formatters.log：子 logger 的 formatters 会**替换**父 logger 的同名项。
+  const withFormatter = capture.logger.child(
+    { component: "formatter" },
+    {
+      formatters: {
+        log: (object: object) => ({ ...object, leaked: dsn }),
+      },
+    },
+  );
+  withFormatter.info({ harmless: true }, "child formatter");
+
+  // 3. formatters.bindings。
+  const withBindingFormatter = capture.logger.child(
+    { component: "bindings" },
+    {
+      formatters: {
+        bindings: (bindings: object) => ({ ...bindings, leaked: encodedDsn }),
+      },
+    },
+  );
+  withBindingFormatter.info("child binding formatter");
+
+  // 4. redact.censor：censor 的返回值直接进入输出。
+  const withCensor = capture.logger.child(
+    { component: "censor" },
+    {
+      redact: {
+        paths: ["secretish"],
+        censor: () => dsn,
+      },
+    },
+  );
+  withCensor.info({ secretish: "x" }, "child censor");
+
+  const withStringCensor = capture.logger.child(
+    { component: "string-censor" },
+    { redact: { paths: ["secretish"], censor: encodedDsn } },
+  );
+  withStringCensor.info({ secretish: "x" }, "child string censor");
+
+  // 5. msgPrefix：它是在我们的 logMethod 之后才拼到 msg 前面的。
+  const withPrefix = capture.logger.child(
+    { component: "prefix" },
+    { msgPrefix: `[${dsn}] ` },
+  );
+  withPrefix.info("child msgPrefix");
+
+  assertClean(capture.output(), "child options");
+  for (const marker of [
+    "serializer",
+    "formatter",
+    "bindings",
+    "censor",
+    "prefix",
+  ]) {
+    assert.equal(
+      capture.output().includes(marker),
+      true,
+      `${marker} child must still emit its own bindings`,
+    );
+  }
+});
+
+test("request logging keeps method, redacted path, remote address and status", async () => {
+  const capture = capturingLogger();
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: capture.logger,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  try {
+    await app.inject({ method: "GET", url: "/healthz?trace=1" });
+  } finally {
+    await app.close();
+  }
+
+  const entries = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  // 正向断言：脱敏不能把请求日志掏空。
+  const request = entries.find((entry) => entry["req"] !== undefined)?.[
+    "req"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(request, "an incoming-request entry must exist");
+  assert.equal(request["method"], "GET");
+  // query 被去掉，路径本身保留并过了一遍取值脱敏。
+  assert.equal(request["path"], "/healthz");
+  assert.equal(
+    typeof request["remoteAddress"],
+    "string",
+    "remoteAddress must be present, not silently dropped",
+  );
+  assert.notEqual(request["remoteAddress"], "");
+  assert.equal(typeof request["requestId"], "string");
+
+  const response = entries.find((entry) => entry["res"] !== undefined)?.[
+    "res"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(response, "a request-completed entry must exist");
+  assert.equal(response["statusCode"], 200);
+});
