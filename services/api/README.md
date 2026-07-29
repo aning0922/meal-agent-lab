@@ -79,7 +79,8 @@ fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同�
 各判一次；端口（含 `:443`）、尾斜杠、query、fragment、userinfo、相似域名与子域名
 全部拒绝。
 
-日志脱敏落在**中央 logger 边界**（`formatters.log` + `hooks.logMethod`），调用方
+日志脱敏落在**中央 logger 边界**（`hooks.logMethod` + `formatters.log` + `child()`
+与 `setBindings()` 覆盖 + 子 logger options 的安全包装 + `redact.paths`），调用方
 无需主动调用 `redactSensitive`；覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
 取值识别的 PostgreSQL 连接串与 libpq conninfo，以及 Error 对象。全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，不启用任何 CORS。

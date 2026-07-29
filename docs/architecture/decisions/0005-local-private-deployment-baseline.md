@@ -290,7 +290,11 @@ sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对
 非 symlink、普通文件、单链接、属主为当前 EUID、只允许 `0600`、≤4096 字节、非空、
 合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim；两个来源同时出现
 （含内容相同）一律拒绝，选中来源失败时不回落。shell 侧三份口令全部在任何 psql
-调用之前解析，任一不合格时 psql 调用次数实测为 0。日志脱敏移到中央 logger 边界，
+调用之前解析，任一不合格时 psql 调用次数实测为 0；该读取是**有界**的（无写端
+FIFO 会让 shell 的 open() 永久阻塞，因此 open+校验+复制跑在 5 秒有界的子进程里）。
+连接串另有专用校验：五个核心字段必须显式来自 URL，且连接串无法覆盖的那一批
+ambient PG* 变量一律拒绝。日志脱敏移到中央 logger 边界（含 child()/setBindings()
+与子 logger options 的安全包装），
 覆盖 database URL、connection string、password、DSN 的命名变体与按取值识别的
 连接串/conninfo，口令的原值与 URL 编码形态同时消失；全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何

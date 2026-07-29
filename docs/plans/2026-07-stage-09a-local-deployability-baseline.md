@@ -301,7 +301,8 @@ review**——**不是 Accepted**。
 
 首轮复验点名四类问题，全部已修，并各自补齐了「修复前会发生什么」的实测对照：
 
-1. **`DATABASE_URL` 的 ambient `PG*` 回落已关闭**。node-postgres 在连接串缺字段
+1. **`DATABASE_URL` 的**五个核心字段**不再从 ambient `PG*` 回落**（其余 ambient
+   变量的关闭见下面的第二轮修订）。node-postgres 在连接串缺字段
    时会静默回落：实测 `postgresql://` 让 host/port/user/password/database 五项
    全部来自 `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`；
    `?host=/tmp` 与 `%2Ftmp` 会把连接目标换成 unix socket，后者还让 port 回落。
@@ -320,14 +321,15 @@ review**——**不是 Accepted**。
    direct 一个都不允许——多行 direct 口令（尤其 `foo\nfoo`）会被 psql 的
    `\password` 读成两次相同输入而**静默**设置成 `foo`。三份口令任一失败时 psql
    调用数仍为 0。
-3. **shell 的文件 TOCTOU 已消除**：`secret-source.sh` 现在只 `open` 一次，用
+3. **shell 的文件 TOCTOU 已消除（但当时仍是无界读取，见第二轮）**：
+   `secret-source.sh` 现在只 `open` 一次，用
    `/dev/fd/N` 取得的 inode 与路径 stat 绑定，内容从**该描述符**复制到 `umask
    077` 的私有快照，之后全部检查与最终读取只针对快照，再也不碰原路径；快照用后
    即删并由 EXIT trap 兜底。反向测试用受控 `PATH` 上的 `stat` 包装器做确定性
    注入：metadata 检查完之后替换路径 → 仍然消费最初已验证的 inode；描述符已取、
    路径 stat 之前替换 → 以「was replaced while it was being validated」拒绝且
    psql 调用数为 0。生产脚本没有任何故障注入开关。
-4. **中央 logger 边界已补全**。修复前实测漏网六处：`child()` bindings、printf
+4. **中央 logger 边界补上了六处漏网（尚不完整，见第二轮）**。当时实测漏网六处：`child()` bindings、printf
    `%j`、printf `%o`、own enumerable `toJSON`、带引号的
    `password=' …'` conninfo（各自 LEAKED），以及数组循环引用（直接
    `RangeError` 栈溢出）。现在 `hooks.logMethod` 在插值**之前**处理全部参数、
@@ -335,6 +337,44 @@ review**——**不是 Accepted**。
    串、conninfo 采用「看到 `password=` 就删掉其后全部文本」的保守口径、循环防护
    对象与数组共用且按路径记录、`req` serializer 的 path 再做一次文本脱敏。8 组
    用例全部扫描**真实 Pino 最终输出**。
+
+#### M3A 第二轮总控复验未通过后的定点修订
+
+第二轮点名的四类问题同样已修，每条都有「修复前会发生什么」的实测对照。**第一轮
+的表述当时超出了实际范围**：ambient 只关了五个核心字段、shell 只消除了 TOCTOU
+但读取仍然无界、logger 只补了六处入口——这三条已在上面按实际范围改写。
+
+1. **仍会影响 node-postgres 的 ambient 变量已全部关闭**。连接串只能决定五个核心
+   字段；`PGOPTIONS`、`PGSSLMODE`、`PGSSLNEGOTIATION`、`PGBINARY`、
+   `PGREPLICATION`、`PGCLIENT_ENCODING`、`PGAPPNAME`、`PGCONNECT_TIMEOUT` 没有
+   URL 对应物，实测（`pg@8.22.0`，同一条合法 URL）会逐一落进
+   `connectionParameters`。现在在共用边界逐条拒绝，错误只列变量名、不回显取值；
+   检查同时覆盖传入的 environment 与 `process.env`（node-postgres 读的永远是
+   后者）。direct/file、API、`db:migrate`、`db:bootstrap` 全覆盖，CLI 以校验错误
+   而不是连接错误退出。拒绝表按 pg 源码逐条列出，并用一条断言把 pg 版本钉住。
+2. **Pino 的公开变更入口已封闭**。修复前实测九处 LEAKED：root/child/grandchild
+   的 `setBindings`、子 logger 的 `serializers`/`formatters.log`/
+   `formatters.bindings`/`redact.censor`（函数与字符串）/`msgPrefix`，以及**百分号
+   编码**的连接串。现在 `setBindings` 与 `child()` 都过同一个 canonicalizer，
+   子 logger options 走**安全包装**而不是一刀切拒绝（Fastify 自己就带着 options
+   调用 `child()`），`redactText` 增加百分号编码探测（解码只用于判断，命中即整条
+   替换，绝不把解码结果写进日志）。
+   同时修复了**请求日志信息丢失**：`logMethod` 此前对第一个参数用通用
+   canonicalizer，把 Fastify 的 `Request` 拍平成普通对象，于是 `method`/`url`
+   这些**原型取值器**全部消失、`res` 只剩空对象——日志看起来「没泄漏」，其实是
+   把请求信息一起丢了。现在第一个参数走与 `formatters.log` 相同的那一层，
+   `req`/`res`/`err` 留给各自的 serializer，并**正向**断言 method、脱敏后的
+   path、remoteAddress 与 statusCode 全部存在。
+3. **shell 读取已有界**。粗筛与 `open()` 之间路径仍可能被换成**无写端 FIFO**，
+   而 shell 没有 `O_NONBLOCK`：修复前实测**永久阻塞**（20 秒后仍未退出，只能被
+   外部杀死）。现在 open + 校验 + 复制跑在后台子进程里，父进程 5 秒有界等待后
+   TERM 再 KILL，实测 5—7 秒内以明确理由失败、psql 调用数 0、无残留读端
+   （FIFO 以 `O_WRONLY|O_NONBLOCK` 打开必然 `ENXIO`）、无快照残留。复制改用
+   `head -c 4097` 而不是无界 `cat`，因此「`fstat` 之后文件增长」也是有界拒绝：
+   仍在上限内报 changed size，超过上限报 grew past 4096 bytes。
+4. **U+FEFF 判据已统一**。此前 file 只查开头、direct 查任何位置，同一份取值在
+   两条来源上结论不同。现在两侧都按「任何位置」判定，并补了内部与结尾 U+FEFF
+   的反例。
 
 两侧解析器的关系表述已统一改为「**按条对齐**」而不是「完全同语义」：Node 侧
 `fstat` 文件描述符，shell 侧用 inode 绑定 + 私有快照；shell 的残留边界（`-f`

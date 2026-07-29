@@ -78,7 +78,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 90/90 |
+| API unit | 101/101 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -118,7 +118,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   （有结构性测试断言）。`DATABASE_URL` 与 `DATABASE_URL_FILE` 互斥：两者都缺、
   两者同时出现（**内容相同也拒绝，从不比较取值**）、空 direct、空 `_FILE` 一律
   失败，选中来源失败时**不回落**到另一来源。
-- **连接串的核心字段必须全部来自 URL**：node-postgres 实测会在字段缺失时静默
+- **连接串的核心字段必须全部来自 URL，且 ambient `PG*` 一律拒绝**：node-postgres 实测会在字段缺失时静默
   回落到 `PG*` 环境变量（`postgresql://` 会让 host/port/user/password/database
   五项全部来自环境变量；`?host=/tmp` 与 `%2Ftmp` 会把目标换成 unix socket）。
   因此 validator 放在**三个入口共用的那一层**：拒绝原始串里的 CR/LF/NUL/BOM 与
@@ -127,6 +127,12 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   多 host/Unix socket/`options` 覆盖、对百分号解码后的 username/password/database
   再查一次 NUL/CR/LF，并**原样返回**输入串。真实 `pg.Client.connectionParameters`
   在注入 ambient sentinel 的条件下逐字段验证。
+  连接串**无法覆盖**的那一批 ambient 变量（`PGOPTIONS`、`PGSSLMODE`、
+  `PGSSLNEGOTIATION`、`PGBINARY`、`PGREPLICATION`、`PGCLIENT_ENCODING`、
+  `PGAPPNAME`、`PGCONNECT_TIMEOUT`）在同一层逐条拒绝——它们能改协议协商、会话
+  参数与传输格式，实测在修复前确实会落进 `connectionParameters`。检查同时覆盖
+  传入的 environment 与 `process.env`（node-postgres 读的永远是后者），错误只列
+  变量名、不回显取值。拒绝表按 `pg@8.22.0` 源码逐条列出并把版本钉在断言里。
 - **secret file 判据 fail closed**：绝对路径、`O_NOFOLLOW|O_NONBLOCK` 打开后
   **fstat**（不是先 stat 路径再 open）、普通文件、链接数为 1、属主等于当前
   effective UID、只允许 owner read/write（0600）、≤4096 字节、非空、合法 UTF-8、
@@ -149,13 +155,18 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   fetch 并替换 `globalThis.fetch` 的条件下，成功与失败两条分支的外部调用次数
   都是 0。**本轮没有接入真实 AppID/AppSecret，也没有调用真实微信服务。**
 - **脱敏落在中央 logger 边界**（`hooks.logMethod` + `formatters.log` + `child()`
-  覆盖 + `redact.paths` 四层），调用方无需主动调用 `redactSensitive`；覆盖任意
+  与 `setBindings()` 覆盖 + 子 logger options 的安全包装 + `redact.paths`），调用方无需主动调用 `redactSensitive`；覆盖任意
   嵌套层级的连接串/口令/DSN 命名变体、按取值识别的 PostgreSQL 连接串与 libpq
   conninfo（含带引号/空格的形态：看到 `password=` 即删除其后全部文本）、Error 与
   嵌套 cause、printf `%j`/`%o`/`%s` 参数、`child()` 与孙 logger 的 bindings、
   own enumerable `toJSON`/`toString`（一律换成占位串，`JSON.stringify` 阶段不再
-  执行任何用户代码），以及对象与数组共用的循环引用防护。口令的原值与 URL 百分号
-  编码形态同时消失。8 组用例全部扫描**真实 Pino 最终输出**。
+  执行任何用户代码），对象与数组共用的循环引用防护，`setBindings()`（root/child/
+  grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
+  `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
+  控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
+  11 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
+  一起丢掉来「通过」。
 - **全部响应**统一携带 `Cache-Control: no-store` 与
   `X-Content-Type-Options: nosniff`（挂在唯一公共出口 `onSend` 上），且不存在
   任何 `Access-Control-Allow-Origin`；liveness、readiness、登录、家庭私有成功
