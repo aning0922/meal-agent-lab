@@ -155,11 +155,28 @@ meal_agent_capture_exit_trap() {
   eval "meal_agent_caller_exit_command=$quoted"
 }
 
+# 唯一作用是把 `$?` 置成给定值。
+meal_agent_set_status() {
+  return "$1"
+}
+
 meal_agent_run_exit_trap() {
   local status=$?
   meal_agent_discard_snapshot
   if [ -n "$meal_agent_caller_exit_command" ]; then
+    # `$?` 必须原样交回去。`trap 'rc=$?; …' EXIT` 是最常见的 EXIT trap 写法，而
+    # 上面两条语句已经把 `$?` 覆盖成 0 了——链式执行如果不还原状态，调用方拿到的
+    # 就是一个假的成功（实测：真实状态 2，调用方看到 rc=0）。
+    #
+    # 顺序很讲究：`set +e` 自己会把 `$?` 置 0，所以必须**先**关 errexit，再用
+    # 一个只做 `return` 的辅助函数把状态置回去，最后立刻 eval。不关 errexit 的话，
+    # 一个非零返回值会在 `set -e` 的调用方那里直接终止 EXIT trap，调用方的命令
+    # 反而一行都跑不到。
+    local previous_options="$-"
+    set +e
+    meal_agent_set_status "$status"
     eval "$meal_agent_caller_exit_command"
+    case "$previous_options" in *e*) set -e ;; esac
   fi
   return "$status"
 }
@@ -303,10 +320,16 @@ meal_agent_restore_one_signal_trap() {
     HUP) saved="$meal_agent_saved_trap_HUP" ;;
     *) return 0 ;;
   esac
-  trap - "$signal"
   if [ -n "$saved" ]; then
+    # `eval "$saved"` 本身就是一条完整的 `trap -- '…' SIG`，它**原子地**替换掉
+    # 当前处置。先写一句 `trap - "$signal"` 反而会在两条语句之间留出一段真实的
+    # SIG_DFL 窗口——重投窗口里再来一个同名信号就会按默认处置把进程带走，连调用方
+    # 的 handler 和 EXIT trap 都跳过（实测：不设间隔地连发 TERM，39/40 次退出 143
+    # 而不是 71）。因此只有在调用方本来就是默认处置时才需要显式复位。
     eval "$saved"
+    return 0
   fi
+  trap - "$signal"
 }
 
 # 把**除 winner 以外**的信号换成「只登记 pending、什么都不做」的抑制 handler。

@@ -159,15 +159,16 @@ export const buildApp = async (
       // 构造它的 Request、也在打出 "incoming request" 之前调用 genReqId。登记
       // 之后，logger 的固定 serializer 才敢去读 Request 原型上的访问器
       // （method/url/ip/socket），而伪造对象拿不到这个标识。
-      trustRawRequest(request);
       const supplied = request.headers["x-request-id"];
-      if (
+      const id =
         typeof supplied === "string" &&
         requestIdSchema.safeParse(supplied).success
-      ) {
-        return supplied;
-      }
-      return newEntityId();
+          ? supplied
+          : newEntityId();
+      // 连 requestId 一起登记：日志里的 requestId 因此来自**我们自己**记下的那
+      // 一个，而不是从某个可能被伪造的对象上读回来。
+      trustRawRequest(request, id);
+      return id;
     },
   });
 

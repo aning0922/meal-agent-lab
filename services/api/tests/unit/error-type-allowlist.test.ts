@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import test from "node:test";
+import test, { after } from "node:test";
 
 import { allowedErrorTypes } from "../../src/logging.js";
+
+const workspace = mkdtempSync(join(tmpdir(), "meal-agent-error-allowlist-"));
+after(() => {
+  rmSync(workspace, { recursive: true, force: true });
+});
 
 /**
  * 阶段 09A / M3A：`allowedErrorTypes` 与仓库真实错误类的**静态防漂移**。
@@ -36,6 +49,19 @@ const nameAssignmentPattern = /^\s*this\.name\s*=\s*"([A-Za-z0-9_$]+)"/gm;
  */
 const errorSubclassPattern =
   /^(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)\s+extends\s+Error\b/gm;
+/**
+ * TypeScript 的类字段写法：`override readonly name = "X"`。它同样是一个**自身
+ * 数据属性**，因此 logger 会如实读到它——但 `this.name =` 那条扫描看不见。
+ */
+const nameFieldPattern =
+  /^\s*(?:public\s+|protected\s+|private\s+|override\s+|readonly\s+|declare\s+|static\s+)*name\s*=\s*"([A-Za-z0-9_$]+)"/gm;
+/**
+ * 继承自**本仓库其它错误类**的子类：`class X extends AppError`。它不 `extends
+ * Error`，因此上一条也看不见。第七轮的对抗性复核就是拿这两种写法把扫描器绕过去
+ * 的，两条都补上。
+ */
+const derivedSubclassPattern =
+  /^(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)\s+extends\s+([A-Za-z0-9_$]+Error)\b/gm;
 
 /**
  * 去掉注释再扫。行首锚点已经挡掉了本仓库的注释风格，但「靠缩进风格」不是一条
@@ -81,8 +107,14 @@ test("every error class defined in src is registered in the logger allowlist", (
   const files = typescriptFilesUnder(sourceRoot);
   assert.ok(files.length > 10, "the source scan must actually find files");
 
-  const declared = matchAll(files, nameAssignmentPattern);
-  const subclasses = matchAll(files, errorSubclassPattern);
+  const declared = new Set([
+    ...matchAll(files, nameAssignmentPattern),
+    ...matchAll(files, nameFieldPattern),
+  ]);
+  const subclasses = new Set([
+    ...matchAll(files, errorSubclassPattern),
+    ...matchAll(files, derivedSubclassPattern),
+  ]);
 
   assert.ok(
     declared.size >= 10,
@@ -108,8 +140,30 @@ test("every error class defined in src is registered in the logger allowlist", (
   assert.deepEqual(
     withoutRegisteredName,
     [],
-    "these classes extend Error without a this.name assignment, so the drift scan " +
-      "above cannot see them: " + withoutRegisteredName.join(", "),
+    "these classes are Error subclasses but register no name, so the logger " +
+      "collapses them to \"Error\": " + withoutRegisteredName.join(", "),
+  );
+
+  // 扫描器自己也要有正向证据：三种写法都真的能被识别出来，否则「没有漂移」也可能
+  // 只是因为正则从来没匹配到任何东西。
+  const probe = [
+    'class ProbeAssignedError extends Error {\n  constructor() {\n    super("x");\n    this.name = "ProbeAssignedError";\n  }\n}',
+    'export class ProbeFieldError extends Error {\n  override readonly name = "ProbeFieldError";\n}',
+    "export class ProbeDerivedError extends AppError {}",
+  ].join("\n");
+  const probeFile = join(workspace, "probe.ts");
+  writeFileSync(probeFile, probe);
+  assert.deepEqual(
+    [...matchAll([probeFile], nameAssignmentPattern)],
+    ["ProbeAssignedError"],
+  );
+  assert.deepEqual(
+    [...matchAll([probeFile], nameFieldPattern)],
+    ["ProbeFieldError"],
+  );
+  assert.deepEqual(
+    [...matchAll([probeFile], derivedSubclassPattern)],
+    ["ProbeDerivedError"],
   );
 });
 

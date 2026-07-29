@@ -1419,3 +1419,243 @@ test("an explicitly passed error message never becomes the top-level msg", () =>
     assert.equal(record["msg"], "request failed");
   }
 });
+
+// ---------------------------------------------------------------------------
+// 第七轮自查：对抗性复核找出来的绕过，逐条钉死
+// ---------------------------------------------------------------------------
+
+test("prototype pollution cannot re-materialise a secret at stringify time", () => {
+  // canonicalizer 造出来的 `{}` / `[]` 仍然继承 Object/Array.prototype。往那上面
+  // 挂一个 toJSON，`JSON.stringify` 阶段就会调用它，整棵已经脱敏干净的树被一句
+  // 返回值替换掉。索引访问器那条路已经堵上，但 Proxy 的 trap 仍能在枚举过程中
+  // 完成污染，所以拦截点必须在**新建容器**那一侧。
+  for (const target of [Object.prototype, Array.prototype]) {
+    const capture = capturingLogger();
+    (target as unknown as { toJSON?: unknown }).toJSON = () => dsn;
+    try {
+      capture.logger.info({ nested: { a: 1 }, items: [1, 2, 3] }, "polluted");
+      capture.logger.child({ nested: { b: 2 } }).info("polluted binding");
+      capture.logger.setBindings({ nested: { c: 3 } });
+      capture.logger.info("polluted after setBindings");
+    } finally {
+      delete (target as unknown as { toJSON?: unknown }).toJSON;
+    }
+    assertClean(capture.output(), "prototype toJSON pollution");
+    assert.equal(capture.output().includes('"a":1'), true, capture.output());
+  }
+
+  // Proxy 的 ownKeys trap 在我们枚举的过程中污染原型——这是文件头明确承认
+  // 「trap 会执行」的那条路径，但它**不能**因此拿到「把 Secret 原样写出去」。
+  const capture = capturingLogger();
+  const payload = new Proxy(
+    {},
+    {
+      ownKeys(target) {
+        (Object.prototype as unknown as { toJSON?: unknown }).toJSON = () => dsn;
+        return Reflect.ownKeys(target);
+      },
+    },
+  );
+  try {
+    capture.logger.info({ payload }, "ownKeys trap pollution");
+  } finally {
+    delete (Object.prototype as unknown as { toJSON?: unknown }).toJSON;
+  }
+  assertClean(capture.output(), "proxy ownKeys prototype pollution");
+});
+
+test("carrying a genuine raw request does not buy a forged wrapper any trust", async () => {
+  // 上一版把「自身数据属性 `raw` 指向已登记的原始请求」当身份证明。`raw` 在
+  // Fastify 5 的 Request 上就是**自身可枚举数据属性**，所以 `{ ...request }`、
+  // `{ raw: request.raw, get ip() {…} }`、`Object.create(request, …)` 全都能过，
+  // 随后又被当成可信对象做普通成员读取——调用方的 getter 照样执行。
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const capture = capturingLogger();
+  let getterCalls = 0;
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: capture.logger,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  app.get("/probe", async (request, reply) => {
+    const raw = (request as unknown as { raw: object }).raw;
+    const forged = {
+      raw,
+      get id() {
+        getterCalls += 1;
+        return "FORGED-ID-SENTINEL";
+      },
+      get method() {
+        getterCalls += 1;
+        return "FORGED-METHOD-SENTINEL";
+      },
+      get ip() {
+        getterCalls += 1;
+        return "FORGED-IP-SENTINEL";
+      },
+      get url() {
+        getterCalls += 1;
+        return "/FORGED-URL-SENTINEL";
+      },
+      get socket() {
+        getterCalls += 1;
+        return { remoteAddress: "FORGED-ADDR-SENTINEL" };
+      },
+    };
+    const spread = {
+      ...(request as unknown as Record<string, unknown>),
+      get ip() {
+        getterCalls += 1;
+        return "SPREAD-SENTINEL";
+      },
+    };
+    const derived = Object.create(request as unknown as object, {
+      ip: {
+        enumerable: true,
+        get() {
+          getterCalls += 1;
+          return "PROTO-SENTINEL";
+        },
+      },
+    }) as object;
+    request.log.info({ req: forged }, "forged carrying a genuine raw");
+    request.log.info({ req: spread }, "spread of a genuine request");
+    request.log.info({ req: derived }, "prototype-derived request");
+    request.log.info(
+      {
+        res: {
+          request: { raw },
+          get statusCode() {
+            getterCalls += 1;
+            return "FORGED-STATUS-SENTINEL";
+          },
+        },
+      },
+      "forged res carrying a genuine raw",
+    );
+    // 整个 raw 记在一个非 `req` 的键下面：rawHeaders 是扁平字符串数组，逐键规则
+    // 看不见里面的 authorization / cookie。
+    request.log.info({ ctx: raw }, "raw request under a non-req key");
+    return reply.send({ ok: true });
+  });
+  try {
+    await app.inject({
+      method: "GET",
+      url: "/probe",
+      headers: {
+        authorization: "Bearer TOKEN-SENTINEL",
+        cookie: "session=COOKIE-SENTINEL",
+      },
+    });
+  } finally {
+    await app.close();
+  }
+
+  assert.equal(
+    getterCalls,
+    0,
+    "carrying a genuine raw must not let a forged wrapper's accessors run",
+  );
+  for (const forgedValue of [
+    "FORGED-ID-SENTINEL",
+    "FORGED-METHOD-SENTINEL",
+    "FORGED-IP-SENTINEL",
+    "FORGED-URL-SENTINEL",
+    "FORGED-ADDR-SENTINEL",
+    "FORGED-STATUS-SENTINEL",
+    "SPREAD-SENTINEL",
+    "PROTO-SENTINEL",
+  ]) {
+    assert.equal(
+      capture.output().includes(forgedValue),
+      false,
+      `${forgedValue} must never reach the log stream\n${capture.output()}`,
+    );
+  }
+  assert.equal(
+    capture.output().includes("TOKEN-SENTINEL"),
+    false,
+    `rawHeaders must not leak the Authorization header\n${capture.output()}`,
+  );
+  assert.equal(
+    capture.output().includes("COOKIE-SENTINEL"),
+    false,
+    `rawHeaders must not leak the Cookie header\n${capture.output()}`,
+  );
+
+  // 真实请求日志仍然完整。
+  const entries = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const incoming = entries.find((entry) => entry["msg"] === "incoming request")?.[
+    "req"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(incoming, "the genuine incoming-request entry must exist");
+  assert.equal(incoming["method"], "GET");
+  assert.equal(incoming["path"], "/probe");
+  assert.equal(typeof incoming["requestId"], "string");
+  assert.notEqual(incoming["requestId"], "");
+  assert.equal(typeof incoming["remoteAddress"], "string");
+  const completed = entries.find(
+    (entry) => entry["msg"] === "request completed",
+  )?.["res"] as Record<string, unknown> | undefined;
+  assert.equal(completed?.["statusCode"], 200);
+});
+
+test("DOMException abort errors keep their type instead of collapsing", () => {
+  // `AbortError` / `TimeoutError` 是 DOMException，它的 `name` 是
+  // `DOMException.prototype` 上的**访问器**。纯数据属性规则会把它们全部折成
+  // `Error`，那样 allowlist 里的这两条就成了永远打不出来的死条目。
+  const capture = capturingLogger();
+  capture.logger.error({ err: new DOMException("x", "AbortError") }, "abort");
+  capture.logger.error({ err: new DOMException("x", "TimeoutError") }, "timeout");
+  const controller = new AbortController();
+  controller.abort();
+  capture.logger.error({ err: controller.signal.reason }, "abort reason");
+  // 名单之外的 DOMException 仍然降级。
+  capture.logger.error({ err: new DOMException("x", "NotAllowedError") }, "other");
+
+  const types = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { err: { type: string } }).err.type);
+  assert.deepEqual(types, [
+    "AbortError",
+    "TimeoutError",
+    "AbortError",
+    "Error",
+  ]);
+  assertClean(capture.output(), "DOMException types");
+
+  // 豁免只认 `DOMException.prototype` 这一个持有者身份，伪造的同名访问器仍然
+  // 一律降级，且**不被执行**。
+  const forged = capturingLogger();
+  let getterCalls = 0;
+  class FakeAbort extends Error {
+    override get name(): string {
+      getterCalls += 1;
+      return "AbortError";
+    }
+  }
+  forged.logger.error({ err: new FakeAbort("x") }, "forged abort");
+  assert.equal(getterCalls, 0);
+  assert.equal(
+    (JSON.parse(forged.output().trim()) as { err: { type: string } }).err.type,
+    "Error",
+  );
+});

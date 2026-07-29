@@ -105,7 +105,7 @@ chmod 755 "$work/bin/head"
 cat > "$work/driver.sh" << 'DRIVER'
 #!/usr/bin/env bash
 set -u
-trap 'echo CALLER-EXIT-MARKER >&2' EXIT
+trap 'echo "CALLER-EXIT-MARKER rc=$?" >&2' EXIT
 case "$DISPOSITION" in
   default) ;;
   exit)
@@ -240,6 +240,19 @@ run_case() {
       fi
       [ "$loser" != "-" ] && kill -"$loser" "$driver" 2> /dev/null
       : > "$markers/terminating.release"
+      ;;
+    storm)
+      # winner 的 handler 一开始跑就不停补发**同一个**信号，专打「先 trap - SIG、
+      # 再 eval 还原」之间那段 SIG_DFL 窗口。
+      if ! await_file "$dir/sleep.pid" 200; then
+        fail "$slot / stall wrapper" "never reached the copy stage"
+      fi
+      kill -"$winner" "$driver" 2> /dev/null
+      local bursts=0
+      while [ "$bursts" -lt 400 ]; do
+        kill -"$loser" "$driver" 2> /dev/null || break
+        bursts=$((bursts + 1))
+      done
       ;;
     handler)
       # 确定地落进「winner 的调用方 handler 正在跑」那一段：等它把自己的 marker
@@ -378,11 +391,27 @@ contains "loser during handler / winner finished" "$work/loser-during-handler/ou
 absent "loser during handler / loser suppressed" "$work/loser-during-handler/out" "CALLER-TRAP-HUP"
 
 # ---------------------------------------------------------------------------
+# 6c. 链式 EXIT trap 必须把**真实退出状态**交给调用方。`trap 'rc=$?; …' EXIT` 是
+#     最常见的写法，交一个假的 0 过去等于骗它
+# ---------------------------------------------------------------------------
+contains "chained EXIT sees the real status" "$work/return-term/out" "CALLER-EXIT-MARKER rc=2"
+contains "chained EXIT sees the caller status" "$work/exit-term/out" "CALLER-EXIT-MARKER rc=71"
+
+# ---------------------------------------------------------------------------
+# 6d. 重投窗口里再来一发**同名**信号：归还必须是原子的，中间不能出现 SIG_DFL。
+#     不设间隔地连发，实测旧写法 39/40 次会以 143 退出而不是跑调用方的 handler
+# ---------------------------------------------------------------------------
+run_case redeliver-storm slow-exit yes storm TERM TERM
+check "redelivery storm / caller handler still wins" 71 "$case_status"
+contains "redelivery storm / winner finished" "$work/redeliver-storm/out" "CALLER-TRAP-TERM-DONE"
+
+# ---------------------------------------------------------------------------
 # 7. 正常完成：口令解析成功，三个信号 trap 与 EXIT trap 全部归还
 # ---------------------------------------------------------------------------
 run_case normal exit no none - -
 check "normal / exit status" 0 "$case_status"
 contains "normal / secret resolved" "$work/normal/out" "RESOLVED 25"
+contains "chained EXIT sees 0 on success" "$work/normal/out" "CALLER-EXIT-MARKER rc=0"
 for fragment in 'exit 71' 'exit 72' 'exit 73'; do
   if sed -n '/TRAPS-AFTER-BEGIN/,/TRAPS-AFTER-END/p' "$work/normal/out" |
     grep -q "$fragment"; then
