@@ -69,7 +69,16 @@
 
 ## 本地验收
 
-项目标准 Codex runtime 直接执行 `pnpm stage08:check`，退出码为 `0`；没有临时注入 `rg` 或改写 PATH。当前门禁包含：
+项目标准 Codex runtime 直接执行 `pnpm stage08:check`，退出码为 `0`；没有临时注入 `rg` 或改写 PATH。
+
+> **阶段 09A / M3A 第七轮起新增前置条件：`pnpm --filter @meal-agent/api check`
+> （因而 `pnpm check` 与 `pnpm stage08:check`）需要能运行 Docker**。
+> `tests/unit/bootstrap-signal-matrix.test.ts` 要把信号矩阵放进钉住 digest 的
+> `postgres:18.4-bookworm` 里以 uid 999 跑一遍，并且**刻意不做静默跳过**——一条会
+> 自动跳过的安全用例等于没有。没有 Docker 的 runtime 会在这一条上确定地失败，
+> 而不是悄悄少跑一项。
+
+当前门禁包含：
 
 下表是 **2026-07-29 阶段 09A / M3A 第七轮之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
@@ -78,7 +87,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 131/131 |
+| API unit | 134/134 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -162,8 +171,8 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 - **信号矩阵已经是门禁，不再只是文档**（第七轮）：
   `infra/docker/postgres/signal-matrix.sh` 覆盖「四种调用方处置（默认处置 /
   handler 自杀 / handler 只返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP ×
-  starting/terminating 两个窗口 × first-wins × EXIT trap 链式执行」，共 **83 项
-  断言**；`tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 bash 3.2 与
+  starting/terminating 两个窗口 × first-wins × EXIT trap 链式执行与退出状态回传」，
+  共 **92 项断言**；`tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 bash 3.2 与
   **钉住 digest 的 postgres:18.4-bookworm 容器内以 uid 999** 各跑一遍，两侧都进
   `pnpm --filter @meal-agent/api check`。**因此这条门禁新增了 Docker 前置条件**，
   并且刻意**不做静默跳过**——会自动跳过的安全用例等于没有。
@@ -202,7 +211,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
   `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
   控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
-  28 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  31 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
   method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
   一起丢掉来「通过」。
 - **Error 与不可信输入的两条额外边界**（第六轮补上）：`Error.message` 会被 pino
@@ -234,9 +243,22 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 - **保证的边界（不夸大）**：这一层保证的是「**不读取访问器**」，不是「绝不执行
   任何调用方代码」。`Proxy` 会让 `Object.keys`、`getOwnPropertyDescriptor`、
   `getPrototypeOf`（`instanceof` 用它）各自触发 trap，`Array.isArray` 对包着数组
-  的 Proxy 也返回 true；那是 JavaScript 语言层面的性质。兜底在于 trap 的返回值
-  仍然要走同一套描述符规则与文本脱敏，因此它能让代码跑，拿不到「把 Secret 原样
-  写出去」这个结果。
+  的 Proxy 也返回 true；那是 JavaScript 语言层面的性质。trap 的返回值仍然要走同
+  一套描述符规则与文本脱敏。
+- **原型污染那条路径已经堵上**：canonicalizer 新建的 `{}` / `[]` 仍然继承
+  `Object.prototype` / `Array.prototype`，只要有人（包括 Proxy 的 `ownKeys` trap
+  在我们枚举的过程中）往那上面挂一个 `toJSON`，`JSON.stringify` 阶段就会调用它，
+  把整棵已经脱敏干净的树换成一句返回值——实测泄漏过完整连接串。现在每个新建容器
+  都带一条不可枚举的自身 `toJSON: undefined` 遮蔽。
+  同时**移除了根 logger 的 `redact` 选项**：它的路径要么已被固定 serializer 的
+  4 字段投影覆盖（`req.headers.*`），要么已被 canonicalizer 的任意深度键名脱敏
+  覆盖（`*.authorization` 等），而 `@pinojs/redact` 会先做一次**选择性克隆**再
+  序列化克隆体，克隆体带不上上面那条遮蔽；又因为存在 `*` 通配路径，pino 会把
+  **每一个键**都送进这个 redactor。去掉之后遮蔽才真正生效。子 logger 仍可自带
+  `redact`，其 censor 依旧被安全包装。
+- **仍然成立的残余**：Proxy 的 trap 返回一段普通字符串时，它就是普通数据——除了
+  连接串/conninfo 的文本规则与键名规则之外没有别的过滤。这与任何调用方直接传一段
+  文本进来是同一件事，不是脱敏漏洞。
 - **全部响应**统一携带 `Cache-Control: no-store` 与
   `X-Content-Type-Options: nosniff`（挂在唯一公共出口 `onSend` 上），且不存在
   任何 `Access-Control-Allow-Origin`；liveness、readiness、登录、家庭私有成功

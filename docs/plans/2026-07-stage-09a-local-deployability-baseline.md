@@ -566,6 +566,46 @@ sentinel 直接进了日志流，现在按描述符取出 err 的 message 并逐
   postgres:18.4-bookworm 内以 uid 999** 各跑一遍。**这条门禁因此新增了 Docker
   前置条件**，并且刻意不做静默跳过。
 
+**第七轮自查（对抗性复核）又发现并修掉的问题。** 上面那些改完之后，我又对每一条
+要求做了一次以「推翻它」为目标的复核，结果推翻了自己五处：
+
+1. **`raw` 身份判据可被绕过。** `raw` 在 Fastify 5 的 Request 上是**自身可枚举
+   数据属性**，所以 `{ ...request }`、`{ raw: request.raw, get ip() { … } }`、
+   `Object.create(request, …)` 全都能通过检查，随后又被当成可信对象做普通成员
+   读取——伪造对象的 getter 调用次数实测 5，而用例期望 0。原因是第一版用例只把
+   `raw` 写成访问器，那恰好是唯一必然失败的形状。现在**可信的是那个已登记的
+   `IncomingMessage` 本身**，投影只从它身上取，requestId 也取自登记时记下的那
+   一个；伪造 wrapper 就算塞进真 `raw`，也只会打出那条真实请求的信息。
+2. **原型污染仍能在 `JSON.stringify` 阶段重新生成 Secret。** 新建的 `{}` / `[]`
+   继承 `Object.prototype` / `Array.prototype`，挂上 `toJSON` 就能把整棵脱敏干净
+   的树替换掉（Proxy 的 `ownKeys` trap 可以在我们枚举的过程中完成污染）。现在每
+   个新建容器都带一条不可枚举的自身 `toJSON: undefined` 遮蔽，并**移除了根
+   logger 的 `redact`**——`@pinojs/redact` 会先做选择性克隆再序列化克隆体
+   （`index.js:522`），克隆体带不上遮蔽，而 `*` 通配路径会让**每一个键**都走这条
+   克隆路径。它的两类路径此时已分别被固定 serializer 的 4 字段投影和 canonicalizer
+   的任意深度键名脱敏覆盖，因此是纯粹的冗余加风险。
+3. **`rawHeaders` 泄漏。** 把整个 request 记在一个非 `req` 的键下面时，
+   `rawHeaders` 是扁平字符串数组，逐键规则看不见里面的 authorization / cookie。
+   现在整条数组按敏感键处理。
+4. **shell 的链式 EXIT trap 丢掉了 `$?`。** `trap 'rc=$?; …' EXIT` 是最常见的写法，
+   而链式执行前的两条语句已经把 `$?` 覆盖成 0（实测：真实状态 2，调用方看到 0）。
+   现在先关 errexit、再用一个只做 `return` 的辅助函数置回状态、最后 eval。
+5. **`meal_agent_restore_one_signal_trap` 自己留了一段 SIG_DFL 窗口。** 它先写
+   `trap - "$signal"` 再 `eval "$saved"`，两条语句之间处置是默认的——重投窗口里
+   再来一发同名信号就会按默认处置把进程带走，连调用方的 handler 和 EXIT trap 都
+   跳过（实测：不设间隔连发 TERM，39/40 次退出 143 而不是 71）。`eval "$saved"`
+   本身就是原子替换，因此只有在调用方本来就是默认处置时才需要显式复位。
+
+测试证据侧同样被推翻两处，一并修掉：`residualDescendants` 在 bootstrap 已经死掉
+之后才从它出发枚举后代，而孤儿会被 reparent 到 pid 1，所以那个检查**恒为空**；
+`withHardCap` 是不取消的 `Promise.race`，两个轮询循环没有自己的 deadline，于是
+断言红了之后 runner 永远不退出（实测 45 秒仍在跑）。现在残留检查改成对**采样期间
+见过的每一个 PID** 逐个有界确认，两个循环各自带 deadline；那条「PID 文件不存在」
+的重言式守卫也换成了「采样到的进程组里必须有一个不是 bootstrap 自己的」。
+allowlist 漂移扫描补上 `override readonly name = "X"` 类字段与
+`class X extends <RepoError>` 两种写法，并加了三条正向自检——否则「没有漂移」也
+可能只是正则从来没匹配到任何东西。
+
 **M3A 仍为 implementation complete, pending total-control review，未标记 Accepted。**
 
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板

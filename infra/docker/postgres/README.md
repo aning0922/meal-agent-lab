@@ -350,13 +350,15 @@ trap → 重投 winner」之间落进来的 loser 会命中调用方的 handler 
 EXIT trap。因此解析期间的快照安全网采用「保存 → 链式执行 → 归还」：进入
 `meal_agent_resolve_secret` 时用 `trap -p EXIT` 存下调用方原有的命令，安装一个
 先删快照、再原样执行调用方那一段的 handler，解析结束后把 EXIT 处置还回去。
-快照只在解析期间存在，安全网也只覆盖这一段。
+快照只在解析期间存在，安全网也只覆盖这一段。链式执行会把**真实退出状态**交回给
+调用方的命令：`trap 'rc=$?; …' EXIT` 是最常见的写法，交一个假的 0 过去等于骗它。
 
 ### 信号矩阵是门禁
 
 `signal-matrix.sh` 覆盖「四种调用方处置（默认处置 / handler 自杀 / handler 只
 返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP × starting/terminating 两个窗口
-× first-wins × EXIT trap 链式执行」，共 83 项断言。
+× first-wins × EXIT trap 链式执行与**退出状态回传** × 重投窗口里的同名信号风暴」，
+共 92 项断言。
 `services/api/tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 shell 与
 **钉住 digest 的 `postgres:18.4-bookworm` 内以 uid 999** 各跑一遍，两侧都进
 `pnpm --filter @meal-agent/api check`。**这条门禁需要能运行 Docker**，并且刻意
