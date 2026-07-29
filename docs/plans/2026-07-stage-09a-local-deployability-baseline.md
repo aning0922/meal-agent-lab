@@ -410,6 +410,71 @@ review**——**不是 Accepted**。
 （Node 靠 `O_NONBLOCK`，shell 靠独立进程组 + 5 秒上界 + 整组 TERM/KILL），
 机制差异登记在 `infra/docker/postgres/README.md`。
 
+#### M3A 第四轮总控复验未通过后的定点修订
+
+第四轮要求的不是继续逐个 sentinel 打补丁，而是把 logger 的**信任上下文**拆开。
+现在只有两个，任何一处输出都必须明确属于其中之一：
+
+1. **strict / untrusted canonicalizer**——child bindings、`setBindings()`、
+   `formatters.level` / `formatters.bindings`、调用方 formatter / serializer /
+   censor 的返回值全部走它。它**没有** `req`/`res`/`err` 豁免，同时处理属性名
+   与属性值。
+2. **log-record canonicalizer**——只有**真正的顶层 log record** 才允许把
+   `req`/`res`/`err` 延后给固定 serializer；固定 serializer 一律新建纯对象，
+   产物**再走一次** strict。因此「伪造一个 `req` 键」拿不到任何豁免。
+
+同轮修掉的还有：百分号解码达到 4 轮上限时改为 **fail closed**（上一轮在上限处
+返回「安全」，而那恰好是编码层数比上限还多的最可疑情形）；外部信号
+（TERM/INT/HUP）与内部 5 秒超时共用同一段 worker-group 清理——修复前
+bootstrap 被 SIGTERM 打断时 worker/head/sleep 三层全部留了下来。
+
+#### M3A 第五轮总控复验未通过后的定点修订
+
+第五轮点名的三个 P1 已修，每条都有修复前的实测输出：
+
+1. **Error 的自动 msg 泄漏**。pino 的 `write()` 在 `msg` 缺省时直接取
+   `_obj[errorKey].message` 当顶层 `msg`，那条路径**完全绕过 serializer**，所以
+   「只在 serializer 里安全化」全程无效。修复前
+   `logger.error(new Error(dsn))` 的真实输出是
+   `"err":{"type":"Error","message":"request failed"}` 配上
+   `"msg":"postgresql://app:p@ss-SENTINEL@db:5432/meal_agent"`；四种调用形状
+   （`error(err)`、`error(err, undefined)`、`error({err})`、`error({err}, undefined)`）
+   都覆盖。折叠改到**交给 pino 之前**完成。`Error.name` 同时改成**精确
+   allowlist**——原来是「符合类名格式即可信」，而 `SimplePasswordSecret123` 完全
+   符合那条正则；名单之外一律输出 `Error`，本仓库真实定义的错误类与内建类型按
+   明确策略保留，用例断言未列入名单的名字一个字符都不出现在输出里。
+2. **strict canonicalizer 不再执行输入自带的转换方法**。数组改为新建数组按下标
+   递归（`hostileArray.map` 调用次数 1 → 0，迭代器同样不走）；BigInt 走原始值
+   转换，覆写 `BigInt.prototype.toString` 无效；记录层不再用 `Object.entries`
+   （那会**读**属性从而执行 getter，getter 调用次数 1 → 0），访问器一律记成
+   `[Getter]` 且不给 `req`/`res`/`err` 延后豁免；遮蔽 `Object.prototype` 成员的
+   结构键统一改名——修复前 `JSON.parse('{"hasOwnProperty":"shadowed"}')` 会让
+   pino 的 `asChindings()` 自己抛 `TypeError: Cannot convert undefined or null to
+   object`，`__proto__` 改名后下游也碰不到原型访问器。设计边界维持不变：
+   Secret/键值是**非可信数据**，logger 配置回调是受信代码或被拒绝，没有引入
+   「沙箱任意 JavaScript 回调」的机制。
+3. **信号清理重做成显式状态机**（`idle / starting / running / terminating`）。
+   修复前 PID 在清理**开始时**就被清空，于是清理途中的第二个信号看到「没有
+   worker」，跳过清理直接把父进程带走——实测「TERM 之后 0.1s 补一发 HUP」会让
+   用例卡满 12 秒硬上界（父进程已死，存活的 worker 组继续持有 bootstrap 的
+   stdout/stderr 管道）；重投信号前做的又是 `trap - "$signal"`，即恢复**默认**
+   处置，调用方自己装的 handler 根本没机会跑（实测三次都是
+   `null / SIGxxx` 而不是 71/72/73）。现在：先装 trap 后起 worker（`starting`
+   覆盖那段窗口）、trap 里只登记、清理回主流程做、PID 保留到 TERM/KILL/`wait`
+   三步全部完成、并发裁决明确为**先到者胜**并写进注释与用例。
+
+用例本身也改成 failure-safe：整条外部信号用例套 12 秒硬上界（没有裸
+`await exited`）、等 `close` 而不是 `exit` 以保证 stdout/stderr 已排空、
+`child.pid` 显式断言为正整数（`?? 0` 之后的 `kill(-0, …)` 会把信号发给测试
+进程自己所在的进程组）、`finally` 无条件读取所有已出现的 PID 文件并只对**真实
+PGID** 用 `kill(-pgid)`（head/sleep 不是组长，只按单个 PID 收）、文件级
+`after` 不再长期堆积已死 PID。stall wrapper 的 head 与它派生的 sleep 现在都
+忽略 TERM/INT/HUP，因此「TERM 就够了」这条捷径被堵死。
+
+bash 3.2/macOS 与 pinned Debian bookworm/bash 5.2/uid 999 两侧同一组场景实测
+全通过；API unit 124 / HTTP 8 全绿。**M3A 仍为 implementation complete,
+pending total-control review，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链

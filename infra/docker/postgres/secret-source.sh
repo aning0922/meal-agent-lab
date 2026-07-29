@@ -51,7 +51,7 @@
 # 读取是**有界**的。shell 没有 `O_NONBLOCK`，所以 `open()`（无写端 FIFO）与复制
 # 阶段（被拖住的 `head`）都可能永久阻塞；整段因此跑在一个独立进程组的后台子
 # 进程里，由父进程做 5 秒有界等待，超时对**整个进程组** TERM 再 KILL。外部信号
-# （TERM/INT/HUP）共用同一段清理，见下面的 worker-group 小节。
+# （TERM/INT/HUP）共用同一段清理，由下面的 worker 状态机小节统一管理。
 #
 # ## Secret 保密边界
 #

@@ -71,14 +71,14 @@
 
 项目标准 Codex runtime 直接执行 `pnpm stage08:check`，退出码为 `0`；没有临时注入 `rg` 或改写 PATH。当前门禁包含：
 
-下表是 **2026-07-29 阶段 09A / M3A 第四轮之后**的实际计数（阶段 08 收口时为
+下表是 **2026-07-29 阶段 09A / M3A 第六轮之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
 各轮新增测试，业务语义未变）：
 
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 114/114 |
+| API unit | 124/124 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -146,6 +146,21 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   不进入 argv、生成 SQL、日志，也不进入 psql 子进程的 environ（`export -n`），
   `bash -x` 下不泄漏。GNU（Debian 容器，uid 999）与 BSD（macOS）两个 `stat`
   分支都已实测。
+- **shell 侧的信号处置是一台显式状态机**（第六轮重做）：
+  `idle / starting / running / terminating`。`starting` 覆盖「`( … ) &` 与
+  `worker=$!` 之间」那段窗口——顺序改成**先装 trap、后起 worker**，因此不再存在
+  「worker 已跑、trap 未装」时按默认处置杀掉父进程、把受控子树留成孤儿的竞态。
+  trap 里**只登记**信号，清理一律回主流程做（bash 只在命令边界分发 trap，在
+  handler 内部再 `kill -SIG $$` 会让「调用方 handler 何时跑」变成依赖 bash 版本
+  的嵌套细节）。worker PID 保留到 TERM、KILL、`wait` 三步**全部**完成才清空，
+  因此清理途中到达的第二个信号只登记 pending，既不重入也不让父进程提前退出。
+  清理完先把调用方**全部**原有 trap 还回去，再重投决胜信号——装了 handler 就跑
+  handler（实测 71/72/73 三个退出码各自生效）、没装走默认处置（128+signo）、
+  `trap '' SIG` 就真的什么都不发生（此时秘密没读成，按失败收场）。并发信号明确
+  为**先到者胜**（first-wins），代码注释与用例都写死：TERM 之后 0.1s 补一发 HUP，
+  退出语义仍是 SIGTERM，且 worker/head/孙进程（三者都忽略 TERM/INT/HUP）全部消失。
+  bash 3.2/macOS 与 pinned Debian bookworm/bash 5.2/uid 999 两侧同一组场景实测
+  全通过。
 - **部署身份是两个无默认值的独立维度**：`DEPLOYMENT_STAGE` 与
   `DEPLOYMENT_EXPOSURE`。fake adapter 只在 `local-test` + `loopback` + 非
   production 三者同时成立时被接受——27 个组合穷尽测试里只有 2 个通过；
@@ -166,9 +181,19 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
   `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
   控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
-  21 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  24 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
   method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
   一起丢掉来「通过」。
+- **Error 与不可信输入的两条额外边界**（第六轮补上）：`Error.message` 会被 pino
+  的 `write()` 直接取成顶层 `msg`，那条路径**绕过 serializer**，因此 Error 的
+  折叠改在交给 pino **之前**完成；`Error.name` 改成**精确 allowlist**，名单之外
+  一律输出 `Error`（`SimplePasswordSecret123` 这种完全符合类名文法的自由文本
+  不再被当成类型名）。strict canonicalizer 不再执行输入自带的任何转换方法：数组
+  按下标新建递归（不走 `map`、不走迭代器）、BigInt 走原始值转换（覆写
+  `BigInt.prototype.toString` 无效）、访问器只记成 `[Getter]` 而**从不读取**、
+  遮蔽 `Object.prototype` 成员的结构键统一改名（`hasOwnProperty` 此前会让 pino
+  的 `asChindings()` 自己抛 `TypeError`，`__proto__` 则不再有机会触及原型
+  访问器）。
 - **全部响应**统一携带 `Cache-Control: no-store` 与
   `X-Content-Type-Options: nosniff`（挂在唯一公共出口 `onSend` 上），且不存在
   任何 `Access-Control-Allow-Origin`；liveness、readiness、登录、家庭私有成功
