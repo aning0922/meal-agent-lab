@@ -663,3 +663,253 @@ test("the real Fastify request log rejects encoded connection secrets", async ()
   assert.ok(response);
   assert.equal(response["statusCode"], 404);
 });
+
+// ---------------------------------------------------------------------------
+// 信任上下文：只有真正的顶层 log record 能把 req/res/err 延后给固定 serializer
+// ---------------------------------------------------------------------------
+
+test("no untrusted path inherits the req/res/err exemption", () => {
+  const capture = capturingLogger();
+
+  // 1. formatters.level 的返回值。
+  childWithOptions(
+    capture.logger,
+    { component: "level" },
+    {
+      formatters: {
+        level: (label: string, number: number) => ({
+          level: number,
+          req: dsn,
+          res: { statusCode: dsn },
+        }),
+      },
+    },
+  ).info("level formatter");
+
+  // 2. 普通 log object 里伪造的 req/res/err。
+  capture.logger.info({ req: dsn }, "fake req string");
+  capture.logger.info({ req: { method: dsn, url: dsn } }, "fake req object");
+  capture.logger.info({ res: { statusCode: dsn } }, "fake res");
+  capture.logger.info(
+    { err: { type: dsn, message: "request failed" } },
+    "fake err",
+  );
+
+  // 3. child binding 里伪造的 req。
+  capture.logger.child({ req: dsn, component: "child-req" }).info("child req");
+  capture.logger
+    .child({ req: { method: dsn }, component: "child-req-object" })
+    .info("child req object");
+
+  // 4. formatters.bindings 的返回值。
+  childWithOptions(
+    capture.logger,
+    { component: "bindings" },
+    {
+      formatters: {
+        bindings: (bindings: object) => ({ ...bindings, req: dsn }),
+      },
+    },
+  ).info("bindings formatter");
+
+  // 5. 调用方 serializer 的返回值。
+  childWithOptions(
+    capture.logger,
+    { component: "serializer" },
+    { serializers: { payload: () => ({ req: dsn, res: { statusCode: dsn } }) } },
+  ).info({ payload: {} }, "child serializer");
+
+  assertClean(capture.output(), "req/res/err exemption");
+  for (const marker of [
+    "level",
+    "child-req",
+    "child-req-object",
+    "bindings",
+    "serializer",
+  ]) {
+    assert.equal(
+      capture.output().includes(marker),
+      true,
+      `${marker} must still be emitted`,
+    );
+  }
+});
+
+test("an error type can never carry caller-controlled text", () => {
+  const capture = capturingLogger();
+
+  // 真实 Error，但 name 被写成一整条连接串。
+  const named = new Error("boom");
+  named.name = dsn;
+  capture.logger.error({ err: named }, "named error");
+  capture.logger.error(named, "named error as first argument");
+  capture.logger.info({ nested: { cause: named } }, "nested named error");
+
+  // 伪造的「已归一化」形状：不能借它把任意 type 送进输出。
+  capture.logger.error(
+    { err: { type: dsn, message: "request failed" } },
+    "forged normalized error",
+  );
+  capture.logger.error(
+    { err: { type: `${quoted}`, message: "request failed" } },
+    "forged normalized error 2",
+  );
+
+  // 合法类名仍然保留，诊断价值不丢。
+  const typed = new Error("boom");
+  typed.name = "MigrationLockTimeoutError";
+  capture.logger.error({ err: typed }, "typed error");
+
+  assertClean(capture.output(), "error type");
+  assert.equal(
+    capture.output().includes('"type":"MigrationLockTimeoutError"'),
+    true,
+    "a well-formed error class name must survive",
+  );
+  assert.equal(capture.output().includes("request failed"), true);
+});
+
+test("secrets used as property names are redacted, collisions included", () => {
+  const capture = capturingLogger();
+  const conninfo = `host=db user=app password='${quoted}'`;
+
+  capture.logger.info(
+    {
+      [dsn]: "first",
+      [encodedDsn]: "second",
+      [conninfo]: "third",
+      [encodeURIComponent(encodeURIComponent(dsn))]: "fourth",
+      safe: "visible",
+    },
+    "secret keys",
+  );
+  capture.logger.child({ [dsn]: "binding" }).info("secret key binding");
+  capture.logger.info({ nested: { [dsn]: "deep" } }, "nested secret key");
+
+  assertClean(capture.output(), "secret property names");
+  assert.equal(capture.output().includes("visible"), true);
+
+  // 塌缩到同一个占位名的键必须确定地编号，而不是互相覆盖。
+  const record = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((entry) => entry["msg"] === "secret keys");
+  assert.ok(record);
+  const placeholders = Object.keys(record).filter((key) =>
+    key.startsWith("[RedactedKey]"),
+  );
+  assert.equal(placeholders.length, 4);
+  assert.deepEqual(
+    [...placeholders].sort(),
+    ["[RedactedKey]", "[RedactedKey]:2", "[RedactedKey]:3", "[RedactedKey]:4"],
+  );
+});
+
+test("percent-decoding is bounded and fails closed at its limit", () => {
+  const capture = capturingLogger();
+  const conninfo = `host=db user=app password='${quoted}'`;
+  const layered = (value: string, layers: number): string => {
+    let encoded = value;
+    for (let round = 0; round < layers; round += 1) {
+      encoded = encodeURIComponent(encoded);
+    }
+    return encoded;
+  };
+
+  const started = Date.now();
+  for (const layers of [1, 2, 3, 4, 5, 8]) {
+    capture.logger.info({ note: layered(dsn, layers) }, `dsn x${String(layers)}`);
+    capture.logger.info({}, `interpolated ${layered(dsn, layers)}`);
+  }
+  capture.logger.info({ note: layered(conninfo, 5) }, "conninfo x5");
+  capture.logger.info({ note: `%ZZ${layered(dsn, 3)}` }, "malformed prefix");
+  capture.logger.info({ note: `%ZZ${layered(dsn, 6)}` }, "malformed deep");
+  const elapsed = Date.now() - started;
+  assert.ok(
+    elapsed < 2_000,
+    `bounded re-decoding must stay fast, took ${String(elapsed)}ms`,
+  );
+
+  assertClean(capture.output(), "layered encodings");
+
+  // 无害的百分号文本不得被误伤。
+  const benign = capturingLogger();
+  const harmless = ["100% done", "50%25 complete", "%", "%%%%", "a%b%c", "100%"];
+  for (const value of harmless) {
+    benign.logger.info({ progress: value }, "benign");
+  }
+  for (const value of harmless) {
+    assert.equal(
+      benign.output().includes(value),
+      true,
+      `${value} must survive untouched`,
+    );
+  }
+});
+
+test("layered encodings are also stopped in the real Fastify request log", async () => {
+  const capture = capturingLogger();
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: capture.logger,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  try {
+    const layered = (value: string, layers: number): string => {
+      let encoded = value;
+      for (let round = 0; round < layers; round += 1) {
+        encoded = encodeURIComponent(encoded);
+      }
+      return encoded;
+    };
+    for (const layers of [1, 2, 3, 4, 5, 8]) {
+      await app.inject({
+        method: "GET",
+        url: `/api/v1/not-a-route/${layered(dsn, layers)}`,
+      });
+    }
+    await app.inject({
+      method: "GET",
+      url: `/api/v1/not-a-route/${layered(`host=db password='${quoted}'`, 5)}`,
+    });
+    await app.inject({ method: "GET", url: "/healthz" });
+  } finally {
+    await app.close();
+  }
+
+  assertClean(capture.output(), "layered request targets");
+
+  // 正常请求字段必须继续存在。
+  const entries = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const healthRequest = entries
+    .map((entry) => entry["req"] as Record<string, unknown> | undefined)
+    .find((request) => request?.["path"] === "/healthz");
+  assert.ok(healthRequest, "the untouched request must keep its real path");
+  assert.equal(healthRequest["method"], "GET");
+  assert.equal(typeof healthRequest["requestId"], "string");
+  assert.equal(typeof healthRequest["remoteAddress"], "string");
+  const response = entries.find((entry) => entry["res"] !== undefined)?.[
+    "res"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(response);
+  assert.equal(typeof response["statusCode"], "number");
+});
