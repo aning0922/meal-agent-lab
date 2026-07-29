@@ -475,6 +475,99 @@ bash 3.2/macOS 与 pinned Debian bookworm/bash 5.2/uid 999 两侧同一组场景
 全通过；API unit 124 / HTTP 8 全绿。**M3A 仍为 implementation complete,
 pending total-control review，未标记 Accepted。**
 
+#### M3A 第六轮总控复验未通过后的定点修订
+
+第六轮点名的四组问题已修，每条都有修复前实测。
+
+**Logger：descriptor-safe 推到每一个入口。**
+
+1. **数组下标**此前是 `value[index]` 普通读取。下标同样可以是访问器
+   （`Object.defineProperty(a, 0, { get })`，`Array.isArray` 仍为真），因此对象
+   分支的加固对数组完全不生效。实测三种载荷：getter 返回 Secret、getter 抛错、
+   getter 篡改 `Array.prototype.toJSON` 与 `Object.prototype.toJSON`——修复前
+   getter 被执行且抛错**直接把整条日志调用带走**（`Error: index getter exploded …`），
+   修复后调用次数 0、日志正常、输出记 `[Getter]`、两个 prototype 未被触碰。
+2. **`Error.name` 与伪造归一化形状的 `type`** 改为沿**原型链**解析描述符。只看
+   自身描述符是不够的：`class E extends Error { get name() { … } }` 的实例
+   `getOwnPropertyDescriptor(instance, "name")` 返回 `undefined`，而
+   `value.name` 照样把原型上的 getter 执行掉。现在自身访问器、继承访问器、解析
+   不出数据属性——一律降级为 `Error`。`TypeError` 这类内建类型不受影响，它们的
+   `name` 是原型上的**数据属性**。修复前实测：`name` getter 被执行并抛错。
+3. **伪造的 `req`/`res` 不再拿到 serializer 豁免。** 此前豁免只看键名，
+   `serializeRequest` 又是七层普通成员读取（`url` 还读了两次，先过
+   `typeof === "string"` 再拿去 `.split`）。修复前实测：伪造 `req` 的 `url`
+   getter 被执行并抛错，异常**逃出 `logger.info()`**。
+   现在走两条路：`app.ts` 在 `genReqId` 里登记原始 `IncomingMessage`——那是能
+   拿到「这条请求确实来自 Fastify」的**最早**的点（实测顺序是
+   `incoming request` → `onRequest` hook，所以 `onRequest` 太晚，第一条请求日志
+   会漏）；`raw` 指向已登记对象的才是真 Request，才允许读它的原型访问器。其余
+   一律走「只读数据属性」的安全投影。实测 fastify 5.10.0 的真实 Request：
+   `method`/`url`/`ip`/`socket` 全是 `Request.prototype` 上的访问器，
+   `id`/`raw` 是自身数据属性，`raw.method`/`raw.url` 也是自身数据属性——所以
+   收紧之后真实请求日志的 method/path/requestId/remoteAddress/statusCode 一个
+   不少。
+4. **`Stage06ManifestError` 补进 allowlist**，并新增
+   `tests/unit/error-type-allowlist.test.ts`：直接扫 `src/` 的
+   `this.name = "X"` 与 `class X extends Error`，未登记即门禁变红。它自己也被
+   负向验证过——临时移除 `Stage06ManifestError` 立刻报
+   `silently collapses them to "Error": Stage06ManifestError`。测试用错误类
+   （`AuthorizationCleanupError`）显式排除在外，这个决定被写成断言而不是靠扫描
+   范围的巧合。第一版扫描器还把 logging.ts 注释里举例的 `class Boom extends
+   Error` 当成了真实类，因此改成行首锚点 + 先剥注释。
+
+顺带修掉的两处（同一轮审计发现，不在点名清单里）：`hardenChildOptions` 用
+`{ ...source }` 展开调用方 options，每个访问器至少跑两遍且两次返回值可以不同
+（先给一个能过 `typeof` 校验的形状、再给真正写进输出的那个）——改成读一次的
+描述符快照；Fastify 的 defaultErrorLog 会调用
+`reply.log.error({ req, res, err }, error?.message)`，msg 是**显式传入的字符串**，
+绕开了「pino 从 `err.message` 自动生成 msg」那条已经封掉的路径——修复前实测
+sentinel 直接进了日志流，现在按描述符取出 err 的 message 并逐字比对后换成固定串。
+
+**signal 状态机：两个真实竞态 + 一个 trap 所有权问题。**
+
+1. **超时清理之后没有重新检查 winner。** `meal_agent_terminate_worker_group` 中间
+   有 0.2 秒的 TERM→KILL 等待，信号完全可能落在那里；trap 只负责登记，主流程
+   如果直接 restore + fail 就把它吞了，调用方的处置永远不生效。现在超时路径与
+   有界等待的每一轮走同一条统一收尾。
+2. **loser 竞态。** 此前是「恢复全部三个 trap → 重投 winner」，两条语句之间
+   loser 会命中调用方的处置。实测（winner 的 handler 故意慢一点，loser 确定地落
+   在它执行期间）：**期望退出码 71，实得 73**，winner 的 handler 甚至没跑完。
+   现在重投前先把另外两个换成「只登记 pending」的抑制 handler，只归还 winner
+   那一个，投递完成后再归还其余。正常完成之后的重投是**第二个独立出口**，也
+   改成走同一条 `meal_agent_abort_on_signal`，不再各写一遍。
+3. **EXIT trap 所有权。** 这个文件是被 `source` 进 bootstrap.sh 的，一句裸的
+   `trap '…' EXIT` 把调用方的 EXIT 处置整条换掉。实测：调用方的 marker 在全部
+   9 个场景里都没出现。现在保存 → 链式执行 → 解析结束归还，并有真实 marker 断言
+   （含「归还之后 `trap -p EXIT` 里不能再有我们的 handler」）。
+   `meal_agent_install_signal_traps` 也补上了幂等保护：第二次安装会把**我们自己
+   的** handler 存成「调用方原有的」。
+
+**测试证据。**
+
+- **断言先于清理。** 上一轮 `runSignalScenario` 的 `finally` 在返回给调用方
+  **之前**就 SIGKILL 了整棵子树，于是后面那句 `processIsGone(...)` 证明的是
+  「测试自己把它杀了」。现在进程存活、FIFO 读端、快照残留、后代枚举全部在
+  `finally` 之前采集并冻结进 outcome；`finally` 只兜底。另外补了一条**正向**
+  断言：发信号之前 FIFO 确实有读端。
+  说明边界：把清理函数整个掏空做变异测试时，新旧两种顺序都会失败——因为在这个
+  harness 里任何存活的后代同时也持着 bootstrap 的 stdout/stderr，一定先撞上
+  12 秒硬上界。也就是说旧顺序是**因果上不成立**，但并没有被实测出一次假通过；
+  这里不把它写成「修复了一次假绿」。
+- **hard-cap 路径能收未知 pgid。** worker 在 `set -m` 下是独立进程组的组长，
+  而它的 PID 只有在跑到复制阶段之后才会被写进文件。新增用例用已有的 stat
+  wrapper 在粗筛之后把常规文件换成无写端 FIFO，让 worker 卡在 `open()`——它确实
+  存在、确实自成进程组、且 PID 文件永远不出现；清理改用等待期间持续采样得到的
+  **真实 pgid** 集合，并有界确认最终一个后代都不剩。
+- **窗口投递不再猜时间**：由实现暴露的 marker 决定。
+- **四种调用方处置**（默认 / handler 自杀 / handler 只返回 / `trap '' SIG`）
+  全部覆盖，见下。
+- **矩阵进了容器门禁**：`infra/docker/postgres/signal-matrix.sh`（83 项断言）由
+  `tests/unit/bootstrap-signal-matrix.test.ts` 在本机 bash 3.2 与**钉住 digest 的
+  postgres:18.4-bookworm 内以 uid 999** 各跑一遍。**这条门禁因此新增了 Docker
+  前置条件**，并且刻意不做静默跳过。
+
+**M3A 仍为 implementation complete, pending total-control review，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链

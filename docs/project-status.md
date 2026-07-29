@@ -71,14 +71,14 @@
 
 项目标准 Codex runtime 直接执行 `pnpm stage08:check`，退出码为 `0`；没有临时注入 `rg` 或改写 PATH。当前门禁包含：
 
-下表是 **2026-07-29 阶段 09A / M3A 第六轮之后**的实际计数（阶段 08 收口时为
+下表是 **2026-07-29 阶段 09A / M3A 第七轮之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
 各轮新增测试，业务语义未变）：
 
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 124/124 |
+| API unit | 131/131 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -159,6 +159,27 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   `trap '' SIG` 就真的什么都不发生（此时秘密没读成，按失败收场）。并发信号明确
   为**先到者胜**（first-wins），代码注释与用例都写死：TERM 之后 0.1s 补一发 HUP，
   退出语义仍是 SIGTERM，且 worker/head/孙进程（三者都忽略 TERM/INT/HUP）全部消失。
+- **信号矩阵已经是门禁，不再只是文档**（第七轮）：
+  `infra/docker/postgres/signal-matrix.sh` 覆盖「四种调用方处置（默认处置 /
+  handler 自杀 / handler 只返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP ×
+  starting/terminating 两个窗口 × first-wins × EXIT trap 链式执行」，共 **83 项
+  断言**；`tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 bash 3.2 与
+  **钉住 digest 的 postgres:18.4-bookworm 容器内以 uid 999** 各跑一遍，两侧都进
+  `pnpm --filter @meal-agent/api check`。**因此这条门禁新增了 Docker 前置条件**，
+  并且刻意**不做静默跳过**——会自动跳过的安全用例等于没有。
+- **窗口投递是确定的，不是猜时间**：实现在进入 `starting` 与 `terminating` 时创建
+  marker 文件并**有界**等待 release 文件，测试据此投递信号。未设置
+  `MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 时这两个函数是纯空操作，生产路径上不
+  stat、不写、不 sleep；等待另有 5 秒硬上界。该变量不出现在任何 Compose 文件、
+  Dockerfile 或 bootstrap 调用里。
+- **调用方的 EXIT trap 不再被顶掉**（第七轮）：`secret-source.sh` 是被 `source`
+  进 bootstrap.sh 的，此前一句裸的 `trap '…' EXIT` 会把调用方的 EXIT 处置整条
+  换掉（实测：调用方的 marker 在全部 9 个场景里都没出现）。现在改成保存 → 链式
+  执行 → 解析结束归还。
+- **first-wins 从概率性变成结构性**：重投 winner 之前先把另外两个信号换成「只登记
+  pending」的抑制 handler，只归还 winner 那一个处置。此前是「先恢复全部 trap、
+  再重投 winner」，落在中间的 loser 会命中调用方的 handler——实测退出码由 loser
+  决定（期望 71，实得 73）。
   bash 3.2/macOS 与 pinned Debian bookworm/bash 5.2/uid 999 两侧同一组场景实测
   全通过。
 - **部署身份是两个无默认值的独立维度**：`DEPLOYMENT_STAGE` 与
@@ -176,12 +197,12 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   嵌套层级的连接串/口令/DSN 命名变体、按取值识别的 PostgreSQL 连接串与 libpq
   conninfo（含带引号/空格的形态：看到 `password=` 即删除其后全部文本）、Error 与
   嵌套 cause、printf `%j`/`%o`/`%s` 参数、`child()` 与孙 logger 的 bindings、
-  own enumerable `toJSON`/`toString`（一律换成占位串，`JSON.stringify` 阶段不再
-  执行任何用户代码），对象与数组共用的循环引用防护，`setBindings()`（root/child/
+  own enumerable `toJSON`/`toString`（一律换成占位串，`JSON.stringify` 阶段不会
+  再碰到调用方提供的这两个方法），对象与数组共用的循环引用防护，`setBindings()`（root/child/
   grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
   `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
   控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
-  24 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  28 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
   method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
   一起丢掉来「通过」。
 - **Error 与不可信输入的两条额外边界**（第六轮补上）：`Error.message` 会被 pino
@@ -190,10 +211,32 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   一律输出 `Error`（`SimplePasswordSecret123` 这种完全符合类名文法的自由文本
   不再被当成类型名）。strict canonicalizer 不再执行输入自带的任何转换方法：数组
   按下标新建递归（不走 `map`、不走迭代器）、BigInt 走原始值转换（覆写
-  `BigInt.prototype.toString` 无效）、访问器只记成 `[Getter]` 而**从不读取**、
+  `BigInt.prototype.toString` 无效）、访问器只记成 `[Getter]` 而**不读取**、
   遮蔽 `Object.prototype` 成员的结构键统一改名（`hasOwnProperty` 此前会让 pino
   的 `asChindings()` 自己抛 `TypeError`，`__proto__` 则不再有机会触及原型
   访问器）。
+- **descriptor-safe 读取推到每一个入口**（第七轮）：数组**下标**也按描述符读
+  （`Object.defineProperty(a, 0, { get })` 是合法的，`a[0]` 会把它执行掉）；
+  `Error.name` 与伪造归一化形状的 `type` 沿**原型链**解析描述符，自身访问器、
+  子类原型上的继承访问器、解析不出数据属性——一律降级为 `Error`（`TypeError`
+  这类内建类型仍然保留，因为它们的 `name` 是原型上的数据属性）；
+  `req`/`res` 的 serializer 豁免不再只看键名：只有经 `genReqId` 登记过原始
+  `IncomingMessage` 的**真 Fastify 对象**才拿得到，伪造对象走「只读数据属性」的
+  安全投影。实测（fastify 5.10.0）真实 Request 的 `method`/`url`/`ip`/`socket`
+  都是原型访问器，因此这条区分是必要的：既不能对伪造对象执行它们，也不能因为
+  收紧而把真实请求日志掏空。Fastify 的 defaultErrorLog 会把 `error.message`
+  **显式**当 msg 传进来，那条路径也补上了。
+- **allowlist 防漂移是静态测试，不是注释里的承诺**：
+  `tests/unit/error-type-allowlist.test.ts` 直接扫 `src/` 的
+  `this.name = "X"` 与 `class X extends Error`，任何未登记的错误类都会让门禁变
+  红。第六轮就是这么漏掉 `Stage06ManifestError` 的——它一直被折成 `Error`，而
+  没有任何用例会失败。
+- **保证的边界（不夸大）**：这一层保证的是「**不读取访问器**」，不是「绝不执行
+  任何调用方代码」。`Proxy` 会让 `Object.keys`、`getOwnPropertyDescriptor`、
+  `getPrototypeOf`（`instanceof` 用它）各自触发 trap，`Array.isArray` 对包着数组
+  的 Proxy 也返回 true；那是 JavaScript 语言层面的性质。兜底在于 trap 的返回值
+  仍然要走同一套描述符规则与文本脱敏，因此它能让代码跑，拿不到「把 Secret 原样
+  写出去」这个结果。
 - **全部响应**统一携带 `Cache-Control: no-store` 与
   `X-Content-Type-Options: nosniff`（挂在唯一公共出口 `onSend` 上），且不存在
   任何 `Access-Control-Allow-Origin`；liveness、readiness、登录、家庭私有成功

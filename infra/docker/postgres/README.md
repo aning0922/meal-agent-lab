@@ -338,8 +338,34 @@ trap 后起 worker（因此不存在「worker 已跑、trap 未装」的窗口�
 清理回主流程做，worker PID 保留到 TERM、KILL、`wait` 三步全部完成才清空，清理
 途中到达的第二个信号只登记 pending。清理完先把调用方**原有的** trap 全部还回去，
 再重投决胜信号——调用方装了 handler 就跑 handler，没装走默认处置（128+signo），
-`trap '' SIG` 则什么都不发生（此时按失败收场）。并发信号按**先到者胜**裁决。
-这条保证只覆盖脚本**自己拉起的**受控子树。因此粗筛与 `open()` 之间被换成无写端 FIFO、或复制阶段
+`trap '' SIG` 则什么都不发生（此时按失败收场）。并发信号按**先到者胜**裁决，
+而且是**结构性**的：重投 winner 之前，另外两个信号先被换成「只登记 pending」的
+抑制 handler，只归还 winner 那一个处置，投递完成后再归还其余——否则「恢复全部
+trap → 重投 winner」之间落进来的 loser 会命中调用方的 handler 并决定退出码
+（实测：期望 71、实得 73）。这条保证只覆盖脚本**自己拉起的**受控子树。
+
+### EXIT trap 是借用，不是接管
+
+`secret-source.sh` 被 `source` 进 `bootstrap.sh`，而 bash 每个 shell 只有一个
+EXIT trap。因此解析期间的快照安全网采用「保存 → 链式执行 → 归还」：进入
+`meal_agent_resolve_secret` 时用 `trap -p EXIT` 存下调用方原有的命令，安装一个
+先删快照、再原样执行调用方那一段的 handler，解析结束后把 EXIT 处置还回去。
+快照只在解析期间存在，安全网也只覆盖这一段。
+
+### 信号矩阵是门禁
+
+`signal-matrix.sh` 覆盖「四种调用方处置（默认处置 / handler 自杀 / handler 只
+返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP × starting/terminating 两个窗口
+× first-wins × EXIT trap 链式执行」，共 83 项断言。
+`services/api/tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 shell 与
+**钉住 digest 的 `postgres:18.4-bookworm` 内以 uid 999** 各跑一遍，两侧都进
+`pnpm --filter @meal-agent/api check`。**这条门禁需要能运行 Docker**，并且刻意
+不做静默跳过。
+
+窗口投递是确定的，不靠猜时间：实现进入 `starting` 与 `terminating` 时创建 marker
+文件并**有界**等待 release 文件。未设置 `MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 时
+这两个函数是纯空操作——不 stat、不写、不 sleep；等待另有 5 秒硬上界。该变量不出
+现在任何 Compose 文件、Dockerfile 或 bootstrap 调用里。因此粗筛与 `open()` 之间被换成无写端 FIFO、或复制阶段
 被拖住（哪怕后代忽略 TERM），都会在 5 秒上界内失败，并且不留残余进程、不留
 快照、psql 调用数为 0。
 
