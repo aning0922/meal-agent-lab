@@ -1,6 +1,6 @@
 # 项目状态
 
-最后更新：2026-07-28
+最后更新：2026-07-29
 
 ## 当前结论
 
@@ -71,14 +71,14 @@
 
 项目标准 Codex runtime 直接执行 `pnpm stage08:check`，退出码为 `0`；没有临时注入 `rg` 或改写 PATH。当前门禁包含：
 
-下表是 **2026-07-28 阶段 09A / M3A 之后**的实际计数（阶段 08 收口时为
+下表是 **2026-07-29 阶段 09A / M3A 第四轮之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
 各轮新增测试，业务语义未变）：
 
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 102/102 |
+| API unit | 108/108 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -118,7 +118,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   （有结构性测试断言）。`DATABASE_URL` 与 `DATABASE_URL_FILE` 互斥：两者都缺、
   两者同时出现（**内容相同也拒绝，从不比较取值**）、空 direct、空 `_FILE` 一律
   失败，选中来源失败时**不回落**到另一来源。
-- **连接串的核心字段必须全部来自 URL，且 ambient `PG*` 一律拒绝**：node-postgres 实测会在字段缺失时静默
+- **连接串的核心字段必须全部来自 URL，且拒绝 URL 无法覆盖的那 8 个 `PG*`**：node-postgres 实测会在字段缺失时静默
   回落到 `PG*` 环境变量（`postgresql://` 会让 host/port/user/password/database
   五项全部来自环境变量；`?host=/tmp` 与 `%2Ftmp` 会把目标换成 unix socket）。
   因此 validator 放在**三个入口共用的那一层**：拒绝原始串里的 CR/LF/NUL/BOM 与
@@ -129,13 +129,15 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   在注入 ambient sentinel 的条件下逐字段验证。
   连接串**无法覆盖**的那一批 ambient 变量（`PGOPTIONS`、`PGSSLMODE`、
   `PGSSLNEGOTIATION`、`PGBINARY`、`PGREPLICATION`、`PGCLIENT_ENCODING`、
-  `PGAPPNAME`、`PGCONNECT_TIMEOUT`）在同一层逐条拒绝——它们能改协议协商、会话
+  `PGAPPNAME`、`PGCONNECT_TIMEOUT`，共 8 个）在同一层逐条拒绝。`PGHOST`/`PGPORT`/
+  `PGUSER`/`PGPASSWORD`/`PGDATABASE` **不在**拒绝表里——URL 已经决定了它们，有
+  正面用例证明它们即使存在也不生效——它们能改协议协商、会话
   参数与传输格式，实测在修复前确实会落进 `connectionParameters`。检查同时覆盖
   传入的 environment 与 `process.env`（node-postgres 读的永远是后者），错误只列
   变量名、不回显取值。拒绝表按 `pg@8.22.0` 源码逐条列出并把版本钉在断言里。
 - **secret file 判据 fail closed**：绝对路径、`O_NOFOLLOW|O_NONBLOCK` 打开后
   **fstat**（不是先 stat 路径再 open）、普通文件、链接数为 1、属主等于当前
-  effective UID、只允许 owner read/write（0600）、≤4096 字节、非空、合法 UTF-8、
+  effective UID、只允许 owner-only 的 `0400` 或 `0600`、≤4096 字节、非空、合法 UTF-8、
   无 NUL、无 BOM、单行、最多移除一个末尾 LF 且**不做 trim**。含空格、`:`、`\`、
   `@`、`/`、`#`、`%` 的取值逐字节保留。错误信息只含变量名、路径与原因。
 - **bootstrap 的 shell 侧按条对齐**（不是逐字节等价的同一实现，差异见下）：`infra/docker/postgres/secret-source.sh` 覆盖
@@ -432,7 +434,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 - **恢复/安装流程分为两个阶段**：`bootstrap.sh acl` 是 containment（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），`bootstrap.sh grants` 是 final（migration 之后建立最终 ACL，并**同时**验证 PUBLIC、app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只重建允许项，后验同时比对 catalog ACL 与 `has_*_privilege` 有效权限。
 - 产品声明禁用 Large Object，收敛口径与上面的「Large Object 的口径」完全一致：**只有在目标库确实零真实 LO 时**，收敛才把 `pg_default_acl` 中 `defaclobjtype='L'` 的多余默认权限收敛为空，并收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）上除函数 owner 之外的 `EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。一旦库里存在**任意**真实 LO 对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，只报告 OID 与 owner——**绝不修改它的 `lomacl`**、绝不改归属、绝不改数据、绝不解除链接，LO 的 OID 也不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。M3A 在 `claude/stage-09a-m3-config-secret-consumption` 上实施，基线 `8c99c46`。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
 - API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 已 Accepted，M3A 待总控复核）；仍缺环境模板与完整 bootstrap 链实证（M3B）、全栈启动与备份恢复证据（M4）以及阶段总门禁（M5）。
 - 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。

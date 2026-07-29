@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-07-27 更新实施状态）
+- 日期：2026-07-26（2026-07-29 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」implementation complete, pending total-control review**；M3B、M4、M5 未开始）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -252,7 +252,7 @@ review**——**不是 Accepted**。
    「已出现」只看变量是否是字符串，空字符串同样算已出现；选中来源失败时**不**
    回落到另一来源。文件判据 fail closed：绝对路径、`O_NOFOLLOW|O_NONBLOCK` 打开
    后 **fstat**（而不是先 stat 路径再 open）、普通文件、链接数为 1、属主等于当前
-   effective UID、权限只允许 owner read/write（0600，因此 group/world 位、owner
+   effective UID、权限只允许 owner-only 的 `0400` 或 `0600`（因此 group/world 位、owner
    执行位与 setuid/setgid/sticky 全部拒绝）、≤4096 字节、非空、合法 UTF-8、无
    NUL、无 BOM、单行、最多移除**一个**末尾 LF 且**不做 trim**。CLI 参数合法性仍
    先于 Secret 文件读取与数据库连接。文件 I/O **不在** Zod 内：先解析来源拿到
@@ -376,10 +376,39 @@ review**——**不是 Accepted**。
    两条来源上结论不同。现在两侧都按「任何位置」判定，并补了内部与结尾 U+FEFF
    的反例。
 
+#### M3A 第三轮总控复验未通过后的定点修订
+
+第三轮点名的三个 P1 已修，各自都有修复前实测：
+
+1. **logger 实例隔离**。`hardenLogger` 用 `bind(logger)` 把 root 绑死，而 pino 的
+   `child()` 是 `Object.create(this)`——子 logger 通过原型链继承到**已经绑定 root**
+   的覆盖，于是 grandchild 从 root 派生（丢掉 parent 的 binding）、
+   `child.setBindings()` 改的是 **root**、root 的输出里出现子 logger 的 binding。
+   改为保留调用时的**动态 `this`**：覆盖只安装一次，每一层操作的都是它自己那个
+   实例。六项断言逐条覆盖继承与隔离，并要求 binding 里的 Secret 仍被脱敏。
+2. **中央 logger 输出边界补齐**。`formatters.level` 此前没有被包装，
+   `customLevels` + `formatters.level` 是一条完整的注入路径；百分号编码探测只解
+   一轮，双重编码与「畸形 `%ZZ` 前缀 + 合法编码」都能绕过；不符合 Pino 类型契约
+   的 `redact.censor`（对象/数组/数字/布尔）被原样透传。现在三个 formatter 入口
+   全部包装，解码改为**有界重复**（上限 4 轮、收敛即停、整串解码失败时回落到逐个
+   `%XX` 的宽松解码），非法 censor 与非法 redact 形态 fail closed，并在**真实
+   Fastify 请求日志**层补了反例。
+3. **shell 后代清理**。超时此前只 kill worker 这一个 PID，被拖住的后代（复制阶段
+   的 `head`）会被留成孤儿继续持有描述符——实测 worker gone、被阻塞且**忽略
+   TERM** 的 head 仍 ALIVE。现在 worker 是独立进程组的组长（`set -m`），超时对
+   **整个进程组** TERM 再 KILL；新增反例证明 worker 与全部后代 PID 都消失、
+   FIFO 无残留 reader、快照目录为空、psql 调用数 0、输出无 sentinel。
+
+机械收口：FIFO 与 stalled-copy 两条回归加了 12 秒外部 timeout 并断言它**没有**
+触发，耗时上界从 30 秒收到 10 秒（实现自身上界 5 秒）；「FIFO 仍会永久挂起」的
+旧说明已删除，改为修复后的真实边界；ambient 文案统一为「拒绝 URL 无法覆盖的 8 个
+`PG*`」；Secret 权限口径统一为 owner-only 的 `0400` 或 `0600`，实现、错误措辞与
+测试断言一起改。
+
 两侧解析器的关系表述已统一改为「**按条对齐**」而不是「完全同语义」：Node 侧
-`fstat` 文件描述符，shell 侧用 inode 绑定 + 私有快照；shell 的残留边界（`-f`
-与 `open()` 之间被换成 FIFO 会阻塞，但不会消费被替换的内容）已登记在
-`infra/docker/postgres/README.md`。
+`fstat` 文件描述符，shell 侧用 inode 绑定 + 私有快照。两侧的读取都是**有界**的
+（Node 靠 `O_NONBLOCK`，shell 靠独立进程组 + 5 秒上界 + 整组 TERM/KILL），
+机制差异登记在 `infra/docker/postgres/README.md`。
 
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个

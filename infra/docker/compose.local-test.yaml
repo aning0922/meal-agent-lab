@@ -16,7 +16,7 @@
 # M3A 起，`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 已经**被真正消费**：
 # `services/api/src/config-source.ts` 与 `postgres/secret-source.sh` 的互斥语义与
 # fail-closed 文件判据**按条对齐**（绝对路径、非 symlink、普通文件、单链接、
-# 属主为当前 EUID、只允许 0600 权限、单行、最多一个末尾 LF），但**不是逐字节
+# 属主为当前 EUID、只允许 owner-only 的 0400 或 0600、单行、最多一个末尾 LF），但**不是逐字节
 # 等价的同一实现**——机制差异与残留边界见 `postgres/README.md`。
 # 连接串另有专用校验：五个核心字段必须全部显式来自 URL，否则 node-postgres 会
 # 回落到 `PG*` 环境变量。

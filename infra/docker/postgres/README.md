@@ -330,9 +330,11 @@ manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写
 `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 打开后直接 `fstat`；shell 没有可移植的
 `fstat`，改为「只 open 一次 → 用 `/dev/fd/N` 的 inode 与路径 stat 绑定 →
 从该描述符复制到私有快照 → 只读快照」。属主与权限位取自路径 stat（BSD 的
-`/dev/fd/N` 权限位不可信），由 inode 相等绑定到同一个 inode 上。残留边界：
-`-f` 检查与 `open()` 之间路径被换成 FIFO 会让 shell 侧**阻塞**（不会消费被
-替换的内容）；Node 侧因为有 `O_NONBLOCK` 没有这个问题。
+`/dev/fd/N` 权限位不可信），由 inode 相等绑定到同一个 inode 上。两侧的读取都是**有界**的，只是机制不同：Node 侧靠 `O_NONBLOCK`，shell 侧靠
+「open + 校验 + 复制跑在独立进程组的子进程里，父进程 5 秒有界等待后对**整个
+进程组** TERM 再 KILL」。因此粗筛与 `open()` 之间被换成无写端 FIFO、或复制阶段
+被拖住（哪怕后代忽略 TERM），都会在 5 秒上界内失败，并且不留残余进程、不留
+快照、psql 调用数为 0。
 
 | `<NAME>` | `<NAME>_FILE` | 结果 |
 | --- | --- | --- |
@@ -345,7 +347,7 @@ manifest 不是从 `0000_stage_06.sql` 正则推导的，也不与 SQL 侧各写
 
 「已出现」只看变量是否被设置，空字符串同样算已出现；选中来源失败时**不**回落。
 文件判据：绝对路径、非 symlink、普通文件、链接数为 1、属主等于当前 EUID、
-权限只允许 owner read/write（0600）、≤4096 字节、非空、无 NUL、合法 UTF-8、
+权限只允许 owner-only 的 `0400` 或 `0600`、≤4096 字节、非空、无 NUL、合法 UTF-8、
 无 BOM、无 CR、最多一个末尾 LF 且**不做 trim**。GNU 与 BSD 的 `stat` 各有一条
 分支，两者都不可用时判定为「无法验证」而拒绝，不降级成跳过检查。
 

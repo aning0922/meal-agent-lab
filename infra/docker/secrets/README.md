@@ -27,7 +27,7 @@ Node 侧的 [`services/api/src/config-source.ts`](../../../services/api/src/conf
 - 不接受 symlink，必须是普通文件（目录、FIFO、socket、设备一律拒绝）；
 - 链接数必须为 1——同一份内容存在第二个名字即拒绝；
 - 属主必须等于当前进程的 effective UID；
-- 权限只允许 owner read/write（`0600`）：group/world 的任何位、owner 的执行位、
+- 权限只允许 owner-only 的 `0400`（只读）或 `0600`（读写）：group/world 的任何位、owner 的执行位、
   setuid/setgid/sticky 全部拒绝；
 - 不超过 4096 字节；
 - 内容非空、合法 UTF-8、无 NUL、无 BOM、无 CR、单行；

@@ -57,7 +57,8 @@ pnpm --filter @meal-agent/api dev
 「已出现」只看变量是否是字符串——空字符串同样算已出现，否则 `DATABASE_URL=` 会
 被当成「没设置」，于是一个歧义配置被静默降级成合法的 file-only 注入。选中来源
 失败时**不回落**到另一来源。secret file 的判据是 fail closed 的（绝对路径、
-`O_NOFOLLOW` 打开后 fstat、普通文件、单链接、属主为当前 EUID、只允许 0600、
+`O_NOFOLLOW` 打开后 fstat、普通文件、单链接、属主为当前 EUID、只允许 owner-only
+的 `0400` 或 `0600`、
 ≤4096 字节、非空、合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim），
 与 [`infra/docker/postgres/secret-source.sh`](../../infra/docker/postgres/secret-source.sh)
 **按条对齐**（不是逐字节等价的同一实现：Node 侧 `fstat` 文件描述符，shell 侧用
