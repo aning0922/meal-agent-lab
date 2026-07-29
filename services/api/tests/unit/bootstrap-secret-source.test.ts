@@ -1029,7 +1029,14 @@ const processTable = (): readonly ProcessRow[] => {
     .map(([pid, ppid, pgid]) => ({ pid, ppid, pgid }));
 };
 
-/** 从 root 出发广度优先枚举当前还活着的后代。 */
+/**
+ * 从 root 出发广度优先枚举当前还活着的后代。
+ *
+ * **只在 root 还活着的时候有意义**：root 一死，它的孩子立刻被 reparent 到 pid 1，
+ * 从 root 出发就再也走不到它们。所以「清理干净了没有」不能靠 root 死后再枚举一次
+ * ——那个检查恒为空，等于测试自己满足了自己。真正的判据是对**存活期间采样到的
+ * PID 集合**逐个做有界确认。
+ */
 const descendantsOf = (root: number): readonly ProcessRow[] => {
   const table = processTable();
   const byParent = new Map<number, ProcessRow[]>();
@@ -1055,6 +1062,20 @@ const descendantsOf = (root: number): readonly ProcessRow[] => {
     }
   }
   return found;
+};
+
+/** 对一批 PID 逐个做有界确认，返回仍然存活的那些。 */
+const residualOf = async (
+  pids: Iterable<number>,
+  budgetMs = 3_000,
+): Promise<readonly number[]> => {
+  const remaining: number[] = [];
+  for (const pid of pids) {
+    if (!(await awaitGone(pid, budgetMs))) {
+      remaining.push(pid);
+    }
+  }
+  return remaining;
 };
 
 const pause = async (ms: number): Promise<void> => {
@@ -1171,6 +1192,9 @@ const runSignalScenario = async (
   mkdirSync(temporaryDirectory, { recursive: true });
   const markerDirectory = join(workspace, `${scenario.slot}-markers`);
   mkdirSync(markerDirectory, { recursive: true });
+  // 这一组用例只针对 terminating 窗口。starting 的 release 预先放好，否则实现会在
+  // 那里白白等满自己的 5 秒上界——三份口令就是 19.5 秒，直接顶穿 12 秒硬上界。
+  writeFileSync(join(markerDirectory, "starting.release"), "");
   const fifo = join(workspace, `${scenario.slot}.fifo`);
   if (!existsSync(fifo)) {
     execFileSync("mkfifo", [fifo]);
@@ -1274,7 +1298,17 @@ const runSignalScenario = async (
       (async (): Promise<SignalOutcome> => {
         if (scenario.stall) {
           // 等三层 PID 全部出现再发信号，否则测的可能是「还没来得及起来」。
+          //
+          // 循环自己也必须有界。`withHardCap` 是 `Promise.race`，它**不会取消**
+          // 输掉的那一侧：一个无界的轮询循环会在断言失败之后继续排定计时器，于是
+          // 断言红了、进程却永远不退出，连测试摘要都打不出来。
+          const stallDeadline = Date.now() + externalTimeoutMs;
           while (readPidFile(sleepFile) === undefined) {
+            if (Date.now() >= stallDeadline) {
+              throw new Error(
+                `${scenario.slot}: the stall wrapper never reached the copy stage`,
+              );
+            }
             sampleDescendants(groupLeader);
             await pause(25);
           }
@@ -1292,7 +1326,13 @@ const runSignalScenario = async (
             if (index > 0 && scenario.secondSignalWindow === "terminating") {
               // 确定地落进 terminating：实现在 TERM 已发、KILL 未发时创建
               // marker 并有界等待 release。等到 marker 才发第二个信号。
+              const markerDeadline = Date.now() + externalTimeoutMs;
               while (!existsSync(join(markerDirectory, "terminating"))) {
+                if (Date.now() >= markerDeadline) {
+                  throw new Error(
+                    `${scenario.slot}: the terminating marker never appeared`,
+                  );
+                }
                 await pause(10);
               }
             }
@@ -1337,7 +1377,9 @@ const runSignalScenario = async (
           fifoReaderSurvived: fifoHasReader(fifo),
           stillAlive,
           recorded,
-          residualDescendants: descendantsOf(groupLeader).map((row) => row.pid),
+          // 对**采样期间见过的每一个后代**逐个有界确认，而不是在 root 死后再从
+          // 它出发枚举一次（那样恒为空）。
+          residualDescendants: await residualOf(observedPids),
         };
       })(),
       `${scenario.slot}: the external signal case`,
@@ -1519,10 +1561,12 @@ test("the hard cap still collects a worker whose pid file never appeared", async
       true,
       "the worker must run in its own process group",
     );
-    assert.equal(
-      existsSync(join(workspace, "signal-nopid.worker.pid")),
-      false,
-      "this case is only meaningful while no pid file exists",
+    // 这条用例的前提是「worker 存在但还没走到会写 PID 文件的那一步」。检查一个
+    // 谁都不会写的路径是重言式，没有信息量；真正要证明的是**兜底清理的依据只能
+    // 来自采样**：观察到的进程组里必须有一个不是 bootstrap 自己的。
+    assert.ok(
+      [...observedGroups].some((pgid) => pgid !== groupLeader),
+      "the fallback must have a real worker pgid that no pid file could provide",
     );
   } finally {
     for (const pgid of observedGroups) {
@@ -1544,15 +1588,15 @@ test("the hard cap still collects a worker whose pid file never appeared", async
     child.stderr.destroy();
   }
 
-  // 有界确认：兜底清理之后一个后代都不剩。
-  const deadline = Date.now() + 5_000;
-  let residual = descendantsOf(groupLeader).map((row) => row.pid);
-  while (residual.length > 0 && Date.now() < deadline) {
-    await pause(25);
-    residual = descendantsOf(groupLeader).map((row) => row.pid);
-  }
+  // 有界确认：兜底清理之后，**采样期间见过的每一个 PID** 都不剩。用
+  // descendantsOf(groupLeader) 是不行的——bootstrap 已经死了，孤儿被 reparent 到
+  // pid 1，从它出发枚举恒为空，那个断言证明不了任何事。
+  assert.ok(
+    observedPids.size > 0,
+    "the sampling must actually have seen the worker subtree",
+  );
   assert.deepEqual(
-    residual,
+    await residualOf(observedPids, 5_000),
     [],
     "the pgid-based fallback cleanup must leave nothing behind",
   );
