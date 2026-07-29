@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   closeSync,
@@ -798,9 +798,12 @@ writeFileSync(
     '  : > "$MEAL_AGENT_TEST_STALL_MARKER"',
     '  printf "%s" "$$" > "$MEAL_AGENT_TEST_STALL_PID"',
     '  printf "%s" "$PPID" > "$MEAL_AGENT_TEST_STALL_PPID"',
+    "  # 第三层：wrapper 自己派生的 sleep。清理必须一直收到这一层。",
+    "  sleep 600 &",
+    '  printf "%s" "$!" > "$MEAL_AGENT_TEST_STALL_SLEEP_PID"',
     "  # 忽略 TERM：只有 KILL 才收得掉，因此清理必须补一发 KILL。",
     "  trap '' TERM",
-    "  sleep 600",
+    "  wait",
     "  exit 0",
     "fi",
     'exec /usr/bin/head "$@"',
@@ -841,6 +844,7 @@ test("a stalled copy that ignores TERM is killed together with its descendants",
   mkdirSync(temporaryDirectory, { recursive: true });
   const stallPidFile = join(workspace, "stall.pid");
   const stallPpidFile = join(workspace, "stall.ppid");
+  const stallSleepPidFile = join(workspace, "stall.sleep.pid");
 
   const started = Date.now();
   const result = runLogins({
@@ -850,6 +854,7 @@ test("a stalled copy that ignores TERM is killed together with its descendants",
     MEAL_AGENT_TEST_STALL_MARKER: join(workspace, "stall.marker"),
     MEAL_AGENT_TEST_STALL_PID: stallPidFile,
     MEAL_AGENT_TEST_STALL_PPID: stallPpidFile,
+    MEAL_AGENT_TEST_STALL_SLEEP_PID: stallSleepPidFile,
     MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretFile(passwords.migration),
     MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
     MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
@@ -858,7 +863,8 @@ test("a stalled copy that ignores TERM is killed together with its descendants",
 
   const stalledPid = Number(readFileSync(stallPidFile, "utf8"));
   const workerPid = Number(readFileSync(stallPpidFile, "utf8"));
-  spawnedByStallTest.push(stalledPid, workerPid);
+  const sleepPid = Number(readFileSync(stallSleepPidFile, "utf8"));
+  spawnedByStallTest.push(stalledPid, workerPid, sleepPid);
 
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /could not be opened and read within 5s/);
@@ -884,6 +890,11 @@ test("a stalled copy that ignores TERM is killed together with its descendants",
     processIsGone(workerPid),
     `the worker ${String(workerPid)} must be killed`,
   );
+  // 第三层同样要收掉：只收 worker 与 wrapper 会把 sleep 留成孤儿。
+  assert.ok(
+    processIsGone(sleepPid),
+    `the sleep grandchild ${String(sleepPid)} must be killed`,
+  );
 
   // 没有快照残留。
   assert.deepEqual(
@@ -892,4 +903,176 @@ test("a stalled copy that ignores TERM is killed together with its descendants",
     ),
     [],
   );
+});
+
+/**
+ * 外部信号（SIGTERM 发给 bootstrap **父进程**）。
+ *
+ * 与内部超时那一条互补：超时是 bootstrap 自己决定收手，这里是别人来收它。
+ * 两者共用同一段 worker-group 清理，因此这条用例证明的是「共用」确实成立——
+ * 修复前 bootstrap 死了而 worker/head/sleep 三层全部存活。
+ */
+const signalWrapperDirectory = join(workspace, "signal-wrapper");
+mkdirSync(signalWrapperDirectory, { recursive: true });
+writeFileSync(
+  join(signalWrapperDirectory, "head"),
+  [
+    "#!/usr/bin/env bash",
+    "set -u",
+    'if [ ! -e "$MEAL_AGENT_TEST_SIGNAL_MARKER" ]; then',
+    '  : > "$MEAL_AGENT_TEST_SIGNAL_MARKER"',
+    '  printf "%s" "$$" > "$MEAL_AGENT_TEST_SIGNAL_HEAD"',
+    '  printf "%s" "$PPID" > "$MEAL_AGENT_TEST_SIGNAL_WORKER"',
+    "  # 真实的 FIFO reader：read-write 打开不会阻塞，但只要本进程活着，",
+    "  # 以 O_WRONLY|O_NONBLOCK 打开该 FIFO 就不会 ENXIO。",
+    '  exec 7<> "$MEAL_AGENT_TEST_SIGNAL_FIFO"',
+    "  sleep 600 &",
+    '  printf "%s" "$!" > "$MEAL_AGENT_TEST_SIGNAL_SLEEP"',
+    "  trap '' TERM",
+    "  wait",
+    "  exit 0",
+    "fi",
+    'exec /usr/bin/head "$@"',
+  ].join("\n"),
+);
+chmodSync(join(signalWrapperDirectory, "head"), 0o755);
+
+const spawnedBySignalTest: number[] = [];
+after(() => {
+  for (const pid of spawnedBySignalTest) {
+    // 先按进程组收，再按单个 PID 兜底；两者都可能已经不存在。
+    for (const target of [-pid, pid]) {
+      try {
+        process.kill(target, "SIGKILL");
+      } catch {
+        // 已经退出。
+      }
+    }
+  }
+});
+
+test("an external SIGTERM tears down the whole controlled subtree", async () => {
+  const temporaryDirectory = join(workspace, "signal-tmp");
+  mkdirSync(temporaryDirectory, { recursive: true });
+  const fifo = join(workspace, "signal-fifo");
+  if (!existsSync(fifo)) {
+    execFileSync("mkfifo", [fifo]);
+  }
+  const headFile = join(workspace, "signal.head.pid");
+  const workerFile = join(workspace, "signal.worker.pid");
+  const sleepFile = join(workspace, "signal.sleep.pid");
+  const logPath = join(workspace, "signal-psql.log");
+  writeFileSync(logPath, "");
+
+  const child = spawn(
+    "bash",
+    [bootstrapScript, "logins", "--maintenance-db", "postgres"],
+    {
+      // 独立进程组：测试收尾时可以整组清理，不依赖单个 PID。
+      detached: true,
+      env: {
+        PATH: `${signalWrapperDirectory}:${process.env["PATH"] ?? ""}`,
+        HOME: process.env["HOME"] ?? "",
+        TMPDIR: temporaryDirectory,
+        PSQL: fakePsql,
+        MEAL_AGENT_FAKE_PSQL_LOG: logPath,
+        MEAL_AGENT_TEST_SIGNAL_MARKER: join(workspace, "signal.marker"),
+        MEAL_AGENT_TEST_SIGNAL_HEAD: headFile,
+        MEAL_AGENT_TEST_SIGNAL_WORKER: workerFile,
+        MEAL_AGENT_TEST_SIGNAL_SLEEP: sleepFile,
+        MEAL_AGENT_TEST_SIGNAL_FIFO: fifo,
+        MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretFile(passwords.migration),
+        MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+        MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const bootstrapPid = child.pid ?? 0;
+  spawnedBySignalTest.push(bootstrapPid);
+
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += String(chunk)));
+  child.stderr.on("data", (chunk) => (output += String(chunk)));
+
+  const exited = new Promise<{ code: number | null; signal: string | null }>(
+    (resolve) => {
+      child.once("exit", (code, signal) => resolve({ code, signal }));
+    },
+  );
+
+  try {
+    // 等三层 PID 全部出现，再发信号——否则测的可能是「还没来得及起来」。
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(sleepFile)) {
+      if (Date.now() >= deadline) {
+        throw new Error("the stall wrapper never reached the copy stage");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const headPid = Number(readFileSync(headFile, "utf8"));
+    const workerPid = Number(readFileSync(workerFile, "utf8"));
+    const sleepPid = Number(readFileSync(sleepFile, "utf8"));
+    spawnedBySignalTest.push(headPid, workerPid, sleepPid);
+
+    // 只有 reader 还在时，以 O_WRONLY|O_NONBLOCK 打开 FIFO 才不会 ENXIO。
+    const writer = openSync(
+      fifo,
+      openConstants.O_WRONLY | openConstants.O_NONBLOCK,
+    );
+    closeSync(writer);
+
+    process.kill(bootstrapPid, "SIGTERM");
+    const result = await exited;
+
+    // 正确的信号退出语义：被 SIGTERM 结束，而不是一个普通退出码。
+    assert.equal(result.signal, "SIGTERM", `unexpected exit ${String(result.code)}`);
+
+    // bootstrap、worker、head、sleep 四层都必须消失。
+    for (const [label, pid] of [
+      ["bootstrap", bootstrapPid],
+      ["worker", workerPid],
+      ["head", headPid],
+      ["sleep", sleepPid],
+    ] as const) {
+      assert.ok(
+        processIsGone(pid),
+        `${label} ${String(pid)} must be gone after the external SIGTERM`,
+      );
+    }
+
+    // 没有残留的 FIFO reader。
+    assert.throws(
+      () => {
+        const descriptor = openSync(
+          fifo,
+          openConstants.O_WRONLY | openConstants.O_NONBLOCK,
+        );
+        closeSync(descriptor);
+      },
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENXIO",
+      "no FIFO reader may survive the signal cleanup",
+    );
+
+    const log = readFileSync(logPath, "utf8");
+    assert.equal(
+      log.split("\n").filter((line) => line.startsWith("ARGV")).length,
+      0,
+      "a signalled run must never reach psql",
+    );
+    assertNoSentinel(output, "the signalled bootstrap output");
+    assertNoSentinel(log, "the recorded psql argv");
+    assert.deepEqual(
+      readdirSync(temporaryDirectory).filter((entry) =>
+        entry.startsWith("meal-agent-secret."),
+      ),
+      [],
+    );
+  } finally {
+    try {
+      process.kill(-bootstrapPid, "SIGKILL");
+    } catch {
+      // 进程组已经消失。
+    }
+  }
 });

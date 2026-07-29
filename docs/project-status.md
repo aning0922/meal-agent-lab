@@ -78,7 +78,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 108/108 |
+| API unit | 114/114 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -142,7 +142,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   `@`、`/`、`#`、`%` 的取值逐字节保留。错误信息只含变量名、路径与原因。
 - **bootstrap 的 shell 侧按条对齐**（不是逐字节等价的同一实现，差异见下）：`infra/docker/postgres/secret-source.sh` 覆盖
   三对 `MEAL_AGENT_*_PASSWORD` / `*_FILE`；**三份口令全部在任何 psql 调用之前
-  解析**，任一不合格时 psql 调用次数实测为 **0**（22 个失败来源逐条断言）。口令
+  解析**，任一不合格时 psql 调用次数实测为 **0**（23 个失败来源逐条断言）。口令
   不进入 argv、生成 SQL、日志，也不进入 psql 子进程的 environ（`export -n`），
   `bash -x` 下不泄漏。GNU（Debian 容器，uid 999）与 BSD（macOS）两个 `stat`
   分支都已实测。
@@ -166,7 +166,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
   `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
   控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
-  11 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  21 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
   method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
   一起丢掉来「通过」。
 - **全部响应**统一携带 `Cache-Control: no-store` 与

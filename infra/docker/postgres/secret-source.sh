@@ -48,9 +48,10 @@
 # 在 macOS 上不可信（devfs 实测报 0400），所以属主与权限仍取自路径 stat——它由
 # inode 相等绑定到同一个 inode 上。
 #
-# 已知残留边界（只会造成失败/挂起，不会造成「消费被替换的内容」）：`-f` 检查
-# 与 `exec` 之间如果路径被换成 FIFO，`open()` 会阻塞。shell 没有 `O_NONBLOCK`
-# 可用；Node 侧用 `O_RDONLY|O_NOFOLLOW|O_NONBLOCK` 没有这个问题。
+# 读取是**有界**的。shell 没有 `O_NONBLOCK`，所以 `open()`（无写端 FIFO）与复制
+# 阶段（被拖住的 `head`）都可能永久阻塞；整段因此跑在一个独立进程组的后台子
+# 进程里，由父进程做 5 秒有界等待，超时对**整个进程组** TERM 再 KILL。外部信号
+# （TERM/INT/HUP）共用同一段清理，见下面的 worker-group 小节。
 #
 # ## Secret 保密边界
 #
@@ -71,8 +72,9 @@ MEAL_AGENT_SECRET_SOURCE_LOADED="yes"
 
 # 与 Node 侧 `maximumSecretFileBytes` 相同的上限。
 meal_agent_secret_max_bytes=4096
-# `open()` + 校验 + 复制的有界上限。shell 没有 O_NONBLOCK，因此这是「路径在
-# 粗筛之后被换成无写端 FIFO」时唯一的兜底；超时后 TERM→KILL，不留后台进程。
+# `open()` + 校验 + 复制的有界上限。超时后对**整个 worker 进程组** TERM 再 KILL，
+# 因此受控子树（worker、复制阶段的 head、它派生的 sleep）不会被留成孤儿。
+# 这条保证只覆盖**本脚本自己拉起的**进程；它不声称清理 bootstrap 之外的任何东西。
 meal_agent_secret_open_deadline_seconds=5
 meal_agent_secret_open_deadline_ticks=100
 meal_agent_stat_flavor=""
@@ -89,6 +91,60 @@ meal_agent_discard_snapshot() {
 
 # failure-safe：无论正常退出、失败退出还是被信号打断，快照都不会留在磁盘上。
 trap 'meal_agent_discard_snapshot' EXIT
+
+# ---------------------------------------------------------------------------
+# worker 进程组的统一清理
+# ---------------------------------------------------------------------------
+# 内部 5 秒超时与**外部信号**（TERM/INT/HUP）共用同一段清理逻辑：只 kill worker
+# 这一个 PID 会把被拖住的后代（复制阶段的 head、它派生的 sleep）留成孤儿，继续
+# 持有描述符。worker 由 `set -m` 放进独立进程组，因此这里对**整个进程组**动手。
+meal_agent_worker_pid=""
+meal_agent_saved_signal_traps=""
+
+meal_agent_terminate_worker_group() {
+  if [ -z "$meal_agent_worker_pid" ]; then
+    return 0
+  fi
+  local worker="$meal_agent_worker_pid"
+  meal_agent_worker_pid=""
+  # 整段包在 stderr 重定向里：被杀死的后台作业会让 shell 打印一行 "Terminated"
+  # 通知，那不是 bootstrap 的诊断信息。
+  {
+    kill -TERM -- "-$worker" 2> /dev/null ||
+      kill -TERM "$worker" 2> /dev/null || true
+    sleep 0.2
+    kill -KILL -- "-$worker" 2> /dev/null ||
+      kill -KILL "$worker" 2> /dev/null || true
+    wait "$worker" || true
+  } 2> /dev/null
+}
+
+# 外部信号：先收干净受控子树与快照，再以**正确的信号退出语义**结束——恢复默认
+# 处置后用同一个信号自杀，调用方看到的是 128+signo，而不是一个普通退出码。
+meal_agent_handle_signal() {
+  local signal="$1"
+  meal_agent_terminate_worker_group
+  meal_agent_discard_snapshot
+  trap - "$signal"
+  kill -"$signal" $$
+}
+
+# 只在 worker 活跃期间接管这三个信号，并保存调用方原有的 trap。bootstrap.sh 自身
+# 目前没有设置它们，但这里不能假设——覆盖必须是**临时**的。
+meal_agent_install_signal_traps() {
+  meal_agent_saved_signal_traps="$(trap -p TERM INT HUP)"
+  trap 'meal_agent_handle_signal TERM' TERM
+  trap 'meal_agent_handle_signal INT' INT
+  trap 'meal_agent_handle_signal HUP' HUP
+}
+
+meal_agent_restore_signal_traps() {
+  trap - TERM INT HUP
+  if [ -n "$meal_agent_saved_signal_traps" ]; then
+    eval "$meal_agent_saved_signal_traps"
+  fi
+  meal_agent_saved_signal_traps=""
+}
 
 meal_agent_secret_fail() {
   # $1 = 变量名；$2 = 原因。绝不打印取值。
@@ -368,20 +424,15 @@ meal_agent_read_secret_file() {
   worker=$!
   case "$previous_options" in *m*) ;; *) set +m ;; esac
 
+  # worker 活跃期间接管 TERM/INT/HUP：内部超时与外部信号共用同一段清理。
+  meal_agent_worker_pid="$worker"
+  meal_agent_install_signal_traps
+
   waited=0
   while [ ! -e "$status_file" ]; do
     if [ "$waited" -ge "$meal_agent_secret_open_deadline_ticks" ]; then
-      # 信号发给**整个进程组**（`-$worker`），不是只发给 worker 这一个 PID：
-      # 被阻塞的是 `head`/`stat` 这些后代，只杀 worker 会把它们留成孤儿，继续
-      # 持有描述符。TERM 之后再补一发 KILL，因此「后代忽略 TERM」也收得掉。
-      # 整段包在一个 stderr 重定向里：被杀死的后台作业会让 shell 打印一行
-      # "Terminated" 通知，那不是 bootstrap 的诊断信息，不该混进运维输出。
-      {
-        kill -TERM -- "-$worker" 2> /dev/null || kill -TERM "$worker" 2> /dev/null || true
-        sleep 0.2
-        kill -KILL -- "-$worker" 2> /dev/null || kill -KILL "$worker" 2> /dev/null || true
-        wait "$worker" || true
-      } 2> /dev/null
+      meal_agent_terminate_worker_group
+      meal_agent_restore_signal_traps
       meal_agent_secret_fail "$name" \
         "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; open() on a non-regular file such as a FIFO, or a stalled read, would otherwise block without a bound"
     fi
@@ -389,6 +440,8 @@ meal_agent_read_secret_file() {
     waited=$((waited + 1))
   done
   wait "$worker" 2> /dev/null || true
+  meal_agent_worker_pid=""
+  meal_agent_restore_signal_traps
 
   status="$(cat "$status_file")"
   if [ "$status" != "0" ]; then
