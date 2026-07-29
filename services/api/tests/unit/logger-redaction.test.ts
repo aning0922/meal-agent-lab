@@ -1149,3 +1149,273 @@ test("the canonicalizer never runs input-supplied conversion methods", () => {
   assert.equal(accessor.output().includes("[Getter]"), true);
   assert.equal(accessor.output().includes("visible"), true);
 });
+
+// ---------------------------------------------------------------------------
+// 第七轮：descriptor-safe 读取
+// ---------------------------------------------------------------------------
+
+test("array indices are read by descriptor, never by invoking them", () => {
+  const capture = capturingLogger();
+  let getterCalls = 0;
+
+  // 1. 索引访问器返回 Secret。
+  const leaking: unknown[] = ["visible"];
+  leaking.length = 3;
+  Object.defineProperty(leaking, 1, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      return dsn;
+    },
+  });
+
+  // 2. 索引访问器抛错——日志调用绝不能因此炸掉。
+  Object.defineProperty(leaking, 2, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error(`index getter exploded ${password}`);
+    },
+  });
+
+  // 3. 索引访问器篡改 Array/Object 的 prototype.toJSON——如果它被执行，
+  //    后面的 JSON.stringify 阶段就会替攻击者把 Secret 写出来。
+  const hostile: unknown[] = [];
+  hostile.length = 1;
+  Object.defineProperty(hostile, 0, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      (Array.prototype as unknown as { toJSON?: unknown }).toJSON = () => dsn;
+      (Object.prototype as unknown as { toJSON?: unknown }).toJSON = () => dsn;
+      return "unused";
+    },
+  });
+
+  try {
+    capture.logger.info({ leaking }, "index accessors in a log record");
+    capture.logger.child({ leaking }).info("index accessors in a binding");
+    capture.logger.setBindings({ leaking });
+    capture.logger.info("index accessors after setBindings");
+    childWithOptions(
+      capture.logger,
+      { component: "index-serializer" },
+      { serializers: { payload: () => leaking } },
+    ).info({ payload: {} }, "index accessors from a serializer");
+    capture.logger.info({ hostile }, "prototype-poisoning index accessor");
+  } finally {
+    delete (Array.prototype as unknown as { toJSON?: unknown }).toJSON;
+    delete (Object.prototype as unknown as { toJSON?: unknown }).toJSON;
+  }
+
+  assert.equal(
+    getterCalls,
+    0,
+    "an array index accessor must never be invoked by the logger",
+  );
+  assertClean(capture.output(), "array index accessors");
+  assert.equal(capture.output().includes("visible"), true);
+  assert.equal(
+    capture.output().includes("[Getter]"),
+    true,
+    "an index accessor must still be reported as present",
+  );
+  assert.equal(
+    (Array.prototype as unknown as { toJSON?: unknown }).toJSON,
+    undefined,
+    "Array.prototype must not have been touched",
+  );
+});
+
+test("the error type is read by descriptor, inherited accessors included", () => {
+  const capture = capturingLogger();
+  let getterCalls = 0;
+
+  // 1. 自身访问器。
+  const own = new Error("boom");
+  Object.defineProperty(own, "name", {
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      return "SecretSourceError";
+    },
+  });
+
+  // 2. **继承**访问器：getOwnPropertyDescriptor(instance, "name") 是 undefined，
+  //    但 `value.name` 照样会把原型上的 getter 执行掉。
+  class InheritedAccessorError extends Error {
+    override get name(): string {
+      getterCalls += 1;
+      return "SecretSourceError";
+    }
+  }
+
+  // 3. 抛错的访问器：日志调用不得被它带走。
+  class ThrowingNameError extends Error {
+    override get name(): string {
+      getterCalls += 1;
+      throw new Error(`name getter exploded ${password}`);
+    }
+  }
+
+  // 4. 伪造的归一化形状，type 是访问器。
+  const forgedNormalized = {
+    message: "request failed",
+    get type() {
+      getterCalls += 1;
+      return "SecretSourceError";
+    },
+  };
+
+  capture.logger.error({ err: own }, "own name accessor");
+  capture.logger.error({ err: new InheritedAccessorError("boom") }, "inherited");
+  capture.logger.error({ err: new ThrowingNameError("boom") }, "throwing");
+  capture.logger.error({ err: forgedNormalized }, "forged normalized");
+
+  assert.equal(
+    getterCalls,
+    0,
+    "an error name/type accessor must never be invoked",
+  );
+
+  const types = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { err: { type: string } }).err.type);
+  assert.deepEqual(
+    types,
+    ["Error", "Error", "Error", "Error"],
+    "an accessor-backed name proves nothing, so it must fail closed to Error",
+  );
+  assertClean(capture.output(), "error name accessors");
+
+  // 数据属性形态的真实类型仍然保留——降级不能靠把所有类型都抹掉来实现。
+  const kept = capturingLogger();
+  const real = new Error("boom");
+  real.name = "Stage06ManifestError";
+  kept.logger.error({ err: real }, "data property name");
+  assert.equal(
+    (JSON.parse(kept.output().trim()) as { err: { type: string } }).err.type,
+    "Stage06ManifestError",
+  );
+});
+
+test("a forged req or res gets no serializer trust, a real one keeps its fields", async () => {
+  const capture = capturingLogger();
+  let getterCalls = 0;
+
+  const forgedRequest = {
+    get id() {
+      getterCalls += 1;
+      return dsn;
+    },
+    get method() {
+      getterCalls += 1;
+      return dsn;
+    },
+    get url() {
+      getterCalls += 1;
+      throw new Error(`url getter exploded ${password}`);
+    },
+    get ip() {
+      getterCalls += 1;
+      return dsn;
+    },
+    get socket() {
+      getterCalls += 1;
+      return { remoteAddress: dsn };
+    },
+    get raw() {
+      getterCalls += 1;
+      return { url: dsn, method: dsn, socket: { remoteAddress: dsn } };
+    },
+  };
+  const forgedResponse = {
+    get statusCode() {
+      getterCalls += 1;
+      return dsn;
+    },
+  };
+
+  capture.logger.info({ req: forgedRequest }, "forged req");
+  capture.logger.info({ res: forgedResponse }, "forged res");
+  capture.logger.child({ req: forgedRequest }).info("forged req binding");
+  childWithOptions(
+    capture.logger,
+    { component: "forged-serializer" },
+    { serializers: { payload: () => ({ req: forgedRequest }) } },
+  ).info({ payload: {} }, "forged req from a serializer");
+
+  assert.equal(
+    getterCalls,
+    0,
+    "a forged req/res accessor must never be invoked by the fixed serializers",
+  );
+  assertClean(capture.output(), "forged req/res");
+
+  // 真实请求这一侧不能因为收紧而被掏空。
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const genuine = capturingLogger();
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: genuine.logger,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  try {
+    await app.inject({ method: "GET", url: "/healthz?trace=1" });
+  } finally {
+    await app.close();
+  }
+  const entries = genuine
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const request = entries.find((entry) => entry["req"] !== undefined)?.[
+    "req"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(request, "a genuine request entry must still exist");
+  assert.equal(request["method"], "GET");
+  assert.equal(request["path"], "/healthz");
+  assert.equal(typeof request["requestId"], "string");
+  assert.equal(typeof request["remoteAddress"], "string");
+  assert.notEqual(request["remoteAddress"], "");
+  const response = entries.find((entry) => entry["res"] !== undefined)?.[
+    "res"
+  ] as Record<string, unknown> | undefined;
+  assert.equal(response?.["statusCode"], 200);
+});
+
+test("an explicitly passed error message never becomes the top-level msg", () => {
+  const capture = capturingLogger();
+
+  // Fastify 的 defaultErrorLog 走的正是这个形状：
+  //   reply.log.error({ req, res, err }, error?.message)
+  // msg 是**显式传入的字符串**，因此绕开了「pino 从 err.message 自动生成 msg」
+  // 那条已经封掉的路径。
+  const failure = new Error(`upstream refused ${password}`);
+  capture.logger.error({ err: failure }, failure.message);
+  capture.logger.error(failure, failure.message);
+
+  assertClean(capture.output(), "explicitly passed error message");
+  for (const line of capture.output().split("\n").filter(Boolean)) {
+    const record = JSON.parse(line) as Record<string, unknown>;
+    assert.equal(record["msg"], "request failed");
+  }
+});

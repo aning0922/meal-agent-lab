@@ -27,7 +27,7 @@ import {
   type Persistence,
 } from "./database/pool.js";
 import { AppError, problemFromError } from "./errors.js";
-import { createLogger } from "./logging.js";
+import { createLogger, trustRawRequest } from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
 import {
@@ -155,6 +155,11 @@ export const buildApp = async (
     bodyLimit: maximumRequestBodyBytes,
     loggerInstance: logger,
     genReqId: (request) => {
+      // 这里是能拿到「这一条请求确实来自 Fastify」的**最早**的点：Fastify 在
+      // 构造它的 Request、也在打出 "incoming request" 之前调用 genReqId。登记
+      // 之后，logger 的固定 serializer 才敢去读 Request 原型上的访问器
+      // （method/url/ip/socket），而伪造对象拿不到这个标识。
+      trustRawRequest(request);
       const supplied = request.headers["x-request-id"];
       if (
         typeof supplied === "string" &&

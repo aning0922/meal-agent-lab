@@ -10,16 +10,30 @@ import pino, { type LogFn, type Logger } from "pino";
  *   1. **strict / untrusted canonicalizer**（`canonicalizeUntrusted`）
  *      child bindings、`setBindings()`、`formatters.level` / `formatters.bindings`、
  *      调用方 formatter / serializer / censor 的返回值——全部走它。
- *      它**没有** `req`/`res`/`err` 豁免，同时处理**属性名与属性值**，绝不执行
- *      `toJSON`/`toString` 之类的用户函数，并把 `Error` 归一化成受控形状。
+ *      它**没有** `req`/`res`/`err` 豁免，同时处理**属性名与属性值**，一律按
+ *      描述符读取而**不读取访问器**，不调用 `toJSON`/`toString` 之类的用户函数，
+ *      并把 `Error` 归一化成受控形状。
  *
  *   2. **log-record canonicalizer**（`canonicalizeLogRecord`）
  *      只有**真正的顶层 log record** 才允许把 `req`/`res`/`err` 延后交给固定
  *      serializer。固定 serializer 一律新建纯对象，且它们的产物**再走一次**
  *      strict canonicalizer。
  *
- * 因此「伪造一个 req 键」拿不到任何豁免：它会被 serializer 投影成固定形状，
- * 再被 strict 收一遍。
+ * 因此「伪造一个 req 键」拿不到任何豁免：`req`/`res` 的延后只发给**能证明是
+ * Fastify 交下来的那一个**（见 `trustRawRequest`），其余一律按不可信取值处理；
+ * 而固定 serializer 对不可信输入本来也只走数据属性，产物还会再被 strict 收一遍。
+ *
+ * ## 这一层保证的边界（不夸大）
+ *
+ * 保证的是「**不读取访问器**」：普通对象、数组下标、Error 的 name/type、
+ * req/res 的字段，全部经 `Object.getOwnPropertyDescriptor` 解析，是数据属性才取值。
+ *
+ * **不**保证「绝不执行任何调用方代码」。`Proxy` 会让 `Object.keys`、
+ * `getOwnPropertyDescriptor`、`getPrototypeOf`（`instanceof` 用它）各自触发对应的
+ * trap；`Array.isArray` 对包着数组的 Proxy 同样返回 true。那是 JavaScript 语言
+ * 层面的性质，这一层消除不了。真正的兜底在别处：trap 的返回值仍然要走同一套
+ * 描述符规则与文本脱敏，因此它能让代码跑，但拿不到「把 Secret 原样写出去」这个
+ * 结果。
  */
 
 const sensitiveKeys = new Set([
@@ -159,6 +173,92 @@ export const redactText = (value: string): string => {
 const redactedKeyPlaceholder = "[RedactedKey]";
 const accessorPlaceholder = "[Getter]";
 
+// ---------------------------------------------------------------------------
+// 描述符读取：唯一被允许的「从不可信取值上拿字段」的方式
+// ---------------------------------------------------------------------------
+
+/**
+ * 一次字段读取的三种结局。把「读到了 `undefined`」与「那里是个访问器」和
+ * 「根本不存在」分开——降级策略依赖这个区分。
+ */
+type FieldRead =
+  | { readonly kind: "value"; readonly value: unknown }
+  | { readonly kind: "accessor" }
+  | { readonly kind: "absent" };
+
+const absentField: FieldRead = { kind: "absent" };
+const accessorField: FieldRead = { kind: "accessor" };
+
+/**
+ * 沿**原型链**解析描述符，返回第一个持有该键的层。
+ *
+ * 为什么必须沿链走：`Object.getOwnPropertyDescriptor(value, "name")` 对
+ * `class Boom extends Error { get name() { … } }` 的实例返回 `undefined`——那个
+ * 访问器在原型上。只看自身描述符然后「没有就普通读一次」等于把继承访问器又执行
+ * 了一遍。
+ *
+ * 边界（不夸大）：`getOwnPropertyDescriptor` 与 `getPrototypeOf` 在 `Proxy` 上
+ * 会触发对应的 trap，因此对 `Proxy` 而言「不执行调用方代码」这句话不成立。这是
+ * JavaScript 语言层面的性质，不是本文件能单方面消除的；本文件保证的是**不读取
+ * 访问器**，不是「绝不执行任何调用方代码」。
+ */
+const resolveDescriptor = (
+  target: object,
+  key: PropertyKey,
+): { readonly holder: object; readonly descriptor: PropertyDescriptor } | undefined => {
+  let holder: object | null = target;
+  while (holder !== null) {
+    const descriptor = Object.getOwnPropertyDescriptor(holder, key);
+    if (descriptor !== undefined) {
+      return { holder, descriptor };
+    }
+    holder = Object.getPrototypeOf(holder) as object | null;
+  }
+  return undefined;
+};
+
+/**
+ * 只在**能证明是数据属性**（自身或继承）时返回取值；访问器只报告它存在。
+ * 证明不了就降级——这是刻意的 fail closed 方向。
+ */
+const readDataField = (target: unknown, key: PropertyKey): FieldRead => {
+  if (
+    target === null ||
+    (typeof target !== "object" && typeof target !== "function")
+  ) {
+    return absentField;
+  }
+  const resolved = resolveDescriptor(target, key);
+  if (resolved === undefined) {
+    return absentField;
+  }
+  return "value" in resolved.descriptor
+    ? { kind: "value", value: resolved.descriptor.value }
+    : accessorField;
+};
+
+/** 按顺序取第一个真正读到取值的候选；都没有时保留「见过访问器」这个事实。 */
+const firstField = (...reads: readonly FieldRead[]): FieldRead => {
+  let sawAccessor = false;
+  for (const read of reads) {
+    if (read.kind === "value" && read.value !== undefined) {
+      return read;
+    }
+    if (read.kind === "accessor") {
+      sawAccessor = true;
+    }
+  }
+  return sawAccessor ? accessorField : absentField;
+};
+
+/** 把一次读取折成可以直接写进日志的取值。 */
+const fieldValue = (read: FieldRead): unknown =>
+  read.kind === "value"
+    ? read.value
+    : read.kind === "accessor"
+      ? accessorPlaceholder
+      : undefined;
+
 /**
  * 属性**名**同样可能就是 Secret（`{ [dsn]: "x" }`）。名字里出现连接串/conninfo
  * 时整条替换成固定占位串。
@@ -201,7 +301,14 @@ const safeKeyName = (key: string, used: Set<string>): string => {
 // Error
 // ---------------------------------------------------------------------------
 
-/** Error 归一化后的固定 message：内部细节永远不进入日志。 */
+/**
+ * Error 归一化后的固定 message。
+ *
+ * 它覆盖的是**经由 `err` 字段**进入日志的错误：`canonicalizeError` 把 message
+ * 换成这一串，pino 的 `write()` 也就只能取到它。调用方**显式**把一段文本当 msg
+ * 传进来时（例如 Fastify 的 defaultErrorLog 会传 `error.message`），走的是另一条
+ * 路径，由下面 `logMethod` 里的那条专门规则处理。
+ */
 export const safeErrorMessage = "request failed";
 
 /**
@@ -213,7 +320,7 @@ export const safeErrorMessage = "request failed";
  * 出现的内建与依赖错误类型。新增错误类时必须同步登记，否则日志里只会看到
  * `Error`——这是刻意的 fail closed 方向。
  */
-const allowedErrorTypes = new Set([
+export const allowedErrorTypes: ReadonlySet<string> = new Set([
   // 本仓库定义的
   "AppError",
   "AuthorizationManifestError",
@@ -225,6 +332,7 @@ const allowedErrorTypes = new Set([
   "MigrationPreflightError",
   "MigrationSelectionError",
   "SecretSourceError",
+  "Stage06ManifestError",
   // 内建
   "Error",
   "AggregateError",
@@ -240,8 +348,26 @@ const allowedErrorTypes = new Set([
   "ZodError",
 ]);
 
-const safeErrorType = (name: unknown): string =>
+const safeErrorTypeName = (name: unknown): string =>
   typeof name === "string" && allowedErrorTypes.has(name) ? name : "Error";
+
+/**
+ * 从取值上**按描述符**取类型名。
+ *
+ * `value.name` 这种普通成员读取会执行访问器，而 `Error.name` 是调用方完全可写
+ * 的字段：既可以是自身访问器（`Object.defineProperty(err, "name", { get })`），
+ * 也可以是子类原型上的继承访问器。两种都不能读。
+ *
+ * 因此这里沿原型链解析描述符，只有落点是**数据属性**且落在 allowlist 里才采用；
+ * 访问器、不存在、非字符串、不在名单里——一律降级为 `Error`。
+ *
+ * 正常类型不会因此丢失：`Error.prototype.name` / `TypeError.prototype.name` 都是
+ * 数据属性，本仓库的错误类则在构造函数里 `this.name = …`（自身数据属性）。
+ */
+const safeErrorTypeOf = (value: unknown, key: PropertyKey): string => {
+  const read = readDataField(value, key);
+  return read.kind === "value" ? safeErrorTypeName(read.value) : "Error";
+};
 
 /**
  * 把任意取值折成固定的 `{ type, message }`。
@@ -254,14 +380,12 @@ const canonicalizeError = (value: unknown): {
   type: string;
   message: string;
 } => ({
-  type:
-    value instanceof Error
-      ? safeErrorType(value.name)
-      : // 已经被折过一次的形状可以保留 type——但只有**在 allowlist 里**才行，
-        // 因此伪造一个 `{ type: <任意文本> }` 拿不到任何东西。
-        safeErrorType(
-          (value as { type?: unknown } | null)?.type,
-        ),
+  type: value instanceof Error
+    ? safeErrorTypeOf(value, "name")
+    : // 已经被折过一次的形状可以保留 type——但只有**在 allowlist 里**、而且它
+      // 确实是个数据属性才行。伪造 `{ type: <任意文本> }` 或
+      // `{ get type() { … } }` 都拿不到任何东西。
+      safeErrorTypeOf(value, "type"),
   message: safeErrorMessage,
 });
 
@@ -271,9 +395,9 @@ const canonicalizeError = (value: unknown): {
 
 /**
  * 返回值一定是由字符串、数字、布尔、null、数组和**纯对象**构成的树，因此
- * 后续的 `JSON.stringify` 阶段不可能再执行任何用户代码。
+ * 后续的 `JSON.stringify` 阶段不会再碰到调用方提供的 `toJSON`/`toString`。
  *
- *   - 函数值（含 own enumerable 的 `toJSON`/`toString`）替换成占位串，**绝不调用**；
+ *   - 函数值（含 own enumerable 的 `toJSON`/`toString`）替换成占位串，不被调用；
  *   - `Error` 归一化成 `{ type, message }`，`type` 走受控文法；
  *   - 键名与取值都脱敏；
  *   - 循环引用防护对对象与数组共用，并按**路径**记录（递归返回后移除），因此
@@ -333,17 +457,39 @@ export const canonicalizeUntrusted = (
     if (Array.isArray(value)) {
       // 逐项复制到**全新数组**，不用 `map`/迭代器/`Symbol.species`——这三者
       // 都可被输入覆写，等于让不可信数据决定执行哪段代码。
+      //
+      // 索引也必须按描述符读：数组下标同样可以是访问器
+      // （`Object.defineProperty(a, 0, { get() { … } })`），`value[index]` 会把它
+      // 执行掉。稀疏洞记 `undefined`，访问器记固定占位串。
       const items: unknown[] = [];
+      // 真实数组（`Array.isArray` 为真）的 `length` 必然是自身数据属性，读它
+      // 不可能触发调用方代码。
       const length = value.length;
       for (let index = 0; index < length; index += 1) {
-        items.push(canonicalizeUntrusted(value[index], seen));
+        const descriptor = Object.getOwnPropertyDescriptor(value, index);
+        if (descriptor === undefined) {
+          items.push(undefined);
+          continue;
+        }
+        if (!("value" in descriptor)) {
+          items.push(accessorPlaceholder);
+          continue;
+        }
+        items.push(canonicalizeUntrusted(descriptor.value, seen));
       }
       return items;
     }
     const used = new Set<string>();
     const result: Record<string, unknown> = {};
-    // `Object.keys` 只列自身可枚举字符串键，且**不会**读取取值；取值另用
-    // 描述符读，因此访问器（getter）不会被执行。
+    // `Object.keys` 只列自身可枚举字符串键，取值另用描述符读，因此**访问器
+    // 不会被读取**。
+    //
+    // 措辞到此为止，不能再往上说。对普通对象而言这等于「不执行调用方代码」；
+    // 对 `Proxy` 而言并不成立——`Object.keys` 会触发 `ownKeys` 与逐键的
+    // `getOwnPropertyDescriptor` trap，`Array.isArray` 对包着数组的 Proxy 返回
+    // true，连 `instanceof` 都会触发 `getPrototypeOf` trap。这些是 JavaScript
+    // 语言层面的性质，本文件消除不了。本文件保证的是「不读取访问器」，不是
+    // 「绝不执行任何调用方代码」。
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       const safe = safeKeyName(key, used);
@@ -387,6 +533,21 @@ export const redactSensitive = canonicalizeUntrusted;
 const serializedKeys = new Set(["req", "res", "err"]);
 
 /**
+ * 一个 `req`/`res`/`err` 键能否延后给固定 serializer。
+ *
+ * `err` 永远延后——但延后的形状已经是 `canonicalizeError()` 折好的安全对象，
+ * 不是调用方的原对象。`req`/`res` 只有在**能证明是 Fastify 交下来的那一个**
+ * 时才延后；伪造的一律当普通不可信取值处理。
+ *
+ * 说明：这条收紧是**纵深防御**。固定 serializer 自己对伪造输入也只走数据属性，
+ * 所以即便 pino 后续仍按键名跑一次 serializer，也不会执行调用方的访问器。
+ */
+const mayDeferToSerializer = (key: string, value: unknown): boolean =>
+  key === "err" ||
+  (key === "req" && isGenuineRequest(value)) ||
+  (key === "res" && isGenuineReply(value));
+
+/**
  * 记录层也不能用 `Object.entries`：那会**读**每一个属性，从而执行输入自带的
  * getter。这里只取自有数据属性；访问器一律记成 `[Getter]`，连 `req`/`res`/`err`
  * 的延后豁免都不给——豁免的前提是「这确实是 Fastify 交下来的那个对象」，一个
@@ -409,7 +570,11 @@ const canonicalizeLogRecord = (
   const used = new Set<string>();
   const result: Record<string, unknown> = {};
   for (const [key, value, isAccessor] of ownDataEntries(record)) {
-    if (serializedKeys.has(key) && !isAccessor) {
+    if (
+      serializedKeys.has(key) &&
+      !isAccessor &&
+      mayDeferToSerializer(key, value)
+    ) {
       // `err` 必须在**这里**就折成安全形状：pino 的 write() 会在 msg 缺省时
       // 直接取 `_obj[errorKey].message` 当顶层 msg，那条路径完全绕过 serializer。
       defineSafeProperty(
@@ -450,7 +615,8 @@ const canonicalizeFormatterRecord = (
       serializedKeys.has(key) &&
       !isAccessor &&
       value !== undefined &&
-      value === source[key]
+      value === fieldValue(readDataField(source, key)) &&
+      mayDeferToSerializer(key, value)
     ) {
       defineSafeProperty(
         result,
@@ -477,38 +643,130 @@ const canonicalizeFormatterRecord = (
 // 固定 serializer：一律新建纯对象，产物再走一次 strict canonicalizer
 // ---------------------------------------------------------------------------
 
-interface RequestLike {
-  readonly id?: unknown;
-  readonly method?: unknown;
-  readonly url?: unknown;
-  readonly ip?: unknown;
-  readonly remoteAddress?: unknown;
-  readonly socket?: { readonly remoteAddress?: unknown };
-  readonly raw?: { readonly socket?: { readonly remoteAddress?: unknown } };
-}
+/**
+ * 真正由 Fastify 交下来的 request / reply 才配得上「读原型访问器」这条待遇。
+ *
+ * 实测（fastify 5.10.0）：`method` / `url` / `ip` / `socket` / `headers` 都是
+ * `Request.prototype` 上的**访问器**，`statusCode` 是 `Reply.prototype` 上的
+ * 访问器。它们是框架自己的代码，不是调用方数据；而伪造对象上的同名访问器是
+ * 调用方代码，绝不能执行。因此这两类必须先被区分开，不能一起「普通成员读取」。
+ *
+ * 可信标识建立在**最早**的那个点上：`genReqId(rawRequest)` 由 Fastify 在构造
+ * `Request`、也在打出 "incoming request" 之前调用。实测顺序确实是
+ * `incoming request` → `onRequest` hook，所以 `onRequest` 里登记来不及，第一条
+ * 请求日志会漏。`app.ts` 在 `genReqId` 里登记原始 `IncomingMessage`；之后一个
+ * 对象只要**自身数据属性** `raw` 指向已登记的那一个，就是货真价实的 Fastify
+ * Request。伪造对象拿不到这条：它的 `raw` 要么不存在，要么不是已登记的对象。
+ */
+const trustedRawRequests = new WeakSet<object>();
 
+export const trustRawRequest = (raw: unknown): void => {
+  if (raw !== null && typeof raw === "object") {
+    trustedRawRequests.add(raw);
+  }
+};
+
+const isGenuineRequest = (value: unknown): boolean => {
+  const raw = readDataField(value, "raw");
+  return (
+    raw.kind === "value" &&
+    raw.value !== null &&
+    typeof raw.value === "object" &&
+    trustedRawRequests.has(raw.value)
+  );
+};
+
+/** Fastify 的 Reply 把它的 Request 放在**自身数据属性** `request` 上。 */
+const isGenuineReply = (value: unknown): boolean => {
+  const request = readDataField(value, "request");
+  return request.kind === "value" && isGenuineRequest(request.value);
+};
+
+/** 已确认可信的对象才走这条：读取会执行框架自己的原型访问器。 */
+const readTrustedField = (target: unknown, key: string): FieldRead => {
+  if (target === null || typeof target !== "object") {
+    return absentField;
+  }
+  try {
+    return { kind: "value", value: (target as Record<string, unknown>)[key] };
+  } catch {
+    // 框架访问器也可能抛（例如 socket 已经销毁）。抛错不该把日志调用带走。
+    return absentField;
+  }
+};
+
+const readField = (
+  target: unknown,
+  key: string,
+  trusted: boolean,
+): FieldRead =>
+  trusted ? readTrustedField(target, key) : readDataField(target, key);
+
+/**
+ * request 的**固定投影**。不可信输入只走数据属性，因此伪造的
+ * `{ get url() { … } }` 不会被执行，只会记成占位串。
+ *
+ * 不可信路径也不会一无所获：Node 的 `IncomingMessage` 把 `method`/`url`/
+ * `socket`/`headers` 放在**自身数据属性**上（实测），所以经由 `raw` 这条路径
+ * 不需要执行任何访问器就能拿到请求信息。
+ */
 const serializeRequest = (request: unknown): unknown => {
-  const source = (request ?? {}) as RequestLike;
-  const url = typeof source.url === "string" ? source.url : undefined;
+  const trusted = isGenuineRequest(request);
+  const raw = fieldValue(readDataField(request, "raw"));
+
+  const urlRead = firstField(
+    readField(request, "url", trusted),
+    readDataField(raw, "url"),
+  );
+  const url = urlRead.kind === "value" ? urlRead.value : undefined;
+
+  const socket = fieldValue(
+    firstField(
+      readField(request, "socket", trusted),
+      readDataField(raw, "socket"),
+    ),
+  );
+
   return canonicalizeUntrusted({
-    requestId: source.id,
-    method: source.method,
+    requestId: fieldValue(readDataField(request, "id")),
+    method: fieldValue(
+      firstField(
+        readField(request, "method", trusted),
+        readDataField(raw, "method"),
+      ),
+    ),
     // 请求目标是调用方完全可控的文本；strict canonicalizer 会再脱敏一次。
-    path: url?.split("?")[0],
-    // Fastify 传进来的是它自己的 Request，`remoteAddress` 在上面并不存在——
-    // 只读那一个字段会让这一列永远缺席。按 Fastify → Node socket 顺序取。
-    remoteAddress:
-      source.remoteAddress ??
-      source.ip ??
-      source.socket?.remoteAddress ??
-      source.raw?.socket?.remoteAddress,
+    path:
+      typeof url === "string"
+        ? url.split("?")[0]
+        : urlRead.kind === "accessor"
+          ? accessorPlaceholder
+          : undefined,
+    // Fastify 的 Request 上没有 `remoteAddress`——只读那一个字段会让这一列永远
+    // 缺席。按 Fastify → Node socket 顺序取。
+    remoteAddress: fieldValue(
+      firstField(
+        readField(request, "remoteAddress", trusted),
+        readField(request, "ip", trusted),
+        readField(socket, "remoteAddress", trusted),
+      ),
+    ),
   });
 };
 
-const serializeResponse = (response: unknown): unknown =>
-  canonicalizeUntrusted({
-    statusCode: (response as { statusCode?: unknown } | null)?.statusCode,
+/** reply 的固定投影，口径与 request 完全一致。 */
+const serializeResponse = (response: unknown): unknown => {
+  const trusted = isGenuineReply(response);
+  const raw = fieldValue(readDataField(response, "raw"));
+  return canonicalizeUntrusted({
+    statusCode: fieldValue(
+      firstField(
+        readField(response, "statusCode", trusted),
+        readDataField(raw, "statusCode"),
+      ),
+    ),
   });
+};
 
 const serializeError = (error: unknown): unknown =>
   // 绝不返回调用方的原对象。type 只可能来自 allowlist，因此伪造一个
@@ -531,13 +789,39 @@ const hardenChildOptions = (options: unknown): unknown => {
   if (options === null || typeof options !== "object") {
     return options;
   }
+  // 一次性快照：`{ ...source }` 会对每个自身可枚举键做一次 `[[Get]]`，随后下面
+  // 每个键又各读一次——同一个访问器至少跑两遍，而且两次的返回值可以不同（先给
+  // 一个能通过 typeof 校验的形状，再给真正写进输出的那个）。这里改成读一次、
+  // 之后全部复用。
+  //
+  // 口径说明：child options 是**配置**，不是不可信数据（这条边界在上一轮已经定
+  // 下：Secret/键值是不可信数据，logger 配置回调是受信代码或被拒绝）。因此这里
+  // 允许访问器跑，但只跑一次。
   const source = options as Record<string, unknown>;
-  const hardened: Record<string, unknown> = { ...source };
+  const snapshot: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    const descriptor = Object.getOwnPropertyDescriptor(source, key);
+    if (descriptor === undefined) {
+      continue;
+    }
+    snapshot[key] = "value" in descriptor
+      ? descriptor.value
+      : descriptor.get === undefined
+        ? undefined
+        : descriptor.get.call(source);
+  }
+  const hardened: Record<string, unknown> = { ...snapshot };
 
-  const serializers = source["serializers"];
+  const serializers = snapshot["serializers"];
   if (serializers !== null && typeof serializers === "object") {
     hardened["serializers"] = Object.fromEntries(
-      Object.entries(serializers as Record<string, unknown>).map(
+      Object.keys(serializers as Record<string, unknown>).map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(
+          serializers as Record<string, unknown>,
+          key,
+        )?.value,
+      ] as const).map(
         ([key, serializer]) => [
           key,
           typeof serializer === "function"
@@ -554,7 +838,7 @@ const hardenChildOptions = (options: unknown): unknown => {
   // 子 logger 的 formatters 会**替换**父 logger 的同名 formatter，因此这里必须
   // 显式补回我们的那一层。三个入口都要包：`level` 的返回值同样会被合并进最终
   // 输出，`customLevels` + `formatters.level` 是一条完整的注入路径。
-  const formatters = source["formatters"];
+  const formatters = snapshot["formatters"];
   if (formatters !== null && typeof formatters === "object") {
     const provided = formatters as Record<string, unknown>;
     const next: Record<string, unknown> = { ...provided };
@@ -592,13 +876,13 @@ const hardenChildOptions = (options: unknown): unknown => {
   }
 
   // msgPrefix 是在我们的 logMethod **之后**才被拼到 msg 前面的。
-  const msgPrefix = source["msgPrefix"];
+  const msgPrefix = snapshot["msgPrefix"];
   if (typeof msgPrefix === "string") {
     hardened["msgPrefix"] = redactText(msgPrefix);
   }
 
   // redact.censor 的返回值直接进入输出；函数与字符串两种形态都要过一遍。
-  const redact = source["redact"];
+  const redact = snapshot["redact"];
   if (redact !== undefined && !Array.isArray(redact)) {
     if (redact === null || typeof redact !== "object") {
       throw new Error(
@@ -709,8 +993,33 @@ export const createLogger = (
             args: Parameters<LogFn>,
             method: LogFn,
           ): void {
+            // Fastify 的 defaultErrorLog 会调用
+            // `reply.log.error({ req, res, err }, error?.message)`——msg 是一段
+            // **显式传入的字符串**，因此绕开了「pino 从 err.message 自动生成 msg」
+            // 那条已经封掉的路径。这里按描述符取出 err 的 message，凡是与它逐字
+            // 相同的 msg 一律换成固定串：错误内部细节不该因为换了个入口就泄漏。
+            const record = (args as readonly unknown[])[0];
+            const carriedErrorMessage =
+              record instanceof Error
+                ? readDataField(record, "message")
+                : record !== null && typeof record === "object"
+                  ? readDataField(
+                      fieldValue(
+                        readDataField(record as Record<string, unknown>, "err"),
+                      ),
+                      "message",
+                    )
+                  : absentField;
             const safe = (args as readonly unknown[]).map(
               (argument, index) => {
+                if (
+                  index > 0 &&
+                  typeof argument === "string" &&
+                  carriedErrorMessage.kind === "value" &&
+                  argument === carriedErrorMessage.value
+                ) {
+                  return safeErrorMessage;
+                }
                 if (typeof argument === "string") {
                   return redactText(argument);
                 }
