@@ -216,7 +216,7 @@ test("group, world and execute permission bits are rejected", () => {
       () => readSecretFile("DATABASE_URL_FILE", path),
       (error: unknown) =>
         error instanceof SecretSourceError &&
-        /only owner read\/write \(0600\) is accepted/.test(error.message),
+        /only owner-only 0400 or 0600 is accepted/.test(error.message),
       `mode ${mode.toString(8)} must be rejected`,
     );
   }
@@ -513,7 +513,7 @@ test("the CLI entry points fail closed on a conflicting or unusable secret sourc
       DATABASE_URL_FILE: secretFile(runtimeDsn, 0o644),
     });
     assert.notEqual(weak.status, 0);
-    assert.match(weak.stderr, /only owner read\/write \(0600\) is accepted/);
+    assert.match(weak.stderr, /only owner-only 0400 or 0600 is accepted/);
     assert.equal(weak.stderr.includes(runtimeDsn), false);
   }
 });

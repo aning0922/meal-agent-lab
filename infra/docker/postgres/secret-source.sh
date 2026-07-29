@@ -304,7 +304,7 @@ meal_agent_copy_validated_secret() {
   perm=$((8#$mode & 8#7777))
   if [ $((perm & 8#7177)) -ne 0 ]; then
     meal_agent_secret_child_fail "$name" \
-      "$path has mode $(printf '%04o' "$perm"); only owner read/write (0600) is accepted"
+      "$path has mode $(printf '%04o' "$perm"); only owner-only 0400 or 0600 is accepted"
   fi
   if [ $((perm & 8#400)) -eq 0 ]; then
     meal_agent_secret_child_fail "$name" "$path is not readable by its owner"
@@ -324,6 +324,7 @@ meal_agent_read_secret_file() {
   local name="$1"
   local path="$2"
   local worker status_file status waited snapshot_size fd_size
+  local previous_options
 
   case "$path" in
     /*) ;;
@@ -349,28 +350,40 @@ meal_agent_read_secret_file() {
   status_file="${meal_agent_snapshot_dir}/status"
 
   # 为什么要开子进程：粗筛与 `open()` 之间路径仍可能被换成**无写端的 FIFO**，
-  # 而 shell 没有 `O_NONBLOCK` 可用，`exec 9<` 会永久阻塞。把 open 连同全部
-  # 校验与复制放进后台子进程，父进程做有界等待，超时就 TERM→KILL。
+  # 而 shell 没有 `O_NONBLOCK` 可用，`exec 9<` 会永久阻塞；复制阶段的
+  # `head` 同样可能被拖住。把 open 连同全部校验与复制放进后台子进程，父进程做
+  # 有界等待，超时就 TERM→KILL。
   # EXIT trap 保证「失败也写状态」，因此父进程能区分「失败了」与「还卡着」。
+  #
+  # `set -m` 让这个后台作业成为**独立进程组的组长**（pgid == worker pid）。
+  # 没有它的话，超时只能 kill worker 这一个 PID，而 `head` 这类后代会被留下来
+  # 继续持有描述符（实测：worker gone、被阻塞的 head 仍 ALIVE）。有了进程组，
+  # 下面的 `kill -- -$worker` 才能把**整棵**受控子树一起收掉。
+  previous_options="$-"
+  set -m
   (
     trap 'meal_agent_child_status=$?; printf "%s" "$meal_agent_child_status" > "${status_file}.partial"; mv -f "${status_file}.partial" "$status_file"' EXIT
     meal_agent_copy_validated_secret "$name" "$path"
   ) &
   worker=$!
+  case "$previous_options" in *m*) ;; *) set +m ;; esac
 
   waited=0
   while [ ! -e "$status_file" ]; do
     if [ "$waited" -ge "$meal_agent_secret_open_deadline_ticks" ]; then
+      # 信号发给**整个进程组**（`-$worker`），不是只发给 worker 这一个 PID：
+      # 被阻塞的是 `head`/`stat` 这些后代，只杀 worker 会把它们留成孤儿，继续
+      # 持有描述符。TERM 之后再补一发 KILL，因此「后代忽略 TERM」也收得掉。
       # 整段包在一个 stderr 重定向里：被杀死的后台作业会让 shell 打印一行
       # "Terminated" 通知，那不是 bootstrap 的诊断信息，不该混进运维输出。
       {
-        kill -TERM "$worker" 2> /dev/null || true
+        kill -TERM -- "-$worker" 2> /dev/null || kill -TERM "$worker" 2> /dev/null || true
         sleep 0.2
-        kill -KILL "$worker" 2> /dev/null || true
+        kill -KILL -- "-$worker" 2> /dev/null || kill -KILL "$worker" 2> /dev/null || true
         wait "$worker" || true
       } 2> /dev/null
       meal_agent_secret_fail "$name" \
-        "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; a non-regular file such as a FIFO can block open() indefinitely"
+        "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; open() on a non-regular file such as a FIFO, or a stalled read, would otherwise block without a bound"
     fi
     sleep 0.05
     waited=$((waited + 1))

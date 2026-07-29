@@ -150,14 +150,14 @@ const assertSecretFileDescriptor = (
     );
   }
 
-  // 允许的位只有 owner 的读与写（0600）。因此 group/world 的任何位、owner 的
-  // 执行位，以及 setuid/setgid/sticky 都会被拒绝。
+  // 策略是 **owner-only**：允许 0400（只读）与 0600（读写）两种。因此
+  // group/world 的任何位、owner 的执行位，以及 setuid/setgid/sticky 都被拒绝。
   const permissions = stats.mode & 0o7777;
   if ((permissions & 0o7177) !== 0) {
     throw new SecretSourceError(
       variable,
       `${path} has mode ${permissions.toString(8).padStart(4, "0")}; only ` +
-        "owner read/write (0600) is accepted",
+        "owner-only 0400 or 0600 is accepted",
     );
   }
   if ((permissions & 0o400) === 0) {

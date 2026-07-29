@@ -104,7 +104,15 @@ interface LoginsResult {
   readonly output: string;
   readonly psqlCalls: number;
   readonly log: string;
+  /** spawnSync 的外部 timeout 是否触发（触发时 signal 为 SIGTERM）。 */
+  readonly timedOut: boolean;
 }
+
+/**
+ * 外部 timeout。它比实现自己的 5 秒上界稍宽，只用来把「实现没有上界」变成一次
+ * **确定的测试失败**而不是一次挂死；断言要求它**不能**被触发。
+ */
+const externalTimeoutMs = 12_000;
 
 let run = 0;
 const runLogins = (
@@ -131,6 +139,8 @@ const runLogins = (
       encoding: "utf8",
       env: childEnvironment,
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: externalTimeoutMs,
+      killSignal: "SIGKILL",
     },
   );
 
@@ -140,6 +150,7 @@ const runLogins = (
     output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
     psqlCalls: log.split("\n").filter((line) => line.startsWith("ARGV")).length,
     log,
+    timedOut: result.signal !== null || result.error !== undefined,
   };
 };
 
@@ -302,17 +313,17 @@ test("any unusable password source leaves the psql call count at zero", () => {
     [
       "group readable",
       fileEnvironment({ backup: secretFile(passwords.backup, 0o640) }),
-      /only owner read\/write \(0600\) is accepted/,
+      /only owner-only 0400 or 0600 is accepted/,
     ],
     [
       "world readable",
       fileEnvironment({ backup: secretFile(passwords.backup, 0o604) }),
-      /only owner read\/write \(0600\) is accepted/,
+      /only owner-only 0400 or 0600 is accepted/,
     ],
     [
       "owner executable",
       fileEnvironment({ backup: secretFile(passwords.backup, 0o700) }),
-      /only owner read\/write \(0600\) is accepted/,
+      /only owner-only 0400 or 0600 is accepted/,
     ],
     [
       "oversized",
@@ -660,16 +671,21 @@ test("a FIFO substituted between the precheck and open fails within a strict bou
 
   assert.notEqual(result.status, 0, result.output);
   assert.match(result.output, /could not be opened and read within 5s/);
-  assert.match(result.output, /FIFO can block open\(\) indefinitely/);
+  assert.match(result.output, /would otherwise block without a bound/);
+  assert.equal(
+    result.timedOut,
+    false,
+    "the implementation must stop itself; the external timeout must never fire",
+  );
   assert.equal(
     result.psqlCalls,
     0,
     `a blocked open must not reach psql (got ${String(result.psqlCalls)})`,
   );
-  // 上界是 5s；给进程启动与轮询留出余量，但必须远小于「永久阻塞」。
+  // 实现自己的上界是 5s；只给进程启动与轮询留一点余量，不再放宽到几十秒。
   assert.ok(
-    elapsedMs < 30_000,
-    `bootstrap must fail fast, took ${String(elapsedMs)}ms`,
+    elapsedMs < 10_000,
+    `bootstrap must fail close to its own 5s bound, took ${String(elapsedMs)}ms`,
   );
   assertNoSentinel(result.output, "the bounded-open failure output");
 
@@ -762,4 +778,118 @@ test("a byte order mark anywhere in the value is rejected on both sources", () =
   assert.notEqual(trailingMark.status, 0, trailingMark.output);
   assert.match(trailingMark.output, /contains a byte order mark/);
   assert.equal(trailingMark.psqlCalls, 0);
+});
+
+/**
+ * 复制阶段被拖住，而且拖住它的**后代进程忽略 TERM**。
+ *
+ * 这一条与 FIFO 那一条覆盖的是不同的失败位置：FIFO 卡在 `open()`，这里卡在
+ * `head` 的读取。它要证明的是清理范围——超时必须收掉**整棵**受控子树，而不是
+ * 只 kill worker 这一个 PID 把后代留成孤儿（后者实测会让被阻塞的 head 存活）。
+ */
+const stallWrapperDirectory = join(workspace, "stall-wrapper");
+mkdirSync(stallWrapperDirectory, { recursive: true });
+writeFileSync(
+  join(stallWrapperDirectory, "head"),
+  [
+    "#!/usr/bin/env bash",
+    "set -u",
+    'if [ -n "${MEAL_AGENT_TEST_STALL:-}" ] && [ ! -e "$MEAL_AGENT_TEST_STALL_MARKER" ]; then',
+    '  : > "$MEAL_AGENT_TEST_STALL_MARKER"',
+    '  printf "%s" "$$" > "$MEAL_AGENT_TEST_STALL_PID"',
+    '  printf "%s" "$PPID" > "$MEAL_AGENT_TEST_STALL_PPID"',
+    "  # 忽略 TERM：只有 KILL 才收得掉，因此清理必须补一发 KILL。",
+    "  trap '' TERM",
+    "  sleep 600",
+    "  exit 0",
+    "fi",
+    'exec /usr/bin/head "$@"',
+  ].join("\n"),
+);
+chmodSync(join(stallWrapperDirectory, "head"), 0o755);
+
+/** 本用例自己拉起来的进程，测试结束时无论成败都要收干净。 */
+const spawnedByStallTest: number[] = [];
+after(() => {
+  for (const pid of spawnedByStallTest) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // 已经退出。
+    }
+  }
+});
+
+const processIsGone = (pid: number): boolean => {
+  const deadline = Date.now() + 3_000;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    if (Date.now() >= deadline) {
+      return false;
+    }
+    // 同步轮询：被 KILL 的进程要等父进程回收，给它一点时间。
+    execFileSync("sleep", ["0.1"]);
+  }
+};
+
+test("a stalled copy that ignores TERM is killed together with its descendants", () => {
+  const temporaryDirectory = join(workspace, "stall-tmp");
+  mkdirSync(temporaryDirectory, { recursive: true });
+  const stallPidFile = join(workspace, "stall.pid");
+  const stallPpidFile = join(workspace, "stall.ppid");
+
+  const started = Date.now();
+  const result = runLogins({
+    PATH: `${stallWrapperDirectory}:${process.env["PATH"] ?? ""}`,
+    TMPDIR: temporaryDirectory,
+    MEAL_AGENT_TEST_STALL: "1",
+    MEAL_AGENT_TEST_STALL_MARKER: join(workspace, "stall.marker"),
+    MEAL_AGENT_TEST_STALL_PID: stallPidFile,
+    MEAL_AGENT_TEST_STALL_PPID: stallPpidFile,
+    MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretFile(passwords.migration),
+    MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+    MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
+  });
+  const elapsedMs = Date.now() - started;
+
+  const stalledPid = Number(readFileSync(stallPidFile, "utf8"));
+  const workerPid = Number(readFileSync(stallPpidFile, "utf8"));
+  spawnedByStallTest.push(stalledPid, workerPid);
+
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /could not be opened and read within 5s/);
+  assert.equal(
+    result.timedOut,
+    false,
+    "the implementation must stop itself; the external timeout must never fire",
+  );
+  assert.ok(
+    elapsedMs < 10_000,
+    `bootstrap must fail close to its own 5s bound, took ${String(elapsedMs)}ms`,
+  );
+  assert.equal(result.psqlCalls, 0);
+  assertNoSentinel(result.output, "the stalled-copy failure output");
+  assertNoSentinel(result.log, "the recorded psql argv");
+
+  // worker 与**全部后代**都必须消失，即使后代忽略了 TERM。
+  assert.ok(
+    processIsGone(stalledPid),
+    `the stalled descendant ${String(stalledPid)} must be killed`,
+  );
+  assert.ok(
+    processIsGone(workerPid),
+    `the worker ${String(workerPid)} must be killed`,
+  );
+
+  // 没有快照残留。
+  assert.deepEqual(
+    readdirSync(temporaryDirectory).filter((entry) =>
+      entry.startsWith("meal-agent-secret."),
+    ),
+    [],
+  );
 });
