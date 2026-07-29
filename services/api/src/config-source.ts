@@ -231,11 +231,13 @@ const decodeSecretBytes = (
   variable: string,
   path: string,
   bytes: Buffer,
+  maximumBytes: number,
 ): string => {
   let text: string;
   try {
     // fatal：非法 UTF-8 抛错，而不是静默替换成 U+FFFD。
-    // ignoreBOM: true：不静默剥掉 BOM——「原样保留」优先于「看起来能用」。
+    // ignoreBOM: true：不静默剥掉 BOM——「原样保留」优先于「看起来能用」，
+    // 而且 U+FEFF 出现在**任何**位置都会被下面的共用内容判据拒绝。
     text = new TextDecoder("utf-8", {
       fatal: true,
       ignoreBOM: true,
@@ -244,18 +246,9 @@ const decodeSecretBytes = (
     throw new SecretSourceError(variable, `${path} is not valid UTF-8`);
   }
 
-  if (text.startsWith("\uFEFF")) {
-    throw new SecretSourceError(
-      variable,
-      `${path} starts with a byte order mark`,
-    );
-  }
-  if (text.includes("\u0000")) {
-    throw new SecretSourceError(variable, `${path} contains a NUL byte`);
-  }
-
-  // 最多移除**一个**末尾 LF。除此之外不做任何 trim：前后空格、冒号、反斜杠、
-  // `@`、`/`、`#`、`%` 都必须原样进入连接串与口令。
+  // 最多移除**一个**末尾 LF。这是 file 来源**唯一**与 direct 不同的地方；
+  // 其余判据由同一个 assertSecretContent 承担，因此 U+FEFF、NUL、CR 与多行
+  // 在两条来源上是**同一条**规则，不会出现「换个注入方式就能绕过」。
   const body = text.endsWith("\n") ? text.slice(0, -1) : text;
 
   if (body.endsWith("\n")) {
@@ -264,22 +257,8 @@ const decodeSecretBytes = (
       `${path} ends with more than one newline`,
     );
   }
-  if (body.includes("\n")) {
-    throw new SecretSourceError(
-      variable,
-      `${path} must contain a single line`,
-    );
-  }
-  if (body.includes("\r")) {
-    throw new SecretSourceError(
-      variable,
-      `${path} contains a carriage return (CRLF line endings are rejected)`,
-    );
-  }
-  if (body === "") {
-    throw new SecretSourceError(variable, `${path} is empty`);
-  }
 
+  assertSecretContent(variable, path, body, maximumBytes);
   return body;
 };
 
@@ -341,7 +320,12 @@ export const readSecretFile = (
       );
     }
 
-    return decodeSecretBytes(variable, path, buffer.subarray(0, read));
+    return decodeSecretBytes(
+      variable,
+      path,
+      buffer.subarray(0, read),
+      maximumBytes,
+    );
   } finally {
     closeSync(fileDescriptor);
   }
@@ -596,19 +580,73 @@ export const assertPostgresConnectionUrl = (
 };
 
 /**
+ * node-postgres 会读取、而**连接串无法覆盖**的 ambient 环境变量。
+ *
+ * 逐条来自 `pg@8.22.0` 的 `lib/connection-parameters.js`：`val()` 在
+ * `config[key]` 为 falsy 时回落到 `process.env['PG' + KEY]`，另有三处显式命名的
+ * 环境变量（`PGSSLNEGOTIATION`、`PGAPPNAME`、`PGCONNECT_TIMEOUT`）与一处
+ * `readSSLConfigFromEnvironment()`（`PGSSLMODE`）。
+ *
+ * `PGHOST` / `PGPORT` / `PGUSER` / `PGPASSWORD` / `PGDATABASE` **不在**这张表里：
+ * 连接串校验已经保证这五项必须显式来自 URL，而 `val()` 优先取 `config`，因此
+ * 它们即使存在也不会生效（有 `pg.Client.connectionParameters` 的正面用例）。
+ * 剩下这些则完全没有 URL 对应物——它们能改协议协商、会话参数与传输格式，
+ * 却不属于「这份 secret 描述的连接」，因此在共用边界 fail closed。
+ *
+ * 注意 `val()` 用的是 `||` 而不是 `??`：把 `binary: false` 之类的显式假值放进
+ * config **不能**阻止回落，所以这里选择拒绝环境变量，而不是构造「显式假值」。
+ */
+export const rejectedAmbientPostgresVariables = [
+  "PGAPPNAME",
+  "PGBINARY",
+  "PGCLIENT_ENCODING",
+  "PGCONNECT_TIMEOUT",
+  "PGOPTIONS",
+  "PGREPLICATION",
+  "PGSSLMODE",
+  "PGSSLNEGOTIATION",
+] as const;
+
+/**
+ * ambient 环境不得改写连接语义。错误只列出**变量名**，绝不包含取值——
+ * `PGOPTIONS` 之类的取值本身可能带有部署细节。
+ */
+export const assertNoAmbientPostgresOverrides = (
+  variable: string,
+  environment: NodeJS.ProcessEnv,
+): void => {
+  // 两个来源都要看。node-postgres 读的**永远是 `process.env`**，与调用方传进来
+  // 的 environment 无关；而调用方传进来的那一份是这次解析的契约。只查其中一个
+  // 都会留下一条真实的绕过路径。
+  const sources =
+    environment === process.env ? [environment] : [environment, process.env];
+  const present = rejectedAmbientPostgresVariables.filter((name) =>
+    sources.some((source) => isPresent(source, name)),
+  );
+  if (present.length > 0) {
+    throw new SecretSourceError(
+      variable,
+      `the environment sets ${present.join(", ")}; node-postgres would apply ` +
+        "them on top of the connection URL, so the connection would no longer " +
+        "be described by this secret alone (unset them)",
+    );
+  }
+};
+
+/**
  * 三个 Node 入口的共用调用点。它存在的意义是让「API、db:migrate、db:bootstrap
  * 共用同一条规则」成为**结构上**成立的事实，而不是三处各写一遍后靠约定维持。
  *
- * 来源解析（互斥 + 文件安全判据）与连接串校验都在这里完成，因此两条来源
- * （direct 与 file）走的是**同一个** validator。
+ * 来源解析（互斥 + 文件安全判据）、连接串校验与 ambient 覆盖检查都在这里完成，
+ * 因此两条来源（direct 与 file）走的是**同一套**判据。
  */
 export const resolveDatabaseUrlSource = (
   environment: NodeJS.ProcessEnv = process.env,
 ): SecretSource => {
   const source = resolveSecretSource("DATABASE_URL", environment);
-  assertPostgresConnectionUrl(
-    source.origin === "file" ? source.fileVariable : source.variable,
-    source.value,
-  );
+  const subject =
+    source.origin === "file" ? source.fileVariable : source.variable;
+  assertPostgresConnectionUrl(subject, source.value);
+  assertNoAmbientPostgresOverrides(subject, environment);
   return source;
 };

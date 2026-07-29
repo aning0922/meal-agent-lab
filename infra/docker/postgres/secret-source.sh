@@ -71,6 +71,10 @@ MEAL_AGENT_SECRET_SOURCE_LOADED="yes"
 
 # 与 Node 侧 `maximumSecretFileBytes` 相同的上限。
 meal_agent_secret_max_bytes=4096
+# `open()` + 校验 + 复制的有界上限。shell 没有 O_NONBLOCK，因此这是「路径在
+# 粗筛之后被换成无写端 FIFO」时唯一的兜底；超时后 TERM→KILL，不留后台进程。
+meal_agent_secret_open_deadline_seconds=5
+meal_agent_secret_open_deadline_ticks=100
 meal_agent_stat_flavor=""
 meal_agent_secret_value=""
 meal_agent_secret_origin=""
@@ -89,6 +93,13 @@ trap 'meal_agent_discard_snapshot' EXIT
 meal_agent_secret_fail() {
   # $1 = 变量名；$2 = 原因。绝不打印取值。
   meal_agent_discard_snapshot
+  echo "bootstrap: $1: $2" >&2
+  exit 2
+}
+
+# 子进程版本：快照目录归**父进程**所有（状态文件也在里面），因此子进程失败时
+# 只报告并退出，绝不删除目录。
+meal_agent_secret_child_fail() {
   echo "bootstrap: $1: $2" >&2
   exit 2
 }
@@ -164,7 +175,7 @@ meal_agent_assert_snapshot_content() {
   local subject="$2"
   local allow_trailing_newline="$3"
   local snapshot="$meal_agent_snapshot_path"
-  local size newline_count cr_count trailing_newline
+  local size newline_count cr_count trailing_newline hex
 
   size=$(($(wc -c < "$snapshot")))
   if [ "$size" -eq 0 ]; then
@@ -189,9 +200,15 @@ meal_agent_assert_snapshot_content() {
       "iconv is required to validate that $subject is UTF-8"
   fi
 
-  if [ "$(head -c 3 -- "$snapshot" | od -An -tx1 | tr -d ' \n')" = "efbbbf" ]; then
-    meal_agent_secret_fail "$name" "$subject starts with a byte order mark"
-  fi
+  # U+FEFF 出现在**任何位置**都拒绝，与 Node 侧的判据一致（只查开头会让
+  # 「中间藏一个 BOM」在两条实现之间产生分歧）。内容已通过 UTF-8 校验，因此
+  # 字节序列 EF BB BF 必然就是 U+FEFF；逐字节比较，不会跨字节边界误报。
+  hex=" $(od -An -v -tx1 < "$snapshot" | tr '\n' ' ' | tr -s ' ')"
+  case "$hex" in
+    *" ef bb bf "*)
+      meal_agent_secret_fail "$name" "$subject contains a byte order mark"
+      ;;
+  esac
 
   cr_count=$(($(tr -cd '\r' < "$snapshot" | wc -c)))
   if [ "$cr_count" -ne 0 ]; then
@@ -222,17 +239,91 @@ meal_agent_assert_snapshot_content() {
   fi
 
   # 只有到这里才真正读取取值。除末尾那一个 LF 之外不做任何 trim：前后空格与
-  # `:`/`\`/`@`/`/`/`#`/`%` 全部原样保留。
+  # `:`/`\\`/`@`/`/`/`#`/`%` 全部原样保留。
   meal_agent_secret_value="$(< "$meal_agent_snapshot_path")"
+}
+
+# open + 校验 + 有界复制。**在后台子进程里执行**，理由见下面的调用方注释。
+# 它只报告问题并以非零退出，绝不删除快照目录。
+meal_agent_copy_validated_secret() {
+  local name="$1"
+  local path="$2"
+  local raw uid mode nlink size perm current_uid
+  local dev1 ino1
+  local fd_ino fd_mode fd_nlink fd_size fd_kind
+
+  # 这一步可能永久阻塞（无写端的 FIFO），因此整个函数都跑在有界的子进程里。
+  exec 9< "$path" ||
+    meal_agent_secret_child_fail "$name" "$path could not be opened"
+
+  raw="$(meal_agent_stat_fd 9)" ||
+    meal_agent_secret_child_fail "$name" "$path could not be inspected"
+  set -- $raw
+  fd_ino="$1"
+  fd_mode="$2"
+  fd_nlink="$3"
+  fd_size="$4"
+
+  # 路径 stat 在**持有描述符期间**执行：inode 因此被钉住，不会被回收再利用。
+  raw="$(meal_agent_stat_path "$path")" ||
+    meal_agent_secret_child_fail "$name" "$path could not be inspected"
+  set -- $raw
+  dev1="$1"
+  ino1="$2"
+  uid="$3"
+  mode="$4"
+  nlink="$5"
+  size="$6"
+
+  if [ "$fd_ino" != "$ino1" ]; then
+    meal_agent_secret_child_fail "$name" \
+      "$path was replaced while it was being validated"
+  fi
+
+  fd_kind=$((8#$fd_mode & 8#170000))
+  if [ "$fd_kind" -ne $((8#100000)) ]; then
+    meal_agent_secret_child_fail "$name" "$path is not a regular file"
+  fi
+  if [ "$fd_nlink" -ne 1 ]; then
+    meal_agent_secret_child_fail "$name" \
+      "$path has $fd_nlink hard links; a secret file must have exactly one name"
+  fi
+  if [ "$fd_size" -gt "$meal_agent_secret_max_bytes" ]; then
+    meal_agent_secret_child_fail "$name" \
+      "$path is $fd_size bytes; the limit is $meal_agent_secret_max_bytes"
+  fi
+
+  current_uid="${EUID:-}"
+  if [ -z "$current_uid" ]; then
+    current_uid="$(id -u)"
+  fi
+  if [ "$uid" -ne "$current_uid" ]; then
+    meal_agent_secret_child_fail "$name" \
+      "$path is owned by uid $uid but this process runs as uid $current_uid"
+  fi
+  perm=$((8#$mode & 8#7777))
+  if [ $((perm & 8#7177)) -ne 0 ]; then
+    meal_agent_secret_child_fail "$name" \
+      "$path has mode $(printf '%04o' "$perm"); only owner read/write (0600) is accepted"
+  fi
+  if [ $((perm & 8#400)) -eq 0 ]; then
+    meal_agent_secret_child_fail "$name" "$path is not readable by its owner"
+  fi
+
+  # 有界读取：最多 max+1 字节。多出来的那一个字节让「fstat 之后文件被撑大」
+  # 变成一次确定的拒绝，而不是先用无界的 `cat` 把任意大小读进磁盘。
+  head -c $((meal_agent_secret_max_bytes + 1)) <&9 > "$meal_agent_snapshot_path" ||
+    meal_agent_secret_child_fail "$name" "$path could not be read"
+  exec 9<&-
+
+  printf '%s' "$fd_size" > "${meal_agent_snapshot_dir}/fd-size"
 }
 
 meal_agent_read_secret_file() {
   # $1 = 变量名（只用于错误信息）；$2 = 绝对路径。
   local name="$1"
   local path="$2"
-  local raw uid mode nlink size perm kind current_uid
-  local dev1 ino1 dev2 ino2 uid2 mode2 nlink2 size2
-  local fd_ino fd_mode fd_nlink fd_size fd_kind snapshot_size
+  local worker status_file status waited snapshot_size fd_size
 
   case "$path" in
     /*) ;;
@@ -254,88 +345,50 @@ meal_agent_read_secret_file() {
   fi
 
   meal_agent_detect_stat
-
-  # 只 open 一次。之后的一切都基于这个描述符。
-  exec 9< "$path" || meal_agent_secret_fail "$name" "$path could not be opened"
-
-  raw="$(meal_agent_stat_fd 9)" || {
-    exec 9<&-
-    meal_agent_secret_fail "$name" "$path could not be inspected"
-  }
-  set -- $raw
-  fd_ino="$1"
-  fd_mode="$2"
-  fd_nlink="$3"
-  fd_size="$4"
-
-  raw="$(meal_agent_stat_path "$path")" || {
-    exec 9<&-
-    meal_agent_secret_fail "$name" "$path could not be inspected"
-  }
-  set -- $raw
-  dev1="$1"
-  ino1="$2"
-  uid="$3"
-  mode="$4"
-  nlink="$5"
-  size="$6"
-
-  # 身份绑定：描述符指向的 inode 必须就是刚刚 stat 到的那一个。路径在检查与
-  # open 之间被替换时，两者必然不同。
-  if [ "$fd_ino" != "$ino1" ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" \
-      "$path was replaced while it was being validated"
-  fi
-
-  # 类型、链接数与大小取自描述符（两个平台都可信）。
-  fd_kind=$((8#$fd_mode & 8#170000))
-  if [ "$fd_kind" -ne $((8#100000)) ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" "$path is not a regular file"
-  fi
-  if [ "$fd_nlink" -ne 1 ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" \
-      "$path has $fd_nlink hard links; a secret file must have exactly one name"
-  fi
-  if [ "$fd_size" -gt "$meal_agent_secret_max_bytes" ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" \
-      "$path is $fd_size bytes; the limit is $meal_agent_secret_max_bytes"
-  fi
-
-  # 属主与权限取自路径 stat——它已被 inode 相等绑定到同一个 inode 上。
-  # （BSD 的 `/dev/fd/N` 权限位不可信，因此不能改用描述符那一份。）
-  current_uid="${EUID:-}"
-  if [ -z "$current_uid" ]; then
-    current_uid="$(id -u)"
-  fi
-  if [ "$uid" -ne "$current_uid" ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" \
-      "$path is owned by uid $uid but this process runs as uid $current_uid"
-  fi
-  perm=$((8#$mode & 8#7777))
-  if [ $((perm & 8#7177)) -ne 0 ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" \
-      "$path has mode $(printf '%04o' "$perm"); only owner read/write (0600) is accepted"
-  fi
-  if [ $((perm & 8#400)) -eq 0 ]; then
-    exec 9<&-
-    meal_agent_secret_fail "$name" "$path is not readable by its owner"
-  fi
-
-  # 内容只从描述符复制一次，之后再也不碰原路径。
   meal_agent_open_snapshot "$name"
-  cat <&9 > "$meal_agent_snapshot_path" || {
-    exec 9<&-
-    meal_agent_secret_fail "$name" "$path could not be read"
-  }
-  exec 9<&-
+  status_file="${meal_agent_snapshot_dir}/status"
 
+  # 为什么要开子进程：粗筛与 `open()` 之间路径仍可能被换成**无写端的 FIFO**，
+  # 而 shell 没有 `O_NONBLOCK` 可用，`exec 9<` 会永久阻塞。把 open 连同全部
+  # 校验与复制放进后台子进程，父进程做有界等待，超时就 TERM→KILL。
+  # EXIT trap 保证「失败也写状态」，因此父进程能区分「失败了」与「还卡着」。
+  (
+    trap 'meal_agent_child_status=$?; printf "%s" "$meal_agent_child_status" > "${status_file}.partial"; mv -f "${status_file}.partial" "$status_file"' EXIT
+    meal_agent_copy_validated_secret "$name" "$path"
+  ) &
+  worker=$!
+
+  waited=0
+  while [ ! -e "$status_file" ]; do
+    if [ "$waited" -ge "$meal_agent_secret_open_deadline_ticks" ]; then
+      # 整段包在一个 stderr 重定向里：被杀死的后台作业会让 shell 打印一行
+      # "Terminated" 通知，那不是 bootstrap 的诊断信息，不该混进运维输出。
+      {
+        kill -TERM "$worker" 2> /dev/null || true
+        sleep 0.2
+        kill -KILL "$worker" 2> /dev/null || true
+        wait "$worker" || true
+      } 2> /dev/null
+      meal_agent_secret_fail "$name" \
+        "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; a non-regular file such as a FIFO can block open() indefinitely"
+    fi
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+  wait "$worker" 2> /dev/null || true
+
+  status="$(cat "$status_file")"
+  if [ "$status" != "0" ]; then
+    # 具体理由已由子进程打印到 stderr。
+    meal_agent_secret_fail "$name" "$path failed validation"
+  fi
+
+  fd_size=$(($(cat "${meal_agent_snapshot_dir}/fd-size")))
   snapshot_size=$(($(wc -c < "$meal_agent_snapshot_path")))
+  if [ "$snapshot_size" -gt "$meal_agent_secret_max_bytes" ]; then
+    meal_agent_secret_fail "$name" \
+      "$path grew past $meal_agent_secret_max_bytes bytes while it was being read"
+  fi
   if [ "$snapshot_size" -ne "$fd_size" ]; then
     meal_agent_secret_fail "$name" "$path changed size while it was being read"
   fi

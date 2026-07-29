@@ -3,12 +3,17 @@ import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
+  constants as openConstants,
   existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -565,4 +570,196 @@ test("replacing the path after its metadata was checked cannot swap the content"
     assert.equal(swapped.psqlCalls, 0);
     assert.equal(swapped.log.includes(replacementValue), false);
   }
+});
+
+/**
+ * 有界读取：`-f` 粗筛与 `open()` 之间路径被换成**无写端 FIFO**。
+ *
+ * shell 没有 `O_NONBLOCK`，`exec 9<` 会永久阻塞，因此这是「实现必须自带上界」
+ * 唯一的证明方式。注入点仍然是受控 `PATH` 上的 `stat` 包装器：
+ * `meal_agent_detect_stat` 探测 `.` 的那一次调用恰好落在粗筛之后、open 之前。
+ */
+const fifoWrapperDirectory = join(workspace, "fifo-wrapper");
+mkdirSync(fifoWrapperDirectory, { recursive: true });
+writeFileSync(
+  join(fifoWrapperDirectory, "stat"),
+  [
+    "#!/usr/bin/env bash",
+    "set -u",
+    'real="/usr/bin/stat"',
+    'saw_probe="no"',
+    'saw_target="no"',
+    'for argument in "$@"; do',
+    '  case "$argument" in',
+    '    .) saw_probe="yes" ;;',
+    '    "$MEAL_AGENT_TEST_TARGET") saw_target="yes" ;;',
+    "  esac",
+    "done",
+    '"$real" "$@"',
+    "status=$?",
+    "# 一次性：用标记文件保证只替换一次，与平台上 detect_stat 探测几次无关。",
+    'if [ "${MEAL_AGENT_TEST_MODE:-}" = "fifo" ] && [ "$saw_probe" = "yes" ] \\',
+    '  && [ ! -e "$MEAL_AGENT_TEST_MARKER" ]; then',
+    '  : > "$MEAL_AGENT_TEST_MARKER"',
+    '  rm -f "$MEAL_AGENT_TEST_TARGET"',
+    '  mkfifo "$MEAL_AGENT_TEST_TARGET"',
+    '  chmod 600 "$MEAL_AGENT_TEST_TARGET"',
+    "fi",
+    "# 增长注入：fd 的 fstat 已经取到原始大小，之后把文件撑大。",
+    'if [ -n "${MEAL_AGENT_TEST_GROW_BY:-}" ] && [ "$saw_target" = "yes" ] \\',
+    '  && [ ! -e "$MEAL_AGENT_TEST_MARKER" ]; then',
+    '  : > "$MEAL_AGENT_TEST_MARKER"',
+    '  head -c "$MEAL_AGENT_TEST_GROW_BY" /dev/zero | tr "\\0" "x" \\',
+    '    >> "$MEAL_AGENT_TEST_TARGET"',
+    "fi",
+    'exit "$status"',
+  ].join("\n"),
+);
+chmodSync(join(fifoWrapperDirectory, "stat"), 0o755);
+
+let boundedRun = 0;
+const runBounded = (
+  mode: "fifo" | "grow",
+  growBy: number,
+): {
+  readonly result: LoginsResult;
+  readonly elapsedMs: number;
+  readonly target: string;
+  readonly temporaryDirectory: string;
+} => {
+  boundedRun += 1;
+  const temporaryDirectory = join(workspace, `bounded-tmp-${String(boundedRun)}`);
+  mkdirSync(temporaryDirectory, { recursive: true });
+  const target = join(workspace, `bounded-target-${String(boundedRun)}`);
+  writeFileSync(target, passwords.migration);
+  chmodSync(target, 0o600);
+
+  const started = Date.now();
+  const result = runLogins({
+    PATH: `${fifoWrapperDirectory}:${process.env["PATH"] ?? ""}`,
+    // 受控 TMPDIR：用后可以直接断言「没有快照残留」。
+    TMPDIR: temporaryDirectory,
+    MEAL_AGENT_TEST_MODE: mode === "fifo" ? "fifo" : "",
+    ...(mode === "grow" ? { MEAL_AGENT_TEST_GROW_BY: String(growBy) } : {}),
+    MEAL_AGENT_TEST_TARGET: target,
+    MEAL_AGENT_TEST_MARKER: join(workspace, `bounded-marker-${String(boundedRun)}`),
+    MEAL_AGENT_MIGRATION_PASSWORD_FILE: target,
+    MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+    MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
+  });
+  return {
+    result,
+    elapsedMs: Date.now() - started,
+    target,
+    temporaryDirectory,
+  };
+};
+
+test("a FIFO substituted between the precheck and open fails within a strict bound", () => {
+  const { result, elapsedMs, target, temporaryDirectory } = runBounded("fifo", 0);
+
+  assert.notEqual(result.status, 0, result.output);
+  assert.match(result.output, /could not be opened and read within 5s/);
+  assert.match(result.output, /FIFO can block open\(\) indefinitely/);
+  assert.equal(
+    result.psqlCalls,
+    0,
+    `a blocked open must not reach psql (got ${String(result.psqlCalls)})`,
+  );
+  // 上界是 5s；给进程启动与轮询留出余量，但必须远小于「永久阻塞」。
+  assert.ok(
+    elapsedMs < 30_000,
+    `bootstrap must fail fast, took ${String(elapsedMs)}ms`,
+  );
+  assertNoSentinel(result.output, "the bounded-open failure output");
+
+  // 没有残留的后台读端：FIFO 没有 reader 时，以 O_WRONLY|O_NONBLOCK 打开必然
+  // ENXIO；如果还有一个卡在 open() 里的子进程，这里会成功并把它唤醒。
+  assert.equal(statSync(target).isFIFO(), true);
+  assert.throws(
+    () => {
+      const descriptor = openSync(
+        target,
+        openConstants.O_WRONLY | openConstants.O_NONBLOCK,
+      );
+      closeSync(descriptor);
+    },
+    (error: unknown) =>
+      (error as NodeJS.ErrnoException).code === "ENXIO",
+    "no reader may survive the bounded open",
+  );
+
+  // 没有快照残留：受控 TMPDIR 里不应剩下任何私有快照目录。
+  assert.deepEqual(
+    readdirSync(temporaryDirectory).filter((entry) =>
+      entry.startsWith("meal-agent-secret."),
+    ),
+    [],
+  );
+});
+
+test("a file that grows after its fstat is rejected within the read bound", () => {
+  // 1. 长大但仍在上限内：快照字节数与 fstat 的 size 不一致，必须拒绝。
+  const modest = runBounded("grow", 32);
+  assert.notEqual(modest.result.status, 0, modest.result.output);
+  assert.match(modest.result.output, /changed size while it was being read/);
+  assert.equal(modest.result.psqlCalls, 0);
+  assert.deepEqual(
+    readdirSync(modest.temporaryDirectory).filter((entry) =>
+      entry.startsWith("meal-agent-secret."),
+    ),
+    [],
+  );
+
+  // 2. 长大到超过上限：读取本身就被 `head -c` 截在 4097 字节，因此是**有界**
+  //    拒绝，而不是先把任意大小读进磁盘再判断。
+  const oversized = runBounded("grow", 8192);
+  assert.notEqual(oversized.result.status, 0, oversized.result.output);
+  assert.match(oversized.result.output, /grew past 4096 bytes/);
+  assert.equal(oversized.result.psqlCalls, 0);
+  assert.deepEqual(
+    readdirSync(oversized.temporaryDirectory).filter((entry) =>
+      entry.startsWith("meal-agent-secret."),
+    ),
+    [],
+  );
+});
+
+test("a byte order mark anywhere in the value is rejected on both sources", () => {
+  // Node 侧与 shell 侧此前只查开头，中间藏一个 U+FEFF 会被放行——两条实现
+  // 因此在同一份取值上给出不同结论。现在两侧都按「任何位置」判定。
+  const withInternalMark = `meal${"\uFEFF"}agent`;
+  for (const [label, environment] of [
+    [
+      "file",
+      {
+        MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretFile(withInternalMark),
+        MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+        MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
+      },
+    ],
+    [
+      "direct",
+      {
+        MEAL_AGENT_MIGRATION_PASSWORD: withInternalMark,
+        MEAL_AGENT_RUNTIME_PASSWORD: passwords.runtime,
+        MEAL_AGENT_BACKUP_PASSWORD: passwords.backup,
+      },
+    ],
+  ] as const) {
+    const result = runLogins(environment);
+    assert.notEqual(result.status, 0, `${label}: ${result.output}`);
+    assert.match(result.output, /contains a byte order mark/, label);
+    assert.equal(result.psqlCalls, 0, label);
+  }
+
+  // 结尾处的 U+FEFF 同样拒绝（此前也只有开头被覆盖）。
+  const trailingMark = runLogins({
+    MEAL_AGENT_MIGRATION_PASSWORD_FILE: secretFile(`meal-agent${"\uFEFF"}`),
+    MEAL_AGENT_RUNTIME_PASSWORD_FILE: secretFile(passwords.runtime),
+    MEAL_AGENT_BACKUP_PASSWORD_FILE: secretFile(passwords.backup),
+  });
+  assert.notEqual(trailingMark.status, 0, trailingMark.output);
+  assert.match(trailingMark.output, /contains a byte order mark/);
+  assert.equal(trailingMark.psqlCalls, 0);
 });

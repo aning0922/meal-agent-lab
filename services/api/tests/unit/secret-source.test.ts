@@ -20,6 +20,7 @@ import pg from "pg";
 import {
   maximumSecretFileBytes,
   readSecretFile,
+  rejectedAmbientPostgresVariables,
   resolveDatabaseUrlSource,
   resolveSecretSource,
   SecretSourceError,
@@ -834,5 +835,227 @@ test("direct values obey the same content rules as files", () => {
       value,
       `${JSON.stringify(value)} must survive untouched`,
     );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ambient 环境不得改写连接语义
+// ---------------------------------------------------------------------------
+// 连接串校验只保证「五个核心字段来自 URL」。node-postgres 还会读取一批**连接串
+// 无法覆盖**的 PG* 变量，它们能改协议协商、会话参数与传输格式。这一组用例先用
+// 真实 pg.Client 证明「如果放着不管，这些 sentinel 确实会生效」，再证明共用边界
+// 已经把它们挡在建连之前。
+
+// [变量名, pg 能接受的取值, connectionParameters 上的字段, 生效后的呈现]
+// 取值必须是 pg 真正接受的：PGSSLNEGOTIATION 只认 postgres/direct，而 direct
+// 还要求 ssl 已启用，否则构造 Client 时直接抛错。
+const ambientOverrideCases: readonly [string, string, string, string][] = [
+  ["PGOPTIONS", "-c search_path=ambient_schema", "options", "-c search_path=ambient_schema"],
+  ["PGSSLMODE", "require", "ssl", "true"],
+  ["PGSSLNEGOTIATION", "postgres", "sslnegotiation", "postgres"],
+  ["PGBINARY", "AMBIENT-BINARY", "binary", "AMBIENT-BINARY"],
+  ["PGREPLICATION", "AMBIENT-REPLICATION", "replication", "AMBIENT-REPLICATION"],
+  ["PGCLIENT_ENCODING", "LATIN1", "client_encoding", "LATIN1"],
+  ["PGAPPNAME", "ambient-application", "application_name", "ambient-application"],
+  ["PGCONNECT_TIMEOUT", "31337", "connect_timeout", "31337"],
+];
+
+// 只用于「错误信息不得回显取值」：sentinel 必须独特到不会碰巧出现在 stderr 里
+// （`1`、`database`、`postgres` 这类取值会与堆栈、行号或 "node-postgres" 撞车）。
+const ambientRejectionSentinel = (name: string): string =>
+  `AMBIENT-${name}-VALUE-SENTINEL`;
+
+const validUrl =
+  "postgresql://meal_agent_runtime_login:runtime-pw@127.0.0.1:5433/meal_agent";
+
+const withEnvironmentVariable = <T>(
+  name: string,
+  value: string,
+  run: () => T,
+): T => {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = previous;
+    }
+  }
+};
+
+test("ambient PG* variables would really change the connection if left alone", () => {
+  // 这一条不是回归断言，而是「为什么必须拒绝」的证据：同一条合法 URL，在设置了
+  // sentinel 之后，node-postgres 真的把 sentinel 应用到了连接参数上。
+  for (const [name, value, field, rendered] of ambientOverrideCases) {
+    const observed = withEnvironmentVariable(name, value, () => {
+      const parameters = connectionParametersOf(validUrl) as Record<
+        string,
+        unknown
+      >;
+      return parameters[field];
+    });
+    assert.notEqual(
+      observed,
+      undefined,
+      `${name} must be observable on connectionParameters.${field}`,
+    );
+    assert.equal(
+      String(observed),
+      rendered,
+      `${name} should have reached connectionParameters.${field}`,
+    );
+  }
+});
+
+test("the shared boundary rejects every ambient PG* override on both sources", () => {
+  for (const [name] of ambientOverrideCases) {
+    const value = ambientRejectionSentinel(name);
+    for (const [label, environment] of [
+      ["direct", { DATABASE_URL: validUrl }],
+      ["file", { DATABASE_URL_FILE: secretFile(validUrl) }],
+    ] as const) {
+      const failure = captureSecretSourceError(() =>
+        resolveDatabaseUrlSource({ ...environment, [name]: value }),
+      );
+      assert.match(
+        failure.message,
+        new RegExp(`the environment sets [^;]*${name}`),
+        `${name} (${label}) must be named in the rejection`,
+      );
+      // 错误里只出现变量名，绝不出现取值。
+      assert.equal(
+        failure.message.includes(value),
+        false,
+        `${name} (${label}): the rejection must not echo the value`,
+      );
+    }
+  }
+
+  // 空字符串同样算「已出现」：`PGOPTIONS=` 一样会被 node-postgres 读到。
+  const empty = captureSecretSourceError(() =>
+    resolveDatabaseUrlSource({ DATABASE_URL: validUrl, PGOPTIONS: "" }),
+  );
+  assert.match(empty.message, /PGOPTIONS/);
+
+  // 多个同时出现时全部列出。
+  const several = captureSecretSourceError(() =>
+    resolveDatabaseUrlSource({
+      DATABASE_URL: validUrl,
+      PGOPTIONS: "-c x=1",
+      PGSSLMODE: "require",
+    }),
+  );
+  assert.match(several.message, /PGOPTIONS/);
+  assert.match(several.message, /PGSSLMODE/);
+
+  // 五个核心字段的 PG* 变量**不**在拒绝表里：URL 已经决定了它们。
+  const core = resolveDatabaseUrlSource({
+    DATABASE_URL: validUrl,
+    PGHOST: "ambient-host.invalid",
+    PGPORT: "15432",
+    PGUSER: "ambient_user",
+    PGPASSWORD: "ambient-password",
+    PGDATABASE: "ambient_database",
+  });
+  assert.equal(core.value, validUrl);
+});
+
+test("the rejected ambient set matches the pinned pg release", () => {
+  // 这张表是从 pg@8.22.0 的 connection-parameters.js 逐条读出来的，不是猜的。
+  // 固定它，pg 升级时这条断言会先失败，提醒重新核对环境变量面。
+  assert.deepEqual([...rejectedAmbientPostgresVariables], [
+    "PGAPPNAME",
+    "PGBINARY",
+    "PGCLIENT_ENCODING",
+    "PGCONNECT_TIMEOUT",
+    "PGOPTIONS",
+    "PGREPLICATION",
+    "PGSSLMODE",
+    "PGSSLNEGOTIATION",
+  ]);
+  assert.equal(
+    JSON.parse(
+      readFileSync(
+        join(sourceRoot, "../node_modules/pg/package.json"),
+        "utf8",
+      ),
+    ).version,
+    "8.22.0",
+  );
+});
+
+test("the CLI entry points reject ambient overrides before connecting", () => {
+  for (const relative of [
+    "database/migrate.ts",
+    "database/bootstrap-0000.ts",
+  ]) {
+    for (const [name] of ambientOverrideCases) {
+      const value = ambientRejectionSentinel(name);
+      const result = runEntryPoint(relative, [], {
+        DATABASE_URL: validUrl,
+        [name]: value,
+      });
+      assert.notEqual(result.status, 0, `${relative} + ${name}`);
+      assert.match(result.stderr, new RegExp(name));
+      assert.equal(
+        result.stderr.includes(value),
+        false,
+        `${relative} + ${name}: the rejection must not echo the value`,
+      );
+      for (const connectionFailure of ["ECONNREFUSED", "ENOTFOUND", "ETIMEDOUT"]) {
+        assert.equal(
+          result.stderr.includes(connectionFailure),
+          false,
+          `${relative} + ${name} must fail before connecting`,
+        );
+      }
+    }
+  }
+});
+
+test("a byte order mark anywhere in a secret file is rejected", () => {
+  // 此前 file 来源只拒绝**开头**的 BOM，direct 来源拒绝任何位置——同一份取值在
+  // 两条来源上结论不同。现在两侧都是「任何位置」。
+  for (const [label, contents] of [
+    ["leading", "\uFEFFmeal-agent"],
+    ["internal", "meal\uFEFFagent"],
+    ["trailing", "meal-agent\uFEFF"],
+  ] as const) {
+    assert.throws(
+      () => readSecretFile("DATABASE_URL_FILE", secretFile(contents)),
+      (error: unknown) =>
+        error instanceof SecretSourceError &&
+        /contains a byte order mark/.test(error.message),
+      `a ${label} byte order mark must be rejected`,
+    );
+    assert.throws(
+      () =>
+        resolveSecretSource("MEAL_AGENT_RUNTIME_PASSWORD", {
+          MEAL_AGENT_RUNTIME_PASSWORD: contents,
+        }),
+      (error: unknown) =>
+        error instanceof SecretSourceError &&
+        /contains a byte order mark/.test(error.message),
+      `a ${label} byte order mark must be rejected on the direct source too`,
+    );
+  }
+});
+
+test("an ambient override in process.env is rejected even when it is not passed in", () => {
+  // node-postgres 读的**永远是 process.env**，与调用方传进来的 environment 无关。
+  // 只检查传进来的那一份会留下一条真实的绕过路径。
+  for (const [name] of ambientOverrideCases) {
+    const value = ambientRejectionSentinel(name);
+    const failure = withEnvironmentVariable(name, value, () =>
+      captureSecretSourceError(() =>
+        // 传进来的 environment 完全干净，脏的是进程环境。
+        resolveDatabaseUrlSource({ DATABASE_URL: validUrl }),
+      ),
+    );
+    assert.match(failure.message, new RegExp(name));
+    assert.equal(failure.message.includes(value), false);
   }
 });
