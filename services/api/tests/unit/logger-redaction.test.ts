@@ -913,3 +913,239 @@ test("layered encodings are also stopped in the real Fastify request log", async
   assert.ok(response);
   assert.equal(typeof response["statusCode"], "number");
 });
+
+// ---------------------------------------------------------------------------
+// Pino 会从 Error.message 自动生成顶层 msg——那条路径绕过 serializer
+// ---------------------------------------------------------------------------
+
+test("an error message never becomes the automatic top-level msg", () => {
+  const shapes: readonly [string, (logger: ReturnType<typeof createLogger>) => void][] =
+    [
+      ["error(new Error(dsn))", (logger) => logger.error(new Error(dsn))],
+      [
+        "error(new Error(dsn), undefined)",
+        (logger) => logger.error(new Error(dsn), undefined),
+      ],
+      [
+        "error({ err: new Error(dsn) })",
+        (logger) => logger.error({ err: new Error(dsn) }),
+      ],
+      [
+        "error({ err: new Error(dsn) }, undefined)",
+        (logger) => logger.error({ err: new Error(dsn) }, undefined),
+      ],
+      [
+        "error(new Error(encodedDsn))",
+        (logger) => logger.error(new Error(encodedDsn)),
+      ],
+      [
+        "error({ err: new Error(conninfo) })",
+        (logger) =>
+          logger.error({ err: new Error(`host=db password='${quoted}'`) }),
+      ],
+      [
+        "warn({ err: new Error(dsn) }) without a message",
+        (logger) => logger.warn({ err: new Error(dsn) }),
+      ],
+    ];
+
+  for (const [label, emit] of shapes) {
+    const capture = capturingLogger();
+    emit(capture.logger);
+    assertClean(capture.output(), label);
+
+    // 顶层 msg 只可能是固定安全串，绝不是 Error.message。
+    const record = JSON.parse(capture.output().trim()) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(
+      record["msg"],
+      "request failed",
+      `${label}: msg must be the fixed safe string`,
+    );
+    assert.deepEqual(record["err"], {
+      type: "Error",
+      message: "request failed",
+    });
+  }
+});
+
+test("the error type comes from an exact allowlist, not a name pattern", () => {
+  const capture = capturingLogger();
+
+  // 完全符合类名文法、却是攻击面可写的自由文本：必须降级为 Error。
+  const unlisted = [
+    "SimplePasswordSecret123",
+    "NotOnTheList",
+    "PostgresqlConnectionString",
+    "",
+  ];
+  unlisted.forEach((name, index) => {
+    const error = new Error("boom");
+    error.name = name;
+    // msg 里**不能**回显 name，否则下面「名字不得出现在输出里」的断言会被
+    // 用例自己写进去的字符串满足，等于白测。
+    capture.logger.error({ err: error }, `unlisted ${index}`);
+  });
+
+  // 本仓库真实定义的错误类与内建类型仍按明确策略保留。
+  const listed = [
+    "SecretSourceError",
+    "MigrationLockTimeoutError",
+    "AppError",
+    "TypeError",
+  ];
+  listed.forEach((name, index) => {
+    const error = new Error("boom");
+    error.name = name;
+    capture.logger.error({ err: error }, `listed ${index}`);
+  });
+
+  const types = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map(
+      (line) =>
+        (JSON.parse(line) as { err: { type: string } }).err.type,
+    );
+  assert.deepEqual(types, [
+    "Error",
+    "Error",
+    "Error",
+    "Error",
+    "SecretSourceError",
+    "MigrationLockTimeoutError",
+    "AppError",
+    "TypeError",
+  ]);
+  assert.equal(
+    capture.output().includes("SimplePasswordSecret123"),
+    false,
+    "an unlisted name must not reach the output at all",
+  );
+  assertClean(capture.output(), "error type allowlist");
+});
+
+// ---------------------------------------------------------------------------
+// strict canonicalizer 不得执行输入自带的转换方法
+// ---------------------------------------------------------------------------
+
+test("the canonicalizer never runs input-supplied conversion methods", () => {
+  const capture = capturingLogger();
+
+  // 1. 数组的 `map`：必须**一次都不被调用**。
+  let mapCalls = 0;
+  const hostileArray: unknown[] = ["first", "second"];
+  Object.defineProperty(hostileArray, "map", {
+    value: () => {
+      mapCalls += 1;
+      return [{ toJSON: () => dsn }];
+    },
+    configurable: true,
+    writable: true,
+  });
+  // 迭代器同样不可信。
+  Object.defineProperty(hostileArray, Symbol.iterator, {
+    value: () => {
+      mapCalls += 1;
+      return [{ toJSON: () => dsn }][Symbol.iterator]();
+    },
+    configurable: true,
+    writable: true,
+  });
+
+  capture.logger.info({ hostileArray }, "hostile array in a log record");
+  capture.logger.child({ hostileArray }).info("hostile array in a binding");
+  capture.logger.setBindings({ hostileArray });
+  capture.logger.info("hostile array after setBindings");
+  childWithOptions(
+    capture.logger,
+    { component: "serializer" },
+    { serializers: { payload: () => hostileArray } },
+  ).info({ payload: {} }, "hostile array from a serializer");
+  childWithOptions(
+    capture.logger,
+    { component: "formatter" },
+    { formatters: { bindings: () => ({ hostileArray }) } },
+  ).info("hostile array from a bindings formatter");
+
+  assert.equal(
+    mapCalls,
+    0,
+    "the canonicalizer must not call map or the iterator on untrusted input",
+  );
+  assertClean(capture.output(), "hostile array");
+  assert.equal(capture.output().includes("first"), true);
+
+  // 2. BigInt：不得调用可覆写的 BigInt.prototype.toString。
+  const originalToString = BigInt.prototype.toString;
+  const bigIntCapture = capturingLogger();
+  Object.defineProperty(BigInt.prototype, "toString", {
+    value: () => dsn,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    bigIntCapture.logger.info({ big: 10n }, "bigint in a log record");
+    bigIntCapture.logger.child({ big: 11n }).info("bigint in a binding");
+    bigIntCapture.logger.setBindings({ big: 12n });
+    bigIntCapture.logger.info("bigint after setBindings");
+  } finally {
+    Object.defineProperty(BigInt.prototype, "toString", {
+      value: originalToString,
+      configurable: true,
+      writable: true,
+    });
+  }
+  assertClean(bigIntCapture.output(), "overridden BigInt.prototype.toString");
+  assert.equal(bigIntCapture.output().includes('"big":"10"'), true);
+
+  // 3. 结构键不能让 pino 崩溃，也不能触发原型 setter。
+  const structural = capturingLogger();
+  const shadowed = JSON.parse(
+    '{"hasOwnProperty":"shadowed","safe":"x"}',
+  ) as Record<string, unknown>;
+  structural.logger.info(shadowed, "shadowed hasOwnProperty");
+  structural.logger.child(shadowed).info("shadowed binding");
+  const polluting = JSON.parse(
+    '{"__proto__":{"polluted":true},"safe":"y"}',
+  ) as Record<string, unknown>;
+  structural.logger.info(polluting, "proto key");
+  structural.logger.child(polluting).info("proto key binding");
+  structural.logger.setBindings(polluting);
+  structural.logger.info("proto key after setBindings");
+
+  assert.equal(
+    ({} as Record<string, unknown>)["polluted"],
+    undefined,
+    "Object.prototype must not be polluted",
+  );
+  assert.equal(structural.output().includes("shadowed"), true);
+  assert.equal(structural.output().includes('"safe":"x"'), true);
+  // 结构键被改名，因此 pino 自己的 `bindings.hasOwnProperty(key)` 不会被遮蔽。
+  assert.equal(
+    structural.output().includes("[Structural]hasOwnProperty"),
+    true,
+  );
+  assert.equal(structural.output().includes("[Structural]__proto__"), true);
+
+  // 4. getter 只被记录、绝不被调用。
+  const accessor = capturingLogger();
+  let getterCalls = 0;
+  accessor.logger.info(
+    {
+      get sneaky() {
+        getterCalls += 1;
+        return dsn;
+      },
+      safe: "visible",
+    },
+    "accessor",
+  );
+  assert.equal(getterCalls, 0, "an untrusted getter must never be invoked");
+  assertClean(accessor.output(), "accessor");
+  assert.equal(accessor.output().includes("[Getter]"), true);
+  assert.equal(accessor.output().includes("visible"), true);
+});

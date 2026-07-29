@@ -157,6 +157,7 @@ export const redactText = (value: string): string => {
 // ---------------------------------------------------------------------------
 
 const redactedKeyPlaceholder = "[RedactedKey]";
+const accessorPlaceholder = "[Getter]";
 
 /**
  * 属性**名**同样可能就是 Secret（`{ [dsn]: "x" }`）。名字里出现连接串/conninfo
@@ -165,8 +166,24 @@ const redactedKeyPlaceholder = "[RedactedKey]";
  * 替换会让多个不同的键塌缩成同一个名字，因此按出现顺序编号——确定、可复现，
  * 而且编号本身只泄漏「有几个」，不泄漏内容。
  */
+/**
+ * 会遮蔽 `Object.prototype` 成员的键必须改名。
+ *
+ * 这不是洁癖：pino 的 `asChindings()` 直接写 `bindings.hasOwnProperty(key)`
+ * （`lib/tools.js`），因此一条 `{"hasOwnProperty": "shadowed"}` 的 binding 会让
+ * pino 自己抛 `TypeError` —— 不可信输入把整条日志链打断了。`__proto__` 同理，
+ * 改名之后下游也不可能再碰到原型访问器。
+ */
+const structuralKeyNames = new Set(
+  Object.getOwnPropertyNames(Object.prototype),
+);
+const structuralKeyPrefix = "[Structural]";
+
 const safeKeyName = (key: string, used: Set<string>): string => {
-  const base = redactText(key) === key ? key : redactedKeyPlaceholder;
+  const redacted = redactText(key) === key ? key : redactedKeyPlaceholder;
+  const base = structuralKeyNames.has(redacted)
+    ? `${structuralKeyPrefix}${redacted}`
+    : redacted;
   if (!used.has(base)) {
     used.add(base);
     return base;
@@ -188,14 +205,65 @@ const safeKeyName = (key: string, used: Set<string>): string => {
 export const safeErrorMessage = "request failed";
 
 /**
- * `Error.name` 是调用方完全可写的字段，可以被塞进一整条连接串。因此只接受
- * 受控的类名文法，其余一律固定降级为 `Error`——不做「脱敏后保留」，因为一个
- * 被脱敏过的类名没有诊断价值，却给了绕过判断的空间。
+ * `Error.name` 是调用方完全可写的字段。这里用**精确 allowlist**，不用「格式
+ * 正则即可信」——`SimplePasswordSecret123` 这种名字完全符合类名文法，却是一段
+ * 可以由攻击面写入的自由文本。名单之外一律固定输出 `Error`。
+ *
+ * 名单 = 本仓库真实定义的错误类（`grep 'this.name ='` 得到）+ 运行时会自然
+ * 出现的内建与依赖错误类型。新增错误类时必须同步登记，否则日志里只会看到
+ * `Error`——这是刻意的 fail closed 方向。
  */
-const safeErrorTypePattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const allowedErrorTypes = new Set([
+  // 本仓库定义的
+  "AppError",
+  "AuthorizationManifestError",
+  "AuthorizationRenderError",
+  "BootstrapCliUsageError",
+  "MigrationCliUsageError",
+  "MigrationLockTimeoutError",
+  "MigrationOptionError",
+  "MigrationPreflightError",
+  "MigrationSelectionError",
+  "SecretSourceError",
+  // 内建
+  "Error",
+  "AggregateError",
+  "EvalError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "TypeError",
+  "URIError",
+  // 运行期常见依赖
+  "AbortError",
+  "FastifyError",
+  "ZodError",
+]);
 
 const safeErrorType = (name: unknown): string =>
-  typeof name === "string" && safeErrorTypePattern.test(name) ? name : "Error";
+  typeof name === "string" && allowedErrorTypes.has(name) ? name : "Error";
+
+/**
+ * 把任意取值折成固定的 `{ type, message }`。
+ *
+ * 它必须在**交给 pino 之前**完成：`pino.write()` 在 `msg === undefined` 时会
+ * 直接取 `_obj.message` 或 `_obj[errorKey].message` 生成顶层 `msg`——那条路径
+ * 完全绕过 serializer。因此「只在 serializer 里安全化」是不够的。
+ */
+const canonicalizeError = (value: unknown): {
+  type: string;
+  message: string;
+} => ({
+  type:
+    value instanceof Error
+      ? safeErrorType(value.name)
+      : // 已经被折过一次的形状可以保留 type——但只有**在 allowlist 里**才行，
+        // 因此伪造一个 `{ type: <任意文本> }` 拿不到任何东西。
+        safeErrorType(
+          (value as { type?: unknown } | null)?.type,
+        ),
+  message: safeErrorMessage,
+});
 
 // ---------------------------------------------------------------------------
 // 1. strict / untrusted canonicalizer
@@ -211,6 +279,26 @@ const safeErrorType = (name: unknown): string =>
  *   - 循环引用防护对对象与数组共用，并按**路径**记录（递归返回后移除），因此
  *     同一个对象作为兄弟节点出现两次不会被误判为循环。
  */
+/**
+ * 写入一个键，且**不触发任何 setter**。
+ *
+ * `result[key] = v` 在 `key` 是 `__proto__` 时会命中 `Object.prototype` 上的
+ * 访问器，把原型换掉而不是新建一条属性；`defineProperty` 没有这个问题，
+ * `hasOwnProperty` 这类结构键也只是普通字符串键。
+ */
+const defineSafeProperty = (
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void => {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+};
+
 export const canonicalizeUntrusted = (
   value: unknown,
   seen: WeakSet<object> = new WeakSet<object>(),
@@ -222,11 +310,16 @@ export const canonicalizeUntrusted = (
     return "[Function]";
   }
   if (typeof value === "bigint") {
-    // JSON.stringify 会对 bigint 抛错；转成字符串而不是让整条日志失败。
-    return value.toString();
+    // `String(bigint)` 走的是抽象 ToString，**不会**调用可被覆写的
+    // `BigInt.prototype.toString`；结果再过一遍文本脱敏。
+    // （直接 `value.toString()` 会执行输入方，那是不可信代码。）
+    return redactText(String(value));
+  }
+  if (typeof value === "symbol") {
+    return "[Symbol]";
   }
   if (value instanceof Error) {
-    return { type: safeErrorType(value.name), message: safeErrorMessage };
+    return canonicalizeError(value);
   }
   if (value === null || typeof value !== "object") {
     return value;
@@ -238,14 +331,40 @@ export const canonicalizeUntrusted = (
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item) => canonicalizeUntrusted(item, seen));
+      // 逐项复制到**全新数组**，不用 `map`/迭代器/`Symbol.species`——这三者
+      // 都可被输入覆写，等于让不可信数据决定执行哪段代码。
+      const items: unknown[] = [];
+      const length = value.length;
+      for (let index = 0; index < length; index += 1) {
+        items.push(canonicalizeUntrusted(value[index], seen));
+      }
+      return items;
     }
     const used = new Set<string>();
     const result: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value)) {
-      result[safeKeyName(key, used)] = isSensitiveKey(key)
-        ? "[Redacted]"
-        : canonicalizeUntrusted(entry, seen);
+    // `Object.keys` 只列自身可枚举字符串键，且**不会**读取取值；取值另用
+    // 描述符读，因此访问器（getter）不会被执行。
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      const safe = safeKeyName(key, used);
+      if (descriptor === undefined) {
+        defineSafeProperty(result, safe, undefined);
+        continue;
+      }
+      if (isSensitiveKey(key)) {
+        defineSafeProperty(result, safe, "[Redacted]");
+        continue;
+      }
+      if (!("value" in descriptor)) {
+        // 访问器：只记录它存在，绝不调用。
+        defineSafeProperty(result, safe, accessorPlaceholder);
+        continue;
+      }
+      defineSafeProperty(
+        result,
+        safe,
+        canonicalizeUntrusted(descriptor.value, seen),
+      );
     }
     return result;
   } finally {
@@ -267,21 +386,49 @@ export const redactSensitive = canonicalizeUntrusted;
  */
 const serializedKeys = new Set(["req", "res", "err"]);
 
+/**
+ * 记录层也不能用 `Object.entries`：那会**读**每一个属性，从而执行输入自带的
+ * getter。这里只取自有数据属性；访问器一律记成 `[Getter]`，连 `req`/`res`/`err`
+ * 的延后豁免都不给——豁免的前提是「这确实是 Fastify 交下来的那个对象」，一个
+ * 访问器不满足这个前提。
+ */
+const ownDataEntries = (
+  record: Record<string, unknown>,
+): readonly (readonly [string, unknown, boolean])[] =>
+  Object.keys(record).map((key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    return descriptor === undefined || "value" in descriptor
+      ? ([key, descriptor?.value, false] as const)
+      : ([key, accessorPlaceholder, true] as const);
+  });
+
 const canonicalizeLogRecord = (
   record: Record<string, unknown>,
 ): Record<string, unknown> => {
   const seen = new WeakSet<object>();
   const used = new Set<string>();
   const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
-    if (serializedKeys.has(key)) {
-      result[key] = value;
+  for (const [key, value, isAccessor] of ownDataEntries(record)) {
+    if (serializedKeys.has(key) && !isAccessor) {
+      // `err` 必须在**这里**就折成安全形状：pino 的 write() 会在 msg 缺省时
+      // 直接取 `_obj[errorKey].message` 当顶层 msg，那条路径完全绕过 serializer。
+      defineSafeProperty(
+        result,
+        key,
+        key === "err" ? canonicalizeError(value) : value,
+      );
       used.add(key);
       continue;
     }
-    result[safeKeyName(key, used)] = isSensitiveKey(key)
-      ? "[Redacted]"
-      : canonicalizeUntrusted(value, seen);
+    defineSafeProperty(
+      result,
+      safeKeyName(key, used),
+      isSensitiveKey(key)
+        ? "[Redacted]"
+        : isAccessor
+          ? accessorPlaceholder
+          : canonicalizeUntrusted(value, seen),
+    );
   }
   return result;
 };
@@ -298,19 +445,30 @@ const canonicalizeFormatterRecord = (
   const seen = new WeakSet<object>();
   const used = new Set<string>();
   const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(produced)) {
+  for (const [key, value, isAccessor] of ownDataEntries(produced)) {
     if (
       serializedKeys.has(key) &&
+      !isAccessor &&
       value !== undefined &&
       value === source[key]
     ) {
-      result[key] = value;
+      defineSafeProperty(
+        result,
+        key,
+        key === "err" ? canonicalizeError(value) : value,
+      );
       used.add(key);
       continue;
     }
-    result[safeKeyName(key, used)] = isSensitiveKey(key)
-      ? "[Redacted]"
-      : canonicalizeUntrusted(value, seen);
+    defineSafeProperty(
+      result,
+      safeKeyName(key, used),
+      isSensitiveKey(key)
+        ? "[Redacted]"
+        : isAccessor
+          ? accessorPlaceholder
+          : canonicalizeUntrusted(value, seen),
+    );
   }
   return result;
 };
@@ -353,12 +511,9 @@ const serializeResponse = (response: unknown): unknown =>
   });
 
 const serializeError = (error: unknown): unknown =>
-  // 绝不返回调用方的原对象：伪造一个 `{ type, message }` 不能借此把任意 type
-  // 送进输出。type 只可能来自真实 Error 的 name，且必须过受控文法。
-  canonicalizeUntrusted({
-    type: error instanceof Error ? safeErrorType(error.name) : "Error",
-    message: safeErrorMessage,
-  });
+  // 绝不返回调用方的原对象。type 只可能来自 allowlist，因此伪造一个
+  // `{ type: <任意文本> }` 拿不到任何东西。
+  canonicalizeUntrusted(canonicalizeError(error));
 
 // ---------------------------------------------------------------------------
 // 子 logger 的公开变更入口
@@ -564,8 +719,12 @@ export const createLogger = (
                   // 与 `formatters.log` 相同的那一层，否则用通用 canonicalizer
                   // 直接拍平会把 Fastify 的 Request 变成普通对象，`method`/`url`
                   // 这些原型取值器全部消失（日志看起来没泄漏，其实丢了信息）。
+                  //
+                  // Error **不能**原样传给 pino：`write()` 在 msg 缺省时会直接
+                  // 取 `_obj.message` 当顶层 msg，那条路径绕过 serializer 与
+                  // formatters。折成安全形状后 pino 最多取到固定 message。
                   if (argument instanceof Error) {
-                    return argument;
+                    return { err: canonicalizeError(argument) };
                   }
                   if (
                     argument !== null &&
