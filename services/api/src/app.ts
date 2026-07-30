@@ -27,7 +27,12 @@ import {
   type Persistence,
 } from "./database/pool.js";
 import { AppError, problemFromError } from "./errors.js";
-import { eventErrorType, logEvent } from "./log-events.js";
+import {
+  createEventLogSink,
+  eventErrorType,
+  eventRequestId,
+  type EventLogSink,
+} from "./log-events.js";
 import { createLogger, registerRequestLogFields } from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
@@ -62,6 +67,16 @@ type ApiOperations = Pick<
   | "revokeHouseholdInvite"
   | "revokeSession"
 >;
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /**
+     * 业务代码唯一持有的日志能力。它由**组装根**从 root logger 创建，内部闭包
+     * 持有那个 logger；实例上没有任何取回它的入口，也没有 `child()`。
+     */
+    readonly eventLog: EventLogSink;
+  }
+}
 
 export interface BuildAppOptions {
   readonly config: AppConfig;
@@ -179,6 +194,10 @@ export const buildApp = async (
     },
   });
 
+  // sink 由**这里**创建：参数是组装根刚拿到的 root logger，不是任何请求作用域的
+  // 子 logger。业务代码此后只持有 `app.eventLog`。
+  app.decorate("eventLog", createEventLogSink(logger));
+
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
   await app.register(fastifySwagger, {
@@ -231,14 +250,18 @@ export const buildApp = async (
   app.setErrorHandler((error, request, reply) => {
     const mapped = mapRequestError(error);
 
+    // 用 sink，不用 `request.log`：请求作用域的子 logger 可能带着任意 binding，
+    // 而 binding 里的取值不受事件字段那套类型约束。requestId 作为**声明过的字段**
+    // 显式带上，因此相关性没有丢。
     if (mapped.code === "INTERNAL_ERROR") {
-      logEvent(request.log, "request.failed", {
+      app.eventLog.emit("request.failed", {
+        requestId: eventRequestId(request.id),
         errorType: eventErrorType(error),
       });
     } else {
-      logEvent(request.log, "request.rejected", {
+      app.eventLog.emit("request.rejected", {
+        requestId: eventRequestId(request.id),
         errorCode: mapped.code,
-        statusCode: mapped.status,
       });
     }
     const problemInstance =

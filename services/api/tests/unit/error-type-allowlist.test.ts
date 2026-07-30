@@ -12,7 +12,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { after } from "node:test";
 
-import { allowedErrorTypes } from "../../src/logging.js";
+import {
+  canonicalErrorTypeNames,
+  isAllowedErrorType,
+} from "../../src/logging.js";
 
 const workspace = mkdtempSync(join(tmpdir(), "meal-agent-error-allowlist-"));
 after(() => {
@@ -122,7 +125,7 @@ test("every error class defined in src is registered in the logger allowlist", (
   );
 
   const missing = [...declared]
-    .filter((name) => !allowedErrorTypes.has(name))
+    .filter((name) => !isAllowedErrorType(name))
     .sort();
   assert.deepEqual(
     missing,
@@ -185,11 +188,61 @@ test("the allowlist keeps the built-in and dependency types on purpose", () => {
     "ZodError",
   ]) {
     assert.equal(
-      allowedErrorTypes.has(name),
+      isAllowedErrorType(name),
       true,
       `${name} must stay in the allowlist`,
     );
   }
+});
+
+test("the allowlist cannot be tampered with at runtime", () => {
+  // 上一版导出的是 `ReadonlySet<string>`——那只是类型上的只读。
+  // `(allowedErrorTypes as Set<string>).add("EVIL")` 在运行期照样成功，于是任何
+  // 拿得到这个模块的人都能给自己开一个后门。现在 Set 是模块私有的，对外只有
+  // 一个冻结数组与一个 predicate。
+  const exported = canonicalErrorTypeNames as unknown as Record<string, unknown>;
+  assert.equal(
+    typeof exported["add"],
+    "undefined",
+    "the canonical export must not be a mutable Set",
+  );
+  assert.equal(Object.isFrozen(canonicalErrorTypeNames), true);
+
+  // 试着改冻结数组本身：非严格模式下静默失败，严格模式下抛错——两种都不能让
+  // 判定放行。
+  try {
+    (canonicalErrorTypeNames as unknown as string[]).push("EVIL_TYPE_SENTINEL");
+  } catch {
+    // 冻结数组在严格模式下抛错，这正是期望。
+  }
+  assert.equal(
+    isAllowedErrorType("EVIL_TYPE_SENTINEL"),
+    false,
+    "tampering with the exported snapshot must not widen the predicate",
+  );
+  assert.equal(canonicalErrorTypeNames.includes("EVIL_TYPE_SENTINEL"), false);
+
+  // predicate 自身也不接受非字符串与原型链上的东西。
+  for (const probe of [
+    undefined,
+    null,
+    123,
+    Symbol("AppError"),
+    { toString: () => "AppError" },
+    new String("AppError"),
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+  ]) {
+    assert.equal(
+      isAllowedErrorType(probe),
+      false,
+      `isAllowedErrorType must reject ${String(probe)}`,
+    );
+  }
+
+  // 真实类型名仍然放行。
+  assert.equal(isAllowedErrorType("AppError"), true);
 });
 
 test("test-only error classes are deliberately out of scope", () => {
@@ -198,7 +251,7 @@ test("test-only error classes are deliberately out of scope", () => {
   // 把这条写成断言，是为了让「扫描范围」这个决定本身是显式的，而不是某次
   // 复制粘贴的副产物。
   assert.equal(
-    allowedErrorTypes.has("AuthorizationCleanupError"),
+    isAllowedErrorType("AuthorizationCleanupError"),
     false,
     "a test-harness-only error class must not be registered as a product type",
   );

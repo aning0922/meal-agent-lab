@@ -1,7 +1,12 @@
-import { apiErrorCodeSchema, type ApiErrorCode } from "@meal-agent/contracts/api";
-import type { FastifyBaseLogger } from "fastify";
+import { requestIdSchema } from "@meal-agent/contracts";
+import {
+  apiErrorCodeSchema,
+  apiErrorStatus,
+  type ApiErrorCode,
+} from "@meal-agent/contracts/api";
+import type { Logger } from "pino";
 
-import { allowedErrorTypes, errorTypeOf } from "./logging.js";
+import { errorTypeOf, isAllowedErrorType } from "./logging.js";
 
 /**
  * 阶段 09A / M3A：业务代码的**窄化 typed logging facade**。
@@ -13,42 +18,48 @@ import { allowedErrorTypes, errorTypeOf } from "./logging.js";
  * 再找出一个。那条路走不到头，因为它试图在**出口**证明一个关于任意输入的全称
  * 命题。
  *
- * 这一层换方向：**业务代码根本不把任意对象交给 logger**。能记的事件是**闭集**，
- * 每个事件的字段是**显式声明**的，而且每个字段都有自己的**专用安全类型**——
- * 不是「任意字符串」。原始 Error / Request / Reply / Config / Secret 在类型上就
- * 进不来。
+ * 这一层换方向：**业务代码根本不把任意对象交给 logger**，而且第十二轮起连
+ * **logger 本身**都拿不到。
  *
- * ## 第十一轮收口的三件事
+ * ## EventLogSink：业务代码唯一持有的东西
  *
- * 1. **参数类型上没有开放的 `Record<string, LogFieldValue>`**。上一版为了让
- *    `logEvent` 能遍历字段，在参数上交了一个开放索引签名——那等于把「随便加一个
- *    原始类型字段」重新放了进来。现在参数就是 `LogEventFields[Event]` 本身。
- * 2. **每个事件有固定的 runtime projector**：逐个字段**按名字**取值，不遍历
- *    `Object.keys(fields)`。因此未声明的字段在结构上就到不了 payload——不是
- *    「遍历时被过滤掉」，是根本没被读过。
- * 3. **字段类型是专用安全类型，不是自由字符串**：
- *    - `errorType` 是 branded 类型，只能由 `eventErrorType()` 产生，运行期还要在
- *      `allowedErrorTypes` 里验一次；
- *    - `errorCode` 用项目真实的 `ApiErrorCode` union，运行期用 contracts 的
- *      schema 验一次；
- *    - `signal` 只允许 `SIGINT` / `SIGTERM`。
- *    任何一项验不过就**抛错**（fail closed），而不是「写一个占位串进去」。
+ * 上一版的 `logEvent(logger, event, fields)` 接受任意 `FastifyBaseLogger`。那意味
+ * 着业务代码可以把**任何**一个 logger 递进来——包括一个带 binding 的子 logger。
+ * binding 里的取值不经过事件字段那套类型约束，只能靠中央边界按**键名**脱敏；而
+ * 键名规则是一份人工维护的名单，对**中性键**（`traceContext`、`correlation` 之类）
+ * 本来就没有覆盖。第十一轮的 `apiKey` 缺口就是这条路上被抓出来的。
+ *
+ * 现在：`createEventLogSink(root)` 由**可信 root logger** 创建一个 sink，业务代码
+ * 只持有 sink。sink 内部闭包持有 root logger，外部没有任何取回它的入口，也没有
+ * `child()` / `setBindings()`。因此业务事件行里**只可能**出现事件目录声明过的字段。
+ *
+ * Fastify 框架自己打的请求日志（`incoming request`、`request completed`、
+ * defaultErrorLog）仍然由 `logging.ts` 的固定 serializer 做纵深防御——那条路径绕不
+ * 过 facade，也不属于业务日志。
+ *
+ * ## 字段是专用安全类型，不是自由字符串
+ *
+ *   - `errorType`：branded，只能由 `eventErrorType()` 产生，运行期再经
+ *     `isAllowedErrorType()` 验一次；
+ *   - `errorCode`：项目真实的 `ApiErrorCode`，运行期用 contracts 的 schema 验；
+ *   - `requestId`：branded，只能由 `eventRequestId()` 产生，运行期用 contracts 的
+ *     `requestIdSchema` 验；
+ *   - `signal`：只允许 `SIGINT` / `SIGTERM`。
+ *
+ * 任何一项验不过就**抛错**（fail closed），而不是写一个占位串。
+ *
+ * `statusCode` **不接受调用方传值**：它由 `apiErrorStatus[errorCode]` 派生，因此
+ * 「`SESSION_EXPIRED` 配 599」这种自相矛盾的组合在结构上就造不出来。
  *
  * `event` 是保留字段：projector 产出的对象里不可能有它，assemble 时它最后写入，
  * 调用方没有任何路径能覆盖。
- *
- * ## 保留的纵深防御
- *
- * `logging.ts` 里的 `req`/`res`/`err` 固定 serializer **保留**，职责收窄成一件事：
- * Fastify **自己**打的那几条请求日志（`incoming request`、`request completed`、
- * defaultErrorLog）是框架直接调 logger 的，绕不过这一层 facade。业务代码不再
- * 依赖它。
  */
 
 /** 事件字段的取值域。对象、数组、函数在类型上就传不进来。 */
 export type LogFieldValue = string | number | boolean | null;
 
 declare const safeErrorTypeBrand: unique symbol;
+declare const safeRequestIdBrand: unique symbol;
 
 /**
  * 已归一化的错误类型名。
@@ -57,6 +68,9 @@ declare const safeErrorTypeBrand: unique symbol;
  * 因此「自由文本冒充安全字段」在类型上就不成立。运行期还会再验一次。
  */
 export type SafeErrorType = string & { readonly [safeErrorTypeBrand]: true };
+
+/** 已校验的 request id，只能由 `eventRequestId()` 产生。 */
+export type SafeRequestId = string & { readonly [safeRequestIdBrand]: true };
 
 /** 优雅停机只可能由这两个信号触发。 */
 export type ShutdownSignal = "SIGINT" | "SIGTERM";
@@ -67,11 +81,12 @@ export type ShutdownSignal = "SIGINT" | "SIGTERM";
  */
 export interface LogEventFields {
   readonly "request.failed": {
+    readonly requestId: SafeRequestId;
     readonly errorType: SafeErrorType;
   };
   readonly "request.rejected": {
+    readonly requestId: SafeRequestId;
     readonly errorCode: ApiErrorCode;
-    readonly statusCode: number;
   };
   readonly "shutdown.started": {
     readonly signal: ShutdownSignal;
@@ -111,7 +126,7 @@ const rejectField = (event: string, field: string, why: string): never => {
 };
 
 const checkedErrorType = (event: string, value: unknown): string => {
-  if (typeof value !== "string" || !allowedErrorTypes.has(value)) {
+  if (typeof value !== "string" || !isAllowedErrorType(value)) {
     return rejectField(
       event,
       "errorType",
@@ -129,16 +144,16 @@ const checkedErrorCode = (event: string, value: unknown): ApiErrorCode => {
   return parsed.data;
 };
 
-const checkedStatusCode = (event: string, value: unknown): number => {
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    value < 100 ||
-    value > 599
-  ) {
-    return rejectField(event, "statusCode", "must be an integer HTTP status");
+const checkedRequestId = (event: string, value: unknown): string => {
+  const parsed = requestIdSchema.safeParse(value);
+  if (!parsed.success) {
+    return rejectField(
+      event,
+      "requestId",
+      "must come from eventRequestId() and satisfy requestIdSchema",
+    );
   }
-  return value;
+  return parsed.data;
 };
 
 const checkedSignal = (event: string, value: unknown): ShutdownSignal => {
@@ -154,6 +169,9 @@ const checkedSignal = (event: string, value: unknown): ShutdownSignal => {
  * 这里刻意**不**遍历 `Object.keys(fields)`——遍历意味着「先看看传进来了什么，
  * 再决定留哪些」，而未声明的字段应该在结构上就到不了 payload，不是被过滤掉。
  * 多传一个字段在这里连读都不会被读到。
+ *
+ * `statusCode` 由 `errorCode` **派生**，不从 fields 里取：调用方造不出
+ * 「`SESSION_EXPIRED` 配 599」这种自相矛盾的组合。
  */
 const projectors: {
   readonly [Event in LogEventName]: (
@@ -161,12 +179,17 @@ const projectors: {
   ) => Readonly<Record<string, LogFieldValue>>;
 } = {
   "request.failed": (fields) => ({
+    requestId: checkedRequestId("request.failed", fields.requestId),
     errorType: checkedErrorType("request.failed", fields.errorType),
   }),
-  "request.rejected": (fields) => ({
-    errorCode: checkedErrorCode("request.rejected", fields.errorCode),
-    statusCode: checkedStatusCode("request.rejected", fields.statusCode),
-  }),
+  "request.rejected": (fields) => {
+    const errorCode = checkedErrorCode("request.rejected", fields.errorCode);
+    return {
+      requestId: checkedRequestId("request.rejected", fields.requestId),
+      errorCode,
+      statusCode: apiErrorStatus[errorCode],
+    };
+  },
   "shutdown.started": (fields) => ({
     signal: checkedSignal("shutdown.started", fields.signal),
   }),
@@ -180,30 +203,56 @@ const projectors: {
 const reservedField = "event";
 
 /**
- * 业务代码记录日志的**唯一**入口。
+ * 业务代码持有的**唯一**日志能力。
  *
- * 字段、级别、msg 全部来自事件目录，调用点没有任何自由拼接的余地。
+ * 它只有 `emit` 一个方法。root logger 关在闭包里，外部没有取回它的入口，因此
+ * 也就没有 `child()` / `setBindings()` 这类能把任意 binding 挂上去的路径。
  */
-export const logEvent = <Event extends LogEventName>(
-  logger: FastifyBaseLogger,
-  event: Event,
-  fields: LogEventFields[Event],
-): void => {
-  const { level, message } = eventCatalogue[event];
-  const projected = projectors[event](fields);
-  if (Object.hasOwn(projected, reservedField)) {
-    // 只可能是有人给 projector 加了一个叫 `event` 的字段。fail closed。
-    throw new Error(`log event ${event}: ${reservedField} is reserved`);
-  }
-  // `event` **最后**写入，调用方没有任何路径能覆盖它。
-  logger[level]({ ...projected, [reservedField]: event }, message);
-};
+export interface EventLogSink {
+  emit<Event extends LogEventName>(
+    event: Event,
+    fields: LogEventFields[Event],
+  ): void;
+}
+
+/**
+ * 从**可信 root logger** 创建一个 sink。
+ *
+ * 只有组装根（`buildApp`）会调用它，参数是它自己刚从 `createLogger()` 拿到的那个
+ * root logger——不是任何请求作用域的子 logger。
+ */
+export const createEventLogSink = (root: Logger): EventLogSink => ({
+  emit(event, fields) {
+    const { level, message } = eventCatalogue[event];
+    const projected = projectors[event](fields);
+    if (Object.hasOwn(projected, reservedField)) {
+      // 只可能是有人给 projector 加了一个叫 `event` 的字段。fail closed。
+      throw new Error(`log event ${event}: ${reservedField} is reserved`);
+    }
+    // `event` **最后**写入，调用方没有任何路径能覆盖它。
+    root[level]({ ...projected, [reservedField]: event }, message);
+  },
+});
 
 /**
  * 从一个 Error 取出**已归一化的类型名**，供 `errorType` 字段使用。
  *
  * 这是原始 Error 与业务日志之间唯一的桥：返回值带 brand，因此 `errorType` 字段
- * 只能由它产生；返回的字符串一定在 `allowedErrorTypes` 里。
+ * 只能由它产生；返回的字符串一定通过 `isAllowedErrorType()`。
  */
 export const eventErrorType = (error: unknown): SafeErrorType =>
   errorTypeOf(error) as SafeErrorType;
+
+/**
+ * 校验并 brand 一个 request id。
+ *
+ * 它接受 `unknown`：调用点拿到的是 Fastify 的 `request.id`，而那是一个可能来自
+ * `x-request-id` 头的字符串。这里用 contracts 自己的 schema 验一次，验不过就抛。
+ */
+export const eventRequestId = (value: unknown): SafeRequestId => {
+  const parsed = requestIdSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("log event: requestId does not satisfy requestIdSchema");
+  }
+  return parsed.data as unknown as SafeRequestId;
+};

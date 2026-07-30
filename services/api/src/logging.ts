@@ -5,13 +5,15 @@ import pino, { type LogFn, type Logger } from "pino";
 /**
  * 阶段 09A / M3A：中央 logger 边界。
  *
- * ## 这一层现在的职责范围（第十一轮收口之后）
+ * ## 这一层现在的职责范围（第十二轮收口之后）
  *
  * 前九轮的路子是「让这一层能安全地吃下任意对象」——净化器一轮补一个洞：原型污染、
  * 有状态 Proxy、装箱字符串、继承访问器、结构键、索引访问器……每一轮都还能再找出
  * 一个。那条路走不到头，因为它试图在**出口**证明一个关于任意输入的全称命题。
  *
- * 第十轮起换了方向：**业务代码根本不把任意对象交给 logger**。
+ * 第十轮起换了方向：**业务代码根本不把任意对象交给 logger**；第十二轮起连
+ * **logger 本身**都拿不到——业务代码只持有 `src/log-events.ts` 的 `EventLogSink`，
+ * 它由组装根从 root logger 创建、闭包持有，外部没有取回 logger 的入口。
  * `src/log-events.ts` 是一层窄化的 typed facade——事件是闭集，每个事件有**固定的
  * runtime projector**（逐个字段按名字取值，不遍历调用方传进来的对象），字段类型
  * 是**专用安全类型**而不是自由字符串：`errorType` 带 brand 且运行期在 allowlist
@@ -70,6 +72,19 @@ import pino, { type LogFn, type Logger } from "pino";
  * 结果。
  */
 
+/**
+ * 已登记的敏感键族。
+ *
+ * **口径（不夸大）**：这是一份人工维护的名单，它只对**这些已登记的键族**提供
+ * 纵深防御。它**不**声称对任意第三方键或中性键（`traceContext`、`correlation`
+ * 之类）里的 Secret 有任何兜底——那类取值在键名上看不出任何线索，靠黑名单是补不
+ * 完的（第十一轮就是被裸的 `apiKey` 抓出来的）。
+ *
+ * 业务日志的安全性**不依赖这份名单**：业务代码只持有
+ * `src/log-events.ts` 的 `EventLogSink`，事件字段是闭集且类型受控，binding 根本
+ * 挂不上去。这份名单覆盖的是 Fastify 框架自己打的请求日志那条绕不过 facade 的
+ * 路径。
+ */
 const sensitiveKeys = new Set([
   "authorization",
   // `Proxy-Authorization` 与 `X-API-Key` 归一化之后就是这两个。写成带分隔符的
@@ -371,7 +386,16 @@ export const safeErrorMessage = "request failed";
  * 出现的内建与依赖错误类型。新增错误类时必须同步登记，否则日志里只会看到
  * `Error`——这是刻意的 fail closed 方向。
  */
-export const allowedErrorTypes: ReadonlySet<string> = new Set([
+/**
+ * 名单是**模块私有**的。
+ *
+ * 上一版导出的是一个 `ReadonlySet<string>`——那只是类型上的只读：
+ * `(allowedErrorTypes as Set<string>).add("EVIL")` 在运行期照样成功，于是任何
+ * 拿得到这个模块的人都能给自己开一个后门。现在对外只有两样东西：一个**冻结的
+ * canonical 数组**（给漂移测试用）和一个 **predicate**（给运行期校验用），两者都
+ * 无法反过来改动名单本身。
+ */
+const allowedErrorTypes: ReadonlySet<string> = new Set([
   // 本仓库定义的
   "AppError",
   "AuthorizationManifestError",
@@ -402,8 +426,17 @@ export const allowedErrorTypes: ReadonlySet<string> = new Set([
   "ZodError",
 ]);
 
+/** 名单的**不可变**快照。冻结数组，改它不会影响判定。 */
+export const canonicalErrorTypeNames: readonly string[] = Object.freeze([
+  ...allowedErrorTypes,
+]);
+
+/** 唯一对外的判定入口。 */
+export const isAllowedErrorType = (name: unknown): boolean =>
+  typeof name === "string" && allowedErrorTypes.has(name);
+
 const safeErrorTypeName = (name: unknown): string =>
-  typeof name === "string" && allowedErrorTypes.has(name) ? name : "Error";
+  isAllowedErrorType(name) ? (name as string) : "Error";
 
 /**
  * 从取值上**按描述符**取类型名。

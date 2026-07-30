@@ -1,9 +1,5 @@
 import { buildApp } from "./app.js";
-import {
-  eventErrorType,
-  logEvent,
-  type ShutdownSignal,
-} from "./log-events.js";
+import { eventErrorType, type ShutdownSignal } from "./log-events.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
@@ -18,10 +14,10 @@ const shutdown = async (signal: ShutdownSignal): Promise<void> => {
     return;
   }
   closing = true;
-  logEvent(app.log, "shutdown.started", { signal });
+  app.eventLog.emit("shutdown.started", { signal });
 
   const forceClose = setTimeout(() => {
-    logEvent(app.log, "shutdown.timed-out", {});
+    app.eventLog.emit("shutdown.timed-out", {});
     process.exitCode = 1;
   }, 10_000);
   forceClose.unref();
@@ -39,7 +35,7 @@ process.once("SIGTERM", () => void shutdown("SIGTERM"));
 try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
-  logEvent(app.log, "startup.failed", { errorType: eventErrorType(error) });
+  app.eventLog.emit("startup.failed", { errorType: eventErrorType(error) });
   await app.close();
   process.exitCode = 1;
 }
