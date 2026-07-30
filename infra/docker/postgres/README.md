@@ -357,17 +357,31 @@ EXIT trap。因此解析期间的快照安全网采用「保存 → 链式执行
 
 `signal-matrix.sh` 覆盖「四种调用方处置（默认处置 / handler 自杀 / handler 只
 返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP × starting/terminating 两个窗口
-× first-wins × EXIT trap 链式执行与**退出状态回传** × 重投窗口里的同名信号风暴」，
-共 92 项断言。
+× first-wins × EXIT trap 链式执行与**退出状态回传** × 重投窗口里的同名信号风暴 ×
+**post-worker 窗口**（worker 已结束、正在删除快照）」，共 **106 项断言**。这个数字
+在门禁里是**精确相等**而不是下界，改动必须同时改门禁与这里。
 `services/api/tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 shell 与
 **钉住 digest 的 `postgres:18.4-bookworm` 内以 uid 999** 各跑一遍，两侧都进
 `pnpm --filter @meal-agent/api check`。**这条门禁需要能运行 Docker**，并且刻意
 不做静默跳过。
 
-窗口投递是确定的，不靠猜时间：实现进入 `starting` 与 `terminating` 时创建 marker
-文件并**有界**等待 release 文件。未设置 `MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 时
-这两个函数是纯空操作——不 stat、不写、不 sleep；等待另有 5 秒硬上界。该变量不出
-现在任何 Compose 文件、Dockerfile 或 bootstrap 调用里。因此粗筛与 `open()` 之间被换成无写端 FIFO、或复制阶段
+窗口投递是确定的，而且观察点**全在测试侧**：生产代码里没有任何测试入口
+（`MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 与它的两个函数已整条删除）。
+
+- `terminating`：受控 `head` 自己 trap 住 TERM 并写 marker——那是实现「对整个
+  worker 进程组发 TERM」的真实外部效果。
+- `post-worker`：PATH 影子 `rm`。`meal_agent_discard_snapshot` 用的就是
+  `rm -rf`，所以那一刻 worker 已结束、快照验证与取值复制都已完成。
+- `starting`（trap 已装、`worker=$!` 未赋值）**没有外部可观测副作用，无法被真实
+  确定地命中**，因此只由代码顺序保证（先装 trap、后 fork），不再声称已被证明。
+
+信号 trap 的作用域是**整个** `meal_agent_resolve_secret`：一直保持到快照验证、
+取值复制、快照删除三步全部完成之后才归还。归还得太早时，落在这个窗口里的信号会
+命中调用方的处置——`trap '' SIG` 直接丢弃、handler 返回后继续往下跑，两种情况下
+resolve 都会照常成功，也就是「被中断了却装作读到了」。
+
+每个 case 有 25 秒看门狗，矩阵退出时按进程组统一清理；容器侧再加 `--init` 与
+`docker rm --force` 兜底。因此粗筛与 `open()` 之间被换成无写端 FIFO、或复制阶段
 被拖住（哪怕后代忽略 TERM），都会在 5 秒上界内失败，并且不留残余进程、不留
 快照、psql 调用数为 0。
 

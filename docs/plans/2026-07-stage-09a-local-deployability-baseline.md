@@ -608,6 +608,61 @@ allowlist 漂移扫描补上 `override readonly name = "X"` 类字段与
 
 **M3A 仍为 implementation complete, pending total-control review，未标记 Accepted。**
 
+#### M3A 第七轮总控复验未通过后的定点修订
+
+第七轮点名的八条，每条都先在 `1855aec` 上跑出失败，再在新实现上通过。
+
+**Logger（六条现场反例，全部扫描真实 Pino 最终输出）**
+
+| 反例 | `1855aec` 实测 | 现在 |
+| --- | --- | --- |
+| err record 的显式 msg 无条件折叠 | sentinel 进入日志流（判据是「与 err.message 逐字相同」，包装/截断即可绕开） | 六种形状的 msg 全部是固定串 |
+| 子 logger 自带 `redact` | 不抛错，照常接受 | 一律 `child loggers may not configure redact` |
+| 归一化后的 `setcookie` 与 `rawTrailers` | 取值原样进日志（名单里写的是 `"set-cookie"`，归一化后永不匹配） | `[Redacted]` |
+| 公开 trust registrar | 登记一个自造对象后，它的 `socket.remoteAddress` getter 被执行 2 次 | 调用次数 0；登记点只捕获**不可变快照** |
+| 环状 `req` wrapper | `RangeError: Maximum call stack size exceeded` | 四种环/深链都正常出日志 |
+| 被改写的 `DOMException.prototype.name` | getter 被执行 1 次 | 调用次数 0，类型降级为 `Error` |
+
+顺带：`canonicalizeUntrusted` 补了 64 层递归上界（`seen` 只挡环、不挡深度，5000
+层嵌套一次调用就能耗光栈）；`net.Socket.prototype.remoteAddress` 与
+`DOMException.prototype.name` 都改成比对**模块加载时抓下来的原始函数引用**，而不
+是「持有者是那个原型」——后者等于把执行权交给任何能改写原型的人。
+
+无条件折叠的代价是明确的：`log.error({ err }, "connection failed")` 这类调用方
+自己写的 msg 也会变成固定串。仓库里那条既有断言已经按新语义改写，而不是删掉。
+
+**信号（第 3、4、5 条）**
+
+- **trap 作用域推到整个 `resolve_secret`**。上一版在 worker 结束后立刻归还，于是
+  「快照验证 → 取值复制 → 删除快照」三步跑在调用方的处置之下。新增的 post-worker
+  用例证明这是活的缺陷：在删除快照那一步发 TERM，调用方 `trap '' TERM` 或
+  handler 只返回时，`1855aec` **照常成功并打出 RESOLVED**（exit 0）——被中断了却
+  装作读到了。现在 fail closed（exit 2，"interrupted by a signal"，无 RESOLVED）。
+- **生产代码里的测试入口整条删除**。`MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 与
+  `meal_agent_mark_window` / `meal_agent_await_window_release` 已从
+  `secret-source.sh` 移除：那是一个可写文件 + 阻塞等待的入口，不该留在生产路径上。
+- **窗口改由测试侧观察定位**。`terminating` 看受控 `head` 自己 trap 到的 TERM
+  （那是实现对整个 worker 进程组发 TERM 的真实外部效果）；`post-worker` 看 PATH
+  影子 `rm`（`discard_snapshot` 用的就是 `rm -rf`）。
+- **`starting` 窗口不再声称已被证明**。它没有任何外部可观测副作用，无法被真实
+  确定地命中；现在只由代码顺序保证（先装 trap、后 fork），矩阵与文档都据实改写。
+- 矩阵新增每 case 25 秒看门狗、退出时按进程组统一清理；容器侧加 `--init` 与
+  `docker rm --force` 兜底（`spawnSync` 的 timeout 只杀本地客户端，容器会留下来）。
+  断言条数 92 → **106**，并在门禁里改成**精确相等**而不是下界。
+
+**测试证据（第 6 条）**
+
+「the hard cap still collects a worker whose pid file never appeared」名不副实——它
+自己发信号、自己等结束，12 秒上界一次都没到过。现在拆成两条：一条诚实改名为
+「the fallback cleanup collects a worker process group with no pid file」，只声称
+它真正证明的事；另一条是新加的、**真的会触发** hard cap 的用例（不发任何信号、
+自带 2.5 秒上界），并断言触发之后受控子树被收干净。后者明确**不**断言「无快照
+残留」：hard cap 之后是测试自己 SIGKILL 的，而 SIGKILL 不跑 EXIT trap，残留是
+测试的行为不是实现的缺陷；「被信号打断时不留快照」由矩阵在**实现自己收手**的
+路径上证明。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链

@@ -1,6 +1,6 @@
 # 项目状态
 
-最后更新：2026-07-29
+最后更新：2026-07-30
 
 ## 当前结论
 
@@ -80,14 +80,14 @@
 
 当前门禁包含：
 
-下表是 **2026-07-29 阶段 09A / M3A 第七轮之后**的实际计数（阶段 08 收口时为
+下表是 **2026-07-30 阶段 09A / M3A 第八轮之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
 各轮新增测试，业务语义未变）：
 
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 134/134 |
+| API unit | 141/141 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -171,16 +171,30 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 - **信号矩阵已经是门禁，不再只是文档**（第七轮）：
   `infra/docker/postgres/signal-matrix.sh` 覆盖「四种调用方处置（默认处置 /
   handler 自杀 / handler 只返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP ×
-  starting/terminating 两个窗口 × first-wins × EXIT trap 链式执行与退出状态回传」，
-  共 **92 项断言**；`tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 bash 3.2 与
+  none / terminating / handler / storm / **post-worker** 四个投递窗口 × first-wins ×
+  EXIT trap 链式执行与退出状态回传」，共 **106 项断言**（数字在门禁里是**精确
+  相等**，不是下界；改动必须同时改门禁与本表）；
+  `tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 bash 3.2 与
   **钉住 digest 的 postgres:18.4-bookworm 容器内以 uid 999** 各跑一遍，两侧都进
   `pnpm --filter @meal-agent/api check`。**因此这条门禁新增了 Docker 前置条件**，
   并且刻意**不做静默跳过**——会自动跳过的安全用例等于没有。
-- **窗口投递是确定的，不是猜时间**：实现在进入 `starting` 与 `terminating` 时创建
-  marker 文件并**有界**等待 release 文件，测试据此投递信号。未设置
-  `MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 时这两个函数是纯空操作，生产路径上不
-  stat、不写、不 sleep；等待另有 5 秒硬上界。该变量不出现在任何 Compose 文件、
-  Dockerfile 或 bootstrap 调用里。
+- **窗口投递是确定的，而且观察点全在测试侧**（第八轮改）：上一版靠生产代码里的
+  marker 文件 + 阻塞等待来命中窗口，那等于在生产路径上留了一个可写文件的测试
+  入口——已经**整条删除**（`MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 与它的两个函数
+  在 `secret-source.sh` 里已不存在）。现在：
+  - `terminating` 窗口由受控 `head` 自己 trap 住 TERM 并写 marker 来定位——那是
+    实现「对整个 worker 进程组发 TERM」的真实外部效果；
+  - `post-worker` 窗口由 PATH 影子 `rm` 定位——`meal_agent_discard_snapshot` 用的
+    就是 `rm -rf`，所以那一刻 worker 已结束、快照验证与取值复制都已完成；
+  - `starting` 窗口（trap 已装、`worker=$!` 未赋值）**没有任何外部可观测副作用，
+    因此无法被真实确定地命中**。它现在只由代码顺序保证（先装 trap、后 fork），
+    矩阵与文档都**不再声称它被证明过**。
+- **信号 trap 的作用域是整个 resolve**（第八轮）：上一版在 worker 结束后立刻归还，
+  于是「快照验证 → 取值复制 → 删除快照」三步全都跑在调用方的处置之下。实测：在
+  删除快照那一步发一个 TERM，调用方 `trap '' TERM` 或 handler 只返回时，
+  `1855aec` 会**照常成功并打出 RESOLVED**——被中断了却装作读到了。现在 trap 一直
+  保持到快照删除完成之后才归还，同样场景下 fail closed（exit 2，
+  "interrupted by a signal"，没有 RESOLVED）。
 - **调用方的 EXIT trap 不再被顶掉**（第七轮）：`secret-source.sh` 是被 `source`
   进 bootstrap.sh 的，此前一句裸的 `trap '…' EXIT` 会把调用方的 EXIT 处置整条
   换掉（实测：调用方的 marker 在全部 9 个场景里都没出现）。现在改成保存 → 链式
@@ -211,7 +225,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
   `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
   控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
-  31 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  37 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
   method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
   一起丢掉来「通过」。
 - **Error 与不可信输入的两条额外边界**（第六轮补上）：`Error.message` 会被 pino
@@ -220,10 +234,32 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   一律输出 `Error`（`SimplePasswordSecret123` 这种完全符合类名文法的自由文本
   不再被当成类型名）。strict canonicalizer 不再执行输入自带的任何转换方法：数组
   按下标新建递归（不走 `map`、不走迭代器）、BigInt 走原始值转换（覆写
-  `BigInt.prototype.toString` 无效）、访问器只记成 `[Getter]` 而**不读取**、
+  `BigInt.prototype.toString` 无效）、访问器只记成 `[Getter]` 而不读取、
   遮蔽 `Object.prototype` 成员的结构键统一改名（`hasOwnProperty` 此前会让 pino
   的 `asChindings()` 自己抛 `TypeError`，`__proto__` 则不再有机会触及原型
   访问器）。
+- **err record 的显式 msg 无条件折叠**（第八轮）：上一版只在 msg 与 `err.message`
+  **逐字相同**时才折。那条判据可以靠包装一层、截一段、加个前缀绕开，而携带的仍
+  然是同一段内部细节（实测 sentinel 直接进日志流）。现在判据只有一条——这条记录
+  带不带 `err`。代价是明确的：`log.error({ err }, "API startup failed")` 这类
+  调用方自己写的 msg 也会变成固定串，诊断信息改从 `err.type` 走；不带 `err` 的
+  普通日志完全不受影响。
+- **子 logger 一律不得自带 `redact`**（第八轮）：包装 censor 不够——路径语义本身
+  就决定了哪些键会走 pino 的克隆式 redactor。根 logger 的 `redact` 第七轮已移除，
+  子 logger 这一侧第八轮整条拒绝。Fastify 只会把 `serializers` 再传一遍
+  （`lib/logger-pino.js`），从不传 `redact`，兼容面不受影响。
+- **归一化之后的敏感键名**（第八轮）：`isSensitiveKey` 先去分隔符再小写，所以名单
+  里原来写的 `"set-cookie"` 归一化成 `setcookie`，**永远匹配不上自己**——一条从来
+  没生效过的规则。同时补上 `rawTrailers`（与 `rawHeaders` 一样是扁平字符串数组）。
+- **请求身份是登记点的不可变快照，不是读取权限**（第八轮）：上一版导出的是一个
+  公开 registrar，任何人都能登记任意对象，之后投影会在它身上做普通成员读取。实测
+  把 `socket` 写成数据属性、`socket.remoteAddress` 写成访问器，登记之后那个 getter
+  会被执行。现在 `genReqId` 一次性把 requestId/method/path/remoteAddress 冻结成
+  快照，serializer **只查快照、不碰候选对象**。
+- **平台访问器只认函数身份**（第八轮）：`DOMException.prototype` 是可变的，只检查
+  「持有者是那个原型」就调用当时解析出来的 getter，等于把执行权交给任何能改写它
+  的人（实测改写后 getter 被执行）。现在比对的是模块加载时抓下来的**原始函数
+  引用**，`net.Socket.prototype.remoteAddress` 同理。
 - **descriptor-safe 读取推到每一个入口**（第七轮）：数组**下标**也按描述符读
   （`Object.defineProperty(a, 0, { get })` 是合法的，`a[0]` 会把它执行掉）；
   `Error.name` 与伪造归一化形状的 `type` 沿**原型链**解析描述符，自身访问器、
@@ -245,6 +281,10 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   `getPrototypeOf`（`instanceof` 用它）各自触发 trap，`Array.isArray` 对包着数组
   的 Proxy 也返回 true；那是 JavaScript 语言层面的性质。trap 的返回值仍然要走同
   一套描述符规则与文本脱敏。
+- **递归深度也有硬上界**（第八轮）：`seen` 只挡得住环，挡不住深度——一条 5000 层
+  的普通嵌套链就能让一次日志调用把进程的栈耗光（实测
+  `RangeError: Maximum call stack size exceeded`）。canonicalizer 现在到 64 层
+  换成固定占位串；`req`/`res` 的快照查找链另有 4 跳上界（真实形状最多两跳）。
 - **原型污染那条路径已经堵上**：canonicalizer 新建的 `{}` / `[]` 仍然继承
   `Object.prototype` / `Array.prototype`，只要有人（包括 Proxy 的 `ownKeys` trap
   在我们枚举的过程中）往那上面挂一个 `toJSON`，`JSON.stringify` 阶段就会调用它，
