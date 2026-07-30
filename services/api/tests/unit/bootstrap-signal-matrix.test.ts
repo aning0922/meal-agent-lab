@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -47,7 +48,7 @@ const pinnedPostgresImage =
  * 原来写的是 `>= 80`：一条下界既拦不住「悄悄删掉几条」，也让文档里的覆盖矩阵
  * 无从核对。改成精确值之后，任何增删都必须同时改这里和文档，漂移会立刻变红。
  */
-const expectedMatrixChecks = 106;
+const expectedMatrixChecks = 150;
 
 /** 矩阵自身每个 case 有 25 秒看门狗；外层再给一个宽裕但**有界**的上限。 */
 const matrixTimeoutMs = 180_000;
@@ -83,26 +84,76 @@ const assertMatrixPassed = (
   );
 };
 
-test("the signal matrix passes on the host shell", () => {
+/**
+ * 当前系统里 `sleep <n>` 的进程数。
+ *
+ * 矩阵每个 case 都会起一个睡 25 秒的看门狗。只 kill 看门狗自己会把那个 `sleep`
+ * 留下来——它会一直挂到自然醒。矩阵内部已经逐个断言过，这里从**外部**再确认一次：
+ * 矩阵结束的那一刻，系统里不能因为它而多出任何一个 `sleep 25`。
+ */
+const sleepProcessCount = (seconds: number): number => {
+  const listed = spawnSync("ps", ["-A", "-o", "args="], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (typeof listed.stdout !== "string") {
+    return 0;
+  }
+  return listed.stdout
+    .split("\n")
+    .filter((line) => line.trim() === `sleep ${String(seconds)}`).length;
+};
+
+/** 与 `signal-matrix.sh` 里的 `meal_agent_case_watchdog_seconds` 一致。 */
+const watchdogSeconds = 25;
+
+test("the signal matrix passes on the host shell and leaves no watchdog sleep", () => {
+  const before = sleepProcessCount(watchdogSeconds);
   const result = spawnSync("bash", [matrixScript, secretSourceScript], {
     encoding: "utf8",
     timeout: matrixTimeoutMs,
     env: { ...process.env },
   });
   assertMatrixPassed(result, "host signal matrix");
+  // 立刻数——不给任何「等它自然醒」的余地。
+  const after = sleepProcessCount(watchdogSeconds);
+  assert.ok(
+    after <= before,
+    `the matrix must not leave watchdog sleeps behind: ${String(before)} -> ${String(after)}`,
+  );
 });
 
 test("the signal matrix passes inside the pinned postgres 18.4 image as uid 999", () => {
-  // 固定容器名 + finally 里的 `docker rm -f`：spawnSync 的 timeout 只会杀掉本地的
-  // `docker` 客户端，容器本身照样在跑。没有这一步，一次超时就会留下一个孤儿容器。
-  const containerName = "meal-agent-signal-matrix-gate";
+  // 容器名必须**按本次运行唯一**：worktree 可以并行、同一台机器上也可能同时跑
+  // 两条门禁。一个写死的名字会让后开的那个直接名字冲突，更糟的是 `docker rm`
+  // 会去删**别人的**容器。
+  //
+  // 因此名字里带 pid 与 worktree 路径的摘要，并且清理只按**本次的 ownership
+  // label** 来删——不按名字模糊匹配，也不碰任何没有这个 label 的容器。
+  const ownershipId = randomUUID();
+  const worktreeDigest = createHash("sha256")
+    .update(repositoryRoot)
+    .digest("hex")
+    .slice(0, 12);
+  const containerName = `meal-agent-signal-matrix-${String(process.pid)}-${worktreeDigest}`;
+  const ownershipLabel = `meal-agent.signal-matrix.run=${ownershipId}`;
   const forceRemove = (): void => {
-    spawnSync("docker", ["rm", "--force", containerName], {
-      encoding: "utf8",
-      timeout: 30_000,
-    });
+    const listed = spawnSync(
+      "docker",
+      ["ps", "--all", "--quiet", "--filter", `label=${ownershipLabel}`],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    const ids = (listed.stdout ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    for (const id of ids) {
+      spawnSync("docker", ["rm", "--force", id], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+    }
   };
-  forceRemove();
   let result;
   try {
     result = spawnSync(
@@ -112,6 +163,8 @@ test("the signal matrix passes inside the pinned postgres 18.4 image as uid 999"
         "--rm",
         "--name",
         containerName,
+        "--label",
+        ownershipLabel,
         // PID 1 收养并回收孤儿：矩阵自己已经按进程组清理，`--init` 是最后一道
         // failure-safe，保证即使矩阵被外部打断也不会在容器里留下僵尸。
         "--init",
@@ -141,5 +194,16 @@ test("the signal matrix passes inside the pinned postgres 18.4 image as uid 999"
   assert.ok(
     /bash, version 5\./.test(`${result.stdout}`),
     `the pinned image must really be the Debian bookworm bash 5 side\n${result.stdout}`,
+  );
+  // 带本次 ownership label 的容器一个都不能剩。
+  const remaining = spawnSync(
+    "docker",
+    ["ps", "--all", "--quiet", "--filter", `label=${ownershipLabel}`],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+  assert.equal(
+    (remaining.stdout ?? "").trim(),
+    "",
+    "no container carrying this run's ownership label may survive",
   );
 });

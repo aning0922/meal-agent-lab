@@ -52,9 +52,22 @@ fi
 work="$(mktemp -d)"
 umask 077
 
-# 每个 case 拉起来的进程组都登记在这里；矩阵退出时无条件整组收掉。容器里同样
-# 生效——EXIT trap 覆盖正常结束、断言失败与被信号打断三种情况。
+# 每个 case 拉起来的进程组都登记在这里：driver、worker、watchdog 三者的**真实
+# pgid**。矩阵退出时无条件整组收掉；EXIT trap 覆盖正常结束、断言失败与被信号打断
+# 三种情况，容器里同样生效。
+#
+# 「真实 pgid」很重要：driver 与 watchdog 都由 `set -m` 放进各自独立的进程组，
+# 所以它们的 pid 就是 pgid；worker 是 `secret-source.sh` 自己用 `set -m` 起的，
+# pgid 同样等于它的 pid，只是要等 PID 文件出现才知道。只登记 driver 一个的话，
+# watchdog 里那个 `sleep 25` 与 worker 的整棵子树都收不到。
 meal_agent_matrix_groups=""
+
+meal_agent_register_group() {
+  case " $meal_agent_matrix_groups " in
+    *" $1 "*) ;;
+    *) meal_agent_matrix_groups="$meal_agent_matrix_groups $1" ;;
+  esac
+}
 
 meal_agent_matrix_cleanup() {
   local pgid=""
@@ -162,6 +175,30 @@ exec "$real" "$@"
 RMWRAPPER
 chmod 755 "$work/rmbin/rm"
 
+# preworker 窗口用的影子 `mktemp`：`meal_agent_open_snapshot` 用的就是
+# `mktemp -d`，而它在**worker fork 之前**的 metadata 阶段被调用（变量名校验 →
+# `stat` 探测 → 建快照目录）。只在第一次调用时暂停。
+mkdir -p "$work/mktempbin"
+cat > "$work/mktempbin/mktemp" << 'MKTEMPWRAPPER'
+#!/usr/bin/env bash
+set -u
+real="/usr/bin/mktemp"
+[ -x "$real" ] || real="/bin/mktemp"
+if [ -n "${MEAL_AGENT_MATRIX_MKTEMP_MARKER:-}" ] && [ ! -e "$MEAL_AGENT_MATRIX_MKTEMP_MARKER" ]; then
+  : > "$MEAL_AGENT_MATRIX_MKTEMP_MARKER"
+  waited=0
+  while [ ! -e "${MEAL_AGENT_MATRIX_MKTEMP_MARKER}.release" ]; do
+    if [ "$waited" -ge 200 ]; then
+      break
+    fi
+    sleep 0.05
+    waited=$((waited + 1))
+  done
+fi
+exec "$real" "$@"
+MKTEMPWRAPPER
+chmod 755 "$work/mktempbin/mktemp"
+
 # 调用方驱动脚本。`DISPOSITION` 决定它给 TERM/INT/HUP 装什么；EXIT trap 永远装，
 # 因为「调用方的 EXIT trap 必须链式执行并拿到真实退出状态」是每个用例都要验的。
 cat > "$work/driver.sh" << 'DRIVER'
@@ -211,6 +248,17 @@ printf 'RUNTIME-PASSWORD-SENTINEL' > "$work/secret"
 chmod 600 "$work/secret"
 
 alive() { kill -0 "$1" 2> /dev/null; }
+
+# 当前还活着的直接子进程。用来确认看门狗那个 `sleep` 真的被回收了，而不是只
+# 「看门狗自己没了」。
+meal_agent_children_of() {
+  ps -A -o pid=,ppid= 2> /dev/null |
+    while read -r child parent; do
+      if [ "$parent" = "$1" ]; then
+        printf '%s ' "$child"
+      fi
+    done
+}
 
 await_file() {
   # $1 = path, $2 = ticks (0.05s each)
@@ -262,6 +310,11 @@ run_case() {
     path="$work/rmbin:$path"
     rm_marker="$dir/rm.marker"
   fi
+  local mktemp_marker=""
+  if [ "$window" = "preworker" ]; then
+    path="$work/mktempbin:$path"
+    mktemp_marker="$dir/mktemp.marker"
+  fi
 
   set -m
   env PATH="$path" TMPDIR="$dir" \
@@ -274,13 +327,16 @@ run_case() {
     MEAL_AGENT_MATRIX_SLEEP="$dir/sleep.pid" \
     MEAL_AGENT_MATRIX_FIFO="$fifo" \
     MEAL_AGENT_MATRIX_RM_MARKER="$rm_marker" \
+    MEAL_AGENT_MATRIX_MKTEMP_MARKER="$mktemp_marker" \
     MEAL_AGENT_RUNTIME_PASSWORD_FILE="$work/secret" \
     bash "$work/driver.sh" > "$out" 2>&1 &
   local driver=$!
   set +m
-  meal_agent_matrix_groups="$meal_agent_matrix_groups $driver"
+  meal_agent_register_group "$driver"
 
-  # 看门狗。它自己也在后台，case 结束后立刻收掉。
+  # 看门狗。它必须是**自己进程组的组长**：`sleep 25` 是它的子进程，只 kill 看门狗
+  # 那一个 pid 会把 sleep 留下来，25 秒之内一直挂在系统里。`set -m` 让整组可回收。
+  set -m
   (
     sleep "$meal_agent_case_watchdog_seconds"
     if kill -0 "$driver" 2> /dev/null; then
@@ -290,6 +346,8 @@ run_case() {
     fi
   ) &
   local watchdog=$!
+  set +m
+  meal_agent_register_group "$watchdog"
 
   case "$window" in
     terminating)
@@ -336,6 +394,17 @@ run_case() {
         bursts=$((bursts + 1))
       done
       ;;
+    preworker)
+      # worker 还没 fork：实现正卡在 metadata 阶段的 `mktemp -d` 上。此刻收到的
+      # 信号必须被记住并在 pre-worker 检查点收尾——上一版会在起 worker 之前把
+      # winner 整条重置掉，于是这一发信号被吞掉，resolve 照常成功。
+      if ! await_file "$mktemp_marker" 200; then
+        fail "$slot / preworker window" "the snapshot directory was never created"
+      fi
+      kill -"$winner" "$driver" 2> /dev/null || true
+      sleep 0.2
+      : > "${mktemp_marker}.release"
+      ;;
     postworker)
       # worker 已经正常结束，快照验证与取值复制都做完了，实现正卡在删除快照的
       # `rm` 上。信号必须仍然由**实现**接管：否则它会按调用方的处置立刻退出，
@@ -361,8 +430,20 @@ run_case() {
 
   wait "$driver" 2> /dev/null
   case_status=$?
+
+  # 整组收掉看门狗——它的 `sleep` 子进程必须跟着消失，并且**有界确认**。
+  local watchdog_children=""
+  watchdog_children="$(meal_agent_children_of "$watchdog")"
+  kill -KILL -- "-$watchdog" 2> /dev/null || true
   kill -KILL "$watchdog" 2> /dev/null || true
   wait "$watchdog" 2> /dev/null || true
+  local stray=""
+  for pid in $watchdog_children; do
+    if ! await_gone "$pid" 40; then
+      stray="$stray $pid"
+    fi
+  done
+  check "$slot / watchdog sleep reaped" "" "$stray"
 
   if [ -e "$dir/watchdog.fired" ]; then
     fail "$slot / watchdog" "the case had to be killed after ${meal_agent_case_watchdog_seconds}s"
@@ -375,6 +456,10 @@ run_case() {
   head="$(cat "$dir/head.pid" 2> /dev/null || echo 0)"
   worker="$(cat "$dir/worker.pid" 2> /dev/null || echo 0)"
   sleeper="$(cat "$dir/sleep.pid" 2> /dev/null || echo 0)"
+  if [ "$worker" != "0" ]; then
+    # worker 是 `secret-source.sh` 用 `set -m` 起的独立组长，pgid == pid。
+    meal_agent_register_group "$worker"
+  fi
   if [ "$stall" = "yes" ]; then
     for pid in "$worker" "$head" "$sleeper"; do
       if [ "$pid" != "0" ] && ! await_gone "$pid" 60; then
@@ -495,6 +580,25 @@ absent "post-worker returning / no RESOLVED" "$work/postworker-return/out" "RESO
 contains "post-worker returning / handler ran" "$work/postworker-return/out" "CALLER-RETURN-TERM"
 
 # ---------------------------------------------------------------------------
+# 8b. pre-worker metadata 阶段：worker 还没 fork，实现正在建快照目录。信号必须被
+#     记住，不能被「起 worker 之前重置一次状态」抹掉
+# ---------------------------------------------------------------------------
+run_case preworker-default default no preworker TERM -
+check "pre-worker TERM / exit status" 143 "$case_status"
+absent "pre-worker / never claims success" "$work/preworker-default/out" "RESOLVED"
+run_case preworker-exit exit no preworker TERM -
+check "pre-worker TERM / caller handler wins" 71 "$case_status"
+contains "pre-worker / caller handler ran" "$work/preworker-exit/out" "CALLER-TRAP-TERM"
+run_case preworker-ignore ignore no preworker TERM -
+check "pre-worker ignored TERM / fails closed" 2 "$case_status"
+absent "pre-worker ignored / no RESOLVED" "$work/preworker-ignore/out" "RESOLVED"
+contains "pre-worker ignored / says why" "$work/preworker-ignore/out" "interrupted by a signal"
+run_case preworker-return return no preworker TERM -
+check "pre-worker returning handler / fails closed" 2 "$case_status"
+absent "pre-worker returning / no RESOLVED" "$work/preworker-return/out" "RESOLVED"
+contains "pre-worker returning / handler ran" "$work/preworker-return/out" "CALLER-RETURN-TERM"
+
+# ---------------------------------------------------------------------------
 # 9. 正常完成：口令解析成功，三个信号 trap 与 EXIT trap 全部归还
 # ---------------------------------------------------------------------------
 run_case normal exit no none - -
@@ -521,6 +625,17 @@ if sed -n '/EXIT-TRAP-AFTER-BEGIN/,/EXIT-TRAP-AFTER-END/p' "$work/normal/out" |
 else
   pass "normal / EXIT trap handed back" "no leftover meal_agent handler"
 fi
+
+# ---------------------------------------------------------------------------
+# 10. 矩阵自身的 failure-safe：跑完之后不能留下任何看门狗的 `sleep`
+# ---------------------------------------------------------------------------
+# 看门狗每个 case 一个，睡的正是 `meal_agent_case_watchdog_seconds` 秒。只 kill
+# 看门狗自己会把 sleep 留下来——它会在系统里一直挂到自然醒。这条直接数一遍。
+meal_agent_stray_watchdog_sleeps="$(
+  ps -A -o args= 2> /dev/null |
+    grep -c "^sleep ${meal_agent_case_watchdog_seconds}$" || true
+)"
+check "matrix / no watchdog sleep left behind" 0 "$meal_agent_stray_watchdog_sleeps"
 
 echo "signal-matrix: $checks checks, $failures failure(s)"
 [ "$failures" -eq 0 ]

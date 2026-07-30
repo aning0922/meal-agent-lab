@@ -1124,6 +1124,11 @@ const fifoHasReader = (fifo: string): boolean => {
  * `after` 执行时 kill 过去就是在杀别人的进程。这个集合在正常路径下永远是空的，
  * 它只兜底「用例在 finally 之前就抛了」。
  */
+/** 每个 slot 的 bootstrap 根 pid，用于把根进程一起纳入残留复核。 */
+const signalRootPids = new Map<string, number>();
+const liveSignalGroupOf = (slot: string): number | undefined =>
+  signalRootPids.get(slot);
+
 const liveSignalGroups = new Set<number>();
 after(() => {
   for (const pgid of liveSignalGroups) {
@@ -1277,6 +1282,7 @@ const runSignalScenario = async (
   );
   const groupLeader = bootstrapPid as number;
   liveSignalGroups.add(groupLeader);
+  signalRootPids.set(scenario.slot, groupLeader);
   observedGroups.add(groupLeader);
 
   let output = "";
@@ -1728,10 +1734,20 @@ test("the hard cap really fires and its cleanup still leaves nothing behind", as
     3,
     "all three controlled layers must have recorded themselves before the cap",
   );
+  // **bootstrap 根进程也要一起复核**。上一版只查 worker/head/sleep 三层，于是
+  // 「根进程还活着、只是它的后代被收掉了」这种残留完全查不出来——而 hard cap 之后
+  // 最可能剩下的恰恰是那个还在等 close 的根进程。
+  const rootPid = liveSignalGroupOf(slot);
+  assert.equal(
+    typeof rootPid,
+    "number",
+    "the bootstrap root pid must have been recorded",
+  );
   assert.deepEqual(
-    await residualOf(recorded, 5_000),
+    await residualOf([rootPid as number, ...recorded], 5_000),
     [],
-    "the hard-cap cleanup path must leave no controlled process behind",
+    "the hard-cap cleanup path must leave no controlled process behind, " +
+      "the bootstrap root included",
   );
   // 这里**不**断言「没有快照残留」。hard cap 触发之后是测试自己 SIGKILL 掉整棵
   // 子树的，而 SIGKILL 不会执行 EXIT trap，所以快照目录留下来完全是测试的行为，
