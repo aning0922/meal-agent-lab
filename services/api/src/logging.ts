@@ -5,17 +5,25 @@ import pino, { type LogFn, type Logger } from "pino";
 /**
  * 阶段 09A / M3A：中央 logger 边界。
  *
- * ## 这一层现在的职责范围（第十轮收口之后）
+ * ## 这一层现在的职责范围（第十一轮收口之后）
  *
  * 前九轮的路子是「让这一层能安全地吃下任意对象」——净化器一轮补一个洞：原型污染、
  * 有状态 Proxy、装箱字符串、继承访问器、结构键、索引访问器……每一轮都还能再找出
  * 一个。那条路走不到头，因为它试图在**出口**证明一个关于任意输入的全称命题。
  *
- * 第十轮换了方向：**业务代码根本不把任意对象交给 logger**。
- * `src/log-events.ts` 是一层窄化的 typed facade——事件是闭集，字段显式声明且只
- * 允许 `string | number | boolean | null`。静态门禁
- * （`tests/unit/production-log-arguments.test.ts`）用 TypeScript 的 type checker
- * 保证 `src/` 里除了 facade 与本文件之外**没有任何**直接的 logger 调用。
+ * 第十轮起换了方向：**业务代码根本不把任意对象交给 logger**。
+ * `src/log-events.ts` 是一层窄化的 typed facade——事件是闭集，每个事件有**固定的
+ * runtime projector**（逐个字段按名字取值，不遍历调用方传进来的对象），字段类型
+ * 是**专用安全类型**而不是自由字符串：`errorType` 带 brand 且运行期在 allowlist
+ * 里验一次，`errorCode` 用项目真实的 `ApiErrorCode`，`signal` 只允许
+ * SIGINT/SIGTERM；验不过就抛错。`event` 是保留字段，调用方没有任何路径能覆盖。
+ *
+ * 静态门禁（`tests/unit/production-log-arguments.test.ts`）用 TypeScript 的 type
+ * checker 限制的是**整项 logger capability**，不只是「调用」：任何类型为 `LogFn`
+ * 的表达式（含 `Reflect.apply`、高阶转发、`as unknown as` 类型擦除之前的那一次
+ * 取用）都只允许出现在 facade 与本文件里；`child`/`setBindings` 这类 mutation
+ * API 只有本文件可以碰；组装根 `src/app.ts` 只能**传递** logger，不能在它上面做
+ * 任何成员访问。
  *
  * 因此本文件里的净化器**不再是业务日志的安全依据**，它的职责收窄成**纵深防御**，
  * 只覆盖两类绕不过去的输入：
@@ -113,6 +121,10 @@ const isSensitiveKey = (key: string): boolean => {
   return (
     sensitiveKeys.has(normalized) ||
     normalized.endsWith("token") ||
+    // `apiKey` / `serviceApiKey` / `X-API-Key` 归一化之后都以 `apikey` 结尾。
+    // 第十一轮的 child-binding 反例就是被裸的 `apiKey` 抓出来的：名单里只登记了
+    // `xapikey`，而后缀规则里没有 `apikey`。
+    normalized.endsWith("apikey") ||
     normalized.endsWith("secret") ||
     normalized.endsWith("openid") ||
     normalized.endsWith("unionid") ||
@@ -959,8 +971,8 @@ const serializeResponse = (response: unknown): unknown =>
  * 填 `errorType` 字段，原始对象本身到不了 logger。
  *
  * 第十轮起业务代码不再自己拼 `{ err: … }` record——能记的事件是闭集，字段是显式
- * 声明的原始类型。静态门禁用 TypeScript 的 type checker 保证 `src/` 里除了
- * facade 之外没有任何直接的 logger 调用。
+ * 声明的专用安全类型。第十一轮起 `errorType` 还带 brand：它**只能**由
+ * `eventErrorType()` 产生，随便一个字符串字面量在类型上就赋不进来。
  */
 export const errorTypeOf = (error: unknown): string =>
   canonicalizeError(error).type;

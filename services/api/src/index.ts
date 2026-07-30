@@ -1,12 +1,19 @@
 import { buildApp } from "./app.js";
-import { eventErrorType, logEvent } from "./log-events.js";
+import {
+  eventErrorType,
+  logEvent,
+  type ShutdownSignal,
+} from "./log-events.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
 const app = await buildApp({ config });
 
 let closing = false;
-const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+// 参数类型收窄成 facade 的 `ShutdownSignal`：这个进程只为这两个信号安装 handler，
+// 而日志字段也只接受这两个。用 `NodeJS.Signals` 就等于把「任意信号名」这条自由
+// 字符串又放了回来。
+const shutdown = async (signal: ShutdownSignal): Promise<void> => {
   if (closing) {
     return;
   }

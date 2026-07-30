@@ -1,6 +1,7 @@
+import { apiErrorCodeSchema, type ApiErrorCode } from "@meal-agent/contracts/api";
 import type { FastifyBaseLogger } from "fastify";
 
-import { errorTypeOf } from "./logging.js";
+import { allowedErrorTypes, errorTypeOf } from "./logging.js";
 
 /**
  * 阶段 09A / M3A：业务代码的**窄化 typed logging facade**。
@@ -13,44 +14,71 @@ import { errorTypeOf } from "./logging.js";
  * 命题。
  *
  * 这一层换方向：**业务代码根本不把任意对象交给 logger**。能记的事件是**闭集**，
- * 每个事件的字段是**显式声明**的，字段类型只允许 `string | number | boolean |
- * null`。原始 Error / Request / Reply / Config / Secret 在类型上就进不来——不是
- * 「进来之后会被净化」，是**编译期就不可表达**。
+ * 每个事件的字段是**显式声明**的，而且每个字段都有自己的**专用安全类型**——
+ * 不是「任意字符串」。原始 Error / Request / Reply / Config / Secret 在类型上就
+ * 进不来。
  *
- * 静态门禁（`tests/unit/production-log-arguments.test.ts`）用 TypeScript 的
- * type checker 保证 `src/` 里除了本文件之外**没有任何**直接的 logger 调用，因此
- * 这条收窄不是靠自觉。
+ * ## 第十一轮收口的三件事
+ *
+ * 1. **参数类型上没有开放的 `Record<string, LogFieldValue>`**。上一版为了让
+ *    `logEvent` 能遍历字段，在参数上交了一个开放索引签名——那等于把「随便加一个
+ *    原始类型字段」重新放了进来。现在参数就是 `LogEventFields[Event]` 本身。
+ * 2. **每个事件有固定的 runtime projector**：逐个字段**按名字**取值，不遍历
+ *    `Object.keys(fields)`。因此未声明的字段在结构上就到不了 payload——不是
+ *    「遍历时被过滤掉」，是根本没被读过。
+ * 3. **字段类型是专用安全类型，不是自由字符串**：
+ *    - `errorType` 是 branded 类型，只能由 `eventErrorType()` 产生，运行期还要在
+ *      `allowedErrorTypes` 里验一次；
+ *    - `errorCode` 用项目真实的 `ApiErrorCode` union，运行期用 contracts 的
+ *      schema 验一次；
+ *    - `signal` 只允许 `SIGINT` / `SIGTERM`。
+ *    任何一项验不过就**抛错**（fail closed），而不是「写一个占位串进去」。
+ *
+ * `event` 是保留字段：projector 产出的对象里不可能有它，assemble 时它最后写入，
+ * 调用方没有任何路径能覆盖。
  *
  * ## 保留的纵深防御
  *
- * `logging.ts` 里的 `req`/`res`/`err` 固定 serializer **保留**，但它的职责收窄成
- * 一件事：Fastify **自己**打的那几条请求日志（`incoming request`、
- * `request completed`、defaultErrorLog）是框架直接调 logger 的，绕不过这一层
- * facade。那条路径上仍然需要投影与脱敏。业务代码不再依赖它。
+ * `logging.ts` 里的 `req`/`res`/`err` 固定 serializer **保留**，职责收窄成一件事：
+ * Fastify **自己**打的那几条请求日志（`incoming request`、`request completed`、
+ * defaultErrorLog）是框架直接调 logger 的，绕不过这一层 facade。业务代码不再
+ * 依赖它。
  */
 
-/** 事件字段只允许这些原始类型——对象、数组、函数在类型上就传不进来。 */
+/** 事件字段的取值域。对象、数组、函数在类型上就传不进来。 */
 export type LogFieldValue = string | number | boolean | null;
 
+declare const safeErrorTypeBrand: unique symbol;
+
 /**
- * 事件闭集。新增事件必须改这里，因此「日志里会出现什么」是一份可以逐条复核的
- * 清单，而不是散落在调用点的自由发挥。
+ * 已归一化的错误类型名。
+ *
+ * brand 让它**只能**由 `eventErrorType()` 产生：随便一个字符串字面量赋不进来，
+ * 因此「自由文本冒充安全字段」在类型上就不成立。运行期还会再验一次。
+ */
+export type SafeErrorType = string & { readonly [safeErrorTypeBrand]: true };
+
+/** 优雅停机只可能由这两个信号触发。 */
+export type ShutdownSignal = "SIGINT" | "SIGTERM";
+
+/**
+ * 事件闭集。新增事件必须同时改这里、改 `eventCatalogue`、改 `projectors`——
+ * 三处都是穷尽映射，漏一处就编译不过。
  */
 export interface LogEventFields {
   readonly "request.failed": {
-    /** 已经归一化过的错误类型名（来自 allowlist），不是原始 Error。 */
-    readonly errorType: string;
+    readonly errorType: SafeErrorType;
   };
   readonly "request.rejected": {
-    readonly errorCode: string;
+    readonly errorCode: ApiErrorCode;
     readonly statusCode: number;
   };
   readonly "shutdown.started": {
-    readonly signal: string;
+    readonly signal: ShutdownSignal;
   };
-  readonly "shutdown.timed-out": Record<string, never>;
+  readonly "shutdown.timed-out": Record<never, never>;
   readonly "startup.failed": {
-    readonly errorType: string;
+    readonly errorType: SafeErrorType;
   };
 }
 
@@ -75,40 +103,107 @@ const eventCatalogue: {
   "startup.failed": { level: "fatal", message: "API startup failed" },
 };
 
+/** 运行期验证：验不过就抛，绝不降级成占位串。 */
+const rejectField = (event: string, field: string, why: string): never => {
+  throw new Error(
+    `log event ${event}: field ${field} is not acceptable (${why})`,
+  );
+};
+
+const checkedErrorType = (event: string, value: unknown): string => {
+  if (typeof value !== "string" || !allowedErrorTypes.has(value)) {
+    return rejectField(
+      event,
+      "errorType",
+      "must come from eventErrorType() and be a registered error type",
+    );
+  }
+  return value;
+};
+
+const checkedErrorCode = (event: string, value: unknown): ApiErrorCode => {
+  const parsed = apiErrorCodeSchema.safeParse(value);
+  if (!parsed.success) {
+    return rejectField(event, "errorCode", "must be a declared ApiErrorCode");
+  }
+  return parsed.data;
+};
+
+const checkedStatusCode = (event: string, value: unknown): number => {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 100 ||
+    value > 599
+  ) {
+    return rejectField(event, "statusCode", "must be an integer HTTP status");
+  }
+  return value;
+};
+
+const checkedSignal = (event: string, value: unknown): ShutdownSignal => {
+  if (value !== "SIGINT" && value !== "SIGTERM") {
+    return rejectField(event, "signal", "must be SIGINT or SIGTERM");
+  }
+  return value;
+};
+
+/**
+ * 每个事件的**固定 projector**：逐个字段按名字取值。
+ *
+ * 这里刻意**不**遍历 `Object.keys(fields)`——遍历意味着「先看看传进来了什么，
+ * 再决定留哪些」，而未声明的字段应该在结构上就到不了 payload，不是被过滤掉。
+ * 多传一个字段在这里连读都不会被读到。
+ */
+const projectors: {
+  readonly [Event in LogEventName]: (
+    fields: LogEventFields[Event],
+  ) => Readonly<Record<string, LogFieldValue>>;
+} = {
+  "request.failed": (fields) => ({
+    errorType: checkedErrorType("request.failed", fields.errorType),
+  }),
+  "request.rejected": (fields) => ({
+    errorCode: checkedErrorCode("request.rejected", fields.errorCode),
+    statusCode: checkedStatusCode("request.rejected", fields.statusCode),
+  }),
+  "shutdown.started": (fields) => ({
+    signal: checkedSignal("shutdown.started", fields.signal),
+  }),
+  "shutdown.timed-out": () => ({}),
+  "startup.failed": (fields) => ({
+    errorType: checkedErrorType("startup.failed", fields.errorType),
+  }),
+};
+
+/** `event` 是保留字段，任何 projector 都不得产出它。 */
+const reservedField = "event";
+
 /**
  * 业务代码记录日志的**唯一**入口。
  *
- * 字段被类型钉死，msg 来自事件目录，级别也来自事件目录——调用点没有任何自由拼接
- * 的余地，因此也就没有「不小心把一个对象拼进去」的可能。
+ * 字段、级别、msg 全部来自事件目录，调用点没有任何自由拼接的余地。
  */
 export const logEvent = <Event extends LogEventName>(
   logger: FastifyBaseLogger,
   event: Event,
-  fields: LogEventFields[Event] & Readonly<Record<string, LogFieldValue>>,
+  fields: LogEventFields[Event],
 ): void => {
   const { level, message } = eventCatalogue[event];
-  // 只从**声明过的**字段里取值，逐个复制成新对象：调用点即使传进来一个带额外
-  // 属性的对象（TypeScript 的多余属性检查只在字面量上生效），多出来的那些也
-  // 到不了 logger。
-  const payload: Record<string, LogFieldValue> = { event };
-  for (const key of Object.keys(fields).sort()) {
-    const value = (fields as Record<string, unknown>)[key];
-    if (
-      typeof value === "string" ||
-      typeof value === "number" ||
-      typeof value === "boolean" ||
-      value === null
-    ) {
-      payload[key] = value;
-    }
+  const projected = projectors[event](fields);
+  if (Object.hasOwn(projected, reservedField)) {
+    // 只可能是有人给 projector 加了一个叫 `event` 的字段。fail closed。
+    throw new Error(`log event ${event}: ${reservedField} is reserved`);
   }
-  logger[level](payload, message);
+  // `event` **最后**写入，调用方没有任何路径能覆盖它。
+  logger[level]({ ...projected, [reservedField]: event }, message);
 };
 
 /**
  * 从一个 Error 取出**已归一化的类型名**，供 `errorType` 字段使用。
  *
- * 这是原始 Error 与业务日志之间唯一的桥：它返回一个 allowlist 里的字符串，
- * 原始对象本身到不了 logger。
+ * 这是原始 Error 与业务日志之间唯一的桥：返回值带 brand，因此 `errorType` 字段
+ * 只能由它产生；返回的字符串一定在 `allowedErrorTypes` 里。
  */
-export const eventErrorType = (error: unknown): string => errorTypeOf(error);
+export const eventErrorType = (error: unknown): SafeErrorType =>
+  errorTypeOf(error) as SafeErrorType;
