@@ -764,6 +764,68 @@ handler 记下来，却再也没人去看它。现在归还之后**再读一次*
 
 **M3A 仍为整改中，未标记 Accepted。**
 
+#### M3A typed facade 最终收口（第十一轮）
+
+**1. 参数上的开放索引签名删掉了。**
+
+第十轮的 `logEvent` 参数是 `LogEventFields[Event] & Readonly<Record<string,
+LogFieldValue>>`。那个交叉项等于把「随便加一个原始类型字段」重新放了回来，而
+实现又靠 `Object.keys(fields)` 遍历——「先看看传进来了什么，再决定留哪些」。
+
+现在参数就是 `LogEventFields[Event]`，每个事件有**固定的 runtime projector**，
+逐个字段**按名字**取值。未声明的字段在结构上就到不了 payload：不是遍历时被过滤
+掉，是根本没被读过。`event` 是保留字段——projector 产不出它，assemble 时它最后
+写入，调用方没有任何路径能覆盖。
+
+**2. 字段是专用安全类型，不是自由字符串。**
+
+| 字段 | 类型 | 运行期验证 |
+| --- | --- | --- |
+| `errorType` | branded `SafeErrorType`，只能由 `eventErrorType()` 产生 | 必须在 `allowedErrorTypes` 里 |
+| `errorCode` | 项目真实的 `ApiErrorCode` union | contracts 的 `apiErrorCodeSchema` |
+| `statusCode` | `number` | 必须是 100–599 的整数 |
+| `signal` | `"SIGINT" \| "SIGTERM"` | 只接受这两个值 |
+
+验不过就**抛错**（fail closed），不写占位串。`index.ts` 的 `shutdown()` 参数也
+从 `NodeJS.Signals` 收窄成 `ShutdownSignal`。
+
+**3. 真实 `createLogger` 反例（`tests/unit/log-events.test.ts`，5 条）。**
+
+额外 primitive 字段、`event` 覆盖、declared string 携带 opaque Secret、child
+binding 携带 opaque Secret、五个事件的完整 round-trip——每条都扫描真实 Pino 最终
+输出，sentinel 命中为 0。
+
+child-binding 那条当场抓出一个真实缺口：裸的 `apiKey` 归一化成 `apikey`，而键名
+规则里只登记了 `xapikey`（`X-API-Key` 的归一化形式），没有 `apikey` 后缀规则。
+已补上。
+
+**4. AST 门禁从「调用」扩到「能力」。**
+
+第十轮只看 `CallExpression` 的 callee。用第十一轮新增的写法逐条打它：
+
+| 写法 | 第十轮检测器 | 第十一轮 |
+| --- | --- | --- |
+| `Reflect.apply(logger.error, …)` | **MISSED** | `[LogFn] logger.error` |
+| 高阶转发 `forward(logger.warn)` | **MISSED** | `[LogFn] logger.warn` |
+| 类型擦除 `logger.fatal as unknown as …` | **MISSED** | `[LogFn] logger.fatal` |
+| `logger.setBindings({…})` | **MISSED** | `[mutation] logger.setBindings` |
+| `logger.child({…})` | 只抓到随后的 `child.info` | `[mutation] logger.child` |
+
+现在的判据是**任何类型为 `LogFn` 的表达式**——调用与否无关紧要，拿到了就是拿到
+了。规则三条：`LogFn` 只允许出现在 `log-events.ts` 与 `logging.ts`；
+`child`/`setBindings`/`flush`/`level` 等 mutation API 只有 `logging.ts` 可以碰；
+组装根 `src/app.ts` 可以**命名** logger（它得交给 Fastify），但一旦在它上面做成员
+访问就变红。实测：往 `app.ts` 注入 `logger.child({…})` + `audit.info(…)`，门禁
+立刻报出 `src/app.ts:182 -> [mutation] logger.child` 与
+`src/app.ts:183 -> [LogFn] audit.info` 两条。
+
+第九轮那条正则扫描器仍逐字保留在测试里跑对照：它对整份十一种写法的 fixture 报告
+**0 条违规**。
+
+**本轮不动**已经通过复验的 Secret 信号状态机与矩阵运行逻辑。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链

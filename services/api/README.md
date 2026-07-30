@@ -80,10 +80,15 @@ fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同�
 各判一次；端口（含 `:443`）、尾斜杠、query、fragment、userinfo、相似域名与子域名
 全部拒绝。
 
-业务日志走 `src/log-events.ts` 的**窄化 typed facade**：事件是闭集，字段显式声明
-且只允许 `string | number | boolean | null`，原始 Error / Request / Reply /
-Config / Secret 在类型上就进不来。静态门禁用 TypeScript 的 type checker 保证
-`src/` 里除了 facade 与 `logging.ts` 之外没有任何直接的 logger 调用。
+业务日志走 `src/log-events.ts` 的**窄化 typed facade**：事件是闭集，每个事件有
+固定的 runtime projector（逐个字段按名字取值，不遍历调用方传进来的对象），字段
+是专用安全类型——`errorType` 带 brand 且运行期在 allowlist 里验一次，`errorCode`
+用真实的 `ApiErrorCode`，`signal` 只允许 SIGINT/SIGTERM，验不过就抛错。原始
+Error / Request / Reply / Config / Secret 在类型上就进不来。
+
+静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**：任何
+`LogFn` 类型的表达式只允许出现在 facade 与 `logging.ts` 里，`child`/`setBindings`
+只有 `logging.ts` 可以碰，组装根 `src/app.ts` 只能传递 logger 而不能访问它的成员。
 
 `logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
 与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖
