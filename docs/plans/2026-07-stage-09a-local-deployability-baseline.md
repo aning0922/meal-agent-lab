@@ -887,6 +887,63 @@ app.ts 改成**精确上下文白名单**（`const logger = …` / `loggerInstan
 
 **M3A 仍为整改中，未标记 Accepted。**
 
+#### M3A Round 13 最终架构收口
+
+**一、EventLogSink 的可信边界。**
+
+Round 12 的 sink 建在组装根手里的那个 logger 上，而那个 logger 可以由调用方
+（`options.logger`）注入——于是一个**预绑定过 binding 的 child** 就能污染每一条
+业务事件。Round 13 引入 `LoggingContext`：`framework` 与 `events` 是**两个独立的
+pino 根**，只是写向同一个目的地；`options.logger` 只能注入 framework 那一侧，
+业务事件底座由 `createLoggingContext()` 新建，调用方没有入口碰它。sink 本身
+`Object.freeze`，`emit` 既不可写也不可重定义。
+
+修复前对照（复刻 Round 12 接线实测）：
+
+| 反例 | Round 12 接线 | Round 13 |
+| --- | --- | --- |
+| 预绑定 child | `{…,"traceContext":"OPAQUE-…","errorCode":"FORBIDDEN","event":"request.rejected"}` | 业务事件键集恒为 `{errorCode,event,level,msg,requestId,statusCode,time}` |
+| sink 建好后 `setBindings` | 同上，binding 照样跟进业务事件 | 不受影响（两棵树） |
+| `sink.emit = …` | `REPLACED-EMIT-RAN` | 冻结 + 不可重定义，替换失败 |
+
+同一条用例里正向断言框架请求日志仍然正常：method / path / requestId / statusCode
+一个不少。
+
+**二、capability gate。**
+
+1. mutation API 改按 **pino 成员声明身份**识别。按名字匹配抓不到
+   `Pick<Logger, "setBindings">`（接收者类型已经不是 Logger），也抓不到
+   `logger["setBindings"]`（`node.name` 根本不存在）。现在先算出被访问的成员名，
+   再从**接收者的类型**上取那个属性的符号，比对它的声明节点——映射类型产生的属性
+   符号仍然指向原始的 `PropertySignature`。三种形状修复前全部漏网，修复后
+   `[mutation] picked.setBindings` / `[mutation] logger["setBindings"]` /
+   `[mutation] logger.setBindings` 逐条命中。
+2. app.ts 白名单从**祖先子树**改成**精确节点 + 精确参数位置**。祖先放行等于放行
+   整棵子树：`loggerInstance: externalRelay(logger)` 与
+   `createEventLogSink(externalRelay(logger))` 修复前**双双假绿**（门禁只报出中继
+   函数自己的参数）；修复后立刻报出
+   `src/app.ts:182 -> [Logger] externalRelay(logging.framework)`。
+   现在只认三个位置，且节点形状也钉死：`createLoggingContext(level, options.logger)`
+   的第 1 个实参、`loggerInstance: <ctx>.framework`、
+   `createEventLogSink(<ctx>.events)`。
+3. 「**工程护栏，不是形式化安全证明**」这条诚实边界保留在文件头。
+
+**三、证据与文档。**
+
+- `statusCode` 的派生测试改成从 `Object.entries(apiErrorStatus)` **全量生成**，
+  不再手写十个样例——手写只能证明被写下的那几个。
+- 清理 `logging.ts` 里已经失真的注释：`redact.paths` 的后备（早已整条不用）、
+  子 logger censor 包装（第八轮起整条拒绝）、以及散落的 Proxy 说明（统一到文件头
+  的一段口径）。
+- 「业务代码拿不到 logger」这句**过强**的说法已改写为：Fastify 仍暴露
+  `app.log` / `request.log`；仓库业务调用点由 capability gate 约束，业务事件通过
+  独立 `EventLogSink`。
+
+Round 12 已完成的 statusCode 派生、私有 error allowlist、声明身份判定全部保留。
+**Secret 信号状态机与矩阵保持冻结**，本轮 diff 为 0 行。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链

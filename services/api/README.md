@@ -86,8 +86,10 @@ fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同�
 用真实的 `ApiErrorCode`，`signal` 只允许 SIGINT/SIGTERM，验不过就抛错。原始
 Error / Request / Reply / Config / Secret 在类型上就进不来。
 
-业务代码连 logger 本身都拿不到：它只持有 `EventLogSink`（由组装根从 root logger
-创建、闭包持有，只有 `emit`）。`statusCode` 由 `errorCode` 派生，调用方造不出
+口径写实：**Fastify 仍然暴露 `app.log` / `request.log`**；成立的是「本仓库的业务
+调用点由 capability gate 约束，业务事件通过独立的 `EventLogSink`」。sink 的底座是
+`createLoggingContext()` 新建的、与 framework 分开的另一个 pino 根，闭包持有，
+`Object.freeze` 且 `emit` 不可替换。`statusCode` 由 `errorCode` 派生，调用方造不出
 自相矛盾的组合。
 
 静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
