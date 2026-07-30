@@ -357,9 +357,13 @@ EXIT trap。因此解析期间的快照安全网采用「保存 → 链式执行
 
 `signal-matrix.sh` 覆盖「四种调用方处置（默认处置 / handler 自杀 / handler 只
 返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP × starting/terminating 两个窗口
-× first-wins × EXIT trap 链式执行与**退出状态回传** × 重投窗口里的同名信号风暴 ×
-**post-worker 窗口**（worker 已结束、正在删除快照）」，共 **106 项断言**。这个数字
-在门禁里是**精确相等**而不是下界，改动必须同时改门禁与这里。
+、first-wins、EXIT trap 链式执行与**退出状态回传**、重投窗口里的同名信号风暴、
+**post-worker 窗口**（worker 已结束、正在删除快照）与 **pre-worker 窗口**（worker
+还没 fork，正在建快照目录）」，共 **150 项断言**。
+
+**150 是断言条数，不是全组合覆盖**：每个窗口只挑与它相关的处置组合，不是
+「4 种处置 × 3 个信号 × 6 个窗口」的笛卡尔积。这个数字在门禁里是**精确相等**而不是
+下界，改动必须同时改门禁与这里。
 `services/api/tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 shell 与
 **钉住 digest 的 `postgres:18.4-bookworm` 内以 uid 999** 各跑一遍，两侧都进
 `pnpm --filter @meal-agent/api check`。**这条门禁需要能运行 Docker**，并且刻意
@@ -372,6 +376,8 @@ EXIT trap。因此解析期间的快照安全网采用「保存 → 链式执行
   worker 进程组发 TERM」的真实外部效果。
 - `post-worker`：PATH 影子 `rm`。`meal_agent_discard_snapshot` 用的就是
   `rm -rf`，所以那一刻 worker 已结束、快照验证与取值复制都已完成。
+- `pre-worker`：PATH 影子 `mktemp`。`meal_agent_open_snapshot` 用的就是
+  `mktemp -d`，而它在 worker fork **之前**的 metadata 阶段被调用。
 - `starting`（trap 已装、`worker=$!` 未赋值）**没有外部可观测副作用，无法被真实
   确定地命中**，因此只由代码顺序保证（先装 trap、后 fork），不再声称已被证明。
 

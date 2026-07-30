@@ -81,8 +81,9 @@ fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同�
 全部拒绝。
 
 日志脱敏落在**中央 logger 边界**（`hooks.logMethod` + `formatters.log` + `child()`
-与 `setBindings()` 覆盖 + 子 logger options 的安全包装 + `redact.paths`），调用方
-无需主动调用 `redactSensitive`；覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
+与 `setBindings()` 覆盖 + 子 logger options 的安全包装）。**pino 的 `redact` 整条
+不用**：根 logger 不配置它，子 logger 传了直接抛错。调用方无需主动调用
+`redactSensitive`；覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
 取值识别的 PostgreSQL 连接串与 libpq conninfo，以及 Error 对象。全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，不启用任何 CORS。
 

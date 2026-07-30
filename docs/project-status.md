@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点 `5e480803`；**M2B（Compose 拓扑）已 Accepted**，验收落点 `d0f2219`；**M3A（配置与 Secret file 消费核心）implementation complete, pending total-control review**，M3B、M4、M5 未开始。完整 bootstrap 链与全栈启动仍未通过。详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点 `5e480803`；**M2B（Compose 拓扑）已 Accepted**，验收落点 `d0f2219`；**M3A（配置与 Secret file 消费核心）整改中**（第九轮，未 Accepted），M3B、M4、M5 未开始。完整 bootstrap 链与全栈启动仍未通过。详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -87,7 +87,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 141/141 |
+| API unit | 147/147 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -115,7 +115,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M2A R8B（把 projector 接入 verify/converge） | 总控 **Accepted** |
 | M2A 整体 | 总控 **Accepted**，验收落点 `5e480803` |
 | M2B Compose 拓扑 | 总控 **Accepted**，验收落点 `d0f2219` |
-| M3A 配置与 Secret file 消费核心 | **implementation complete, pending total-control review** |
+| M3A 配置与 Secret file 消费核心 | **整改中（第九轮，未 Accepted）** |
 | M3B 环境模板与完整 bootstrap 链实证 | **未开始** |
 | M4 / M5 | **未开始** |
 
@@ -171,9 +171,12 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 - **信号矩阵已经是门禁，不再只是文档**（第七轮）：
   `infra/docker/postgres/signal-matrix.sh` 覆盖「四种调用方处置（默认处置 /
   handler 自杀 / handler 只返回不退出 / `trap '' SIG` 忽略）× TERM/INT/HUP ×
-  none / terminating / handler / storm / **post-worker** 四个投递窗口 × first-wins ×
-  EXIT trap 链式执行与退出状态回传」，共 **106 项断言**（数字在门禁里是**精确
-  相等**，不是下界；改动必须同时改门禁与本表）；
+  none / terminating / handler / storm / post-worker / **pre-worker** 六个投递窗口、
+  first-wins、EXIT trap 链式执行与退出状态回传」，共 **150 项断言**。
+  **150 是断言条数，不是 4×3×窗口的全组合覆盖**——每个窗口只挑与它相关的处置组合
+  （例如 pre-worker 与 post-worker 各跑 default/exit/ignore/return 四种处置、只用
+  TERM），断言数远小于全组合。这个数字在门禁里是**精确相等**而不是下界，改动必须
+  同时改门禁与本表；
   `tests/unit/bootstrap-signal-matrix.test.ts` 让它在本机 bash 3.2 与
   **钉住 digest 的 postgres:18.4-bookworm 容器内以 uid 999** 各跑一遍，两侧都进
   `pnpm --filter @meal-agent/api check`。**因此这条门禁新增了 Docker 前置条件**，
@@ -216,16 +219,18 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   fetch 并替换 `globalThis.fetch` 的条件下，成功与失败两条分支的外部调用次数
   都是 0。**本轮没有接入真实 AppID/AppSecret，也没有调用真实微信服务。**
 - **脱敏落在中央 logger 边界**（`hooks.logMethod` + `formatters.log` + `child()`
-  与 `setBindings()` 覆盖 + 子 logger options 的安全包装 + `redact.paths`），调用方无需主动调用 `redactSensitive`；覆盖任意
+  与 `setBindings()` 覆盖 + 子 logger options 的安全包装）。**pino 的 `redact`
+  已经整条不用**：根 logger 不配置它，子 logger 传了直接抛错。调用方无需主动调用
+  `redactSensitive`；覆盖任意
   嵌套层级的连接串/口令/DSN 命名变体、按取值识别的 PostgreSQL 连接串与 libpq
   conninfo（含带引号/空格的形态：看到 `password=` 即删除其后全部文本）、Error 与
   嵌套 cause、printf `%j`/`%o`/`%s` 参数、`child()` 与孙 logger 的 bindings、
   own enumerable `toJSON`/`toString`（一律换成占位串，`JSON.stringify` 阶段不会
   再碰到调用方提供的这两个方法），对象与数组共用的循环引用防护，`setBindings()`（root/child/
   grandchild），子 logger 的 `serializers`/`formatters.log`/`formatters.bindings`/
-  `redact.censor`/`msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
+  `msgPrefix`，以及**百分号编码**的连接串（请求目标完全由调用方
   控制，可以把整条 DSN 编码进 path）。口令的原值与 URL 编码形态同时消失。
-  37 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
+  41 组用例全部扫描**真实 Pino 最终输出**，并**正向**断言请求日志仍然保留
   method、脱敏后的 path、remoteAddress 与 statusCode——脱敏不能靠把请求信息
   一起丢掉来「通过」。
 - **Error 与不可信输入的两条额外边界**（第六轮补上）：`Error.message` 会被 pino
@@ -238,6 +243,24 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   遮蔽 `Object.prototype` 成员的结构键统一改名（`hasOwnProperty` 此前会让 pino
   的 `asChindings()` 自己抛 `TypeError`，`__proto__` 则不再有机会触及原型
   访问器）。
+- **请求字段在 Fastify 可信边界读、logger 只登记纯数据**（第九轮）：`app.ts` 的
+  `genReqId(rawRequest)` 是 Fastify 刚把 request 交给我们、还没经过任何调用方之手
+  的唯一一刻。四个字段在那里读完、物化成字符串传给 logger；`registerRequestLogFields`
+  **不读任何属性、不调用任何访问器**。上一版的登记函数会去读传进来的对象，把
+  `socket` 写成数据属性、`socket.remoteAddress` 写成 `net.Socket.prototype` 上的
+  访问器就能拿到执行权（实测 1 次）。方向是收窄，不是继续扩展任意对象/Proxy 净化器。
+- **顶层 record 只抓一次描述符快照**（第九轮）：`carriesError` 与 canonicalization
+  共用同一份。分两次探测有洞——一个有状态的 Proxy 可以第一次报「没有 err」（msg
+  因此不折叠）、第二次再把 `err` 交出来，产出一条**自相矛盾**的记录（带 err、配
+  一条未折叠的 msg）。
+- **msg 折叠不看类型**（第九轮）：`new String("…")` 的 `typeof` 是 "object"，
+  上一版「只折 typeof === 'string'」的判据把它整条放过去——实测那条 msg 被拍成了
+  一个逐字符的对象，秘密完整可读。现在 index 1 只要 record 带 `err` 就折。
+- **生产代码不得把原始对象塞进 log record**（第九轮）：新增静态门禁
+  `tests/unit/production-log-arguments.test.ts`，扫描 `src/` 里所有
+  `log.<level>(` 的第一个实参，禁止裸 `request`/`reply`/`raw`/`error`/`config`/
+  `secret`/`password`/`token`。生产调用点改用 `safeErrorRecord(error)`，在调用点
+  就折成纯数据。扫描器自带正反两组自检。
 - **err record 的显式 msg 无条件折叠**（第八轮）：上一版只在 msg 与 `err.message`
   **逐字相同**时才折。那条判据可以靠包装一层、截一段、加个前缀绕开，而携带的仍
   然是同一段内部细节（实测 sentinel 直接进日志流）。现在判据只有一条——这条记录
@@ -294,8 +317,9 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   4 字段投影覆盖（`req.headers.*`），要么已被 canonicalizer 的任意深度键名脱敏
   覆盖（`*.authorization` 等），而 `@pinojs/redact` 会先做一次**选择性克隆**再
   序列化克隆体，克隆体带不上上面那条遮蔽；又因为存在 `*` 通配路径，pino 会把
-  **每一个键**都送进这个 redactor。去掉之后遮蔽才真正生效。子 logger 仍可自带
-  `redact`，其 censor 依旧被安全包装。
+  **每一个键**都送进这个 redactor。去掉之后遮蔽才真正生效。子 logger **也不能**
+  把它带回来：第八轮起 `hardenChildOptions` 见到 `redact` 直接抛错，不再按形态
+  包装 censor。
 - **仍然成立的残余**：Proxy 的 trap 返回一段普通字符串时，它就是普通数据——除了
   连接串/conninfo 的文本规则与键名规则之外没有别的过滤。这与任何调用方直接传一段
   文本进来是同一件事，不是脱敏漏洞。
@@ -556,7 +580,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）implementation complete, pending total-control review**，M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链实证）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；M3A 只覆盖代码侧消费能力，完整 bootstrap 链与全栈启动仍未通过。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）整改中**（第九轮，未 Accepted），M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链实证）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；M3A 只覆盖代码侧消费能力，完整 bootstrap 链与全栈启动仍未通过。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
@@ -566,7 +590,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。M3A 在 `claude/stage-09a-m3-config-secret-consumption` 上实施，基线 `8c99c46`。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
-- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 已 Accepted，M3A 待总控复核）；仍缺环境模板与完整 bootstrap 链实证（M3B）、全栈启动与备份恢复证据（M4）以及阶段总门禁（M5）。
+- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 已 Accepted，M3A 整改中）；仍缺环境模板与完整 bootstrap 链实证（M3B）、全栈启动与备份恢复证据（M4）以及阶段总门禁（M5）。
 - 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。
 - GitHub `origin` 与 `main` upstream 已配置，仓库已有 CI workflow；当前只确认配置存在，没有在本次规划中读取或伪造远端 run Pass。
 
@@ -585,4 +609,4 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M2A 的 R8A、R8B 与 M2A 整体均已由总控 Accepted（M2A 验收落点 `5e480803`），M2B（Compose 拓扑）也已由总控 Accepted（验收落点 `d0f2219`），M3A 实现完成待总控复核，下一项是 M3B。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M2A 的 R8A、R8B 与 M2A 整体均已由总控 Accepted（M2A 验收落点 `5e480803`），M2B（Compose 拓扑）也已由总控 Accepted（验收落点 `d0f2219`），M3A 整改中（未 Accepted），下一项是 M3B。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。

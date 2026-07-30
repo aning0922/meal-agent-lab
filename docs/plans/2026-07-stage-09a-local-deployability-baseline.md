@@ -663,6 +663,59 @@ allowlist 漂移扫描补上 `override readonly name = "X"` 类字段与
 
 **M3A 仍为整改中，未标记 Accepted。**
 
+#### M3A 第八轮总控复验未通过后的定点修订
+
+**信号（第 1 条）**
+
+| 反例 | `f67225e` 实测 | 现在 |
+| --- | --- | --- |
+| pre-worker metadata 阶段定点 TERM（default / exit / ignore / return 四种处置） | 四种全部 exit 0 并打出 RESOLVED——信号被静默吞掉 | 143 / 71 / 2 / 2，都没有 RESOLVED |
+
+根因：winner 的初始化写在 `meal_agent_read_secret_file` 里、worker 起来之前，
+而 trap 从 `resolve_secret` 入口就装上了。metadata 阶段（变量名校验 → `stat`
+探测 → `mktemp -d` 建快照目录）收到的信号已经记进 winner，然后被那句重置**整条
+抹掉**。现在初始化移到 resolve 入口、装 trap **之前**，且只做一次；
+`read_secret_file` 里的那句重置删除，并在起 worker 之前加了一个 pre-worker
+检查点。
+
+「final winner check → restore traps」之间还有一个窗口：落在那里的信号由我们的
+handler 记下来，却再也没人去看它。现在归还之后**再读一次**——此刻我们的 handler
+已经卸掉，能被登记的信号集合到此为止是最终的，补投一次就把处置权真正交回调用方。
+再之后到达的信号本来就该由调用方处置。
+
+**Logger（第 2 条，四条现场反例）**
+
+| 反例 | `f67225e` 实测 | 现在 |
+| --- | --- | --- |
+| carriesError 与 canonicalization 同一份快照 | 有状态 Proxy 让两次探测看到不同形状，产出「带 err + 未折叠 msg」的自相矛盾记录 | 一次快照，两者一致 |
+| 装箱字符串 msg | msg 被拍成逐字符对象，秘密完整可读 | `request failed` |
+| `Proxy-Authorization` / `X-API-Key` | 取值原样进日志 | `[Redacted]` |
+| 登记函数不读任何属性 | 自造对象的 `socket.remoteAddress` getter 被执行 1 次 | 0 次 |
+
+方向是**收窄**而不是继续扩展任意对象/Proxy 净化器：请求的四个字段改在 Fastify 的
+可信边界（`genReqId`）读完、物化成字符串，logger 侧的 `registerRequestLogFields`
+一个属性都不读。新增静态门禁 `production-log-arguments.test.ts`：`src/` 里任何
+`log.<level>(` 的第一个实参都不得出现裸 `request`/`reply`/`raw`/`error`/`config`/
+`secret`/`password`/`token`；生产调用点改用 `safeErrorRecord(error)`。把
+`f67225e` 的 `app.ts` 放回去，这条门禁立刻变红。
+
+**矩阵 failure-safe（第 3 条）**
+
+- 看门狗改成**自己进程组的组长**并整组回收，还要**有界确认它的 `sleep` 子进程
+  消失**。只 kill 看门狗自己时，实测每个 case 都会漏下一个 `sleep 25`（21 个 case
+  就是 21 个），它们会一直挂到自然醒。
+- 全局 EXIT 清理登记 driver、worker、watchdog **三者的真实 pgid**。
+- 容器名按 `pid + worktree 摘要` 唯一，并且只删带**本次 ownership label** 的容器
+  ——不按名字模糊匹配，也不碰别人的容器。
+- hard-cap 复核把 **bootstrap 根进程**一起纳入：上一版只查 worker/head/sleep 三层，
+  而 hard cap 之后最可能剩下的恰恰是那个还在等 close 的根进程。
+- 新增「矩阵结束瞬间没有多出 `sleep 25`」的外部反例（矩阵内部也逐个断言一遍）。
+
+断言条数 106 → **150**。**150 是断言条数，不是全组合覆盖**：每个窗口只挑与它
+相关的处置组合，不是「4 种处置 × 3 个信号 × 6 个窗口」的笛卡尔积。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
