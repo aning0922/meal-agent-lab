@@ -1,7 +1,5 @@
 import type { Writable } from "node:stream";
 
-import { Socket } from "node:net";
-
 import pino, { type LogFn, type Logger } from "pino";
 
 /**
@@ -22,7 +20,7 @@ import pino, { type LogFn, type Logger } from "pino";
  *      strict canonicalizer。
  *
  * 因此「伪造一个 req 键」拿不到任何豁免：`req`/`res` 的延后只发给**能证明是
- * Fastify 交下来的那一个**（见 `captureRequestLogSnapshot`），其余一律按不可信
+ * Fastify 交下来的那一个**（见 `registerRequestLogFields`），其余一律按不可信
  * 取值处理；
  * 而固定 serializer 对不可信输入本来也只走数据属性，产物还会再被 strict 收一遍。
  *
@@ -41,6 +39,10 @@ import pino, { type LogFn, type Logger } from "pino";
 
 const sensitiveKeys = new Set([
   "authorization",
+  // `Proxy-Authorization` 与 `X-API-Key` 归一化之后就是这两个。写成带分隔符的
+  // 形式永远匹配不上——`set-cookie` 那条规则就是这么白写了好几轮的。
+  "proxyauthorization",
+  "xapikey",
   "cookie",
   // `isSensitiveKey` 先去掉分隔符再小写，所以这里必须写**归一化之后**的形式。
   // 名单里原来写的是 `"set-cookie"`，它归一化成 `setcookie`，因此永远匹配不上
@@ -391,16 +393,6 @@ const safeErrorTypeName = (name: unknown): string =>
  * `DOMException.prototype`，那是我们自己从 `globalThis` 上取到的身份，调用方
  * 伪造不出来。执行的是平台代码，不是调用方代码。
  */
-/**
- * `net.Socket.prototype.remoteAddress` 的**原始** getter 函数。
- *
- * 只有当解析出来的访问器与它 `===` 相等时才调用——那说明接收者的原型链上挂的
- * 确实是 Node 自己那段代码。任何自造对象的同名 getter 都是另一个函数，身份不等，
- * 直接跳过。同 DOMException 那一处，判据是**函数身份**，不是所在原型对象。
- */
-const socketRemoteAddressGetter: (() => unknown) | undefined =
-  Object.getOwnPropertyDescriptor(Socket.prototype, "remoteAddress")?.get;
-
 const domExceptionNameGetter: (() => unknown) | undefined = (() => {
   if (typeof DOMException !== "function") {
     return undefined;
@@ -642,78 +634,43 @@ export const redactSensitive = canonicalizeUntrusted;
  * strict canonicalizer。
  */
 /**
- * 请求身份：**登记点捕获的不可变快照**，不是「以后可以在这个对象上普通读取」的
- * 权利。
+ * 请求身份：**在 Fastify 的可信边界上物化好的纯数据**。
  *
- * 上一版导出的是一个公开的 trust registrar：任何人都能把任意对象登记进去，之后
- * 投影就会在它身上做普通成员读取。实测这不只是架构洁癖——把 `socket` 写成数据
- * 属性、`socket.remoteAddress` 写成访问器，登记之后那个 getter 会被执行
- * （调用次数 2）。
+ * 边界收窄的方向是明确的：logger 这一层不再做「任意对象 / Proxy 净化器」，也不
+ * 再替调用方去读任何字段。字段由 `app.ts` 在 `genReqId(rawRequest)` 里读——那是
+ * Fastify 刚把 request 交给我们、还没有经过任何调用方之手的唯一一刻，读的是
+ * 平台自己的对象。读完就物化成四个原始值传进来。
  *
- * 现在换成：`app.ts` 的 `genReqId(rawRequest)` 在**唯一确定是 Fastify 交下来的
- * 那一刻**把 request 的四个字段读出来，冻结成一份快照存进 WeakMap。之后
- * serializer 只查这份快照，**再也不碰候选对象**。因此登记一个自造对象换不来任何
- * 执行访问器的机会——它只会得到一份用数据属性读出来的、属于它自己的快照。
- *
- * 为什么登记点必须是 `genReqId`：Fastify 在构造 `Request`、也在打出
- * "incoming request" 之前调用它。实测顺序是 `incoming request` → `onRequest`
- * hook，在 onRequest 里登记来不及，第一条请求日志会漏。
- *
- * 快照里的 `remoteAddress` 来自 `raw.socket.remoteAddress`
- * （`net.Socket.prototype` 上的 getter）。接收者是 Node 自己刚交给我们的 socket，
- * 那一刻它还没有经过任何调用方之手。
+ * 因此这个登记函数**不调用任何访问器、不读任何属性**：传进来的对象只当 WeakMap
+ * 的键用，取值全部来自参数。非字符串的字段一律丢弃——登记的必须是已经物化的纯
+ * 数据，而不是「等会儿再读」的承诺。
  */
-interface RequestLogSnapshot {
+interface RequestLogFields {
   readonly requestId: string;
-  readonly method: unknown;
-  readonly path: unknown;
-  readonly remoteAddress: unknown;
+  readonly method: string | undefined;
+  readonly path: string | undefined;
+  readonly remoteAddress: string | undefined;
 }
 
-const requestLogSnapshots = new WeakMap<object, RequestLogSnapshot>();
+const requestLogSnapshots = new WeakMap<object, RequestLogFields>();
 
-/**
- * 在登记点抓取快照。
- *
- * 它**不授予任何权限**：传进来的对象只是 WeakMap 的键，读取一律走数据属性，
- * 唯一的例外是 `socket.remoteAddress`，而且只在 socket 本身是数据属性时才尝试，
- * 读失败就留空。因此就算这个入口被误用，最坏结果也只是日志里多一条由调用方自己
- * 的数据属性拼出来的记录。
- */
-export const captureRequestLogSnapshot = (
+const plainString = (value: unknown): string | undefined =>
+  typeof value === "string" ? value : undefined;
+
+export const registerRequestLogFields = (
   raw: unknown,
-  requestId: string,
+  fields: RequestLogFields,
 ): void => {
   if (raw === null || typeof raw !== "object") {
     return;
   }
-  const socket = fieldValue(readDataField(raw, "socket"));
-  let remoteAddress: unknown;
-  if (socket !== null && typeof socket === "object") {
-    const resolved = resolveDescriptor(socket, "remoteAddress");
-    if (resolved !== undefined && "value" in resolved.descriptor) {
-      remoteAddress = resolved.descriptor.value;
-    } else if (
-      resolved !== undefined &&
-      socketRemoteAddressGetter !== undefined &&
-      resolved.descriptor.get === socketRemoteAddressGetter
-    ) {
-      try {
-        remoteAddress = socketRemoteAddressGetter.call(socket);
-      } catch {
-        // socket 可能已经销毁；读不到就留空，不能把日志调用带走。
-        remoteAddress = undefined;
-      }
-    }
-  }
-  const url = fieldValue(readDataField(raw, "url"));
   requestLogSnapshots.set(
     raw,
     Object.freeze({
-      requestId,
-      method: fieldValue(readDataField(raw, "method")),
-      path: typeof url === "string" ? url.split("?")[0] : undefined,
-      remoteAddress,
+      requestId: plainString(fields.requestId) ?? "",
+      method: plainString(fields.method),
+      path: plainString(fields.path),
+      remoteAddress: plainString(fields.remoteAddress),
     }),
   );
 };
@@ -731,7 +688,7 @@ const maximumRequestChainDepth = 4;
 const snapshotOf = (
   value: unknown,
   depth = 0,
-): RequestLogSnapshot | undefined => {
+): RequestLogFields | undefined => {
   if (
     depth > maximumRequestChainDepth ||
     value === null ||
@@ -786,13 +743,32 @@ const ownDataEntries = (
       : ([key, accessorPlaceholder, true] as const);
   });
 
+/**
+ * 顶层 record 的描述符快照。**整条链路只抓一次**，`carriesError` 与后面的
+ * canonicalization 共用同一份。
+ *
+ * 分两次抓是有洞的：中间的对象可以是**有状态的 Proxy**，第一次 `ownKeys` /
+ * `getOwnPropertyDescriptor` 报告一套形状（不含 `err`），第二次换另一套。一次
+ * 快照之后，后面的每一步看到的都是同一组已经物化的键值对。
+ */
+const snapshotLogRecord = (
+  record: Record<string, unknown>,
+): readonly (readonly [string, unknown, boolean])[] => ownDataEntries(record);
+
+const recordCarriesError = (
+  entries: readonly (readonly [string, unknown, boolean])[],
+): boolean => entries.some(([key]) => key === "err");
+
 const canonicalizeLogRecord = (
   record: Record<string, unknown>,
+  entries: readonly (readonly [string, unknown, boolean])[] = snapshotLogRecord(
+    record,
+  ),
 ): Record<string, unknown> => {
   const seen = new WeakSet<object>();
   const used = new Set<string>();
   const result: Record<string, unknown> = shieldFromPrototypeToJson({});
-  for (const [key, value, isAccessor] of ownDataEntries(record)) {
+  for (const [key, value, isAccessor] of entries) {
     if (
       serializedKeys.has(key) &&
       !isAccessor &&
@@ -887,6 +863,7 @@ const pathOf = (url: FieldRead): unknown =>
 const serializeRequest = (request: unknown): unknown => {
   const snapshot = snapshotOf(request);
   if (snapshot !== undefined) {
+    // 已经是纯数据了，仍然过一遍文本脱敏——path 是调用方完全可控的文本。
     return canonicalizeUntrusted({
       requestId: snapshot.requestId,
       method: snapshot.method,
@@ -942,6 +919,21 @@ const serializeResponse = (response: unknown): unknown =>
       ),
     ),
   });
+
+/**
+ * 生产代码里**唯一**被允许的「把一个 Error 交给 logger」的方式：调用点就折成
+ * 固定形状，logger 拿到的已经是纯数据。
+ *
+ * 静态门禁（`tests/unit/production-log-arguments.test.ts`）会拒绝 `src/` 里任何
+ * 把原始 Request / Error / 配置 / Secret 对象塞进 log record 的写法——原始对象一旦
+ * 进了 record，安全性就完全依赖 logger 这一层的净化器，而收窄边界的方向恰恰是
+ * **不要**再依赖它。
+ */
+export const safeErrorRecord = (
+  error: unknown,
+): { readonly err: { readonly type: string; readonly message: string } } => ({
+  err: canonicalizeError(error),
+});
 
 const serializeError = (error: unknown): unknown =>
   // 绝不返回调用方的原对象。type 只可能来自 allowlist，因此伪造一个
@@ -1169,14 +1161,26 @@ export const createLogger = (
             // 方自己写的 msg 也会变成固定串。诊断信息从 `err.type` 走（它来自
             // allowlist），不再从 msg 走。不带 `err` 的普通日志完全不受影响。
             const record = (args as readonly unknown[])[0];
+            const isRecordObject =
+              record !== null &&
+              typeof record === "object" &&
+              !Array.isArray(record) &&
+              !(record instanceof Error);
+            // **一次**描述符快照，后面 carriesError 与 canonicalization 共用。
+            // 分两次抓的话，一个有状态的 Proxy 可以先报「没有 err」、再报「有」。
+            const entries = isRecordObject
+              ? snapshotLogRecord(record as Record<string, unknown>)
+              : undefined;
             const carriesError =
               record instanceof Error ||
-              (record !== null &&
-                typeof record === "object" &&
-                readDataField(record, "err").kind !== "absent");
+              (entries !== undefined && recordCarriesError(entries));
             const safe = (args as readonly unknown[]).map(
               (argument, index) => {
-                if (index > 0 && typeof argument === "string" && carriesError) {
+                // index 1 是 msg。record 带 `err` 时它**无条件**折成固定串，而且
+                // 不看类型——`new String("…")` 这种装箱字符串 `typeof` 是
+                // "object"，上一版的 `typeof === "string"` 判据会把它整条放过去。
+                // index > 1 是 printf 插值参数，仍然按普通不可信取值处理。
+                if (index === 1 && carriesError) {
                   return safeErrorMessage;
                 }
                 if (typeof argument === "string") {
@@ -1194,13 +1198,10 @@ export const createLogger = (
                   if (argument instanceof Error) {
                     return { err: canonicalizeError(argument) };
                   }
-                  if (
-                    argument !== null &&
-                    typeof argument === "object" &&
-                    !Array.isArray(argument)
-                  ) {
+                  if (entries !== undefined) {
                     return canonicalizeLogRecord(
                       argument as Record<string, unknown>,
+                      entries,
                     );
                   }
                 }

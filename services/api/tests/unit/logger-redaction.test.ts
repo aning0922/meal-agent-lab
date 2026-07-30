@@ -4,9 +4,11 @@ import test from "node:test";
 
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
+import { Socket } from "node:net";
+
 import {
-  captureRequestLogSnapshot,
   createLogger,
+  registerRequestLogFields,
 } from "../../src/logging.js";
 
 /**
@@ -1806,7 +1808,12 @@ test("the request identity is an immutable snapshot, not a read privilege", asyn
         },
       },
     };
-    captureRequestLogSnapshot(hostile, "HOSTILE-ID-SENTINEL");
+    registerRequestLogFields(hostile, {
+      requestId: "HOSTILE-ID-SENTINEL",
+      method: undefined,
+      path: undefined,
+      remoteAddress: undefined,
+    });
     request.log.info({ req: hostile }, "self-registered hostile object");
     request.log.info(
       { req: { raw: hostile } },
@@ -1931,4 +1938,207 @@ test("a mutated DOMException prototype getter is never executed", () => {
     (JSON.parse(intact.output().trim()) as { err: { type: string } }).err.type,
     "AbortError",
   );
+});
+
+// ---------------------------------------------------------------------------
+// 第九轮：边界收窄之后的定点反例
+// ---------------------------------------------------------------------------
+
+test("carriesError and canonicalization see the same record snapshot", () => {
+  const capture = capturingLogger();
+
+  // 顶层 record 的描述符如果被读**两次**，中间就有一个洞：一个有状态的 Proxy 可以
+  // 第一次报告「没有 err」（于是 msg 不折叠），第二次再把 err 交出来（于是 err
+  // 照样进了输出）。上一版 `carriesError` 走 `readDataField`、canonicalization 走
+  // `ownDataEntries`，正好是两次独立探测，于是产出一条**自相矛盾**的记录：带着
+  // `err`，却配着一条没有折叠过的 msg。
+  //
+  // 这里断言的正是那条一致性：一条记录要么「有 err 且 msg 是固定串」，要么
+  // 「没有 err 且 msg 原样（只过文本脱敏）」，不允许第三种。
+  //
+  // 说明边界：msg 里的任意明文本来就不在脱敏范围内（只有连接串/conninfo 会被
+  // 替换），所以这条用例证明的是**一致性**，不是「msg 里的秘密会被抹掉」。
+  // 只对 `err` 这个键计数：**第一次**被问到时说「没有」，之后如实回答。
+  // 一次快照的实现只会问一次，因此两边看到的都是「没有 err」；两次独立探测的
+  // 实现会在第二次拿到它，于是产出「有 err + 未折叠 msg」的自相矛盾记录。
+  let errProbes = 0;
+  const target: Record<string, unknown> = {
+    err: new Error("hidden failure"),
+    component: "stateful",
+  };
+  const record = new Proxy(target, {
+    getOwnPropertyDescriptor(actual, key) {
+      if (key === "err") {
+        errProbes += 1;
+        if (errProbes === 1) {
+          return undefined;
+        }
+      }
+      return Reflect.getOwnPropertyDescriptor(actual, key);
+    },
+  });
+
+  capture.logger.error(record, "handler: upstream refused");
+
+  const emitted = JSON.parse(capture.output().trim()) as Record<string, unknown>;
+  const hasErr = Object.hasOwn(emitted, "err");
+  assert.equal(
+    hasErr,
+    emitted["msg"] === "request failed",
+    "a record may not carry an err while keeping an unfolded msg\n" +
+      capture.output(),
+  );
+
+  // 反过来：第一次探测就报告 err 的 Proxy，msg 必须折叠，err 必须是固定形状。
+  const eager = capturingLogger();
+  const eagerTarget: Record<string, unknown> = {
+    err: new Error(`upstream refused ${password}`),
+  };
+  let eagerProbes = 0;
+  const eagerRecord = new Proxy(eagerTarget, {
+    getOwnPropertyDescriptor(actual, key) {
+      eagerProbes += 1;
+      if (key === "err" && eagerProbes > 2) {
+        // 第三次之后换一个**没有折过**的 Error——同一快照口径下它永远不会被用到。
+        return {
+          configurable: true,
+          enumerable: true,
+          value: new Error(`second face ${opaqueSecret}`),
+        };
+      }
+      return Reflect.getOwnPropertyDescriptor(actual, key);
+    },
+  });
+  eager.logger.error(eagerRecord, `handler: upstream refused ${password}`);
+  const eagerEmitted = JSON.parse(eager.output().trim()) as Record<
+    string,
+    unknown
+  >;
+  assert.equal(eagerEmitted["msg"], "request failed", eager.output());
+  assert.deepEqual(eagerEmitted["err"], {
+    type: "Error",
+    message: "request failed",
+  });
+  assertClean(eager.output(), "eager proxy record");
+  assert.equal(
+    eager.output().includes(opaqueSecret),
+    false,
+    `the proxy's second face must never be used\n${eager.output()}`,
+  );
+});
+
+test("a boxed String msg on an err record is folded too", () => {
+  const capture = capturingLogger();
+
+  // `new String("…")` 的 `typeof` 是 "object"，因此「只折叠 typeof === 'string'」
+  // 那条判据会把它整条放过去。折叠的判据只能是「这条 record 带不带 err」。
+  const failure = new Error(`upstream refused ${password}`);
+  capture.logger.error(
+    { err: failure },
+    new String(`handler: upstream refused ${password}`) as unknown as string,
+  );
+  capture.logger.error(
+    { err: failure },
+    Object(`boxed ${opaqueSecret}`) as unknown as string,
+  );
+
+  assertClean(capture.output(), "boxed String msg");
+  assert.equal(
+    capture.output().includes(opaqueSecret),
+    false,
+    `a boxed String msg must not survive\n${capture.output()}`,
+  );
+  for (const line of capture.output().split("\n").filter(Boolean)) {
+    assert.equal(
+      (JSON.parse(line) as { msg: unknown }).msg,
+      "request failed",
+    );
+  }
+});
+
+test("Proxy-Authorization and X-API-Key are redacted after normalisation", () => {
+  const capture = capturingLogger();
+
+  capture.logger.info(
+    {
+      "Proxy-Authorization": opaqueSecret,
+      proxyAuthorization: opaqueSecret,
+      "X-API-Key": opaqueSecret,
+      xApiKey: opaqueSecret,
+      x_api_key: opaqueSecret,
+      safe: "visible",
+    },
+    "proxy and api key headers",
+  );
+  capture.logger
+    .child({ "Proxy-Authorization": opaqueSecret })
+    .info("proxy auth binding");
+  capture.logger.setBindings({ "X-API-Key": opaqueSecret });
+  capture.logger.info("api key after setBindings");
+
+  assert.equal(
+    capture.output().includes(opaqueSecret),
+    false,
+    `a normalised sensitive header key must be redacted\n${capture.output()}`,
+  );
+  assert.equal(capture.output().includes("visible"), true);
+});
+
+test("the request registrar reads nothing off the object it is handed", () => {
+  const capture = capturingLogger();
+  let hostileCalls = 0;
+
+  // 上一版的登记函数会去读传进来的对象：`socket` / `url` / `method`，而且在
+  // socket 的原型链是 `net.Socket.prototype` 时还会调用那个 `remoteAddress`
+  // getter——它内部是 `this._getpeername()`，一个自造的 `_getpeername` 就能拿到
+  // 执行权。现在字段在 Fastify 的可信边界上读完、物化成纯数据再传进来，登记函数
+  // 一个属性都不读。
+  const hostileSocket = Object.create(Socket.prototype) as Record<
+    string,
+    unknown
+  >;
+  hostileSocket["_getpeername"] = (): { address: string } => {
+    hostileCalls += 1;
+    return { address: `HOSTILE-PEER-SENTINEL-${opaqueSecret}` };
+  };
+  const hostile: Record<string, unknown> = { socket: hostileSocket };
+  Object.defineProperty(hostile, "url", {
+    enumerable: true,
+    get() {
+      hostileCalls += 1;
+      return `/HOSTILE-URL-${opaqueSecret}`;
+    },
+  });
+  Object.defineProperty(hostile, "method", {
+    enumerable: true,
+    get() {
+      hostileCalls += 1;
+      return `HOSTILE-METHOD-${opaqueSecret}`;
+    },
+  });
+
+  registerRequestLogFields(hostile, {
+    requestId: "registered-without-reading",
+    method: undefined,
+    path: undefined,
+    remoteAddress: undefined,
+  });
+  capture.logger.info({ req: hostile }, "registered hostile object");
+
+  assert.equal(
+    hostileCalls,
+    0,
+    "the registrar must not call any accessor on the object it registers",
+  );
+  assert.equal(
+    capture.output().includes(opaqueSecret),
+    false,
+    `nothing read off the hostile object may reach the log\n${capture.output()}`,
+  );
+  const emitted = JSON.parse(capture.output().trim()) as {
+    req: Record<string, unknown>;
+  };
+  assert.equal(emitted.req["requestId"], "registered-without-reading");
+  assert.equal(emitted.req["method"], undefined);
+  assert.equal(emitted.req["remoteAddress"], undefined);
 });

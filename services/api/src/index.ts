@@ -1,4 +1,5 @@
 import { buildApp } from "./app.js";
+import { safeErrorRecord } from "./logging.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
@@ -31,7 +32,7 @@ process.once("SIGTERM", () => void shutdown("SIGTERM"));
 try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
-  app.log.fatal({ err: error }, "API startup failed");
+  app.log.fatal(safeErrorRecord(error), "API startup failed");
   await app.close();
   process.exitCode = 1;
 }

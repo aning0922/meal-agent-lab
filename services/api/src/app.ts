@@ -27,7 +27,11 @@ import {
   type Persistence,
 } from "./database/pool.js";
 import { AppError, problemFromError } from "./errors.js";
-import { captureRequestLogSnapshot, createLogger } from "./logging.js";
+import {
+  createLogger,
+  registerRequestLogFields,
+  safeErrorRecord,
+} from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
 import {
@@ -165,10 +169,15 @@ export const buildApp = async (
         requestIdSchema.safeParse(supplied).success
           ? supplied
           : newEntityId();
-      // 在这里把 method / path / remoteAddress / requestId 一次性抓成**不可变
-      // 快照**。之后 serializer 只查这份快照，再也不碰任何候选对象——登记换不来
-      // 「以后可以在你身上普通读取」这项权利。
-      captureRequestLogSnapshot(request, id);
+      // 请求字段在**这里**读——Fastify 刚把 raw request 交给我们、还没经过任何
+      // 调用方之手的唯一一刻，读的是平台自己的对象。读完物化成四个字符串传给
+      // logger；logger 那一侧的登记函数不读任何属性，也不调用任何访问器。
+      registerRequestLogFields(request, {
+        requestId: id,
+        method: request.method,
+        path: (request.url ?? "").split("?")[0],
+        remoteAddress: request.socket?.remoteAddress,
+      });
       return id;
     },
   });
@@ -226,7 +235,7 @@ export const buildApp = async (
     const mapped = mapRequestError(error);
 
     if (mapped.code === "INTERNAL_ERROR") {
-      request.log.error({ err: error }, "request failed");
+      request.log.error(safeErrorRecord(error), "request failed");
     } else {
       request.log.warn(
         { errorCode: mapped.code, statusCode: mapped.status },
