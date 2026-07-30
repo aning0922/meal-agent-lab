@@ -1,5 +1,5 @@
 import { buildApp } from "./app.js";
-import { safeErrorRecord } from "./logging.js";
+import { eventErrorType, logEvent } from "./log-events.js";
 import { loadConfig } from "./config.js";
 
 const config = loadConfig();
@@ -11,10 +11,10 @@ const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     return;
   }
   closing = true;
-  app.log.info({ signal }, "graceful shutdown started");
+  logEvent(app.log, "shutdown.started", { signal });
 
   const forceClose = setTimeout(() => {
-    app.log.fatal("graceful shutdown timed out");
+    logEvent(app.log, "shutdown.timed-out", {});
     process.exitCode = 1;
   }, 10_000);
   forceClose.unref();
@@ -32,7 +32,7 @@ process.once("SIGTERM", () => void shutdown("SIGTERM"));
 try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
-  app.log.fatal(safeErrorRecord(error), "API startup failed");
+  logEvent(app.log, "startup.failed", { errorType: eventErrorType(error) });
   await app.close();
   process.exitCode = 1;
 }

@@ -3,9 +3,34 @@ import type { Writable } from "node:stream";
 import pino, { type LogFn, type Logger } from "pino";
 
 /**
- * 阶段 09A / M3A：日志脱敏的**信任上下文**只有两个，任何一处输出都必须明确
- * 属于其中之一。这一层的划分比「再补一个 sentinel 判断」重要得多——先前几轮
- * 的漏网无一例外都是「某条路径悄悄拿到了 log-record 的豁免」。
+ * 阶段 09A / M3A：中央 logger 边界。
+ *
+ * ## 这一层现在的职责范围（第十轮收口之后）
+ *
+ * 前九轮的路子是「让这一层能安全地吃下任意对象」——净化器一轮补一个洞：原型污染、
+ * 有状态 Proxy、装箱字符串、继承访问器、结构键、索引访问器……每一轮都还能再找出
+ * 一个。那条路走不到头，因为它试图在**出口**证明一个关于任意输入的全称命题。
+ *
+ * 第十轮换了方向：**业务代码根本不把任意对象交给 logger**。
+ * `src/log-events.ts` 是一层窄化的 typed facade——事件是闭集，字段显式声明且只
+ * 允许 `string | number | boolean | null`。静态门禁
+ * （`tests/unit/production-log-arguments.test.ts`）用 TypeScript 的 type checker
+ * 保证 `src/` 里除了 facade 与本文件之外**没有任何**直接的 logger 调用。
+ *
+ * 因此本文件里的净化器**不再是业务日志的安全依据**，它的职责收窄成**纵深防御**，
+ * 只覆盖两类绕不过去的输入：
+ *
+ *   1. Fastify **自己**打的请求日志（`incoming request`、`request completed`、
+ *      defaultErrorLog）——框架直接调 logger，不经过 facade；
+ *   2. 第三方或未来代码万一直接拿到 logger 时的兜底。
+ *
+ * 这个定位很重要：**不要再为「任意对象 / Proxy」增补特例**。真正的边界在类型
+ * 系统那一侧，这里只保证已知的框架路径不泄漏。
+ *
+ * ## 信任上下文仍然只有两个
+ *
+ * 任何一处输出都必须明确属于其中之一。这一层的划分比「再补一个 sentinel 判断」
+ * 重要得多——先前几轮的漏网无一例外都是「某条路径悄悄拿到了 log-record 的豁免」。
  *
  *   1. **strict / untrusted canonicalizer**（`canonicalizeUntrusted`）
  *      child bindings、`setBindings()`、`formatters.level` / `formatters.bindings`、
@@ -839,8 +864,15 @@ const canonicalizeFormatterRecord = (
 };
 
 // ---------------------------------------------------------------------------
-// 固定 serializer：一律新建纯对象，产物再走一次 strict canonicalizer
+// 固定 serializer：只为**框架自动请求日志**保留的纵深防御
 // ---------------------------------------------------------------------------
+// 业务代码第十轮起走 `src/log-events.ts` 的 typed facade，不再产生 `req`/`res`/
+// `err` 这三个键。留着这三个 serializer 是因为 Fastify 自己会直接调 logger 打
+// `incoming request` / `request completed` / defaultErrorLog——那条路径绕不过
+// facade，仍然需要投影与脱敏。
+//
+// 换句话说：它们现在是**纵深防御**，不是业务日志的安全依据。不要再往这里加
+// 「任意对象 / Proxy」的特例。
 
 const pathOf = (url: FieldRead): unknown =>
   url.kind === "value" && typeof url.value === "string"
@@ -921,19 +953,17 @@ const serializeResponse = (response: unknown): unknown =>
   });
 
 /**
- * 生产代码里**唯一**被允许的「把一个 Error 交给 logger」的方式：调用点就折成
- * 固定形状，logger 拿到的已经是纯数据。
+ * 从任意取值取出**已归一化的错误类型名**（一定在 allowlist 里）。
  *
- * 静态门禁（`tests/unit/production-log-arguments.test.ts`）会拒绝 `src/` 里任何
- * 把原始 Request / Error / 配置 / Secret 对象塞进 log record 的写法——原始对象一旦
- * 进了 record，安全性就完全依赖 logger 这一层的净化器，而收窄边界的方向恰恰是
- * **不要**再依赖它。
+ * 这是原始 Error 与业务日志之间**唯一**的桥：`src/log-events.ts` 的 facade 用它
+ * 填 `errorType` 字段，原始对象本身到不了 logger。
+ *
+ * 第十轮起业务代码不再自己拼 `{ err: … }` record——能记的事件是闭集，字段是显式
+ * 声明的原始类型。静态门禁用 TypeScript 的 type checker 保证 `src/` 里除了
+ * facade 之外没有任何直接的 logger 调用。
  */
-export const safeErrorRecord = (
-  error: unknown,
-): { readonly err: { readonly type: string; readonly message: string } } => ({
-  err: canonicalizeError(error),
-});
+export const errorTypeOf = (error: unknown): string =>
+  canonicalizeError(error).type;
 
 const serializeError = (error: unknown): unknown =>
   // 绝不返回调用方的原对象。type 只可能来自 allowlist，因此伪造一个

@@ -27,11 +27,8 @@ import {
   type Persistence,
 } from "./database/pool.js";
 import { AppError, problemFromError } from "./errors.js";
-import {
-  createLogger,
-  registerRequestLogFields,
-  safeErrorRecord,
-} from "./logging.js";
+import { eventErrorType, logEvent } from "./log-events.js";
+import { createLogger, registerRequestLogFields } from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
 import {
@@ -235,12 +232,14 @@ export const buildApp = async (
     const mapped = mapRequestError(error);
 
     if (mapped.code === "INTERNAL_ERROR") {
-      request.log.error(safeErrorRecord(error), "request failed");
+      logEvent(request.log, "request.failed", {
+        errorType: eventErrorType(error),
+      });
     } else {
-      request.log.warn(
-        { errorCode: mapped.code, statusCode: mapped.status },
-        "request rejected",
-      );
+      logEvent(request.log, "request.rejected", {
+        errorCode: mapped.code,
+        statusCode: mapped.status,
+      });
     }
     const problemInstance =
       request.url.split("?", 1)[0]?.slice(0, 500) || "/";
