@@ -616,13 +616,22 @@ meal_agent_read_secret_file() {
   # 顺序不可颠倒：**先装 trap，后起 worker**。反过来的话，`&` 与 `worker=$!`
   # 之间来的 TERM 会按默认处置直接杀掉父进程，刚 fork 出来的整棵受控子树就成了
   # 孤儿。`starting` 状态覆盖的正是这一段。
+  # **不要**在这里清空 winner / pending：trap 从 resolve 入口就装上了，metadata
+  # 阶段收到的信号已经记在里面，清掉就等于把它吞了。初始化只在 resolve 入口做
+  # 一次。
   meal_agent_worker_pid=""
-  meal_agent_signal_winner=""
-  meal_agent_pending_signal=""
   meal_agent_worker_state="starting"
   # 幂等：resolve 入口已经装过了。留在这里是为了让「先装 trap、后起 worker」这条
   # 顺序在本函数内部也是自明的——万一将来有人单独调用它，窗口依然是关闭的。
   meal_agent_install_signal_traps
+
+  # pre-worker 检查点：metadata 阶段（变量名校验、`stat` 探测、`mktemp -d`）里
+  # 收到的信号在这里收尾，连 worker 都不用起。
+  if [ -n "$meal_agent_signal_winner" ]; then
+    meal_agent_abort_on_signal || true
+    meal_agent_secret_fail "$name" \
+      "$path read was interrupted by a signal before it could complete"
+  fi
 
   previous_options="$-"
   set -m
@@ -715,7 +724,20 @@ meal_agent_resolve_secret() {
   # 快照只在这一段里存在，安全网也只覆盖这一段。调用方原有的 EXIT trap 被保存
   # 下来链式执行，结束时归还。
   meal_agent_install_exit_trap
-  # 信号 trap 的作用域也是**整个** resolve：不只是 worker 活着的那段。上一版在
+
+  # 信号状态**必须在装 trap 之前**清空，而且只能在这里清一次。
+  #
+  # 上一版把它清在 `meal_agent_read_secret_file` 里、worker 起来之前：那时 trap
+  # 已经装了一段时间了（整个 metadata 阶段——变量名校验、`stat` 探测、
+  # `mktemp -d` 建快照目录），落在那一段里的信号已经被记进 winner，然后被那句
+  # 重置**整条抹掉**。实测：在 `stat` 那一步定点发 TERM，resolve 照常成功并打出
+  # RESOLVED。
+  meal_agent_worker_pid=""
+  meal_agent_worker_state="idle"
+  meal_agent_signal_winner=""
+  meal_agent_pending_signal=""
+
+  # 信号 trap 的作用域是**整个** resolve：不只是 worker 活着的那段。上一版在
   # worker 结束后立刻归还，于是「快照验证 → 取值复制 → 删除快照」这三步全都跑在
   # 调用方的处置之下——那时一发 TERM 就能让进程按调用方的方式退出，而**快照还在
   # 磁盘上**。现在一直保持到快照删除完成之后再归还。
@@ -782,6 +804,22 @@ meal_agent_resolve_secret() {
       "$name was interrupted by a signal before it could complete"
   fi
   meal_agent_restore_signal_traps
+
+  # 「检查 winner」与「归还 trap」之间还有一个窗口：落在那里的信号由**我们的**
+  # handler 记下来，却再也没有人去看它——归还之后调用方的处置已经回位，而那一发
+  # 信号已经被我们吃掉了。
+  #
+  # 因此归还之后**再读一次**。此刻我们的 handler 已经卸掉，能被登记进 winner 的
+  # 信号集合到此为止是最终的；补投一次就把处置权真正交回给调用方。再之后到达的
+  # 信号本来就该由调用方处置，那正是正确行为。
+  if [ -n "$meal_agent_signal_winner" ]; then
+    local late="$meal_agent_signal_winner"
+    meal_agent_signal_winner=""
+    meal_agent_discard_snapshot
+    kill -"$late" "$$"
+    meal_agent_secret_fail "$name" \
+      "$name was interrupted by a signal before it could complete"
+  fi
   meal_agent_restore_exit_trap
 
   case "$previous_options" in *x*) set -x ;; esac
