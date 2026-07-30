@@ -80,10 +80,15 @@ fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同�
 各判一次；端口（含 `:443`）、尾斜杠、query、fragment、userinfo、相似域名与子域名
 全部拒绝。
 
-日志脱敏落在**中央 logger 边界**（`hooks.logMethod` + `formatters.log` + `child()`
-与 `setBindings()` 覆盖 + 子 logger options 的安全包装）。**pino 的 `redact` 整条
-不用**：根 logger 不配置它，子 logger 传了直接抛错。调用方无需主动调用
-`redactSensitive`；覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
+业务日志走 `src/log-events.ts` 的**窄化 typed facade**：事件是闭集，字段显式声明
+且只允许 `string | number | boolean | null`，原始 Error / Request / Reply /
+Config / Secret 在类型上就进不来。静态门禁用 TypeScript 的 type checker 保证
+`src/` 里除了 facade 与 `logging.ts` 之外没有任何直接的 logger 调用。
+
+`logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
+与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖
+Fastify 自己打的请求日志那条绕不过 facade 的路径。**pino 的 `redact` 整条不用**：
+根 logger 不配置它，子 logger 传了直接抛错。它覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
 取值识别的 PostgreSQL 连接串与 libpq conninfo，以及 Error 对象。全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，不启用任何 CORS。
 

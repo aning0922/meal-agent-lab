@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
 - 状态：Proposed
-- 日期：2026-07-26
+- 日期：2026-07-26（实施注记最后更新 2026-07-30）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -295,8 +295,11 @@ sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对
 FIFO 会让 shell 的 open() 永久阻塞，因此 open+校验+复制跑在 5 秒有界的子进程里）。
 连接串另有专用校验：五个核心字段必须显式来自 URL，且连接串无法覆盖的那一批
 、URL 无法覆盖的那 8 个 ambient `PG*` 变量逐条拒绝（五个核心字段对应的 `PG*`
-不在其中，URL 已经决定了它们）。日志脱敏移到中央 logger 边界（含 child()/setBindings()
-与子 logger options 的安全包装），
+不在其中，URL 已经决定了它们）。业务日志走 `src/log-events.ts` 的窄化 typed
+facade（闭集事件 + 显式声明的原始类型字段，原始 Error/Request/Reply/Config/Secret
+在类型上进不来），并由基于 TypeScript type checker 的静态门禁保证 `src/` 里没有
+直接的 logger 调用；中央 logger 边界（含 child()/setBindings() 与子 logger options
+的安全包装）保留为**纵深防御**，覆盖 Fastify 自己打的请求日志。
 覆盖 database URL、connection string、password、DSN 的命名变体与按取值识别的
 连接串/conninfo，口令的原值与 URL 编码形态同时消失；全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何

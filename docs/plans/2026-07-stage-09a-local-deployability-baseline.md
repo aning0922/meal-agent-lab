@@ -716,6 +716,54 @@ handler 记下来，却再也没人去看它。现在归还之后**再读一次*
 
 **M3A 仍为整改中，未标记 Accepted。**
 
+#### M3A Logger 架构收口（第十轮）
+
+前九轮的方向是「让中央 logger 能安全地吃下任意对象」。那条路走不到头：原型污染、
+有状态 Proxy、装箱字符串、继承访问器、结构键、索引访问器——每一轮都还能再找出
+一个，因为它试图在**出口**证明一个关于任意输入的全称命题。这一轮换方向。
+
+**1. 业务代码不再把任意对象交给 logger。**
+
+新增 `src/log-events.ts`：闭集事件（`request.failed` / `request.rejected` /
+`shutdown.started` / `shutdown.timed-out` / `startup.failed`），每个事件的字段显式
+声明，字段类型只允许 `string | number | boolean | null`。级别与 msg 都来自事件
+目录，调用点没有自由拼接的余地。原始 Error / Request / Reply / Config / Secret
+**在类型上就进不来**——不是「进来之后会被净化」，是编译期不可表达。
+`logEvent()` 还会逐字段复制并丢弃非原始类型的取值，即使有人用 `as` 绕过类型也
+进不了 payload（用例逐条断言）。
+
+原来的 `safeErrorRecord` 收窄成 `errorTypeOf`：它只返回 allowlist 里的类型名，
+是原始 Error 与业务日志之间**唯一**的桥。
+
+**2. 静态门禁从正则换成 TypeScript type checker。**
+
+第九轮的门禁是 `\blog\.(info|warn|…)\s*\(` 加一次源码文本切分，只看**第一个**
+实参。它有一整类结构性漏网。`tests/fixtures/log-escape-shapes.ts` 把六种写法逐条
+摆出来：别名、变量改名、元素访问、可选链、printf 后续参数、常量下标 + `call`。
+
+现在的判据是「凡是调用一个类型为 pino `LogFn` 的表达式（无论怎么取到它），或者
+对它用 `call`/`apply`/`bind`」，`src/` 里只有 `log-events.ts`（facade）与
+`logging.ts`（边界本身）允许出现这种调用。
+
+实测对照（同一段代码，两套扫描器）：
+
+| | 第九轮正则门禁 | 第十轮 AST 门禁 |
+| --- | --- | --- |
+| 六种漏网写法的 fixture | 0 条违规（**全部假绿**） | 7 处调用点全部命中（别名那种被 `.bind` 与裸调用各抓一次） |
+| 往 `src/index.ts` 注入 `const audit = app.log; audit["info"]({ signal, config }, …)` | **匹配到 0 个调用点、报告 0 条违规** | 直接变红 |
+
+**3. `logging.ts` 的净化器降级为纵深防御。**
+
+它不再是业务日志的安全依据，只覆盖两类绕不过 facade 的输入：Fastify **自己**打的
+请求日志（`incoming request` / `request completed` / defaultErrorLog），以及未来
+代码万一直接拿到 logger 时的兜底。`req`/`res`/`err` 三个固定 serializer 因此保留，
+但**不再为「任意对象 / Proxy」增补特例**——真正的边界在类型系统那一侧。这一点写进
+了 `logging.ts` 的文件头与 serializer 段落的注释。
+
+**本轮不动**已经通过复验的 Secret 信号状态机与矩阵运行逻辑。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
