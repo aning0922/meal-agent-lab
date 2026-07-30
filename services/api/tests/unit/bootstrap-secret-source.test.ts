@@ -976,7 +976,12 @@ writeFileSync(
     // head 与它派生的孙进程**都**忽略 TERM/INT/HUP。忽略要在 fork 之前设好，
     // 这样 sleep 会把 SIG_IGN 一起继承下去——于是「TERM 就够了」这条捷径被彻底
     // 堵死，只有对整个进程组补一发 KILL 才收得干净。
-    "  trap '' TERM INT HUP",
+    // 三个信号都接管成「记录下来但不退出」——效果与忽略相同，但实现对整个 worker
+    // 进程组发 TERM 这件事因此成为**测试侧可观测**的事件。terminating 窗口靠它
+    // 定位，不再依赖生产代码里的 marker 文件（那条测试入口已经整条删除）。
+    "  trap ': > \"$MEAL_AGENT_TEST_SIGNAL_TERM\"' TERM",
+    "  trap ': > \"$MEAL_AGENT_TEST_SIGNAL_TERM\"' INT",
+    "  trap ': > \"$MEAL_AGENT_TEST_SIGNAL_TERM\"' HUP",
     '  printf "%s" "$$" > "$MEAL_AGENT_TEST_SIGNAL_HEAD"',
     '  printf "%s" "$PPID" > "$MEAL_AGENT_TEST_SIGNAL_WORKER"',
     "  # 交出 bootstrap 的 stdout/stderr。不这么做的话，「受控子树还活着」与",
@@ -989,8 +994,9 @@ writeFileSync(
     '  exec 7<> "$MEAL_AGENT_TEST_SIGNAL_FIFO"',
     "  sleep 600 &",
     '  printf "%s" "$!" > "$MEAL_AGENT_TEST_SIGNAL_SLEEP"',
-    "  wait",
-    "  exit 0",
+    "  while :; do",
+    "    wait || true",
+    "  done",
     "fi",
     'exec /usr/bin/head "$@"',
   ].join("\n"),
@@ -1131,7 +1137,11 @@ after(() => {
 });
 
 /** 整个外部信号用例的**硬上界**：绝不出现裸 `await`，挂死一律变成确定失败。 */
-const withHardCap = async <T>(work: Promise<T>, label: string): Promise<T> => {
+const withHardCap = async <T>(
+  work: Promise<T>,
+  label: string,
+  capMs = externalTimeoutMs,
+): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -1139,11 +1149,9 @@ const withHardCap = async <T>(work: Promise<T>, label: string): Promise<T> => {
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           reject(
-            new Error(
-              `${label} did not finish within ${String(externalTimeoutMs)}ms`,
-            ),
+            new Error(`${label} did not finish within ${String(capMs)}ms`),
           );
-        }, externalTimeoutMs);
+        }, capMs);
       }),
     ]);
   } finally {
@@ -1167,6 +1175,11 @@ interface SignalScenario {
   readonly callerTraps: boolean;
   /** false 时不挂 stall wrapper，用于「正常完成后 trap 仍被还回去」。 */
   readonly stall: boolean;
+  /**
+   * 覆盖这一条用例的硬上界。只有「刻意让 hard cap 真的触发」那一条会用它——
+   * 默认仍是 12 秒。
+   */
+  readonly capMs?: number;
 }
 
 /**
@@ -1190,11 +1203,6 @@ const runSignalScenario = async (
 ): Promise<SignalOutcome> => {
   const temporaryDirectory = join(workspace, `${scenario.slot}-tmp`);
   mkdirSync(temporaryDirectory, { recursive: true });
-  const markerDirectory = join(workspace, `${scenario.slot}-markers`);
-  mkdirSync(markerDirectory, { recursive: true });
-  // 这一组用例只针对 terminating 窗口。starting 的 release 预先放好，否则实现会在
-  // 那里白白等满自己的 5 秒上界——三份口令就是 19.5 秒，直接顶穿 12 秒硬上界。
-  writeFileSync(join(markerDirectory, "starting.release"), "");
   const fifo = join(workspace, `${scenario.slot}.fifo`);
   if (!existsSync(fifo)) {
     execFileSync("mkfifo", [fifo]);
@@ -1202,6 +1210,7 @@ const runSignalScenario = async (
   const headFile = join(workspace, `${scenario.slot}.head.pid`);
   const workerFile = join(workspace, `${scenario.slot}.worker.pid`);
   const sleepFile = join(workspace, `${scenario.slot}.sleep.pid`);
+  const termMarker = join(workspace, `${scenario.slot}.term.marker`);
   const logPath = join(workspace, `${scenario.slot}.psql.log`);
   writeFileSync(logPath, "");
 
@@ -1239,15 +1248,11 @@ const runSignalScenario = async (
         PSQL: fakePsql,
         MEAL_AGENT_FAKE_PSQL_LOG: logPath,
         MEAL_AGENT_SECRET_SOURCE: secretSourceScript,
-        // 只有需要精确投递的用例才打开窗口 marker；其余用例保持生产形态（未设置
-        // 时实现里那两个函数是纯空操作）。
-        ...(scenario.secondSignalWindow === undefined
-          ? {}
-          : { MEAL_AGENT_SECRET_WINDOW_MARKER_DIR: markerDirectory }),
         MEAL_AGENT_TEST_SIGNAL_MARKER: join(
           workspace,
           `${scenario.slot}.marker`,
         ),
+        MEAL_AGENT_TEST_SIGNAL_TERM: termMarker,
         MEAL_AGENT_TEST_SIGNAL_HEAD: headFile,
         MEAL_AGENT_TEST_SIGNAL_WORKER: workerFile,
         MEAL_AGENT_TEST_SIGNAL_SLEEP: sleepFile,
@@ -1302,7 +1307,7 @@ const runSignalScenario = async (
           // 循环自己也必须有界。`withHardCap` 是 `Promise.race`，它**不会取消**
           // 输掉的那一侧：一个无界的轮询循环会在断言失败之后继续排定计时器，于是
           // 断言红了、进程却永远不退出，连测试摘要都打不出来。
-          const stallDeadline = Date.now() + externalTimeoutMs;
+          const stallDeadline = Date.now() + (scenario.capMs ?? externalTimeoutMs);
           while (readPidFile(sleepFile) === undefined) {
             if (Date.now() >= stallDeadline) {
               throw new Error(
@@ -1324,22 +1329,21 @@ const runSignalScenario = async (
 
           for (const [index, signal] of scenario.signals.entries()) {
             if (index > 0 && scenario.secondSignalWindow === "terminating") {
-              // 确定地落进 terminating：实现在 TERM 已发、KILL 未发时创建
-              // marker 并有界等待 release。等到 marker 才发第二个信号。
-              const markerDeadline = Date.now() + externalTimeoutMs;
-              while (!existsSync(join(markerDirectory, "terminating"))) {
+              // 确定地落进 terminating：等受控 head 确认**它自己收到了 TERM**。
+              // 那是实现「对整个 worker 进程组发 TERM」这一步的真实外部效果，
+              // 观察点完全在测试侧——生产代码里已经没有任何 marker 入口。
+              const markerDeadline =
+                Date.now() + (scenario.capMs ?? externalTimeoutMs);
+              while (!existsSync(termMarker)) {
                 if (Date.now() >= markerDeadline) {
                   throw new Error(
-                    `${scenario.slot}: the terminating marker never appeared`,
+                    `${scenario.slot}: the worker group never saw the first signal`,
                   );
                 }
                 await pause(10);
               }
             }
             process.kill(groupLeader, signal);
-          }
-          if (scenario.secondSignalWindow === "terminating") {
-            writeFileSync(join(markerDirectory, "terminating.release"), "");
           }
         }
         const result = await closed;
@@ -1383,6 +1387,7 @@ const runSignalScenario = async (
         };
       })(),
       `${scenario.slot}: the external signal case`,
+      scenario.capMs ?? externalTimeoutMs,
     );
   } finally {
     // 兜底清理。它排在**全部观察之后**，因此不可能替实现把断言弄绿。
@@ -1492,10 +1497,16 @@ test("a second signal lands inside the terminating window and loses", async () =
   assertControlledSubtreeGone(outcome);
 });
 
-test("the hard cap still collects a worker whose pid file never appeared", async () => {
-  // 反过来验证 harness 自己：worker 在**记录自己之前**就被拦住时，PID 文件是空的，
-  // 而 worker 在 `set -m` 下是独立进程组的组长。这条用例证明兜底清理不依赖 PID
-  // 文件——它用的是等待期间持续采样得到的真实 pgid，并在最后有界确认无残留。
+test("the fallback cleanup collects a worker process group with no pid file", async () => {
+  // 名字改过：上一版叫「the hard cap still collects …」，但它**根本没有触发**
+  // hard cap——它自己发信号、自己等进程结束，12 秒上界一次都没到过。名不副实的
+  // 证据比没有证据更坏，所以这条现在只声称它真正证明的那件事：
+  //
+  //   兜底清理不依赖 PID 文件。worker 在**记录自己之前**就被拦住时 PID 文件是空
+  //   的，而它在 `set -m` 下又是独立进程组的组长——唯一可用的依据是等待期间持续
+  //   采样到的真实 pgid。
+  //
+  // 「hard cap 真的会触发、触发之后也能收干净」由下面那条独立用例证明。
   const temporaryDirectory = join(workspace, "signal-nopid-tmp");
   mkdirSync(temporaryDirectory, { recursive: true });
   const logPath = join(workspace, "signal-nopid.psql.log");
@@ -1678,4 +1689,52 @@ test("the caller's traps are still restored after a normal completion", async ()
     `the chained EXIT handler must be handed back; got ${restored}`,
   );
   assertNoSentinel(outcome.output, "the normal-completion driver output");
+});
+
+test("the hard cap really fires and its cleanup still leaves nothing behind", async () => {
+  // 真正触发 hard cap：受控 head 卡住不动，用例**不发任何信号**，于是 `close`
+  // 永远不会到来。上一版那条名字里带 hard cap 的用例从来没走到过这里。
+  //
+  // 用例自带一个更短的上界（2.5 秒），这样「真的等到超时」不必花掉 12 秒。
+  const slot = "signal-hardcap";
+  let capFired = false;
+  try {
+    await runSignalScenario({
+      slot,
+      signals: [],
+      callerTraps: false,
+      stall: true,
+      capMs: 2_500,
+    });
+  } catch (error) {
+    capFired = /did not finish within 2500ms/.test(String(error));
+    if (!capFired) {
+      throw error;
+    }
+  }
+  assert.equal(capFired, true, "the hard cap must actually have fired");
+
+  // 触发之后，兜底清理仍然要把这一棵受控子树收干净：bootstrap 自己、worker 的
+  // 独立进程组、以及 head 与它的孙进程。
+  const recorded = [
+    join(workspace, `${slot}.worker.pid`),
+    join(workspace, `${slot}.head.pid`),
+    join(workspace, `${slot}.sleep.pid`),
+  ]
+    .map(readPidFile)
+    .filter((pid): pid is number => pid !== undefined);
+  assert.equal(
+    recorded.length,
+    3,
+    "all three controlled layers must have recorded themselves before the cap",
+  );
+  assert.deepEqual(
+    await residualOf(recorded, 5_000),
+    [],
+    "the hard-cap cleanup path must leave no controlled process behind",
+  );
+  // 这里**不**断言「没有快照残留」。hard cap 触发之后是测试自己 SIGKILL 掉整棵
+  // 子树的，而 SIGKILL 不会执行 EXIT trap，所以快照目录留下来完全是测试的行为，
+  // 不是实现的缺陷。把它写成实现的断言就是又一条名不副实的证据。
+  // 「被信号打断时不留快照」由信号矩阵在**实现自己收手**的路径上证明。
 });
