@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
 - 状态：Proposed
-- 日期：2026-07-26（实施注记最后更新 2026-07-30，M3A 第十一轮）
+- 日期：2026-07-26（实施注记最后更新 2026-07-30，M3A 第十二轮）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -298,8 +298,9 @@ FIFO 会让 shell 的 open() 永久阻塞，因此 open+校验+复制跑在 5 �
 不在其中，URL 已经决定了它们）。业务日志走 `src/log-events.ts` 的窄化 typed
 facade（闭集事件 + 固定 runtime projector + 专用安全字段类型，原始
 Error/Request/Reply/Config/Secret 在类型上进不来），并由基于 TypeScript type
-checker 的静态门禁限制整项 logger capability（`LogFn` 只允许出现在边界文件里，
-mutation API 只有 `logging.ts` 可碰）；中央 logger 边界（含 child()/setBindings() 与子 logger options
+checker 的静态门禁限制整项 logger capability（按**声明身份**判定，`LogFn` 只允许
+出现在边界文件里，mutation API 只有 `logging.ts` 可碰，组装根只有三个精确上下文
+可以命名 logger）——该门禁是工程护栏，不是形式化安全证明；中央 logger 边界（含 child()/setBindings() 与子 logger options
 的安全包装）保留为**纵深防御**，覆盖 Fastify 自己打的请求日志。
 覆盖 database URL、connection string、password、DSN 的命名变体与按取值识别的
 连接串/conninfo，口令的原值与 URL 编码形态同时消失；全部响应统一携带

@@ -86,9 +86,15 @@ fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同�
 用真实的 `ApiErrorCode`，`signal` 只允许 SIGINT/SIGTERM，验不过就抛错。原始
 Error / Request / Reply / Config / Secret 在类型上就进不来。
 
-静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**：任何
-`LogFn` 类型的表达式只允许出现在 facade 与 `logging.ts` 里，`child`/`setBindings`
-只有 `logging.ts` 可以碰，组装根 `src/app.ts` 只能传递 logger 而不能访问它的成员。
+业务代码连 logger 本身都拿不到：它只持有 `EventLogSink`（由组装根从 root logger
+创建、闭包持有，只有 `emit`）。`statusCode` 由 `errorCode` 派生，调用方造不出
+自相矛盾的组合。
+
+静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
+**声明身份**而不是类型名字符串：任何解析到 pino `LogFn` 声明的表达式只允许出现在
+facade 与 `logging.ts` 里；`child`/`setBindings` 只有 `logging.ts` 可以碰；组装根
+`src/app.ts` 只有三个**精确上下文**可以命名 logger。它是**工程护栏，不是形式化
+安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
 
 `logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
 与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖

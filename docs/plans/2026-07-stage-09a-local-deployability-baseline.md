@@ -826,6 +826,67 @@ child-binding 那条当场抓出一个真实缺口：裸的 `apiKey` 归一化�
 
 **M3A 仍为整改中，未标记 Accepted。**
 
+#### M3A 架构定点收口（第十二轮）
+
+本轮不再补敏感键黑名单——那条路补不完。改动全部在架构面。
+
+**1. 业务代码连 logger 本身都拿不到。**
+
+`logEvent(logger, event, fields)` 换成 `EventLogSink`：由组装根从 **root logger**
+创建，闭包持有，只有 `emit` 一个方法，没有 `child()` / `setBindings()`，也没有
+取回 logger 的入口。`app.ts` 用 `app.decorate("eventLog", createEventLogSink(logger))`
+把它交给业务代码；`request.id` 作为**声明过的** `requestId` 字段显式带上，相关性
+没有丢。
+
+理由是可验证的：中性键（`traceContext`、`correlation`）上的 Secret 在键名上看不出
+任何线索，键名黑名单对它**没有**覆盖。反例逐条实测——一个带 `traceContext` 的子
+logger 自己打的行**确实**带着 opaque Secret（如实承认，那属于框架日志路径），而
+业务事件行的键集恒为 `{errorCode, event, level, msg, requestId, statusCode, time}`。
+
+**2. `allowedErrorTypes` 改为模块私有。**
+
+上一版导出 `ReadonlySet<string>`——那只是类型上的只读，
+`(x as Set<string>).add("EVIL")` 在运行期照样成功。现在对外只有一个**冻结的
+canonical 数组**与一个 **predicate**。反例：篡改导出的快照之后
+`isAllowedErrorType("EVIL_TYPE_SENTINEL")` 仍为 false；predicate 另外拒绝非字符串、
+装箱字符串、以及 `constructor`/`toString`/`hasOwnProperty` 这类原型链上的名字。
+
+**3. `statusCode` 由 `errorCode` 派生。**
+
+字段里根本没有它，`apiErrorStatus[errorCode]` 是唯一来源。反例：硬塞
+`SESSION_EXPIRED + 599`，输出仍是 401；另有十个错误码逐条比对 contracts 的映射表。
+
+**4. capability gate 按声明身份重做。**
+
+第十一轮的判据是**类型名字符串**，两头都错。这一轮从 program 里找出 pino 与
+fastify 自己的 `.d.ts` 声明节点，之后比对节点身份；结构类型（`Pick<Logger, …>`）
+再按成员看一眼。
+
+| 形状 | 第十一轮（按名字） | 第十二轮（按声明身份） |
+| --- | --- | --- |
+| 泛型参数 `<T extends Logger>` | 名字是 `T` | `[Logger] T` / `[Logger] l` |
+| `Pick<Logger, "warn">` | 符号名不叫 Logger，**漏报** | `[LogFn] picked.warn` |
+| computed access `logger[key]` | 视表达式而定 | `[LogFn] logger[key]` |
+| 本地同名工厂 `createEventLogSink` | 名字相同就放行 | `[Logger] root`，不放行 |
+| **无关的同名 `LogFn`** | **误报** | 不报 |
+
+app.ts 改成**精确上下文白名单**（`const logger = …` / `loggerInstance:` /
+解析到 `log-events.ts` 真实导出的 `createEventLogSink` 调用），不再整文件放行。
+实测：往 app.ts 注入 `const sidecar = logger`，门禁立刻变红。
+
+门禁的定位写进了文件头：**它是工程护栏，不是形式化安全证明**——类型系统看不见的
+东西（`any`、跨越 `JSON.parse` 的运行期值、动态 `import()` 之后的反射、用
+`declare` 伪造的声明）都不在它的射程里。
+
+**5. 敏感键名单的口径写实。**
+
+它只对**已登记的键族**提供纵深防御，不声称对任意第三方键或中性键有兜底。业务日志
+的安全性不依赖它。
+
+**Secret 信号状态机与矩阵保持冻结**，本轮 diff 为 0 行。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
