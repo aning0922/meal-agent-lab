@@ -4,7 +4,10 @@ import test from "node:test";
 
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
-import { createLogger } from "../../src/logging.js";
+import {
+  captureRequestLogSnapshot,
+  createLogger,
+} from "../../src/logging.js";
 
 /**
  * 阶段 09A / M3A：中央 logger 边界的完整性。
@@ -310,23 +313,18 @@ test("child options cannot reintroduce a secret after redaction", () => {
   );
   withBindingFormatter.info("child binding formatter");
 
-  // 4. redact.censor：censor 的返回值直接进入输出。
-  const withCensor = capture.logger.child(
-    { component: "censor" },
-    {
-      redact: {
-        paths: ["secretish"],
-        censor: () => dsn,
-      },
-    },
-  );
-  withCensor.info({ secretish: "x" }, "child censor");
-
-  const withStringCensor = capture.logger.child(
-    { component: "string-censor" },
-    { redact: { paths: ["secretish"], censor: encodedDsn } },
-  );
-  withStringCensor.info({ secretish: "x" }, "child string censor");
+  // 4. redact：第八轮起整条拒绝，不再包装 censor（见下面那条专门的用例）。
+  //    这里只确认「拒绝」这件事本身不会把已经写出去的日志弄脏。
+  for (const censor of [() => dsn, encodedDsn]) {
+    assert.throws(
+      () =>
+        capture.logger.child(
+          { component: "censor" },
+          { redact: { paths: ["secretish"], censor } } as never,
+        ),
+      /child loggers may not configure redact/,
+    );
+  }
 
   // 5. msgPrefix：它是在我们的 logMethod 之后才拼到 msg 前面的。
   const withPrefix = capture.logger.child(
@@ -336,13 +334,7 @@ test("child options cannot reintroduce a secret after redaction", () => {
   withPrefix.info("child msgPrefix");
 
   assertClean(capture.output(), "child options");
-  for (const marker of [
-    "serializer",
-    "formatter",
-    "bindings",
-    "censor",
-    "prefix",
-  ]) {
+  for (const marker of ["serializer", "formatter", "bindings", "prefix"]) {
     assert.equal(
       capture.output().includes(marker),
       true,
@@ -517,13 +509,21 @@ test("customLevels with a level formatter cannot inject a secret", () => {
   assert.equal(capture.output().includes("audit"), true);
 });
 
-test("child redact.censor shapes outside the Pino contract fail closed", () => {
+test("child redact is rejected whatever shape its censor has", () => {
   const capture = capturingLogger();
+
+  // 第七轮的做法是「按 Pino 契约检查 censor 形态、合法的就包装」。第八轮改成
+  // **整条拒绝**：路径语义本身就能决定哪些键走 pino 的 redactor，而那条路径会先
+  // 克隆再序列化克隆体，克隆体带不上容器的 `toJSON` 遮蔽。因此不再区分形态。
   for (const censor of [
     { leaked: dsn },
     [dsn],
     42,
     true,
+    null,
+    () => dsn,
+    "[Redacted]",
+    undefined,
   ]) {
     assert.throws(
       () =>
@@ -532,31 +532,23 @@ test("child redact.censor shapes outside the Pino contract fail closed", () => {
           { component: "censor" },
           { redact: { paths: ["secretish"], censor } },
         ),
-      /redact\.censor must be a string or a function/,
-      `censor ${JSON.stringify(censor)} must be rejected`,
+      /child loggers may not configure redact/,
+      `censor ${JSON.stringify(censor)} must still be rejected`,
     );
   }
+
+  // 数组形态的 redact（纯路径列表）同样拒绝。
   assert.throws(
     () =>
       childWithOptions(
         capture.logger,
-        { component: "censor" },
-        { redact: "not-an-object" },
+        { component: "paths" },
+        { redact: ["secretish"] },
       ),
-    /redact must be an array of paths or an options object/,
+    /child loggers may not configure redact/,
   );
-  // 合法形态仍然可用（并且仍然被包装）。
-  const stringCensor = childWithOptions(
-    capture.logger,
-    { component: "ok" },
-    { redact: { paths: ["secretish"], censor: "[hidden]" } },
-  );
-  stringCensor.info({ secretish: dsn }, "string censor");
-  const pathsOnly = childWithOptions(capture.logger, { component: "ok2" }, {
-    redact: ["secretish"],
-  });
-  pathsOnly.info({ secretish: dsn }, "paths only");
-  assertClean(capture.output(), "valid censor shapes");
+
+  assert.equal(capture.output(), "", "no rejected child may emit anything");
 });
 
 test("percent-encoded connection secrets are found through bounded re-decoding", () => {
@@ -1657,5 +1649,286 @@ test("DOMException abort errors keep their type instead of collapsing", () => {
   assert.equal(
     (JSON.parse(forged.output().trim()) as { err: { type: string } }).err.type,
     "Error",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 第八轮：总控点名的六条现场反例
+// ---------------------------------------------------------------------------
+
+/** 不是连接串、也不含 `password=`，因此只能靠**键名规则**拦住。 */
+const opaqueSecret = "OPAQUE-VALUE-SENTINEL";
+
+test("an err record folds the explicit msg unconditionally", () => {
+  const capture = capturingLogger();
+
+  // 上一轮只在 msg 与 `err.message` **逐字相同**时才折叠。那条判据是可以绕开的：
+  // 包装一层、截一段、加个前缀，msg 就不再相等，而它携带的仍然是同一段内部细节。
+  // 现在只要 record 带 `err`，显式 msg 一律折成固定串。
+  const failure = new Error(`upstream refused ${password}`);
+  const shapes: readonly [string, () => void][] = [
+    ["exact message", () => { capture.logger.error({ err: failure }, failure.message); }],
+    ["wrapped message", () => { capture.logger.error({ err: failure }, `handler: ${failure.message}`); }],
+    ["truncated message", () => { capture.logger.error({ err: failure }, failure.message.slice(0, 24)); }],
+    ["unrelated message", () => { capture.logger.error({ err: failure }, `boom ${opaqueSecret}`); }],
+    ["error as the record", () => { capture.logger.error(failure, `handler: ${failure.message}`); }],
+    ["warn level", () => { capture.logger.warn({ err: failure }, `warn: ${failure.message}`); }],
+  ];
+  for (const [, emit] of shapes) {
+    emit();
+  }
+
+  assertClean(capture.output(), "unconditional err msg folding");
+  assert.equal(
+    capture.output().includes(opaqueSecret),
+    false,
+    `an unrelated msg on an err record must not survive\n${capture.output()}`,
+  );
+  const messages = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { msg: string }).msg);
+  assert.deepEqual(messages, shapes.map(() => "request failed"));
+
+  // 不带 `err` 的普通日志不受影响——折叠不能靠把所有 msg 都抹掉来实现。
+  const plain = capturingLogger();
+  plain.logger.info({ component: "probe" }, "a perfectly ordinary message");
+  assert.equal(
+    (JSON.parse(plain.output().trim()) as { msg: string }).msg,
+    "a perfectly ordinary message",
+  );
+});
+
+test("a child logger may not bring its own redact at all", () => {
+  const capture = capturingLogger();
+
+  // 包装 censor 是不够的：`redact` 的路径语义本身就能决定**哪些键**被送进
+  // pino 的 redactor，而那条路径会先克隆再序列化克隆体，克隆体带不上我们给容器
+  // 加的 `toJSON` 遮蔽。根 logger 的 `redact` 已经整条移除，子 logger 也不能再
+  // 把它带回来。Fastify 只会把 `serializers` 再传一遍（lib/logger-pino.js:34），
+  // 从不传 `redact`，所以拒绝不影响兼容面。
+  for (const redact of [
+    { paths: ["*.authorization"], censor: "[Redacted]" },
+    { paths: ["req.headers.cookie"] },
+    ["*.token"],
+    {},
+  ]) {
+    assert.throws(
+      () => childWithOptions(capture.logger, { component: "child" }, { redact }),
+      /child loggers may not configure redact/,
+      `child redact ${JSON.stringify(redact)} must be rejected outright`,
+    );
+  }
+
+  // 其它 options 不受影响。
+  const child = childWithOptions(
+    capture.logger,
+    { component: "ok" },
+    { level: "info" },
+  );
+  child.info("child without redact still works");
+  assert.equal(capture.output().includes("ok"), true);
+});
+
+test("normalised header key names are redacted, set-cookie included", () => {
+  const capture = capturingLogger();
+
+  // `isSensitiveKey` 会先去掉分隔符再小写，所以名单里写 `"set-cookie"` 是永远
+  // 匹配不上的——它归一化之后是 `setcookie`。同理，`rawTrailers` 与 `rawHeaders`
+  // 一样是**扁平字符串数组**，逐键规则看不见里面的取值。
+  capture.logger.info(
+    {
+      "set-cookie": opaqueSecret,
+      setCookie: opaqueSecret,
+      Set_Cookie: opaqueSecret,
+      rawTrailers: ["authorization", opaqueSecret, "cookie", opaqueSecret],
+      rawHeaders: ["authorization", opaqueSecret],
+      safe: "visible",
+    },
+    "header shaped keys",
+  );
+  capture.logger
+    .child({ "set-cookie": opaqueSecret, rawTrailers: [opaqueSecret] })
+    .info("header shaped bindings");
+  capture.logger.setBindings({ setCookie: opaqueSecret });
+  capture.logger.info("header shaped after setBindings");
+
+  assert.equal(
+    capture.output().includes(opaqueSecret),
+    false,
+    `a normalised sensitive key must be redacted\n${capture.output()}`,
+  );
+  assert.equal(capture.output().includes("visible"), true);
+});
+
+test("the request identity is an immutable snapshot, not a read privilege", async () => {
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const capture = capturingLogger();
+  let getterCalls = 0;
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: capture.logger,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  app.get("/probe", async (request, reply) => {
+    // 登记点捕获的是**不可变快照**，不是「以后可以读你的访问器」这项权利。因此
+    // 即便有人把一个自造对象喂进登记入口，也只能得到一份用数据属性读出来的快照，
+    // 换不来任何执行访问器的机会。
+    const hostile = {
+      get method() {
+        getterCalls += 1;
+        return "HOSTILE-METHOD-SENTINEL";
+      },
+      get url() {
+        getterCalls += 1;
+        return "/HOSTILE-URL-SENTINEL";
+      },
+      // `socket` 是**数据属性**，它里面的 `remoteAddress` 才是访问器。登记之后
+      // 若还保留「可以在这个对象上做普通成员读取」这项权利，这个 getter 就会被
+      // 执行——这正是公开 registrar 的实际危险，不只是架构洁癖。
+      socket: {
+        get remoteAddress() {
+          getterCalls += 1;
+          return "HOSTILE-ADDR-SENTINEL";
+        },
+      },
+    };
+    captureRequestLogSnapshot(hostile, "HOSTILE-ID-SENTINEL");
+    request.log.info({ req: hostile }, "self-registered hostile object");
+    request.log.info(
+      { req: { raw: hostile } },
+      "wrapper around a self-registered object",
+    );
+
+    // 真实请求的那份快照仍然完整。
+    request.log.info({ req: request }, "genuine request relogged");
+    return reply.send({ ok: true });
+  });
+  try {
+    await app.inject({ method: "GET", url: "/probe?trace=1" });
+  } finally {
+    await app.close();
+  }
+
+  assert.equal(
+    getterCalls,
+    0,
+    "registering an object must never let its accessors run",
+  );
+  for (const sentinel of [
+    "HOSTILE-METHOD-SENTINEL",
+    "HOSTILE-URL-SENTINEL",
+    "HOSTILE-ADDR-SENTINEL",
+  ]) {
+    assert.equal(
+      capture.output().includes(sentinel),
+      false,
+      `${sentinel} must never reach the log stream\n${capture.output()}`,
+    );
+  }
+
+  const entries = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const genuine = entries.find(
+    (entry) => entry["msg"] === "genuine request relogged",
+  )?.["req"] as Record<string, unknown> | undefined;
+  assert.ok(genuine, "the genuine request entry must exist");
+  assert.equal(genuine["method"], "GET");
+  assert.equal(genuine["path"], "/probe");
+  assert.equal(typeof genuine["requestId"], "string");
+  assert.equal(typeof genuine["remoteAddress"], "string");
+});
+
+test("a cyclic req wrapper is bounded instead of overflowing the stack", () => {
+  const capture = capturingLogger();
+
+  // `trustedRawOf` 会沿 `request` 往下找已登记的原始请求。两个互指的对象让它
+  // 无限递归——一次日志调用就能把整个进程的栈耗光。
+  const first: Record<string, unknown> = {};
+  const second: Record<string, unknown> = { request: first };
+  first["request"] = second;
+
+  const selfReferential: Record<string, unknown> = {};
+  selfReferential["request"] = { request: selfReferential };
+
+  capture.logger.info({ req: first }, "two-cycle req");
+  capture.logger.info({ res: second }, "two-cycle res");
+  capture.logger.info({ req: selfReferential }, "self-referential req");
+
+  // 深链同样必须有界，而不是靠「反正没人会写那么深」。
+  let deep: Record<string, unknown> = { url: "/deep" };
+  for (let level = 0; level < 5_000; level += 1) {
+    deep = { request: deep };
+  }
+  capture.logger.info({ req: deep }, "deeply nested req");
+
+  assert.equal(
+    capture.output().split("\n").filter(Boolean).length,
+    4,
+    `every cyclic shape must still produce a log line\n${capture.output()}`,
+  );
+  assertClean(capture.output(), "cyclic req wrapper");
+});
+
+test("a mutated DOMException prototype getter is never executed", () => {
+  const capture = capturingLogger();
+  let getterCalls = 0;
+
+  // `DOMException.prototype` 是可变的。只检查「持有者是 DOMException.prototype」
+  // 而后调用**当时解析出来的** getter，等于把执行权交给了任何能改写那个原型的人。
+  const original = Object.getOwnPropertyDescriptor(
+    DOMException.prototype,
+    "name",
+  );
+  assert.ok(original, "DOMException.prototype.name must be an accessor");
+  Object.defineProperty(DOMException.prototype, "name", {
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      return `AbortError${dsn}`;
+    },
+  });
+  try {
+    capture.logger.error({ err: new DOMException("x", "AbortError") }, "abort");
+    capture.logger.error({ err: new Error("x") }, "plain error");
+  } finally {
+    Object.defineProperty(DOMException.prototype, "name", original);
+  }
+
+  assert.equal(
+    getterCalls,
+    0,
+    "a replaced DOMException name getter must never be executed",
+  );
+  assertClean(capture.output(), "mutated DOMException prototype");
+  const types = capture
+    .output()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => (JSON.parse(line) as { err: { type: string } }).err.type);
+  assert.deepEqual(types, ["Error", "Error"]);
+
+  // 原型没有被改写时，真实的 AbortError 仍然如实输出。
+  const intact = capturingLogger();
+  intact.logger.error({ err: new DOMException("x", "AbortError") }, "abort");
+  assert.equal(
+    (JSON.parse(intact.output().trim()) as { err: { type: string } }).err.type,
+    "AbortError",
   );
 });

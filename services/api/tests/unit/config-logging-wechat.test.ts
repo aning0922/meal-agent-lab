@@ -325,10 +325,18 @@ test("the central logger boundary redacts database credentials without any calle
     );
   }
   assert.equal(output.includes("visible"), true);
-  assert.equal(output.includes("connection failed"), true);
+  // 第八轮起：record 一旦带 `err`，显式 msg 就**无条件**折成固定串。原来的判据是
+  // 「msg 与 err.message 逐字相同才折」，那条可以靠包装/截断绕开。代价是这里的
+  // "connection failed" 也一起被折掉；诊断信息改从 `err.type` 走。
+  assert.equal(output.includes("connection failed"), false);
   // Error 仍然保留它自己的类型名，只是内容被换成固定安全串。
   assert.equal(output.includes('"type":"Error"'), true);
   assert.equal(output.includes("request failed"), true);
+  // 不带 `err` 的那两条日志的 msg 只走文本脱敏，不被折叠：一条保留了前缀，
+  // 另一条因为整串在**任意层百分号编码之下**都藏着连接串而被整条替换（fail
+  // closed 的那条规则）。两者都不是固定的 "request failed"。
+  assert.equal(output.includes('"msg":"retrying [Redacted]"'), true);
+  assert.equal(output.includes('"msg":"[Redacted]"'), true);
 });
 
 test("recursive redaction prevents secrets and private member constraints from reaching logs", () => {

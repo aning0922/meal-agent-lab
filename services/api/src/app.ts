@@ -27,7 +27,7 @@ import {
   type Persistence,
 } from "./database/pool.js";
 import { AppError, problemFromError } from "./errors.js";
-import { createLogger, trustRawRequest } from "./logging.js";
+import { captureRequestLogSnapshot, createLogger } from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
 import {
@@ -165,9 +165,10 @@ export const buildApp = async (
         requestIdSchema.safeParse(supplied).success
           ? supplied
           : newEntityId();
-      // 连 requestId 一起登记：日志里的 requestId 因此来自**我们自己**记下的那
-      // 一个，而不是从某个可能被伪造的对象上读回来。
-      trustRawRequest(request, id);
+      // 在这里把 method / path / remoteAddress / requestId 一次性抓成**不可变
+      // 快照**。之后 serializer 只查这份快照，再也不碰任何候选对象——登记换不来
+      // 「以后可以在你身上普通读取」这项权利。
+      captureRequestLogSnapshot(request, id);
       return id;
     },
   });

@@ -1,5 +1,7 @@
 import type { Writable } from "node:stream";
 
+import { Socket } from "node:net";
+
 import pino, { type LogFn, type Logger } from "pino";
 
 /**
@@ -20,7 +22,8 @@ import pino, { type LogFn, type Logger } from "pino";
  *      strict canonicalizer。
  *
  * 因此「伪造一个 req 键」拿不到任何豁免：`req`/`res` 的延后只发给**能证明是
- * Fastify 交下来的那一个**（见 `trustRawRequest`），其余一律按不可信取值处理；
+ * Fastify 交下来的那一个**（见 `captureRequestLogSnapshot`），其余一律按不可信
+ * 取值处理；
  * 而固定 serializer 对不可信输入本来也只走数据属性，产物还会再被 strict 收一遍。
  *
  * ## 这一层保证的边界（不夸大）
@@ -39,7 +42,10 @@ import pino, { type LogFn, type Logger } from "pino";
 const sensitiveKeys = new Set([
   "authorization",
   "cookie",
-  "set-cookie",
+  // `isSensitiveKey` 先去掉分隔符再小写，所以这里必须写**归一化之后**的形式。
+  // 名单里原来写的是 `"set-cookie"`，它归一化成 `setcookie`，因此永远匹配不上
+  // 自己——一条从来没生效过的规则。
+  "setcookie",
   "code",
   "invitecode",
   "logincode",
@@ -67,11 +73,12 @@ const sensitiveKeys = new Set([
   "password",
   "dbpassword",
   "pgpassword",
-  // `IncomingMessage.rawHeaders` 是一个**扁平字符串数组**（["authorization",
+  // `IncomingMessage.rawHeaders` / `rawTrailers` 是**扁平字符串数组**（["authorization",
   // "Bearer …", "cookie", "…"]），因此逐键判断根本看不到里面的 authorization 与
   // cookie，`redact.paths` 的 `req.headers.*` 也覆盖不到它。把整条数组按敏感键
   // 处理——只要有人把整个 request 记在一个非 `req` 的键下面，这就是唯一的拦截点。
   "rawheaders",
+  "rawtrailers",
 ]);
 
 const isSensitiveKey = (key: string): boolean => {
@@ -384,25 +391,47 @@ const safeErrorTypeName = (name: unknown): string =>
  * `DOMException.prototype`，那是我们自己从 `globalThis` 上取到的身份，调用方
  * 伪造不出来。执行的是平台代码，不是调用方代码。
  */
-const platformAccessorHolders = new Set<object>(
-  typeof DOMException === "function" &&
-  typeof DOMException.prototype === "object" &&
-  DOMException.prototype !== null
-    ? [DOMException.prototype]
-    : [],
-);
+/**
+ * `net.Socket.prototype.remoteAddress` 的**原始** getter 函数。
+ *
+ * 只有当解析出来的访问器与它 `===` 相等时才调用——那说明接收者的原型链上挂的
+ * 确实是 Node 自己那段代码。任何自造对象的同名 getter 都是另一个函数，身份不等，
+ * 直接跳过。同 DOMException 那一处，判据是**函数身份**，不是所在原型对象。
+ */
+const socketRemoteAddressGetter: (() => unknown) | undefined =
+  Object.getOwnPropertyDescriptor(Socket.prototype, "remoteAddress")?.get;
+
+const domExceptionNameGetter: (() => unknown) | undefined = (() => {
+  if (typeof DOMException !== "function") {
+    return undefined;
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(
+    DOMException.prototype,
+    "name",
+  );
+  return descriptor === undefined ? undefined : descriptor.get;
+})();
 
 const safeErrorTypeOf = (value: unknown, key: PropertyKey): string => {
-  if (value !== null && (typeof value === "object" || typeof value === "function")) {
+  if (
+    key === "name" &&
+    domExceptionNameGetter !== undefined &&
+    value !== null &&
+    typeof value === "object"
+  ) {
     const resolved = resolveDescriptor(value, key);
+    // 身份判据是**函数本身**，不是它所在的那个原型对象。
+    // `DOMException.prototype` 是可变的：只要检查「持有者是那个原型」就调用当时
+    // 解析出来的 getter，等于把执行权交给任何能改写它的人（实测：改写之后 getter
+    // 被执行 1 次）。这里比对的是模块加载时抓下来的**原始函数引用**，改写之后
+    // 身份不再相等，直接降级。
     if (
       resolved !== undefined &&
       !("value" in resolved.descriptor) &&
-      platformAccessorHolders.has(resolved.holder) &&
-      resolved.descriptor.get !== undefined
+      resolved.descriptor.get === domExceptionNameGetter
     ) {
       try {
-        return safeErrorTypeName(resolved.descriptor.get.call(value));
+        return safeErrorTypeName(domExceptionNameGetter.call(value));
       } catch {
         return "Error";
       }
@@ -490,10 +519,24 @@ const defineSafeProperty = (
   });
 };
 
+/**
+ * 递归深度的**硬上界**。
+ *
+ * `seen` 只挡得住环，挡不住深度：一条 5000 层的普通嵌套链就能让一次日志调用把
+ * 整个进程的栈耗光（实测 `RangeError: Maximum call stack size exceeded`）。真实
+ * 日志记录不会有这么深，因此到界就换成固定占位串，而不是让调用崩掉。
+ */
+const maximumCanonicalDepth = 64;
+const tooDeepPlaceholder = "[TooDeep]";
+
 export const canonicalizeUntrusted = (
   value: unknown,
   seen: WeakSet<object> = new WeakSet<object>(),
+  depth = 0,
 ): unknown => {
+  if (depth > maximumCanonicalDepth) {
+    return tooDeepPlaceholder;
+  }
   if (typeof value === "string") {
     return redactText(value);
   }
@@ -543,7 +586,7 @@ export const canonicalizeUntrusted = (
           items.push(accessorPlaceholder);
           continue;
         }
-        items.push(canonicalizeUntrusted(descriptor.value, seen));
+        items.push(canonicalizeUntrusted(descriptor.value, seen, depth + 1));
       }
       return items;
     }
@@ -577,7 +620,7 @@ export const canonicalizeUntrusted = (
       defineSafeProperty(
         result,
         safe,
-        canonicalizeUntrusted(descriptor.value, seen),
+        canonicalizeUntrusted(descriptor.value, seen, depth + 1),
       );
     }
     return result;
@@ -599,35 +642,117 @@ export const redactSensitive = canonicalizeUntrusted;
  * strict canonicalizer。
  */
 /**
- * 可信标识**只能绑在对象本身**，绝不能绑在它的某个属性上。
+ * 请求身份：**登记点捕获的不可变快照**，不是「以后可以在这个对象上普通读取」的
+ * 权利。
  *
- * 上一版把「自身数据属性 `raw` 指向已登记的原始请求」当作身份证明，那是错的：
- * `raw` 在 Fastify 5 的 Request 上就是一个**自身可枚举数据属性**，因此
- * `{ ...request }`、`{ req: { raw: request.raw, get ip() { … } } }`、
- * `Object.create(request, …)` 全都能通过检查，随后又被当成可信对象去做普通成员
- * 读取——调用方的 getter 照样执行。实测：伪造对象带上 `raw: request.raw` 之后
- * getter 调用次数 5，而用例期望 0。
+ * 上一版导出的是一个公开的 trust registrar：任何人都能把任意对象登记进去，之后
+ * 投影就会在它身上做普通成员读取。实测这不只是架构洁癖——把 `socket` 写成数据
+ * 属性、`socket.remoteAddress` 写成访问器，登记之后那个 getter 会被执行
+ * （调用次数 2）。
  *
- * 现在改成：**可信的是那个已登记的 `IncomingMessage` 本身**，投影只从它身上取。
- * 一个伪造的 wrapper 就算把真 `raw` 塞进来，也只是让日志打出那条**真实请求**的
- * 信息，它自己的字段一个都读不到。
+ * 现在换成：`app.ts` 的 `genReqId(rawRequest)` 在**唯一确定是 Fastify 交下来的
+ * 那一刻**把 request 的四个字段读出来，冻结成一份快照存进 WeakMap。之后
+ * serializer 只查这份快照，**再也不碰候选对象**。因此登记一个自造对象换不来任何
+ * 执行访问器的机会——它只会得到一份用数据属性读出来的、属于它自己的快照。
  *
- * 为什么必须有这条：实测（fastify 5.10.0）真实 Request 的 `method`/`url`/`ip`/
- * `socket` 都是 `Request.prototype` 上的访问器，而 `raw.method`/`raw.url`/
- * `raw.socket` 是自身**数据属性**——所以经由 raw 取值不需要执行任何 Fastify 的
- * 访问器。唯一还需要访问器的是 `socket.remoteAddress`（`net.Socket.prototype`
- * 上的 getter），而那时的接收者是**已登记请求的** socket，不是调用方的对象。
+ * 为什么登记点必须是 `genReqId`：Fastify 在构造 `Request`、也在打出
+ * "incoming request" 之前调用它。实测顺序是 `incoming request` → `onRequest`
+ * hook，在 onRequest 里登记来不及，第一条请求日志会漏。
  *
- * 登记点是 `genReqId(rawRequest)`：Fastify 在构造 `Request`、也在打出
- * "incoming request" 之前调用它。实测顺序确实是 `incoming request` →
- * `onRequest` hook，所以在 onRequest 里登记来不及，第一条请求日志会漏。
+ * 快照里的 `remoteAddress` 来自 `raw.socket.remoteAddress`
+ * （`net.Socket.prototype` 上的 getter）。接收者是 Node 自己刚交给我们的 socket，
+ * 那一刻它还没有经过任何调用方之手。
  */
-const trustedRawRequests = new WeakMap<object, string>();
+interface RequestLogSnapshot {
+  readonly requestId: string;
+  readonly method: unknown;
+  readonly path: unknown;
+  readonly remoteAddress: unknown;
+}
 
-export const trustRawRequest = (raw: unknown, requestId: string): void => {
-  if (raw !== null && typeof raw === "object") {
-    trustedRawRequests.set(raw, requestId);
+const requestLogSnapshots = new WeakMap<object, RequestLogSnapshot>();
+
+/**
+ * 在登记点抓取快照。
+ *
+ * 它**不授予任何权限**：传进来的对象只是 WeakMap 的键，读取一律走数据属性，
+ * 唯一的例外是 `socket.remoteAddress`，而且只在 socket 本身是数据属性时才尝试，
+ * 读失败就留空。因此就算这个入口被误用，最坏结果也只是日志里多一条由调用方自己
+ * 的数据属性拼出来的记录。
+ */
+export const captureRequestLogSnapshot = (
+  raw: unknown,
+  requestId: string,
+): void => {
+  if (raw === null || typeof raw !== "object") {
+    return;
   }
+  const socket = fieldValue(readDataField(raw, "socket"));
+  let remoteAddress: unknown;
+  if (socket !== null && typeof socket === "object") {
+    const resolved = resolveDescriptor(socket, "remoteAddress");
+    if (resolved !== undefined && "value" in resolved.descriptor) {
+      remoteAddress = resolved.descriptor.value;
+    } else if (
+      resolved !== undefined &&
+      socketRemoteAddressGetter !== undefined &&
+      resolved.descriptor.get === socketRemoteAddressGetter
+    ) {
+      try {
+        remoteAddress = socketRemoteAddressGetter.call(socket);
+      } catch {
+        // socket 可能已经销毁；读不到就留空，不能把日志调用带走。
+        remoteAddress = undefined;
+      }
+    }
+  }
+  const url = fieldValue(readDataField(raw, "url"));
+  requestLogSnapshots.set(
+    raw,
+    Object.freeze({
+      requestId,
+      method: fieldValue(readDataField(raw, "method")),
+      path: typeof url === "string" ? url.split("?")[0] : undefined,
+      remoteAddress,
+    }),
+  );
+};
+
+/**
+ * 沿 `raw` / `request` 找出候选对象背后那份快照。
+ *
+ * **有界**。`request` 这条链是调用方可以随便造的：两个互指的对象就能让它无限
+ * 递归，一次日志调用把整个进程的栈耗光（实测
+ * `RangeError: Maximum call stack size exceeded`）。上界取小值——真实形状最多
+ * reply → request → raw 两跳。
+ */
+const maximumRequestChainDepth = 4;
+
+const snapshotOf = (
+  value: unknown,
+  depth = 0,
+): RequestLogSnapshot | undefined => {
+  if (
+    depth > maximumRequestChainDepth ||
+    value === null ||
+    typeof value !== "object"
+  ) {
+    return undefined;
+  }
+  const direct = requestLogSnapshots.get(value);
+  if (direct !== undefined) {
+    return direct;
+  }
+  for (const key of ["raw", "request"] as const) {
+    const next = readDataField(value, key);
+    if (next.kind === "value" && next.value !== value) {
+      const found = snapshotOf(next.value, depth + 1);
+      if (found !== undefined) {
+        return found;
+      }
+    }
+  }
+  return undefined;
 };
 
 const serializedKeys = new Set(["req", "res", "err"]);
@@ -643,7 +768,7 @@ const serializedKeys = new Set(["req", "res", "err"]);
  * 所以即便 pino 后续仍按键名跑一次 serializer，也不会执行调用方的访问器。
  */
 const mayDeferToSerializer = (key: string, value: unknown): boolean =>
-  key === "err" || trustedRawOf(value) !== undefined;
+  key === "err" || snapshotOf(value) !== undefined;
 
 /**
  * 记录层也不能用 `Object.entries`：那会**读**每一个属性，从而执行输入自带的
@@ -741,49 +866,6 @@ const canonicalizeFormatterRecord = (
 // 固定 serializer：一律新建纯对象，产物再走一次 strict canonicalizer
 // ---------------------------------------------------------------------------
 
-/**
- * 从候选对象上找出**已登记的**原始请求。
- *
- * 候选可以是 Fastify 的 Request（`raw` 是自身数据属性）、Reply（`request.raw`），
- * 或者原始 `IncomingMessage` 自己。找不到就返回 undefined，走不可信投影。
- */
-const trustedRawOf = (value: unknown): object | undefined => {
-  if (value !== null && typeof value === "object" && trustedRawRequests.has(value)) {
-    return value;
-  }
-  const raw = readDataField(value, "raw");
-  if (
-    raw.kind === "value" &&
-    raw.value !== null &&
-    typeof raw.value === "object" &&
-    trustedRawRequests.has(raw.value)
-  ) {
-    return raw.value;
-  }
-  // Reply 把它的 Request 放在自身数据属性 `request` 上。
-  const request = readDataField(value, "request");
-  if (request.kind === "value" && request.value !== value) {
-    return trustedRawOf(request.value);
-  }
-  return undefined;
-};
-
-/**
- * 只对**已证明可信的接收者**用普通成员读取。这条路径上执行的访问器属于 Node 或
- * Fastify，不属于调用方。
- */
-const readPlatformField = (target: unknown, key: string): FieldRead => {
-  if (target === null || typeof target !== "object") {
-    return absentField;
-  }
-  try {
-    return { kind: "value", value: (target as Record<string, unknown>)[key] };
-  } catch {
-    // 平台访问器也可能抛（例如 socket 已经销毁）。抛错不该把日志调用带走。
-    return absentField;
-  }
-};
-
 const pathOf = (url: FieldRead): unknown =>
   url.kind === "value" && typeof url.value === "string"
     ? url.value.split("?")[0]
@@ -794,25 +876,22 @@ const pathOf = (url: FieldRead): unknown =>
 /**
  * request 的**固定投影**。
  *
- *   - 可信路径：全部字段只从已登记的 `IncomingMessage` 上取，requestId 取自登记
- *     时记下的那一个，因此调用方连一个字段都插不进来；
- *   - 不可信路径：只读数据属性，访问器记成占位串、绝不调用。Node 的
- *     `IncomingMessage` 把 `method`/`url`/`socket` 放在自身数据属性上，所以
- *     即便是不可信输入，只要它真带着一个 IncomingMessage 形状的东西，也拿得到
- *     有用信息。
+ *   - 有快照：整条记录**就是那份冻结的快照**，serializer 一个字段都不从候选对象
+ *     上读。因此伪造 wrapper 就算指向真实请求，也只会打出真实请求的信息；而一个
+ *     被登记进来的自造对象只会拿回它自己那份用数据属性拼出来的快照。
+ *   - 没有快照：只读数据属性，访问器记成占位串、不被读取。Node 的
+ *     `IncomingMessage` 把 `method`/`url`/`socket` 放在自身数据属性上，所以即便
+ *     是不可信输入，只要它真带着一个 IncomingMessage 形状的东西，也拿得到有用
+ *     信息。
  */
 const serializeRequest = (request: unknown): unknown => {
-  const raw = trustedRawOf(request);
-  if (raw !== undefined) {
-    const socket = fieldValue(readDataField(raw, "socket"));
+  const snapshot = snapshotOf(request);
+  if (snapshot !== undefined) {
     return canonicalizeUntrusted({
-      requestId: trustedRawRequests.get(raw),
-      method: fieldValue(readDataField(raw, "method")),
-      // 请求目标是调用方完全可控的文本；strict canonicalizer 会再脱敏一次。
-      path: pathOf(readDataField(raw, "url")),
-      // `net.Socket.prototype.remoteAddress` 是访问器，但接收者是已登记请求的
-      // socket，执行的是 Node 自己的代码。
-      remoteAddress: fieldValue(readPlatformField(socket, "remoteAddress")),
+      requestId: snapshot.requestId,
+      method: snapshot.method,
+      path: snapshot.path,
+      remoteAddress: snapshot.remoteAddress,
     });
   }
 
@@ -850,29 +929,19 @@ const serializeRequest = (request: unknown): unknown => {
 /**
  * reply 的固定投影。
  *
- * 这一条根本不需要「可信」这个概念：`ServerResponse` 的 `statusCode` 是**数据
- * 属性**（实测），因此经由 `raw` 读它对可信与不可信输入是同一条路径，且永远不会
- * 执行访问器。
+ * 这一条不需要「可信」这个概念：`ServerResponse` 的 `statusCode` 是**数据属性**
+ * （实测），因此经由 `raw` 读它对两类输入是同一条路径，永远不会读访问器。状态码
+ * 会在请求生命周期里变化，所以它不能进登记点的那份冻结快照。
  */
-const serializeResponse = (response: unknown): unknown => {
-  const raw = trustedRawOf(response);
-  const source =
-    raw === undefined
-      ? fieldValue(readDataField(response, "raw"))
-      : // 可信 reply：从它自己的 `raw`（ServerResponse）上取，不碰 wrapper。
-        fieldValue(readDataField(response, "raw"));
-  return canonicalizeUntrusted({
+const serializeResponse = (response: unknown): unknown =>
+  canonicalizeUntrusted({
     statusCode: fieldValue(
       firstField(
-        readDataField(source, "statusCode"),
-        // 不可信 wrapper 上的同名数据属性只在没有 raw 时才作为兜底。
-        raw === undefined
-          ? readDataField(response, "statusCode")
-          : absentField,
+        readDataField(fieldValue(readDataField(response, "raw")), "statusCode"),
+        readDataField(response, "statusCode"),
       ),
     ),
   });
-};
 
 const serializeError = (error: unknown): unknown =>
   // 绝不返回调用方的原对象。type 只可能来自 allowlist，因此伪造一个
@@ -987,35 +1056,22 @@ const hardenChildOptions = (options: unknown): unknown => {
     hardened["msgPrefix"] = redactText(msgPrefix);
   }
 
-  // redact.censor 的返回值直接进入输出；函数与字符串两种形态都要过一遍。
-  const redact = snapshot["redact"];
-  if (redact !== undefined && !Array.isArray(redact)) {
-    if (redact === null || typeof redact !== "object") {
-      throw new Error(
-        "logger child redact must be an array of paths or an options object",
-      );
-    }
-    const next = { ...(redact as Record<string, unknown>) };
-    const censor = next["censor"];
-    if (typeof censor === "function") {
-      next["censor"] = (value: unknown, path: readonly string[]) =>
-        canonicalizeUntrusted(
-          (censor as (input: unknown, at: readonly string[]) => unknown)(
-            value,
-            path,
-          ),
-        );
-    } else if (typeof censor === "string") {
-      next["censor"] = redactText(censor);
-    } else if (censor !== undefined) {
-      // Pino 的契约只有「字符串」与「(value, path) => any」两种 censor。别的形态
-      // 会被原样当成替换值写进输出，而我们无法对一个未知形态做等价包装。
-      throw new Error(
-        "logger child redact.censor must be a string or a function; " +
-          `received ${typeof censor}`,
-      );
-    }
-    hardened["redact"] = next;
+  // 子 logger **一律不得自带 `redact`**。
+  //
+  // 包装 censor 是不够的：`redact` 的路径语义本身就决定了**哪些键**会被送进
+  // pino 的 redactor，而那条路径（`@pinojs/redact`）会先做选择性克隆、再序列化
+  // 克隆体，克隆体带不上我们给容器加的 `toJSON` 遮蔽——被污染的
+  // `Object.prototype.toJSON` 于是又能在序列化阶段把整棵脱敏干净的树替换掉。
+  // 根 logger 的 `redact` 已经整条移除（它的两类路径都已被固定 serializer 与
+  // canonicalizer 覆盖），子 logger 也不能把它带回来。
+  //
+  // 兼容面不受影响：Fastify 只会把 `serializers` 再传一遍
+  // （`lib/logger-pino.js`），从不传 `redact`。
+  if ("redact" in snapshot) {
+    throw new Error(
+      "child loggers may not configure redact; redaction is enforced at the " +
+        "central logger boundary",
+    );
   }
 
   return hardened;
@@ -1102,28 +1158,25 @@ export const createLogger = (
             // Fastify 的 defaultErrorLog 会调用
             // `reply.log.error({ req, res, err }, error?.message)`——msg 是一段
             // **显式传入的字符串**，因此绕开了「pino 从 err.message 自动生成 msg」
-            // 那条已经封掉的路径。这里按描述符取出 err 的 message，凡是与它逐字
-            // 相同的 msg 一律换成固定串：错误内部细节不该因为换了个入口就泄漏。
+            // 那条已经封掉的路径。
+            //
+            // 上一轮只在 msg 与 `err.message` **逐字相同**时才折叠。那条判据是
+            // 可以绕开的：包装一层、截一段、加个前缀，msg 就不再相等，而它携带的
+            // 仍然是同一段内部细节。现在的判据只有一条——**这条记录带不带
+            // `err`**；带就无条件折成固定串。
+            //
+            // 代价是明确的：`log.error({ err }, "API startup failed")` 这类调用
+            // 方自己写的 msg 也会变成固定串。诊断信息从 `err.type` 走（它来自
+            // allowlist），不再从 msg 走。不带 `err` 的普通日志完全不受影响。
             const record = (args as readonly unknown[])[0];
-            const carriedErrorMessage =
-              record instanceof Error
-                ? readDataField(record, "message")
-                : record !== null && typeof record === "object"
-                  ? readDataField(
-                      fieldValue(
-                        readDataField(record as Record<string, unknown>, "err"),
-                      ),
-                      "message",
-                    )
-                  : absentField;
+            const carriesError =
+              record instanceof Error ||
+              (record !== null &&
+                typeof record === "object" &&
+                readDataField(record, "err").kind !== "absent");
             const safe = (args as readonly unknown[]).map(
               (argument, index) => {
-                if (
-                  index > 0 &&
-                  typeof argument === "string" &&
-                  carriedErrorMessage.kind === "value" &&
-                  argument === carriedErrorMessage.value
-                ) {
+                if (index > 0 && typeof argument === "string" && carriesError) {
                   return safeErrorMessage;
                 }
                 if (typeof argument === "string") {
