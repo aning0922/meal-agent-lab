@@ -33,7 +33,7 @@ import {
   eventRequestId,
   type EventLogSink,
 } from "./log-events.js";
-import { createLogger, registerRequestLogFields } from "./logging.js";
+import { createLoggingContext, registerRequestLogFields } from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
 import {
@@ -80,7 +80,16 @@ declare module "fastify" {
 
 export interface BuildAppOptions {
   readonly config: AppConfig;
+  /**
+   * **框架** logger（Fastify 的 `loggerInstance`）。测试用它捕获框架请求日志。
+   *
+   * 它**不是**业务事件的底座：业务事件走 `eventSink`，而 `eventSink` 的默认值
+   * 由 `createLoggingContext()` 新建的独立 root 提供，调用方没有任何入口把一个
+   * 预绑定的 logger 塞进去。
+   */
   readonly logger?: Logger;
+  /** 业务事件 sink。只作为测试接缝；生产路径上由组装根自己建。 */
+  readonly eventSink?: EventLogSink;
   readonly persistence?: Persistence;
   readonly wechatAdapter?: WechatAdapter;
   readonly operations?: ApiOperations;
@@ -164,12 +173,12 @@ const mapRequestError = (error: unknown): AppError => {
 export const buildApp = async (
   options: BuildAppOptions,
 ): Promise<FastifyInstance<any, any, any, Logger>> => {
-  const logger =
-    options.logger ??
-    createLogger(options.config.logLevel);
+  // 框架 logger 与业务事件 logger 是**两个独立的 pino 根**，只是写向同一个目的地。
+  // `options.logger` 只能注入 framework 那一侧。
+  const logging = createLoggingContext(options.config.logLevel, options.logger);
   const app = Fastify({
     bodyLimit: maximumRequestBodyBytes,
-    loggerInstance: logger,
+    loggerInstance: logging.framework,
     genReqId: (request) => {
       // 这里是能拿到「这一条请求确实来自 Fastify」的**最早**的点：Fastify 在
       // 构造它的 Request、也在打出 "incoming request" 之前调用 genReqId。登记
@@ -194,9 +203,12 @@ export const buildApp = async (
     },
   });
 
-  // sink 由**这里**创建：参数是组装根刚拿到的 root logger，不是任何请求作用域的
-  // 子 logger。业务代码此后只持有 `app.eventLog`。
-  app.decorate("eventLog", createEventLogSink(logger));
+  // sink 的底座是 `logging.events`——一个**从不**出现在 `app.log` / `request.log`
+  // / 任何公开返回值上的独立 root。业务代码此后只持有 `app.eventLog`。
+  app.decorate(
+    "eventLog",
+    options.eventSink ?? createEventLogSink(logging.events),
+  );
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);

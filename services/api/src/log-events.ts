@@ -221,8 +221,8 @@ export interface EventLogSink {
  * 只有组装根（`buildApp`）会调用它，参数是它自己刚从 `createLogger()` 拿到的那个
  * root logger——不是任何请求作用域的子 logger。
  */
-export const createEventLogSink = (root: Logger): EventLogSink => ({
-  emit(event, fields) {
+export const createEventLogSink = (root: Logger): EventLogSink => {
+  const emit: EventLogSink["emit"] = (event, fields) => {
     const { level, message } = eventCatalogue[event];
     const projected = projectors[event](fields);
     if (Object.hasOwn(projected, reservedField)) {
@@ -231,8 +231,19 @@ export const createEventLogSink = (root: Logger): EventLogSink => ({
     }
     // `event` **最后**写入，调用方没有任何路径能覆盖它。
     root[level]({ ...projected, [reservedField]: event }, message);
-  },
-});
+  };
+  const sink = {} as { emit: EventLogSink["emit"] };
+  // `emit` 不可替换：既不可写也不可重定义。一个被 decorate 到 Fastify 实例上的
+  // 对象，任何拿得到实例的人都够得着；如果 `emit` 可以被换掉，前面所有关于字段
+  // 与类型的约束都白做了。
+  Object.defineProperty(sink, "emit", {
+    value: emit,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+  return Object.freeze(sink);
+};
 
 /**
  * 从一个 Error 取出**已归一化的类型名**，供 `errorType` 字段使用。

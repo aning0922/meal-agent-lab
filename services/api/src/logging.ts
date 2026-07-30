@@ -5,15 +5,20 @@ import pino, { type LogFn, type Logger } from "pino";
 /**
  * 阶段 09A / M3A：中央 logger 边界。
  *
- * ## 这一层现在的职责范围（第十二轮收口之后）
+ * ## 这一层现在的职责范围（第十三轮收口之后）
  *
  * 前九轮的路子是「让这一层能安全地吃下任意对象」——净化器一轮补一个洞：原型污染、
  * 有状态 Proxy、装箱字符串、继承访问器、结构键、索引访问器……每一轮都还能再找出
  * 一个。那条路走不到头，因为它试图在**出口**证明一个关于任意输入的全称命题。
  *
- * 第十轮起换了方向：**业务代码根本不把任意对象交给 logger**；第十二轮起连
- * **logger 本身**都拿不到——业务代码只持有 `src/log-events.ts` 的 `EventLogSink`，
- * 它由组装根从 root logger 创建、闭包持有，外部没有取回 logger 的入口。
+ * 第十轮起换了方向：业务代码不把任意对象交给 logger。
+ *
+ * **口径要写实**：Fastify 仍然暴露 `app.log` / `request.log`——那是框架的 API，
+ * 这一层管不着。真正成立的是：**本仓库的业务调用点由 capability gate 约束**
+ * （`tests/unit/production-log-arguments.test.ts`，按 pino/fastify 的声明身份判定），
+ * 而业务事件走一条**独立**的 `EventLogSink`：它的底座是
+ * `createLoggingContext()` 新建的、与 framework 分开的另一个 pino 根，闭包持有，
+ * 不出现在 `app.log` / `request.log` / 任何公开返回值上。
  * `src/log-events.ts` 是一层窄化的 typed facade——事件是闭集，每个事件有**固定的
  * runtime projector**（逐个字段按名字取值，不遍历调用方传进来的对象），字段类型
  * 是**专用安全类型**而不是自由字符串：`errorType` 带 brand 且运行期在 allowlist
@@ -35,7 +40,11 @@ import pino, { type LogFn, type Logger } from "pino";
  *   2. 第三方或未来代码万一直接拿到 logger 时的兜底。
  *
  * 这个定位很重要：**不要再为「任意对象 / Proxy」增补特例**。真正的边界在类型
- * 系统那一侧，这里只保证已知的框架路径不泄漏。
+ * 系统与 capability gate 那一侧，这里只保证已知的框架路径不泄漏。
+ *
+ * 关于 `Proxy`：下面每一处提到它的注释说的都是同一件事——描述符读取本身在 Proxy
+ * 上会触发 trap，因此这一层保证的是「**不读取访问器**」，不是「绝不执行任何调用方
+ * 代码」。那是 JavaScript 语言层面的性质，不是这一层的疏漏。
  *
  * ## 信任上下文仍然只有两个
  *
@@ -44,7 +53,8 @@ import pino, { type LogFn, type Logger } from "pino";
  *
  *   1. **strict / untrusted canonicalizer**（`canonicalizeUntrusted`）
  *      child bindings、`setBindings()`、`formatters.level` / `formatters.bindings`、
- *      调用方 formatter / serializer / censor 的返回值——全部走它。
+ *      调用方 formatter / serializer 的返回值——全部走它。（子 logger 的
+ *      `redact` 第八轮起整条拒绝，因此这里不再有 censor 这条入口。）
  *      它**没有** `req`/`res`/`err` 豁免，同时处理**属性名与属性值**，一律按
  *      描述符读取而**不读取访问器**，不调用 `toJSON`/`toString` 之类的用户函数，
  *      并把 `Error` 归一化成受控形状。
@@ -125,8 +135,9 @@ const sensitiveKeys = new Set([
   "pgpassword",
   // `IncomingMessage.rawHeaders` / `rawTrailers` 是**扁平字符串数组**（["authorization",
   // "Bearer …", "cookie", "…"]），因此逐键判断根本看不到里面的 authorization 与
-  // cookie，`redact.paths` 的 `req.headers.*` 也覆盖不到它。把整条数组按敏感键
-  // 处理——只要有人把整个 request 记在一个非 `req` 的键下面，这就是唯一的拦截点。
+  // cookie。把整条数组按敏感键处理——只要有人把整个 request 记在一个非 `req` 的
+  // 键下面，这就是唯一的拦截点。（pino 的 `redact` 已经整条不用，因此不存在
+  // `redact.paths` 这条后备。）
   "rawheaders",
   "rawtrailers",
 ]);
@@ -1129,7 +1140,7 @@ const hardenChildOptions = (options: unknown): unknown => {
   // pino 的 redactor，而那条路径（`@pinojs/redact`）会先做选择性克隆、再序列化
   // 克隆体，克隆体带不上我们给容器加的 `toJSON` 遮蔽——被污染的
   // `Object.prototype.toJSON` 于是又能在序列化阶段把整棵脱敏干净的树替换掉。
-  // 根 logger 的 `redact` 已经整条移除（它的两类路径都已被固定 serializer 与
+  // 根 logger 不配置 `redact`（第七轮移除，它的两类路径都已被固定 serializer 与
   // canonicalizer 覆盖），子 logger 也不能把它带回来。
   //
   // 兼容面不受影响：Fastify 只会把 `serializers` 再传一遍
@@ -1204,6 +1215,39 @@ const hardenLogger = (logger: Logger): Logger => {
  *   - 固定 serializer：新建纯对象并再走一次 strict；
  *   - `redact.paths`：与前面几层独立的最后一道。
  */
+/**
+ * 框架 logger 与业务事件 logger 的**分离容器**。
+ *
+ * 它们是**两个独立的 pino 根实例**，只是写向同一个目的地。这条分离是必须的：
+ *
+ *   - `framework` 交给 Fastify。它会被 Fastify 派生成请求作用域的子 logger，也
+ *     可能被调用方预先绑定过 binding；
+ *   - `events` 只喂给 `createEventLogSink()`，**永不**出现在 `app.log` /
+ *     `request.log` / 任何公开返回值上。
+ *
+ * 因此：预绑定在 framework 上的 binding 到不了业务事件；sink 建好之后再对
+ * framework root `setBindings()` 也影响不到业务事件——两者根本不是同一棵树。
+ */
+export interface LoggingContext {
+  readonly framework: Logger;
+  readonly events: Logger;
+}
+
+/**
+ * 建立分离容器。
+ *
+ * `framework` 允许由调用方注入（测试要捕获框架日志）；`events` **永远**由这里
+ * 新建，调用方没有任何入口把一个预绑定的 logger 塞进业务事件底座。
+ */
+export const createLoggingContext = (
+  level: string,
+  framework?: Logger,
+  destination?: Writable,
+): LoggingContext => ({
+  framework: framework ?? createLogger(level, destination),
+  events: createLogger(level, destination),
+});
+
 export const createLogger = (
   level: string,
   stream?: Writable,

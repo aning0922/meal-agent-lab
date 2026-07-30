@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { apiErrorStatus } from "@meal-agent/contracts/api";
 import { Writable } from "node:stream";
 import test from "node:test";
 
+import { buildApp } from "../../src/app.js";
+import { loadConfig } from "../../src/config.js";
 import {
   createEventLogSink,
   eventErrorType,
@@ -10,7 +13,7 @@ import {
   type LogEventFields,
   type LogEventName,
 } from "../../src/log-events.js";
-import { createLogger } from "../../src/logging.js";
+import { createLogger, createLoggingContext } from "../../src/logging.js";
 
 /**
  * 阶段 09A / M3A：typed facade 的反向测试，**全部走真实 `createLogger`**。
@@ -126,20 +129,15 @@ test("statusCode is derived, so a contradictory pair cannot be built", () => {
     `statusCode must come from apiErrorStatus, not from the caller\n${capture.output()}`,
   );
 
-  // 每一个 ApiErrorCode 都必须派生出与 contracts 一致的状态码。
+  // **全量**覆盖：从 `apiErrorStatus` 自己生成用例，不再手写十个样例。手写样例
+  // 只能证明被写下的那几个，而漏掉的恰恰是没人想到的那个。
   const derived = capturingSink();
-  for (const code of [
-    "VALIDATION_FAILED",
-    "AUTHENTICATION_REQUIRED",
-    "SESSION_EXPIRED",
-    "FORBIDDEN",
-    "RESOURCE_NOT_FOUND",
-    "CONFLICT",
-    "SAFETY_BLOCKED",
-    "RATE_LIMITED",
-    "EXTERNAL_DEPENDENCY_UNAVAILABLE",
-    "INTERNAL_ERROR",
-  ] as const) {
+  const codes = Object.keys(apiErrorStatus) as (keyof typeof apiErrorStatus)[];
+  assert.ok(
+    codes.length >= 18,
+    `expected the full code table, got ${String(codes.length)}`,
+  );
+  for (const code of codes) {
     derived.sink.emit("request.rejected", {
       requestId: eventRequestId(requestId),
       errorCode: code,
@@ -150,18 +148,7 @@ test("statusCode is derived, so a contradictory pair cannot be built", () => {
       entry["errorCode"],
       entry["statusCode"],
     ]),
-    [
-      ["VALIDATION_FAILED", 400],
-      ["AUTHENTICATION_REQUIRED", 401],
-      ["SESSION_EXPIRED", 401],
-      ["FORBIDDEN", 403],
-      ["RESOURCE_NOT_FOUND", 404],
-      ["CONFLICT", 409],
-      ["SAFETY_BLOCKED", 422],
-      ["RATE_LIMITED", 429],
-      ["EXTERNAL_DEPENDENCY_UNAVAILABLE", 503],
-      ["INTERNAL_ERROR", 500],
-    ],
+    codes.map((code) => [code, apiErrorStatus[code]]),
   );
 });
 
@@ -171,11 +158,7 @@ test("a declared string field cannot smuggle an opaque secret", () => {
   for (const [event, fields, field] of [
     ["request.failed", { requestId, errorType: opaqueSecret }, "errorType"],
     ["startup.failed", { errorType: `AppError${opaqueSecret}` }, "errorType"],
-    [
-      "request.rejected",
-      { requestId, errorCode: opaqueSecret },
-      "errorCode",
-    ],
+    ["request.rejected", { requestId, errorCode: opaqueSecret }, "errorCode"],
     [
       "request.rejected",
       { requestId: opaqueSecret, errorCode: "CONFLICT" },
@@ -298,4 +281,180 @@ test("the sink exposes nothing but emit", () => {
       `the sink must not expose ${escape}`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// 第十三轮：EventLogSink 的可信边界
+// ---------------------------------------------------------------------------
+
+test("a pre-bound framework logger cannot pollute business events", async () => {
+  // 组装根收到的 `options.logger` 只进 framework 那一侧。业务事件的底座由
+  // `createLoggingContext()` 新建，调用方没有入口把预绑定的 logger 塞进去。
+  let frameworkOutput = "";
+  const frameworkStream = new Writable({
+    write(chunk, _encoding, callback) {
+      frameworkOutput += chunk.toString();
+      callback();
+    },
+  });
+  const preBound = createLogger("info", frameworkStream).child({
+    traceContext: opaqueSecret,
+    tenantHint: opaqueSecret,
+  });
+
+  let eventOutput = "";
+  const eventStream = new Writable({
+    write(chunk, _encoding, callback) {
+      eventOutput += chunk.toString();
+      callback();
+    },
+  });
+  const eventSink = createEventLogSink(createLogger("info", eventStream));
+
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: preBound,
+    eventSink,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  try {
+    // 触发一条业务事件（404 走 request.rejected）。
+    await app.inject({ method: "GET", url: "/no-such-route" });
+  } finally {
+    await app.close();
+  }
+
+  // 框架日志确实带着预绑定的 binding——那是它自己的树，如实承认。
+  assert.equal(
+    frameworkOutput.includes(opaqueSecret),
+    true,
+    "the pre-bound framework binding is genuinely present on framework lines",
+  );
+  // 业务事件一条都没沾上。
+  assert.equal(
+    eventOutput.includes(opaqueSecret),
+    false,
+    `a pre-bound framework binding must never reach a business event\n${eventOutput}`,
+  );
+  const events = eventOutput
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.ok(events.length > 0, "a business event must have been emitted");
+  assert.deepEqual(Object.keys(events[0] ?? {}).sort(), [
+    "errorCode",
+    "event",
+    "level",
+    "msg",
+    "requestId",
+    "statusCode",
+    "time",
+  ]);
+
+  // 框架请求日志的字段仍然正常。
+  const frameworkLines = frameworkOutput
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const incoming = frameworkLines.find((line) => line["req"] !== undefined)?.[
+    "req"
+  ] as Record<string, unknown> | undefined;
+  assert.ok(incoming, "the framework request log must still exist");
+  assert.equal(incoming["method"], "GET");
+  assert.equal(incoming["path"], "/no-such-route");
+  assert.equal(typeof incoming["requestId"], "string");
+  const completed = frameworkLines.find((line) => line["res"] !== undefined)?.[
+    "res"
+  ] as Record<string, unknown> | undefined;
+  assert.equal(completed?.["statusCode"], 404);
+});
+
+test("mutating the framework root after sink creation cannot pollute events", () => {
+  let frameworkOutput = "";
+  const frameworkStream = new Writable({
+    write(chunk, _encoding, callback) {
+      frameworkOutput += chunk.toString();
+      callback();
+    },
+  });
+  let eventOutput = "";
+  const eventStream = new Writable({
+    write(chunk, _encoding, callback) {
+      eventOutput += chunk.toString();
+      callback();
+    },
+  });
+
+  const context = createLoggingContext(
+    "info",
+    createLogger("info", frameworkStream),
+    eventStream,
+  );
+  const sink = createEventLogSink(context.events);
+
+  // sink 建好之后再去改 framework root 的 bindings。
+  context.framework.setBindings({ traceContext: opaqueSecret });
+  context.framework.info("framework line after setBindings");
+
+  sink.emit("request.rejected", {
+    requestId: eventRequestId(requestId),
+    errorCode: "FORBIDDEN",
+  });
+
+  assert.equal(
+    frameworkOutput.includes(opaqueSecret),
+    true,
+    "the framework root genuinely picked up the new binding",
+  );
+  assert.equal(
+    eventOutput.includes(opaqueSecret),
+    false,
+    `a later framework setBindings must never reach a business event\n${eventOutput}`,
+  );
+});
+
+test("sink.emit cannot be replaced", () => {
+  const capture = capturingSink();
+  const sink = capture.sink as unknown as Record<string, unknown>;
+
+  assert.equal(Object.isFrozen(sink), true, "the sink must be frozen");
+  const descriptor = Object.getOwnPropertyDescriptor(sink, "emit");
+  assert.equal(descriptor?.writable, false);
+  assert.equal(descriptor?.configurable, false);
+
+  // 直接赋值：非严格模式静默失败，严格模式抛错——两种都不能换掉它。
+  try {
+    sink["emit"] = (): void => {
+      throw new Error("replaced emit must never run");
+    };
+  } catch {
+    // 冻结对象在严格模式下抛错，这正是期望。
+  }
+  assert.throws(() => {
+    Object.defineProperty(sink, "emit", {
+      value: () => undefined,
+      configurable: true,
+    });
+  });
+
+  // 原来的 emit 仍然工作。
+  capture.sink.emit("shutdown.timed-out", {});
+  assert.equal(
+    lines(capture.output())[0]?.["event"],
+    "shutdown.timed-out",
+    capture.output(),
+  );
 });
