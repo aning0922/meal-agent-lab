@@ -4,9 +4,11 @@ import {
   apiErrorStatus,
   type ApiErrorCode,
 } from "@meal-agent/contracts/api";
+import type { Writable } from "node:stream";
+
 import type { Logger } from "pino";
 
-import { errorTypeOf, isAllowedErrorType } from "./logging.js";
+import { createLogger, errorTypeOf, isAllowedErrorType } from "./logging.js";
 
 /**
  * 阶段 09A / M3A：业务代码的**窄化 typed logging facade**。
@@ -216,12 +218,14 @@ export interface EventLogSink {
 }
 
 /**
- * 从**可信 root logger** 创建一个 sink。
+ * 从一个 root logger 包出 sink。
  *
- * 只有组装根（`buildApp`）会调用它，参数是它自己刚从 `createLogger()` 拿到的那个
- * root logger——不是任何请求作用域的子 logger。
+ * **模块私有**。第十四轮起它不再是公开工厂：一个「接受任意 Logger」的公开入口
+ * 本身就是一条能力出口——谁都能拿自己那个带 binding 的 logger 换一个 sink 出来。
+ * 现在唯一的建法是 `createLoggingContext()`，它自己新建 event root、当场包成
+ * sink，raw logger 只留在这个模块的词法作用域里。
  */
-export const createEventLogSink = (root: Logger): EventLogSink => {
+const createEventLogSink = (root: Logger): EventLogSink => {
   const emit: EventLogSink["emit"] = (event, fields) => {
     const { level, message } = eventCatalogue[event];
     const projected = projectors[event](fields);
@@ -243,6 +247,77 @@ export const createEventLogSink = (root: Logger): EventLogSink => {
     configurable: false,
   });
   return Object.freeze(sink);
+};
+
+/**
+ * 框架 logger 与业务事件 sink 的**分离容器**。
+ *
+ * 注意它**不**暴露 event root：`eventLog` 已经是包好的 sink。任何公开的
+ * interface / factory 都不得返回 raw event `Logger`——那正是上一轮留下的口子。
+ *
+ * 所有权也在这里定死：
+ *
+ *   - `framework`：调用方注入时归**调用方**所有（测试要捕获框架日志），我们不
+ *     `end` 它、不 flush 它；没注入时由我们新建；
+ *   - event root：**永远**归我们所有，因此 `close()` 只 flush 它这一个。
+ */
+export interface LoggingContext {
+  readonly framework: Logger;
+  readonly eventLog: EventLogSink;
+  /** flush 自有的 event logger。幂等：重复调用返回同一个 promise。 */
+  close: () => Promise<void>;
+}
+
+/**
+ * 建立分离容器。
+ *
+ * `framework` 允许由调用方注入；event root **永远**由这里新建、当场包成 sink，
+ * 调用方没有任何入口拿到它，也没有入口把一个预绑定的 logger 塞进业务事件底座。
+ */
+/**
+ * 等目的地把已经交给它的字节写完。
+ *
+ * pino 的 `flush()` 只对它自己的 `destination` 有意义；目的地是一个普通
+ * `Writable` 时它立刻回调，**不会**等 `_write` 的回调跑完。于是「关机前最后一条
+ * 业务事件」在异步目的地上会丢（实测：延迟 5ms 的写入在 close 返回之后还没落地）。
+ *
+ * 这里只**等它排空**，绝不 `end()` 它——目的地归调用方所有。等待有 2 秒硬上界，
+ * 一个卡住的目的地只会让关机慢一点，不会把它挂死。
+ */
+const awaitDrained = async (destination: Writable | undefined): Promise<void> => {
+  if (destination === undefined) {
+    return;
+  }
+  const deadline = Date.now() + 2_000;
+  while (destination.writableLength > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 1);
+    });
+  }
+};
+
+export const createLoggingContext = (
+  level: string,
+  framework?: Logger,
+  eventDestination?: Writable,
+): LoggingContext => {
+  // raw event logger 只存在于这个闭包里。它不出现在返回值上，也没有 getter。
+  const eventRoot = createLogger(level, eventDestination);
+  const eventLog = createEventLogSink(eventRoot);
+  let closing: Promise<void> | undefined;
+  return {
+    framework: framework ?? createLogger(level),
+    eventLog,
+    close: () => {
+      // exactly-once：第二次调用拿到的是同一个 promise，不会再 flush 一遍。
+      closing ??= new Promise<void>((resolve) => {
+        eventRoot.flush(() => {
+          resolve();
+        });
+      }).then(() => awaitDrained(eventDestination));
+      return closing;
+    },
+  };
 };
 
 /**

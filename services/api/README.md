@@ -88,15 +88,25 @@ Error / Request / Reply / Config / Secret 在类型上就进不来。
 
 口径写实：**Fastify 仍然暴露 `app.log` / `request.log`**；成立的是「本仓库的业务
 调用点由 capability gate 约束，业务事件通过独立的 `EventLogSink`」。sink 的底座是
-`createLoggingContext()` 新建的、与 framework 分开的另一个 pino 根，闭包持有，
-`Object.freeze` 且 `emit` 不可替换。`statusCode` 由 `errorCode` 派生，调用方造不出
-自相矛盾的组合。
+`createLoggingContext()` 新建的、与 framework 分开的另一个 pino 根。那个 root
+**只存在于模块词法作用域里**：建出来立刻包成 `EventLogSink`，任何公开 interface
+或 factory 都不返回它，`createEventLogSink` 也不再导出。sink 本身 `Object.freeze`
+且 `emit` 不可写不可重定义；`app.eventLog` 用 `Object.defineProperty` 钉成
+不可写不可配置，错误处理器只从词法闭包取 sink，不读那个属性。测试只能换目的地
+（`eventLogDestination?: Writable`），换不掉 sink。`statusCode` 由 `errorCode`
+派生，调用方造不出自相矛盾的组合。
+
+两棵 logger 树的**所有权**在 `LoggingContext`：`app.close` 经 `onClose` 等待自有
+event logger flush（恰好一次），调用方注入的 `Writable` / `Logger` 一律不 end。
 
 静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
 **声明身份**而不是类型名字符串：任何解析到 pino `LogFn` 声明的表达式只允许出现在
 facade 与 `logging.ts` 里；`child`/`setBindings` 只有 `logging.ts` 可以碰；组装根
-`src/app.ts` 只有三个**精确上下文**可以命名 logger。它是**工程护栏，不是形式化
-安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
+`src/app.ts` 只有三个**精确上下文**可以命名 logger。能力被装进别的壳子里也算：
+容器、mapped type、indexed access、接口重声明与解构逐条命中，组装根白名单绑的是
+**真实变量符号 + 声明来源 + factory initializer**。七种违规接线固定在
+`tests/fixtures/app-wiring-variants.ts` 里，测试把它当作组装根喂给收集器，因此
+白名单有自动化回归。它是**工程护栏，不是形式化安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
 
 `logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
 与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖

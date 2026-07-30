@@ -1031,10 +1031,11 @@ const serializeError = (error: unknown): unknown =>
 // ---------------------------------------------------------------------------
 
 /**
- * `serializers`、`formatters.*`、`redact.censor` 与 `msgPrefix` 都在我们的
- * canonicalizer **之后**参与输出，因此各自都能把刚脱敏掉的取值重新生成出来。
+ * `serializers`、`formatters.*` 与 `msgPrefix` 都在我们的 canonicalizer **之后**
+ * 参与输出，因此各自都能把刚脱敏掉的取值重新生成出来。（`redact` 不在这个名单
+ * 里：它整条被拒绝，见下面的 `redact` 分支。）
  *
- * 这里选择**安全包装**而不是一刀切拒绝：Fastify 自己就带着 options 调用
+ * 其余几项选择**安全包装**而不是一刀切拒绝：Fastify 自己就带着 options 调用
  * `child()`（`lib/logger-pino.js` 会把父 logger 的 serializers 再传一遍）。
  * 包装口径统一是「先让调用方的函数跑，再把结果交给 strict canonicalizer」。
  */
@@ -1212,42 +1213,11 @@ const hardenLogger = (logger: Logger): Logger => {
  *   - `hooks.logMethod`：在 pino 做 printf 插值**之前**处理全部参数；
  *   - `formatters.log`：顶层 log record（唯一允许延后 req/res/err 的地方）；
  *   - `child()` / `setBindings()` 覆盖 + 子 logger options 包装：不可信输入；
- *   - 固定 serializer：新建纯对象并再走一次 strict；
- *   - `redact.paths`：与前面几层独立的最后一道。
+ *   - 固定 serializer：新建纯对象并再走一次 strict。
+ *
+ * 这里**没有** `redact` 这一层：根 logger 第七轮起不再配置它，子 logger 第八轮起
+ * 整条拒绝。
  */
-/**
- * 框架 logger 与业务事件 logger 的**分离容器**。
- *
- * 它们是**两个独立的 pino 根实例**，只是写向同一个目的地。这条分离是必须的：
- *
- *   - `framework` 交给 Fastify。它会被 Fastify 派生成请求作用域的子 logger，也
- *     可能被调用方预先绑定过 binding；
- *   - `events` 只喂给 `createEventLogSink()`，**永不**出现在 `app.log` /
- *     `request.log` / 任何公开返回值上。
- *
- * 因此：预绑定在 framework 上的 binding 到不了业务事件；sink 建好之后再对
- * framework root `setBindings()` 也影响不到业务事件——两者根本不是同一棵树。
- */
-export interface LoggingContext {
-  readonly framework: Logger;
-  readonly events: Logger;
-}
-
-/**
- * 建立分离容器。
- *
- * `framework` 允许由调用方注入（测试要捕获框架日志）；`events` **永远**由这里
- * 新建，调用方没有任何入口把一个预绑定的 logger 塞进业务事件底座。
- */
-export const createLoggingContext = (
-  level: string,
-  framework?: Logger,
-  destination?: Writable,
-): LoggingContext => ({
-  framework: framework ?? createLogger(level, destination),
-  events: createLogger(level, destination),
-});
-
 export const createLogger = (
   level: string,
   stream?: Writable,
@@ -1353,8 +1323,8 @@ export const createLogger = (
         // 的树替换成一句返回值（实测泄漏）。去掉这一层之后，序列化走 pino 自己的
         // `JSON.stringify`，我们的遮蔽因此真正生效。
         //
-        // 子 logger 仍然可以自己传 `redact`，那条路径上的 censor 依旧被
-        // `hardenChildOptions` 包起来。
+        // 子 logger 也不能自己把它加回来：`hardenChildOptions` 见到 `redact` 直接
+        // 抛错，因此整个进程里不存在任何一条经过 `@pinojs/redact` 的输出路径。
       },
       stream,
     ),

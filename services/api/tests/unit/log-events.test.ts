@@ -6,14 +6,14 @@ import test from "node:test";
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
 import {
-  createEventLogSink,
+  createLoggingContext,
   eventErrorType,
   eventRequestId,
   type EventLogSink,
   type LogEventFields,
   type LogEventName,
 } from "../../src/log-events.js";
-import { createLogger, createLoggingContext } from "../../src/logging.js";
+import { createLogger } from "../../src/logging.js";
 
 /**
  * 阶段 09A / M3A：typed facade 的反向测试，**全部走真实 `createLogger`**。
@@ -41,7 +41,9 @@ const capturingSink = (): Capture => {
     },
   });
   const root = createLogger("info", stream);
-  return { sink: createEventLogSink(root), root, output: () => output };
+  // 直接用生产工厂：event root 由它自己建，测试只提供目的地。
+  const context = createLoggingContext("info", root, stream);
+  return { sink: context.eventLog, root, output: () => output };
 };
 
 const assertClean = (output: string, label: string): void => {
@@ -309,8 +311,6 @@ test("a pre-bound framework logger cannot pollute business events", async () => 
       callback();
     },
   });
-  const eventSink = createEventLogSink(createLogger("info", eventStream));
-
   const config = loadConfig({
     NODE_ENV: "test",
     DEPLOYMENT_STAGE: "local-test",
@@ -326,7 +326,7 @@ test("a pre-bound framework logger cannot pollute business events", async () => 
   const app = await buildApp({
     config,
     logger: preBound,
-    eventSink,
+    eventLogDestination: eventStream,
     operations: new Proxy({}, { get: () => unavailable }) as never,
     readiness: async () => true,
   });
@@ -403,7 +403,7 @@ test("mutating the framework root after sink creation cannot pollute events", ()
     createLogger("info", frameworkStream),
     eventStream,
   );
-  const sink = createEventLogSink(context.events);
+  const sink = context.eventLog;
 
   // sink 建好之后再去改 framework root 的 bindings。
   context.framework.setBindings({ traceContext: opaqueSecret });
@@ -457,4 +457,167 @@ test("sink.emit cannot be replaced", () => {
     "shutdown.timed-out",
     capture.output(),
   );
+});
+
+// ---------------------------------------------------------------------------
+// 第十四轮：app.eventLog 的替换入口与日志生命周期
+// ---------------------------------------------------------------------------
+
+interface WiredApp {
+  readonly app: Awaited<ReturnType<typeof buildApp>>;
+  readonly frameworkLines: () => string;
+  readonly eventLines: () => string;
+  readonly frameworkEnded: () => boolean;
+  readonly eventWrites: () => number;
+}
+
+/** 用**默认生产接线**建一个 app：只注入 framework logger 与业务事件目的地。 */
+const wireApp = async (options: { readonly delayWrites?: boolean } = {}): Promise<WiredApp> => {
+  let frameworkOut = "";
+  let ended = false;
+  const frameworkStream = new Writable({
+    write(chunk, _encoding, callback) {
+      frameworkOut += chunk.toString();
+      callback();
+    },
+    final(callback) {
+      ended = true;
+      callback();
+    },
+  });
+  let eventOut = "";
+  let writes = 0;
+  const eventStream = new Writable({
+    write(chunk, _encoding, callback) {
+      writes += 1;
+      const persist = (): void => {
+        eventOut += chunk.toString();
+        callback();
+      };
+      if (options.delayWrites === true) {
+        // 迟到的写入：回调被推到下一个 tick 之后才完成。
+        setTimeout(persist, 5);
+        return;
+      }
+      persist();
+    },
+  });
+
+  const config = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    DATABASE_URL:
+      "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/meal_agent",
+    WECHAT_ADAPTER: "fake",
+    LOG_LEVEL: "info",
+  });
+  const unavailable = async (): Promise<never> => {
+    throw new Error("operation should not be called");
+  };
+  const app = await buildApp({
+    config,
+    logger: createLogger("info", frameworkStream),
+    eventLogDestination: eventStream,
+    operations: new Proxy({}, { get: () => unavailable }) as never,
+    readiness: async () => true,
+  });
+  return {
+    app,
+    frameworkLines: () => frameworkOut,
+    eventLines: () => eventOut,
+    frameworkEnded: () => ended,
+    eventWrites: () => writes,
+  };
+};
+
+test("app.eventLog is read-only and the error handler never reads it", async () => {
+  const wired = await wireApp();
+  const app = wired.app as unknown as Record<string, unknown>;
+
+  const descriptor = Object.getOwnPropertyDescriptor(app, "eventLog");
+  assert.equal(descriptor?.writable, false, "eventLog must not be writable");
+  assert.equal(
+    descriptor?.configurable,
+    false,
+    "eventLog must not be configurable",
+  );
+
+  // 1. 直接赋值：非严格模式静默失败，严格模式抛错——两种都不能换掉它。
+  let replacementRan = false;
+  const replacement = {
+    emit: (): void => {
+      replacementRan = true;
+    },
+  };
+  try {
+    app["eventLog"] = replacement;
+  } catch {
+    // 只读属性在严格模式下抛错，这正是期望。
+  }
+  assert.notEqual(app["eventLog"], replacement, "assignment must not take");
+
+  // 2. defineProperty 同样失败。
+  assert.throws(() => {
+    Object.defineProperty(app, "eventLog", {
+      value: replacement,
+      configurable: true,
+    });
+  });
+
+  // 3. 业务事件仍然走原来的 sink——错误处理器读的是词法闭包，不是这个属性。
+  try {
+    await wired.app.inject({ method: "GET", url: "/no-such-route" });
+  } finally {
+    await wired.app.close();
+  }
+  assert.equal(replacementRan, false, "the replacement sink must never run");
+  const events = wired
+    .eventLines()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(events[0]?.["event"], "request.rejected");
+  assert.equal(events[0]?.["statusCode"], 404);
+});
+
+test("close flushes the owned event logger exactly once and never ends the injected stream", async () => {
+  const wired = await wireApp({ delayWrites: true });
+  await wired.app.inject({ method: "GET", url: "/no-such-route" });
+
+  // 迟到的写入：close 返回之后，业务事件必须已经落到目的地。
+  await wired.app.close();
+  assert.ok(
+    wired.eventLines().includes('"event":"request.rejected"'),
+    `a delayed write must have landed before close resolved\n${wired.eventLines()}`,
+  );
+  const writesAfterClose = wired.eventWrites();
+
+  // 再关一次：exactly-once——不会再产生任何写入。
+  await wired.app.close();
+  assert.equal(
+    wired.eventWrites(),
+    writesAfterClose,
+    "closing twice must not flush or write again",
+  );
+
+  // 调用方注入的 Writable 归调用方所有：我们既不 end 它也不 final 它。
+  assert.equal(
+    wired.frameworkEnded(),
+    false,
+    "an injected framework stream must never be ended by us",
+  );
+});
+
+test("the logging context close is idempotent by identity", async () => {
+  const context = createLoggingContext("info", createLogger("info"), new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  }));
+  const first = context.close();
+  const second = context.close();
+  assert.equal(first, second, "close must return the very same promise");
+  await first;
+  await second;
 });

@@ -45,6 +45,12 @@ const escapeFixture = join(
   "fixtures",
   "log-escape-shapes.ts",
 );
+const wiringFixture = join(
+  packageRoot,
+  "tests",
+  "fixtures",
+  "app-wiring-variants.ts",
+);
 
 interface LoggerCallSite {
   readonly file: string;
@@ -107,24 +113,42 @@ const resolveCapabilityDeclarations = (
         if (pino && name === "LogFn") {
           logFunction.add(node);
         }
-        if (
-          (pino && (name === "Logger" || name === "BaseLogger")) ||
-          (fastify && name === "FastifyBaseLogger")
-        ) {
-          logger.add(node);
+        const isLoggerShape =
+          (pino &&
+            (name === "Logger" ||
+              name === "BaseLogger" ||
+              name === "LoggerExtras")) ||
+          (fastify && name === "FastifyBaseLogger");
+        if (isLoggerShape) {
+          if (name !== "LoggerExtras") {
+            logger.add(node);
+          }
+          // mutation 成员**只**从真实的 Logger/BaseLogger/LoggerExtras/
+          // FastifyBaseLogger 上收集——不是「pino 的 .d.ts 里凡是同名的成员」。
+          // 后者会把无关类型上的同名成员也收进来，名单一旦变宽，判据就又退回
+          // 名字匹配了。
+          const collect = (container: ts.Node): void => {
+            container.forEachChild((member) => {
+              if (
+                (ts.isPropertySignature(member) ||
+                  ts.isMethodSignature(member)) &&
+                member.name !== undefined &&
+                ts.isIdentifier(member.name) &&
+                mutationMemberNames.has(member.name.text)
+              ) {
+                mutationMembers.add(member);
+              }
+              // 类型别名里的类型字面量（`Logger` 是 `BaseLogger & {…}`）。
+              if (
+                ts.isTypeLiteralNode(member) ||
+                ts.isIntersectionTypeNode(member)
+              ) {
+                collect(member);
+              }
+            });
+          };
+          collect(node);
         }
-      }
-      // mutation 成员的声明可能挂在 interface 上，也可能挂在类型别名的类型字面量
-      // 里（pino 的 `Logger` 就是 `BaseLogger & {…}`）。因此在 pino/fastify 自己的
-      // `.d.ts` 里**凡是**同名的成员声明都收下——身份仍然来自它们自己的声明节点，
-      // 不是名字匹配。
-      if (
-        (ts.isPropertySignature(node) || ts.isMethodSignature(node)) &&
-        node.name !== undefined &&
-        ts.isIdentifier(node.name) &&
-        mutationMemberNames.has(node.name.text)
-      ) {
-        mutationMembers.add(node);
       }
       ts.forEachChild(node, visit);
     };
@@ -172,23 +196,74 @@ const typeResolvesTo = (
 };
 
 /**
- * `Pick<Logger, "warn">` 之类的结构类型：符号已经不是 Logger 的声明了，但它的成员
- * 仍然是 pino 的 `LogFn`。逐个成员看一眼就能认出来。
+ * 一个类型是否**携带**了 logger 能力——直接是、成员是、元素是、类型实参是，都算。
+ *
+ * 只看类型本身是不够的：`readonly Logger[]`、`{ alias: Logger }`、
+ * `Pick<Logger, "warn">`、`Logger["setBindings"]`、mapped type、以及解构出来的
+ * 单个成员——这些写法都能把能力装进另一个壳子里带出边界。深度有界，避免在
+ * 递归类型上打转。
  */
-const exposesLogFunction = (
+const carriesCapability = (
   checker: ts.TypeChecker,
   type: ts.Type,
   declarations: ReadonlySet<ts.Declaration>,
   node: ts.Node,
-): boolean =>
-  type
-    .getProperties()
-    .some((property) =>
-      typeResolvesTo(
-        checker.getTypeOfSymbolAtLocation(property, node),
-        declarations,
-      ),
-    );
+  depth = 0,
+  seen: Set<ts.Type> = new Set(),
+): boolean => {
+  if (depth > 4 || seen.has(type)) {
+    return false;
+  }
+  seen.add(type);
+  if (typeResolvesTo(type, declarations)) {
+    return true;
+  }
+  // 只往**自家或匿名**的类型里走成员。第三方框架类型（`FastifyRequest`、
+  // `FastifyInstance`）几乎都间接挂着一个 `log`，往里走会把每一个 request/reply
+  // 都报成能力泄漏——那不是「用容器把能力带出边界」，那是框架本来的形状。
+  // 从它们身上**取出** logger（`request.log`）仍然由直接判据抓住。
+  const declaredInDependencies = (
+    type.getSymbol()?.getDeclarations() ?? []
+  ).some(
+    (declaration) =>
+      declaration.getSourceFile().fileName.includes("/node_modules/"),
+  );
+  if (!declaredInDependencies) {
+    for (const property of type.getProperties()) {
+      if (
+        carriesCapability(
+          checker,
+          checker.getTypeOfSymbolAtLocation(property, node),
+          declarations,
+          node,
+          depth + 1,
+          seen,
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  // 类型实参只在**数组/元组**这类真正的容器上走。第三方框架类型的泛型参数不算
+  // 「用容器把能力带出边界」——`FastifyRequest` 的第七个类型参数就是 `Logger`，
+  // 往里走会把每一个 request 形参都报成泄漏。
+  const isContainer =
+    checker.isArrayType(type) ||
+    checker.isTupleType(type) ||
+    !declaredInDependencies;
+  if (isContainer) {
+    for (const argument of checker.getTypeArguments(
+      type as ts.TypeReference,
+    ) ?? []) {
+      if (
+        carriesCapability(checker, argument, declarations, node, depth + 1, seen)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
 
 /** pino / Fastify logger 上会改变实例状态或派生新实例的成员名。 */
 const mutationMemberNames = new Set([
@@ -279,12 +354,15 @@ const resolvesToExport = (
 const collectCapabilityUses = (
   program: ts.Program,
   withinPath: string,
+  compositionRootOverride?: string,
 ): readonly LoggerCallSite[] => {
   const checker = program.getTypeChecker();
   const declarations = resolveCapabilityDeclarations(program);
   const facadeModule = join(sourceRoot, "log-events.ts");
   const loggingModule = join(sourceRoot, "logging.ts");
-  const compositionRoot = join(sourceRoot, "app.ts");
+  // 组装根可以被覆盖，好让 fixture 扮演它——app.ts 的白名单因此有**自动化回归**，
+  // 而不是靠每轮手工改一次文件再改回来。
+  const compositionRoot = compositionRootOverride ?? join(sourceRoot, "app.ts");
   const found = new Map<string, LoggerCallSite>();
 
   /**
@@ -304,52 +382,171 @@ const collectCapabilityUses = (
    *
    * 任何把 logger 先过一手函数的写法都不满足「节点形状」，因此拿不到放行。
    */
-  const isContextMember = (node: ts.Node, member: string): boolean =>
-    ts.isPropertyAccessExpression(node) && node.name.text === member;
+  /** 一个调用是否就是 `log-events.ts` 真实导出的 `createLoggingContext`。 */
+  const isContextFactoryCall = (node: ts.Node): node is ts.CallExpression =>
+    ts.isCallExpression(node) &&
+    resolvesToExport(
+      checker,
+      node.expression,
+      facadeModule,
+      "createLoggingContext",
+    );
+
+  /**
+   * 组装根里由**工厂 initializer** 声明出来的那些 context 变量的**真实符号**。
+   *
+   * 白名单绑的是符号身份，不是成员文本：`logging.framework` 之所以放行，是因为
+   * `logging` 这个标识符解析到的符号确实来自一条
+   * `const … = createLoggingContext(…)` 的声明——换个同名变量、或者先过一手中继
+   * 函数，都对不上。
+   */
+  const contextSymbols = new Set<ts.Symbol>();
+  /**
+   * 组装根**持有**的容器符号：`const logging = createLoggingContext(…)` 与
+   * `const app = Fastify(…)`。
+   *
+   * 组装根当然要拿着这两个东西——它就是干这个的。允许的只是**持有**：容器本身
+   * 可以被命名，但从它身上取出来的 logger 成员照样逐个判定，因此 `app.log` 或
+   * `logging.framework` 出现在白名单之外的位置仍然会被报出来。
+   */
+  const rootHeldSymbols = new Set<ts.Symbol>();
+  const collectContextSymbols = (file: ts.SourceFile): void => {
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined
+      ) {
+        const symbol = checker.getSymbolAtLocation(node.name);
+        if (symbol !== undefined) {
+          if (isContextFactoryCall(node.initializer)) {
+            contextSymbols.add(symbol);
+            rootHeldSymbols.add(symbol);
+          } else if (ts.isCallExpression(node.initializer)) {
+            // 组装根用某个工厂建出来的容器（`Fastify(…)` 返回的
+            // `FastifyInstance`）。绑的是**这条声明的符号**加上**它的 factory
+            // initializer**——不是名字，也不是类型文本。
+            rootHeldSymbols.add(symbol);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  };
+
+  /** `<ctx>.framework`，且 `<ctx>` 必须解析到上面收集到的那些符号之一。 */
+  const isContextMemberAccess = (node: ts.Node, member: string): boolean => {
+    if (
+      !ts.isPropertyAccessExpression(node) ||
+      node.name.text !== member ||
+      !ts.isIdentifier(node.expression)
+    ) {
+      return false;
+    }
+    const symbol = checker.getSymbolAtLocation(node.expression);
+    return symbol !== undefined && contextSymbols.has(symbol);
+  };
+
+  /** 组装根函数自己的形参：输入，不是能力出口。 */
+  const isCompositionInput = (node: ts.Node): boolean => {
+    if (!ts.isIdentifier(node)) {
+      return false;
+    }
+    const symbol = checker.getSymbolAtLocation(node);
+    return (symbol?.getDeclarations() ?? []).some(
+      (declaration) =>
+        ts.isParameter(declaration) &&
+        declaration.parent !== undefined &&
+        ts.isFunctionLike(declaration.parent),
+    );
+  };
 
   const isAllowedAppNode = (node: ts.Node): boolean => {
     const parent = node.parent;
     if (parent === undefined) {
       return false;
     }
+    if (isCompositionInput(node)) {
+      return true;
+    }
+    // 持有容器本身（`logging` / `app`），以及创建它们的那一次调用。
+    if (ts.isIdentifier(node)) {
+      const symbol = checker.getSymbolAtLocation(node);
+      if (symbol !== undefined && rootHeldSymbols.has(symbol)) {
+        return true;
+      }
+    }
+    // 结果被**丢弃**的调用：`app.register(…)` / `Object.defineProperty(app, …)`
+    // 这类返回容器自身的链式调用。值没有去处，能力就没有离开边界。
+    if (ts.isCallExpression(node)) {
+      let cursor: ts.Node = node;
+      while (
+        cursor.parent !== undefined &&
+        ts.isAwaitExpression(cursor.parent)
+      ) {
+        cursor = cursor.parent;
+      }
+      if (
+        cursor.parent !== undefined &&
+        ts.isExpressionStatement(cursor.parent)
+      ) {
+        return true;
+      }
+    }
+    // 交给框架工厂的选项对象字面量：里面的 `loggerInstance` 另有精确白名单。
     if (
+      ts.isObjectLiteralExpression(node) &&
       ts.isCallExpression(parent) &&
-      parent.arguments[1] === node &&
-      ts.isPropertyAccessExpression(node) &&
-      node.name.text === "logger" &&
-      resolvesToExport(
-        checker,
-        parent.expression,
-        loggingModule,
-        "createLoggingContext",
-      )
+      parent.arguments.includes(node as ts.Expression)
     ) {
       return true;
     }
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === node &&
+      ts.isIdentifier(parent.name)
+    ) {
+      const symbol = checker.getSymbolAtLocation(parent.name);
+      if (symbol !== undefined && rootHeldSymbols.has(symbol)) {
+        return true;
+      }
+    }
+    // 1. `createLoggingContext(level, <options.logger>, …)` 的第 1 个实参。
+    if (
+      isContextFactoryCall(parent) &&
+      parent.arguments[1] === node &&
+      ts.isPropertyAccessExpression(node)
+    ) {
+      return true;
+    }
+    // 2. 工厂调用本身，以及它所初始化的那条变量声明。
+    if (isContextFactoryCall(node)) {
+      return true;
+    }
+    // 3. `loggerInstance: <ctx>.framework`——node 必须**就是** initializer。
     if (
       ts.isPropertyAssignment(parent) &&
       ts.isIdentifier(parent.name) &&
       parent.name.text === "loggerInstance" &&
       parent.initializer === node &&
-      isContextMember(node, "framework")
-    ) {
-      return true;
-    }
-    if (
-      ts.isCallExpression(parent) &&
-      parent.arguments[0] === node &&
-      isContextMember(node, "events") &&
-      resolvesToExport(
-        checker,
-        parent.expression,
-        facadeModule,
-        "createEventLogSink",
-      )
+      isContextMemberAccess(node, "framework")
     ) {
       return true;
     }
     return false;
   };
+
+  // 直接判据用的声明集合：logger 接口本身、`LogFn`，**以及每一个 mutation 成员
+  // 的声明**。最后这一项是 `Logger["setBindings"]` 这种 indexed access 的落点——
+  // 接口把它重声明成自己的字段（`readonly mutate: Logger["setBindings"]`）之后，
+  // 成员名已经不叫 setBindings 了，但那个字段的**类型符号**仍然指回 pino 里
+  // `setBindings` 的那条声明。
+  const capabilityDeclarations = new Set([
+    ...declarations.logger,
+    ...declarations.logFunction,
+    ...declarations.mutationMembers,
+  ]);
 
   for (const file of program.getSourceFiles()) {
     if (file.isDeclarationFile || !file.fileName.startsWith(withinPath)) {
@@ -358,6 +555,9 @@ const collectCapabilityUses = (
     const isBoundary =
       file.fileName === facadeModule || file.fileName === loggingModule;
     const isCompositionRoot = file.fileName === compositionRoot;
+    if (isCompositionRoot) {
+      collectContextSymbols(file);
+    }
 
     const record = (node: ts.Node, kind: string): void => {
       const line = file.getLineAndCharacterOfPosition(node.getStart()).line + 1;
@@ -379,8 +579,16 @@ const collectCapabilityUses = (
       // 声明处的**名字**不是表达式位置：`readonly logger?: Logger` 里的
       // `logger`、`const logger = …` 里的 `logger`、参数名、解构名，都不算一次
       // 能力取用。
-      const isDeclarationName =
+      const isTypeDeclarationName =
         node.parent !== undefined &&
+        (ts.isInterfaceDeclaration(node.parent) ||
+          ts.isTypeAliasDeclaration(node.parent) ||
+          ts.isModuleDeclaration(node.parent) ||
+          ts.isClassDeclaration(node.parent)) &&
+        (node.parent as { name?: ts.Node }).name === node;
+      const isDeclarationName =
+        isTypeDeclarationName ||
+        (node.parent !== undefined &&
         ((ts.isPropertyAccessExpression(node.parent) &&
           node.parent.name === node) ||
           ((ts.isPropertySignature(node.parent) ||
@@ -391,7 +599,7 @@ const collectCapabilityUses = (
             ts.isPropertyAssignment(node.parent) ||
             ts.isMethodSignature(node.parent) ||
             ts.isMethodDeclaration(node.parent)) &&
-            node.parent.name === node));
+            node.parent.name === node)));
 
       if (
         ts.isExpression(node) &&
@@ -405,8 +613,12 @@ const collectCapabilityUses = (
             record(node, "[LogFn]");
           }
         } else if (
-          typeResolvesTo(type, declarations.logger) ||
-          exposesLogFunction(checker, type, declarations.logFunction, node)
+          carriesCapability(
+            checker,
+            type,
+            capabilityDeclarations,
+            node,
+          )
         ) {
           if (!isBoundary && !(isCompositionRoot && isAllowedAppNode(node))) {
             record(node, "[Logger]");
@@ -414,13 +626,13 @@ const collectCapabilityUses = (
         }
       }
 
-      if (file.fileName !== loggingModule) {
+      {
         const member = accessedMutationMember(
           checker,
           node,
           declarations.mutationMembers,
         );
-        if (member !== undefined) {
+        if (member !== undefined && !isBoundary) {
           record(node, "[mutation]");
         }
       }
@@ -543,6 +755,10 @@ test("the capability gate catches every escape shape, by declaration identity", 
     ["17 Pick<Logger, 'setBindings'>", "[mutation] picked.setBindings"],
     ["18 element-access mutation", '[mutation] logger["setBindings"]'],
     ["19 type-erased mutation", "[mutation] logger.setBindings"],
+    ["20 mapped type member", "[Logger] mapped.setBindings"],
+    ["21 interface re-declared member", "[Logger] relay.mutate"],
+    ["22 destructured Pick", "[Logger] child"],
+    ["23 level mutation", "[mutation] logger.level"],
   ] as const) {
     assert.ok(
       lines.includes(marker),
@@ -566,6 +782,57 @@ test("the capability gate catches every escape shape, by declaration identity", 
     [],
     "an unrelated locally declared LogFn must not be reported",
   );
+});
+
+test("the composition-root allowlist admits only the exact wiring nodes", () => {
+  // 第十三轮的 app.ts 假绿是**手工改文件**验证的：改一版、跑一次、改回来。那种
+  // 验证跑完就没了，下一轮没人知道它还成不成立。这里把每一种接线写法固定进
+  // fixture，再把 fixture **当作组装根**喂给收集器——白名单于是有了回归。
+  const program = buildProgram([wiringFixture]);
+  const uses = collectCapabilityUses(program, wiringFixture, wiringFixture);
+  const source = readFileSync(wiringFixture, "utf8").split("\n");
+  const lineOf = (name: string): number => {
+    const index = source.findIndex((line) =>
+      line.startsWith(`export const ${name} `),
+    );
+    assert.ok(index >= 0, `fixture must declare ${name}`);
+    return index + 1;
+  };
+  const ends = source
+    .map((line, index) => (line.startsWith("export const ") ? index + 1 : 0))
+    .filter((line) => line > 0);
+  /** 一个导出变体自己那一段里被报出来的用点。 */
+  const within = (name: string): readonly string[] => {
+    const from = lineOf(name);
+    const to = ends.find((line) => line > from) ?? source.length + 1;
+    return uses
+      .filter((use) => use.line >= from && use.line < to)
+      .map((use) => use.text);
+  };
+
+  // 合法：工厂调用、`options.injected` 作为第 1 个实参、
+  // `loggerInstance: logging.framework`、以及组装根持有的容器本身。
+  assert.deepEqual(
+    within("allowedWiring"),
+    [],
+    "the exact production wiring must not be reported",
+  );
+
+  // 违规：每一种都必须被报出来。这里断言的是**覆盖面**，不是总数。
+  for (const name of [
+    "violatingRelayedFramework",
+    "violatingRelayedContext",
+    "violatingAliasedFramework",
+    "violatingDestructuredFramework",
+    "violatingContainer",
+    "violatingIndexedAccess",
+    "violatingRawRoot",
+  ]) {
+    assert.ok(
+      within(name).length > 0,
+      `${name}: expected the capability gate to report it, got nothing`,
+    );
+  }
 });
 
 test("the round-9 regex scanner false-greens on the whole fixture", () => {

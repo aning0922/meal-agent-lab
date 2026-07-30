@@ -1,6 +1,6 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-07-29 更新实施状态）
+- 日期：2026-07-26（2026-07-30 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」implementation complete, pending total-control review**；M3B、M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`
 - 规划基线：`main` `35ddf78`
@@ -930,8 +930,9 @@ pino 根**，只是写向同一个目的地；`options.logger` 只能注入 fram
 
 **三、证据与文档。**
 
-- `statusCode` 的派生测试改成从 `Object.entries(apiErrorStatus)` **全量生成**，
-  不再手写十个样例——手写只能证明被写下的那几个。
+- `statusCode` 的派生测试改成从 `Object.keys(apiErrorStatus)` **动态生成**，覆盖
+  contracts 里全部 **18/18** 个错误码，不再手写十个样例——手写只能证明被写下的
+  那几个。
 - 清理 `logging.ts` 里已经失真的注释：`redact.paths` 的后备（早已整条不用）、
   子 logger censor 包装（第八轮起整条拒绝）、以及散落的 Proxy 说明（统一到文件头
   的一段口径）。
@@ -941,6 +942,74 @@ pino 根**，只是写向同一个目的地；`options.logger` 只能注入 fram
 
 Round 12 已完成的 statusCode 派生、私有 error allowlist、声明身份判定全部保留。
 **Secret 信号状态机与矩阵保持冻结**，本轮 diff 为 0 行。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
+#### M3A Round 14 运行时能力边界最终收口
+
+本轮**不动** Secret signal、数据库、Compose，也不再扩充 logger 脱敏规则。
+
+**一、关闭 event logger 的公开能力。**
+
+Round 13 的 `LoggingContext` 仍然把 event 那棵树的 **raw `Logger`** 摆在返回值上
+（`context.events`），拿到 context 的人可以直接 `setBindings` 绕过 sink；
+`createEventLogSink` 也还是一个**接受任意 `Logger`** 的公开工厂。现在 event root
+建出来**立刻**包成 `EventLogSink`，raw logger 只留在模块词法作用域里；
+`LoggingContext` 上只有 `framework`、`eventLog`、`close`；`createEventLogSink`
+不再导出。`BuildAppOptions.eventSink` 删除，测试注入口改成
+`eventLogDestination?: Writable`——只能换目的地，换不掉 sink，因此预绑定 framework
+的集成用例走的是 **buildApp 的默认生产接线**。
+
+**二、关闭 `app.eventLog` 的替换入口。**
+
+`decorate` 只是普通赋值，属性可写可配置。现在用 `Object.defineProperty` 钉成
+`writable: false, configurable: false`，错误处理器改从**词法闭包**取 sink，不读那个
+属性。反例实测：赋值与 `defineProperty` 均失败，业务事件仍走原 sink。
+
+**三、日志生命周期。**
+
+framework root 与 event root 都归 `LoggingContext` 所有；`app.close` 经 `onClose`
+等待自有 event logger flush，**调用方注入的 `Writable` / `Logger` 一律不 end**。
+pino 的 `flush(cb)` 对普通 `Writable` 目的地是立即回调的，因此 close 之后再做一次
+有界的 `writableLength` 排空等待。回归覆盖 delayed-write 与「flush 恰好一次」。
+
+**四、capability gate。**
+
+优先**减少 raw `Logger` 的暴露面**，而不是继续扩充 mutation 名单。判据补齐「能力
+被装进别的壳子里带出去」：容器（`readonly Logger[]`）、mapped type、indexed
+access、接口重声明（`readonly mutate: Logger["setBindings"]`）、解构。mutation
+声明只从真实的 `Logger` / `BaseLogger` / `LoggerExtras` / `FastifyBaseLogger`
+收集；`Logger["setBindings"]` 这种 indexed access 的落点是**成员声明身份**——字段
+名已经不叫 `setBindings`，但它的类型符号仍然指回 pino 里那条声明。第三方框架类型
+不往成员里走（`FastifyRequest` 的第七个类型参数正好就是 `Logger`，走进去会把每一个
+request 形参都报成泄漏），类型实参只在数组/元组这类**真正的容器**上走。
+
+组装根白名单绑的是**真实变量符号 + 声明来源 + factory initializer**，不是名字或
+类型文本。Round 13 的 app.ts 假绿是**手工改文件**验证的，跑完就没了；本轮把七种
+违规接线固定进 `tests/fixtures/app-wiring-variants.ts`，测试把 fixture **当作
+组装根**喂给收集器：
+
+| 变体 | 期望 |
+| --- | --- |
+| `allowedWiring` | 不报 |
+| `violatingRelayedFramework`（`loggerInstance: externalRelay(logging.framework)`） | 报 |
+| `violatingRelayedContext`（`externalRelay(createLoggingContext(…))`） | 报 |
+| `violatingAliasedFramework`（`{ alias: logging.framework }`） | 报 |
+| `violatingDestructuredFramework`（`const { framework } = …`） | 报 |
+| `violatingContainer`（`readonly Logger[]`） | 报 |
+| `violatingIndexedAccess`（`LoggingContext["framework"]`） | 报 |
+| `violatingRawRoot`（`createLogger(level)`） | 报 |
+
+修复前对照（把判据退回 Round 13：只做直接类型解析、mutation 成员不进直接集合）：
+`12 generic parameter: expected \`[Logger] l\` among …` 与
+`violatingRelayedContext: expected the capability gate to report it, got nothing`
+两条断言双双失败；shape 20/21 也整体漏网。修复后 4/4 全绿。
+
+**五、机械文档。**
+
+删除 `logging.ts` 里失真的 `redact.paths` 后备与子 logger censor 包装注释（根
+logger 第七轮起不配置 `redact`，子 logger 第八轮起整条拒绝，因此进程里不存在任何
+一条经过 `@pinojs/redact` 的输出路径）。
 
 **M3A 仍为整改中，未标记 Accepted。**
 

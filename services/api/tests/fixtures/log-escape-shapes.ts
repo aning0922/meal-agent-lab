@@ -150,6 +150,46 @@ export const viaErasedMutation = ({ logger, request }: EscapeInputs): void => {
   mutate({ req: request });
 };
 
+// ---------------------------------------------------------------------------
+// 第十四轮：容器 / mapped / indexed / 接口重声明 / 解构
+// ---------------------------------------------------------------------------
+
+/** 20. mapped type 里的 setBindings。 */
+type MappedLogger = { [Key in "setBindings" | "info"]: Logger[Key] };
+export const viaMappedMutation = (
+  { request }: EscapeInputs,
+  mapped: MappedLogger,
+): void => {
+  mapped.setBindings({ req: request });
+};
+
+/** 21. 接口重声明：把 `Logger["setBindings"]` 当成自己的字段。 */
+interface RelayInterface {
+  readonly mutate: Logger["setBindings"];
+}
+export const viaInterfaceField = (
+  { request }: EscapeInputs,
+  relay: RelayInterface,
+): void => {
+  relay.mutate({ req: request });
+};
+
+/** 22. 解构一个 Pick 出来的能力。 */
+export const viaDestructuredPick = (
+  { error }: EscapeInputs,
+  picked: Pick<Logger, "child" | "error">,
+): void => {
+  const { child, error: emit } = picked;
+  emit({ err: error }, "destructured pick");
+  child({}).info("destructured child");
+};
+
+/** 23. `useLevelLabels` / `onChild` 这类 pino 选项面的成员。 */
+export const viaLoggerOptionMembers = ({ logger }: EscapeInputs): void => {
+  const level = logger.level;
+  logger.level = level;
+};
+
 /**
  * 16. 无关的同名 `LogFn`：局部声明一个同名类型，**不得**被误报。
  * 它与 pino 的 `LogFn` 只是重名。

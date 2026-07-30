@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点 `5e480803`；**M2B（Compose 拓扑）已 Accepted**，验收落点 `d0f2219`；**M3A（配置与 Secret file 消费核心）整改中**（Round 13 整改中，未 Accepted），M3B、M4、M5 未开始。完整 bootstrap 链与全栈启动仍未通过。详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点 `5e480803`；**M2B（Compose 拓扑）已 Accepted**，验收落点 `d0f2219`；**M3A（配置与 Secret file 消费核心）整改中**（Round 14 整改中，未 Accepted），M3B、M4、M5 未开始。完整 bootstrap 链与全栈启动仍未通过。详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -80,14 +80,14 @@
 
 当前门禁包含：
 
-下表是 **2026-07-30 阶段 09A / M3A Round 13 之后**的实际计数（阶段 08 收口时为
+下表是 **2026-07-30 阶段 09A / M3A Round 14 之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
 各轮新增测试，业务语义未变）：
 
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 159/159 |
+| API unit | 163/163 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -115,7 +115,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M2A R8B（把 projector 接入 verify/converge） | 总控 **Accepted** |
 | M2A 整体 | 总控 **Accepted**，验收落点 `5e480803` |
 | M2B Compose 拓扑 | 总控 **Accepted**，验收落点 `d0f2219` |
-| M3A 配置与 Secret file 消费核心 | **M3A Round 13 整改中（未 Accepted）** |
+| M3A 配置与 Secret file 消费核心 | **M3A Round 14 整改中（未 Accepted）** |
 | M3B 环境模板与完整 bootstrap 链实证 | **未开始** |
 | M4 / M5 | **未开始** |
 
@@ -243,7 +243,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   遮蔽 `Object.prototype` 成员的结构键统一改名（`hasOwnProperty` 此前会让 pino
   的 `asChindings()` 自己抛 `TypeError`，`__proto__` 则不再有机会触及原型
   访问器）。
-- **业务事件走独立的 `EventLogSink`**（第十二轮建立，Round 13 收口）。口径写实：
+- **业务事件走独立的 `EventLogSink`**（第十二轮建立，Round 13/14 收口）。口径写实：
   **Fastify 仍然暴露 `app.log` / `request.log`**——那是框架的 API，仓库改不掉。
   真正成立的是两件事：**本仓库的业务调用点由 capability gate 约束**，而**业务事件
   通过独立的 `EventLogSink`**。
@@ -255,6 +255,24 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   `"traceContext":"OPAQUE-…"` 出现在业务事件行；建好 sink 之后 `setBindings` →
   同样出现；`sink.emit = …` → `REPLACED-EMIT-RAN`。修复后三条全部不再发生，且框架
   请求日志的 method/path/requestId/statusCode 仍然正常。
+- **event logger 的原始能力不再有公开出口**（Round 14）。Round 13 之后
+  `createLoggingContext()` 仍然把 event 那棵树的 **raw `Logger`** 放在返回值上，
+  拿到 context 的人可以直接 `context.events.setBindings(…)` 绕过 sink；
+  `createEventLogSink` 也还是一个**接受任意 Logger** 的公开工厂。Round 14 把
+  raw logger 关进模块词法作用域：event root 建出来立刻包成 `EventLogSink`，
+  `LoggingContext` 上只有 `framework`、`eventLog` 与 `close`，
+  `createEventLogSink` 不再导出。测试注入口从 `eventSink`（可以塞任意 sink）
+  换成 `eventLogDestination?: Writable`（只能换目的地），因此预绑定 framework
+  的集成用例走的是 **buildApp 的默认生产接线**，不是测试自己搭的一套。
+- **`app.eventLog` 不可替换**（Round 14）：`decorate` 只是普通赋值，属性可写可
+  配置；现在用 `Object.defineProperty` 钉成 `writable: false, configurable: false`。
+  错误处理器也不读这个属性，改从**词法闭包**里取 sink——读一个可替换的属性等于把
+  「谁来处理业务事件」交给任何拿得到实例的人。反例实测：直接赋值与
+  `Object.defineProperty` 均失败，业务事件仍走原 sink。
+- **日志生命周期归属明确**（Round 14）：framework root 与 event root 都由
+  `LoggingContext` 拥有，`app.close` 经 `onClose` 等待自有 event logger flush；
+  调用方注入的 `Writable` / `Logger` **一律不 end**。回归覆盖 delayed-write 与
+  「flush 恰好一次」。
 - **`allowedErrorTypes` 改为模块私有**（第十二轮）：上一版导出的是
   `ReadonlySet<string>`，那只是类型上的只读——`(x as Set<string>).add("EVIL")` 在
   运行期照样成功。现在对外只有一个**冻结的 canonical 数组**与一个 **predicate**；
@@ -262,7 +280,9 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   false。
 - **`statusCode` 由 `errorCode` 派生**（第十二轮）：字段里根本没有它，
   `apiErrorStatus[errorCode]` 是唯一来源。反例：硬塞
-  `SESSION_EXPIRED + 599` 进去，输出仍是 401；另有十个错误码逐条比对 contracts。
+  `SESSION_EXPIRED + 599` 进去，输出仍是 401；另有一条用例从
+  `Object.keys(apiErrorStatus)` **动态生成**，把 contracts 里全部 **18/18** 个错误码
+  逐条比对——手写样例只能证明被写下的那几个。
 - **业务日志走窄化 typed facade**（第十轮建立，第十一/十二轮收口）：
   `src/log-events.ts` 定义**闭集事件**与每个事件的**显式字段**。第十一轮把参数上
   那个开放的 `Record<string, LogFieldValue>` 删掉了——它等于把「随便加一个原始
@@ -282,8 +302,18 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   表达式**——调用与否无关紧要，拿到了就是拿到了；`child`/`setBindings` 这类
   mutation API 只有 `logging.ts` 可以碰；组装根 `src/app.ts` 只能**传递** logger，
   一旦在它上面做成员访问就变红（实测注入 `logger.child({…})` + `audit.info(…)`
-  立刻报出两条）。`tests/fixtures/log-escape-shapes.ts` 把十一种写法逐条摆出来；
+  立刻报出两条）。`tests/fixtures/log-escape-shapes.ts` 把 **23 种**写法逐条摆出来；
   第九轮那条正则扫描器仍逐字保留在测试里跑对照，它对整份 fixture 报告 **0 条违规**。
+  Round 13 起 mutation API 按**成员声明身份**识别；Round 14 再把「能力被装进别的
+  壳子里带出去」补齐：容器（`readonly Logger[]`）、mapped type
+  （`{ [K in "setBindings"] : Logger[K] }`）、indexed access
+  （`LoggingContext["framework"]`）、接口重声明（`readonly mutate: Logger["setBindings"]`）
+  与解构（`const { framework } = …`）逐条命中。判据仍是**声明身份**，因此第三方
+  框架类型（`FastifyRequest` 的第七个类型参数正好就是 `Logger`）不会被误报。
+  组装根白名单绑的是**真实变量符号 + 声明来源 + factory initializer**，不是名字或
+  类型文本。Round 13 的 app.ts 假绿是**手工改文件**验证的，跑完就没了；Round 14
+  把七种违规接线固定进 `tests/fixtures/app-wiring-variants.ts`，测试把 fixture
+  **当作组装根**喂给收集器，白名单从此有自动化回归。
 - **logging.ts 的净化器降级为纵深防御**（第十轮起）：它不再是业务日志的安全依据，
   只覆盖 Fastify **自己**打的那几条请求日志（`incoming request`、
   `request completed`、defaultErrorLog）——那条路径绕不过 facade。因此**不再为
@@ -631,7 +661,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）整改中**（Round 13 整改中，未 Accepted），M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链实证）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；M3A 只覆盖代码侧消费能力，完整 bootstrap 链与全栈启动仍未通过。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）整改中**（Round 14 整改中，未 Accepted），M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链实证）、M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；M3A 只覆盖代码侧消费能力，完整 bootstrap 链与全栈启动仍未通过。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也

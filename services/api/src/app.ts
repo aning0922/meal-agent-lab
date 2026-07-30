@@ -5,6 +5,8 @@ import {
   requestIdSchema,
 } from "@meal-agent/contracts";
 import fastifySwagger from "@fastify/swagger";
+import type { Writable } from "node:stream";
+
 import Fastify, {
   type FastifyError,
   type FastifyInstance,
@@ -28,12 +30,12 @@ import {
 } from "./database/pool.js";
 import { AppError, problemFromError } from "./errors.js";
 import {
-  createEventLogSink,
+  createLoggingContext,
   eventErrorType,
   eventRequestId,
   type EventLogSink,
 } from "./log-events.js";
-import { createLoggingContext, registerRequestLogFields } from "./logging.js";
+import { registerRequestLogFields } from "./logging.js";
 import { registerRoutes } from "./routes.js";
 import { newEntityId } from "./utils.js";
 import {
@@ -88,8 +90,15 @@ export interface BuildAppOptions {
    * 预绑定的 logger 塞进去。
    */
   readonly logger?: Logger;
-  /** 业务事件 sink。只作为测试接缝；生产路径上由组装根自己建。 */
-  readonly eventSink?: EventLogSink;
+  /**
+   * 业务事件的**目的地**。测试用它捕获业务事件行。
+   *
+   * 注意这里给的是一个 `Writable`，不是一个现成的 sink，更不是一个 logger：
+   * event root 仍然由组装根自己新建、当场包成 sink，调用方拿不到它。上一版的
+   * `eventSink?: EventLogSink` 让测试可以整个替掉 sink，于是「预绑定 framework
+   * 不会污染业务事件」那条集成测试其实没走生产接线。
+   */
+  readonly eventLogDestination?: Writable;
   readonly persistence?: Persistence;
   readonly wechatAdapter?: WechatAdapter;
   readonly operations?: ApiOperations;
@@ -175,7 +184,15 @@ export const buildApp = async (
 ): Promise<FastifyInstance<any, any, any, Logger>> => {
   // 框架 logger 与业务事件 logger 是**两个独立的 pino 根**，只是写向同一个目的地。
   // `options.logger` 只能注入 framework 那一侧。
-  const logging = createLoggingContext(options.config.logLevel, options.logger);
+  const logging = createLoggingContext(
+    options.config.logLevel,
+    options.logger,
+    options.eventLogDestination,
+  );
+  // 业务事件的 sink 只从**词法闭包**里取。下面虽然也 decorate 到实例上（给
+  // index.ts 用），但错误处理器**不**去读那个属性——读一个可替换的属性等于把
+  // 「谁来处理业务事件」交给任何拿得到实例的人。
+  const eventLog = logging.eventLog;
   const app = Fastify({
     bodyLimit: maximumRequestBodyBytes,
     loggerInstance: logging.framework,
@@ -205,10 +222,15 @@ export const buildApp = async (
 
   // sink 的底座是 `logging.events`——一个**从不**出现在 `app.log` / `request.log`
   // / 任何公开返回值上的独立 root。业务代码此后只持有 `app.eventLog`。
-  app.decorate(
-    "eventLog",
-    options.eventSink ?? createEventLogSink(logging.events),
-  );
+  app.decorate("eventLog", eventLog);
+  // `decorate` 只是普通赋值，属性仍然可写可配置。钉成只读且不可重定义：赋值与
+  // `Object.defineProperty` 都会失败，业务事件永远走上面那个词法闭包里的 sink。
+  Object.defineProperty(app, "eventLog", {
+    value: eventLog,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
 
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
@@ -266,12 +288,12 @@ export const buildApp = async (
     // 而 binding 里的取值不受事件字段那套类型约束。requestId 作为**声明过的字段**
     // 显式带上，因此相关性没有丢。
     if (mapped.code === "INTERNAL_ERROR") {
-      app.eventLog.emit("request.failed", {
+      eventLog.emit("request.failed", {
         requestId: eventRequestId(request.id),
         errorType: eventErrorType(error),
       });
     } else {
-      app.eventLog.emit("request.rejected", {
+      eventLog.emit("request.rejected", {
         requestId: eventRequestId(request.id),
         errorCode: mapped.code,
       });
@@ -310,6 +332,12 @@ export const buildApp = async (
   });
 
   await registerRoutes(app, operations, readiness);
+
+  // 生命周期：只 flush **自有**的 event logger。调用方注入的 framework logger 与
+  // 它的 Writable 归调用方所有，我们既不 flush 也不 end。
+  app.addHook("onClose", async () => {
+    await logging.close();
+  });
 
   if (
     persistence !== undefined &&
