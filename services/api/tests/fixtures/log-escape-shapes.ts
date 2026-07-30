@@ -1,4 +1,5 @@
-import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import type { Logger } from "pino";
 
 /**
  * 阶段 09A / M3A：**故意违规**的日志调用形状，专供静态门禁的反向测试使用。
@@ -13,7 +14,8 @@ import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from "fastify";
  */
 
 interface EscapeInputs {
-  readonly logger: FastifyBaseLogger;
+  /** 用 pino 的 `Logger`：`setBindings` 这类 mutation API 只在它上面有。 */
+  readonly logger: Logger;
   readonly request: FastifyRequest;
   readonly reply: FastifyReply;
   readonly error: Error;
@@ -51,4 +53,41 @@ export const viaConstIndexAlias = ({ logger, error }: EscapeInputs): void => {
   const level = "fatal" as const;
   const emit = logger[level];
   emit.call(logger, { err: error }, "const index alias");
+};
+
+// ---------------------------------------------------------------------------
+// 第十一轮：只看 CallExpression 的 callee 仍然抓不到的形状
+// ---------------------------------------------------------------------------
+
+/** 7. `Reflect.apply`：callee 是 `Reflect.apply`，不是 LogFn。 */
+export const viaReflectApply = ({ logger, error }: EscapeInputs): void => {
+  Reflect.apply(logger.error, logger, [{ err: error }, "reflect apply"]);
+};
+
+/** 8. 高阶转发：把 LogFn 当参数传出去，在别处调用。 */
+export const viaHigherOrderForward = ({ logger, request }: EscapeInputs): void => {
+  const forward = (emit: (payload: unknown, message: string) => void): void => {
+    emit({ req: request }, "higher order forward");
+  };
+  forward(logger.warn);
+};
+
+/** 9. 类型擦除：先擦成 unknown 再调用，callee 的类型已经不是 LogFn。 */
+export const viaTypeErasure = ({ logger, error }: EscapeInputs): void => {
+  const erased = logger.fatal as unknown as (
+    payload: unknown,
+    message: string,
+  ) => void;
+  erased({ err: error }, "type erased");
+};
+
+/** 10. mutation API：child 会把 binding 永久挂在子 logger 上。 */
+export const viaChildBinding = ({ logger, error }: EscapeInputs): void => {
+  const child = logger.child({ err: error });
+  child.info("child binding");
+};
+
+/** 11. mutation API：setBindings 直接改当前实例。 */
+export const viaSetBindings = ({ logger, request }: EscapeInputs): void => {
+  logger.setBindings({ req: request });
 };
