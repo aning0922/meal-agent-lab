@@ -7,23 +7,33 @@ import test from "node:test";
 import ts from "typescript";
 
 /**
- * 阶段 09A / M3A：业务代码**不得直接调用 logger** 的静态门禁。
+ * 阶段 09A / M3A：**logger capability 不得离开日志边界**的静态门禁。
  *
- * ## 为什么从「检查实参形状」改成「禁止直接调用」
+ * ## 判据的演进
  *
- * 第九轮的门禁是一条正则加一次源码文本切分：找 `\blog\.(info|warn|…)\s*\(`，再看
- * **第一个**实参里有没有裸的 `request`/`error`/`config`/…。它有一整类结构性漏网：
- * 别名、变量改名、元素访问、可选链，以及 printf 的后续参数——`tests/fixtures/
- * log-escape-shapes.ts` 把这六种写法逐条摆了出来，下面那条反向测试证明旧扫描器
- * 对它们**全部假绿**。
+ * 第九轮是正则 + 只看第一个实参：别名、改名、元素访问、可选链、printf 后续参数
+ * 全部漏网。第十轮改成 type checker，但只看 `CallExpression` 的 callee：
+ * `Reflect.apply`、高阶转发、类型擦除仍然漏网。第十一轮改成看**能力本身**，但
+ * 判据是**类型名字符串**——两头都错：局部声明一个同名 `LogFn` 会被误报，
+ * `Pick<Logger, "warn">` 这类结构变换之后的类型会被漏报。
  *
- * 现在改成用 TypeScript 的 **type checker**：凡是调用一个类型为 pino `LogFn` 的
- * 表达式（无论怎么取到它），或者对它用 `call`/`apply`/`bind`，都算一次 logger
- * 调用。`src/` 里只有 `src/log-events.ts` 这一个 facade 允许出现这种调用；业务
- * 代码只能经由 `logEvent()` 记录**闭集事件 + 显式声明的原始类型字段**。
+ * 这一轮改成**声明身份**：从 program 里找出 pino 与 fastify 自己的 `.d.ts` 声明
+ * 节点，之后一律比对节点身份；结构类型再按成员看一眼。
  *
- * 于是「原始 Error / Request / Reply / Config / Secret 不进业务日志」这件事由
- * **类型系统**保证，而不是靠出口处的净化器去追平任意输入。
+ * ## 规则
+ *
+ *   1. `LogFn` 类型的表达式只允许出现在 `src/log-events.ts`（facade）与
+ *      `src/logging.ts`（中央边界）里；
+ *   2. `child`/`setBindings` 等 mutation API 只有 `src/logging.ts` 可以碰；
+ *   3. Logger 类型的表达式只允许出现在上面两个边界文件，以及组装根 `src/app.ts`
+ *      的**三个精确上下文**里——不是整文件放行。
+ *
+ * ## 它是什么，不是什么
+ *
+ * **这是工程护栏，不是形式化安全证明。** 它建立在 TypeScript 的类型解析之上，
+ * 因此凡是类型系统看不见的东西（`any`、跨越 `JSON.parse` 的运行期值、动态
+ * `import()` 之后的反射、用 `declare` 伪造的声明）都不在它的射程里。它拦的是
+ * **日常演进中会自然出现的**那些写法，而不是一个有决心的攻击者。
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,27 +45,6 @@ const escapeFixture = join(
   "fixtures",
   "log-escape-shapes.ts",
 );
-
-/**
- * 允许持有 **LogFn 能力**的生产文件，只有两个，而且都**是 logger 边界本身**：
- *
- *   - `src/log-events.ts`：facade，业务代码的唯一入口；
- *   - `src/logging.ts`：中央边界自己。它的 `hooks.logMethod` 必须
- *     `method.apply(this, safe)` 把净化后的实参交给 pino——那正是这一层的职责。
- */
-const logFunctionHolders = new Set([
-  join(sourceRoot, "log-events.ts"),
-  join(sourceRoot, "logging.ts"),
-]);
-
-/**
- * 允许**命名** Logger 的生产文件，比上面多一个组装根。
- *
- * `src/app.ts` 必须把 logger 交给 Fastify（`loggerInstance`），因此它会出现
- * Logger 类型的表达式。但它只能**传递**——一旦在 Logger 上做成员访问（无论是
- * `.info` 还是 `.child`），就说明它在用这项能力，那是违规。
- */
-const loggerHolders = new Set([...logFunctionHolders, join(sourceRoot, "app.ts")]);
 
 interface LoggerCallSite {
   readonly file: string;
@@ -83,17 +72,77 @@ const buildProgram = (extraFiles: readonly string[]): ts.Program => {
   return ts.createProgram(files, { ...parsed.options, noEmit: true });
 };
 
-/** 某个类型（含 union / intersection 成员）里是否出现某个具名符号。 */
-const typeMentions = (type: ts.Type, names: ReadonlySet<string>): boolean => {
+/**
+ * 按**声明身份**建立能力类型的判据，而不是按类型名字符串。
+ *
+ * 名字匹配两头都错：局部声明一个同名 `LogFn` 会被误报；而 `Pick<Logger, "warn">`
+ * 这类结构变换之后的类型，符号名已经不叫 Logger 了，会被漏报。这里改成从 program
+ * 里找出 **pino 与 fastify 自己的 .d.ts 声明节点**，之后一律比对节点身份。
+ */
+interface CapabilityDeclarations {
+  readonly logFunction: ReadonlySet<ts.Declaration>;
+  readonly logger: ReadonlySet<ts.Declaration>;
+}
+
+const fromPackage = (fileName: string, name: string): boolean =>
+  fileName.includes(`/node_modules/`) && fileName.includes(`/${name}/`);
+
+const resolveCapabilityDeclarations = (
+  program: ts.Program,
+): CapabilityDeclarations => {
+  const logFunction = new Set<ts.Declaration>();
+  const logger = new Set<ts.Declaration>();
+  for (const file of program.getSourceFiles()) {
+    const pino = fromPackage(file.fileName, "pino");
+    const fastify = fromPackage(file.fileName, "fastify");
+    if (!pino && !fastify) {
+      continue;
+    }
+    const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node)) {
+        const name = node.name.text;
+        if (pino && name === "LogFn") {
+          logFunction.add(node);
+        }
+        if (
+          (pino && (name === "Logger" || name === "BaseLogger")) ||
+          (fastify && name === "FastifyBaseLogger")
+        ) {
+          logger.add(node);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  }
+  assert.ok(
+    logFunction.size > 0,
+    "the program must contain pino's own LogFn declaration",
+  );
+  assert.ok(
+    logger.size > 0,
+    "the program must contain pino/fastify logger declarations",
+  );
+  return { logFunction, logger };
+};
+
+/** 类型（含 union / intersection 成员）是否解析到给定的声明节点之一。 */
+const typeResolvesTo = (
+  type: ts.Type,
+  declarations: ReadonlySet<ts.Declaration>,
+): boolean => {
   const seen = new Set<ts.Type>();
   const walk = (candidate: ts.Type): boolean => {
     if (seen.has(candidate)) {
       return false;
     }
     seen.add(candidate);
-    const symbol = candidate.aliasSymbol ?? candidate.getSymbol();
-    if (symbol !== undefined && names.has(symbol.getName())) {
-      return true;
+    for (const symbol of [candidate.aliasSymbol, candidate.getSymbol()]) {
+      for (const declaration of symbol?.getDeclarations() ?? []) {
+        if (declarations.has(declaration)) {
+          return true;
+        }
+      }
     }
     if (candidate.isUnionOrIntersection()) {
       return candidate.types.some(walk);
@@ -103,13 +152,24 @@ const typeMentions = (type: ts.Type, names: ReadonlySet<string>): boolean => {
   return walk(type);
 };
 
-const logFunctionNames = new Set(["LogFn"]);
-const loggerNames = new Set([
-  "Logger",
-  "BaseLogger",
-  "FastifyBaseLogger",
-  "pino",
-]);
+/**
+ * `Pick<Logger, "warn">` 之类的结构类型：符号已经不是 Logger 的声明了，但它的成员
+ * 仍然是 pino 的 `LogFn`。逐个成员看一眼就能认出来。
+ */
+const exposesLogFunction = (
+  checker: ts.TypeChecker,
+  type: ts.Type,
+  declarations: ReadonlySet<ts.Declaration>,
+  node: ts.Node,
+): boolean =>
+  type
+    .getProperties()
+    .some((property) =>
+      typeResolvesTo(
+        checker.getTypeOfSymbolAtLocation(property, node),
+        declarations,
+      ),
+    );
 
 /** pino / Fastify logger 上会改变实例状态或派生新实例的成员。 */
 const mutationMembers = new Set([
@@ -124,45 +184,105 @@ const mutationMembers = new Set([
   "removeListener",
 ]);
 
+/** 某个表达式是否解析到某个模块的**真实导出符号**（import alias 也认得出来）。 */
+const resolvesToExport = (
+  checker: ts.TypeChecker,
+  callee: ts.Expression,
+  moduleFile: string,
+  exportName: string,
+): boolean => {
+  let symbol = checker.getSymbolAtLocation(callee);
+  if (symbol === undefined) {
+    return false;
+  }
+  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+    symbol = checker.getAliasedSymbol(symbol);
+  }
+  if (symbol.getName() !== exportName) {
+    return false;
+  }
+  return (symbol.getDeclarations() ?? []).some(
+    (declaration) => declaration.getSourceFile().fileName === moduleFile,
+  );
+};
+
 /**
  * 收集一个 program 里所有的 **logger capability** 出现点。
  *
- * 第十轮只看 `CallExpression` 的 callee，因此 `Reflect.apply(logger.error, …)`、
- * 把 `LogFn` 当参数传出去的高阶转发、以及「先 `as unknown as` 擦掉类型再调用」
- * 全都溜过去了——那三种写法的 callee 分别是 `Reflect.apply`、形参 `emit` 与一个
- * 已经不是 `LogFn` 的函数类型。
+ * 判据是**能力本身**：任何表达式只要类型解析到 pino 的 `LogFn` 声明（或结构上
+ * 暴露了它），或者解析到 pino/fastify 的 logger 声明，就算一次 capability 取用。
+ * 调用与否无关紧要——拿到了就是拿到了。
  *
- * 这一轮改成看**能力本身**：任何**表达式**只要类型是 `LogFn`，或者类型是 Logger
- * 而它出现在不被允许的位置，就算一次 capability 取用。调用与否无关紧要——拿到了
- * 就是拿到了。
+ * **这是工程护栏，不是形式化安全证明。** 它建立在 TypeScript 的类型解析之上，
+ * 因此凡是类型系统看不见的东西（`any`、跨越 `JSON.parse` 的运行期值、动态
+ * `import()` 之后的反射、用 `declare` 伪造的声明）都不在它的射程里。它拦的是
+ * **日常演进中会自然出现的**那些写法，而不是一个有决心的攻击者。
  */
 const collectCapabilityUses = (
   program: ts.Program,
   withinPath: string,
 ): readonly LoggerCallSite[] => {
   const checker = program.getTypeChecker();
+  const declarations = resolveCapabilityDeclarations(program);
+  const facadeModule = join(sourceRoot, "log-events.ts");
+  const loggingModule = join(sourceRoot, "logging.ts");
+  const compositionRoot = join(sourceRoot, "app.ts");
   const found = new Map<string, LoggerCallSite>();
 
-  /** `logEvent(logger, …)` 的第 0 个实参是 Logger 唯一允许出现的业务位置。 */
-  const isFacadeLoggerArgument = (node: ts.Node): boolean => {
-    const parent = node.parent;
-    if (parent === undefined || !ts.isCallExpression(parent)) {
-      return false;
+  /**
+   * app.ts 的**精确上下文白名单**——不是整文件放行。
+   *
+   * 组装根必须把 logger 交给 Fastify，因此它会出现 Logger 类型的表达式；但只允许
+   * 出现在这三种上下文里：
+   *
+   *   1. `const logger = …` 这一条变量声明；
+   *   2. `loggerInstance:` 属性赋值；
+   *   3. 解析到 `log-events.ts` **真实导出**的 `createEventLogSink` 的调用。
+   *
+   * 第 3 条按导出符号解析：本地再定义一个同名函数拿不到放行，换个名字导入则照样
+   * 认得出来。
+   */
+  const inAllowedAppContext = (node: ts.Node): boolean => {
+    let current: ts.Node | undefined = node;
+    while (current !== undefined) {
+      if (
+        ts.isVariableDeclaration(current) &&
+        ts.isIdentifier(current.name) &&
+        current.name.text === "logger"
+      ) {
+        return true;
+      }
+      if (
+        ts.isPropertyAssignment(current) &&
+        ts.isIdentifier(current.name) &&
+        current.name.text === "loggerInstance"
+      ) {
+        return true;
+      }
+      if (
+        ts.isCallExpression(current) &&
+        resolvesToExport(
+          checker,
+          current.expression,
+          facadeModule,
+          "createEventLogSink",
+        )
+      ) {
+        return true;
+      }
+      current = current.parent;
     }
-    if (parent.arguments[0] !== node) {
-      return false;
-    }
-    const callee = parent.expression;
-    const calleeText = ts.isPropertyAccessExpression(callee)
-      ? callee.name.text
-      : callee.getText();
-    return calleeText === "logEvent";
+    return false;
   };
 
   for (const file of program.getSourceFiles()) {
     if (file.isDeclarationFile || !file.fileName.startsWith(withinPath)) {
       continue;
     }
+    const isBoundary =
+      file.fileName === facadeModule || file.fileName === loggingModule;
+    const isCompositionRoot = file.fileName === compositionRoot;
+
     const record = (node: ts.Node, kind: string): void => {
       const line = file.getLineAndCharacterOfPosition(node.getStart()).line + 1;
       const text = node.getText().replace(/\s+/g, " ").slice(0, 80);
@@ -174,39 +294,58 @@ const collectCapabilityUses = (
     };
 
     const visit = (node: ts.Node): void => {
-      // 只看表达式位置；类型标注、声明名、import 说明符都跳过。
       const isTypePosition =
         ts.isTypeNode(node) ||
         (node.parent !== undefined &&
           (ts.isTypeReferenceNode(node.parent) ||
             ts.isImportSpecifier(node.parent) ||
             ts.isImportClause(node.parent)));
-      const isPropertyName =
+      // 声明处的**名字**不是表达式位置：`readonly logger?: Logger` 里的
+      // `logger`、`const logger = …` 里的 `logger`、参数名、解构名，都不算一次
+      // 能力取用。
+      const isDeclarationName =
         node.parent !== undefined &&
-        ts.isPropertyAccessExpression(node.parent) &&
-        node.parent.name === node;
+        ((ts.isPropertyAccessExpression(node.parent) &&
+          node.parent.name === node) ||
+          ((ts.isPropertySignature(node.parent) ||
+            ts.isPropertyDeclaration(node.parent) ||
+            ts.isParameter(node.parent) ||
+            ts.isVariableDeclaration(node.parent) ||
+            ts.isBindingElement(node.parent) ||
+            ts.isPropertyAssignment(node.parent) ||
+            ts.isMethodSignature(node.parent) ||
+            ts.isMethodDeclaration(node.parent)) &&
+            node.parent.name === node));
 
       if (
         ts.isExpression(node) &&
         !isTypePosition &&
-        !isPropertyName &&
+        !isDeclarationName &&
         !ts.isStringLiteralLike(node)
       ) {
         const type = checker.getTypeAtLocation(node);
-        if (typeMentions(type, logFunctionNames)) {
-          record(node, "[LogFn]");
-        } else if (typeMentions(type, loggerNames)) {
-          if (!isFacadeLoggerArgument(node)) {
+        if (typeResolvesTo(type, declarations.logFunction)) {
+          if (!isBoundary) {
+            record(node, "[LogFn]");
+          }
+        } else if (
+          typeResolvesTo(type, declarations.logger) ||
+          exposesLogFunction(checker, type, declarations.logFunction, node)
+        ) {
+          if (!isBoundary && !(isCompositionRoot && inAllowedAppContext(node))) {
             record(node, "[Logger]");
           }
         }
       }
 
-      // mutation API：`<Logger>.child(…)` / `.setBindings(…)` 之类。
       if (
         ts.isPropertyAccessExpression(node) &&
         mutationMembers.has(node.name.text) &&
-        typeMentions(checker.getTypeAtLocation(node.expression), loggerNames)
+        typeResolvesTo(
+          checker.getTypeAtLocation(node.expression),
+          declarations.logger,
+        ) &&
+        file.fileName !== loggingModule
       ) {
         record(node, "[mutation]");
       }
@@ -221,8 +360,8 @@ const collectCapabilityUses = (
 /**
  * 第九轮的正则扫描器，**逐字保留**下来做对照。
  *
- * 它只找 `log.<level>(`，只看第一个实参的源码文本。保留它不是为了继续用，而是
- * 为了让「旧门禁在这些形状上是假绿的」变成一条会跑的断言，而不是一句说法。
+ * 保留它不是为了继续用，而是为了让「旧门禁在这些形状上是假绿的」变成一条会跑的
+ * 断言，而不是一句说法。
  */
 const roundNineRegexScanner = (source: string): readonly string[] => {
   const strip = (text: string): string =>
@@ -283,81 +422,29 @@ const roundNineRegexScanner = (source: string): readonly string[] => {
 
 test("the logger capability never leaves the logging boundary in src", () => {
   const program = buildProgram([]);
-  const uses = collectCapabilityUses(program, sourceRoot);
-
-  // 正向断言：checker 必须真的解析出了边界文件里的那些取用，否则「没有违规」也
-  // 可能只是类型解析失败、一个点都没识别出来。
-  assert.ok(
-    uses.length > 0,
-    "the checker must resolve at least the boundary's own logger capability uses",
+  const violations = collectCapabilityUses(program, sourceRoot).map(
+    (use) =>
+      `${relative(packageRoot, use.file)}:${String(use.line)} -> ${use.text}`,
   );
-
-  const violations = uses
-    .filter((use) => {
-      if (use.text.startsWith("[LogFn]")) {
-        return !logFunctionHolders.has(use.file);
-      }
-      // Logger 与 mutation：组装根 app.ts 可以**命名** logger，但不能在它上面做
-      // 任何成员访问；mutation 只有 logging.ts 自己可以做。
-      if (use.text.startsWith("[mutation]")) {
-        return use.file !== join(sourceRoot, "logging.ts");
-      }
-      return !loggerHolders.has(use.file);
-    })
-    .map(
-      (use) =>
-        `${relative(packageRoot, use.file)}:${String(use.line)} -> ${use.text}`,
-    );
   assert.deepEqual(
     violations,
     [],
     "the logger capability escaped the boundary:\n" + violations.join("\n"),
   );
 
-  // app.ts 只能**传递** logger：它里面不允许出现任何 LogFn 或 mutation。
-  const appFile = join(sourceRoot, "app.ts");
-  const appMisuse = uses
-    .filter(
-      (use) =>
-        use.file === appFile &&
-        (use.text.startsWith("[LogFn]") || use.text.startsWith("[mutation]")),
-    )
-    .map((use) => `app.ts:${String(use.line)} -> ${use.text}`);
-  assert.deepEqual(
-    appMisuse,
-    [],
-    "the composition root may only pass the logger along:\n" +
-      appMisuse.join("\n"),
-  );
-
-  // LogFn 只出现在两个边界文件里，一个不多。
-  assert.deepEqual(
-    [
-      ...new Set(
-        uses
-          .filter((use) => use.text.startsWith("[LogFn]"))
-          .map((use) => relative(packageRoot, use.file)),
-      ),
-    ].sort(),
-    ["src/log-events.ts", "src/logging.ts"],
+  // 正向断言：收集器必须真的能在**别处**认出能力，否则「没有违规」也可能只是
+  // 类型解析失败、一个点都没识别出来。用 fixture 当探针。
+  const probe = buildProgram([escapeFixture]);
+  assert.ok(
+    collectCapabilityUses(probe, escapeFixture).length > 0,
+    "the collector must be able to resolve logger capability at all",
   );
 });
 
-test("the AST gate catches every shape the round-9 regex scanner missed", () => {
+test("the capability gate catches every escape shape, by declaration identity", () => {
   const program = buildProgram([escapeFixture]);
-  const fixtureCalls = collectCapabilityUses(program, escapeFixture);
-  const fixtureSource = readFileSync(escapeFixture, "utf8");
-
-  // 旧门禁：一条都抓不到——别名、改名、元素访问、可选链、printf 后续参数，
-  // 每一种都从 `\blog\.(…)\(` 底下走过去了。
-  assert.deepEqual(
-    roundNineRegexScanner(fixtureSource),
-    [],
-    "the round-9 regex scanner is expected to false-green on these shapes",
-  );
-
-  // 新门禁：六种全部抓到。
-  const lines = fixtureCalls.map((call) => call.text);
+  const uses = collectCapabilityUses(program, escapeFixture);
+  const lines = uses.map((use) => use.text);
 
   // 断言的是**每一种写法都被覆盖到**，不是一个总数——总数会随 fixture 的无关改动
   // 漂移，覆盖面不会。
@@ -374,6 +461,10 @@ test("the AST gate catches every shape the round-9 regex scanner missed", () => 
     ["9 type erasure", "[LogFn] logger.fatal"],
     ["10 child mutation", "[mutation] logger.child"],
     ["11 setBindings mutation", "[mutation] logger.setBindings"],
+    ["12 generic parameter", "[Logger] l"],
+    ["13 Pick<Logger, …>", "[LogFn] picked.warn"],
+    ["14 computed access", "[LogFn] logger[key]"],
+    ["15 locally shadowed factory", "[Logger] root"],
   ] as const) {
     assert.ok(
       lines.includes(marker),
@@ -381,20 +472,25 @@ test("the AST gate catches every shape the round-9 regex scanner missed", () => 
     );
   }
 
-  // 第十轮的门禁只看 CallExpression 的 callee，因此 7/8/9 三种写法它也抓不到：
-  // callee 分别是 `Reflect.apply`、形参 `emit`、以及一个已经被擦成普通函数类型
-  // 的表达式。这一条把「只看 callee 不够」也变成一条会跑的断言。
-  const calleeOnly = fixtureCalls.filter((use) =>
-    use.text.startsWith("[LogFn]"),
-  );
-  assert.ok(
-    calleeOnly.some((use) => use.text === "[LogFn] logger.fatal"),
-    "the capability gate must see a LogFn that is only ever type-erased",
+  // 16 无关的同名 `LogFn`：**不得**误报。判据是声明身份，不是名字。
+  //
+  // fixture 最后声明了一个局部的 `type LogFn = (message: string) => void`，并用它
+  // 标注一个参数。按名字匹配的判据会把那个参数也算成能力取用；按声明身份就不会。
+  const fixtureSource = readFileSync(escapeFixture, "utf8").split("\n");
+  const unrelatedFrom =
+    fixtureSource.findIndex((line) =>
+      line.startsWith("type LogFn = (message: string)"),
+    ) + 1;
+  assert.ok(unrelatedFrom > 1, "the unrelated LogFn declaration must exist");
+  const inUnrelatedRegion = uses.filter((use) => use.line >= unrelatedFrom);
+  assert.deepEqual(
+    inUnrelatedRegion.map((use) => `${String(use.line)} ${use.text}`),
+    [],
+    "an unrelated locally declared LogFn must not be reported",
   );
 });
 
 test("the round-9 regex scanner false-greens on the whole fixture", () => {
-  // 旧门禁只找 `log.<level>(`，只看第一个实参。fixture 里十一种写法它一条都抓不到。
   assert.deepEqual(
     roundNineRegexScanner(readFileSync(escapeFixture, "utf8")),
     [],

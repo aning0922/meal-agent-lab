@@ -91,3 +91,45 @@ export const viaChildBinding = ({ logger, error }: EscapeInputs): void => {
 export const viaSetBindings = ({ logger, request }: EscapeInputs): void => {
   logger.setBindings({ req: request });
 };
+
+// ---------------------------------------------------------------------------
+// 第十二轮：按类型名字符串匹配会漏掉 / 误报的形状
+// ---------------------------------------------------------------------------
+
+/** 12. 泛型参数：能力藏在类型参数里。 */
+export const viaGeneric = <T extends Logger>({ error }: EscapeInputs, l: T): void => {
+  l.error({ err: error }, "generic logger");
+};
+
+/** 13. `Pick`：只挑一个方法出来，类型名不再叫 Logger。 */
+export const viaPick = (
+  { error }: EscapeInputs,
+  picked: Pick<Logger, "warn">,
+): void => {
+  picked.warn({ err: error }, "picked logger");
+};
+
+/** 14. computed access：下标是一个计算出来的常量。 */
+export const viaComputedAccess = ({ logger, error }: EscapeInputs): void => {
+  const key = ("er" + "ror") as "error";
+  logger[key]({ err: error }, "computed access");
+};
+
+/** 15. import alias：换个名字导入 facade，不能因此拿到放行。 */
+export const viaAliasedFacade = ({ logger }: EscapeInputs): void => {
+  const createEventLogSink = (root: Logger): { emit: () => void } => ({
+    emit: () => {
+      root.info("locally shadowed factory");
+    },
+  });
+  createEventLogSink(logger).emit();
+};
+
+/**
+ * 16. 无关的同名 `LogFn`：局部声明一个同名类型，**不得**被误报。
+ * 它与 pino 的 `LogFn` 只是重名。
+ */
+type LogFn = (message: string) => void;
+export const unrelatedSameNameLogFn = (emit: LogFn): void => {
+  emit("this is not a pino logger");
+};
