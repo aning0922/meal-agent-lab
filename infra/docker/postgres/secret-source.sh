@@ -82,41 +82,6 @@ meal_agent_secret_value=""
 meal_agent_secret_origin=""
 meal_agent_snapshot_dir=""
 
-# ---------------------------------------------------------------------------
-# 状态窗口标记（只为可复现的信号测试而存在）
-# ---------------------------------------------------------------------------
-# 信号必须能被**确定地**投递到 `starting` 与 `terminating` 这两个窗口里。靠
-# "sleep 100ms 然后但愿它落在 0.2s 窗口内" 那种猜测，绿了也证明不了任何事。
-#
-# 因此这里留两个观察点：进入窗口时创建一个 marker 文件，然后**有界**等待一个
-# release 文件。没有设置 `MEAL_AGENT_SECRET_WINDOW_MARKER_DIR` 时两个函数都是
-# 纯空操作——不 stat、不写、不 sleep，生产路径上完全不存在这段行为。等待还有
-# 5 秒硬上界，即使有人误设了这个变量也只会慢，不会挂死。
-#
-# 这个变量不出现在任何 Compose 文件、Dockerfile 或 bootstrap 调用里；拓扑门禁
-# 会保证这一点。
-meal_agent_mark_window() {
-  if [ -z "${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR:-}" ]; then
-    return 0
-  fi
-  : > "${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR}/$1" 2> /dev/null || true
-}
-
-meal_agent_await_window_release() {
-  if [ -z "${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR:-}" ]; then
-    return 0
-  fi
-  local release="${MEAL_AGENT_SECRET_WINDOW_MARKER_DIR}/$1.release"
-  local waited=0
-  while [ ! -e "$release" ]; do
-    if [ "$waited" -ge 100 ]; then
-      return 0
-    fi
-    sleep 0.05
-    waited=$((waited + 1))
-  done
-}
-
 meal_agent_discard_snapshot() {
   if [ -n "$meal_agent_snapshot_dir" ]; then
     rm -rf -- "$meal_agent_snapshot_dir"
@@ -247,14 +212,11 @@ meal_agent_terminate_worker_group() {
   meal_agent_worker_state="terminating"
   local worker="$meal_agent_worker_pid"
   local reaped=0
-  meal_agent_mark_window terminating
   # 整段包在 stderr 重定向里：被杀死的后台作业会让 shell 打印一行 "Terminated"
   # 通知，那不是 bootstrap 的诊断信息。
   {
     kill -TERM -- "-$worker" 2> /dev/null ||
       kill -TERM "$worker" 2> /dev/null || true
-    # 测试用观察点：TERM 已发出、KILL 还没发，正处在 terminating 窗口正中。
-    meal_agent_await_window_release terminating
     sleep 0.2 || true
     kill -KILL -- "-$worker" 2> /dev/null ||
       kill -KILL "$worker" 2> /dev/null || true
@@ -658,10 +620,9 @@ meal_agent_read_secret_file() {
   meal_agent_signal_winner=""
   meal_agent_pending_signal=""
   meal_agent_worker_state="starting"
+  # 幂等：resolve 入口已经装过了。留在这里是为了让「先装 trap、后起 worker」这条
+  # 顺序在本函数内部也是自明的——万一将来有人单独调用它，窗口依然是关闭的。
   meal_agent_install_signal_traps
-  # 测试用观察点：trap 已装好、worker 还没起，正处在 starting 窗口里。
-  meal_agent_mark_window starting
-  meal_agent_await_window_release starting
 
   previous_options="$-"
   set -m
@@ -674,10 +635,10 @@ meal_agent_read_secret_file() {
   meal_agent_worker_pid="$worker"
   meal_agent_worker_state="running"
 
-  # `starting` 窗口里登记下来的信号，在拿到 PID 之后第一时间收尾。
+  # trap 装好之后、worker PID 还不知道之前登记下来的信号，在拿到 PID 之后第一
+  # 时间收尾。
   if [ -n "$meal_agent_signal_winner" ]; then
     meal_agent_abort_on_signal || true
-    meal_agent_restore_signal_traps
     meal_agent_secret_fail "$name" \
       "$path read was interrupted by a signal before it could complete"
   fi
@@ -704,7 +665,6 @@ meal_agent_read_secret_file() {
         meal_agent_secret_fail "$name" \
           "$path read was interrupted by a signal before it could complete"
       fi
-      meal_agent_restore_signal_traps
       meal_agent_secret_fail "$name" \
         "$path could not be opened and read within ${meal_agent_secret_open_deadline_seconds}s; open() on a non-regular file such as a FIFO, or a stalled read, would otherwise block without a bound"
     fi
@@ -726,7 +686,6 @@ meal_agent_read_secret_file() {
     meal_agent_secret_fail "$name" \
       "$path read was interrupted by a signal before it could complete"
   fi
-  meal_agent_restore_signal_traps
 
   status="$(cat "$status_file")"
   if [ "$status" != "0" ]; then
@@ -756,6 +715,11 @@ meal_agent_resolve_secret() {
   # 快照只在这一段里存在，安全网也只覆盖这一段。调用方原有的 EXIT trap 被保存
   # 下来链式执行，结束时归还。
   meal_agent_install_exit_trap
+  # 信号 trap 的作用域也是**整个** resolve：不只是 worker 活着的那段。上一版在
+  # worker 结束后立刻归还，于是「快照验证 → 取值复制 → 删除快照」这三步全都跑在
+  # 调用方的处置之下——那时一发 TERM 就能让进程按调用方的方式退出，而**快照还在
+  # 磁盘上**。现在一直保持到快照删除完成之后再归还。
+  meal_agent_install_signal_traps
 
   local file_name="${name}_FILE"
   local direct_set="no"
@@ -809,6 +773,15 @@ meal_agent_resolve_secret() {
   unset "$file_name"
   meal_agent_secret_value=""
   meal_agent_discard_snapshot
+
+  # 快照验证、取值复制、快照删除三步**全部**做完之后，才轮到统一收尾。落在这三步
+  # 里的信号在这里被处理：受控子树（如果还有）收掉、快照删掉、调用方的处置重投。
+  if [ -n "$meal_agent_signal_winner" ]; then
+    meal_agent_abort_on_signal || true
+    meal_agent_secret_fail "$name" \
+      "$name was interrupted by a signal before it could complete"
+  fi
+  meal_agent_restore_signal_traps
   meal_agent_restore_exit_trap
 
   case "$previous_options" in *x*) set -x ;; esac

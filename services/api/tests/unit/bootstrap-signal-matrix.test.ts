@@ -41,7 +41,15 @@ const pinnedPostgresImage =
   "docker.io/library/postgres:18.4-bookworm@sha256:" +
   "1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296";
 
-/** 矩阵本身有 83 项断言；外层再给一个宽裕但**有界**的上限。 */
+/**
+ * 矩阵的断言条数**精确钉住**。
+ *
+ * 原来写的是 `>= 80`：一条下界既拦不住「悄悄删掉几条」，也让文档里的覆盖矩阵
+ * 无从核对。改成精确值之后，任何增删都必须同时改这里和文档，漂移会立刻变红。
+ */
+const expectedMatrixChecks = 106;
+
+/** 矩阵自身每个 case 有 25 秒看门狗；外层再给一个宽裕但**有界**的上限。 */
 const matrixTimeoutMs = 180_000;
 
 const assertMatrixPassed = (
@@ -61,12 +69,17 @@ const assertMatrixPassed = (
   );
   assert.equal(result.status, 0, `${label} failed\n${output}`);
   // 正向断言：不能靠「一条检查都没跑」拿到退出码 0。
-  const summary = /signal-matrix: (\d+) checks, (\d+) failure\(s\)/.exec(output);
+  const summary = /signal-matrix: (\d+) checks, (\d+) failure\(s\)/.exec(
+    output,
+  );
   assert.ok(summary, `${label}: no matrix summary line\n${output}`);
   assert.equal(Number(summary[2]), 0, `${label}: ${output}`);
-  assert.ok(
-    Number(summary[1]) >= 80,
-    `${label}: only ${String(summary[1])} checks ran; the matrix was truncated\n${output}`,
+  assert.equal(
+    Number(summary[1]),
+    expectedMatrixChecks,
+    `${label}: expected exactly ${String(expectedMatrixChecks)} checks, got ` +
+      `${String(summary[1])}; update both this number and the coverage matrix in\n` +
+      `  docs/project-status.md and infra/docker/postgres/README.md\n${output}`,
   );
 };
 
@@ -80,30 +93,50 @@ test("the signal matrix passes on the host shell", () => {
 });
 
 test("the signal matrix passes inside the pinned postgres 18.4 image as uid 999", () => {
-  const result = spawnSync(
-    "docker",
-    [
-      "run",
-      "--rm",
-      // bootstrap 在 Compose 拓扑里就是以 uid 999 跑的；权限判据（属主必须等于
-      // effective uid）只有在同一个 uid 下才有意义。
-      "--user",
-      "999:999",
-      "--network",
-      "none",
-      "-v",
-      `${secretSourceScript}:/srv/secret-source.sh:ro`,
-      "-v",
-      `${matrixScript}:/srv/signal-matrix.sh:ro`,
-      "-e",
-      "TMPDIR=/tmp",
-      pinnedPostgresImage,
-      "bash",
-      "/srv/signal-matrix.sh",
-      "/srv/secret-source.sh",
-    ],
-    { encoding: "utf8", timeout: matrixTimeoutMs },
-  );
+  // 固定容器名 + finally 里的 `docker rm -f`：spawnSync 的 timeout 只会杀掉本地的
+  // `docker` 客户端，容器本身照样在跑。没有这一步，一次超时就会留下一个孤儿容器。
+  const containerName = "meal-agent-signal-matrix-gate";
+  const forceRemove = (): void => {
+    spawnSync("docker", ["rm", "--force", containerName], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+  };
+  forceRemove();
+  let result;
+  try {
+    result = spawnSync(
+      "docker",
+      [
+        "run",
+        "--rm",
+        "--name",
+        containerName,
+        // PID 1 收养并回收孤儿：矩阵自己已经按进程组清理，`--init` 是最后一道
+        // failure-safe，保证即使矩阵被外部打断也不会在容器里留下僵尸。
+        "--init",
+        // bootstrap 在 Compose 拓扑里就是以 uid 999 跑的；权限判据（属主必须等于
+        // effective uid）只有在同一个 uid 下才有意义。
+        "--user",
+        "999:999",
+        "--network",
+        "none",
+        "-v",
+        `${secretSourceScript}:/srv/secret-source.sh:ro`,
+        "-v",
+        `${matrixScript}:/srv/signal-matrix.sh:ro`,
+        "-e",
+        "TMPDIR=/tmp",
+        pinnedPostgresImage,
+        "bash",
+        "/srv/signal-matrix.sh",
+        "/srv/secret-source.sh",
+      ],
+      { encoding: "utf8", timeout: matrixTimeoutMs },
+    );
+  } finally {
+    forceRemove();
+  }
   assertMatrixPassed(result, "pinned-image signal matrix");
   assert.ok(
     /bash, version 5\./.test(`${result.stdout}`),
