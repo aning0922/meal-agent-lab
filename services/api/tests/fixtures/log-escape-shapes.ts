@@ -125,6 +125,31 @@ export const viaAliasedFacade = ({ logger }: EscapeInputs): void => {
   createEventLogSink(logger).emit();
 };
 
+// ---------------------------------------------------------------------------
+// 第十三轮：mutation API 按**成员声明身份**识别才抓得到的形状
+// ---------------------------------------------------------------------------
+
+/** 17. `Pick<Logger, "setBindings">`：类型已经不是 Logger，成员还在。 */
+export const viaPickedMutation = (
+  { request }: EscapeInputs,
+  picked: Pick<Logger, "setBindings">,
+): void => {
+  picked.setBindings({ req: request });
+};
+
+/** 18. element access 形式的 mutation。 */
+export const viaElementMutation = ({ logger, request }: EscapeInputs): void => {
+  logger["setBindings"]({ req: request });
+};
+
+/** 19. 类型擦除之后的 mutation。 */
+export const viaErasedMutation = ({ logger, request }: EscapeInputs): void => {
+  const mutate = logger.setBindings as unknown as (
+    bindings: Record<string, unknown>,
+  ) => void;
+  mutate({ req: request });
+};
+
 /**
  * 16. 无关的同名 `LogFn`：局部声明一个同名类型，**不得**被误报。
  * 它与 pino 的 `LogFn` 只是重名。

@@ -82,6 +82,8 @@ const buildProgram = (extraFiles: readonly string[]): ts.Program => {
 interface CapabilityDeclarations {
   readonly logFunction: ReadonlySet<ts.Declaration>;
   readonly logger: ReadonlySet<ts.Declaration>;
+  /** pino/fastify logger 上那些 mutation 成员的**成员声明节点**。 */
+  readonly mutationMembers: ReadonlySet<ts.Declaration>;
 }
 
 const fromPackage = (fileName: string, name: string): boolean =>
@@ -92,6 +94,7 @@ const resolveCapabilityDeclarations = (
 ): CapabilityDeclarations => {
   const logFunction = new Set<ts.Declaration>();
   const logger = new Set<ts.Declaration>();
+  const mutationMembers = new Set<ts.Declaration>();
   for (const file of program.getSourceFiles()) {
     const pino = fromPackage(file.fileName, "pino");
     const fastify = fromPackage(file.fileName, "fastify");
@@ -111,6 +114,18 @@ const resolveCapabilityDeclarations = (
           logger.add(node);
         }
       }
+      // mutation 成员的声明可能挂在 interface 上，也可能挂在类型别名的类型字面量
+      // 里（pino 的 `Logger` 就是 `BaseLogger & {…}`）。因此在 pino/fastify 自己的
+      // `.d.ts` 里**凡是**同名的成员声明都收下——身份仍然来自它们自己的声明节点，
+      // 不是名字匹配。
+      if (
+        (ts.isPropertySignature(node) || ts.isMethodSignature(node)) &&
+        node.name !== undefined &&
+        ts.isIdentifier(node.name) &&
+        mutationMemberNames.has(node.name.text)
+      ) {
+        mutationMembers.add(node);
+      }
       ts.forEachChild(node, visit);
     };
     visit(file);
@@ -123,7 +138,11 @@ const resolveCapabilityDeclarations = (
     logger.size > 0,
     "the program must contain pino/fastify logger declarations",
   );
-  return { logFunction, logger };
+  assert.ok(
+    mutationMembers.size > 0,
+    "the program must contain pino's own mutation member declarations",
+  );
+  return { logFunction, logger, mutationMembers };
 };
 
 /** 类型（含 union / intersection 成员）是否解析到给定的声明节点之一。 */
@@ -171,8 +190,8 @@ const exposesLogFunction = (
       ),
     );
 
-/** pino / Fastify logger 上会改变实例状态或派生新实例的成员。 */
-const mutationMembers = new Set([
+/** pino / Fastify logger 上会改变实例状态或派生新实例的成员名。 */
+const mutationMemberNames = new Set([
   "child",
   "setBindings",
   "bindings",
@@ -183,6 +202,45 @@ const mutationMembers = new Set([
   "addListener",
   "removeListener",
 ]);
+
+/**
+ * 一次成员访问是否落在 pino 的 mutation 成员上——判据是**成员声明身份**。
+ *
+ * 按名字匹配抓不到 `Pick<Logger, "setBindings">`（接收者类型已经不是 Logger），
+ * 也抓不到 `logger["setBindings"]`（`node.name` 根本不存在）。这里改成：先算出
+ * 被访问的成员名，再从**接收者的类型**上取那个属性的符号，比对它的声明节点。
+ * 映射类型（`Pick`）产生的属性符号仍然指向原始的 `PropertySignature`。
+ */
+const accessedMutationMember = (
+  checker: ts.TypeChecker,
+  node: ts.Node,
+  declarations: ReadonlySet<ts.Declaration>,
+): string | undefined => {
+  let receiver: ts.Expression;
+  let member: string;
+  if (ts.isPropertyAccessExpression(node)) {
+    receiver = node.expression;
+    member = node.name.text;
+  } else if (
+    ts.isElementAccessExpression(node) &&
+    ts.isStringLiteralLike(node.argumentExpression)
+  ) {
+    receiver = node.expression;
+    member = node.argumentExpression.text;
+  } else {
+    return undefined;
+  }
+  if (!mutationMemberNames.has(member)) {
+    return undefined;
+  }
+  const property = checker
+    .getTypeAtLocation(receiver)
+    .getProperty(member);
+  const hit = (property?.getDeclarations() ?? []).some((declaration) =>
+    declarations.has(declaration),
+  );
+  return hit ? member : undefined;
+};
 
 /** 某个表达式是否解析到某个模块的**真实导出符号**（import alias 也认得出来）。 */
 const resolvesToExport = (
@@ -230,47 +288,65 @@ const collectCapabilityUses = (
   const found = new Map<string, LoggerCallSite>();
 
   /**
-   * app.ts 的**精确上下文白名单**——不是整文件放行。
+   * app.ts 的白名单：**精确节点 + 精确参数位置**，不按祖先子树放行。
    *
-   * 组装根必须把 logger 交给 Fastify，因此它会出现 Logger 类型的表达式；但只允许
-   * 出现在这三种上下文里：
+   * 上一版是往上走祖先链，只要撞到 `loggerInstance:` 或 `createEventLogSink(...)`
+   * 就放行。那等于放行了整棵子树——`loggerInstance: externalRelay(logger)` 与
+   * `createEventLogSink(externalRelay(logger))` 都能溜过去（实测两条都假绿）。
    *
-   *   1. `const logger = …` 这一条变量声明；
-   *   2. `loggerInstance:` 属性赋值；
-   *   3. 解析到 `log-events.ts` **真实导出**的 `createEventLogSink` 的调用。
+   * 现在只认三个**确切的**位置，而且节点形状也钉死：
    *
-   * 第 3 条按导出符号解析：本地再定义一个同名函数拿不到放行，换个名字导入则照样
-   * 认得出来。
+   *   1. `createLoggingContext(level, <node>)` 的第 1 个实参，且 `<node>` 必须是
+   *      一个成员访问（`options.logger`）；
+   *   2. `loggerInstance: <node>`，且 `<node>` 必须是 `<ctx>.framework`；
+   *   3. `createEventLogSink(<node>)` 的第 0 个实参，且 `<node>` 必须是
+   *      `<ctx>.events`。
+   *
+   * 任何把 logger 先过一手函数的写法都不满足「节点形状」，因此拿不到放行。
    */
-  const inAllowedAppContext = (node: ts.Node): boolean => {
-    let current: ts.Node | undefined = node;
-    while (current !== undefined) {
-      if (
-        ts.isVariableDeclaration(current) &&
-        ts.isIdentifier(current.name) &&
-        current.name.text === "logger"
-      ) {
-        return true;
-      }
-      if (
-        ts.isPropertyAssignment(current) &&
-        ts.isIdentifier(current.name) &&
-        current.name.text === "loggerInstance"
-      ) {
-        return true;
-      }
-      if (
-        ts.isCallExpression(current) &&
-        resolvesToExport(
-          checker,
-          current.expression,
-          facadeModule,
-          "createEventLogSink",
-        )
-      ) {
-        return true;
-      }
-      current = current.parent;
+  const isContextMember = (node: ts.Node, member: string): boolean =>
+    ts.isPropertyAccessExpression(node) && node.name.text === member;
+
+  const isAllowedAppNode = (node: ts.Node): boolean => {
+    const parent = node.parent;
+    if (parent === undefined) {
+      return false;
+    }
+    if (
+      ts.isCallExpression(parent) &&
+      parent.arguments[1] === node &&
+      ts.isPropertyAccessExpression(node) &&
+      node.name.text === "logger" &&
+      resolvesToExport(
+        checker,
+        parent.expression,
+        loggingModule,
+        "createLoggingContext",
+      )
+    ) {
+      return true;
+    }
+    if (
+      ts.isPropertyAssignment(parent) &&
+      ts.isIdentifier(parent.name) &&
+      parent.name.text === "loggerInstance" &&
+      parent.initializer === node &&
+      isContextMember(node, "framework")
+    ) {
+      return true;
+    }
+    if (
+      ts.isCallExpression(parent) &&
+      parent.arguments[0] === node &&
+      isContextMember(node, "events") &&
+      resolvesToExport(
+        checker,
+        parent.expression,
+        facadeModule,
+        "createEventLogSink",
+      )
+    ) {
+      return true;
     }
     return false;
   };
@@ -332,22 +408,21 @@ const collectCapabilityUses = (
           typeResolvesTo(type, declarations.logger) ||
           exposesLogFunction(checker, type, declarations.logFunction, node)
         ) {
-          if (!isBoundary && !(isCompositionRoot && inAllowedAppContext(node))) {
+          if (!isBoundary && !(isCompositionRoot && isAllowedAppNode(node))) {
             record(node, "[Logger]");
           }
         }
       }
 
-      if (
-        ts.isPropertyAccessExpression(node) &&
-        mutationMembers.has(node.name.text) &&
-        typeResolvesTo(
-          checker.getTypeAtLocation(node.expression),
-          declarations.logger,
-        ) &&
-        file.fileName !== loggingModule
-      ) {
-        record(node, "[mutation]");
+      if (file.fileName !== loggingModule) {
+        const member = accessedMutationMember(
+          checker,
+          node,
+          declarations.mutationMembers,
+        );
+        if (member !== undefined) {
+          record(node, "[mutation]");
+        }
       }
 
       ts.forEachChild(node, visit);
@@ -465,6 +540,9 @@ test("the capability gate catches every escape shape, by declaration identity", 
     ["13 Pick<Logger, …>", "[LogFn] picked.warn"],
     ["14 computed access", "[LogFn] logger[key]"],
     ["15 locally shadowed factory", "[Logger] root"],
+    ["17 Pick<Logger, 'setBindings'>", "[mutation] picked.setBindings"],
+    ["18 element-access mutation", '[mutation] logger["setBindings"]'],
+    ["19 type-erased mutation", "[mutation] logger.setBindings"],
   ] as const) {
     assert.ok(
       lines.includes(marker),
