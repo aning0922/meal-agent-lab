@@ -78,8 +78,8 @@ export const passwordAlphabet =
 /** 62^48 ≈ 2^285：远超口令强度需要，也让「相同口令」只能来自复制。 */
 export const passwordLength = 48
 
-/** 预检允许的最小口令长度（手写 bundle 也不得低于它）。 */
-export const minimumPasswordLength = 24
+// 口令长度**精确钉住**为 passwordLength（48）：预检不接受任何其他长度，
+// 手写 bundle 也必须用同长度的 CSPRNG 值（用 generator 就不会遇到这条）。
 
 /** 与 M3A 消费侧一致的单文件字节上限。 */
 export const maximumSecretFileBytes = 4096
@@ -362,9 +362,9 @@ const checkPasswordBody = (filename, body, problems) => {
     )
     return null
   }
-  if (body.length < minimumPasswordLength) {
+  if (body.length !== passwordLength) {
     problems.push(
-      `${filename}: the password is shorter than ${String(minimumPasswordLength)} characters`
+      `${filename}: the password must be exactly ${String(passwordLength)} characters`
     )
     return null
   }
@@ -587,21 +587,13 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         'a zero-coverage scan must not pass silently'
     )
   }
-  for (const file of files) {
-    const path = resolve(repository, file)
-    let content
-    try {
-      content = readFileSync(path, 'utf8')
-    } catch {
-      problems.push(`${file}: tracked template could not be read`)
-      continue
-    }
+  const scanTemplateContent = (label, content) => {
     const lines = content.split('\n')
     for (const [index, line] of lines.entries()) {
       for (const pattern of fullDsnPatterns) {
         if (pattern.test(line)) {
           problems.push(
-            `${file}:${String(index + 1)}: tracked template contains a full ` +
+            `${label}:${String(index + 1)}: tracked template contains a full ` +
               'connection string with credentials'
           )
           break
@@ -619,10 +611,41 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       const sensitive = sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix))
       if (sensitive && value !== '' && value !== '""' && value !== "''") {
         problems.push(
-          `${file}:${String(index + 1)}: tracked template assigns a non-empty ` +
+          `${label}:${String(index + 1)}: tracked template assigns a non-empty ` +
             `value to the sensitive key ${match[1]}`
         )
       }
+    }
+  }
+
+  for (const file of files) {
+    // **两层都扫**：工作树内容与 Git index blob。只扫工作树会漏掉「已经
+    // git add、随后把工作树恢复干净」的凭据——它仍然会随下一次 commit 进入
+    // 历史。index blob 用 `git show :<path>` 读取，读不到即 fail closed。
+    const path = resolve(repository, file)
+    let worktreeContent = null
+    try {
+      worktreeContent = readFileSync(path, 'utf8')
+    } catch {
+      problems.push(`${file}: tracked template could not be read from the worktree`)
+    }
+    if (worktreeContent !== null) {
+      scanTemplateContent(file, worktreeContent)
+    }
+    const indexBlob = spawnSync('git', ['show', `:${file}`], {
+      cwd: repository,
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024
+    })
+    if (indexBlob.error !== undefined || indexBlob.status !== 0) {
+      problems.push(
+        `${file}: the git index blob could not be read ` +
+          `(${indexBlob.error?.message ?? `git show exit=${String(indexBlob.status)}`})`
+      )
+      continue
+    }
+    if (indexBlob.stdout !== worktreeContent) {
+      scanTemplateContent(`${file} (git index)`, indexBlob.stdout)
     }
   }
   return problems
@@ -669,10 +692,12 @@ export const checkSecretBundle = (directory, options = {}) => {
         `expected owner is uid ${String(expectedOwnerUid)}`
     )
   }
-  if ((directoryStats.mode & 0o077) !== 0) {
+  // 目录权限**精确** 0700：0500（owner 不可写）、0600（owner 不可进入）、
+  // 1700（sticky）等变体都不是「已知安全」的形态，一律拒绝。
+  if ((directoryStats.mode & 0o7777) !== 0o700) {
     problems.push(
       `${directory} has mode ${(directoryStats.mode & 0o7777).toString(8).padStart(4, '0')}; ` +
-        'the bundle directory must be owner-only (0700)'
+        'the bundle directory mode must be exactly 0700'
     )
   }
 
@@ -693,13 +718,16 @@ export const checkSecretBundle = (directory, options = {}) => {
       allowed.add(extra)
     }
   }
-  for (const entry of entries.slice().sort()) {
-    if (!allowed.has(entry)) {
-      problems.push(
-        `${entry}: unknown entry in the bundle directory; a bundle contains ` +
-          'exactly the eight declared secret files'
-      )
-    }
+  // 未知条目**只报数量，不回显名字**：文件名本身是不可信输入，甚至可能就是
+  // 一段 Secret（有人把口令误存成文件名）。回显它等于把 Secret 打进错误消息。
+  const unknownEntries = entries.filter((entry) => !allowed.has(entry))
+  if (unknownEntries.length > 0) {
+    problems.push(
+      `the bundle directory contains ${String(unknownEntries.length)} unknown ` +
+        'entr' + (unknownEntries.length === 1 ? 'y' : 'ies') + '; a bundle ' +
+        'contains exactly the eight declared secret files (unknown names are ' +
+        'deliberately not echoed)'
+    )
   }
 
   // 逐文件判据 + 读取。

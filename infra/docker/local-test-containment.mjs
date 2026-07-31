@@ -126,49 +126,106 @@ const attemptConnect = (host, port, timeoutMs = 3_000) =>
     setTimeout(() => done('timeout'), timeoutMs).unref()
   })
 
-/** HTTP 层判定「是不是我们的 API」：/healthz 200 且 body 是它的成功形状。 */
-const probeApiHttp = async (host, port) => {
-  // IPv6（含带 zone 的 link-local）用方括号形式；zone 分隔符 % 在 URL 里必须
-  // 编码为 %25。
-  const bare = host.split('%')[0]
-  const target =
-    isIP(bare) === 6
-      ? `http://[${host.replace('%', '%25')}]:${String(port)}/healthz`
-      : `http://${host}:${String(port)}/healthz`
-  try {
-    const response = await fetch(target, { signal: AbortSignal.timeout(4_000) })
-    const body = await response.text()
-    if (response.status === 200 && body.includes('"status":"ok"')) {
-      return 'api-reachable'
+/**
+ * HTTP 层判定「是不是我们的 API」。**不用 fetch**：WHATWG URL 不接受 IPv6
+ * zone（`fe80::1%en0`），一旦构造失败 fetch 会抛错，而把「请求根本没构造出
+ * 来」和「请求发出后没人应答」混成同一个 http-unreachable，正是上一版把
+ * link-local 证据做成空转的根因。这里改成**原始 socket + 手写 HTTP/1.1
+ * 请求**，socket 层原生支持 zone，并给出五种互斥结局：
+ *
+ *   not-constructed  连 socket 都没建起来（地址不合法）——**不是**隔离证据
+ *   not-sent         连接未建立（TCP 拒绝/超时），请求字节从未发出
+ *   tcp-refused      TCP 明确被拒
+ *   not-api          有 HTTP 响应，但不是我们的 /healthz 成功形状
+ *   api-reachable    /healthz 200 且 body 是它的成功形状
+ *
+ * 只有 `not-api` 与 `api-reachable` 能证明「请求确实发出并被应答」，因此只有
+ * 它们可以进入隔离裁决；其余三种只说明请求没能发出去。
+ */
+const probeApiHttp = (host, port, timeoutMs = 4_000) =>
+  new Promise((resolveProbe) => {
+    const bare = host.split('%')[0]
+    const family = isIP(bare) === 6 ? 6 : 4
+    let socket
+    try {
+      socket = connect({ host, port, family })
+    } catch (error) {
+      resolveProbe({ outcome: 'not-constructed', detail: String(error?.code ?? error) })
+      return
     }
-    return `http-${String(response.status)}-not-our-api`
-  } catch {
-    return 'http-unreachable'
-  }
-}
+    let settled = false
+    let connected = false
+    let body = ''
+    const done = (outcome, detail) => {
+      if (!settled) {
+        settled = true
+        socket.destroy()
+        resolveProbe({ outcome, detail })
+      }
+    }
+    const timer = setTimeout(
+      () => done(connected ? 'not-api' : 'not-sent', 'timeout'),
+      timeoutMs
+    )
+    timer.unref()
+    socket.once('error', (error) => {
+      done(connected ? 'not-api' : 'tcp-refused', String(error.code ?? 'unknown'))
+    })
+    socket.once('connect', () => {
+      connected = true
+      // Host 头用裸地址（不带 zone）：zone 是本机路由概念，不属于 HTTP。
+      const hostHeader = family === 6 ? `[${bare}]:${String(port)}` : `${bare}:${String(port)}`
+      socket.write(
+        `GET /healthz HTTP/1.1\r\nHost: ${hostHeader}\r\nConnection: close\r\n\r\n`
+      )
+    })
+    socket.on('data', (chunk) => {
+      body += chunk.toString('utf8')
+      if (body.includes('"status":"ok"') && /^HTTP\/1\.[01] 200/.test(body)) {
+        done('api-reachable', 'healthz 200 with the API success shape')
+      }
+    })
+    socket.once('close', () => {
+      if (settled) {
+        return
+      }
+      if (!connected) {
+        done('not-sent', 'closed before connect')
+        return
+      }
+      const statusLine = body.split('\r\n')[0] ?? ''
+      done('not-api', statusLine === '' ? 'no HTTP response' : statusLine)
+    })
+  })
+
+/** 只有这两种结局证明请求确实发出并被应答。 */
+const requestActuallySent = (outcome) =>
+  outcome === 'api-reachable' || outcome === 'not-api'
 
 /**
  * 采集一个 label project 的全部 Docker 产物：每个容器的完整 inspect、单列的
  * Config.Env / Config.Cmd/Args / Mounts、stdout/stderr logs，以及它们镜像的
  * inspect 与 `history --no-trunc`。smoke 与反向测试用**同一个**采集器。
  */
-export const collectDockerArtifactsForProject = ({ project, run, onProblem }) => {
+export const collectDockerArtifactsForProject = async ({ project, run, onProblem }) => {
   const artifacts = []
   const addArtifact = (label, content) => {
     artifacts.push({ label, content: content ?? '' })
   }
-  const containerIds = run([
+  const listing = await run([
     'docker',
     'ps',
     '-aq',
     '--filter',
     `label=com.docker.compose.project=${project}`
   ])
-    .stdout.split('\n')
-    .filter(Boolean)
+  if (listing.status !== 0) {
+    onProblem('containment: listing project containers failed; artifacts cannot be collected')
+  }
+  const containerIds = listing.stdout.split('\n').filter(Boolean)
   const imageIds = new Set()
   for (const id of containerIds) {
-    const inspect = run(['docker', 'inspect', id])
+    const inspect = await run(['docker', 'inspect', id])
     if (inspect.status !== 0) {
       onProblem(`containment: docker inspect ${id} failed`)
       continue
@@ -190,20 +247,20 @@ export const collectDockerArtifactsForProject = ({ project, run, onProblem }) =>
     if (typeof parsed.Image === 'string') {
       imageIds.add(parsed.Image)
     }
-    const logs = run(['docker', 'logs', id], { timeoutMs: 120_000 })
+    const logs = await run(['docker', 'logs', id], { timeoutMs: 120_000 })
     if (logs.status !== 0) {
       onProblem(`containment: docker logs ${name} failed; its output cannot be scanned`)
     }
     addArtifact(`container logs ${name}`, `${logs.stdout}\n${logs.stderr}`)
   }
   for (const imageId of imageIds) {
-    const inspect = run(['docker', 'image', 'inspect', imageId])
+    const inspect = await run(['docker', 'image', 'inspect', imageId])
     if (inspect.status !== 0) {
       onProblem(`containment: docker image inspect ${imageId} failed`)
     } else {
       addArtifact(`image inspect ${imageId.slice(0, 19)}`, inspect.stdout)
     }
-    const history = run(['docker', 'image', 'history', '--no-trunc', imageId])
+    const history = await run(['docker', 'image', 'history', '--no-trunc', imageId])
     if (history.status !== 0) {
       onProblem(`containment: docker image history ${imageId} failed`)
     } else {
@@ -234,6 +291,7 @@ export const runContainmentAndIsolation = async ({
   hostPort,
   bodies,
   composeFile,
+  composeArgs = [],
   composeEnvironment,
   transcript,
   log,
@@ -258,6 +316,7 @@ export const runContainmentAndIsolation = async ({
         'compose',
         '--file',
         composeFile,
+        ...composeArgs,
         '--profile',
         'bootstrap',
         '--project-name',
@@ -269,7 +328,7 @@ export const runContainmentAndIsolation = async ({
 
   assertNeedleCompleteness(bodies, needles, fail)
 
-  const resolvedConfig = compose(['config'], { timeoutMs: 120_000 })
+  const resolvedConfig = await compose(['config'], { timeoutMs: 120_000 })
   if (resolvedConfig.status !== 0) {
     fail(
       'containment: docker compose config failed; the resolved configuration ' +
@@ -279,14 +338,14 @@ export const runContainmentAndIsolation = async ({
   const artifacts = [
     { label: 'docker compose config', content: resolvedConfig.stdout }
   ]
-  const collected = collectDockerArtifactsForProject({ project, run, onProblem: fail })
+  const collected = await collectDockerArtifactsForProject({ project, run, onProblem: fail })
   artifacts.push(...collected.artifacts)
   if (collected.containerIds.length === 0) {
     fail('containment: no project containers were found to scan')
   }
 
   // Git tracked files：全仓库逐文件字节扫描。
-  const tracked = run(['git', 'ls-files', '-z'], {
+  const tracked = await run(['git', 'ls-files', '-z'], {
     cwd: repositoryRoot,
     timeoutMs: 60_000
   })
@@ -386,7 +445,7 @@ export const runContainmentAndIsolation = async ({
     const http = await probeApiHttp('::1', hostPort)
     fail(
       `isolation: [::1]:${String(hostPort)} accepted a TCP connection ` +
-        `(http probe: ${http}); the API must not be reachable over IPv6 loopback`
+        `(http probe: ${http.outcome}); the API must not be reachable over IPv6 loopback`
     )
   } else {
     log(`isolation: [::1]:${String(hostPort)} -> ${ipv6Loopback} (as required)`)
@@ -395,13 +454,67 @@ export const runContainmentAndIsolation = async ({
   // HTTP 探针的正向自检：它必须能在 127.0.0.1 上认出我们自己的 API，否则
   // 下面 accept-all 分支的「API 级探测失败 = 安全」就没有裁决能力。
   const selfProbe = await probeApiHttp('127.0.0.1', hostPort)
-  if (selfProbe !== 'api-reachable') {
+  if (selfProbe.outcome !== 'api-reachable') {
     fail(
       `isolation: the HTTP probe cannot recognise our own API on 127.0.0.1 ` +
-        `(${selfProbe}); every accept-all verdict below would be meaningless`
+        `(${selfProbe.outcome}: ${selfProbe.detail}); every accept-all verdict ` +
+        'below would be meaningless'
     )
   } else {
     log('isolation: HTTP probe self-check on 127.0.0.1 recognises the API (positive control)')
+  }
+
+  // **带 zone 的 IPv6 正向对照**：证明探针在 scoped link-local 上真的能发出
+  // 请求并收到应答——否则「link-local 探测失败」就分不清「隔离成立」和
+  // 「请求根本没发出去」。做法：在本机第一个 link-local 地址上起一个临时
+  // HTTP 监听，用与隔离判定**同一个** probeApiHttp 打它，要求结局是
+  // `not-api`（连上了、发出了请求、拿到 HTTP 响应，但不是我们的 API 形状）。
+  const linkLocal = []
+  for (const [interfaceName, addresses] of Object.entries(networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (
+        !address.internal &&
+        address.family === 'IPv6' &&
+        address.address.toLowerCase().startsWith('fe80:')
+      ) {
+        linkLocal.push({ interfaceName, address: address.address })
+      }
+    }
+  }
+  if (linkLocal.length === 0) {
+    log(
+      'isolation: the host has no link-local IPv6 address; the zoned-probe ' +
+        'positive control cannot be obtained on this host'
+    )
+  } else {
+    const { interfaceName, address } = linkLocal[0]
+    const scoped = `${address}%${interfaceName}`
+    const control = createServer((socket) => {
+      socket.end('HTTP/1.1 418 I am a control\r\nConnection: close\r\n\r\ncontrol')
+    })
+    const controlOutcome = await new Promise((resolveControl) => {
+      control.once('error', (error) =>
+        resolveControl({ outcome: 'listen-failed', detail: String(error.code ?? error) })
+      )
+      control.listen({ host: scoped, port: 0 }, async () => {
+        const { port } = control.address()
+        const probed = await probeApiHttp(scoped, port)
+        resolveControl(probed)
+      })
+    })
+    control.close()
+    if (controlOutcome.outcome === 'not-api') {
+      log(
+        `isolation: zoned IPv6 positive control on ${scoped} — the probe really ` +
+          `sent a request and read a response (${controlOutcome.detail})`
+      )
+    } else {
+      fail(
+        `isolation: the zoned IPv6 positive control on ${scoped} returned ` +
+          `${controlOutcome.outcome} (${controlOutcome.detail}); link-local ` +
+          'results below cannot be treated as isolation evidence'
+      )
+    }
   }
 
   // 对照端口：本轮随机选择、与 API 端口不同，并且**验证过**本机确实没有任何
@@ -416,18 +529,23 @@ export const runContainmentAndIsolation = async ({
         server.close(() => resolveBindable(true))
       })
     })
-  let controlPort = 0
-  for (let attempt = 0; attempt < 20 && controlPort === 0; attempt += 1) {
+  // 取**两个**互相独立的无监听对照端口：accept-all 接口的判据因此是「对任意
+  // 端口都 accept」，而不是「恰好对某一个端口 accept」。
+  const controlPorts = []
+  for (let attempt = 0; attempt < 40 && controlPorts.length < 2; attempt += 1) {
     const candidate = 20_000 + (randomBytes(2).readUInt16BE(0) % 40_000)
-    if (candidate === hostPort) {
+    if (candidate === hostPort || controlPorts.includes(candidate)) {
       continue
     }
     if ((await portIsBindable('127.0.0.1', candidate)) && (await portIsBindable('::1', candidate))) {
-      controlPort = candidate
+      controlPorts.push(candidate)
     }
   }
-  if (controlPort === 0) {
-    fail('isolation: could not find a listener-free control port; accept-all verdicts would be unfounded')
+  if (controlPorts.length < 2) {
+    fail(
+      'isolation: could not find two listener-free control ports; accept-all ' +
+        'verdicts would be unfounded'
+    )
   }
 
   // link-local IPv6（fe80::/10）必须带 zone（scope id）才能真的被路由：不带
@@ -456,45 +574,68 @@ export const runContainmentAndIsolation = async ({
       log(`isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} (as required)`)
       continue
     }
-    const control = controlPort === 0 ? 'unverified' : await attemptConnect(address, controlPort)
+    // TCP 连上了：此时必须真的把 HTTP 请求发出去再判。probe 的五种结局里，
+    // 只有 api-reachable / not-api 证明请求确实发出并被应答。
     const http = await probeApiHttp(address, hostPort)
-    if (http === 'api-reachable') {
+    if (http.outcome === 'api-reachable') {
       fail(
         `isolation: the API answered /healthz from non-loopback address ` +
           `${interfaceName} ${address}; the loopback boundary is broken`
       )
-    } else if (control === 'connected' && selfProbe === 'api-reachable') {
-      log(
-        `isolation: ${interfaceName} ${address} is an accept-all interface proxy ` +
-          `(listener-free control port ${String(controlPort)} also accepts); ` +
-          `API-level probe failed as required (${http})`
-      )
-    } else {
-      fail(
-        `isolation: ${interfaceName} ${address}:${String(hostPort)} accepted TCP ` +
-          `(control=${control}, http=${http}); this acceptance cannot be ` +
-          'attributed to an accept-all proxy and is treated as exposure'
-      )
+      continue
     }
+    if (!requestActuallySent(http.outcome)) {
+      // 连上了却连一个 HTTP 响应都读不到：这在真实的「端口被发布」情形下不该
+      // 发生。只有当该接口被证明是 accept-all 代理时才允许放行。
+      const controls =
+        controlPorts.length < 2
+          ? []
+          : await Promise.all(controlPorts.map((port) => attemptConnect(address, port)))
+      const acceptsAll = controls.length === 2 && controls.every((r) => r === 'connected')
+      if (acceptsAll && selfProbe.outcome === 'api-reachable') {
+        log(
+          `isolation: ${interfaceName} ${address} is an accept-all interface proxy ` +
+            `(both listener-free control ports ${controlPorts.join(', ')} also accept); ` +
+            `the API-level request produced ${http.outcome} (${http.detail}) as required`
+        )
+      } else {
+        fail(
+          `isolation: ${interfaceName} ${address}:${String(hostPort)} accepted TCP ` +
+            `but the probe result is ${http.outcome} (${http.detail}) and the ` +
+            `control ports returned [${controls.join(', ') || 'unverified'}]; this ` +
+            'acceptance cannot be attributed to a proven accept-all proxy'
+        )
+      }
+      continue
+    }
+    log(
+      `isolation: ${interfaceName} ${address}:${String(hostPort)} answered ` +
+        `${http.outcome} (${http.detail}) — a real request was sent and it is not our API`
+    )
   }
 
   // postgres：没有任何 PublishedPort / PortBinding。inspect 失败必须 fail
   // closed——「容器不存在」不能被读成「没有发布端口」。
-  const strictInspectJson = (target, format, label) => {
-    const result = run(['docker', 'inspect', '--format', format, target])
+  const strictInspectJson = async (target, format, label) => {
+    const result = await run(['docker', 'inspect', '--format', format, target])
     if (result.status !== 0) {
       fail(`isolation: docker inspect ${label} failed; the check cannot pass by default`)
       return null
     }
-    return JSON.parse(result.stdout.trim() || 'null')
+    try {
+      return JSON.parse(result.stdout.trim() || 'null')
+    } catch {
+      fail(`isolation: docker inspect ${label} did not return valid JSON`)
+      return null
+    }
   }
   const postgresName = `${project}-postgres-1`
-  const postgresPorts = strictInspectJson(
+  const postgresPorts = await strictInspectJson(
     postgresName,
     '{{json .NetworkSettings.Ports}}',
     `${postgresName} ports`
   )
-  const postgresBindings = strictInspectJson(
+  const postgresBindings = await strictInspectJson(
     postgresName,
     '{{json .HostConfig.PortBindings}}',
     `${postgresName} bindings`
@@ -512,11 +653,8 @@ export const runContainmentAndIsolation = async ({
 
   // api：恰好一个 host binding，127.0.0.1:<port> → 3000/tcp。
   const apiName = `${project}-api-1`
-  const apiPorts = strictInspectJson(
-    apiName,
-    '{{json .NetworkSettings.Ports}}',
-    `${apiName} ports`
-  ) ?? {}
+  const apiPorts =
+    (await strictInspectJson(apiName, '{{json .NetworkSettings.Ports}}', `${apiName} ports`)) ?? {}
   const apiBindings = Object.entries(apiPorts ?? {}).flatMap(([containerPort, bindings]) =>
     (bindings ?? []).map((binding) => ({ containerPort, ...binding }))
   )

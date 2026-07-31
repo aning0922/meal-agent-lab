@@ -19,19 +19,31 @@
 //
 // 任何一条不满足即失败退出。失败与成功都会执行 scoped cleanup：只处理本次
 // project 的 container/network/volume 与临时 secret 目录。
-import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { generateAndPreflight } from './generate-local-test-secrets.mjs'
 import { secretFiles } from './local-test-secrets-contract.mjs'
+import {
+  cleanupRun,
+  discardOverride,
+  imageIdOf,
+  inspectStrict,
+  overridePathFor,
+  runImageTagFor,
+  verifyNoResidue,
+  writeImageOverride
+} from './m3b-docker.mjs'
+import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
-const apiImage = 'meal-agent-api:stage09a-local-test'
+/** probe 的 cleanup 范围：只认自己的 project 形状。 */
+const probeProjectPattern = /^meal-agent-m3b-probe-[a-z0-9]+$/
+const probeSecretsPrefix = 'meal-agent-m3b-probe-'
 
 /** 每份 secret 在哪个服务里被消费（与 compose.local-test.yaml 的 secrets 一致）。 */
 const probePlan = [
@@ -62,17 +74,8 @@ const consumerUidOf = (secretName) => {
 const failures = []
 const evidence = []
 
-const run = (args, options = {}) => {
-  const result = spawnSync(args[0], args.slice(1), {
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-    ...options
-  })
-  if (result.error !== undefined) {
-    throw new Error(`failed to run ${args[0]}: ${result.error.message}`)
-  }
-  return result
-}
+// 异步 spawn（自成进程组、有超时）：事件循环保持存活，信号可被真实处理。
+const run = (args, options = {}) => runCommand(args, options)
 
 // bash 侧（postgres 镜像，GNU stat）：每个文件输出一行固定格式的 PROBE 记录。
 // 刻意不用 eval：stat 失败时 eval 空串会静默沿用上一个文件的取值。三个字段
@@ -128,48 +131,82 @@ const parseProbeLine = (line) => {
   return { path: parts[1], fields }
 }
 
-/** CLI 信号处置读取的现场登记。 */
-const activeProbeScene = { project: null, secretsDirectory: null }
+/** CLI 信号处置读取的现场登记（正常、失败、信号三条路径共用同一套 cleanup）。 */
+const activeProbeScene = {
+  project: null,
+  secretsDirectory: null,
+  imageTag: null,
+  overridePath: null,
+  composeEnvironment: process.env,
+  composeArgs: []
+}
 
-const main = () => {
-  const project = `meal-agent-m3b-probe-${randomBytes(6).toString('hex')}`
-  const secretsDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-probe-'))
-  activeProbeScene.project = project
-  activeProbeScene.secretsDirectory = secretsDirectory
+/** probe 的 scoped cleanup：与 smoke 共用 m3b-docker 的分阶段收集器。 */
+const cleanupProbe = async (scene) =>
+  cleanupRun({
+    project: scene.project,
+    projectPattern: probeProjectPattern,
+    secretsDirectory: scene.secretsDirectory,
+    secretsPrefix: probeSecretsPrefix,
+    imageTag: scene.imageTag,
+    composeFile,
+    composeEnvironment: scene.composeEnvironment,
+    composeArgs: scene.composeArgs,
+    realpath: realpathSync
+  })
+
+const main = async () => {
+  const runId = randomBytes(6).toString('hex')
+  const project = `meal-agent-m3b-probe-${runId}`
+  const imageTag = runImageTagFor(runId)
+  const overridePath = overridePathFor(composeDirectory, runId)
+  const secretsDirectory = mkdtempSync(resolve(tmpdir(), probeSecretsPrefix))
   const composeEnvironment = {
     ...process.env,
     MEAL_AGENT_SECRETS_DIR: secretsDirectory,
     MEAL_AGENT_API_HOST_PORT: '3000'
   }
-  const compose = (args) =>
+  const composeArgs = ['--file', overridePath]
+  Object.assign(activeProbeScene, {
+    project,
+    secretsDirectory,
+    imageTag,
+    overridePath,
+    composeEnvironment,
+    composeArgs
+  })
+  const compose = (args, options = {}) =>
     run(
       [
         'docker',
         'compose',
         '--file',
         composeFile,
+        ...composeArgs,
         '--profile',
         'bootstrap',
         '--project-name',
         project,
         ...args
       ],
-      { cwd: composeDirectory, env: composeEnvironment }
+      { cwd: composeDirectory, env: composeEnvironment, ...options }
     )
 
   try {
     generateAndPreflight(secretsDirectory)
 
-    // API 镜像必须存在（三个 UID 10001 服务都用它）。缺失时构建——这与后续
-    // smoke 使用的是同一个 build stanza。
-    const inspect = run(['docker', 'image', 'inspect', apiImage])
-    if (inspect.status !== 0) {
-      process.stdout.write(`building ${apiImage} (missing locally)...\n`)
-      const build = compose(['build', 'api'])
-      if (build.status !== 0) {
-        throw new Error(`docker compose build api failed:\n${build.stderr}`)
-      }
+    // 本轮唯一 image tag：经临时 override 注入，绝不覆盖全局 tag，也不会与
+    // 并行 worktree/project 互相覆盖。build 之后读取 immutable image ID。
+    writeImageOverride(overridePath, imageTag)
+    const build = await compose(['build', 'api'], { timeoutMs: 1_800_000 })
+    if (build.status !== 0) {
+      throw new Error(`docker compose build api failed:\n${build.stderr.slice(-2000)}`)
     }
+    const builtImageId = await imageIdOf(imageTag, { env: composeEnvironment })
+    if (builtImageId === null) {
+      throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
+    }
+    process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
 
     for (const plan of probePlan) {
       const targets = plan.secrets.map((name) => `/run/secrets/${name}`)
@@ -177,7 +214,7 @@ const main = () => {
         plan.runtime === 'bash'
           ? ['run', '--rm', '--no-deps', '--entrypoint', 'bash', plan.service, '-c', bashProbeScript(targets)]
           : ['run', '--rm', '--no-deps', '--entrypoint', 'node', plan.service, '-e', nodeProbeScript(targets)]
-      const result = compose(args)
+      const result = await compose(args, { timeoutMs: 300_000 })
       if (result.status !== 0) {
         failures.push(
           `${plan.service}: in-container probe exited ${String(result.status)}: ` +
@@ -227,30 +264,31 @@ const main = () => {
       }
     }
   } finally {
-    // scoped cleanup：只处理本次 project 与本次临时目录。明文 Secret 目录
-    // **最先**删除——Docker 侧任何一步失败都不允许把它留在 tmpdir。容器删除
-    // 带 -v（postgres 镜像自带 VOLUME，不带 -v 会泄漏匿名卷），结束后逐类
-    // 复核零残留。
-    rmSync(secretsDirectory, { recursive: true, force: true })
-    compose(['down', '--volumes', '--remove-orphans'])
-    const sweeps = [
-      [['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'rm', '-f', '-v']],
-      [['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'network', 'rm']],
-      [['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'volume', 'rm', '-f']]
-    ]
-    for (const [listArgs, removeArgs] of sweeps) {
-      const listed = run(listArgs)
-      const identifiers = listed.stdout.split('\n').filter(Boolean)
-      if (identifiers.length > 0) {
-        run([...removeArgs, ...identifiers])
-      }
+    // 正常、失败与信号三条路径复用**同一套** scoped cleanup + 独立复查。
+    // override 必须**在 cleanup 之后**删除：`compose down` 仍要用它解析配置。
+    try {
+      failures.push(...(await cleanupProbe(activeProbeScene)))
+    } catch (error) {
+      failures.push(
+        `cleanup-error: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
-    for (const [listArgs] of sweeps) {
-      const remaining = run(listArgs).stdout.split('\n').filter(Boolean)
-      if (remaining.length > 0) {
-        failures.push(`cleanup residue: ${remaining.join(', ')}`)
-      }
+    try {
+      failures.push(
+        ...(await verifyNoResidue({
+          project,
+          imageTag,
+          secretsDirectory,
+          composeEnvironment,
+          exists: existsSync
+        }))
+      )
+    } catch (error) {
+      failures.push(
+        `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
+      )
     }
+    discardOverride(overridePath)
   }
 
   if (failures.length > 0) {
@@ -267,43 +305,47 @@ const main = () => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  // 信号处置：Ctrl-C 不允许把临时 Secret 目录或 probe 容器留下。main() 在
-  // 进入 try 前就把现场登记到这里。
-  let terminating = false
-  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
-    process.on(signal, () => {
-      if (terminating) {
-        return
+  // 信号：终止受控子树 → 与正常/失败路径**同一套** scoped cleanup → 复查
+  // residue（必被打印）→ 按原信号语义退出。
+  installSignalHandlers(
+    async () => {
+      const residue = []
+      if (activeProbeScene.project === null) {
+        if (activeProbeScene.overridePath !== null) {
+          discardOverride(activeProbeScene.overridePath)
+        }
+        return residue
       }
-      terminating = true
-      process.stderr.write(`\n${signal}: cleaning up the probe scene before exiting\n`)
       try {
-        if (activeProbeScene.secretsDirectory !== null) {
-          rmSync(activeProbeScene.secretsDirectory, { recursive: true, force: true })
-        }
-        if (activeProbeScene.project !== null) {
-          const listed = run([
-            'docker',
-            'ps',
-            '-aq',
-            '--filter',
-            `label=com.docker.compose.project=${activeProbeScene.project}`
-          ])
-          const ids = listed.stdout.split('\n').filter(Boolean)
-          if (ids.length > 0) {
-            run(['docker', 'rm', '-f', '-v', ...ids])
-          }
-        }
+        residue.push(...(await cleanupProbe(activeProbeScene)))
       } catch (error) {
-        process.stderr.write(
-          `cleanup on ${signal} failed: ${error instanceof Error ? error.message : String(error)}\n`
+        residue.push(`cleanup-error: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      try {
+        residue.push(
+          ...(await verifyNoResidue({
+            project: activeProbeScene.project,
+            imageTag: activeProbeScene.imageTag,
+            secretsDirectory: activeProbeScene.secretsDirectory,
+            composeEnvironment: activeProbeScene.composeEnvironment,
+            exists: existsSync
+          }))
+        )
+      } catch (error) {
+        residue.push(
+          `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
         )
       }
-      process.exit(code)
-    })
-  }
+      if (activeProbeScene.overridePath !== null) {
+        discardOverride(activeProbeScene.overridePath)
+      }
+      return residue
+    },
+    { label: 'probe scoped cleanup' }
+  )
+
   try {
-    main()
+    await main()
   } catch (error) {
     process.stderr.write(
       `probe-compose-secret-identity: ${
