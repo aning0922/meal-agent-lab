@@ -135,8 +135,8 @@ M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本
 | --- | --- |
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
 | `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
-| `node infra/docker/check-local-test-negatives.mjs` | **75 cases**：1 个正向 baseline + 74 个反例/边界检查，全部要求以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | 第二、三轮阻断整改的 **12 项**窄反例（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期） |
+| `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | 第二、三、四轮阻断整改的 **16 项**窄反例（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期，以及第四轮的 one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据、解码后的 credential query key） |
 | `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证 |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
@@ -241,7 +241,7 @@ Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前�
 M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为
-implementation complete, pending total-control review**，未自行标记 Accepted。
+已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**。
 M4、M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 仍为 `Proposed`，阶段 09A 仍为 In Progress。
@@ -253,10 +253,25 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-75 cases（1 个正向 baseline + 74 个反例/边界检查）、12 项第二/三轮窄反例、
+75 cases（1 个正向 baseline + 74 个反例/边界检查）、16 项第二/三/四轮窄反例、
 15 项拓扑变异反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
-M3B 当前状态：**implementation complete, pending total-control review**，未
-Accepted；M4、M5 未开始；阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
+M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
+M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
+
+### 本轮的威胁模型（写清边界，避免过度声称）
+
+M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手：
+
+- **本地同 EUID 进程受信**。同一个 EUID 的进程本来就能读写这些文件、连接
+  Docker socket、并替换 PATH 上的任何二进制；把它当作攻击者会让每一条判据
+  都无法收敛；
+- 因此以下三类**不作为当前 M3B blocker**：目录被恶意替换、外部对 Secret 文件
+  建硬链接、同 EUID 进程抢占临时 Compose override；
+- 已落地的 inode 身份复核、`no-replace` promotion 与 scoped cleanup 的定位是
+  **不误删他人文件、不把读取失败读成阴性证据**，而不是抵御同 EUID 敌手；
+- 真实的凭据隔离仍然只靠：未跟踪的 secret file、0700/0600 权限、容器内
+  UID/mode 实证、以及「Secret 不进入 Git / 模板 / environment / argv /
+  inspect / image history / logs」这条扫描线。
 
 每次 smoke/probe 运行使用**每轮唯一的 image tag**（`meal-agent-api:m3b-<run id>`，
 经临时 Compose override 注入），并断言三个 API 镜像服务容器的 `.Image` 等于本轮

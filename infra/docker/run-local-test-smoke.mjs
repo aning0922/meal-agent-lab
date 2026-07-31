@@ -46,6 +46,7 @@ import {
   inodeIdentityOf,
   inspectJsonStrict,
   inspectStrict,
+  parseInspectedExitCode,
   listByProject,
   overridePathFor,
   runImageTagFor,
@@ -374,14 +375,20 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       timeoutMs,
       1_000
     )
+    // 退出码是整条链最关键的一条证据，因此两层都必须 fail closed：
+    // `inspectStrict` 拒绝「退出 0 但没打印」，`parseInspectedExitCode` 只接受
+    // 规范的非负十进制整数。此前用的是 `Number(text)` + `Number.isInteger`，
+    // 而 `Number('')` 是 0——一次读不到会被记成「这一步退出码为 0」。
     const exitCodeText = await inspectStrict(name, '{{.State.ExitCode}}')
-    const exitCode = Number(exitCodeText)
-    if (!Number.isInteger(exitCode)) {
-      throw new Error(`${service}: unreadable exit code ${JSON.stringify(exitCodeText)}`)
+    const parsedExitCode = parseInspectedExitCode(exitCodeText)
+    if (!parsedExitCode.ok) {
+      throw new Error(
+        `${service}: refusing to read an exit code that is ${parsedExitCode.reason}`
+      )
     }
     return {
       service,
-      exitCode,
+      exitCode: parsedExitCode.value,
       startedAt: await inspectStrict(name, '{{.State.StartedAt}}')
     }
   }
@@ -750,9 +757,12 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       failVisibility('secret visibility: no project containers were found to check')
     }
     for (const id of containerIds) {
+      // 这一处**显式**接受空串：下面紧接着就有一条具名判定（「没有 compose
+      // service label」），比抛一个通用读取错误更有信息量。
       const service = await inspectStrict(
         id,
-        '{{index .Config.Labels "com.docker.compose.service"}}'
+        '{{index .Config.Labels "com.docker.compose.service"}}',
+        { allowEmpty: true }
       )
       if (service === '' || service === '<no value>') {
         failVisibility(`secret visibility: a project container carries no compose service label (${id})`)

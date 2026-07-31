@@ -54,6 +54,7 @@ import { cleanupSmokeProject } from './run-local-test-smoke.mjs'
 import {
   imageIdOf,
   inodeIdentityOf,
+  isAbsenceMessage,
   overridePathFor,
   runImageTagFor,
   writeImageOverride
@@ -124,16 +125,13 @@ const containerPresence = async (containerName, env = process.env) => {
   if (result.status === 0 && result.stdout.trim() !== '') {
     return 'present'
   }
-  // 锚定整行：`error: no such object: <name>`（也接受 daemon 前缀形态）。
-  // 不用无锚点的 includes——一条**关于别的对象**的错误、或 PATH 上的 shim 回显
-  // 都可能含有同样的字样。
-  const absent = new RegExp(
-    `^\\s*(?:[Ee]rror(?: response from daemon)?:\\s*)?[Nn]o such object:\\s*${
-      containerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    }\\s*$`,
-    'm'
-  )
-  if (result.status === 1 && absent.test(result.stderr)) {
+  // 与 m3b-docker.mjs 的 `imageIdOf` 走**同一个** `isAbsenceMessage`：对整串
+  // `stderr.trim()` 做锚定匹配、不带 `m` 标志。前缀、后缀、多行包装、以及一条
+  // 关于**别的对象**的错误，全都不算「不存在」。
+  if (result.status === 1 && isAbsenceMessage(result.stderr, {
+    kind: 'object',
+    name: containerName
+  })) {
     return 'absent'
   }
   return 'unknown'
@@ -1776,26 +1774,34 @@ for (const project of usedNegativeProjects) {
   }
 }
 
-// 反例数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
+// case 数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
 // 差额暴露，而不是静默变成「跑得更少的绿」。
-const expectedNegativeCount = 75
-if (caught + failures.length !== expectedNegativeCount) {
+// 本套件的**准确口径**：75 个 case = **1 个正向 baseline + 74 个反例/边界
+// 检查**。此前变量与输出都叫「negatives」，把那条正向 baseline 也算成了反例
+// ——而它恰恰是唯一一条「必须通过」的用例（没有它，「一律判失败」的回归会让
+// 其余 74 条恒绿）。
+const expectedCaseCount = 75
+const positiveBaselineCount = 1
+const negativeCaseCount = expectedCaseCount - positiveBaselineCount
+if (caught + failures.length !== expectedCaseCount) {
   fail(
     'suite completeness',
-    `expected ${String(expectedNegativeCount)} negatives to be evaluated, ` +
-      `got ${String(caught)} caught + ${String(failures.length)} failed`
+    `expected ${String(expectedCaseCount)} cases to be evaluated ` +
+      `(${String(positiveBaselineCount)} positive baseline + ${String(negativeCaseCount)} ` +
+      `negative/boundary), got ${String(caught)} satisfied + ${String(failures.length)} failed`
   )
 }
 
 if (failures.length > 0) {
-  process.stderr.write('local-test negative suite FAIL\n')
+  process.stderr.write('local-test case suite FAIL\n')
   for (const message of failures) {
     process.stderr.write(`  - ${message}\n`)
   }
   process.exit(1)
 }
 process.stdout.write(
-  `local-test negative suite PASS (${String(caught)}/${String(expectedNegativeCount)} ` +
-    'negatives caught with their named reasons, 0 escapes, no secret values in ' +
-    'any failure message)\n'
+  `local-test case suite PASS (${String(caught)}/${String(expectedCaseCount)} cases: ` +
+    `${String(positiveBaselineCount)} positive baseline + ${String(negativeCaseCount)} ` +
+    'negative/boundary cases, each satisfied for its named reason, 0 escapes, ' +
+    'no secret values in any failure message)\n'
 )

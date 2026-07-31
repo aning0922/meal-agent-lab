@@ -72,7 +72,7 @@ nlink=1、非 symlink、可读，因此 M3A 的 fail-closed 消费判据在真�
 Secret 上成立。`postgres_admin.pgpass` 还额外受 libpq 自身的 mode 检查约束。
 八份 secret 的**交叉一致性预检**（三个 URL、三个口令与 pgpass 必须描述同一个
 数据库与同一批角色）由 `preflight-local-test-secrets.mjs` 承担（M3B，
-implementation complete, pending total-control review）。
+M3B 已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收）。
 
 ## 备份与恢复
 

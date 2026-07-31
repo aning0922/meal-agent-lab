@@ -26,6 +26,16 @@
 //        库级注入 seam 制造，跑的是真实 runGeneratorCli 与真实 signal handler
 //   R3-4 cleanup 集成反例走 **generateAndPreflight 的真实接线**，不只直接调
 //        helper
+//
+// 第四轮追加（同样先证明旧行为会红）：
+//
+//   R4-1 one-shot ExitCode **fail closed**：`docker inspect` 退出 0 却不打印时
+//        必须拒绝，退出码文本只接受规范的非负十进制整数且必须是安全整数；
+//        含一条**真实调用链**反例（PATH shim 让 ExitCode inspect 返回
+//        status=0 + 空 stdout，smoke 必须失败且不记录 exit=0）
+//   R4-2 「资源不存在」对**整串** `stderr.trim()` 锚定匹配（不带 `m` 标志），
+//        三处判据共用同一个 `isAbsenceMessage`，退出码必须仍精确等于 1
+//   R4-3 模板扫描按**解码后**的 query key 判定 credential 参数
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
@@ -54,8 +64,14 @@ import { scanTrackedRepositoryForNeedles } from './local-test-containment.mjs'
 import {
   generatePassword,
   repositoryRoot,
+  scanTrackedTemplates,
   secretFilenames
 } from './local-test-secrets-contract.mjs'
+import {
+  imageIdOf,
+  isAbsenceMessage,
+  parseInspectedExitCode
+} from './m3b-docker.mjs'
 import { wrongReason } from './m3b-safe-output.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -627,6 +643,251 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
 }
 
 // ---------------------------------------------------------------------------
+// R4-1：one-shot ExitCode 的 fail-closed 读取
+// ---------------------------------------------------------------------------
+process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
+
+{
+  // 解析器层：`Number()` 会把 `''`/`'  '`/`'\n'` 变成 0，把 `'+3'`/`'1.0'`/
+  // `'1e3'`/`'0x10'` 变成数字。旧实现正是 `Number(text)` + `Number.isInteger`，
+  // 因此第一类会把「读不到退出码」记成「这一步退出码为 0」。
+  const name = 'the exit-code parser rejects every non-canonical numeric form'
+  const rejected = ['', ' ', '\n', '  12', '12 ', '+3', '-1', '1.0', '1e3', '0x10', '01', 'abc', 'NaN', 'Infinity']
+  const accepted = [['0', 0], ['1', 1], ['137', 137], ['255', 255]]
+  const unsafe = '9007199254740993'
+  const wrongly = rejected.filter((raw) => parseInspectedExitCode(raw).ok)
+  const missed = accepted.filter(([raw, value]) => {
+    const parsed = parseInspectedExitCode(raw)
+    return !parsed.ok || parsed.value !== value
+  })
+  const unsafeAccepted = parseInspectedExitCode(unsafe).ok
+  if (wrongly.length > 0) {
+    fail(name, `${String(wrongly.length)} non-canonical form(s) were accepted as an exit code`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} canonical form(s) were rejected or mis-parsed`)
+  } else if (unsafeAccepted) {
+    fail(name, 'a value beyond the safe integer range was accepted')
+  } else {
+    pass(
+      name,
+      `${String(rejected.length)} non-canonical forms rejected (empty/blank/signed/float/` +
+        `exponent/hex/leading-zero included), ${String(accepted.length)} canonical forms parsed, ` +
+        'unsafe integer rejected'
+    )
+  }
+}
+
+{
+  // **真实调用链**反例：PATH shim 让 `docker inspect --format {{.State.ExitCode}}`
+  // 退出 0 且不打印任何东西（其余 docker 调用原样透传）。容器真实退出码本来
+  // 就是 0，所以旧实现会把这次读不到读成 exit=0 并**照常通过整条 smoke**；
+  // 新实现必须在第一个一次性服务上失败，且绝不记录任何 `exit=` 行。
+  const name = 'an empty ExitCode payload fails the smoke instead of being recorded as exit=0'
+  const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r4-shim-'))
+  try {
+    const realDocker = spawnSync('which', ['docker'], { encoding: 'utf8' })
+    if (realDocker.error !== undefined || realDocker.status !== 0) {
+      fail(name, 'the precondition failed: the real docker path could not be resolved')
+    } else {
+      const shimPath = resolve(shimDirectory, 'docker')
+      writeFileSync(
+        shimPath,
+        '#!/bin/sh\n' +
+          'if [ "$1" = "inspect" ]; then\n' +
+          '  for a in "$@"; do\n' +
+          '    case "$a" in\n' +
+          '      *State.ExitCode*) exit 0 ;;\n' +
+          '    esac\n' +
+          '  done\n' +
+          'fi\n' +
+          `exec ${realDocker.stdout.trim()} "$@"\n`,
+        { mode: 0o700 }
+      )
+      const outcome = await new Promise((resolveOutcome) => {
+        const child = spawn(
+          process.execPath,
+          [resolve(composeDirectory, 'run-local-test-smoke.mjs')],
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              PATH: `${shimDirectory}:${process.env.PATH ?? ''}`
+            }
+          }
+        )
+        let stdout = ''
+        let stderr = ''
+        child.stdout.on('data', (chunk) => {
+          stdout += chunk.toString('utf8')
+        })
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk.toString('utf8')
+        })
+        child.once('close', (code) => resolveOutcome({ code, stdout, stderr }))
+      })
+      const recordedExit = /chain [a-z-]+: exit=/.test(outcome.stdout)
+      const refused = /exited 0 but printed nothing|refusing to read an exit code/.test(
+        outcome.stdout
+      )
+      const claimedPass = /local-test smoke PASS/.test(outcome.stdout)
+      if (claimedPass) {
+        fail(name, 'NOT CAUGHT — the smoke passed while its exit-code reads returned nothing')
+      } else if (recordedExit) {
+        fail(name, 'a one-shot exit code was recorded from an empty inspect payload')
+      } else if (!refused) {
+        fail(name, wrongReason('/exited 0 but printed nothing/', [String(outcome.code)]))
+      } else if (outcome.code === 0) {
+        fail(name, 'the smoke reported failure but still exited 0')
+      } else {
+        pass(name, 'the smoke refused the empty payload, recorded no exit code and exited non-zero')
+      }
+    }
+  } finally {
+    rmSync(shimDirectory, { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R4-2：「资源不存在」必须整串匹配
+// ---------------------------------------------------------------------------
+process.stdout.write('R4-2: absence is judged on the whole trimmed stderr\n')
+
+{
+  // 三处判据（imageIdOf / containerPresence / 信号窗口）共用同一个
+  // `isAbsenceMessage`。旧实现按行匹配（`m` 标志），于是多行包装的错误里只要
+  // **某一行**长得像「不存在」就整条被读成「资源已消失」。
+  const name = 'a prefixed, suffixed or multi-line wrapped message is never read as absence'
+  const tag = 'meal-agent-api:m3b-r4probe'
+  const container = 'meal-agent-m3b-r4-probe'
+  const shapes = [
+    ['exact image message', `Error response from daemon: No such image: ${tag}`, 'image', tag, true],
+    ['exact object message', `error: no such object: ${container}`, 'object', container, true],
+    ['surrounding whitespace', `  Error response from daemon: No such image: ${tag} \n`, 'image', tag, true],
+    ['prefixed line', `warning: retrying\nError response from daemon: No such image: ${tag}`, 'image', tag, false],
+    ['suffixed line', `Error response from daemon: No such image: ${tag}\nsee the daemon logs`, 'image', tag, false],
+    ['inline prefix', `context deadline exceeded: Error response from daemon: No such image: ${tag}`, 'image', tag, false],
+    ['inline suffix', `Error response from daemon: No such image: ${tag} (will retry)`, 'image', tag, false],
+    ['another object', 'Error response from daemon: No such image: other/image:latest', 'image', tag, false],
+    ['another container', 'error: no such object: some-other-container', 'object', container, false]
+  ]
+  const wrong = shapes.filter(
+    ([, stderr, kind, subject, expected]) =>
+      isAbsenceMessage(stderr, { kind, name: subject }) !== expected
+  )
+
+  // 退出码同样必须**恰好是 1**：用 shim 让 docker 以 7 退出却打印完全正确的
+  // 「不存在」消息，`imageIdOf` 必须抛而不是返回 null。
+  const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r4-shim-'))
+  let statusHonoured = null
+  let wrappedHonoured = null
+  try {
+    const writeShim = (script) => {
+      writeFileSync(resolve(shimDirectory, 'docker'), `#!/bin/sh\n${script}`, { mode: 0o700 })
+      return { ...process.env, PATH: `${shimDirectory}:${process.env.PATH ?? ''}` }
+    }
+    const exactMessage = `Error response from daemon: No such image: ${tag}`
+    let env = writeShim(`echo "${exactMessage}" >&2\nexit 7\n`)
+    statusHonoured = await imageIdOf(tag, { env }).then(
+      (value) => (value === null ? 'read as absent' : 'read as present'),
+      () => 'threw'
+    )
+    env = writeShim(`echo "warning: retrying" >&2\necho "${exactMessage}" >&2\nexit 1\n`)
+    wrappedHonoured = await imageIdOf(tag, { env }).then(
+      (value) => (value === null ? 'read as absent' : 'read as present'),
+      () => 'threw'
+    )
+  } finally {
+    rmSync(shimDirectory, { recursive: true, force: true })
+  }
+
+  if (wrong.length > 0) {
+    fail(name, `${String(wrong.length)} stderr shape(s) were judged incorrectly`)
+  } else if (statusHonoured !== 'threw') {
+    fail(name, `a non-1 exit code with a perfect absence message was ${statusHonoured}`)
+  } else if (wrappedHonoured !== 'threw') {
+    fail(name, `a multi-line wrapped absence message was ${wrappedHonoured}`)
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} stderr shapes judged correctly; exit 7 with a perfect message ` +
+        'and a wrapped exit-1 message both fail closed'
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R4-3：模板扫描识别**解码后**的 credential query key
+// ---------------------------------------------------------------------------
+process.stdout.write('R4-3: encoded credential query keys are decoded before judging\n')
+
+{
+  // 只在原始文本上匹配词干时，`pass%77ord` 这类百分号编码在字节层面根本不含
+  // `password`，于是整条连接串静默进 Git。判据改为按 WHATWG URL 解析后的
+  // query key 判定。
+  const name = 'percent-encoded and case-variant credential query keys are caught'
+  const shapes = [
+    ['pass%77ord', 'CACHE_A=redis://redis:6379?pass%77ord=SYNTHETIC-A', true],
+    ['%70assword', 'CACHE_B=redis://redis:6379?%70assword=SYNTHETIC-B', true],
+    ['access%5Ftoken', 'SEARCH_A=https://search.invalid/index?access%5Ftoken=SYNTHETIC-C', true],
+    ['upper/mixed case', 'QUEUE_A=amqp://broker:5672?PassWord=SYNTHETIC-D', true],
+    ['separator variant', 'SEARCH_B=https://search.invalid/index?X-API-KEY=SYNTHETIC-E', true],
+    ['benign query', 'PG_A=postgresql://postgres:5432/db?sslmode=require', false],
+    ['empty placeholder', 'CACHE_C=redis://redis:6379?password=', false]
+  ]
+  const problemsFor = (line) => {
+    const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r4-repo-'))
+    try {
+      const repo = resolve(parent, 'repo')
+      const templateDirectory = resolve(repo, 'infra/environments/local-test')
+      mkdirSync(templateDirectory, { recursive: true })
+      for (const args of [
+        ['init', '--quiet', repo],
+        ['-C', repo, 'config', 'user.email', 'r4@example.invalid'],
+        ['-C', repo, 'config', 'user.name', 'M3B round four']
+      ]) {
+        const result = git(args)
+        if (result.error !== undefined || result.status !== 0) {
+          throw new Error(`git ${args[0]} failed`)
+        }
+      }
+      writeFileSync(
+        resolve(templateDirectory, 'local-test.env.example'),
+        `WECHAT_APP_ID=\n${line}\n`
+      )
+      git(['-C', repo, 'add', '-A'])
+      git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
+      return scanTrackedTemplates(repo)
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  }
+  const misjudged = []
+  const leaking = []
+  for (const [label, line, expected] of shapes) {
+    const problems = problemsFor(line)
+    const caught = problems.some((problem) => /connection string/.test(problem))
+    if (caught !== expected) {
+      misjudged.push(label)
+    }
+    const injected = line.slice(line.indexOf('=') + 1)
+    if (problems.some((problem) => problem.includes(injected) || /SYNTHETIC-/.test(problem))) {
+      leaking.push(label)
+    }
+  }
+  if (misjudged.length > 0) {
+    fail(name, `${String(misjudged.length)} encoded/benign query shape(s) were judged incorrectly`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message echoed the value or the full DSN (not reprinted here)')
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} shapes judged correctly (percent-encoded, case and separator ` +
+        'variants caught; benign query and empty placeholder not flagged; no value echoed)'
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
 process.stdout.write('P1-5: repository-wide git index containment\n')
@@ -750,7 +1011,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 12
+const expectedCount = 16
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

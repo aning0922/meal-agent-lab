@@ -602,6 +602,7 @@ const credentialQueryKeyStems = [
   'access[_.-]?token',
   'credential'
 ]
+const credentialQueryCategory = 'contains a connection string with a credential query parameter'
 const fullDsnPatterns = [
   {
     // 顺序固定：userinfo 形排在最前，两条既有反例继续命中这条消息。
@@ -609,15 +610,80 @@ const fullDsnPatterns = [
     category: 'contains a full connection string with credentials'
   },
   {
+    // **原始文本**上的词干判据。它抓不到百分号编码（`pass%77ord`），因此下面
+    // 还有一层按**解码后**的 query key 判定；两层并存，任一命中即拒绝。
     pattern: new RegExp(
       String.raw`[a-z][a-z0-9+.-]*://\S*[?&][^\s=&#]*(?:` +
         credentialQueryKeyStems.join('|') +
         String.raw`)[^\s=&#]*=[^\s&#]`,
       'i'
     ),
-    category: 'contains a connection string with a credential query parameter'
+    category: credentialQueryCategory
   }
 ]
+
+/**
+ * 词干的**紧凑**形态：判定前把 key 转小写并去掉 `-`/`_`/`.`，因此
+ * `api_key`、`apiKey`、`API-KEY`、`x-access_token` 归到同一判据上。
+ */
+const compactCredentialStems = [
+  'password',
+  'passwd',
+  'pwd',
+  'token',
+  'secret',
+  'apikey',
+  'accesstoken',
+  'credential'
+]
+
+/** 行内的连接串候选：有界（最多 8 个、每个最长 2048 字符），避免病态输入。 */
+const connectionStringCandidates = (line) => {
+  const found = []
+  const pattern = /[a-z][a-z0-9+.-]*:\/\/\S+/gi
+  for (const match of String(line).matchAll(pattern)) {
+    if (found.length >= 8) {
+      break
+    }
+    if (match[0].length <= 2048) {
+      found.push(match[0])
+    }
+  }
+  return found
+}
+
+/**
+ * 按**解码后**的 query key 判定 credential 参数。
+ *
+ * 只在原始文本上匹配词干是不够的：`?pass%77ord=…`、`?%70assword=…`、
+ * `?access%5Ftoken=…` 在字节层面根本不含 `password` / `access_token`，但
+ * 解析成 URL 之后它们**就是**那些键——写进模板同样是凭据入 Git。
+ * 这里用 WHATWG `URL` + `URLSearchParams` 做有界解析（它按规范解码 key），
+ * 解析失败就交回上面那层原始文本判据。
+ *
+ * **只返回布尔**：key、取值与整条连接串一律不外传，调用方只能拿到类别。
+ */
+const hasEncodedCredentialQueryKey = (line) => {
+  for (const candidate of connectionStringCandidates(line)) {
+    let url
+    try {
+      url = new URL(candidate)
+    } catch {
+      continue
+    }
+    for (const [key, value] of url.searchParams) {
+      if (value === '') {
+        // 空占位与模板的「空值允许」规则一致。
+        continue
+      }
+      const compact = key.toLowerCase().replace(/[-_.]/g, '')
+      if (compactCredentialStems.some((stem) => compact.includes(stem))) {
+        return true
+      }
+    }
+  }
+  return false
+}
 
 /**
  * 模板扫描**只支持 dotenv 形态**（`KEY=value`，可带 `export` 前缀与 `#` 注释）。
@@ -662,12 +728,20 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
   const scanTemplateContent = (label, content) => {
     const lines = content.split('\n')
     for (const [index, line] of lines.entries()) {
+      let dsnCategory = null
       for (const { pattern, category } of fullDsnPatterns) {
         if (pattern.test(line)) {
-          // 只报**类别 + 文件 + 行号**：命中的连接串本身就是凭据，绝不回显。
-          problems.push(`${label}:${String(index + 1)}: tracked template ${category}`)
+          dsnCategory = category
           break
         }
+      }
+      // 第二层：解码后的 query key。原始文本层漏掉百分号编码时由它兜住。
+      if (dsnCategory === null && hasEncodedCredentialQueryKey(line)) {
+        dsnCategory = credentialQueryCategory
+      }
+      if (dsnCategory !== null) {
+        // 只报**类别 + 文件 + 行号**：命中的连接串本身就是凭据，绝不回显。
+        problems.push(`${label}:${String(index + 1)}: tracked template ${dsnCategory}`)
       }
       // 剥掉行首注释标记后再匹配赋值：`# WECHAT_APP_SECRET=real` 与未注释的
       // 版本同样是进了 Git 的凭据。**反复剥离**直到不再变化——单次剥离会被

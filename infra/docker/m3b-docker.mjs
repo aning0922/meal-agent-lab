@@ -68,38 +68,70 @@ export const dockerStrict = async (args, { timeoutMs = 120_000, env } = {}) => {
   return result
 }
 
-/** `docker inspect --format` 的严格读取：读不到即抛，不返回默认值。 */
-export const inspectStrict = async (target, format, { env } = {}) => {
+/**
+ * `docker inspect --format` 的严格读取：读不到即抛，不返回默认值。
+ *
+ * **退出 0 但 stdout 为空同样算读不到**。模板求值给出空串的原因可能是字段不
+ * 存在、daemon 返回了非预期结构，或 PATH 上有个只会 `exit 0` 的 shim；无论
+ * 哪一种，把它交给调用方都会变成一条伪造的阴性证据——`Number('')` 是 0，于是
+ * 「读不到退出码」会被记成「这一步退出码为 0」。要显式接受空串的调用方必须
+ * 传 `allowEmpty: true`，并自己给出具名判定。
+ */
+export const inspectStrict = async (target, format, { env, allowEmpty = false } = {}) => {
   const result = await dockerStrict(
     ['docker', 'inspect', '--format', format, target],
     { env }
   )
-  return result.stdout.trim()
+  const value = result.stdout.trim()
+  if (value === '' && !allowEmpty) {
+    throw new DockerEvidenceError(
+      `docker inspect ${target} ${format} exited 0 but printed nothing; ` +
+        'an unreadable field must not be read as an empty or zero one'
+    )
+  }
+  return value
 }
 
 /**
- * 严格读取一段 JSON 形态的 inspect 字段。
+ * 把 `{{.State.ExitCode}}` 的文本解析成退出码。**只接受规范的非负十进制整数**。
  *
- * **空 stdout 不再被悄悄当成 `null`**：`docker inspect` 退出 0 却什么都没打印，
- * 说明模板求值给出了空串，那是一次「读不到」，不是「这个字段确实是空的」。
- * 调用方若把它读成「没有 tmpfs 挂载」「没有发布端口」，就等于用读取失败冒充
- * 一条阴性证据。要显式接受空值的调用方必须传 `allowEmpty: true`。
+ * `Number()` 会把 `''`、`'  '`、`'\n'` 变成 0，把 `'+3'`/`'1.0'`/`'1e3'`/`'0x10'`
+ * 变成数字——这些形态里没有一个是 docker 真实打印的退出码，而其中第一类恰好
+ * 会把「读不到」伪装成「成功」。因此先按文法判定，再确认它落在安全整数范围内
+ * （超出 2^53 的字面量在 double 上会失真）。
  */
-export const inspectJsonStrict = async (
-  target,
-  format,
-  { env, allowEmpty = false } = {}
-) => {
-  const raw = await inspectStrict(target, format, { env })
-  if (raw === '') {
-    if (!allowEmpty) {
-      throw new DockerEvidenceError(
-        `docker inspect ${target} ${format} returned an empty payload; ` +
-          'an unreadable field must not be read as an absent one'
-      )
-    }
-    return null
+export const parseInspectedExitCode = (raw) => {
+  const text = String(raw ?? '')
+  if (!/^(?:0|[1-9][0-9]*)$/.test(text)) {
+    return { ok: false, reason: 'not a canonical non-negative decimal integer' }
   }
+  const value = Number(text)
+  if (!Number.isSafeInteger(value)) {
+    return { ok: false, reason: 'outside the safe integer range' }
+  }
+  return { ok: true, value }
+}
+
+/**
+ * docker CLI 「这个对象不存在」的**唯一**判据，三处调用点共用。
+ *
+ * 判定对**整串** `stderr.trim()` 做锚定匹配，且**不带 `m` 标志**：多行包装的
+ * 错误、带前缀或后缀的错误、以及一条关于**别的对象**的错误，全都不算「不存在」。
+ * 调用方还必须自己确认退出码恰好是 1——只有那一个组合才是 docker 的
+ * 「找不到对象」。
+ */
+export const isAbsenceMessage = (stderr, { kind, name }) => {
+  const noun = kind === 'image' ? 'image' : 'object'
+  const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(
+    `^(?:[Ee]rror(?: response from daemon)?:\\s*)?[Nn]o such ${noun}:?\\s*${escaped}$`
+  )
+  return pattern.test(String(stderr ?? '').trim())
+}
+
+/** 严格读取一段 JSON 形态的 inspect 字段（空 payload 由 inspectStrict 拒绝）。 */
+export const inspectJsonStrict = async (target, format, { env } = {}) => {
+  const raw = await inspectStrict(target, format, { env })
   try {
     return JSON.parse(raw)
   } catch {
@@ -137,9 +169,9 @@ export const danglingVolumes = async ({ env } = {}) => {
  *
  *   - 退出码必须**恰好是 1**（docker CLI 的「找不到对象」）。`status === null`
  *     表示 CLI 自己被信号杀掉，绝不是「镜像不存在」；
- *   - stderr 必须匹配**锚定的** `Error: No such image: <tag>` 形态，而不是
- *     任意位置出现 "no such image" 字样——被包装的错误、PATH 上的 shim 回显、
- *     或一条关于**另一个**镜像的消息都不算数；
+ *   - stderr 必须整串匹配 `isAbsenceMessage`（锚定、**不带 `m` 标志**），而不是
+ *     任意位置出现 "no such image" 字样——被包装的多行错误、带前缀或后缀的
+ *     错误、PATH 上的 shim 回显、或一条关于**另一个**镜像的消息都不算数；
  *   - 其余一律抛出。
  */
 export const imageIdOf = async (tag, { env } = {}) => {
@@ -156,13 +188,7 @@ export const imageIdOf = async (tag, { env } = {}) => {
     }
     return id
   }
-  const absent = new RegExp(
-    `^\\s*Error(?::| response from daemon:)?\\s*[Nn]o such image:?\\s*${
-      tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    }\\s*$`,
-    'm'
-  )
-  if (result.status === 1 && absent.test(result.stderr)) {
+  if (result.status === 1 && isAbsenceMessage(result.stderr, { kind: 'image', name: tag })) {
     return null
   }
   throw new DockerEvidenceError(

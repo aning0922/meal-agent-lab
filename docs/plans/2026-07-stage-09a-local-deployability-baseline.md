@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-31 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」为 implementation complete, pending total-control review**；M4、M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -1317,9 +1317,9 @@ URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
 `config`/`inspect`/`history`/`logs` 的容器级 sentinel 扫描，以及宿主全部非
 loopback 地址的动态隔离证明（第 5 条）。**M4、M5 未开始。**
 
-### M3B 实施记录（implementation complete, pending total-control review）
+### M3B 实施记录（已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收）
 
-**状态：M3B implementation complete, pending total-control review。**未自行标记
+**状态：M3B 已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收。**未自行标记
 Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)、
 [`generate-local-test-secrets.mjs`](../../infra/docker/generate-local-test-secrets.mjs)、
 [`preflight-local-test-secrets.mjs`](../../infra/docker/preflight-local-test-secrets.mjs)、
@@ -1697,12 +1697,9 @@ Secret」（`.directory` 未复位）；生产失败路径补上独立目录复�
    一致）；cleanup 集成反例新增一条走 `generateAndPreflight` 真实接线的
    ownership 用例。
 
-第三轮之后的门禁数字：**local-test 75 cases（1 个正向 baseline + 74 个反例/
-边界检查）**、round-two/three negatives **12**、signal windows **5**、topology
-mutations **15**。M3B 的完整命令清单（七条）见
-[`infra/docker/README.md`](../../infra/docker/README.md) 的「M3B：八份 Secret
-与完整链的一条命令验证」：topology checker、topology mutations、local-test
-cases、round-two/three negatives、signal windows、smoke、probe。
+第三轮收口时的门禁数字是 local-test 75 cases、round-two/three negatives
+**12**、signal windows **5**、topology mutations **15**；第四轮把第二项改成
+**16**（见下一节）。
 
 #### 第三轮整改之后的两路只读审计与定点修复
 
@@ -1749,8 +1746,90 @@ fail-closed）。两路共提出 11 条，逐条经独立的「尽力证伪」�
 四条新模板反例确实以正确的两个类别命中，而路径里的 `@`（`https://example.com/a@b`）
 不被误判；正向 baseline 的模板扫描无条件先跑（不因 bundle 断言失败而被跳过）。
 
-**M3B 状态：implementation complete, pending total-control review——未
-Accepted。M4、M5 未开始；阶段 09A 仍为 In Progress；ADR-0005 仍为 `Proposed`。**
+#### 第四轮窄修（ExitCode fail-closed、整串 stderr 判据、解码后的 query key）
+
+三个代码缺口，每一条都先在**未整改基线**（`b3bed2c`）上跑红，再实现修复
+（证据见每条的「修复前」）。
+
+1. **one-shot ExitCode 的 fail-closed 读取**。`inspectStrict` 此前对「退出 0
+   但 stdout 为空」原样返回空串，而 `runOneShot` 用的是
+   `Number(text)` + `Number.isInteger`——`Number('')` 是 **0**。
+   *修复前*：8/8 非规范形态（空串、空白、`+3`、`-1`、`1.0`、`1e3`、`0x10`、
+   前导零）全部被接受为退出码；PATH shim 让 `docker inspect --format
+   {{.State.ExitCode}}` 退出 0 且不打印时，`inspectStrict` 返回 `""`；把同一个
+   shim 挂到**真实调用链**上（基线仓库的完整 clone），基线 smoke **退出 0、
+   打印 `local-test smoke PASS`、并逐条记录 `chain <service>: exit=0`**——十步
+   链的退出码证据整条是伪造的。
+   *修复后*：`inspectStrict` 对空 stdout 抛 fail-closed 错误（需要空值的调用方
+   必须显式传 `allowEmpty: true`，全仓只有一处 compose service label 判定这么
+   做，且它自带具名判定）；新增 `parseInspectedExitCode`，只接受
+   `^(?:0|[1-9][0-9]*)$` 且必须是安全整数。同一个 shim 下，smoke 拒绝该 payload、
+   不记录任何 `exit=` 行、并以非零退出。
+2. **「资源不存在」必须整串匹配**。三处判据（`imageIdOf`、
+   `containerPresence`、信号窗口的 per-run tag 复查）此前各写各的正则，且都带
+   `m` 标志——**按行**匹配。
+   *修复前*：一条多行包装的 stderr（`warning: retrying` + 正确的
+   `No such image: <tag>`，退出 1）被 `imageIdOf` 读成 **ABSENT**。
+   *修复后*：三处共用 `isAbsenceMessage`，对**整串** `stderr.trim()` 做锚定
+   匹配、**不带 `m` 标志**；退出码必须仍精确等于 1。实测 9 种 stderr 形态
+   （精确、带首尾空白、前缀行、后缀行、行内前缀、行内后缀、另一个对象、另一个
+   容器）判定全部正确；退出码 7 配一条完全正确的「不存在」消息同样 fail closed。
+3. **模板扫描识别编码后的 credential query key**。此前只在**原始文本**上匹配
+   词干。
+   *修复前*：`pass%77ord=` 与 `%70assword=` 两种百分号编码在字节层面不含
+   `password`，**完全没有被抓到**（`access%5Ftoken` 与 `X-API-KEY` 恰好因为
+   仍含 `token` / `api-key` 字面量而被旧判据命中——这一点如实记录，不夸大）。
+   *修复后*：在原始文本判据之外增加一层按 WHATWG `URL` + `URLSearchParams`
+   **解码后**的 query key 判定（有界解析：每行最多 8 个候选、每个最长 2048
+   字符），key 转小写并去掉 `-`/`_`/`.` 后与紧凑词干比对。7 种形态实测判定
+   正确（四种编码/大小写/分隔符变体被抓，benign `?sslmode=require` 与空占位
+   `?password=` 不误报），且失败消息只含**类别 + 文件 + 行号**，取值与整条
+   连接串都不出现。
+
+第四轮之后的门禁数字：**local-test 75 cases = 1 个正向 baseline + 74 个反例/
+边界检查**、round-two/three/four negatives **16**、signal windows **5**、
+topology mutations **15**。
+
+M3B 的**完整命令清单（七条）**，与 [`infra/docker/README.md`](../../infra/docker/README.md)
+逐条一致：
+
+1. `node infra/docker/check-compose-topology.mjs`
+2. `node infra/docker/check-compose-topology-mutations.mjs`
+3. `node infra/docker/check-local-test-negatives.mjs`
+4. `node infra/docker/check-m3b-round2-negatives.mjs`
+5. `node infra/docker/check-m3b-signal-windows.mjs`
+6. `node infra/docker/run-local-test-smoke.mjs`
+7. `node infra/docker/probe-compose-secret-identity.mjs`
+
+（另有两条**运维**命令，不属于门禁：`generate-local-test-secrets.mjs` 与
+`preflight-local-test-secrets.mjs`。）
+
+#### 冻结面与已登记的未修项
+
+- **受控例外**：[`check-compose-topology-mutations.mjs`](../../infra/docker/check-compose-topology-mutations.mjs)
+  属于已 Accepted 里程碑的门禁面。第三轮对它做了**诊断输出加固**（wrong-reason
+  分支改为固定类别 + 输出行数，不再回显被变异 compose 文件的原文，因为其中几条
+  变异内嵌合成 DSN 与 AppSecret）。**判据集与 15 条变异本身未改**。因此不能
+  笼统声称「冻结面零触碰」——这是一处明确的、范围受控的例外。
+- **已登记但本轮不修**：[`services/api/tests/unit/bootstrap-signal-matrix.test.ts`](../../services/api/tests/unit/bootstrap-signal-matrix.test.ts)
+  的 `docker ps` 退出码 fail-open（失败的 `docker ps` 给出空 stdout，于是
+  「没有幸存容器」这条断言真空成立）。它属于已 Accepted 的 M3A 冻结面，本轮
+  **不触碰**，留到 **M5 总门禁加固**处理。
+
+#### 本轮的威胁模型（边界，不要过度声称）
+
+M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手：
+
+- **本地同 EUID 进程受信**：同 EUID 的进程本来就能读写这些文件、连接 Docker
+  socket、替换 PATH 上的任何二进制；
+- 因此**目录被恶意替换、外部对 Secret 文件建硬链接、同 EUID 进程抢占临时
+  Compose override** 三类**不作为当前 M3B blocker**；
+- 已落地的 inode 身份复核、no-replace promotion 与 scoped cleanup，定位是
+  **不误删他人文件、不把读取失败读成阴性证据**，不是抵御同 EUID 敌手。
+
+**M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
+未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
+`Proposed`。**
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
