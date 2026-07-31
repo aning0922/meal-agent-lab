@@ -1439,6 +1439,117 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
 
 修复后全部门禁重跑：smoke PASS（18 needles、86 产物、315 tracked files 零命
 中）、probe PASS、反例 47/47、拓扑门禁与 15 项变异全绿、悬挂匿名卷零新增。
+（第二轮阻断整改后的最终数字见下面两节。）
+
+#### M3B 总控阻断整改（第二轮）
+
+总控复核点名七类阻断，全部已修，每条都有修复前实测：
+
+1. **镜像隔离**。此前 smoke 与 probe 共用全局 tag `meal-agent-api:stage09a-local-test`，
+   不同 worktree/project 会互相覆盖。现在每轮生成唯一 tag
+   `meal-agent-api:m3b-<run id>`，经**临时 Compose override** 注入（M2B 已
+   Accepted 的默认拓扑一字未改，override 用后即删并进 `.gitignore`）；build 之后
+   读取 immutable image ID，并断言 `bootstrap-schema`/`migrate`/`api` 三个容器的
+   `.Image` 逐一等于它；cleanup 只删本轮 tag 并复核已消失，拒绝任何非本轮形状的
+   tag。新增交错反例实测：project A 的 tag `m3b-neg53cc2d → 7912ff5c` 在 project B
+   build 之后**保持不变**，B 得到另一个 image ID；删 A 的 tag 之后 B 的仍在。
+2. **子进程与信号**。`spawnSync` 全部换成异步 spawn（`detached` 自成进程组、有
+   超时、超时按组 TERM→KILL 并以明确错误 reject），因此事件循环存活、信号可被
+   真实处理。`installSignalHandlers` 的次序固定为「终止受控子树 → 调用方 scoped
+   cleanup（residue 必被打印）→ 卸载 handler 并重投同名信号」。新增
+   `check-m3b-signal-windows.mjs`，在三个真实窗口取证：
+
+   | 窗口 | 信号 | 修复前 | 修复后 |
+   | --- | --- | --- | --- |
+   | smoke build（docker build 正在跑） | SIGINT | `code=1`（普通失败退出抢先，信号语义被吞） | SIGINT 语义，零残留 |
+   | smoke chain（postgres healthy） | SIGTERM | —— | SIGTERM 语义，零残留 |
+   | probe run（容器探测阶段） | SIGINT | `code=1` | SIGINT 语义，零残留 |
+
+   每个窗口逐项断言：CLI 与引用该 project 的 docker 子进程全部消失、本轮
+   container/network/volume 一个不剩、唯一 image tag 已删、临时 Secret 目录已删、
+   临时 override 已删、tracked compose 文件在 git 里依然干净。修法是
+   `terminationSignal()` 让 CLI 在信号在飞时**让位**，并把 `cleanupRun` 串行化，
+   避免信号处置与主流程 finally 的两次 cleanup 并发看到彼此的中间态。
+   generator 另外登记本轮已创建路径，rename 窗口被 SIGINT 打断时不留半套 bundle
+   （有独立反例）。
+3. **Docker 证据 fail closed**。down/list/inspect/remove/re-list/dangling 全部检查
+   退出码；cleanup 改为分阶段收集器（Secret 目录 → down → 容器 → 网络 → 卷 →
+   image tag → 匿名卷对照），一个阶段失败不阻断其余；cleanup 之后
+   `verifyNoResidue` **独立复查**六类。反例用 PATH 影子 docker 让 `ps` /
+   `volume ls` / `compose down` 分别非零退出，三条都必须进 residue；另有「注入
+   compose-down 失败后容器 sweep 仍真实删掉 decoy 容器」的阶段独立性反例。
+4. **Secret 可见面**。service label 与 Mounts 全部走严格 inspect（无 `null`/`[]`
+   默认值）；service 必须是 `expectedSecretMounts` 的**自有键**，未知 service 立即
+   失败；Mounts JSON 结构逐项验证；比较 exact source 文件名、容器内 target 与只读
+   标志的**集合**，不再只筛 `/run/secrets/` 前缀。
+5. **Git index 扫描**。tracked 模板扫描同时读工作树与 **git index blob**
+   （`git show :path`），两者不同则各扫一遍，index 读不到即 fail closed。新增
+   index-only 反例：Secret 已 `git add`、工作树随后恢复干净——只扫工作树的实现
+   完全看不见它，现在以 `(git index)` 前缀的理由被抓住，且不回显取值。
+6. **契约与输出边界**。bundle 目录权限精确 `(mode & 07777) === 0700`（0500/0600/
+   1700 三个反例）；未知条目**只报类别与数量、不回显文件名**（generator 与
+   preflight 同改，并有「Secret 被当作文件名」的回归）；口令精确 48 字符；
+   negative 的 mutate 可返回 `additionalSensitiveValues`，泄漏检查覆盖变异前后
+   取值；`generateAndPreflight` 增加 preflight 注入 seam 供「预检抛出时也清理」
+   的回归使用。
+7. **带 zone 的 IPv6 隔离证据**。探针改为**原始 socket + 手写 HTTP/1.1**——
+   WHATWG URL 不接受 zone，用 `fetch` 会把「请求根本没构造出来」误判成
+   `http-unreachable`。结局分为 `not-constructed` / `not-sent` / `tcp-refused` /
+   `not-api` / `api-reachable`，只有后两者证明请求确实发出，才能进入隔离裁决；
+   accept-all 例外要求**两个**独立的无监听对照端口都 accept；新增 link-local
+   正向对照：在真实 `fe80::…%en10` 上起临时监听并用同一个探针打它，实测得到
+   `HTTP/1.1 418`，证明 zoned 探针真的发包（修复前该地址只会给出未路由的空转
+   结果，却被记成「as required」）。
+
+反例套件同时改为**绝不变异真实 tracked 文件**：模板反例在临时 git 仓库的副本上
+做，Compose 变异在临时副本上做（拓扑门禁新增受限的 `--compose-file <infra/docker
+内路径>` seam，生产调用仍是零参数），并断言跑完后 tracked compose 文件在 git 里
+依然干净。
+
+#### M3B 阻断整改后的第二轮对抗审计与定点修复
+
+阻断整改落地、窄反例全绿之后，按要求并行跑了两个只读审计（A：Secret/index/
+输出与信号；B：runtime 证据、镜像、cleanup、网络）。确认级发现全部已修，其中
+两条推翻了本轮刚写下的结论：
+
+1. **隔离裁决被自己的分类绕过（B）**。`probeApiHttp` 把「TCP 连上但一个响应
+   字节都没收到」（RST / 静默丢弃 / 超时）也判成 `not-api`，而 `not-api` 被
+   `requestActuallySent()` 当作「请求确实发出并被应答」直接放行。Docker
+   Desktop 的 accept-all 接口恰恰是 accept 后立刻 RST——于是「两个无监听对照
+   端口」那套论证在**目标平台上是死代码**（实测：accept-then-RST → not-api →
+   通过）。现在拆出独立的 `no-response` 结局，它必须由两个对照端口都 accept
+   **且产生相同结局**来解释；`attemptConnect` 另区分 `unattemptable:`
+   （EINVAL/ENETUNREACH/EHOSTUNREACH 等本机没试成的情形），这类结果不再算
+   隔离证据，如实记为无法取证。本机实测：`utun4 198.18.0.1` 走 proven
+   accept-all 分支并如实标注，其余 18 个地址逐一 refused/timeout。
+2. **generator 的信号处置整段不可达，且它的反例是假绿（A）**。实测
+   `kill -INT` 落在生成期间时 handler 从不执行，进程 exit=0 且八份文件全部
+   落盘——Node 的信号监听器不 ref 事件循环，而生成是一整段同步代码；而那条
+   「rename 窗口」反例用自造 fixture + 同步生成器，信号只可能落在生成之前或
+   之后，`leftovers.length > 0` 恒不成立，**任何实现都能通过**。现在 CLI 走
+   `generateAndPreflightInterruptible`（每份文件之间让出事件循环并检查
+   `terminationSignal()`），反例改成驱动**真实 CLI**、轮询到第一份暂存文件
+   出现才发信号，断言零残留 + SIGINT 终止 + 处置报告删了什么。
+
+其余确认级修复：cleanup 把明文 Secret 目录排到 project 形状校验**之前**
+（此前 project 名不合规会连带把凭据留在盘上）、目录守卫从无锚点 `includes`
+改为「tmpdir 下该前缀开头」、二次 cleanup 先判存在性再 realpath（此前信号
+路径必然产出 ENOENT 伪 residue）、override 的删除交给拥有 cleanup 的一方
+（此前主流程先删会让 handler 的 `compose down` 以 no such file 失败）、
+信号在飞时主流程不再把 docker 错误记成失败也不重复 cleanup、probe 补 catch
+使抛错路径不再丢弃 residue 并在信号在飞时停止创建新容器、smoke 与 probe 的
+信号路径补齐匿名悬挂卷对照（六类复查完整）、secret 可见面改为比对**全路径**
+source 并覆盖全部 mount 与 `/run/secrets` 下的 tmpfs（此前只比 basename、只筛
+前缀）、模板扫描反复剥离注释标记并把任何带 userinfo 的连接串（redis/mongodb
+等）纳入拒绝。信号窗口套件自身也被硬化：只接受真实信号终止（不再接受
+exit 130/143 的伪装）、检查被测 CLI 自己报出的 FAIL/residue、build 窗口改为
+等 `compose … build api` 子进程**真实出现**才发信号（此前 trigger 落在拓扑
+门禁期间，全部残留断言都是空真）、tracked compose 与 HEAD 逐字节比对。
+
+反例从 47 → 62 → **67 项**：新增「干净 bundle 预检零问题」的**正向基线**
+（审计实测：把 0700 判据改成拒绝一切正确目录时，33 条反例仍全绿）、双层注释
+与非 postgres DSN、generator 侧不回显未知条目名、预检抛出时的清理回归。全部
+以指定理由捕获、0 漏网。
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
