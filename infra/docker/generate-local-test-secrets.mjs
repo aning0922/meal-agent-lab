@@ -20,6 +20,7 @@
 import {
   chmodSync,
   closeSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   linkSync,
@@ -62,17 +63,45 @@ export class SecretGeneratorError extends Error {
 }
 
 /**
- * 生成期间**本轮自己创建**的路径，以及 bundle 目录。CLI 的信号处置与失败路径
- * 都读它。`paths` 里只放本进程亲手 create/link 出来的条目——外部文件绝不进入
+ * 生成期间**本轮自己创建**的条目，以及 bundle 目录。CLI 的信号处置与失败路径
+ * 都读它。`owned` 里只放本进程亲手 create/link 出来的条目——外部文件绝不进入
  * 这个集合，因此清理永远不会删掉别人的东西。
+ *
+ * 每个条目都是 `{ path, dev, ino }`：**路径不是身份**。路径只是一个名字，随时
+ * 可能被外部 unlink 后指向另一个 inode；只登记路径的 cleanup 会把那个替身当成
+ * 自己的产物删掉。身份取自**创建那一刻的 fd**（`fstat`），因此不存在「先按路径
+ * stat 再认领」的 TOCTOU 空档。
  */
-export const activeGeneratorScene = { paths: [], directory: null }
+export const activeGeneratorScene = { owned: [], directory: null }
 
-/** 成功收尾：paths 与 directory 都必须清空（见下面的 discardGeneratedPaths）。 */
+/** 成功收尾：owned 与 directory 都必须清空（见下面的 discardGeneratedPaths）。 */
 const clearGeneratorScene = () => {
-  activeGeneratorScene.paths = []
+  activeGeneratorScene.owned = []
   activeGeneratorScene.directory = null
 }
+
+/**
+ * 一条 owned 记录的身份判据。`dev`/`ino` 用 **BigInt**（`{ bigint: true }`）：
+ * 默认的 double 形态在大 inode 号上会丢精度，而丢精度的比较等于把「不是我的
+ * 文件」判成「是我的」。
+ */
+const identityOf = (entry) =>
+  typeof entry === 'object' &&
+  entry !== null &&
+  typeof entry.path === 'string' &&
+  entry.path !== '' &&
+  typeof entry.dev === 'bigint' &&
+  typeof entry.ino === 'bigint'
+    ? entry
+    : null
+
+/** 从一个**刚由本进程创建**的 fd 上取身份。 */
+const ownedFromFd = (path, fd) => {
+  const stats = fstatSync(fd, { bigint: true })
+  return { path, dev: stats.dev, ino: stats.ino }
+}
+
+const basenameOf = (path) => path.slice(path.lastIndexOf('/') + 1)
 
 const errorCodeOf = (error) =>
   typeof error === 'object' && error !== null && 'code' in error
@@ -85,24 +114,60 @@ const errorCodeOf = (error) =>
  * 之后**独立枚举目录**再确认一次零 Secret 残留：只相信 unlink 的返回值是不够
  * 的（它证明不了目录里没有别的路径指向同一批 Secret）。
  *
- * 有任何残留时**绝不**声称 “was removed”；返回的 residue 只含文件名、计数与
- * errno，不含路径之外的内容，也不含任何 Secret 取值。
+ * **删除前逐条复核 inode 身份**：路径仍在，但已经指向另一个 inode（外部把它
+ * unlink 后放了一个同名替身）时，绝不 unlink——那是别人的文件。这类情形记成
+ * ownership drift 残留，替身原样留下。
+ *
+ * 有任何残留时**绝不**声称 “was removed”；返回的 residue 只含类别、计数与
+ * errno，不含文件名、路径之外的内容，也不含任何 Secret 取值。
  */
 export const discardGeneratedPaths = ({
-  paths = activeGeneratorScene.paths,
+  owned = activeGeneratorScene.owned,
   verifyDirectory = activeGeneratorScene.directory,
   ownNames = null
 } = {}) => {
   const removed = []
   const residue = []
-  for (const path of paths) {
+  for (const entry of owned) {
+    const identity = identityOf(entry)
+    if (identity === null) {
+      // 没有可验证身份的条目一律不删：宁可留下残留，也不按名字误删。
+      residue.push(
+        'a registered entry carries no verifiable inode identity; refusing to ' +
+          'unlink it by name alone'
+      )
+      continue
+    }
+    let observed = null
     try {
-      unlinkSync(path)
-      removed.push(path)
+      // lstat：**不跟随 symlink**。外部把我们的成品换成指向别处的软链接时，
+      // 跟随会让 unlink 的判据落在链接目标上。
+      observed = lstatSync(identity.path, { bigint: true })
     } catch (error) {
       const code = errorCodeOf(error)
       if (code === 'ENOENT') {
         // 已经不在了：这既不是移除也不是残留。
+        continue
+      }
+      residue.push(
+        `could not verify a generated secret file's inode identity (${code}); ` +
+          'refusing to unlink it'
+      )
+      continue
+    }
+    if (observed.dev !== identity.dev || observed.ino !== identity.ino) {
+      residue.push(
+        'ownership drift at a generated secret path: it no longer refers to the ' +
+          'inode this run created; the entry now at that name was left untouched'
+      )
+      continue
+    }
+    try {
+      unlinkSync(identity.path)
+      removed.push(identity.path)
+    } catch (error) {
+      const code = errorCodeOf(error)
+      if (code === 'ENOENT') {
         continue
       }
       residue.push(
@@ -125,9 +190,12 @@ export const discardGeneratedPaths = ({
           : ownNames
       const remaining = readdirSync(verifyDirectory).filter((entry) => watched.includes(entry))
       if (remaining.length > 0) {
+        // 复查刻意**按名字**判定、不按 inode 身份收窄：一个坐在八份清单名字上的
+        // 文件，无论是不是本轮的产物，都可能是 Secret 材料。这里宁可多报也不
+        // 漏报——「不是我的」由上面的 ownership drift 单独说明。
         residue.push(
-          `the bundle directory still contains ${String(remaining.length)} secret ` +
-            'file(s) after cleanup (names are deliberately not echoed)'
+          `the bundle directory still contains ${String(remaining.length)} file(s) ` +
+            'at generated secret name(s) after cleanup (names are deliberately not echoed)'
         )
       }
     } catch (error) {
@@ -136,17 +204,22 @@ export const discardGeneratedPaths = ({
       )
     }
   }
-  activeGeneratorScene.paths = []
+  activeGeneratorScene.owned = []
   return { removed, residue }
 }
 
 const stagingName = (filename) => `.staging.${filename}`
 
-/** 写一份暂存文件（0600、fsync）。同步与可中断两条路径共用。 */
-const writeStagingFile = (target, filename, body, createdPaths) => {
+/**
+ * 写一份暂存文件（0600、fsync）。同步与可中断两条路径共用。
+ *
+ * `wx` 保证这个 fd 指向的 inode 一定是**本次调用创建**的（已存在即 EEXIST）；
+ * 身份就从这个 fd 上取，因此登记的 dev/ino 无可争议地属于本轮。
+ */
+const writeStagingFile = (target, filename, body, owned) => {
   const stagingPath = resolve(target, stagingName(filename))
   const fd = openSync(stagingPath, 'wx', 0o600)
-  createdPaths.push(stagingPath)
+  owned.push(ownedFromFd(stagingPath, fd))
   try {
     const bytes = Buffer.from(`${body}\n`, 'utf8')
     let written = 0
@@ -167,11 +240,22 @@ const writeStagingFile = (target, filename, body, createdPaths) => {
  * 无声改写。`link(2)` 在目标已存在时以 EEXIST 失败，这正是需要的
  * no-replace 原子性：先硬链接到 final 名，成功后再删掉 staging 名。
  *
- * createdPaths 只登记**本轮亲手创建**的名字，因此失败清理永远不会碰外部文件。
+ * owned 只登记**本轮亲手创建**的 inode，因此失败清理永远不会碰外部文件。
+ * final 名登记的身份就是 staging 的 dev/ino——`link(2)` 成功意味着两个名字指向
+ * **同一个** inode，那正是本轮创建的那一个。之后有人把 final 名换掉，身份复核
+ * 会立刻发现并拒绝删除。
  */
-const promoteStagingFile = (target, filename, createdPaths) => {
+const promoteStagingFile = (target, filename, owned) => {
   const stagingPath = resolve(target, stagingName(filename))
   const finalPath = resolve(target, filename)
+  const stagingIndex = owned.findIndex((entry) => entry.path === stagingPath)
+  const stagingIdentity = stagingIndex === -1 ? null : identityOf(owned[stagingIndex])
+  if (stagingIdentity === null) {
+    throw new SecretGeneratorError(
+      `${filename} has no registered staging identity; refusing to promote an ` +
+        'entry this run cannot prove it created'
+    )
+  }
   try {
     linkSync(stagingPath, finalPath)
   } catch (error) {
@@ -183,10 +267,10 @@ const promoteStagingFile = (target, filename, createdPaths) => {
     }
     throw error
   }
-  // final 名已经属于本轮：登记它，随后删掉 staging 名。
-  createdPaths.push(finalPath)
+  // final 名已经属于本轮（与 staging 同 inode）：登记它，随后删掉 staging 名。
+  owned.push({ path: finalPath, dev: stagingIdentity.dev, ino: stagingIdentity.ino })
   unlinkSync(stagingPath)
-  createdPaths.splice(createdPaths.indexOf(stagingPath), 1)
+  owned.splice(stagingIndex, 1)
   return finalPath
 }
 
@@ -196,7 +280,7 @@ const promoteStagingFile = (target, filename, createdPaths) => {
  */
 const discardAfterFailure = (result, error) => {
   const discarded = discardGeneratedPaths({
-    paths: [...result.files],
+    owned: [...result.owned],
     verifyDirectory: result.directory
   })
   if (discarded.residue.length > 0) {
@@ -299,34 +383,36 @@ export const generateSecretBundle = (directory, { beforePromotion = null } = {})
   }
   const bodies = deriveSecretBodies(passwords)
 
-  const createdPaths = []
-  activeGeneratorScene.paths = createdPaths
+  const owned = []
+  activeGeneratorScene.owned = owned
   activeGeneratorScene.directory = target
   try {
     for (const filename of secretFilenames) {
-      writeStagingFile(target, filename, bodies.get(filename), createdPaths)
+      writeStagingFile(target, filename, bodies.get(filename), owned)
     }
     const finalPaths = []
     for (const filename of secretFilenames) {
       // 注入点**只给反例**用：让一个并发写者恰好抢在 promotion 之前放好同名
       // final 文件。生产路径永远不传它。
       beforePromotion?.(filename)
-      finalPaths.push(promoteStagingFile(target, filename, createdPaths))
+      finalPaths.push(promoteStagingFile(target, filename, owned))
     }
-    // 生成成功：现场登记必须**整体**清空（paths 与 directory 都要）。只清
-    // paths 会让此后的信号处置用默认 verifyDirectory 去枚举一套**完好**的
-    // bundle，然后谎报「目录里还残留 8 份 Secret」。
+    // 生成成功：现场登记必须**整体**清空（owned 与 directory 都要）。只清
+    // owned 会让此后的信号处置用默认 verifyDirectory 去枚举一套**完好**的
+    // bundle，然后谎报「目录里还残留 8 份 Secret」。返回的 owned 是快照，供
+    // 调用方（generateAndPreflight、反例）继续持有身份。
+    const ownedSnapshot = [...owned]
     clearGeneratorScene()
-    return { directory: target, files: finalPaths }
+    return { directory: target, files: finalPaths, owned: ownedSnapshot }
   } catch (error) {
     // 失败清理走**共享 collector**：continue-on-failure、聚合 residue、并做
-    // 独立目录复查。它只删本轮自己创建的路径，外部同名文件绝不受影响。
+    // 独立目录复查。它只删本轮自己创建的 inode，外部同名文件绝不受影响。
     // 复查按**本轮自己创建过的名字**收窄（`ownNames`），因此不会把促发失败的
     // 那个外部同名文件误报成残留。
     const discarded = discardGeneratedPaths({
-      paths: createdPaths,
+      owned,
       verifyDirectory: target,
-      ownNames: createdPaths.map((path) => path.slice(path.lastIndexOf('/') + 1))
+      ownNames: owned.map((entry) => basenameOf(entry.path))
     })
     if (discarded.residue.length > 0) {
       throw new SecretGeneratorError(
@@ -355,8 +441,8 @@ export const generateSecretBundleInterruptible = async (directory) => {
   }
   const bodies = deriveSecretBodies(passwords)
 
-  const createdPaths = []
-  activeGeneratorScene.paths = createdPaths
+  const owned = []
+  activeGeneratorScene.owned = owned
   activeGeneratorScene.directory = target
   const abortIfSignalled = () => {
     const signal = terminationSignal()
@@ -368,24 +454,25 @@ export const generateSecretBundleInterruptible = async (directory) => {
     for (const filename of secretFilenames) {
       await tick()
       abortIfSignalled()
-      writeStagingFile(target, filename, bodies.get(filename), createdPaths)
+      writeStagingFile(target, filename, bodies.get(filename), owned)
     }
     const finalPaths = []
     for (const filename of secretFilenames) {
       await tick()
       abortIfSignalled()
-      finalPaths.push(promoteStagingFile(target, filename, createdPaths))
+      finalPaths.push(promoteStagingFile(target, filename, owned))
     }
+    const ownedSnapshot = [...owned]
     clearGeneratorScene()
-    return { directory: target, files: finalPaths }
+    return { directory: target, files: finalPaths, owned: ownedSnapshot }
   } catch (error) {
-    // 被信号打断时**不**在这里删：现场登记仍持有已创建路径，处置会统一清理
+    // 被信号打断时**不**在这里删：现场登记仍持有已创建条目，处置会统一清理
     // 并把删不掉的条目报成 residue。其余失败按原来的 failure-safe 处理。
     if (!(error instanceof SecretGenerationInterrupted)) {
       const discarded = discardGeneratedPaths({
-        paths: createdPaths,
+        owned,
         verifyDirectory: target,
-        ownNames: createdPaths.map((path) => path.slice(path.lastIndexOf('/') + 1))
+        ownNames: owned.map((entry) => basenameOf(entry.path))
       })
       if (discarded.residue.length > 0) {
         throw new SecretGeneratorError(
@@ -414,7 +501,7 @@ export const generateAndPreflight = (
   const result = generateSecretBundle(directory)
   // 预检期间现场登记必须**保持有效**（P1-3）：信号落在同步 preflight 里时，
   // 处置要能删掉这八份文件。
-  activeGeneratorScene.paths = [...result.files]
+  activeGeneratorScene.owned = [...result.owned]
   activeGeneratorScene.directory = result.directory
   let problems
   try {
@@ -446,17 +533,12 @@ export const generateAndPreflightInterruptible = async (
 ) => {
   const result = await generateSecretBundleInterruptible(directory)
   // P1-3：现场登记保持到 preflight 完成为止。
-  activeGeneratorScene.paths = [...result.files]
+  activeGeneratorScene.owned = [...result.owned]
   activeGeneratorScene.directory = result.directory
-  // 只给反例用的窗口标记与延时：让 SIGINT 能确定地落在**同步** preflight 中。
-  const preflightDelayMs = Number(process.env['MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS'] ?? '0')
-  if (Number.isInteger(preflightDelayMs) && preflightDelayMs > 0) {
-    process.stderr.write('entering preflight\n')
-    const until = Date.now() + preflightDelayMs
-    while (Date.now() < until) {
-      // 刻意的同步忙等：模拟一次不让出事件循环的 preflight。
-    }
-  }
+  // 这里**没有**任何测试专用的环境变量分支。preflight 信号窗口的回归改由
+  // fixtures/preflight-signal-window.mjs 用**库级注入 seam**（下面的 `preflight`
+  // 形参）制造：生产二进制不认识 `MEAL_AGENT_M3B_*_DELAY_MS` 之类的取值，
+  // 因此没有任何环境变量能让它进入忙等或改变时序。
   let problems
   try {
     problems = preflight(result.directory).problems
@@ -490,25 +572,29 @@ const usage = () => {
   )
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2)
-  let directory = defaultSecretsDirectory
-  if (args.length === 2 && args[0] === '--directory') {
-    directory = args[1]
-  } else if (args.length !== 0) {
-    usage()
-    process.exit(2)
-  }
-
-  // 信号处置：rename 窗口里被 SIGINT/SIGTERM 打断时，先清掉本轮已创建的
-  // 全部路径再按原信号语义退出，绝不留半套 bundle。
+/**
+ * CLI 的**全部**运行期接线：信号处置安装、生成前的让位 tick、可中断的
+ * 生成 + 预检、成功输出与失败/中断判定。CLI 入口与 preflight 信号窗口
+ * fixture 调的是**同一个**函数——fixture 因此运行的是真实
+ * `generateAndPreflightInterruptible` 与真实 signal handler，而不是一份会漂移
+ * 的复制品。
+ *
+ * `preflight` 是**唯一**的注入 seam，只能由库调用方（fixture）传入；命令行与
+ * 环境变量都无法触达它，生产进程永远用默认的 checkSecretBundle。
+ */
+export const runGeneratorCli = async (
+  directory,
+  { preflight = checkSecretBundle } = {}
+) => {
+  // 信号处置：promotion 窗口里被 SIGINT/SIGTERM 打断时，先清掉本轮已创建的
+  // 全部条目再按原信号语义退出，绝不留半套 bundle。
   //
   // **生成必须切成可被信号打断的分片**：`installSignalHandlers` 装了监听器，
   // 但 Node 的信号监听器不 ref 事件循环，而生成本身是一段同步代码——实测
   // 在同步区间里 `kill -INT` 时 handler 从不执行，进程照常 exit 0 并把八份
   // 文件全部落盘。因此这里先把控制权交回事件循环（`setImmediate`），让已经
   // 排队的信号在**生成开始之前**被分发；生成期间到达的信号则由 handler 在
-  // 同步段结束后立即处置（`activeGeneratorScene` 仍持有已创建路径）。
+  // 同步段结束后立即处置（`activeGeneratorScene` 仍持有已创建条目）。
   installSignalHandlers(
     () => {
       const { removed, residue } = discardGeneratedPaths()
@@ -528,9 +614,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (terminationSignal() !== null) {
     // 信号已在处置中：不开始生成，也不自己退出。
     process.exitCode = 0
-  } else {
+    return
+  }
   try {
-    const result = await generateAndPreflightInterruptible(directory)
+    const result = await generateAndPreflightInterruptible(directory, { preflight })
     process.stdout.write(
       `generated the local-test secret bundle in ${result.directory}\n`
     )
@@ -561,5 +648,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exit(1)
     }
   }
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const args = process.argv.slice(2)
+  let directory = defaultSecretsDirectory
+  if (args.length === 2 && args[0] === '--directory') {
+    directory = args[1]
+  } else if (args.length !== 0) {
+    usage()
+    process.exit(2)
   }
+  // 生产入口**不传第二个参数**：预检永远是 checkSecretBundle。
+  await runGeneratorCli(directory)
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 阶段 09A / M3B 第二轮阻断整改的窄反例。
+// 阶段 09A / M3B 第二、三轮阻断整改的窄反例。
 //
 //   node infra/docker/check-m3b-round2-negatives.mjs
 //
@@ -14,6 +14,18 @@
 //
 // 四（smoke/probe 最早期窗口）与七的运行期部分需要真实 Docker，放在
 // check-m3b-signal-windows.mjs 里。
+//
+// 第三轮追加（同样是先写、先跑、先看它红）：
+//
+//   R3-1 cleanup 的 **inode ownership**：外部把成品 unlink 后放了同名替身时，
+//        清理必须按 dev/ino 认出「这不是我的」，拒绝 unlink 并报 ownership
+//        drift；替身逐字节不变，本轮自己的 staging/final inode 全部收敛
+//   R3-2 生产 CLI **没有** preflight 忙等钩子：旧的
+//        `MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS` 已从生产源码删除，设置它不改变
+//        任何时序；信号窗口回归改由 fixtures/preflight-signal-window.mjs 用
+//        库级注入 seam 制造，跑的是真实 runGeneratorCli 与真实 signal handler
+//   R3-4 cleanup 集成反例走 **generateAndPreflight 的真实接线**，不只直接调
+//        helper
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
@@ -24,6 +36,8 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -32,11 +46,13 @@ import { fileURLToPath } from 'node:url'
 
 import {
   discardGeneratedPaths,
+  generateAndPreflight,
   generateSecretBundle,
   SecretGeneratorError
 } from './generate-local-test-secrets.mjs'
 import { scanTrackedRepositoryForNeedles } from './local-test-containment.mjs'
 import { generatePassword, secretFilenames } from './local-test-secrets-contract.mjs'
+import { wrongReason } from './m3b-safe-output.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 
@@ -166,12 +182,15 @@ process.stdout.write('P1-2: generator failure-safe cleanup\n')
   const directory = resolve(parent, 'bundle')
   try {
     mkdirSync(directory, { mode: 0o700 })
-    generateSecretBundle(directory)
-    // 现场登记在成功后被清空，这里手动重放一次「本轮创建了这八份」的状态，
-    // 因为要测的是 cleanup 在**删不掉**时的行为。
-    const created = secretFilenames.map((filename) => resolve(directory, filename))
+    // 用**生成器返回的真实 owned 记录**（path + 创建时刻的 dev/ino）重放一次
+    // 「本轮创建了这八份」的状态：现场登记在成功后被清空，而要测的是 cleanup
+    // 在**删不掉**时的行为。
+    const generated = generateSecretBundle(directory)
     chmodSync(directory, 0o500)
-    const outcome = discardGeneratedPaths({ paths: created, verifyDirectory: directory })
+    const outcome = discardGeneratedPaths({
+      owned: generated.owned,
+      verifyDirectory: directory
+    })
     chmodSync(directory, 0o700)
     const remaining = readdirSync(directory).filter((entry) =>
       secretFilenames.includes(entry)
@@ -181,7 +200,7 @@ process.stdout.write('P1-2: generator failure-safe cleanup\n')
       /could not remove a generated secret file/.test(String(entry))
     )
     const sweep = outcome.residue.filter((entry) =>
-      /still contains \d+ secret file/.test(String(entry))
+      /still contains \d+ file\(s\) at generated secret name/.test(String(entry))
     )
     if (perFile.length !== secretFilenames.length) {
       fail(
@@ -221,17 +240,20 @@ process.stdout.write('P1-2: generator failure-safe cleanup\n')
   const directory = resolve(parent, 'bundle')
   try {
     mkdirSync(directory, { mode: 0o700 })
-    generateSecretBundle(directory)
-    const created = secretFilenames.map((filename) => resolve(directory, filename))
+    const generated = generateSecretBundle(directory)
     // 只把其中一份交给 collector：它必须在**独立枚举**时发现另外七份仍在。
     const outcome = discardGeneratedPaths({
-      paths: [created[0]],
+      owned: [generated.owned[0]],
       verifyDirectory: directory
     })
     if (outcome.residue.length === 0) {
       fail(name, 'NOT CAUGHT — seven secret files remained but nothing was reported')
-    } else if (!outcome.residue.some((entry) => /still contains \d+ secret file/.test(String(entry)))) {
-      fail(name, `wrong reason: ${outcome.residue.join('; ')}`)
+    } else if (
+      !outcome.residue.some((entry) =>
+        /still contains \d+ file\(s\) at generated secret name/.test(String(entry))
+      )
+    ) {
+      fail(name, wrongReason('/still contains N file(s) at generated secret name/', outcome.residue))
     } else {
       pass(name, 'the independent directory sweep reported the remaining secrets')
     }
@@ -243,23 +265,35 @@ process.stdout.write('P1-2: generator failure-safe cleanup\n')
 // ---------------------------------------------------------------------------
 // 三、preflight 信号窗口
 // ---------------------------------------------------------------------------
-process.stdout.write('P1-3: preflight signal window\n')
+process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-wait hook\n')
 
 {
   // SIGINT 落在**同步 preflight** 期间：generator 不得 exit 0、不得输出成功、
   // 不得留下八份 Secret，且必须保持原信号语义。
+  //
+  // 窗口由 **fixture** 制造，不再由生产二进制的环境变量分支制造：
+  // fixtures/preflight-signal-window.mjs 调的是**真实**的 `runGeneratorCli`
+  // （生产 CLI 入口调的同一个函数），只通过库级 `preflight` seam 换上一段
+  // 「先打标记、再同步忙等、最后跑真实 checkSecretBundle」的预检。因此真实的
+  // installSignalHandlers 处置、真实的 generateAndPreflightInterruptible 与
+  // 真实的中断判定全部照原样参与。
   const name = 'SIGINT during the synchronous preflight leaves nothing and honours the signal'
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r2-'))
   const bundle = resolve(parent, 'bundle')
   try {
     const child = spawn(
       process.execPath,
-      [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],
+      [
+        resolve(composeDirectory, 'fixtures/preflight-signal-window.mjs'),
+        '--directory',
+        bundle,
+        '--hold-ms',
+        '900'
+      ],
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         // detached：pid 即 pgid，下面才能按**进程组**发信号。
-        detached: true,
-        env: { ...process.env, MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS: '900' }
+        detached: true
       }
     )
     const outcome = await new Promise((resolveOutcome) => {
@@ -270,8 +304,8 @@ process.stdout.write('P1-3: preflight signal window\n')
       })
       child.stderr.on('data', (chunk) => {
         stderr += chunk.toString('utf8')
-        // 生产代码在进入 preflight 时打这一行（只有窗口标记，无 Secret）。
-        if (/entering preflight/.test(stderr)) {
+        // fixture 在进入同步 preflight 时打这一行（只有窗口标记，无 Secret）。
+        if (/entered the synchronous preflight window/.test(stderr)) {
           try {
             process.kill(-child.pid, 'SIGINT')
           } catch {
@@ -284,8 +318,8 @@ process.stdout.write('P1-3: preflight signal window\n')
     const leftovers = existsSync(bundle)
       ? readdirSync(bundle).filter((entry) => secretFilenames.includes(entry))
       : []
-    if (!/entering preflight/.test(outcome.stderr)) {
-      fail(name, `the preflight window marker never appeared: ${outcome.stderr.trim()}`)
+    if (!/entered the synchronous preflight window/.test(outcome.stderr)) {
+      fail(name, 'the fixture never announced the preflight window')
     } else if (leftovers.length > 0) {
       fail(name, `${String(leftovers.length)} secret file(s) survived the interrupted preflight`)
     } else if (/generated the local-test secret bundle/.test(outcome.stdout)) {
@@ -296,7 +330,230 @@ process.stdout.write('P1-3: preflight signal window\n')
         `expected termination by SIGINT, got code=${String(outcome.code)} signal=${String(outcome.signal)}`
       )
     } else {
-      pass(name, 'no secrets left, no success output, terminated by SIGINT')
+      pass(name, 'no secrets left, no success output, terminated by SIGINT (fixture-driven window)')
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+{
+  // R3-2 的反例：**生产 CLI 不认识**任何 preflight 忙等钩子。
+  //
+  // 两条断言缺一不可：
+  //   1. 静态——生产源码与 Compose 文件里不得再出现 `*_PREFLIGHT_DELAY_MS`
+  //      这个标识符（fixtures/ 与本反例套件除外，它们是测试侧）；
+  //   2. 动态——把旧环境变量设成 5 秒，真实 CLI 的耗时相对**不设它**的基线
+  //      不得出现任何可归因的增长，也不得打印任何窗口标记。
+  const name = 'the production generator CLI never busy-waits on the retired preflight env var'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r2-'))
+  try {
+    const productionSources = [
+      'generate-local-test-secrets.mjs',
+      'preflight-local-test-secrets.mjs',
+      'local-test-secrets-contract.mjs',
+      'run-local-test-smoke.mjs',
+      'probe-compose-secret-identity.mjs',
+      'local-test-containment.mjs',
+      'm3b-docker.mjs',
+      'm3b-subprocess.mjs',
+      'm3b-safe-output.mjs',
+      'compose.local-test.yaml'
+    ]
+    const offenders = productionSources.filter((file) =>
+      /PREFLIGHT_DELAY_MS/.test(readFileSync(resolve(composeDirectory, file), 'utf8'))
+    )
+
+    const runCli = async (extraEnv) => {
+      const directory = resolve(parent, `bundle-${randomBytes(4).toString('hex')}`)
+      const startedAt = Date.now()
+      const outcome = await new Promise((resolveOutcome) => {
+        const child = spawn(
+          process.execPath,
+          [
+            resolve(composeDirectory, 'generate-local-test-secrets.mjs'),
+            '--directory',
+            directory
+          ],
+          { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } }
+        )
+        let stdout = ''
+        let stderr = ''
+        child.stdout.on('data', (chunk) => {
+          stdout += chunk.toString('utf8')
+        })
+        child.stderr.on('data', (chunk) => {
+          stderr += chunk.toString('utf8')
+        })
+        child.once('close', (code) => resolveOutcome({ code, stdout, stderr }))
+      })
+      return { ...outcome, elapsedMs: Date.now() - startedAt, directory }
+    }
+
+    const requestedDelayMs = 5_000
+    const baseline = await runCli({})
+    const withRetiredVariable = await runCli({
+      MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS: String(requestedDelayMs)
+    })
+    // 判据是**相对基线**的增量，不是一个绝对墙钟阈值：机器负载会同时抬高两次
+    // 运行，只有「那 5 秒真的被等了」才会让差值逼近 5 秒。
+    const overhead = withRetiredVariable.elapsedMs - baseline.elapsedMs
+    const marker = /entering preflight|preflight window/.test(withRetiredVariable.stderr)
+
+    if (offenders.length > 0) {
+      fail(
+        name,
+        `${String(offenders.length)} production file(s) still reference the retired ` +
+          'preflight delay variable'
+      )
+    } else if (baseline.code !== 0 || withRetiredVariable.code !== 0) {
+      fail(
+        name,
+        `the precondition failed: the CLI did not succeed (baseline=${String(baseline.code)}, ` +
+          `withVariable=${String(withRetiredVariable.code)})`
+      )
+    } else if (marker) {
+      fail(name, 'the production CLI still announced a preflight window')
+    } else if (overhead > requestedDelayMs / 2) {
+      fail(
+        name,
+        `the retired variable still cost ${String(overhead)}ms over the baseline ` +
+          `(a live busy-wait would cost about ${String(requestedDelayMs)}ms)`
+      )
+    } else {
+      pass(
+        name,
+        `no production reference, no window marker, ${String(overhead)}ms overhead against ` +
+          `a requested ${String(requestedDelayMs)}ms delay`
+      )
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R3-1：cleanup 的 inode ownership
+// ---------------------------------------------------------------------------
+process.stdout.write('R3-1: cleanup honours inode ownership\n')
+
+{
+  // 场景（总控点名的五步）：
+  //   1. 第一份 final 完成 promotion；
+  //   2. 外部把它 unlink，并在同名位置写入一个**不同 inode** 的替身；
+  //   3. 第二次 promotion 之前抛错，触发失败清理；
+  //   4. 替身必须仍在，且逐字节不变；
+  //   5. 本轮自己的 staging 与 final inode 必须全部收敛（目录里只剩替身）。
+  //
+  // 只登记路径的实现在第 4 步就会红：它会按名字把替身 unlink 掉。
+  const name = 'failure cleanup refuses to unlink an external replacement at a generated name'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r3-'))
+  const directory = resolve(parent, 'bundle')
+  const victimName = secretFilenames[0]
+  const replacementBody = `EXTERNAL-REPLACEMENT-${randomBytes(8).toString('hex')}\n`
+  const injectedMarker = `injected-failure-${randomBytes(4).toString('hex')}`
+  try {
+    mkdirSync(directory, { mode: 0o700 })
+    let replacementIno = null
+    let caughtError = null
+    try {
+      generateSecretBundle(directory, {
+        beforePromotion: (filename) => {
+          // 第二份 promotion 之前：换掉第一份的 final，然后抛错。
+          if (filename !== secretFilenames[1]) {
+            return
+          }
+          const victimPath = resolve(directory, victimName)
+          unlinkSync(victimPath)
+          writeFileSync(victimPath, replacementBody, { mode: 0o600 })
+          replacementIno = statSync(victimPath, { bigint: true }).ino
+          throw new Error(injectedMarker)
+        }
+      })
+    } catch (error) {
+      caughtError = error
+    }
+    const message = caughtError instanceof Error ? caughtError.message : String(caughtError)
+    const replacementPath = resolve(directory, victimName)
+    const survived =
+      existsSync(replacementPath) && readFileSync(replacementPath, 'utf8') === replacementBody
+    const sameInode =
+      survived && replacementIno !== null && statSync(replacementPath, { bigint: true }).ino === replacementIno
+    const leftovers = readdirSync(directory).filter((entry) => entry !== victimName)
+
+    if (caughtError === null) {
+      fail(name, 'the precondition failed: the injected failure did not propagate')
+    } else if (!message.includes(injectedMarker)) {
+      fail(name, wrongReason(`/${injectedMarker}/`, [message]))
+    } else if (!survived) {
+      fail(name, 'the external replacement was removed or rewritten by the failure cleanup')
+    } else if (!sameInode) {
+      fail(name, 'the entry at that name is no longer the external replacement inode')
+    } else if (leftovers.length > 0) {
+      fail(
+        name,
+        `${String(leftovers.length)} entr(y|ies) created by this run survived the cleanup`
+      )
+    } else if (!/ownership drift/.test(message)) {
+      fail(name, wrongReason('/ownership drift/', [message]))
+    } else {
+      pass(
+        name,
+        'replacement byte-identical and still the same inode, every own staging/final inode ' +
+          'converged, ownership drift reported'
+      )
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+{
+  // R3-4：同一条 ownership 纪律必须在 **generateAndPreflight 的真实接线**上
+  // 成立，而不只是直接调 discardGeneratedPaths。这里让**真实**的预检返回
+  // problems 触发真实的失败清理，替身在预检期间被放进去。
+  const name = "generateAndPreflight's real failure cleanup honours inode ownership"
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r3-'))
+  const directory = resolve(parent, 'bundle')
+  const victimName = secretFilenames[2]
+  const replacementBody = `EXTERNAL-REPLACEMENT-${randomBytes(8).toString('hex')}\n`
+  try {
+    let replacementIno = null
+    let caughtError = null
+    try {
+      generateAndPreflight(directory, {
+        // 库级注入 seam：预检期间外部换掉一份成品，然后判定失败。
+        preflight: (bundleDirectory) => {
+          const victimPath = resolve(bundleDirectory, victimName)
+          unlinkSync(victimPath)
+          writeFileSync(victimPath, replacementBody, { mode: 0o600 })
+          replacementIno = statSync(victimPath, { bigint: true }).ino
+          return { problems: ['synthetic preflight rejection'], bodies: new Map() }
+        }
+      })
+    } catch (error) {
+      caughtError = error
+    }
+    const message = caughtError instanceof Error ? caughtError.message : String(caughtError)
+    const replacementPath = resolve(directory, victimName)
+    const survived =
+      existsSync(replacementPath) && readFileSync(replacementPath, 'utf8') === replacementBody
+    const sameInode =
+      survived && replacementIno !== null && statSync(replacementPath, { bigint: true }).ino === replacementIno
+    const ownLeftovers = readdirSync(directory).filter((entry) => entry !== victimName)
+
+    if (caughtError === null) {
+      fail(name, 'the precondition failed: the failing preflight did not propagate')
+    } else if (!survived) {
+      fail(name, 'the external replacement was removed by the real failure cleanup')
+    } else if (!sameInode) {
+      fail(name, 'the entry at that name is no longer the external replacement inode')
+    } else if (ownLeftovers.length > 0) {
+      fail(name, `${String(ownLeftovers.length)} of this run's own secret file(s) survived`)
+    } else if (!/ownership drift/.test(message)) {
+      fail(name, wrongReason('/ownership drift/', [message]))
+    } else {
+      pass(name, 'real generateAndPreflight wiring: replacement untouched, own files all removed')
     }
   } finally {
     rmSync(parent, { recursive: true, force: true })
@@ -427,7 +684,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 8
+const expectedCount = 11
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
@@ -435,13 +692,13 @@ if (caught + failures.length !== expectedCount) {
   )
 }
 if (failures.length > 0) {
-  process.stderr.write('M3B round-two negative suite FAIL\n')
+  process.stderr.write('M3B round-two/three negative suite FAIL\n')
   for (const message of failures) {
     process.stderr.write(`  - ${message}\n`)
   }
   process.exit(1)
 }
 process.stdout.write(
-  `M3B round-two negative suite PASS (${String(caught)}/${String(expectedCount)} ` +
+  `M3B round-two/three negative suite PASS (${String(caught)}/${String(expectedCount)} ` +
     'negatives caught with their named reasons)\n'
 )

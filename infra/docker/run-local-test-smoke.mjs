@@ -43,6 +43,7 @@ import {
   cleanupRun,
   danglingVolumes,
   imageIdOf,
+  inodeIdentityOf,
   inspectJsonStrict,
   inspectStrict,
   listByProject,
@@ -51,6 +52,7 @@ import {
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
+import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -138,18 +140,13 @@ const transcript = []
 const failures = []
 export const smokeState = { transcript, failures }
 
-let scrubValues = []
-const registerScrubValues = (values) => {
-  scrubValues = [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))]
-    .sort((a, b) => b.length - a.length)
-}
-const scrub = (text) => {
-  let output = String(text)
-  for (const value of scrubValues) {
-    output = output.split(value).join('[redacted-secret]')
-  }
-  return output
-}
+// 共享的输出边界（m3b-safe-output.mjs）：证据行按**取值**打码（image ID 之类
+// 必须保持可读），失败消息按**取值 + 形状**打码——失败文本里混着 docker
+// stderr、容器日志摘录与 problems，而形状层在 bundle 尚未生成 / 已被删除时
+// 仍然拦得住口令形态的长串与连接串。
+const scrubber = createSecretScrubber()
+const registerScrubValues = (values) => scrubber.register(values)
+const scrub = (text) => scrubber.scrub(text)
 
 const log = (line) => {
   const safe = scrub(line)
@@ -157,7 +154,7 @@ const log = (line) => {
   process.stdout.write(`${safe}\n`)
 }
 const fail = (message) => {
-  const safe = scrub(message)
+  const safe = scrubber.scrubUntrusted(message)
   failures.push(safe)
   log(`FAIL: ${safe}`)
 }
@@ -172,6 +169,25 @@ const sleep = (milliseconds) =>
   new Promise((resolveSleep) => {
     setTimeout(resolveSleep, milliseconds)
   })
+
+/**
+ * 失败诊断用的容器日志摘录。**退出码必须检查**：`docker logs` 非零时输出是空的，
+ * 若直接拼进消息，操作者看到的就是「last log lines:」后面什么都没有——证据静默
+ * 消失，而失败原因看起来像「容器没打日志」。
+ */
+const logExcerpt = async (containerName) => {
+  const logs = await run(['docker', 'logs', containerName])
+  if (logs.status !== 0) {
+    return (
+      'the log excerpt is unavailable: docker logs exited ' +
+      `${logs.status === null ? `on signal ${String(logs.signal)}` : String(logs.status)}`
+    )
+  }
+  const excerpt = (logs.stdout + logs.stderr).split('\n').slice(-15).join('\n')
+  return excerpt.trim() === ''
+    ? 'docker logs succeeded but the container produced no output'
+    : `last log lines:\n${scrub(excerpt)}`
+}
 
 // ---------------------------------------------------------------------------
 // 随机未占用端口（127.0.0.1 与 ::1 双侧确认）
@@ -241,13 +257,16 @@ export const cleanupSmokeProject = async (
     imageTag = null,
     composeArgs = [],
     danglingBaseline = null,
-    overridePath = null
+    overridePath = null,
+    secretsIdentity = null
   } = {}
 ) =>
   cleanupRun({
     project,
     projectPattern: smokeProjectPattern,
     secretsDirectory,
+    // 递归删除前的 inode 身份复核：路径对不代表还是本轮 mkdtemp 出来的目录。
+    secretsIdentity,
     secretsPrefix: temporarySecretsPrefix,
     imageTag,
     // override 是**正式 cleanup 阶段**（P1-4），排在 compose down 之后并进入
@@ -266,6 +285,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
+  // 刚 mkdtemp 出来就取 inode 身份：cleanup 的递归删除必须能证明「删的还是
+  // 本轮创建的那个目录」，而不是一个后来占用同名路径的替身。
+  const secretsIdentity = inodeIdentityOf(secretsDirectory)
   // **第一个资源刚创建就登记现场**（P1-4）：下面还有 `await danglingVolumes()`
   // 等 Docker 查询，信号可以落在那里；此前 scene 要到 runSmoke 里才登记，那段
   // 窗口内被中断会把明文 Secret 目录留在盘上。override 此刻**尚未创建**，因此
@@ -274,6 +296,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   smokeState.registerScene?.({
     project,
     secretsDirectory,
+    secretsIdentity,
     imageTag: null,
     overridePath: null,
     overrideCreated: false,
@@ -325,6 +348,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   const scene = {
     project,
     secretsDirectory,
+    secretsIdentity,
     imageTag: null,
     overridePath,
     overrideCreated: false,
@@ -374,10 +398,8 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       `${service} health`,
       async () => {
         if ((await inspectStrict(name, '{{.State.Status}}')) === 'exited') {
-          const logs = await run(['docker', 'logs', name])
           throw new Error(
-            `${service} exited before becoming healthy; last log lines:\n` +
-              scrub((logs.stdout + logs.stderr).split('\n').slice(-15).join('\n'))
+            `${service} exited before becoming healthy; ${await logExcerpt(name)}`
           )
         }
         return (await inspectStrict(name, '{{.State.Health.Status}}')) === 'healthy'
@@ -483,10 +505,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         outcome = await runOneShot(service, service === 'migrate' ? 660_000 : 300_000)
         log(`chain ${service}: exit=${String(outcome.exitCode)}`)
         if (outcome.exitCode !== 0) {
-          const logs = await run(['docker', 'logs', containerNameOf(project, service)])
           throw new Error(
-            `${service} exited ${String(outcome.exitCode)}; last log lines:\n` +
-              scrub((logs.stdout + logs.stderr).split('\n').slice(-15).join('\n'))
+            `${service} exited ${String(outcome.exitCode)}; ` +
+              `${await logExcerpt(containerNameOf(project, service))}`
           )
         }
       }
@@ -792,7 +813,14 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       }
       // tmpfs 不出现在 .Mounts 里：单独读 HostConfig.Tmpfs，任何挂到
       // /run/secrets 下的 tmpfs 都必须被发现。
+      // `{{json .HostConfig.Tmpfs}}` 在「没有 tmpfs」时打印字面量 `null`，那是
+      // 一条**合法的阴性证据**；而**空 stdout** 是读不到，inspectJsonStrict 现在
+      // 会为此抛错，不再把它折叠成同一个 null。
       const tmpfs = await inspectJsonStrict(id, '{{json .HostConfig.Tmpfs}}')
+      if (tmpfs !== null && (typeof tmpfs !== 'object' || Array.isArray(tmpfs))) {
+        failVisibility(`secret visibility: ${service} HostConfig.Tmpfs is not an object`)
+        continue
+      }
       const tmpfsTargets = tmpfs === null ? [] : Object.keys(tmpfs)
       const secretTmpfs = tmpfsTargets.filter((target) => target.startsWith('/run/secrets'))
       if (secretTmpfs.length > 0) {
@@ -857,6 +885,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       try {
         residue = await cleanupSmokeProject(project, secretsDirectory, {
           composeEnvironment,
+          secretsIdentity,
           imageTag: scene.imageTag,
           composeArgs: scene.overrideCreated ? composeArgs : [],
           overridePath: scene.overrideCreated ? overridePath : null,
@@ -938,6 +967,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const activeScene = {
     project: null,
     secretsDirectory: null,
+    secretsIdentity: null,
     imageTag: null,
     overridePath: null,
     overrideCreated: false,
@@ -956,6 +986,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         residue.push(
           ...(await cleanupSmokeProject(activeScene.project, activeScene.secretsDirectory, {
             composeEnvironment: activeScene.composeEnvironment,
+            secretsIdentity: activeScene.secretsIdentity,
             imageTag: activeScene.imageTag,
             composeArgs: activeScene.overrideCreated ? activeScene.composeArgs : [],
             overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,

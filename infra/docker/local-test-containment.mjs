@@ -258,7 +258,11 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
     `label=com.docker.compose.project=${project}`
   ])
   if (listing.status !== 0) {
+    // **立即返回**：失败命令的 stdout 是空的，继续往下走会把「列举失败」降级成
+    // 「这个 project 一个容器都没有」，扫描面于是静默塌成零，而调用方只看
+    // artifacts 长度时完全察觉不到。
     onProblem('containment: listing project containers failed; artifacts cannot be collected')
+    return { artifacts, containerIds: [] }
   }
   const containerIds = listing.stdout.split('\n').filter(Boolean)
   const imageIds = new Set()
@@ -496,7 +500,10 @@ export const runContainmentAndIsolation = async ({
     timeoutMs: 60_000
   })
   if (tracked.status !== 0) {
-    fail('containment: git ls-files failed; tracked files cannot be scanned')
+    // failContainment（不是 fail）：只有前者会给 containmentProblems 计数，
+    // 而成功行是按那个计数 gating 的——用 fail 会让「tracked 文件没扫成」与
+    // 「containment scan: no hits」同时出现在输出里。
+    failContainment('containment: git ls-files failed; tracked files cannot be scanned')
   }
   const trackedFiles = tracked.stdout.split('\u0000').filter(Boolean)
 
@@ -798,8 +805,16 @@ export const runContainmentAndIsolation = async ({
       fail(`isolation: docker inspect ${label} failed; the check cannot pass by default`)
       return { value: null, failed: true }
     }
+    const raw = result.stdout.trim()
+    if (raw === '') {
+      // 退出 0 却什么都没打印 = 模板求值出了空串，这是一次**读不到**。此前
+      // `|| 'null'` 把它折叠成合法的 JSON null，于是「读不到」与「确实没有
+      // 端口」变成同一个取值。
+      fail(`isolation: docker inspect ${label} returned an empty payload`)
+      return { value: null, failed: true }
+    }
     try {
-      return { value: JSON.parse(result.stdout.trim() || 'null'), failed: false }
+      return { value: JSON.parse(raw), failed: false }
     } catch {
       fail(`isolation: docker inspect ${label} did not return valid JSON`)
       return { value: null, failed: true }
@@ -838,19 +853,30 @@ export const runContainmentAndIsolation = async ({
   }
 
   // api：恰好一个 host binding，127.0.0.1:<port> → 3000/tcp。
+  // 与 postgres 同一条纪律：`failed` **必须**被读。此前这里把它丢掉、只取
+  // `.value ?? {}`，于是一次失败的 inspect 会变成「api 一个端口都没发布」，
+  // 断言随之判成 `!expectedBinding` 并报出一条**误导性**的结论，而真正的原因
+  // （读不到）只在别处留了一条 problem。
   const apiName = `${project}-api-1`
-  const apiPorts =
-    (await strictInspectJson(apiName, '{{json .NetworkSettings.Ports}}', `${apiName} ports`))
-      .value ?? {}
-  const apiBindings = Object.entries(apiPorts ?? {}).flatMap(([containerPort, bindings]) =>
+  const apiPortsRead = await strictInspectJson(
+    apiName,
+    '{{json .NetworkSettings.Ports}}',
+    `${apiName} ports`
+  )
+  const apiPorts = apiPortsRead.value ?? {}
+  const apiBindings = Object.entries(apiPorts).flatMap(([containerPort, bindings]) =>
     (bindings ?? []).map((binding) => ({ containerPort, ...binding }))
   )
   const expectedBinding =
+    !apiPortsRead.failed &&
     apiBindings.length === 1 &&
     apiBindings[0].containerPort === '3000/tcp' &&
     apiBindings[0].HostIp === '127.0.0.1' &&
     apiBindings[0].HostPort === String(hostPort)
-  if (!expectedBinding) {
+  if (apiPortsRead.failed) {
+    // 读取失败已由 strictInspectJson 记入 problems：不再输出任何关于「发布了
+    // 什么端口」的结论。
+  } else if (!expectedBinding) {
     fail(
       `isolation: api host bindings drifted: ${JSON.stringify(apiBindings)} ` +
         `(expected exactly 127.0.0.1:${String(hostPort)} -> 3000/tcp)`

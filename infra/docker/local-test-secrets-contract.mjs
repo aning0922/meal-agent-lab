@@ -571,13 +571,52 @@ const sensitiveKeySuffixes = [
   'URI'
 ]
 const assignmentPattern = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/
-// 两种完整连接串形态都拒绝：userinfo 形（user:pass@host）与查询参数形
-// （…?password=… / …&sslpassword=…）。
-// 任何**带 userinfo 的连接串**都拒绝，不限于 postgres：模板里出现
-// `redis://user:pass@…` / `mongodb://…` / `amqp://…` 同样是凭据入 Git。
+
+/**
+ * 连接串里的凭据判据。**两条都与赋值键名无关**：判据看的是行内容本身，因此
+ * `CACHE_ENDPOINT=redis://TOKEN@redis:6379/0` 这种「中性键 + 有凭据的连接串」
+ * 同样会被抓住——凭据是不是泄漏，取决于它写没写进文件，不取决于左边那个变量
+ * 叫什么名字。
+ *
+ * 1. **userinfo 形**（任意 scheme、任意 userinfo 形态）。此前只认
+ *    `user:password@`：必须有那个冒号、且两侧都至少一个字符。实测因此漏掉
+ *    - `https://ghp_TOKEN@github.com`（token-only：`@` 前无冒号），
+ *    - `postgresql://:pw@host/db`（password-only：冒号左侧为空），
+ *    - `redis://@host`（退化形）。
+ *    现在只要 `scheme://…@host` 的 authority 里出现 `@` 就拒绝。`@` 之前不允许
+ *    出现 `/`、`?`、`#`，因此 `https://example.com/a@b` 这类路径里的 `@` 不会
+ *    被误判成 userinfo。
+ * 2. **credential 查询参数形**（任意 scheme）。此前锚死在 postgres + 词干
+ *    `password`，于是 `redis://redis:6379?password=…`、任何 scheme 的
+ *    `?token=`/`?secret=`/`?api_key=`/`?access_token=`/`?pwd=`/`?passwd=` 全部
+ *    漏网。键名允许带前后缀（`sslpassword`、`x-access_token`）。取值必须非空：
+ *    `?password=` 这样的空占位与模板的「空占位允许」规则一致。
+ */
+const credentialQueryKeyStems = [
+  'password',
+  'passwd',
+  'pwd',
+  'token',
+  'secret',
+  'api[_.-]?key',
+  'access[_.-]?token',
+  'credential'
+]
 const fullDsnPatterns = [
-  /[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@\S+/i,
-  /postgres(?:ql)?:\/\/\S*[?&][a-z_]*password[a-z_]*=\S/i
+  {
+    // 顺序固定：userinfo 形排在最前，两条既有反例继续命中这条消息。
+    pattern: /[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@[^\s/?#]+/i,
+    category: 'contains a full connection string with credentials'
+  },
+  {
+    pattern: new RegExp(
+      String.raw`[a-z][a-z0-9+.-]*://\S*[?&][^\s=&#]*(?:` +
+        credentialQueryKeyStems.join('|') +
+        String.raw`)[^\s=&#]*=[^\s&#]`,
+      'i'
+    ),
+    category: 'contains a connection string with a credential query parameter'
+  }
 ]
 
 /**
@@ -623,12 +662,10 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
   const scanTemplateContent = (label, content) => {
     const lines = content.split('\n')
     for (const [index, line] of lines.entries()) {
-      for (const pattern of fullDsnPatterns) {
+      for (const { pattern, category } of fullDsnPatterns) {
         if (pattern.test(line)) {
-          problems.push(
-            `${label}:${String(index + 1)}: tracked template contains a full ` +
-              'connection string with credentials'
-          )
+          // 只报**类别 + 文件 + 行号**：命中的连接串本身就是凭据，绝不回显。
+          problems.push(`${label}:${String(index + 1)}: tracked template ${category}`)
           break
         }
       }

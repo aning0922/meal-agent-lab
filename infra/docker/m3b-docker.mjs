@@ -13,7 +13,7 @@
 // 每次 smoke/probe 运行使用**唯一 image tag**（`meal-agent-api:m3b-<run id>`），
 // 通过临时 Compose override 注入，因此并行 worktree/project 不会互相覆盖；
 // build 之后读取 immutable image ID 并绑定到三个 API 镜像服务的 `.Image`。
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 
@@ -37,6 +37,16 @@ export const writeImageOverride = (path, imageTag) => {
       `  bootstrap-schema:\n    image: ${imageTag}\n`,
     { mode: 0o600 }
   )
+}
+
+/**
+ * 取一个**刚由本轮创建**的路径的 inode 身份（`mkdtemp` 之后立即调用）。
+ * BigInt 形态：默认的 double 在大 inode 号上会丢精度，而丢精度的比较等于把
+ * 「不是我的目录」判成「是我的」。
+ */
+export const inodeIdentityOf = (path) => {
+  const stats = lstatSync(path, { bigint: true })
+  return { dev: stats.dev, ino: stats.ino }
 }
 
 export class DockerEvidenceError extends Error {
@@ -67,11 +77,31 @@ export const inspectStrict = async (target, format, { env } = {}) => {
   return result.stdout.trim()
 }
 
-/** 严格读取一段 JSON 形态的 inspect 字段。 */
-export const inspectJsonStrict = async (target, format, { env } = {}) => {
+/**
+ * 严格读取一段 JSON 形态的 inspect 字段。
+ *
+ * **空 stdout 不再被悄悄当成 `null`**：`docker inspect` 退出 0 却什么都没打印，
+ * 说明模板求值给出了空串，那是一次「读不到」，不是「这个字段确实是空的」。
+ * 调用方若把它读成「没有 tmpfs 挂载」「没有发布端口」，就等于用读取失败冒充
+ * 一条阴性证据。要显式接受空值的调用方必须传 `allowEmpty: true`。
+ */
+export const inspectJsonStrict = async (
+  target,
+  format,
+  { env, allowEmpty = false } = {}
+) => {
   const raw = await inspectStrict(target, format, { env })
+  if (raw === '') {
+    if (!allowEmpty) {
+      throw new DockerEvidenceError(
+        `docker inspect ${target} ${format} returned an empty payload; ` +
+          'an unreadable field must not be read as an absent one'
+      )
+    }
+    return null
+  }
   try {
-    return JSON.parse(raw === '' ? 'null' : raw)
+    return JSON.parse(raw)
   } catch {
     throw new DockerEvidenceError(
       `docker inspect ${target} ${format} did not return valid JSON`
@@ -100,22 +130,45 @@ export const danglingVolumes = async ({ env } = {}) => {
   return new Set(result.stdout.split('\n').filter(Boolean))
 }
 
-/** 某个 image tag 是否存在（存在返回 image ID，不存在返回 null）。 */
+/**
+ * 某个 image tag 是否存在（存在返回 image ID，不存在返回 null）。
+ *
+ * 这是**全仓唯一**允许把非零退出解释成「资源不存在」的地方，因此判据收得很紧：
+ *
+ *   - 退出码必须**恰好是 1**（docker CLI 的「找不到对象」）。`status === null`
+ *     表示 CLI 自己被信号杀掉，绝不是「镜像不存在」；
+ *   - stderr 必须匹配**锚定的** `Error: No such image: <tag>` 形态，而不是
+ *     任意位置出现 "no such image" 字样——被包装的错误、PATH 上的 shim 回显、
+ *     或一条关于**另一个**镜像的消息都不算数；
+ *   - 其余一律抛出。
+ */
 export const imageIdOf = async (tag, { env } = {}) => {
   const result = await runCommand(
     ['docker', 'image', 'inspect', '--format', '{{.Id}}', tag],
     { env }
   )
   if (result.status === 0) {
-    return result.stdout.trim()
+    const id = result.stdout.trim()
+    if (id === '') {
+      throw new DockerEvidenceError(
+        `docker image inspect ${tag} exited 0 without printing an image ID`
+      )
+    }
+    return id
   }
-  // 只有「镜像不存在」才允许非零退出；其余情形（daemon 不可达等）必须抛。
-  if (/No such image|no such image/.test(result.stderr)) {
+  const absent = new RegExp(
+    `^\\s*Error(?::| response from daemon:)?\\s*[Nn]o such image:?\\s*${
+      tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    }\\s*$`,
+    'm'
+  )
+  if (result.status === 1 && absent.test(result.stderr)) {
     return null
   }
   throw new DockerEvidenceError(
-    `docker image inspect ${tag} exited ${String(result.status)}: ` +
-      `${result.stderr.trim().split('\n').slice(-1)[0] ?? '(no stderr)'}`
+    `docker image inspect ${tag} exited ${
+      result.status === null ? `on signal ${String(result.signal)}` : String(result.status)
+    }: ${result.stderr.trim().split('\n').slice(-1)[0] ?? '(no stderr)'}`
   )
 }
 
@@ -151,6 +204,7 @@ const cleanupRunUnsynchronized = async ({
   project,
   projectPattern,
   secretsDirectory = null,
+  secretsIdentity = null,
   secretsPrefix,
   imageTag = null,
   overridePath = null,
@@ -191,6 +245,21 @@ const cleanupRunUnsynchronized = async ({
       throw new DockerEvidenceError(
         `${secretsDirectory} is not a ${secretsPrefix}* directory under the system tmpdir`
       )
+    }
+    // **inode 身份复核**：路径与前缀都对，不代表它还是本轮 mkdtemp 出来的那个
+    // 目录。递归删除是不可逆操作，必须先确认它仍指向本轮创建的那个 inode；
+    // 对不上就报 ownership drift 并原样留下，绝不递归删别人的目录。
+    if (secretsIdentity !== null) {
+      const observed = lstatSync(realDir, { bigint: true })
+      if (
+        observed.dev !== secretsIdentity.dev ||
+        observed.ino !== secretsIdentity.ino
+      ) {
+        throw new DockerEvidenceError(
+          'ownership drift at the temporary secrets directory: it no longer refers ' +
+            'to the inode this run created; refusing to remove it recursively'
+        )
+      }
     }
     rmSync(realDir, { recursive: true, force: true })
   })
@@ -242,7 +311,7 @@ const cleanupRunUnsynchronized = async ({
 
   // 阶段 3—5：容器 / 网络 / 卷。每类：列出 → 逐个复核 label → 删除 → 再列一次。
   const sweeps = [
-    { kind: 'container', remove: (ids) => ['docker', 'rm', '-f', '-v', ...ids], labelFormat: '{{index .Config.Labels "com.docker.compose.project"}}', inspect: (id) => ['docker', 'inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}', id] },
+    { kind: 'container', remove: (ids) => ['docker', 'rm', '-f', '-v', ...ids], inspect: (id) => ['docker', 'inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}', id] },
     { kind: 'network', remove: (ids) => ['docker', 'network', 'rm', ...ids], inspect: (id) => ['docker', 'network', 'inspect', '--format', '{{index .Labels "com.docker.compose.project"}}', id] },
     { kind: 'volume', remove: (ids) => ['docker', 'volume', 'rm', '-f', ...ids], inspect: (id) => ['docker', 'volume', 'inspect', '--format', '{{index .Labels "com.docker.compose.project"}}', id] }
   ]

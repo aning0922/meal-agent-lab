@@ -29,9 +29,9 @@ import { generateAndPreflight } from './generate-local-test-secrets.mjs'
 import { secretFiles } from './local-test-secrets-contract.mjs'
 import {
   cleanupRun,
+  inodeIdentityOf,
   danglingVolumes,
   imageIdOf,
-  inspectStrict,
   overridePathFor,
   runImageTagFor,
   verifyNoResidue,
@@ -135,6 +135,7 @@ const parseProbeLine = (line) => {
 const activeProbeScene = {
   project: null,
   secretsDirectory: null,
+  secretsIdentity: null,
   imageTag: null,
   overridePath: null,
   composeEnvironment: process.env,
@@ -148,6 +149,8 @@ const cleanupProbe = async (scene) =>
     project: scene.project,
     projectPattern: probeProjectPattern,
     secretsDirectory: scene.secretsDirectory,
+    // 递归删除前复核 inode 身份：路径对不代表还是本轮 mkdtemp 出来的目录。
+    secretsIdentity: scene.secretsIdentity ?? null,
     secretsPrefix: probeSecretsPrefix,
     imageTag: scene.imageTag,
     // override 只在**确实创建过**时才交给 cleanup（P1-4）：未创建时引用它会
@@ -167,11 +170,13 @@ const main = async () => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), probeSecretsPrefix))
+  const secretsIdentity = inodeIdentityOf(secretsDirectory)
   // **第一个资源刚创建就登记现场**（P1-4）：下面的 `await danglingVolumes()`
   // 是一次真实 Docker 查询，信号可以落在它期间。override 此刻尚未创建。
   Object.assign(activeProbeScene, {
     project,
     secretsDirectory,
+    secretsIdentity,
     imageTag: null,
     overridePath: null,
     overrideCreated: false,
@@ -189,6 +194,7 @@ const main = async () => {
   Object.assign(activeProbeScene, {
     project,
     secretsDirectory,
+    secretsIdentity,
     // imageTag / override 在 writeImageOverride 之后才登记。
     imageTag: null,
     overridePath,

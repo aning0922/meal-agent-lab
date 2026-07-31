@@ -37,7 +37,17 @@ const fail = (name, detail) => {
   failures.push(`${name}: ${detail}`)
 }
 
-const docker = (args) => spawnSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+/**
+ * `spawnSync` 包装：**`error` 也要检查**。docker 不在 PATH 上时 status 是 null，
+ * 调用方若只比较 `!== 0` 会把「根本没跑起来」和「跑了但失败」混在一起。
+ */
+const docker = (args) => {
+  const result = spawnSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  if (result.error !== undefined) {
+    throw new Error(`failed to run docker ${args[0] ?? ''}: ${result.error.message}`)
+  }
+  return result
+}
 
 /** 所有 residue 查询都检查退出码：读不到即抛，绝不当成「没有残留」。 */
 const listByLabel = (kind, project) => {
@@ -49,7 +59,11 @@ const listByLabel = (kind, project) => {
         : ['volume', 'ls', '-q']
   const result = docker([...base, '--filter', `label=com.docker.compose.project=${project}`])
   if (result.status !== 0) {
-    throw new Error(`docker ${base.join(' ')} failed while checking residue`)
+    throw new Error(
+      `docker ${base.join(' ')} exited ${
+        result.status === null ? `on signal ${String(result.signal)}` : String(result.status)
+      } while checking residue`
+    )
   }
   return result.stdout.split('\n').filter(Boolean)
 }
@@ -290,13 +304,21 @@ const assertCleanScene = (name, result, { expectSignal }) => {
     .split('\n')
     .filter((line) => /^FAIL: |cleanup residue:/.test(line))
   if (reportedFailures.length > 0) {
-    problems.push(`the CLI reported its own problems: ${reportedFailures.join(' | ')}`)
+    // 固定类别：这些行来自被测 CLI 的 stdout，内容不可信（内嵌 docker stderr、
+    // 目录路径与 problems）。只报计数。
+    problems.push(
+      `the CLI reported ${String(reportedFailures.length)} problem line(s) of its own ` +
+        '(deliberately not echoed)'
+    )
   }
   const reportedResidue = result.stderr
     .split('\n')
     .filter((line) => /residue after SIG/.test(line))
   if (reportedResidue.length > 0) {
-    problems.push(`the signal handler reported residue: ${reportedResidue.join(' | ')}`)
+    problems.push(
+      `the signal handler reported ${String(reportedResidue.length)} residue line(s) ` +
+        '(deliberately not echoed)'
+    )
   }
   if (problems.length > 0) {
     fail(name, problems.join('; '))

@@ -170,9 +170,10 @@ const runChecker = () => {
 try {
   const baseline = runChecker()
   if (baseline.status !== 0) {
+    // 基线失败时**可以**回显：此刻 compose 文件还没有被变异，输出里没有本套件
+    // 注入的凭据形态取值，而操作者确实需要知道为什么基线过不了。
     abort(
-      `the unmutated topology must pass before any mutation is meaningful:\n` +
-        baseline.output
+      'the unmutated topology must pass before any mutation is meaningful:\n' + baseline.output
     )
   }
 
@@ -196,9 +197,13 @@ try {
         continue
       }
       if (!mutation.expect.test(result.output)) {
+        // **固定类别**：checker 的输出会逐字回显它观察到的取值，而此刻 tracked
+        // compose 文件正带着变异（其中几条内嵌合成 DSN 与 AppSecret）。这里
+        // 只报期望判据与输出行数，绝不回显输出本身。
         failures.push(
           `${mutation.name}: caught, but for the wrong reason (expected ` +
-            `${String(mutation.expect)}):\n${result.output.trim()}`
+            `${String(mutation.expect)}); ${String(result.output.trim().split('\n').length)} ` +
+            'output line(s) deliberately not echoed'
         )
         continue
       }
