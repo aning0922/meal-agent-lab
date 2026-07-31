@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-31 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」implementation complete, pending total-control review**；M3B、M4、M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」Round 14 整改中，未 Accepted**；M3B、M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -231,8 +231,7 @@ fail closed。**M3A 之后 `_FILE` 契约已被真正消费**（见下面的 M3A
 
 M3 被拆成 **M3A（配置与 Secret file 消费核心）**与 **M3B（环境模板、八份 Secret 的
 生成与交叉一致性、完整 Compose bootstrap 链实证）**两轮。M3A 覆盖上面第 2、3、6、
-7、8、9 条的**代码侧**，状态是 **implementation complete, pending total-control
-review**——**不是 Accepted**。
+7、8、9 条的**代码侧**，状态是 **Round 14 整改中，未 Accepted**。
 
 1. **统一的 Node Secret 来源解析器**
    [`services/api/src/config-source.ts`](../../services/api/src/config-source.ts)
@@ -606,7 +605,7 @@ allowlist 漂移扫描补上 `override readonly name = "X"` 类字段与
 `class X extends <RepoError>` 两种写法，并加了三条正向自检——否则「没有漂移」也
 可能只是正则从来没匹配到任何东西。
 
-**M3A 仍为 implementation complete, pending total-control review，未标记 Accepted。**
+**M3A 仍为 Round 14 整改中，未标记 Accepted。**
 
 #### M3A 第七轮总控复验未通过后的定点修订
 
@@ -1055,7 +1054,7 @@ framework root）；调用方注入的 `Logger` 我们不碰，任何 `Writable`
 符号名 + 声明文件比对）。认不出 fastify 的声明文件时门禁直接抛错，而不是退化成
 「什么调用都放行」。fixture 的 `allowedWiring` 因此改成调用**真实的** `Fastify`，
 自造工厂降级为违规变体，违规接线从七种增加到九种（收尾复评后十三种，收尾追加后
-十六种，收尾复评二后为**二十一种**）。
+十六种，收尾复评二后二十一种，定点追加后为**二十二种**）。
 
 #### M3A Round 14 收尾复评整改
 
@@ -1123,7 +1122,7 @@ rejection 丢掉，最终只剩 Node 对未处理拒绝的默认行为。现在�
 
 `app.ts` 里指向已删除的 `eventSink` 的注释、gate 的 root-held 注释、ADR-0005 的
 实施注记、project-status、本计划与 API README 一并同步，日期统一 **2026-07-31**。
-API unit 163 → **176**。
+API unit 163 → **181**。
 
 **Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
 本轮 diff 为 0 行。
@@ -1230,6 +1229,71 @@ event drain 还要跑）。修复后统一走 `safeErrorType()`，兜底 `"Unrea
 close 现在会 reject，那条路径上 rejection 会从 top-level await 逃出去，
 `process.exitCode = 1` 根本轮不到执行，整个错误对象还会被打到 stderr。已补 catch，
 文案同样是固定的 `shutdown: close failed`。
+
+**Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
+本轮 diff 为 0 行。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
+#### M3A Round 14 定点追加
+
+**一、回调不能盖住 `flush()` 的同步 throw。**
+
+`root.flush()` 先把回调调成功、然后自己同步抛：上一版在回调里就把结果定死了，那个
+throw 被完全吃掉——一次失败的 flush 报告成功。现在回调在 `root.flush()` 返回**之前
+只暂存**结果，最终定案要等它返回，**同步 throw 优先**。
+
+| 反例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 回调报成功 → `flush()` 同步 throw | 该阶段报告**成功** | `log flush failed (event): Error` |
+| 同一条：后续 framework flush | —— | `framework.flushes() === 1` |
+| 同一条：后续 framework drain | —— | 聚合消息含 `did not drain (framework)` |
+| 同一条：聚合消息含 sentinel | —— | 不含 |
+
+**二、超时架构的边界写实。**
+
+计时全部改用 `performance.now()`（`Date.now()` 会跟着系统时间跳，不能量时限）。
+`root.flush()` 与 `writableLength` getter **返回之后重新量一次**已用时间——同步阻塞
+期间定时器根本没机会跑：
+
+| 反例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `flush()` 同步阻塞 2300ms 后**成功**返回 | 报告成功 | `log flush timed out after 2000ms (event)` |
+| `writableLength` getter 同步阻塞 2300ms 后返回 0 | 算「排空了」 | `did not drain within 2000ms (event)` |
+
+同时把口径写实：**同一个 JS 线程里无法抢占一个不返回的同步调用**。调用方给的
+`Writable` 与它的 `flush` 是**受信的、合作式的**接口，死循环的 `flush` 这一层挡不住；
+「可对任意同步阻塞提供硬上界」的说法已从代码注释与文档里删掉。**不**为此引入
+worker/子进程改造。
+
+**三、options 注入槽按声明身份登记。**
+
+上一版判的是「任何 FunctionLike 的第一个形参」——那还是形状。随手写一个 helper，
+它自己的首参就成了合法注入源：
+
+| 反例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `violatingNestedHelperInput`（helper 首参含 logger，传进 `createLoggingContext`） | **0 report** | 报出 |
+
+现在按**声明身份**登记：生产里是 `buildApp` 的第一个 parameter 声明；fixture 扮演
+组装根时**明确指定**入口为 `allowedWiring`，只有它的首参算注入源。
+
+**四、机械收口。**
+
+关机契约从 `index.ts` 抽进 [`src/shutdown.ts`](../../services/api/src/shutdown.ts)
+（窄接口 `{ eventLog, close }`，不依赖整个 Fastify 实例），这样两条失败路径的
+**subprocess 回归**跑的是**生产函数本身**而不是抄件：
+
+| 回归 | 去掉 `catch` 后 | 现在 |
+| --- | --- | --- |
+| SIGTERM 关机失败 | stderr 不是那一行固定文本 | `shutdown: close failed\n`、exit 1、无 sentinel |
+| listen 失败后再关又失败 | 同上 | 同上 |
+
+`app.ts` 的注释补齐所有权：**不 `end` / 不 `destroy` / 不写入**调用方的 `Writable`，
+但 flush 自有 root 时 pino 会调用**目的地自己的** `flush`。`index.ts`/`shutdown.ts`
+的文案改成「**应用**关闭失败」——`app.close()` 会跑完所有 onClose hook，日志 flush
+只是其中一个。M3A 的状态口径在 `docs/README.md`、project-status、本计划、ADR-0005
+与 API README 里统一成 **Round 14 整改中，未 Accepted**。
 
 **Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
 本轮 diff 为 0 行。

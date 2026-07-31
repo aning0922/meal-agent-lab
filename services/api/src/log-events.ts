@@ -273,9 +273,14 @@ export interface LoggingContext {
   /**
    * flush 自有的那些 logger，并等自有 logger 写进去的字节排空。
    *
-   * **有界且 fail closed**：flush 报错、flush 回调超时、目的地排空超时——三者都
-   * **reject**，不会静默当成关干净了。日志是审计面，「关的时候悄悄丢最后几条」
-   * 与「没写过」在事后是分不清的。
+   * **fail closed**：flush 报错、flush 回调超时、flush 同步 throw、目的地排空
+   * 超时——全都 **reject**，不会静默当成关干净了。日志是审计面，「关的时候悄悄丢
+   * 最后几条」与「没写过」在事后是分不清的。
+   *
+   * 时限只**对异步拖延有效**。调用方给的 `Writable` 与它的 `flush` 是受信的、
+   * 合作式的接口：同一个 JS 线程里没有办法抢占一个不返回的同步调用，这一层挡不住
+   * 死循环的 `flush`。能保证的是——**有限**的同步阻塞会被 fail closed，因为同步
+   * 调用返回之后我们会重新量一次已用时间。
    *
    * **failure-safe**：每一个适用的阶段都会跑到，一个阶段失败不跳过后面的阶段；
    * 失败在最后一次性聚合抛出（`AggregateError`），消息只由本模块自己的固定文本与
@@ -305,9 +310,27 @@ const safeErrorType = (error: unknown): string => {
   }
 };
 
-/** flush 与排空的硬上界。到点一律 reject，绝不静默放行。 */
+/**
+ * flush 与排空的时限。
+ *
+ * ## 这个上界管得住什么，管不住什么
+ *
+ * 它管得住**异步**的拖延：回调不来、目的地一直不排空。它**管不住同步阻塞**——
+ * 同一个 JS 线程里没有任何办法抢占一个不返回的同步调用，定时器要等调用栈空了才
+ * 可能跑。因此这里的口径必须写实：
+ *
+ *   - 调用方给的 `Writable` 与它的 `flush` 是**受信的、合作式的**接口。它们必须
+ *     最终返回；一个死循环的 `flush` 会挂死进程，这一层挡不住，也不打算靠
+ *     worker/子进程去挡（那是另一个量级的改造，不属于本阶段）。
+ *   - 对**有限**的同步阻塞则必须 fail closed：同步调用返回之后**重新量一次**已用
+ *     时间，超了就算失败，哪怕它最终「成功」返回了。否则一个阻塞 2.3 秒后成功返回
+ *     的 `flush` 会让我们报告「关干净了」。
+ */
 const flushTimeoutMs = 2_000;
 const drainTimeoutMs = 2_000;
+
+/** 单调时钟。`Date.now()` 会跟着系统时间跳，不能用来量时限。 */
+const monotonicMs = (): number => performance.now();
 
 const sleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => {
@@ -322,43 +345,67 @@ const sleep = (milliseconds: number): Promise<void> =>
  * 因此有三种收场：正常回调、带 error 的回调、以及**回调根本不来**。前一版只写了
  * `flush(() => resolve())`——后两种一个都没管：报错被吃掉，卡住则永远挂着。
  *
+ * 还有第四种：**回调先来，`flush()` 随后同步 throw**。上一版在回调里就把结果定死
+ * 了，于是那个 throw 被完全吃掉，一次失败的 flush 报告成功。所以回调在
+ * `root.flush()` 返回之前**只暂存**结果，最终定案要等它返回——同步 throw 优先。
+ *
  * 错误消息里只保留**归一化的类型名**：目的地的 error message 是不可信文本，
  * 可能带上路径、连接串或别的取值。
  */
 const flushOwned = (root: Logger, role: string): Promise<string | undefined> =>
   new Promise<string | undefined>((resolve) => {
+    const startedAt = monotonicMs();
     let settled = false;
-    const timer = setTimeout(() => {
+    /** `root.flush()` 还没返回时，回调只能把结果放在这里。 */
+    let staged: { readonly reason: string | undefined } | undefined;
+    let awaitingReturn = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (reason: string | undefined): void => {
       if (settled) {
         return;
       }
       settled = true;
-      resolve(
-        `log flush timed out after ${String(flushTimeoutMs)}ms (${role})`,
-      );
+      clearTimeout(timer);
+      resolve(reason);
+    };
+    const timedOut = `log flush timed out after ${String(flushTimeoutMs)}ms (${role})`;
+    timer = setTimeout(() => {
+      finish(timedOut);
     }, flushTimeoutMs);
     // **刻意不 `unref()`**。unref 过的定时器不 ref 事件循环，而关机正是「循环里
     // 已经没有别的 handle」的那一刻：avvio 的 onClose 是 LIFO，监听 socket 已关、
     // 连接池已 end、`process.once("SIGTERM", …)` 的监听器本身也不 ref 循环。于是
     // 进程会直接退出，这条 reject 永远不会发生，退出码还是 0——比静默 resolve 更糟。
     // 它最多活 2 秒，是有界的。
-    void timer;
+    const failed = (error: unknown): string =>
+      `log flush failed (${role}): ${safeErrorType(error)}`;
     const done = (error?: Error | null): void => {
-      if (settled) {
+      const reason =
+        error === undefined || error === null ? undefined : failed(error);
+      if (awaitingReturn) {
+        // 只暂存：`root.flush()` 还可能同步 throw，那才是最终结果。
+        staged ??= { reason };
         return;
       }
-      settled = true;
-      clearTimeout(timer);
-      resolve(
-        error === undefined || error === null
-          ? undefined
-          : `log flush failed (${role}): ${safeErrorType(error)}`,
-      );
+      finish(reason);
     };
     try {
       root.flush(done);
+      awaitingReturn = false;
     } catch (error) {
-      done(error instanceof Error ? error : new Error("log flush threw"));
+      awaitingReturn = false;
+      // 同步 throw 压过回调暂存的任何结果——包括「成功」。
+      finish(failed(error));
+      return;
+    }
+    // `root.flush()` 可能同步阻塞了很久才返回。回来之后**重新量一次**：超了就算
+    // 超时，哪怕回调报的是成功。定时器这时还没机会跑（线程一直被占着）。
+    if (monotonicMs() - startedAt >= flushTimeoutMs) {
+      finish(timedOut);
+      return;
+    }
+    if (staged !== undefined) {
+      finish(staged.reason);
     }
   });
 
@@ -369,11 +416,12 @@ const flushOwned = (root: Logger, role: string): Promise<string | undefined> =>
  * `Writable` 时它立刻回调，**不会**等 `_write` 的回调跑完。于是「关机前最后一条
  * 业务事件」在异步目的地上会丢（实测：延迟 5ms 的写入在 close 返回之后还没落地）。
  *
- * 这里只**等它排空**，绝不 `end()` 它——目的地归调用方所有。等待有硬上界，但到点
- * 是**报失败**而不是接着往下走：一个没排空的目的地意味着日志真的丢了。
+ * 这里只**等它排空**，绝不 `end()` 它——目的地归调用方所有。到点是**报失败**而不是
+ * 接着往下走：一个没排空的目的地意味着日志真的丢了。
  *
- * `writableLength` 是一个访问器，调用方给的对象可以让它抛。所以整段包起来，
- * 抛出来的东西只按**归一化类型名**记一笔。
+ * `writableLength` 是一个访问器，调用方给的对象可以让它抛，也可以让它同步阻塞。
+ * 所以整段包起来，抛出来的东西只按**归一化类型名**记一笔；而且每次读完都**重新量
+ * 一次**已用时间——一个阻塞 2.3 秒后返回 0 的 getter 不算「排空了」。
  */
 const awaitDrained = async (
   destination: Writable | undefined,
@@ -382,11 +430,17 @@ const awaitDrained = async (
   if (destination === undefined) {
     return undefined;
   }
-  const deadline = Date.now() + drainTimeoutMs;
+  const startedAt = monotonicMs();
+  const timedOut = `log destination did not drain within ${String(drainTimeoutMs)}ms (${role})`;
   try {
-    while (destination.writableLength > 0) {
-      if (Date.now() >= deadline) {
-        return `log destination did not drain within ${String(drainTimeoutMs)}ms (${role})`;
+    for (;;) {
+      const buffered = destination.writableLength;
+      // 先判时限再判排空：getter 自己可能同步吃掉了整个预算。
+      if (monotonicMs() - startedAt >= drainTimeoutMs) {
+        return timedOut;
+      }
+      if (buffered === 0) {
+        break;
       }
       await sleep(1);
     }

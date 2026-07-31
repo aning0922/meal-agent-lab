@@ -103,14 +103,25 @@ Error / Request / Reply / Config / Secret 在类型上就进不来。
 写实：flush 自有 root 时 pino 会把回调转交给**目的地自己的** `flush`（如果它有），
 所以调用方给的目的地会因此被调用一次 `flush`，它报错同样会让 `close()` 失败。
 
-关机是**有界、fail closed 且 failure-safe** 的。close 是一个**阶段收集器**：
-event flush、（自建时的）framework flush 与 framework drain、event drain——每一个
-适用的阶段都会跑到，一个阶段失败**不跳过**后面的阶段，最后一次性抛出
-`AggregateError`。失败原因只由本模块自己的固定文本与**归一化错误类型名**拼成，
-不带调用方或目的地的原始文本。超时定时器**刻意不 `unref()`**：关机那一刻循环里
-已经没有别的 handle，unref 过的定时器不会到，进程会以 0 退出而不是 reject。重复
-调用拿到的是同一个 promise，成功失败都一样。`index.ts` 把这个失败落成 stderr 上
-一行**完全固定的中性文本** `shutdown: close failed`，以及确定的非零退出码。
+关机是 **fail closed 且 failure-safe** 的。close 是一个**阶段收集器**：event
+flush、（自建时的）framework flush 与 framework drain、event drain——每一个适用的
+阶段都会跑到，一个阶段失败**不跳过**后面的阶段，最后一次性抛出 `AggregateError`。
+失败原因只由本模块自己的固定文本与**归一化错误类型名**拼成，不带调用方或目的地的
+原始文本；`flush()` 在回调之后**同步 throw** 同样算失败（回调在 `flush()` 返回前
+只暂存结果）。超时定时器**刻意不 `unref()`**：关机那一刻循环里已经没有别的 handle，
+unref 过的定时器不会到，进程会以 0 退出而不是 reject。重复调用拿到的是同一个
+promise，成功失败都一样。
+
+时限只**对异步拖延有效**。同一个 JS 线程里没有办法抢占一个不返回的同步调用，因此
+调用方给的 `Writable` 与它的 `flush` 被明确定义为**受信的、合作式的**接口：死循环
+的 `flush` 这一层挡不住，也不为此引入 worker/子进程改造。能保证的是**有限**的同步
+阻塞会被 fail closed——同步调用返回之后重新量一次已用时间（`performance.now()`，
+不用 `Date.now()`），超了就算超时，哪怕它最终「成功」返回。
+
+关机契约本身在 [`src/shutdown.ts`](src/shutdown.ts)：**应用**关闭失败（不只是日志
+flush）落成 stderr 上一行**完全固定的中性文本** `shutdown: close failed` 与确定的
+非零退出码。两条路径（SIGTERM、listen 失败后再关）都有 **subprocess 回归**，跑的是
+这两个生产函数本身。
 
 静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
 **声明身份**而不是类型名字符串：任何解析到 pino `LogFn` 声明的表达式只允许出现在
@@ -167,8 +178,7 @@ metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完�
 M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点
 `ca65275`。**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点
 `5e480803`。**M2B（Compose 拓扑）已由项目总控 Accepted**，验收落点 `d0f2219`；
-**M3A（配置与 Secret file 消费核心）implementation complete, pending
-total-control review**；M3B、M4、M5 未开始。阶段 09A 仍为 In Progress，完整
+**M3A（配置与 Secret file 消费核心）Round 14 整改中，未 Accepted**；M3B、M4、M5 未开始。阶段 09A 仍为 In Progress，完整
 bootstrap 链与全栈启动尚未通过。ADR-0005 保持 `Proposed`。
 
 R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或

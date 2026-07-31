@@ -338,11 +338,16 @@ export const buildApp = async (
   await registerRoutes(app, operations, readiness);
 
   // 生命周期：flush **自有**的那些 logger（event root，以及没被注入时我们自己建的
-  // framework root），再等自有 logger 写进去的字节排空。调用方注入的 framework
-  // logger 与所有 `Writable` 都归调用方所有，我们既不 flush 也不 end。
+  // framework root），再等自有 logger 写进去的字节排空。
   //
-  // `close` 是**有界且 fail closed** 的：flush 报错、flush 回调超时、排空超时都会
-  // reject，并经由这个 hook 让 `app.close()` 一起失败。关机时悄悄丢掉最后几条日志，
+  // 调用方给的 `Writable` 归调用方所有：我们**不 `end`、不 `destroy`、也不往里
+  // 写**任何东西，只读 `writableLength` 等它排空。有一处要写实——flush **自有
+  // root** 时 pino 会把回调转交给**目的地自己的 `flush`**（如果它有），所以调用方
+  // 的目的地确实会因此被调用一次 `flush`。调用方注入的 framework **logger** 则
+  // 完全不碰。
+  //
+  // `close` 是 **fail closed 且 failure-safe** 的：每个适用阶段都会跑到，失败聚合
+  // 抛出，并经由这个 hook 让 `app.close()` 一起失败。关机时悄悄丢掉最后几条日志，
   // 事后与「根本没写过」分不清。
   app.addHook("onClose", async () => {
     await logging.close();

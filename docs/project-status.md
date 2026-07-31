@@ -87,7 +87,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 176/176 |
+| API unit | 181/181 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -269,14 +269,21 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   错误处理器也不读这个属性，改从**词法闭包**里取 sink——读一个可替换的属性等于把
   「谁来处理业务事件」交给任何拿得到实例的人。反例实测：直接赋值与
   `Object.defineProperty` 均失败，业务事件仍走原 sink。
-- **日志关机有界且 fail closed**（Round 14）：`close()` 先 flush **自建的**那些
+- **日志关机 fail closed**（Round 14）：`close()` 先 flush **自建的**那些
   logger（event root，以及没被注入时我们自己建的 framework root），再等自有 logger
   写进去的字节排空。调用方注入的 `Logger` 我们不碰，任何 `Writable` 都**绝不
   `end`**；口径写实的部分是——flush 自有 root 时 pino 会把回调转交给**目的地自己
   的** `flush`（`lib/proto.js:253`，判据是 `typeof stream.flush === "function"`），
   所以调用方给的目的地会因此被调用一次 `flush`，它报错同样会让 `close()` 失败。
   三条失败路径全部 **reject**、不静默放行：flush 报错、flush 回调不来、目的地排空
-  超时。重复调用拿到的是**同一个** promise，成功失败都一样。修复前实测：flush 报错
+  超时、以及 flush **同步 throw**（回调先报成功、`flush()` 随后抛，上一版把那个
+  throw 整个吃掉，一次失败的 flush 报告成功）。时限只**对异步拖延有效**：同一个 JS
+  线程里没有办法抢占一个不返回的同步调用，因此调用方给的 `Writable` 与它的 `flush`
+  被明确定义为**受信的、合作式的**接口——死循环的 `flush` 这一层挡不住，也不为此
+  引入 worker/子进程改造。能保证的是**有限**的同步阻塞会被 fail closed：同步调用
+  返回之后重新量一次已用时间（用 `performance.now()`，不是 `Date.now()`），超了就
+  算超时，哪怕它最终「成功」返回。重复调用拿到的是**同一个** promise，成功失败都
+  一样。修复前实测：flush 报错
   → close 静默 resolve；flush 回调不来 → 用例**永不返回**（仓库的 `test:unit` 没有
   超时；加 `--test-timeout=8000` 跑才会在 8 秒后被判超时）；排空超时 → 静默
   resolve；自建的 framework root 根本不在 flush 名单里。错误消息只保留**归一化的
@@ -304,7 +311,15 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   （`framework.flushes() === 1`）；framework flush 失败后 event drain 仍执行；
   一个 drain 失败不阻断另一个 drain（两条 `did not drain` 同时出现在聚合消息里）。
 - **调用方的 `Writable` 只读不写**（Round 14 收尾追加）：绝不 `end`、绝不
-  `destroy`、也绝不往里写关机标记，只读 `writableLength` 等它排空。
+  `destroy`、也绝不往里写关机标记，只读 `writableLength` 等它排空。口径还要补一句
+  写实的：flush **自有 root** 时 pino 会把回调转交给目的地自己的 `flush`。
+- **关机契约抽成 `src/shutdown.ts`**（Round 14 定点追加）：`index.ts` 里那两段
+  handler 挪进一个只依赖 `{ eventLog, close }` 的窄接口模块。这样两条失败路径
+  （SIGTERM 关机失败、listen 失败后再关又失败）的 **subprocess 回归**跑的是**生产
+  函数本身**而不是抄件——抄件跑绿不代表生产那份还在。两条回归都断言 stderr 恰好是
+  `shutdown: close failed`、退出码 1、目的地抛出的敌意文本一个字都不出现；把
+  `catch` 去掉之后两条同时失败。文案是**应用**关闭失败，不归因到日志 flush：
+  `app.close()` 会跑完所有 onClose hook，连接池与插件清理同样可能失败。
 - **敌意抛出物兜到固定串**（Round 14 收尾复评二）：`errorTypeOf` 自己要读输入的
   原型与属性描述符，因此一个**自指** Proxy 能让它再抛一次。三个调用点都没兜的
   后果不是少一句诊断，而是抛出来的**就是调用方的原始对象**：它穿过阶段收集器，
@@ -360,11 +375,15 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   访问」的话，`createLoggingContext(level, app.log)` 与
   `createLoggingContext(level, foreign.logger)` 都是绿的（实测）。`logging.ts` 的
   `createLogger` 同样计入能力，而且比 `createLoggingContext` 更严：它直接返回 raw
-  `Logger`，因此在两个边界文件之外**一处都不许出现**。收尾修订前这条写的是「initializer 是不是一个
+  `Logger`，因此在两个边界文件之外**一处都不许出现**。注入槽的**基**按**声明身份**
+  登记：必须解析到组装根入口函数（生产里的 `buildApp`）第一个形参的那条 parameter
+  声明。上一版判的是「任何 FunctionLike 的第一个形参」——那还是形状，随手写一个
+  helper，它自己的首参就成了合法注入源（`violatingNestedHelperInput` 修复前实测
+  **0 report**）。收尾修订前这条写的是「initializer 是不是一个
   `CallExpression`」——**任何**调用的返回值都算，于是
   `const held = externalRelay(logging)` 之后 `held` 怎么用都放行，一个中继函数就能
   把整个 context 带出边界（实测假绿）。Round 13 的 app.ts 假绿是**手工改文件**验证
-  的，跑完就没了；现在二十一种违规接线固定在
+  的，跑完就没了；现在二十二种违规接线固定在
   `tests/fixtures/app-wiring-variants.ts` 里，测试把 fixture **当作组装根**喂给
   收集器，白名单从此有自动化回归。
 - **logging.ts 的净化器降级为纵深防御**（第十轮起）：它不再是业务日志的安全依据，

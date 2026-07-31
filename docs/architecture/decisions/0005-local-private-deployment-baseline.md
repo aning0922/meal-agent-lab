@@ -164,8 +164,7 @@ catalog → 共享结构化 projector CTE → 公开只读 projection adapter / 
 （object + grantee + grantor + privilege + grantable）判定，固定允许授权的 canonical
 grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验收落点
 `5e480803`）；**M2B（Compose 拓扑）也已由总控 Accepted，验收落点 `d0f2219`**。
-**M3A（配置与 Secret file 消费核心）implementation complete, pending
-total-control review**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
+**M3A（配置与 Secret file 消费核心）Round 14 整改中，未 Accepted**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
 §4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
 [§4 的实施注记](#4-secret日志与镜像边界)）。阶段 09A 仍在进行（M3B、M4、M5 未
 开始），完整 bootstrap 链与全栈启动尚未通过，本 ADR 因此保持 `Proposed`。
@@ -282,8 +281,7 @@ sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对
 - 镜像、运行日志、解析后的 Compose 配置和 tracked files 均执行 sentinel/Secret 扫描；
 - 私有和认证响应使用 `Cache-Control: no-store`，响应增加 `X-Content-Type-Options: nosniff`，不启用 wildcard CORS。
 
-**M3A 实施注记**（implementation complete, pending total-control review，**不是**
-阶段完成证据）：`_FILE` 互斥注入由 `services/api/src/config-source.ts`（API、
+**M3A 实施注记**（**M3A Round 14 整改中，未 Accepted**，**不是**阶段完成证据）：`_FILE` 互斥注入由 `services/api/src/config-source.ts`（API、
 `db:migrate`、`db:bootstrap` 三个入口共用）与 `infra/docker/postgres/secret-source.sh`
 （三对 `MEAL_AGENT_*_PASSWORD`）实现，两侧的互斥语义与内容判据**按条对齐**
 （不是逐字节等价的同一实现，机制差异见 `infra/docker/postgres/README.md`）：绝对路径、
@@ -312,7 +310,11 @@ raw `Logger` 只存在于模块词法作用域，`app.eventLog` 不可写不可�
 （event flush、自建时的 framework flush 与 drain、event drain）都会跑到，一个阶段
 失败不跳过后面的阶段，最后聚合成 `AggregateError` 让 `app.close()` 失败；失败原因
 只由固定文本与归一化错误类型名拼成，取类型名这一步本身也兜了底（敌意的自指 Proxy
-会让归一化再抛一次）。自建的 logger 才 flush，调用方注入的 logger
+会让归一化再抛一次）；`flush()` 在回调之后同步 throw 同样算失败。时限只对**异步**
+拖延有效——同一个 JS 线程无法抢占不返回的同步调用，因此调用方的 `Writable`/`flush`
+被定义为**受信的合作式接口**，只保证**有限**的同步阻塞会 fail closed（同步调用返回
+后用 `performance.now()` 重新量一次）。进程级关机契约在 `src/shutdown.ts`，两条失败
+路径有 subprocess 回归。自建的 logger 才 flush，调用方注入的 logger
 不碰，调用方的 `Writable` 绝不 `end`/`destroy`/写入，只读 `writableLength` 等它
 排空。`index.ts` 把失败落成 stderr 上固定中性文本 `shutdown: close failed` 与
 非零退出码。

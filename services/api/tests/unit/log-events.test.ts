@@ -643,9 +643,20 @@ interface ProbeDestination {
   ended: () => boolean;
 }
 
+/** 同步占住线程。用来复现「有限的同步阻塞」，不是死循环。 */
+const blockSynchronously = (milliseconds: number): void => {
+  const until = performance.now() + milliseconds;
+  while (performance.now() < until) {
+    // 忙等：同一个 JS 线程里定时器根本没机会跑，这正是要复现的情形。
+  }
+};
+
 const probeDestination = (
-  behaviour: "ok" | "error" | "hang",
-  options: { readonly stallWrites?: boolean } = {},
+  behaviour: "ok" | "error" | "hang" | "callback-then-throw",
+  options: {
+    readonly stallWrites?: boolean;
+    readonly blockFlushMs?: number;
+  } = {},
 ): ProbeDestination => {
   let flushes = 0;
   let ended = false;
@@ -665,6 +676,9 @@ const probeDestination = (
   Object.defineProperty(stream, "flush", {
     value: (callback: (error?: Error | null) => void): void => {
       flushes += 1;
+      if (options.blockFlushMs !== undefined) {
+        blockSynchronously(options.blockFlushMs);
+      }
       if (behaviour === "hang") {
         return;
       }
@@ -673,6 +687,10 @@ const probeDestination = (
           ? new Error(`flush failed: ${opaqueSecret}`)
           : null,
       );
+      if (behaviour === "callback-then-throw") {
+        // 回调先报成功，然后 `flush()` 自己同步抛。
+        throw new Error(`flush threw after calling back: ${opaqueSecret}`);
+      }
     },
     writable: false,
     enumerable: true,
@@ -999,4 +1017,153 @@ test("a hostile throw from the destination cannot escape close, nor skip a stage
   );
   assert.equal(events.ended(), false);
   assert.equal(framework.ended(), false);
+});
+
+// ---------------------------------------------------------------------------
+// 第十四轮定点追加：回调不能盖住同步 throw；有限的同步阻塞必须 fail closed
+// ---------------------------------------------------------------------------
+
+test("a flush callback cannot mask a synchronous throw from flush()", async () => {
+  // `root.flush()` 先把回调调成功、然后自己同步抛。上一版在回调里就把结果定死了，
+  // 于是那个 throw 被完全吃掉——一次失败的 flush 报告成功。
+  const events = probeDestination("callback-then-throw");
+  const framework = probeDestination("ok", { stallWrites: true });
+  const context = createLoggingContext(
+    "info",
+    undefined,
+    events.stream,
+    framework.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+  // framework 那棵也得真有字节压在目的地里，它的 drain 才谈得上「跑没跑」。
+  context.framework.info("keeping the framework destination busy");
+
+  const failure = await context.close().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.ok(
+    failure instanceof AggregateError,
+    "a flush that throws after calling back must fail the close",
+  );
+  assert.match(failure.message, /log flush failed \(event\): Error/);
+  // 后续阶段一个都不能少。
+  assert.equal(
+    framework.flushes(),
+    1,
+    `the framework flush must still run\n${failure.message}`,
+  );
+  assert.match(
+    failure.message,
+    /log destination did not drain within 2000ms \(framework\)/,
+    `the framework drain must still run\n${failure.message}`,
+  );
+  assert.ok(
+    !failure.message.includes(opaqueSecret),
+    `the aggregate must not carry the destination's message\n${failure.message}`,
+  );
+  assert.equal(events.ended(), false);
+  assert.equal(framework.ended(), false);
+});
+
+test("a flush that blocks past the deadline and then succeeds still fails closed", async () => {
+  // 同步阻塞 2300ms 之后**成功**返回。定时器在阻塞期间根本没机会跑，所以
+  // `root.flush()` 返回之后必须重新量一次已用时间。
+  const events = probeDestination("ok", { blockFlushMs: 2_300 });
+  const context = createLoggingContext(
+    "info",
+    createLogger("info"),
+    events.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const failure = await context.close().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.ok(
+    failure instanceof AggregateError,
+    "a flush that overran the deadline must not report success",
+  );
+  assert.match(failure.message, /log flush timed out after 2000ms \(event\)/);
+  assert.equal(events.ended(), false);
+});
+
+test("a writableLength getter that blocks past the deadline still fails closed", async () => {
+  const events = probeDestination("ok");
+  Object.defineProperty(events.stream, "writableLength", {
+    get: () => {
+      blockSynchronously(2_300);
+      return 0;
+    },
+    configurable: true,
+  });
+  const context = createLoggingContext(
+    "info",
+    createLogger("info"),
+    events.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const failure = await context.close().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.ok(
+    failure instanceof AggregateError,
+    "a getter that overran the deadline must not count as drained",
+  );
+  assert.match(
+    failure.message,
+    /log destination did not drain within 2000ms \(event\)/,
+  );
+  assert.equal(events.ended(), false);
+});
+
+// ---------------------------------------------------------------------------
+// 第十四轮定点追加：关机契约的 subprocess 回归
+// ---------------------------------------------------------------------------
+
+const shutdownSentinel = "OPAQUE-SHUTDOWN-SENTINEL";
+
+const runShutdownProbe = (
+  mode: "sigterm" | "listen",
+): ReturnType<typeof spawnSync> =>
+  spawnSync(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      join(packageRoot, "tests", "fixtures", "shutdown-close-failure.ts"),
+      mode,
+    ],
+    { cwd: packageRoot, encoding: "utf8", timeout: 60_000 },
+  );
+
+test("a SIGTERM close failure exits 1 with fixed neutral stderr", () => {
+  const run = runShutdownProbe("sigterm");
+  assert.equal(run.status, 1, `stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+  assert.equal(
+    run.stderr,
+    "shutdown: close failed\n",
+    "stderr must be exactly one fixed neutral line",
+  );
+  assert.ok(
+    !`${run.stdout}${run.stderr}`.includes(shutdownSentinel),
+    `the destination's hostile text must not reach any output\n${run.stdout}\n${run.stderr}`,
+  );
+});
+
+test("a close failure after a failed listen exits 1 with fixed neutral stderr", () => {
+  const run = runShutdownProbe("listen");
+  assert.equal(run.status, 1, `stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+  assert.equal(
+    run.stderr,
+    "shutdown: close failed\n",
+    "stderr must be exactly one fixed neutral line",
+  );
+  assert.ok(
+    !`${run.stdout}${run.stderr}`.includes(shutdownSentinel),
+    `the destination's hostile text must not reach any output\n${run.stdout}\n${run.stderr}`,
+  );
 });

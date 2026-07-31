@@ -355,6 +355,7 @@ const collectCapabilityUses = (
   program: ts.Program,
   withinPath: string,
   compositionRootOverride?: string,
+  compositionEntryName = "buildApp",
 ): readonly LoggerCallSite[] => {
   const checker = program.getTypeChecker();
   const declarations = resolveCapabilityDeclarations(program);
@@ -363,6 +364,16 @@ const collectCapabilityUses = (
   // 组装根可以被覆盖，好让 fixture 扮演它——app.ts 的白名单因此有**自动化回归**，
   // 而不是靠每轮手工改一次文件再改回来。
   const compositionRoot = compositionRootOverride ?? join(sourceRoot, "app.ts");
+  /**
+   * 组装根**入口函数的第一个形参**的真实符号——生产里就是
+   * `buildApp(options: BuildAppOptions)` 的 `options`。
+   *
+   * 上一版判的是「任何 FunctionLike 的第一个形参」。那不是身份，是形状：随手写一个
+   * helper，它自己的首参就成了合法注入源
+   * （`(input: { logger: Logger }) => createLoggingContext(level, input.logger)`
+   * 实测 0 report）。注入槽只有一个来源，必须按**这条 parameter 声明**登记。
+   */
+  const optionsSymbols = new Set<ts.Symbol>();
   const found = new Map<string, LoggerCallSite>();
 
   /**
@@ -486,6 +497,30 @@ const collectCapabilityUses = (
     visit(file);
   };
 
+  /** 登记组装根入口函数（`buildApp` / fixture 里指定的那一个）的首参符号。 */
+  const collectEntryOptions = (file: ts.SourceFile): void => {
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === compositionEntryName &&
+        node.initializer !== undefined &&
+        ts.isFunctionLike(node.initializer)
+      ) {
+        const parameter = node.initializer.parameters[0];
+        const symbol =
+          parameter === undefined
+            ? undefined
+            : checker.getSymbolAtLocation(parameter.name);
+        if (symbol !== undefined) {
+          optionsSymbols.add(symbol);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+  };
+
   /** `<ctx>.framework`，且 `<ctx>` 必须解析到上面收集到的那些符号之一。 */
   const isContextMemberAccess = (node: ts.Node, member: string): boolean => {
     if (
@@ -582,21 +617,22 @@ const collectCapabilityUses = (
    * 组装根入口函数**自己的 options 对象**上的一个字段。
    *
    * 光是「基是某个形参」不够：多加一个形参就能绕过去
-   * （`(options, foreign: { logger: Logger }) => createLoggingContext(level, foreign.logger)`）。
-   * 注入槽只有一个来源——组装根收到的那个 options 对象，也就是它的**第一个**形参。
+   * （`(options, foreign: { logger: Logger }) => …`）。「任何 FunctionLike 的第一个
+   * 形参」同样不够——随手写一个 helper，它自己的首参就成了合法注入源。
+   *
+   * 判据是**声明身份**：必须解析到 `optionsSymbols` 里那个符号，也就是组装根入口
+   * 函数（生产里的 `buildApp`）第一个形参的那条声明。
    */
   const isCompositionOptionsMember = (node: ts.Node, parent: ts.Node): boolean => {
-    if (!isCompositionInputMember(node, parent)) {
+    if (
+      !ts.isIdentifier(node) ||
+      !ts.isPropertyAccessExpression(parent) ||
+      parent.expression !== node
+    ) {
       return false;
     }
-    const declaration = (
-      checker.getSymbolAtLocation(node)?.getDeclarations() ?? []
-    ).find(ts.isParameter);
-    return (
-      declaration !== undefined &&
-      ts.isFunctionLike(declaration.parent) &&
-      declaration.parent.parameters[0] === declaration
-    );
+    const symbol = checker.getSymbolAtLocation(node);
+    return symbol !== undefined && optionsSymbols.has(symbol);
   };
 
   const isAllowedAppNode = (node: ts.Node): boolean => {
@@ -717,6 +753,7 @@ const collectCapabilityUses = (
     const isCompositionRoot = file.fileName === compositionRoot;
     if (isCompositionRoot) {
       collectContextSymbols(file);
+      collectEntryOptions(file);
     }
 
     const record = (node: ts.Node, kind: string): void => {
@@ -965,7 +1002,14 @@ test("the composition-root allowlist admits only the exact wiring nodes", () => 
   // 验证跑完就没了，下一轮没人知道它还成不成立。这里把每一种接线写法固定进
   // fixture，再把 fixture **当作组装根**喂给收集器——白名单于是有了回归。
   const program = buildProgram([wiringFixture]);
-  const uses = collectCapabilityUses(program, wiringFixture, wiringFixture);
+  // fixture 扮演组装根时，入口函数**明确指定**为 `allowedWiring`——只有它的首参
+  // 是合法注入源，别的导出（包括 helper 自己的首参）都不是。
+  const uses = collectCapabilityUses(
+    program,
+    wiringFixture,
+    wiringFixture,
+    "allowedWiring",
+  );
   const source = readFileSync(wiringFixture, "utf8").split("\n");
   const lineOf = (name: string): number => {
     const index = source.findIndex((line) =>
@@ -1018,6 +1062,7 @@ test("the composition-root allowlist admits only the exact wiring nodes", () => 
     "violatingRootFactoryAlias",
     "violatingRootFactoryHandover",
     "violatingFactoryProbe",
+    "violatingNestedHelperInput",
   ]) {
     assert.ok(
       within(name).length > 0,

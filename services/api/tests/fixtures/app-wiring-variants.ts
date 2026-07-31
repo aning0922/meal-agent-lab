@@ -264,3 +264,17 @@ export const violatingFactoryProbe = (): boolean => {
   const build = createLoggingContext;
   return typeof build === "function";
 };
+
+/**
+ * 22. helper 自己的首参当成注入源。
+ *
+ * 上一版判的是「任何 FunctionLike 的第一个形参」——那不是身份，是形状。随手写一个
+ * helper，它自己的首参就成了合法注入源，一个来路不明的 `logger` 就这样进了
+ * `LoggingContext.framework`。修复前实测 0 report。
+ */
+export const violatingNestedHelperInput = (input: {
+  readonly logger: Logger;
+}): EventLogSink => {
+  const logging = createLoggingContext("info", input.logger);
+  return logging.eventLog;
+};
