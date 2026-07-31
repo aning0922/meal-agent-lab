@@ -32,7 +32,8 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { generateAndPreflight } from './generate-local-test-secrets.mjs'
-import { repositoryRoot } from './local-test-secrets-contract.mjs'
+import { runContainmentAndIsolation } from './local-test-containment.mjs'
+import { checkSecretBundle, repositoryRoot } from './local-test-secrets-contract.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -637,6 +638,21 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       `secret visibility: ${String(containerIds.length)} project containers each ` +
         'mount exactly their declared secret set'
     )
+
+    // 6. Secret containment 扫描与动态网络隔离（api 仍在运行时取证）。
+    // bodies 只在内存中流转，绝不输出；scanTemplates 已在预检做过，这里只取值。
+    const { bodies } = checkSecretBundle(secretsDirectory, { scanTemplates: false })
+    await runContainmentAndIsolation({
+      project,
+      hostPort,
+      bodies,
+      composeFile,
+      composeEnvironment,
+      transcript,
+      log,
+      fail,
+      run
+    })
 
     return { project, hostPort, stepResults }
   } catch (error) {
