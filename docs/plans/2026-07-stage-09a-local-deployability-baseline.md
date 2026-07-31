@@ -1372,7 +1372,7 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
    runtime login（与观察用 admin 连接）；16 个容器逐一只挂载所属服务声明的
    secret（api 只有 runtime URL；migrate 只有 migration URL；bootstrap 各取
    所需）。
-6. **Secret containment 扫描**：12 条 needle（四口令及 URL 编码形态、三条完整
+6. **Secret containment 扫描**：18 条 needle（四口令与 16 字符前缀、三条完整
    URL、两条 pgpass 记录）加本轮随机 scanner sentinel，先在合成产物上自检逐条
    可命中，再扫 `docker compose config`、全部容器 inspect（单列 Config.Env、
    Config.Cmd/Args、Mounts）、image inspect、`image history --no-trunc`、全部
@@ -1385,7 +1385,7 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
    失败）；postgres 无 PublishedPort/PortBinding；api 恰好一个
    `127.0.0.1:<port>→3000/tcp` binding。失败也执行按 project label 限定的
    scoped cleanup，实测零残留；`--keep-failure` 才保留现场。
-8. **反向测试 32 项全部以指定理由捕获、0 漏网**（`check-local-test-negatives.mjs`）：
+8. **反向测试 47 项全部以指定理由捕获、0 漏网**（`check-local-test-negatives.mjs`）：
    错 user（含 `meal_agent_migration` 漏 `_login`）、错 host/port/database、
    query 走私、URL 与口令不一致、pgpass 不一致/第三 endpoint/通配、缺文件、
    多文件、弱权限 0644、错属主（经 expectedOwnerUid 注入 seam——非 root 进程
@@ -1396,6 +1396,48 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
    migrate argv（改写-还原 + 拓扑门禁指定理由）、sentinel 进
    environment/argv 必须被同一台扫描器命中且报告不含取值、cleanup 拒绝范围外
    project 名与范围外目录、decoy 容器存活。全部失败消息不含任何 Secret 取值。
+
+#### M3B 首轮自查（两路只读对抗审计）与定点修复
+
+交付后先做了两路只读对抗审计（Secret/泄漏面；Compose/网络/cleanup），确认级
+发现全部在同一轮修复（`fix(stage09a): close the M3B adversarial audit findings`），
+其中最重要的几条与修复前后的对照：
+
+1. **失败路径的输出泄漏面**：一次性容器非零退出时，smoke 会把容器日志摘录
+   原样打到 stdout，而该分支恰好跳过 containment 扫描。现在 bundle 生成后把
+   全部敏感值（与扫描器同一个 buildNeedles）注册进输出 scrub，smoke 的**每一
+   条**输出（含失败路径日志摘录与子进程 stderr）都过它。
+2. **生成器的 failure-safe 缺口**：`generateAndPreflight` 只在预检返回
+   problems 时清理，预检**抛出**（如 realpath 异常）会留下整套真凭据；生成器
+   对 symlink 目标目录会跟随写入、对将被拒绝的目录先 chmod 再校验。三条都已
+   修复（lstat 拒绝 symlink、校验先于 chmod、抛出路径同样清理）。
+3. **两处 fail-open 判定**：`docker inspect` 失败被 `Number(null)===0` 读成
+   「退出码 0」、被 `stdout || '{}'` 读成「postgres 没有发布端口」。全部改为
+   显式失败，不允许用默认值替代读不到的证据。
+4. **网络隔离证据的空转**：link-local IPv6 不带 zone id 时连接是未路由的
+   EHOSTUNREACH 空转（本机 18 个非 loopback 地址里 9 个），却每次贡献
+   「as required」。现在拼 `%<interface>` 后是真实路由尝试；HTTP 探针增加
+   「先在 127.0.0.1 认出自家 API」的正向自检；accept-all 对照端口先验证本机
+   确实无监听。
+5. **匿名卷泄漏**：postgres 镜像自带 `VOLUME`，`compose run` 的一次性容器删除
+   时不带 `-v` 会持续泄漏匿名卷（实测已泄漏 6 个，已按 ID 清除）。容器删除
+   全部带 `-v`，并新增「悬挂匿名卷前后对照」断言（匿名卷不带 project label，
+   按 label 的残留检查在原理上看不见它们）。
+6. **cleanup 的异常与信号路径**：明文 Secret 目录改为**最先**删除；down 退出
+   码不再静默；单类 sweep 失败不中断其余；smoke 与 probe 增加 SIGINT/SIGTERM
+   清理（此前 Ctrl-C 会把容器、卷与明文 Secret 整套留下）；cleanup 范围收窄到
+   `meal-agent-m3b-{smoke,neg}-*`（并发探针不可被摸到）；`--keep-failure` 只在
+   链路已启动时保留现场并显式警告其中含真实合成凭据。
+7. **反例套件的假绿与覆盖缺口**：decoy 反例此前只断言上界（空实现的 cleanup
+   也能通过），现在同时断言下界（自己 project 的容器必须被删掉）；模板扫描补
+   `KEY`/`PWD`/`PASS`/`CREDENTIAL` 后缀、注释行、无 userinfo 的 `password=`
+   查询参数 DSN 与零覆盖抛错；默认目录强制 `.gitignore` 存在且八个文件名逐一
+   过 `git check-ignore`；反例从 32 项扩到 **47 项**（补内容卫生、口令字母表、
+   fragment、tab 走私——canonical 全等的专属回归、unix socket host 等），并加
+   47 项精确计数断言。
+
+修复后全部门禁重跑：smoke PASS（18 needles、86 产物、315 tracked files 零命
+中）、probe PASS、反例 47/47、拓扑门禁与 15 项变异全绿、悬挂匿名卷零新增。
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
@@ -1532,7 +1574,7 @@ node infra/docker/generate-local-test-secrets.mjs      # 八份 Secret 的单一
 node infra/docker/preflight-local-test-secrets.mjs     # 部署前交叉一致性预检
 node infra/docker/probe-compose-secret-identity.mjs    # Compose Secret 的容器内 UID/mode 证据
 node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离
-node infra/docker/check-local-test-negatives.mjs       # 32 项指定理由反例
+node infra/docker/check-local-test-negatives.mjs       # 47 项指定理由反例
 ```
 
 `pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由

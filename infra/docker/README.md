@@ -128,7 +128,7 @@ secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不
 | `node infra/docker/preflight-local-test-secrets.mjs` | 部署前交叉一致性预检（任何数据库容器启动之前必须通过） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
-| `node infra/docker/check-local-test-negatives.mjs` | 32 项反例，全部要求以指定理由失败 |
+| `node infra/docker/check-local-test-negatives.mjs` | 47 项反例，全部要求以指定理由失败 |
 
 八份 Secret 的文件清单、角色与固定部署 identity 只有一个事实源：
 [`local-test-secrets-contract.mjs`](local-test-secrets-contract.mjs)。
@@ -232,7 +232,7 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-32 项指定理由反例（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+47 项指定理由反例（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 
 备份与恢复命令、停止/重启持久化属于 M4；`pnpm stage09a:check` 聚合门禁与远端
 CI 属于 M5——两者仍未取得证据，阶段 09A **不得记为 Pass**。
