@@ -33,7 +33,10 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { generateSecretBundle } from './generate-local-test-secrets.mjs'
+import {
+  generateAndPreflight,
+  generateSecretBundle
+} from './generate-local-test-secrets.mjs'
 import {
   buildNeedles,
   collectDockerArtifactsForProject,
@@ -163,6 +166,26 @@ const readBody = (directory, filename) => {
 }
 
 process.stdout.write('Group A: secret preflight negatives\n')
+
+{
+  // **正向基线**：一套刚生成的干净 bundle 预检必须零问题。没有它，「所有
+  // bundle 一律判失败」的回归会让下面每一条反例都恒绿（审计实测：把
+  // 0700 判据改成拒绝一切正确目录，33 条反例全部照常通过）。
+  const name = 'a freshly generated bundle passes preflight with zero problems'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-'))
+  const directory = resolve(parent, 'bundle')
+  try {
+    generateSecretBundle(directory)
+    const { problems } = checkSecretBundle(directory, { scanTemplates: false })
+    if (problems.length > 0) {
+      fail(name, `a clean bundle was rejected: ${problems.join('; ')}`)
+    } else {
+      pass(name, 'zero problems on a pristine bundle (guards against blanket rejection)')
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
 
 preflightNegative(
   'wrong URL user (meal_agent_migration without _login)',
@@ -624,6 +647,18 @@ templateNegative(
   /contains a full connection string with credentials/
 )
 
+templateNegative(
+  'a double-commented secret assignment is still caught',
+  (source) => source.replace('WECHAT_APP_SECRET=\n', '# WECHAT_APP_SECRET=double-commented\n'),
+  /assigns a non-empty value to the sensitive key WECHAT_APP_SECRET/
+)
+
+templateNegative(
+  'a non-postgres connection string with credentials is caught',
+  (source) => `${source}\nREDIS_URL=redis://default:synthetic-pass@redis:6379\n`,
+  /contains a full connection string with credentials/
+)
+
 // **index-only 反例**：Secret 已经 git add，工作树随后被恢复干净。只扫工作树
 // 的实现会完全看不见它，而它仍会随下一次 commit 进入历史。
 templateNegative(
@@ -663,6 +698,67 @@ templateNegative(
       } else {
         pass(name, '/refusing to overwrite/')
       }
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+{
+  const name = 'the generator never echoes an unknown entry name'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-'))
+  try {
+    const directory = resolve(parent, 'bundle')
+    mkdirSync(directory, { mode: 0o700 })
+    // 用一段口令形态的字符串当文件名：它绝不能出现在错误消息里。
+    const secretLikeName = generatePassword()
+    writeFileSync(resolve(directory, secretLikeName), '', { mode: 0o600 })
+    try {
+      generateSecretBundle(directory)
+      fail(name, 'NOT CAUGHT — the generator accepted a directory with an unknown entry')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.includes(secretLikeName)) {
+        fail(name, 'the generator echoed the unknown entry name (not reprinted here)')
+      } else if (!/unexpected entr/.test(message)) {
+        fail(name, `wrong reason: ${message}`)
+      } else {
+        pass(name, 'category and count only, no entry name')
+      }
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+{
+  // 要求 7 的回归：预检**抛出**时，刚生成的八份文件必须被删干净。
+  const name = 'generateAndPreflight discards the bundle when preflight throws'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-'))
+  try {
+    const directory = resolve(parent, 'bundle')
+    let threw = false
+    try {
+      generateAndPreflight(directory, {
+        preflight: () => {
+          throw new Error('synthetic preflight failure')
+        }
+      })
+    } catch (error) {
+      threw = true
+      if (!/synthetic preflight failure/.test(String(error))) {
+        fail(name, `wrong error propagated: ${String(error)}`)
+      }
+    }
+    const leftovers = existsSync(directory)
+      ? readdirSync(directory).filter((entry) => secretFilenames.includes(entry))
+      : []
+    if (!threw) {
+      fail(name, 'NOT CAUGHT — the throwing preflight did not propagate')
+    } else if (leftovers.length > 0) {
+      fail(name, `${String(leftovers.length)} secret file(s) survived a throwing preflight`)
+    } else {
+      pass(name, 'the throwing preflight left no secret files behind')
     }
   } finally {
     rmSync(parent, { recursive: true, force: true })
@@ -1231,46 +1327,58 @@ process.stdout.write('Group F: docker evidence fail-closed negatives\n')
 process.stdout.write('Group G: subprocess and signal negatives\n')
 
 {
-  // generator 的 rename 窗口：SIGINT 落在这里必须清掉半套 bundle，且按原信号
-  // 语义退出（128+2=130）。用 PATH 影子无法命中，改用一个真实子进程 fixture。
-  const name = 'SIGINT during the generator rename window leaves no partial bundle'
+  // generator 的生成窗口：SIGINT 落在**生成过程中**必须清掉半套 bundle，并
+  // 按原信号语义收场。这条用**真实 CLI**（`generate-local-test-secrets.mjs`）
+  // 跑，不再自己手搓 handler——审计指出上一版用同步的 generateSecretBundle
+  // 做 fixture，信号只可能落在生成之前或之后，`leftovers.length > 0` 恒不
+  // 成立，任何实现都能通过（实测：把可中断路径换成同步版，这条仍然绿）。
+  const name = 'SIGINT during generation leaves no bundle and honours the signal'
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-gen-'))
   const bundle = resolve(directory, 'bundle')
   try {
     const child = spawn(
       process.execPath,
-      ['--input-type=module', '-e',
-        `import { generateSecretBundle } from ${JSON.stringify(resolve(composeDirectory, 'generate-local-test-secrets.mjs'))};\n` +
-        `import { installSignalHandlers } from ${JSON.stringify(resolve(composeDirectory, 'm3b-subprocess.mjs'))};\n` +
-        `import { discardGeneratedPaths } from ${JSON.stringify(resolve(composeDirectory, 'generate-local-test-secrets.mjs'))};\n` +
-        'installSignalHandlers(() => { discardGeneratedPaths(); return [] }, { label: "generator cleanup" });\n' +
-        'process.stdout.write("ready\\n");\n' +
-        `setTimeout(() => { generateSecretBundle(${JSON.stringify(bundle)}); process.stdout.write("done\\n") }, 400);\n` +
-        'setTimeout(() => {}, 10_000);\n'
-      ],
+      [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],
       { stdio: ['ignore', 'pipe', 'pipe'] }
     )
     const outcome = await new Promise((resolveOutcome) => {
       let stdout = ''
+      let stderr = ''
+      // 生成是分片的（每份文件之间让出事件循环）。轮询到**第一份暂存文件
+      // 真的出现**再发信号，窗口因此确定落在生成过程中，而不是靠猜时间。
+      const poll = setInterval(() => {
+        const started = existsSync(bundle) && readdirSync(bundle).length > 0
+        if (started) {
+          clearInterval(poll)
+          child.kill('SIGINT')
+        }
+      }, 5)
+      setTimeout(() => {
+        clearInterval(poll)
+        child.kill('SIGINT')
+      }, 5_000).unref()
       child.stdout.on('data', (chunk) => {
         stdout += chunk.toString('utf8')
-        if (stdout.includes('ready')) {
-          // 在 generateSecretBundle 正在写/rename 的那一刻发信号。
-          setTimeout(() => child.kill('SIGINT'), 400)
-        }
       })
-      child.once('close', (code, signal) => resolveOutcome({ code, signal, stdout }))
+      child.stderr.on('data', (chunk) => {
+        stderr += chunk.toString('utf8')
+      })
+      child.once('close', (code, signal) => resolveOutcome({ code, signal, stdout, stderr }))
     })
     const leftovers = existsSync(bundle)
       ? readdirSync(bundle).filter((entry) => !entry.startsWith('.keep'))
       : []
-    const signalled = outcome.signal === 'SIGINT' || outcome.code === 130
     if (leftovers.length > 0) {
       fail(name, `the interrupted generator left ${String(leftovers.length)} file(s) behind`)
-    } else if (!signalled) {
-      fail(name, `expected SIGINT semantics, got code=${String(outcome.code)} signal=${String(outcome.signal)}`)
+    } else if (outcome.signal !== 'SIGINT') {
+      fail(
+        name,
+        `expected termination by SIGINT, got code=${String(outcome.code)} signal=${String(outcome.signal)}`
+      )
+    } else if (/discarded \d+ generated file/.test(outcome.stderr) === false) {
+      fail(name, `the cleanup did not report what it discarded: ${outcome.stderr.trim()}`)
     } else {
-      pass(name, 'no partial bundle and the process exited with SIGINT semantics')
+      pass(name, 'no bundle left behind and the process was terminated by SIGINT')
     }
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -1317,7 +1425,7 @@ for (const project of usedNegativeProjects) {
 
 // 反例数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
 // 差额暴露，而不是静默变成「跑得更少的绿」。
-const expectedNegativeCount = 62
+const expectedNegativeCount = 67
 if (caught + failures.length !== expectedNegativeCount) {
   fail(
     'suite completeness',

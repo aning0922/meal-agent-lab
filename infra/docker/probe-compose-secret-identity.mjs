@@ -29,6 +29,7 @@ import { generateAndPreflight } from './generate-local-test-secrets.mjs'
 import { secretFiles } from './local-test-secrets-contract.mjs'
 import {
   cleanupRun,
+  danglingVolumes,
   discardOverride,
   imageIdOf,
   inspectStrict,
@@ -138,7 +139,8 @@ const activeProbeScene = {
   imageTag: null,
   overridePath: null,
   composeEnvironment: process.env,
-  composeArgs: []
+  composeArgs: [],
+  danglingBaseline: null
 }
 
 /** probe 的 scoped cleanup：与 smoke 共用 m3b-docker 的分阶段收集器。 */
@@ -152,6 +154,8 @@ const cleanupProbe = async (scene) =>
     composeFile,
     composeEnvironment: scene.composeEnvironment,
     composeArgs: scene.composeArgs,
+    // 匿名悬挂卷同样是六类残留之一：postgres 镜像自带 VOLUME。
+    danglingBaseline: scene.danglingBaseline,
     realpath: realpathSync
   })
 
@@ -161,6 +165,7 @@ const main = async () => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), probeSecretsPrefix))
+  const danglingBaseline = await danglingVolumes()
   const composeEnvironment = {
     ...process.env,
     MEAL_AGENT_SECRETS_DIR: secretsDirectory,
@@ -173,7 +178,8 @@ const main = async () => {
     imageTag,
     overridePath,
     composeEnvironment,
-    composeArgs
+    composeArgs,
+    danglingBaseline
   })
   const compose = (args, options = {}) =>
     run(
@@ -195,6 +201,9 @@ const main = async () => {
   process.stdout.write(`probe project: ${project}\n`)
   process.stdout.write(`temporary secrets: ${secretsDirectory}\n`)
 
+  // 任何抛出都先记进 failures 再走 finally 的 cleanup：抛错路径绝不能把
+  // cleanup residue 与 verifyNoResidue 的结果一起吞掉（此前 build 失败时
+  // 操作者只看到一条 build 错误，残留报告完全丢失）。
   try {
     generateAndPreflight(secretsDirectory)
 
@@ -223,6 +232,11 @@ const main = async () => {
           `${plan.service}: in-container probe exited ${String(result.status)}: ` +
             `${result.stderr.trim().split('\n').slice(-3).join(' / ')}`
         )
+        // 信号在飞时**立即停止**创建新容器：否则 handler 已经跑完 label
+        // sweep，这里再 spawn 出来的容器无人回收。
+        if (terminationSignal() !== null) {
+          break
+        }
         continue
       }
       const lines = result.stdout.split('\n').filter((line) => line.startsWith('PROBE '))
@@ -266,9 +280,16 @@ const main = async () => {
         )
       }
     }
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error))
   } finally {
     // 正常、失败与信号三条路径复用**同一套** scoped cleanup + 独立复查。
     // override 必须**在 cleanup 之后**删除：`compose down` 仍要用它解析配置。
+    // 信号在飞时整段交给处置：主流程既不重复 cleanup 也不删 override。
+    if (terminationSignal() !== null) {
+      process.stderr.write('signal in flight: cleanup is owned by the signal handler\n')
+      return
+    }
     try {
       failures.push(...(await cleanupProbe(activeProbeScene)))
     } catch (error) {
@@ -282,6 +303,7 @@ const main = async () => {
           project,
           imageTag,
           secretsDirectory,
+          danglingBaseline,
           composeEnvironment,
           exists: existsSync
         }))
@@ -334,6 +356,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             project: activeProbeScene.project,
             imageTag: activeProbeScene.imageTag,
             secretsDirectory: activeProbeScene.secretsDirectory,
+            danglingBaseline: activeProbeScene.danglingBaseline,
             composeEnvironment: activeProbeScene.composeEnvironment,
             exists: existsSync
           }))

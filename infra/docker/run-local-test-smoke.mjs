@@ -198,9 +198,27 @@ const pickFreePort = async () => {
 
 const containerNameOf = (project, service) => `${project}-${service}-1`
 
+/** 信号在飞时抛出的中断错误：它不是「smoke 失败」，而是「被要求停下」。 */
+class SmokeInterrupted extends Error {
+  constructor(signal) {
+    super(`interrupted by ${signal}`)
+    this.name = 'SmokeInterrupted'
+  }
+}
+
+const throwIfInterrupted = () => {
+  const signal = terminationSignal()
+  if (signal !== null) {
+    throw new SmokeInterrupted(signal)
+  }
+}
+
 const waitFor = async (label, predicate, timeoutMs, intervalMs = 2_000) => {
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    // 信号在飞：立刻停下，别再去 inspect 正在被 handler 删掉的容器——那会
+    // 让严格读取抛错并被记成 smoke 自己的失败。
+    throwIfInterrupted()
     const value = await predicate()
     if (value !== null) {
       return value
@@ -272,7 +290,15 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     )
 
   /** 现场登记：signal handler 与 finally 用同一份状态跑同一套 cleanup。 */
-  const scene = { project, secretsDirectory, imageTag, overridePath, composeEnvironment, composeArgs }
+  const scene = {
+    project,
+    secretsDirectory,
+    imageTag,
+    overridePath,
+    composeEnvironment,
+    composeArgs,
+    danglingBaseline
+  }
   smokeState.registerScene?.(scene)
 
   /** 一次性服务：启动 → 等 exited → 严格读取真实退出码 + StartedAt。 */
@@ -653,6 +679,8 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         fail(`secret visibility: ${service} Mounts is not an array`)
         continue
       }
+      // **全部** mount 都要看，不只是 /run/secrets/ 前缀内的：把整个 bundle
+      // 目录挂到别处、或把某份 Secret 挂到 /tmp，前缀过滤都看不见。
       const observed = []
       for (const mount of mounts) {
         if (typeof mount !== 'object' || mount === null) {
@@ -660,20 +688,31 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
           continue
         }
         const destination = String(mount.Destination ?? '')
-        if (!destination.startsWith('/run/secrets/')) {
+        const source = String(mount.Source ?? '')
+        // 允许的非 secret 挂载：M2A 的只读 bootstrap 资产、handoff 的那一个
+        // 冻结 0000 文件、以及数据库 named volume。其余一律进入比较集合。
+        const isRepositoryAsset =
+          destination === '/opt/meal-agent/bootstrap' ||
+          destination === '/services/api/migrations/0000_stage_06.sql'
+        const isDatabaseVolume =
+          destination === '/var/lib/postgresql' && String(mount.Type ?? '') === 'volume'
+        if (isRepositoryAsset || isDatabaseVolume) {
           continue
         }
-        const source = String(mount.Source ?? '')
         observed.push({
-          target: destination.slice('/run/secrets/'.length),
-          sourceName: source.slice(source.lastIndexOf('/') + 1),
+          type: String(mount.Type ?? ''),
+          target: destination,
+          // **全路径**比对，不是 basename：同名文件放在别的目录（例如上一轮
+          // 遗留的 bundle）必须被发现。
+          source,
           readOnly: mount.RW === false
         })
       }
       const expected = expectedSecretMounts[service]
         .map((filename) => ({
-          target: secretTargetOf(filename),
-          sourceName: filename,
+          type: 'bind',
+          target: `/run/secrets/${secretTargetOf(filename)}`,
+          source: resolve(secretsDirectory, filename),
           readOnly: true
         }))
         .sort((a, b) => a.target.localeCompare(b.target))
@@ -684,10 +723,23 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
             `expected exactly ${JSON.stringify(expected)}`
         )
       }
+      // tmpfs 不出现在 .Mounts 里：单独读 HostConfig.Tmpfs，任何挂到
+      // /run/secrets 下的 tmpfs 都必须被发现。
+      const tmpfs = await inspectJsonStrict(id, '{{json .HostConfig.Tmpfs}}')
+      const tmpfsTargets = tmpfs === null ? [] : Object.keys(tmpfs)
+      const secretTmpfs = tmpfsTargets.filter((target) => target.startsWith('/run/secrets'))
+      if (secretTmpfs.length > 0) {
+        fail(
+          `secret visibility: ${service} mounts a tmpfs under /run/secrets ` +
+            `(${secretTmpfs.join(', ')})`
+        )
+      }
     }
     log(
       `secret visibility: ${String(containerIds.length)} project containers each mount ` +
-        'exactly their declared secret set (source, target and read-only all checked)'
+        'exactly their declared secret set (full source path, target, type and ' +
+        'read-only all checked; every non-asset mount and any /run/secrets tmpfs ' +
+        'is in scope)'
     )
 
     // 6. Secret containment 扫描与动态网络隔离（api 仍在运行时取证）。
@@ -706,11 +758,22 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
     return { project, imageTag, builtImageId, hostPort, stepResults }
   } catch (error) {
-    fail(error instanceof Error ? error.message : String(error))
+    if (error instanceof SmokeInterrupted || terminationSignal() !== null) {
+      // 被信号打断不是失败：处置拥有 cleanup 与退出语义，这里只留一行说明。
+      log(`interrupted by ${terminationSignal() ?? 'a signal'}; the signal handler owns the cleanup`)
+    } else {
+      fail(error instanceof Error ? error.message : String(error))
+    }
     return { project, imageTag, builtImageId, hostPort: null, stepResults }
   } finally {
     // override 在 cleanup **之后**删除：`compose down` 仍要用它解析配置。
-    if (failures.length > 0 && keepFailure && chainStarted) {
+    if (terminationSignal() !== null) {
+      // 信号处置拥有 cleanup **与 override 的删除**：主流程既不重复 cleanup，
+      // 也**不能**在这里删 override——handler 的 `compose down` 还要用它解析
+      // 配置（实测：主流程先删会让 down 以 "no such file or directory" 失败
+      // 并被报成 residue）。
+      log('signal in flight: the scoped cleanup is owned by the signal handler')
+    } else if (failures.length > 0 && keepFailure && chainStarted) {
       preserved = true
       log(
         `--keep-failure: preserving project ${project}, image tag ${imageTag} and ` +
@@ -758,7 +821,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         )
       }
     }
-    discardOverride(overridePath)
+    if (terminationSignal() === null) {
+      discardOverride(overridePath)
+    }
 
     log('--- chain exit codes ---')
     for (const step of stepResults) {
@@ -801,7 +866,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     imageTag: null,
     overridePath: null,
     composeEnvironment: process.env,
-    composeArgs: []
+    composeArgs: [],
+    danglingBaseline: null
   }
   smokeState.registerScene = (partial) => Object.assign(activeScene, partial)
   installSignalHandlers(
@@ -818,7 +884,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           ...(await cleanupSmokeProject(activeScene.project, activeScene.secretsDirectory, {
             composeEnvironment: activeScene.composeEnvironment,
             imageTag: activeScene.imageTag,
-            composeArgs: activeScene.composeArgs
+            composeArgs: activeScene.composeArgs,
+            danglingBaseline: activeScene.danglingBaseline
           }))
         )
       } catch (error) {
@@ -830,6 +897,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             project: activeScene.project,
             imageTag: activeScene.imageTag,
             secretsDirectory: activeScene.secretsDirectory,
+            danglingBaseline: activeScene.danglingBaseline,
             composeEnvironment: activeScene.composeEnvironment,
             exists: existsSync
           }))

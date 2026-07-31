@@ -108,11 +108,32 @@ export const assertNeedleCompleteness = (bodies, needles, onProblem) => {
   }
 }
 
+/**
+ * 「本地根本无法发起这次连接」的 errno：地址族不支持、地址非法、接口 down、
+ * 路由不可达。它们证明的是**本机没能试**，不是「对端拒绝了」，因此不能当作
+ * 隔离证据——必须与 ECONNREFUSED 区分开。
+ */
+const unattemptableErrorCodes = new Set([
+  'EINVAL',
+  'EAFNOSUPPORT',
+  'EADDRNOTAVAIL',
+  'ENETUNREACH',
+  'ENETDOWN',
+  'EHOSTUNREACH',
+  'EHOSTDOWN'
+])
+
 const attemptConnect = (host, port, timeoutMs = 3_000) =>
   new Promise((resolveAttempt) => {
     // zone 后缀（fe80::…%en0）不影响 family 判定：按去掉 zone 的裸地址判。
     const bare = host.split('%')[0]
-    const socket = connect({ host, port, family: isIP(bare) === 6 ? 6 : 4 })
+    let socket
+    try {
+      socket = connect({ host, port, family: isIP(bare) === 6 ? 6 : 4 })
+    } catch (error) {
+      resolveAttempt(`unattemptable:${String(error?.code ?? 'construct-failed')}`)
+      return
+    }
     let settled = false
     const done = (outcome) => {
       if (!settled) {
@@ -122,7 +143,10 @@ const attemptConnect = (host, port, timeoutMs = 3_000) =>
       }
     }
     socket.once('connect', () => done('connected'))
-    socket.once('error', (error) => done(`refused:${error.code ?? 'unknown'}`))
+    socket.once('error', (error) => {
+      const code = String(error.code ?? 'unknown')
+      done(unattemptableErrorCodes.has(code) ? `unattemptable:${code}` : `refused:${code}`)
+    })
     setTimeout(() => done('timeout'), timeoutMs).unref()
   })
 
@@ -131,16 +155,22 @@ const attemptConnect = (host, port, timeoutMs = 3_000) =>
  * zone（`fe80::1%en0`），一旦构造失败 fetch 会抛错，而把「请求根本没构造出
  * 来」和「请求发出后没人应答」混成同一个 http-unreachable，正是上一版把
  * link-local 证据做成空转的根因。这里改成**原始 socket + 手写 HTTP/1.1
- * 请求**，socket 层原生支持 zone，并给出五种互斥结局：
+ * 请求**，socket 层原生支持 zone，并给出六种互斥结局：
  *
  *   not-constructed  连 socket 都没建起来（地址不合法）——**不是**隔离证据
  *   not-sent         连接未建立（TCP 拒绝/超时），请求字节从未发出
  *   tcp-refused      TCP 明确被拒
- *   not-api          有 HTTP 响应，但不是我们的 /healthz 成功形状
+ *   no-response      TCP 连上、请求已写出，但**一个响应字节都没读到**
+ *                    （RST / 静默丢弃 / 超时）——它证明不了对端是 HTTP 服务，
+ *                    因此**不算**「请求被应答」
+ *   not-api          确实读到了 HTTP 响应，但不是我们的 /healthz 成功形状
  *   api-reachable    /healthz 200 且 body 是它的成功形状
  *
- * 只有 `not-api` 与 `api-reachable` 能证明「请求确实发出并被应答」，因此只有
- * 它们可以进入隔离裁决；其余三种只说明请求没能发出去。
+ * 只有 `not-api` 与 `api-reachable` 证明「请求确实发出**并被 HTTP 应答**」，
+ * 才可以进入隔离裁决。`no-response` 必须单独成一类：Docker Desktop 的
+ * accept-all 接口恰恰是「accept 之后立刻 RST」，把它算成 not-api 会让
+ * accept-all 的对照端口论证整条变成死代码（实测：accept-then-RST 会被上一版
+ * 判成 not-api 并直接放行）。
  */
 const probeApiHttp = (host, port, timeoutMs = 4_000) =>
   new Promise((resolveProbe) => {
@@ -164,12 +194,15 @@ const probeApiHttp = (host, port, timeoutMs = 4_000) =>
       }
     }
     const timer = setTimeout(
-      () => done(connected ? 'not-api' : 'not-sent', 'timeout'),
+      () => done(connected ? (body === '' ? 'no-response' : 'not-api') : 'not-sent', 'timeout'),
       timeoutMs
     )
     timer.unref()
     socket.once('error', (error) => {
-      done(connected ? 'not-api' : 'tcp-refused', String(error.code ?? 'unknown'))
+      done(
+        connected ? (body === '' ? 'no-response' : 'not-api') : 'tcp-refused',
+        String(error.code ?? 'unknown')
+      )
     })
     socket.once('connect', () => {
       connected = true
@@ -193,12 +226,16 @@ const probeApiHttp = (host, port, timeoutMs = 4_000) =>
         done('not-sent', 'closed before connect')
         return
       }
+      if (body === '') {
+        done('no-response', 'the peer closed without sending a single byte')
+        return
+      }
       const statusLine = body.split('\r\n')[0] ?? ''
-      done('not-api', statusLine === '' ? 'no HTTP response' : statusLine)
+      done('not-api', statusLine)
     })
   })
 
-/** 只有这两种结局证明请求确实发出并被应答。 */
+/** 只有这两种结局证明请求确实发出**并被 HTTP 应答**。 */
 const requestActuallySent = (outcome) =>
   outcome === 'api-reachable' || outcome === 'not-api'
 
@@ -484,7 +521,8 @@ export const runContainmentAndIsolation = async ({
   if (linkLocal.length === 0) {
     log(
       'isolation: the host has no link-local IPv6 address; the zoned-probe ' +
-        'positive control cannot be obtained on this host'
+        'positive control cannot be obtained on this host (no link-local ' +
+        'address participates in the adjudication below either)'
     )
   } else {
     const { interfaceName, address } = linkLocal[0]
@@ -570,6 +608,16 @@ export const runContainmentAndIsolation = async ({
   }
   for (const { interfaceName, address } of nonLoopback) {
     const outcome = await attemptConnect(address, hostPort)
+    if (outcome.startsWith('unattemptable:')) {
+      // 本机根本没能发起这次连接（地址族/路由/接口问题）。这**不是**隔离
+      // 证据，如实记为无法取证，不算通过也不算失败。
+      log(
+        `isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} ` +
+          '(the host could not attempt this connection; no isolation evidence ' +
+          'is obtainable for this address)'
+      )
+      continue
+    }
     if (outcome !== 'connected') {
       log(`isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} (as required)`)
       continue
@@ -584,33 +632,45 @@ export const runContainmentAndIsolation = async ({
       )
       continue
     }
+    // 连上了但**没读到 HTTP 响应**（no-response）或请求根本没发出：这在
+    // 「端口真的被发布」的情形下不该发生，只有当该接口被证明是 accept-all
+    // 代理时才允许放行。判据必须是**两个**独立的无监听对照端口都 accept，
+    // 并且它们的 HTTP 层结局与本次一致（同样读不到响应）——否则「对任意端口
+    // 都 accept」这条解释不成立。
     if (!requestActuallySent(http.outcome)) {
-      // 连上了却连一个 HTTP 响应都读不到：这在真实的「端口被发布」情形下不该
-      // 发生。只有当该接口被证明是 accept-all 代理时才允许放行。
       const controls =
         controlPorts.length < 2
           ? []
           : await Promise.all(controlPorts.map((port) => attemptConnect(address, port)))
       const acceptsAll = controls.length === 2 && controls.every((r) => r === 'connected')
-      if (acceptsAll && selfProbe.outcome === 'api-reachable') {
+      const controlProbes =
+        acceptsAll && controlPorts.length === 2
+          ? await Promise.all(controlPorts.map((port) => probeApiHttp(address, port)))
+          : []
+      const controlsBehaveTheSame =
+        controlProbes.length === 2 &&
+        controlProbes.every((probe) => probe.outcome === http.outcome)
+      if (acceptsAll && controlsBehaveTheSame && selfProbe.outcome === 'api-reachable') {
         log(
-          `isolation: ${interfaceName} ${address} is an accept-all interface proxy ` +
-            `(both listener-free control ports ${controlPorts.join(', ')} also accept); ` +
-            `the API-level request produced ${http.outcome} (${http.detail}) as required`
+          `isolation: ${interfaceName} ${address} is a proven accept-all interface ` +
+            `proxy (both listener-free control ports ${controlPorts.join(', ')} accept ` +
+            `and produce the same ${http.outcome} result); the API-level request on ` +
+            `the published port produced ${http.outcome} (${http.detail}) as required`
         )
       } else {
         fail(
           `isolation: ${interfaceName} ${address}:${String(hostPort)} accepted TCP ` +
-            `but the probe result is ${http.outcome} (${http.detail}) and the ` +
-            `control ports returned [${controls.join(', ') || 'unverified'}]; this ` +
-            'acceptance cannot be attributed to a proven accept-all proxy'
+            `but the probe result is ${http.outcome} (${http.detail}); control ports ` +
+            `returned [${controls.join(', ') || 'unverified'}] with probe outcomes ` +
+            `[${controlProbes.map((probe) => probe.outcome).join(', ') || 'unverified'}]; ` +
+            'this acceptance cannot be attributed to a proven accept-all proxy'
         )
       }
       continue
     }
     log(
       `isolation: ${interfaceName} ${address}:${String(hostPort)} answered ` +
-        `${http.outcome} (${http.detail}) — a real request was sent and it is not our API`
+        `${http.outcome} (${http.detail}) — a real HTTP response was read and it is not our API`
     )
   }
 

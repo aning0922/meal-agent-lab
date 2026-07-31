@@ -43,7 +43,7 @@ import {
   safeRealpath,
   secretFilenames
 } from './local-test-secrets-contract.mjs'
-import { installSignalHandlers } from './m3b-subprocess.mjs'
+import { installSignalHandlers, terminationSignal } from './m3b-subprocess.mjs'
 
 /** lstat 帮助器：**不**跟随 symlink 的存在性/类型判断。 */
 const lstatIfExists = (path) => {
@@ -67,28 +67,81 @@ export class SecretGeneratorError extends Error {
  */
 export const activeGeneratorScene = { paths: [] }
 
-/** 删除本轮已创建的一切（暂存与成品），供信号处置与失败路径共用。 */
+/**
+ * 删除本轮已创建的一切（暂存与成品），供信号处置与失败路径共用。
+ * 返回 `{ removed, residue }`：删不掉的条目**必须**进 residue 让调用方打印
+ * ——静默吞掉 unlink 失败等于把真凭据留在盘上还宣称已清理。residue 只含
+ * 文件名与 errno，不含路径之外的内容。
+ */
 export const discardGeneratedPaths = () => {
   const removed = []
+  const residue = []
   for (const path of activeGeneratorScene.paths) {
     try {
       unlinkSync(path)
       removed.push(path)
-    } catch {
-      // 尽力而为；残留会被预检当作未知条目拒绝。
+    } catch (error) {
+      const code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String(error.code)
+          : 'unknown'
+      residue.push(
+        `could not remove a generated secret file (${code}); it is still on disk`
+      )
     }
   }
   activeGeneratorScene.paths = []
-  return removed
+  return { removed, residue }
 }
 
 const stagingName = (filename) => `.staging.${filename}`
+
+/** 写一份暂存文件（0600、fsync）。同步与可中断两条路径共用。 */
+const writeStagingFile = (target, filename, body, createdPaths) => {
+  const stagingPath = resolve(target, stagingName(filename))
+  const fd = openSync(stagingPath, 'wx', 0o600)
+  createdPaths.push(stagingPath)
+  try {
+    const bytes = Buffer.from(`${body}\n`, 'utf8')
+    let written = 0
+    while (written < bytes.length) {
+      written += writeSync(fd, bytes, written, bytes.length - written, null)
+    }
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** 把一份暂存文件提升为成品，并同步更新现场登记。 */
+const promoteStagingFile = (target, filename, createdPaths) => {
+  const stagingPath = resolve(target, stagingName(filename))
+  const finalPath = resolve(target, filename)
+  renameSync(stagingPath, finalPath)
+  createdPaths.splice(createdPaths.indexOf(stagingPath), 1)
+  createdPaths.push(finalPath)
+  return finalPath
+}
+
+/** 让出一次事件循环：排队中的信号在这里被分发。 */
+const tick = () =>
+  new Promise((resolveTick) => {
+    setImmediate(resolveTick)
+  })
+
+/** 生成被信号打断时抛出的错误（CLI 据此让位给信号处置）。 */
+export class SecretGenerationInterrupted extends Error {
+  constructor(signal) {
+    super(`secret generation was interrupted by ${signal}`)
+    this.name = 'SecretGenerationInterrupted'
+  }
+}
 
 /**
  * 生成一套完整 bundle。返回生成的文件路径列表；**从不**返回或输出口令。
  * 口令只存在于本函数的局部变量与写出的文件里。
  */
-export const generateSecretBundle = (directory) => {
+const prepareBundleDirectory = (directory) => {
   if (typeof directory !== 'string' || directory === '') {
     throw new SecretGeneratorError('the target directory must be a non-empty path')
   }
@@ -146,43 +199,34 @@ export const generateSecretBundle = (directory) => {
   }
   // 目录必须 owner-only。对 tracked 的默认目录同样生效（git 不记录目录权限）。
   chmodSync(target, 0o700)
+  return { target, isDefaultDirectory }
+}
 
+/**
+ * 生成一套完整 bundle（**同步**版，供库调用方与反例使用）。返回生成的文件
+ * 路径列表；**从不**返回或输出口令。CLI 走的是可中断的异步版。
+ */
+export const generateSecretBundle = (directory) => {
+  const { target } = prepareBundleDirectory(directory)
   const passwords = {}
   for (const role of passwordRoles) {
     passwords[role] = generatePassword()
   }
   const bodies = deriveSecretBodies(passwords)
 
-  // failure-safe：暂存 → 全部就绪 → rename。任何失败都清掉已创建的一切。
-  // createdPaths 同时登记给 CLI 的信号处置：rename 窗口里被 SIGINT 打断时，
-  // 处置会删掉这批路径，因此不留半套 bundle（KILL 除外，用户态兜不住）。
   const createdPaths = []
   activeGeneratorScene.paths = createdPaths
   try {
     for (const filename of secretFilenames) {
-      const stagingPath = resolve(target, stagingName(filename))
-      const fd = openSync(stagingPath, 'wx', 0o600)
-      createdPaths.push(stagingPath)
-      try {
-        const bytes = Buffer.from(`${bodies.get(filename)}\n`, 'utf8')
-        let written = 0
-        while (written < bytes.length) {
-          written += writeSync(fd, bytes, written, bytes.length - written, null)
-        }
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
-      }
+      writeStagingFile(target, filename, bodies.get(filename), createdPaths)
     }
     const finalPaths = []
     for (const filename of secretFilenames) {
-      const stagingPath = resolve(target, stagingName(filename))
-      const finalPath = resolve(target, filename)
-      renameSync(stagingPath, finalPath)
-      createdPaths.splice(createdPaths.indexOf(stagingPath), 1)
-      createdPaths.push(finalPath)
-      finalPaths.push(finalPath)
+      finalPaths.push(promoteStagingFile(target, filename, createdPaths))
     }
+    // 生成成功：现场登记必须清空。否则此后任何信号处置都会把一套**完好**的
+    // bundle 当成半成品删掉，并谎报「discarded N partially generated files」。
+    activeGeneratorScene.paths = []
     return { directory: target, files: finalPaths }
   } catch (error) {
     for (const path of createdPaths) {
@@ -191,6 +235,63 @@ export const generateSecretBundle = (directory) => {
       } catch {
         // 清理是尽力而为；留下的暂存条目会被预检当作未知条目拒绝。
       }
+    }
+    activeGeneratorScene.paths = []
+    throw error
+  }
+}
+
+/**
+ * **可中断**的生成：与同步版逐字节等价，但在每一份文件之间让出事件循环，
+ * 因此排队中的 SIGINT/SIGTERM 能在生成**中途**被分发。这是 CLI 走的路径。
+ *
+ * 同步版 `generateSecretBundle` 保留给库调用方与反例：它跑在一个不可中断的
+ * 同步区间里，这一点是实测过的事实（在同步区间内 `kill -INT` 时 Node 的信号
+ * 监听器根本不会被调用），因此 CLI 不能用它。
+ */
+export const generateSecretBundleInterruptible = async (directory) => {
+  const prepared = prepareBundleDirectory(directory)
+  const { target } = prepared
+  const passwords = {}
+  for (const role of passwordRoles) {
+    passwords[role] = generatePassword()
+  }
+  const bodies = deriveSecretBodies(passwords)
+
+  const createdPaths = []
+  activeGeneratorScene.paths = createdPaths
+  const abortIfSignalled = () => {
+    const signal = terminationSignal()
+    if (signal !== null) {
+      throw new SecretGenerationInterrupted(signal)
+    }
+  }
+  try {
+    for (const filename of secretFilenames) {
+      await tick()
+      abortIfSignalled()
+      writeStagingFile(target, filename, bodies.get(filename), createdPaths)
+    }
+    const finalPaths = []
+    for (const filename of secretFilenames) {
+      await tick()
+      abortIfSignalled()
+      finalPaths.push(promoteStagingFile(target, filename, createdPaths))
+    }
+    activeGeneratorScene.paths = []
+    return { directory: target, files: finalPaths }
+  } catch (error) {
+    // 被信号打断时**不**在这里删：现场登记仍持有已创建路径，处置会统一清理
+    // 并把删不掉的条目报成 residue。其余失败按原来的 failure-safe 处理。
+    if (!(error instanceof SecretGenerationInterrupted)) {
+      for (const path of createdPaths) {
+        try {
+          unlinkSync(path)
+        } catch {
+          // 尽力而为；残留会被预检当作未知条目拒绝。
+        }
+      }
+      activeGeneratorScene.paths = []
     }
     throw error
   }
@@ -239,6 +340,45 @@ export const generateAndPreflight = (
   return result
 }
 
+/**
+ * 可中断的生成 + 预检：CLI 走这一条。生成被信号打断时**不**清理（现场登记
+ * 仍持有已创建路径，交给信号处置统一删并报 residue），其余失败仍按
+ * failure-safe 删干净。
+ */
+export const generateAndPreflightInterruptible = async (
+  directory,
+  { preflight = checkSecretBundle } = {}
+) => {
+  const result = await generateSecretBundleInterruptible(directory)
+  let problems
+  try {
+    problems = preflight(result.directory).problems
+  } catch (error) {
+    for (const path of result.files) {
+      try {
+        unlinkSync(path)
+      } catch {
+        // 尽力而为；残留由下一次预检拒绝。
+      }
+    }
+    throw error
+  }
+  if (problems.length > 0) {
+    for (const path of result.files) {
+      try {
+        unlinkSync(path)
+      } catch {
+        // 同上。
+      }
+    }
+    throw new SecretGeneratorError(
+      'the freshly generated bundle failed its own preflight and was removed:\n' +
+        problems.map((problem) => `  - ${problem}`).join('\n')
+    )
+  }
+  return result
+}
+
 const usage = () => {
   process.stderr.write(
     'usage: generate-local-test-secrets.mjs [--directory <absolute path>]\n' +
@@ -258,19 +398,35 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   // 信号处置：rename 窗口里被 SIGINT/SIGTERM 打断时，先清掉本轮已创建的
   // 全部路径再按原信号语义退出，绝不留半套 bundle。
+  //
+  // **生成必须切成可被信号打断的分片**：`installSignalHandlers` 装了监听器，
+  // 但 Node 的信号监听器不 ref 事件循环，而生成本身是一段同步代码——实测
+  // 在同步区间里 `kill -INT` 时 handler 从不执行，进程照常 exit 0 并把八份
+  // 文件全部落盘。因此这里先把控制权交回事件循环（`setImmediate`），让已经
+  // 排队的信号在**生成开始之前**被分发；生成期间到达的信号则由 handler 在
+  // 同步段结束后立即处置（`activeGeneratorScene` 仍持有已创建路径）。
   installSignalHandlers(
     () => {
-      const removed = discardGeneratedPaths()
+      const { removed, residue } = discardGeneratedPaths()
       process.stderr.write(
-        `discarded ${String(removed.length)} partially generated file(s)\n`
+        `discarded ${String(removed.length)} generated file(s)\n`
       )
-      return []
+      return residue
     },
     { label: 'generator cleanup' }
   )
 
+  // 让事件循环先跑一轮：已经排队的 SIGINT/SIGTERM 在此被分发，处置得以在
+  // 任何文件被创建之前接管。
+  await new Promise((resolveTick) => {
+    setImmediate(resolveTick)
+  })
+  if (terminationSignal() !== null) {
+    // 信号已在处置中：不开始生成，也不自己退出。
+    process.exitCode = 0
+  } else {
   try {
-    const result = generateAndPreflight(directory)
+    const result = await generateAndPreflightInterruptible(directory)
     process.stdout.write(
       `generated the local-test secret bundle in ${result.directory}\n`
     )
@@ -282,11 +438,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         'they were not printed, logged or exported\n'
     )
   } catch (error) {
-    process.stderr.write(
-      `generate-local-test-secrets: ${
-        error instanceof Error ? error.message : String(error)
-      }\n`
-    )
-    process.exit(1)
+    // 被信号打断不是失败：处置拥有清理与退出语义，这里不再打印错误。
+    if (error instanceof SecretGenerationInterrupted || terminationSignal() !== null) {
+      // 处置会打印它删掉了什么，并按原信号语义收场。
+    } else {
+      process.stderr.write(
+        `generate-local-test-secrets: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`
+      )
+      process.exit(1)
+    }
+  }
   }
 }

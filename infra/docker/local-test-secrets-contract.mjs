@@ -548,17 +548,23 @@ const sensitiveKeySuffixes = [
   'TOKEN',
   'SECRET',
   'KEY',
+  'KEY_BASE',
   'CREDENTIAL',
+  'CREDENTIALS',
   'APP_ID',
   'APPID',
   'DSN',
-  'DATABASE_URL'
+  'DATABASE_URL',
+  'URL',
+  'URI'
 ]
 const assignmentPattern = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/
 // 两种完整连接串形态都拒绝：userinfo 形（user:pass@host）与查询参数形
 // （…?password=… / …&sslpassword=…）。
+// 任何**带 userinfo 的连接串**都拒绝，不限于 postgres：模板里出现
+// `redis://user:pass@…` / `mongodb://…` / `amqp://…` 同样是凭据入 Git。
 const fullDsnPatterns = [
-  /postgres(?:ql)?:\/\/\S+@\S+/i,
+  /[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@\S+/i,
   /postgres(?:ql)?:\/\/\S*[?&][a-z_]*password[a-z_]*=\S/i
 ]
 
@@ -600,8 +606,17 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         }
       }
       // 剥掉行首注释标记后再匹配赋值：`# WECHAT_APP_SECRET=real` 与未注释的
-      // 版本同样是进了 Git 的凭据。
-      const uncommented = line.replace(/^\s*#+\s*/, '')
+      // 版本同样是进了 Git 的凭据。**反复剥离**直到不再变化——单次剥离会被
+      // `# # KEY=value` 绕过（实测：`#+\s*` 吃掉第一个 `#` 和空格后剩下的
+      // `# KEY=value` 不再匹配赋值文法）。
+      let uncommented = line
+      for (;;) {
+        const stripped = uncommented.replace(/^\s*#+\s*/, '')
+        if (stripped === uncommented) {
+          break
+        }
+        uncommented = stripped
+      }
       const match = assignmentPattern.exec(uncommented)
       if (match === null) {
         continue

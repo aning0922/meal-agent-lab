@@ -13,7 +13,8 @@
 // 每次 smoke/probe 运行使用**唯一 image tag**（`meal-agent-api:m3b-<run id>`），
 // 通过临时 Compose override 注入，因此并行 worktree/project 不会互相覆盖；
 // build 之后读取 immutable image ID 并绑定到三个 API 镜像服务的 `.Image`。
-import { rmSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 
 import { runCommand } from './m3b-subprocess.mjs'
@@ -169,26 +170,36 @@ const cleanupRunUnsynchronized = async ({
     }
   }
 
-  if (typeof project !== 'string' || !projectPattern.test(project)) {
-    throw new DockerEvidenceError(
-      `cleanup refused: project name ${JSON.stringify(project)} is outside the ` +
-        'meal-agent-m3b-* smoke scope'
-    )
-  }
-
-  // 阶段 1：明文 Secret 目录（最先）。
+  // 阶段 1：明文 Secret 目录（**最先**，而且**先于** project 形状校验）。
+  // 否则「project 名不合规」会连带把明文凭据留在盘上——注释承诺的是「Docker
+  // 侧任何失败都不允许把它留在盘上」，project 校验也属于这一类。
   await stage('secrets-directory', async () => {
     if (secretsDirectory === null) {
       return
     }
+    // 目录已被上一次 cleanup 删掉时不算问题：串行化之后第二次执行本来就该
+    // 「发现已经干净」。realpath 对不存在路径会抛 ENOENT，必须先判存在性。
+    if (!existsSync(secretsDirectory)) {
+      return
+    }
     const realDir = realpath(secretsDirectory)
-    if (!realDir.includes(secretsPrefix)) {
+    // 守卫必须是「系统 tmpdir 下的该前缀开头」，不是无锚点的 includes：
+    // `/Users/x/notes/meal-agent-m3b-secrets-archive` 这类路径不得被删。
+    const expectedPrefix = resolve(realpath(tmpdir()), secretsPrefix)
+    if (!realDir.startsWith(expectedPrefix)) {
       throw new DockerEvidenceError(
         `${secretsDirectory} is not a ${secretsPrefix}* directory under the system tmpdir`
       )
     }
     rmSync(realDir, { recursive: true, force: true })
   })
+
+  if (typeof project !== 'string' || !projectPattern.test(project)) {
+    throw new DockerEvidenceError(
+      `cleanup refused: project name ${JSON.stringify(project)} is outside the ` +
+        'meal-agent-m3b-* smoke scope'
+    )
+  }
 
   // 阶段 2：compose down（退出码检查，失败不阻断后面的 label sweep）。
   await stage('compose-down', async () => {

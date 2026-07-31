@@ -71,7 +71,13 @@ const sleep = (milliseconds) =>
  * 把一个 M3B CLI 跑起来，等它的输出命中 `trigger`，发 `signal`，然后收集：
  * 退出语义、project 名、image tag、Secret 目录、残留与后代进程。
  */
-const runAndSignal = async ({ script, trigger, signal, timeoutMs = 900_000 }) => {
+const runAndSignal = async ({
+  script,
+  trigger,
+  signal,
+  timeoutMs = 900_000,
+  waitForProcess = null
+}) => {
   const child = spawn(process.execPath, [resolve(composeDirectory, script)], {
     cwd: repositoryRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -80,6 +86,7 @@ const runAndSignal = async ({ script, trigger, signal, timeoutMs = 900_000 }) =>
   let stdout = ''
   let stderr = ''
   let signalled = false
+  let windowConfirmed = waitForProcess === null
   const scene = { project: null, imageTag: null, secretsDirectory: null }
 
   const observe = (text) => {
@@ -104,14 +111,33 @@ const runAndSignal = async ({ script, trigger, signal, timeoutMs = 900_000 }) =>
       observe(stdout)
       if (!signalled && trigger.test(stdout)) {
         signalled = true
-        // 给它一点时间真正进入那个窗口（例如 build 已经在跑）。
-        setTimeout(() => {
+        void (async () => {
+          if (waitForProcess !== null) {
+            // 等到那个子进程**真的存在**再发信号，窗口因此是确定的而不是靠
+            // 猜时间。60 秒内没出现就照发，让断言去暴露问题。
+            const deadline = Date.now() + 60_000
+            for (;;) {
+              const found = spawnSync('pgrep', ['-f', waitForProcess.source], {
+                encoding: 'utf8'
+              })
+              if (found.status === 0) {
+                windowConfirmed = true
+                break
+              }
+              if (Date.now() >= deadline) {
+                break
+              }
+              await sleep(300)
+            }
+          } else {
+            await sleep(1_500)
+          }
           try {
             child.kill(signal)
           } catch {
             // 已退出。
           }
-        }, 1_500)
+        })()
       }
     })
     child.stderr.on('data', (chunk) => {
@@ -131,13 +157,21 @@ const runAndSignal = async ({ script, trigger, signal, timeoutMs = 900_000 }) =>
   clearTimeout(guard)
   // 给 cleanup 的最后一点 I/O 一点时间落地。
   await sleep(1_000)
-  return { ...outcome, stdout, stderr, scene, signalled, pid: child.pid }
+  return { ...outcome, stdout, stderr, scene, signalled, windowConfirmed, pid: child.pid }
 }
 
 const assertCleanScene = (name, result, { expectSignal }) => {
   const { scene } = result
   if (!result.signalled) {
     fail(name, `the trigger never matched; output was:\n${result.stdout.slice(-500)}`)
+    return
+  }
+  if (!result.windowConfirmed) {
+    fail(
+      name,
+      'the expected child process never appeared, so the signal did not land in ' +
+        'the intended window (the residue assertions would be vacuously true)'
+    )
     return
   }
   if (scene.project === null) {
@@ -159,26 +193,45 @@ const assertCleanScene = (name, result, { expectSignal }) => {
     const image = docker(['image', 'inspect', '--format', '{{.Id}}', scene.imageTag])
     if (image.status === 0) {
       problems.push(`image tag ${scene.imageTag} still exists`)
+    } else if (!/No such image|no such image/.test(image.stderr ?? '')) {
+      // 只有「镜像不存在」才算已删除；daemon 不可达等非零退出不得被读成通过。
+      problems.push(
+        `could not determine whether ${scene.imageTag} still exists ` +
+          `(docker image inspect exited ${String(image.status)})`
+      )
     }
   }
   if (scene.secretsDirectory !== null && existsSync(scene.secretsDirectory)) {
     problems.push('the temporary secrets directory still exists')
   }
-  const overrides = readdirSync(composeDirectory).filter((entry) =>
-    entry.startsWith('.m3b-image-override-')
-  )
-  if (overrides.length > 0) {
-    problems.push(`${String(overrides.length)} compose override file(s) left behind`)
+  // 只查**本轮**的 override（按 run id）：并发的 M3B 运行不该让这里误红。
+  const runId = scene.imageTag === null ? null : scene.imageTag.split(':m3b-')[1]
+  if (runId !== undefined && runId !== null) {
+    const own = readdirSync(composeDirectory).filter(
+      (entry) => entry === `.m3b-image-override-${runId}.yaml`
+    )
+    if (own.length > 0) {
+      problems.push('this run left its compose override file behind')
+    }
   }
   if (processAlive(result.pid)) {
     problems.push('the CLI process is still alive')
   }
-  const dockerChildren = spawnSync('sh', ['-c', `pgrep -f "${scene.project}" | wc -l`], {
-    encoding: 'utf8'
-  })
-  if (Number(dockerChildren.stdout.trim()) > 0) {
-    problems.push('a docker child process referencing this project is still alive')
+  // pgrep 找不到匹配时退出码是 1（正常），其余非零退出说明**无法判定**。
+  const dockerChildren = spawnSync('pgrep', ['-f', scene.project], { encoding: 'utf8' })
+  if (dockerChildren.error !== undefined || ![0, 1].includes(dockerChildren.status)) {
+    problems.push(
+      `could not determine whether docker child processes remain ` +
+        `(pgrep exited ${String(dockerChildren.status)})`
+    )
+  } else if (dockerChildren.status === 0) {
+    const alive = dockerChildren.stdout.split('\n').filter(Boolean)
+    problems.push(
+      `${String(alive.length)} process(es) referencing this project are still alive`
+    )
   }
+  // tracked compose 文件必须**逐字节**等于 HEAD 里的版本（git status 只说
+  // 「有没有改动」，这里直接比字节）。
   const dirty = spawnSync('git', ['status', '--porcelain', '--', composeFile], {
     cwd: repositoryRoot,
     encoding: 'utf8'
@@ -186,12 +239,51 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   if (dirty.status !== 0 || dirty.stdout.trim() !== '') {
     problems.push('the tracked compose file is dirty')
   }
-  const semanticsOk =
-    result.closeSignal === expectSignal || result.code === (expectSignal === 'SIGINT' ? 130 : 143)
-  if (!semanticsOk) {
+  const committed = spawnSync('git', ['show', `HEAD:infra/docker/compose.local-test.yaml`], {
+    cwd: repositoryRoot,
+    encoding: 'buffer',
+    maxBuffer: 8 * 1024 * 1024
+  })
+  if (committed.error !== undefined || committed.status !== 0) {
+    problems.push('could not read the committed compose file for a byte comparison')
+  } else if (!readFileSync(composeFile).equals(committed.stdout)) {
+    problems.push('the tracked compose file differs byte-for-byte from HEAD')
+  }
+  // 本套件不应留下任何临时 secret 目录（除了被测 CLI 自己的那一个，已在上面
+  // 单独断言）。
+  const strayBundles = readdirSync(tmpdir()).filter(
+    (entry) =>
+      entry.startsWith('meal-agent-m3b-secrets-') || entry.startsWith('meal-agent-m3b-probe-')
+  )
+  const ownBundle =
+    scene.secretsDirectory === null ? null : scene.secretsDirectory.split('/').pop()
+  const foreignBundles = strayBundles.filter((entry) => entry !== ownBundle)
+  if (foreignBundles.length > 0) {
     problems.push(
-      `expected ${expectSignal} semantics, got code=${String(result.code)} signal=${String(result.closeSignal)}`
+      `${String(foreignBundles.length)} temporary secret director(y|ies) remain in tmpdir`
     )
+  }
+  // **只接受真实的信号终止**。`process.exit(130)` 这类伪装恰恰是本套件要
+  // 拒绝的东西，所以不再接受「退出码等于 128+signo」。
+  if (result.closeSignal !== expectSignal) {
+    problems.push(
+      `expected termination by ${expectSignal}, got code=${String(result.code)} ` +
+        `signal=${String(result.closeSignal)}`
+    )
+  }
+  // G3：被测 CLI 自己报出的 residue/失败必须一并被看见，否则「外部状态干净」
+  // 会掩盖「CLI 认为自己没清干净」。
+  const reportedFailures = result.stdout
+    .split('\n')
+    .filter((line) => /^FAIL: |cleanup residue:/.test(line))
+  if (reportedFailures.length > 0) {
+    problems.push(`the CLI reported its own problems: ${reportedFailures.join(' | ')}`)
+  }
+  const reportedResidue = result.stderr
+    .split('\n')
+    .filter((line) => /residue after SIG/.test(line))
+  if (reportedResidue.length > 0) {
+    problems.push(`the signal handler reported residue: ${reportedResidue.join(' | ')}`)
   }
   if (problems.length > 0) {
     fail(name, problems.join('; '))
@@ -205,13 +297,18 @@ const assertCleanScene = (name, result, { expectSignal }) => {
 
 process.stdout.write('M3B signal-window negatives\n')
 
-// 窗口 1：build 阶段（此时有一个长时间运行的 docker build 子进程）。
+// 窗口 1：**build 阶段**。trigger 必须是「build 确实已经开始」之后才出现的
+// 输出——用 `per-run image tag:` 会让信号大概率落在其后的拓扑门禁子进程期间，
+// 那时 override / image tag / 容器都还不存在，全部残留断言都是空真（这正是
+// 修复前的实测形态）。`host port:` 是 build 之前的最后一条输出，随后就是
+// `compose build`，因此以它为锚点并**确认 build 子进程真的在跑**。
 assertCleanScene(
   'SIGINT during the smoke build window',
   await runAndSignal({
     script: 'run-local-test-smoke.mjs',
-    trigger: /per-run image tag: /,
-    signal: 'SIGINT'
+    trigger: /host port: /,
+    signal: 'SIGINT',
+    waitForProcess: /compose.*build api/
   }),
   { expectSignal: 'SIGINT' }
 )
