@@ -13,12 +13,14 @@
 //
 // Compose 变异类反例沿用 check-compose-topology-mutations.mjs 的机制：要求
 // tracked 文件干净、临时改写、立即还原、结束逐字节复核。
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   linkSync,
+  readdirSync,
   mkdtempSync,
   readFileSync,
   renameSync,
@@ -46,6 +48,13 @@ import {
   secretFilenames
 } from './local-test-secrets-contract.mjs'
 import { cleanupSmokeProject } from './run-local-test-smoke.mjs'
+import {
+  imageIdOf,
+  overridePathFor,
+  runImageTagFor,
+  writeImageOverride
+} from './m3b-docker.mjs'
+import { runCommand, terminateControlledSubtree } from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -67,18 +76,8 @@ const fail = (name, detail) => {
   failures.push(`${name}: ${detail}`)
 }
 
-const run = (args, options = {}) => {
-  const result = spawnSync(args[0], args.slice(1), {
-    encoding: 'utf8',
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: 300_000,
-    ...options
-  })
-  if (result.error !== undefined) {
-    throw new Error(`failed to run ${args.join(' ')}: ${result.error.message}`)
-  }
-  return result
-}
+// 异步 spawn（自成进程组、有超时）：与其余三个 M3B CLI 同一套子进程基础设施。
+const run = (args, options = {}) => runCommand(args, { timeoutMs: 300_000, ...options })
 
 // ---------------------------------------------------------------------------
 // Group A：预检反例（不触碰 Docker）
@@ -114,7 +113,11 @@ const preflightNegative = (name, expected, mutate, options = {}) => {
   try {
     generateSecretBundle(directory)
     const values = sensitiveValuesOf(directory)
-    const checkOptions = { scanTemplates: false, ...(mutate(directory, parent) ?? {}) }
+    // mutate 可以返回 additionalSensitiveValues：变异**引入**的取值（例如被
+    // 当作文件名的口令）同样不允许出现在任何失败消息里。
+    const { additionalSensitiveValues = [], ...checkOverrides } = mutate(directory, parent) ?? {}
+    values.push(...additionalSensitiveValues)
+    const checkOptions = { scanTemplates: false, ...checkOverrides }
     const { problems } = checkSecretBundle(directory, checkOptions)
     if (problems.length === 0) {
       fail(name, 'NOT CAUGHT — the preflight still passed')
@@ -137,6 +140,13 @@ const preflightNegative = (name, expected, mutate, options = {}) => {
     }
     pass(name, String(expected))
   } finally {
+    // 变异可能把目录权限改成不可写（0500 等），先恢复再删，否则临时 bundle
+    // 会留在 tmpdir 里。
+    try {
+      chmodSync(directory, 0o700)
+    } catch {
+      // 目录可能已经不存在。
+    }
     rmSync(parent, { recursive: true, force: true })
   }
 }
@@ -284,7 +294,7 @@ preflightNegative(
 
 preflightNegative(
   'an unknown file appears in the bundle',
-  /stray\.txt: unknown entry in the bundle directory/,
+  /the bundle directory contains 1 unknown entry.*not echoed/,
   (directory) => {
     writeFileSync(resolve(directory, 'stray.txt'), 'not a secret\n', { mode: 0o600 })
   }
@@ -400,9 +410,10 @@ preflightNegative(
   (directory) => {
     const path = resolve(directory, 'meal_agent_runtime_password')
     unlinkSync(path)
-    const made = run(['mkfifo', '-m', '600', path])
-    if (made.status !== 0) {
-      throw new Error(`mkfifo failed: ${made.stderr}`)
+    // 同步创建 FIFO：mutate 回调是同步的，这里不能起异步子进程。
+    const made = spawnSync('mkfifo', ['-m', '600', path], { encoding: 'utf8' })
+    if (made.error !== undefined || made.status !== 0) {
+      throw new Error(`mkfifo failed: ${made.error?.message ?? made.stderr}`)
     }
   }
 )
@@ -420,12 +431,33 @@ preflightNegative(
 )
 
 preflightNegative(
-  'a password is shorter than the minimum length',
-  /meal_agent_runtime_password: the password is shorter than 24 characters/,
+  'a password is not exactly 48 characters',
+  /meal_agent_runtime_password: the password must be exactly 48 characters/,
   (directory) => {
     rewriteSecret(directory, 'meal_agent_runtime_password', 'Abc123')
   }
 )
+
+// 「Secret 本身被当成文件名」：未知条目的名字绝不能被回显出来。
+preflightNegative(
+  'a secret value used as an unknown file name is never echoed',
+  /the bundle directory contains 1 unknown entry.*not echoed/,
+  (directory) => {
+    const password = readBody(directory, 'meal_agent_runtime_password')
+    writeFileSync(resolve(directory, password), '', { mode: 0o600 })
+    return { additionalSensitiveValues: [password] }
+  }
+)
+
+for (const mode of [0o500, 0o600, 0o1700]) {
+  preflightNegative(
+    `the bundle directory mode ${mode.toString(8).padStart(4, '0')} is rejected (only exactly 0700)`,
+    /the bundle directory mode must be exactly 0700/,
+    (directory) => {
+      chmodSync(directory, mode)
+    }
+  )
+}
 
 preflightNegative(
   'two raw passwords are identical',
@@ -487,10 +519,10 @@ preflightNegative(
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-'))
   try {
     const repo = resolve(parent, 'repo')
-    run(['git', 'init', '--quiet', repo])
+    spawnSync('git', ['init', '--quiet', repo], { encoding: 'utf8' })
     const directory = resolve(repo, 'secrets')
     generateSecretBundle(directory)
-    run(['git', '-C', repo, 'add', '--', 'secrets/postgres_superuser_password'])
+    spawnSync('git', ['-C', repo, 'add', '--', 'secrets/postgres_superuser_password'], { encoding: 'utf8' })
     const values = sensitiveValuesOf(directory)
     const { problems } = checkSecretBundle(directory, { scanTemplates: false })
     if (!problems.some((problem) => /postgres_superuser_password: is tracked by git/.test(problem))) {
@@ -505,21 +537,56 @@ preflightNegative(
   }
 }
 
-// tracked 模板反例：临时改写真实模板文件，扫描必须拒绝，随后逐字节还原。
-// 还原与逐字节复核都在 finally 里：任何早退路径（wrong-reason、扫描抛出）都
-// 不允许绕过这道复核；复核失败时同时打印手工恢复命令。
-const templateNegative = (name, mutate, expected) => {
-  const status = run(['git', 'status', '--porcelain', '--', templateFile], {
-    cwd: repositoryRoot
-  })
-  if (status.status !== 0 || status.stdout.trim() !== '') {
-    fail(name, `refusing to run: ${templateFile} is dirty or unreadable in git`)
-    return
-  }
-  const original = readFileSync(templateFile)
+// tracked 模板反例：**绝不变异真实 tracked 文件**。做法是把真实模板复制进一个
+// 临时 git 仓库（同样的 infra/environments/local-test/ 路径），在副本上变异并
+// 提交/暂存，再用同一个 scanTrackedTemplates 扫那个仓库。因此本套件对工作树的
+// 副作用恒为零，也不需要「还原窗口」。
+const templateNegative = (name, mutate, expected, { stageOnly = false } = {}) => {
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-repo-'))
   try {
-    writeFileSync(templateFile, mutate(original.toString('utf8')))
-    const problems = scanTrackedTemplates()
+    const repo = resolve(parent, 'repo')
+    const templateDirectory = resolve(repo, 'infra/environments/local-test')
+    mkdirSync(templateDirectory, { recursive: true })
+    for (const args of [
+      ['init', '--quiet', repo],
+      ['-C', repo, 'config', 'user.email', 'negatives@example.invalid'],
+      ['-C', repo, 'config', 'user.name', 'M3B negatives']
+    ]) {
+      const result = spawnSync('git', args, { encoding: 'utf8' })
+      if (result.error !== undefined || result.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed`)
+      }
+    }
+    const copyPath = resolve(templateDirectory, 'local-test.env.example')
+    const pristine = readFileSync(templateFile, 'utf8')
+    writeFileSync(copyPath, pristine)
+    for (const args of [
+      ['-C', repo, 'add', '-A'],
+      ['-C', repo, 'commit', '--quiet', '-m', 'baseline']
+    ]) {
+      const result = spawnSync('git', args, { encoding: 'utf8' })
+      if (result.error !== undefined || result.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed`)
+      }
+    }
+
+    const mutated = mutate(pristine)
+    if (stageOnly) {
+      // 「已 git add、随后把工作树恢复干净」——只有扫 index blob 才能发现。
+      writeFileSync(copyPath, mutated)
+      spawnSync('git', ['-C', repo, 'add', '--', 'infra/environments/local-test/local-test.env.example'], { encoding: 'utf8' })
+      writeFileSync(copyPath, pristine)
+    } else {
+      writeFileSync(copyPath, mutated)
+    }
+
+    let problems
+    try {
+      problems = scanTrackedTemplates(repo)
+    } catch (error) {
+      fail(name, `template scan threw: ${error instanceof Error ? error.message : String(error)}`)
+      return
+    }
     if (!problems.some((problem) => expected.test(problem))) {
       fail(
         name,
@@ -527,15 +594,19 @@ const templateNegative = (name, mutate, expected) => {
       )
       return
     }
-    pass(name, String(expected))
-  } catch (error) {
-    fail(name, `template scan threw: ${error instanceof Error ? error.message : String(error)}`)
-  } finally {
-    writeFileSync(templateFile, original)
-    if (!readFileSync(templateFile).equals(original)) {
-      fail(name, `FATAL: ${templateFile} was not restored byte-for-byte`)
-      process.stderr.write(`Run: git restore -- ${templateFile}\n`)
+    // 泄漏检查：变异值本身不得出现在任何 problem 里。
+    const injected = mutated
+      .split('\n')
+      .filter((line) => !pristine.includes(line) && line.trim() !== '')
+      .map((line) => line.split('=').slice(1).join('=').trim())
+      .filter((value) => value.length > 6)
+    if (problems.some((problem) => injected.some((value) => problem.includes(value)))) {
+      fail(name, 'a failure message echoes the injected value (not reprinted here)')
+      return
     }
+    pass(name, String(expected))
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
   }
 }
 
@@ -551,6 +622,15 @@ templateNegative(
     `${source}\n# poisoned line for the negative test only\n` +
     'EXAMPLE=postgresql://synthetic-user:synthetic-pass@synthetic-host:5432/x\n',
   /contains a full connection string with credentials/
+)
+
+// **index-only 反例**：Secret 已经 git add，工作树随后被恢复干净。只扫工作树
+// 的实现会完全看不见它，而它仍会随下一次 commit 进入历史。
+templateNegative(
+  'a staged secret with a clean worktree is still caught (git index scan)',
+  (source) => source.replace('WECHAT_APP_SECRET=\n', 'WECHAT_APP_SECRET=staged-only-value\n'),
+  /\(git index\).*assigns a non-empty value to the sensitive key WECHAT_APP_SECRET/,
+  { stageOnly: true }
 )
 
 // generator 反例：默认拒绝覆盖 / 未知条目拒绝。
@@ -594,7 +674,7 @@ templateNegative(
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-'))
   try {
     const directory = resolve(parent, 'bundle')
-    run(['mkdir', '-m', '700', directory])
+    mkdirSync(directory, { mode: 0o700 })
     writeFileSync(resolve(directory, 'not-a-bundle.txt'), 'x\n')
     let threw = false
     try {
@@ -627,14 +707,11 @@ templateNegative(
 // ---------------------------------------------------------------------------
 process.stdout.write('Group B: compose mutation negatives\n')
 
-const composeStatus = run(['git', 'status', '--porcelain', '--', composeFile], {
-  cwd: repositoryRoot
-})
-if (composeStatus.status !== 0 || composeStatus.stdout.trim() !== '') {
-  fail('compose mutations', `refusing to run: ${composeFile} is dirty in git`)
-} else {
-  const original = readFileSync(composeFile)
-  const source = original.toString('utf8')
+// Compose 变异反例：**绝不改动真实 tracked compose 文件**。把它复制进临时目录
+// 变异，再让拓扑门禁用 MEAL_AGENT_COMPOSE_FILE 指向副本运行。真实文件因此没有
+// 任何改写窗口——信号中断也不可能留下被篡改的 tracked 文件。
+{
+  const composeSource = readFileSync(composeFile, 'utf8')
   const composeMutations = [
     {
       name: 'postgres publishes a host port',
@@ -674,51 +751,58 @@ if (composeStatus.status !== 0 || composeStatus.stdout.trim() !== '') {
     }
   ]
   for (const mutation of composeMutations) {
-    const anchorIndex = source.indexOf(mutation.from)
-    const occurrences = source.split(mutation.from).length - 1
+    const occurrences = composeSource.split(mutation.from).length - 1
     if (occurrences !== 1) {
-      fail(
-        mutation.name,
-        `anchor appears ${String(occurrences)} times (expected exactly 1)`
-      )
+      fail(mutation.name, `anchor appears ${String(occurrences)} times (expected exactly 1)`)
       continue
     }
+    const scratch = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-compose-'))
     try {
-      // 用 slice 拼接而不是 String.replace：replace 的第二参数会解释 $& / $'
-      // 等替换记号，未来任何含 $ 的变异内容都会被静默改写。
+      // 副本必须与真实文件同目录名布局：门禁按 compose 文件所在目录解析
+      // ./postgres、./secrets 等相对路径。这里直接放进 infra/docker 的同级
+      // 临时目录并通过 symlink 复用真实资产是不安全的（会引入 symlink 语义），
+      // 因此改为把副本放在 infra/docker 下、用唯一文件名，跑完即删。
+      const copyPath = resolve(composeDirectory, `.m3b-neg-compose-${randomBytes(4).toString('hex')}.yaml`)
+      const anchorIndex = composeSource.indexOf(mutation.from)
       writeFileSync(
-        composeFile,
-        source.slice(0, anchorIndex) +
+        copyPath,
+        composeSource.slice(0, anchorIndex) +
           mutation.to +
-          source.slice(anchorIndex + mutation.from.length)
+          composeSource.slice(anchorIndex + mutation.from.length)
       )
-      const result = run([process.execPath, topologyChecker], {
-        cwd: repositoryRoot
-      })
-      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
-      if (result.status === 0) {
-        fail(mutation.name, 'NOT CAUGHT — the topology checker still passed')
-      } else if (!mutation.expect.test(output)) {
-        fail(
-          mutation.name,
-          `caught, but for the wrong reason (expected ${String(mutation.expect)}):\n${output.trim()}`
-        )
-      } else {
-        pass(mutation.name, String(mutation.expect))
+      try {
+        const result = await run([process.execPath, topologyChecker, '--compose-file', copyPath], {
+          cwd: repositoryRoot
+        })
+        const output = `${result.stdout ?? ''}${result.stderr ?? ''}`
+        if (result.status === 0) {
+          fail(mutation.name, 'NOT CAUGHT — the topology checker still passed')
+        } else if (!mutation.expect.test(output)) {
+          fail(
+            mutation.name,
+            `caught, but for the wrong reason (expected ${String(mutation.expect)}):\n${output.trim()}`
+          )
+        } else {
+          pass(mutation.name, String(mutation.expect))
+        }
+      } finally {
+        rmSync(copyPath, { force: true })
       }
     } catch (error) {
-      // run() 抛出（超时/spawn 失败）也不允许绕过 finally 的还原与下面的复核。
       fail(
         mutation.name,
         `checker invocation threw: ${error instanceof Error ? error.message : String(error)}`
       )
     } finally {
-      writeFileSync(composeFile, original)
+      rmSync(scratch, { recursive: true, force: true })
     }
   }
-  if (!readFileSync(composeFile).equals(original)) {
-    fail('compose mutations', `FATAL: ${composeFile} was not restored byte-for-byte`)
-    process.stderr.write(`Run: git restore -- ${composeFile}\n`)
+  // 真实 tracked compose 文件全程未被改写。
+  const dirty = await run(['git', 'status', '--porcelain', '--', composeFile], { cwd: repositoryRoot })
+  if (dirty.status !== 0 || dirty.stdout.trim() !== '') {
+    fail('compose mutations', 'the tracked compose file is dirty after the mutation negatives')
+  } else {
+    pass('compose mutations leave the tracked file untouched', 'git status clean for the tracked compose file')
   }
 }
 
@@ -775,12 +859,12 @@ if (pinnedImageMatch === null) {
       }
     ]
     for (const testCase of cases) {
-      const created = run(testCase.createArgs)
+      const created = await run(testCase.createArgs)
       if (created.status !== 0) {
         fail(testCase.name, `docker create failed: ${created.stderr.trim()}`)
         continue
       }
-      const { artifacts } = collectDockerArtifactsForProject({
+      const { artifacts } = await collectDockerArtifactsForProject({
         project: negativeProject,
         run,
         onProblem: (message) => fail(testCase.name, message)
@@ -797,20 +881,19 @@ if (pinnedImageMatch === null) {
       } else {
         pass(testCase.name, String(testCase.expectLabel))
       }
-      run(['docker', 'rm', '-f', '-v', testCase.createArgs[testCase.createArgs.indexOf('--name') + 1]])
+      await run(['docker', 'rm', '-f', '-v', testCase.createArgs[testCase.createArgs.indexOf('--name') + 1]])
     }
   } finally {
-    const leftover = run([
+    const leftoverResult = await run([
       'docker',
       'ps',
       '-aq',
       '--filter',
       `label=com.docker.compose.project=${negativeProject}`
     ])
-      .stdout.split('\n')
-      .filter(Boolean)
+    const leftover = leftoverResult.stdout.split('\n').filter(Boolean)
     if (leftover.length > 0) {
-      run(['docker', 'rm', '-f', '-v', ...leftover])
+      await run(['docker', 'rm', '-f', '-v', ...leftover])
     }
   }
 }
@@ -829,7 +912,7 @@ for (const outOfScope of [
 ]) {
   const name = `cleanup refuses the out-of-scope project name ${JSON.stringify(outOfScope)}`
   try {
-    cleanupSmokeProject(outOfScope)
+    await cleanupSmokeProject(outOfScope)
     fail(name, 'NOT CAUGHT — cleanup accepted an out-of-scope project name')
   } catch (error) {
     if (/outside the meal-agent-m3b-\* smoke scope/.test(String(error))) {
@@ -841,22 +924,29 @@ for (const outOfScope of [
 }
 
 {
+  // 范围外目录：分阶段收集器把它记成 residue（调用方因此失败），而**绝不
+  // 删除**它——一个阶段的拒绝不再中断其余阶段，但也绝不被静默吞掉。
   const name = 'cleanup refuses a secrets directory outside the smoke tmp prefix'
   const decoyDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-not-secrets-'))
+  const scopeProject = `meal-agent-m3b-neg-scope-${randomBytes(4).toString('hex')}`
+  usedNegativeProjects.push(scopeProject)
   try {
-    cleanupSmokeProject(`meal-agent-m3b-neg-scope-${randomBytes(4).toString('hex')}`, decoyDirectory)
-    fail(name, 'NOT CAUGHT — cleanup removed a directory outside its scope')
-  } catch (error) {
-    const reasonOk = /is not a meal-agent-m3b-secrets-\* directory under the system tmpdir/.test(
-      String(error)
+    const residue = await cleanupSmokeProject(scopeProject, decoyDirectory)
+    const reported = residue.some((entry) =>
+      /secrets-directory: .*is not a meal-agent-m3b-secrets-\* directory under the system tmpdir/.test(
+        String(entry)
+      )
     )
     const stillThere = existsSync(decoyDirectory)
-    if (!reasonOk) {
-      fail(name, `wrong reason: ${error instanceof Error ? error.message : String(error)}`)
+    if (!reported) {
+      fail(
+        name,
+        `NOT CAUGHT — cleanup did not report the out-of-scope directory: ${residue.join('; ')}`
+      )
     } else if (!stillThere) {
       fail(name, 'the out-of-scope directory disappeared')
     } else {
-      pass(name, '/not a meal-agent-m3b-secrets-\\* directory/')
+      pass(name, '/secrets-directory: not a meal-agent-m3b-secrets-\\* directory/')
     }
   } finally {
     rmSync(decoyDirectory, { recursive: true, force: true })
@@ -879,7 +969,7 @@ for (const outOfScope of [
     const decoyName = `${decoyProject}-decoy`
     const targetName = `${targetProject}-victim`
     try {
-      const createdDecoy = run([
+      const createdDecoy = await run([
         'docker',
         'create',
         '--label',
@@ -890,7 +980,7 @@ for (const outOfScope of [
         'true',
         pinned[1]
       ])
-      const createdTarget = run([
+      const createdTarget = await run([
         'docker',
         'create',
         '--label',
@@ -904,9 +994,9 @@ for (const outOfScope of [
       if (createdDecoy.status !== 0 || createdTarget.status !== 0) {
         fail(name, `docker create failed: ${(createdDecoy.stderr + createdTarget.stderr).trim()}`)
       } else {
-        cleanupSmokeProject(targetProject)
-        const survived = run(['docker', 'inspect', decoyName])
-        const removed = run(['docker', 'inspect', targetName])
+        await cleanupSmokeProject(targetProject)
+        const survived = await run(['docker', 'inspect', decoyName])
+        const removed = await run(['docker', 'inspect', targetName])
         if (survived.status !== 0) {
           fail(name, 'NOT CAUGHT — the decoy container of another project was removed')
         } else if (removed.status === 0) {
@@ -916,9 +1006,294 @@ for (const outOfScope of [
         }
       }
     } finally {
-      run(['docker', 'rm', '-f', '-v', decoyName])
-      run(['docker', 'rm', '-f', '-v', targetName])
+      await run(['docker', 'rm', '-f', '-v', decoyName])
+      await run(['docker', 'rm', '-f', '-v', targetName])
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Group E：镜像隔离（唯一 tag + immutable ID）
+// ---------------------------------------------------------------------------
+process.stdout.write('Group E: image isolation negatives\n')
+
+{
+  // 两个 project 交错 build/up：各自的唯一 tag 必须指向**不同**的 image ID，
+  // 且任一方的 build 都不能改写对方 tag 指向的镜像。
+  const name = 'two interleaved projects keep independent per-run image tags'
+  const runIdA = `neg${randomBytes(3).toString('hex')}`
+  const runIdB = `neg${randomBytes(3).toString('hex')}`
+  const tagA = runImageTagFor(runIdA)
+  const tagB = runImageTagFor(runIdB)
+  const overrideA = overridePathFor(composeDirectory, runIdA)
+  const overrideB = overridePathFor(composeDirectory, runIdB)
+  const projectA = `meal-agent-m3b-neg-imga-${randomBytes(3).toString('hex')}`
+  const projectB = `meal-agent-m3b-neg-imgb-${randomBytes(3).toString('hex')}`
+  usedNegativeProjects.push(projectA, projectB)
+  const secretsA = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
+  const secretsB = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
+  try {
+    generateSecretBundle(secretsA)
+    generateSecretBundle(secretsB)
+    writeImageOverride(overrideA, tagA)
+    writeImageOverride(overrideB, tagB)
+    const buildFor = (project, override, secrets) =>
+      run(
+        [
+          'docker',
+          'compose',
+          '--file',
+          composeFile,
+          '--file',
+          override,
+          '--project-name',
+          project,
+          'build',
+          'api'
+        ],
+        {
+          cwd: composeDirectory,
+          timeoutMs: 1_800_000,
+          env: { ...process.env, MEAL_AGENT_SECRETS_DIR: secrets, MEAL_AGENT_API_HOST_PORT: '3000' }
+        }
+      )
+    // 交错顺序：A build → B build → 再读两个 tag 的 image ID。
+    const builtA = await buildFor(projectA, overrideA, secretsA)
+    if (builtA.status !== 0) {
+      throw new Error(`project A build failed: ${builtA.stderr.slice(-400)}`)
+    }
+    const idA1 = await imageIdOf(tagA)
+    const builtB = await buildFor(projectB, overrideB, secretsB)
+    if (builtB.status !== 0) {
+      throw new Error(`project B build failed: ${builtB.stderr.slice(-400)}`)
+    }
+    const idA2 = await imageIdOf(tagA)
+    const idB = await imageIdOf(tagB)
+    if (idA1 === null || idB === null) {
+      fail(name, 'a per-run tag does not exist after its own build')
+    } else if (idA2 !== idA1) {
+      fail(name, "project B's build changed the image that project A's tag points at")
+    } else if (tagA === tagB) {
+      fail(name, 'the two runs produced the same tag')
+    } else {
+      pass(
+        name,
+        `${tagA} -> ${idA1.slice(0, 19)} stayed put while ${tagB} -> ${idB.slice(0, 19)} was built`
+      )
+    }
+
+    // cleanup 只删自己那一个 tag：删 A 之后 B 必须还在。
+    const cleanupName = 'per-run cleanup removes only its own image tag'
+    const residueA = await cleanupSmokeProject(projectA, secretsA, { imageTag: tagA })
+    const afterA = await imageIdOf(tagA)
+    const survivingB = await imageIdOf(tagB)
+    if (residueA.length > 0) {
+      fail(cleanupName, `cleanup reported residue: ${residueA.join('; ')}`)
+    } else if (afterA !== null) {
+      fail(cleanupName, 'the run tag still exists after cleanup')
+    } else if (survivingB === null) {
+      fail(cleanupName, "cleanup removed the other project's tag")
+    } else {
+      pass(cleanupName, "own tag removed, the other project's tag untouched")
+    }
+  } catch (error) {
+    fail(name, `image isolation negative threw: ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    await cleanupSmokeProject(projectB, secretsB, { imageTag: tagB }).catch(() => undefined)
+    for (const path of [overrideA, overrideB]) {
+      rmSync(path, { force: true })
+    }
+    for (const directory of [secretsA, secretsB]) {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
+}
+
+{
+  // cleanup 拒绝删除任何非本轮形状的 tag（例如全局共享 tag）。
+  const name = 'cleanup refuses to remove a tag outside the per-run namespace'
+  const project = `meal-agent-m3b-neg-tag-${randomBytes(3).toString('hex')}`
+  usedNegativeProjects.push(project)
+  const residue = await cleanupSmokeProject(project, null, {
+    imageTag: 'meal-agent-api:stage09a-local-test'
+  })
+  if (residue.some((entry) => /image-tag: refusing to remove .*not a per-run/.test(String(entry)))) {
+    pass(name, '/image-tag: refusing to remove … not a per-run/')
+  } else {
+    fail(name, `NOT CAUGHT — cleanup accepted a foreign tag: ${residue.join('; ')}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Group F：Docker 证据 fail closed（list/inspect/remove 非零 & 部分删除失败）
+// ---------------------------------------------------------------------------
+process.stdout.write('Group F: docker evidence fail-closed negatives\n')
+
+{
+  // 用 PATH 影子 docker 让指定子命令非零退出，证明证据读取不会 fail open。
+  const shimCases = [
+    {
+      name: 'a failing docker ps makes the container sweep report residue instead of passing',
+      script: 'if [ "$1" = "ps" ]; then echo "boom" >&2; exit 7; fi\nexec /usr/local/bin/docker "$@"\n',
+      expect: /container-sweep: docker ps .*exited 7/
+    },
+    {
+      name: 'a failing docker volume ls makes the dangling check report residue',
+      script: 'if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then echo "boom" >&2; exit 9; fi\nexec /usr/local/bin/docker "$@"\n',
+      expect: /(volume-sweep|dangling-volumes): docker volume ls .*exited 9/
+    },
+    {
+      name: 'a failing docker compose down is reported instead of silently ignored',
+      script: 'if [ "$1" = "compose" ]; then echo "boom" >&2; exit 5; fi\nexec /usr/local/bin/docker "$@"\n',
+      expect: /compose-down: docker compose .*exited 5/
+    }
+  ]
+  const realDocker = (await run(['which', 'docker'])).stdout.trim()
+  for (const shimCase of shimCases) {
+    const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-shim-'))
+    const project = `meal-agent-m3b-neg-shim-${randomBytes(3).toString('hex')}`
+    usedNegativeProjects.push(project)
+    try {
+      const shimPath = resolve(shimDirectory, 'docker')
+      writeFileSync(
+        shimPath,
+        `#!/bin/sh\n${shimCase.script.replaceAll('/usr/local/bin/docker', realDocker)}`,
+        { mode: 0o700 }
+      )
+      const residue = await cleanupSmokeProject(project, null, {
+        composeEnvironment: { ...process.env, PATH: `${shimDirectory}:${process.env.PATH ?? ''}` },
+        danglingBaseline: new Set()
+      })
+      if (residue.some((entry) => shimCase.expect.test(String(entry)))) {
+        pass(shimCase.name, String(shimCase.expect))
+      } else {
+        fail(shimCase.name, `NOT CAUGHT — residue was ${JSON.stringify(residue)}`)
+      }
+    } finally {
+      rmSync(shimDirectory, { recursive: true, force: true })
+    }
+  }
+}
+
+{
+  // 一个阶段失败不阻断其余阶段：compose down 失败时，容器/网络/卷 sweep 仍
+  // 必须执行（本例用一个真实 decoy 容器证明它确实被删掉）。
+  const name = 'a failing stage does not block the remaining cleanup stages'
+  const project = `meal-agent-m3b-neg-stage-${randomBytes(3).toString('hex')}`
+  usedNegativeProjects.push(project)
+  const pinned = /image: (docker\.io\/library\/postgres:[^\n]+)/.exec(readFileSync(composeFile, 'utf8'))
+  const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-shim-'))
+  const containerName = `${project}-victim`
+  try {
+    const realDocker = (await run(['which', 'docker'])).stdout.trim()
+    const created = await run([
+      'docker',
+      'create',
+      '--label',
+      `com.docker.compose.project=${project}`,
+      '--name',
+      containerName,
+      '--entrypoint',
+      'true',
+      pinned[1]
+    ])
+    if (created.status !== 0) {
+      fail(name, `docker create failed: ${created.stderr.trim()}`)
+    } else {
+      const shimPath = resolve(shimDirectory, 'docker')
+      writeFileSync(
+        shimPath,
+        `#!/bin/sh\nif [ "$1" = "compose" ]; then echo "boom" >&2; exit 5; fi\nexec ${realDocker} "$@"\n`,
+        { mode: 0o700 }
+      )
+      const residue = await cleanupSmokeProject(project, null, {
+        composeEnvironment: { ...process.env, PATH: `${shimDirectory}:${process.env.PATH ?? ''}` }
+      })
+      const downFailed = residue.some((entry) => /compose-down/.test(String(entry)))
+      const containerGone = (await run(['docker', 'inspect', containerName])).status !== 0
+      if (!downFailed) {
+        fail(name, 'the injected compose-down failure was not reported')
+      } else if (!containerGone) {
+        fail(name, 'the container sweep was skipped after the compose-down failure')
+      } else {
+        pass(name, 'compose-down failure reported AND the container sweep still ran')
+      }
+    }
+  } finally {
+    await run(['docker', 'rm', '-f', '-v', containerName])
+    rmSync(shimDirectory, { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Group G：子进程与信号（build / run / cleanup / 文件变异 / rename 五个窗口）
+// ---------------------------------------------------------------------------
+process.stdout.write('Group G: subprocess and signal negatives\n')
+
+{
+  // generator 的 rename 窗口：SIGINT 落在这里必须清掉半套 bundle，且按原信号
+  // 语义退出（128+2=130）。用 PATH 影子无法命中，改用一个真实子进程 fixture。
+  const name = 'SIGINT during the generator rename window leaves no partial bundle'
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-gen-'))
+  const bundle = resolve(directory, 'bundle')
+  try {
+    const child = spawn(
+      process.execPath,
+      ['--input-type=module', '-e',
+        `import { generateSecretBundle } from ${JSON.stringify(resolve(composeDirectory, 'generate-local-test-secrets.mjs'))};\n` +
+        `import { installSignalHandlers } from ${JSON.stringify(resolve(composeDirectory, 'm3b-subprocess.mjs'))};\n` +
+        `import { discardGeneratedPaths } from ${JSON.stringify(resolve(composeDirectory, 'generate-local-test-secrets.mjs'))};\n` +
+        'installSignalHandlers(() => { discardGeneratedPaths(); return [] }, { label: "generator cleanup" });\n' +
+        'process.stdout.write("ready\\n");\n' +
+        `setTimeout(() => { generateSecretBundle(${JSON.stringify(bundle)}); process.stdout.write("done\\n") }, 400);\n` +
+        'setTimeout(() => {}, 10_000);\n'
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] }
+    )
+    const outcome = await new Promise((resolveOutcome) => {
+      let stdout = ''
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk.toString('utf8')
+        if (stdout.includes('ready')) {
+          // 在 generateSecretBundle 正在写/rename 的那一刻发信号。
+          setTimeout(() => child.kill('SIGINT'), 400)
+        }
+      })
+      child.once('close', (code, signal) => resolveOutcome({ code, signal, stdout }))
+    })
+    const leftovers = existsSync(bundle)
+      ? readdirSync(bundle).filter((entry) => !entry.startsWith('.keep'))
+      : []
+    const signalled = outcome.signal === 'SIGINT' || outcome.code === 130
+    if (leftovers.length > 0) {
+      fail(name, `the interrupted generator left ${String(leftovers.length)} file(s) behind`)
+    } else if (!signalled) {
+      fail(name, `expected SIGINT semantics, got code=${String(outcome.code)} signal=${String(outcome.signal)}`)
+    } else {
+      pass(name, 'no partial bundle and the process exited with SIGINT semantics')
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
+{
+  // 受控子树：runCommand 起的子进程自成进程组，terminateControlledSubtree
+  // 必须把整组带走（用一个长时间 sleep 的子进程证明）。
+  const name = 'the controlled subtree is terminated as a group'
+  const started = runCommand(['sh', '-c', 'sleep 60'], { timeoutMs: 30_000 })
+  await new Promise((resolveWait) => setTimeout(resolveWait, 300))
+  const before = (await run(['sh', '-c', 'pgrep -f "sleep 60" | wc -l'])).stdout.trim()
+  await terminateControlledSubtree({ graceMs: 300 })
+  await started.catch(() => undefined)
+  await new Promise((resolveWait) => setTimeout(resolveWait, 300))
+  const after = (await run(['sh', '-c', 'pgrep -f "sleep 60" | wc -l'])).stdout.trim()
+  if (Number(before) < 1) {
+    fail(name, 'the controlled child never started')
+  } else if (Number(after) >= Number(before)) {
+    fail(name, `the child survived termination (before=${before}, after=${after})`)
+  } else {
+    pass(name, `controlled subtree went from ${before} to ${after} matching processes`)
   }
 }
 
@@ -932,7 +1307,8 @@ for (const project of usedNegativeProjects) {
     ['network', ['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]],
     ['volume', ['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]]
   ]) {
-    const residue = run(listArgs).stdout.split('\n').filter(Boolean)
+    const residueResult = await run(listArgs)
+    const residue = residueResult.stdout.split('\n').filter(Boolean)
     if (residue.length > 0) {
       fail('suite residue', `${kind}s left behind under ${project}: ${residue.join(', ')}`)
     }
@@ -941,7 +1317,7 @@ for (const project of usedNegativeProjects) {
 
 // 反例数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
 // 差额暴露，而不是静默变成「跑得更少的绿」。
-const expectedNegativeCount = 47
+const expectedNegativeCount = 62
 if (caught + failures.length !== expectedNegativeCount) {
   fail(
     'suite completeness',

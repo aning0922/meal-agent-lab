@@ -22,7 +22,31 @@ import { fileURLToPath } from 'node:url'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
-const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
+
+// 生产调用**零参数**，检查的永远是 tracked 的 compose.local-test.yaml。
+// `--compose-file <path>` 是 M3B 反例专用的受限 seam：它让变异反例改写**临时
+// 副本**而不是 tracked 文件（tracked 文件因此没有任何改写窗口，信号中断也不会
+// 留下被篡改的拓扑）。副本必须位于本目录，否则 `./postgres`、`./secrets` 等
+// 相对资产会解析到别处，检查结果就不再等价——路径不合规时直接失败。
+const parseComposeFileArgument = (argv) => {
+  if (argv.length === 0) {
+    return resolve(composeDirectory, 'compose.local-test.yaml')
+  }
+  if (argv.length !== 2 || argv[0] !== '--compose-file') {
+    process.stderr.write('usage: check-compose-topology.mjs [--compose-file <path in infra/docker>]\n')
+    process.exit(2)
+  }
+  const candidate = resolve(argv[1])
+  if (resolve(candidate, '..') !== composeDirectory) {
+    process.stderr.write(
+      `--compose-file must name a file inside ${composeDirectory} so that relative ` +
+        'asset paths resolve identically\n'
+    )
+    process.exit(2)
+  }
+  return candidate
+}
+const composeFile = parseComposeFileArgument(process.argv.slice(2))
 
 // 与 compose.local-test.yaml 逐字相同的固定镜像。digest 由
 // `docker buildx imagetools inspect` 解析真实仓库获得，不是猜测值。
