@@ -24,16 +24,15 @@ const shutdown = async (signal: ShutdownSignal): Promise<void> => {
 
   try {
     await app.close();
-  } catch (error) {
+  } catch {
     // 日志关不干净（flush 报错 / flush 回调超时 / 目的地没排空）。能用来记录这件事
-    // 的东西正好就是坏掉的那个，所以往 stderr 写**一行固定文本 + 归一化类型名**
-    // （不是取值），并留一个确定的非零退出码。
+    // 的东西正好就是坏掉的那个，所以往 stderr 写**一行完全固定的中性文本**——不带
+    // 阶段、不带类型名、不带任何来自错误对象的东西——并留一个确定的非零退出码。
     //
     // 不这么做的话，`void shutdown(…)` 会把这个 rejection 丢掉，最终只剩 Node 对
-    // 未处理拒绝的默认行为——退出码对不对取决于运行时开关，而不是我们的选择。
-    process.stderr.write(
-      `shutdown: log close failed (${eventErrorType(error)})\n`,
-    );
+    // 未处理拒绝的默认行为：退出码对不对取决于运行时开关，而且它会把整个错误对象
+    // 打到 stderr 上。
+    process.stderr.write("shutdown: close failed\n");
     process.exitCode = 1;
   } finally {
     clearTimeout(forceClose);
@@ -47,6 +46,12 @@ try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
   app.eventLog.emit("startup.failed", { errorType: eventErrorType(error) });
-  await app.close();
+  try {
+    await app.close();
+  } catch {
+    // 关机路径上的 close 会 reject。这里不接住的话，rejection 会从 top-level
+    // await 逃出去，下面那行退出码根本轮不到执行，整个错误对象还会被打到 stderr。
+    process.stderr.write("shutdown: close failed\n");
+  }
   process.exitCode = 1;
 }

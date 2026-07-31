@@ -302,13 +302,20 @@ checker 的静态门禁限制整项 logger capability（按**声明身份**判�
 出现在边界文件里，mutation API 只有 `logging.ts` 可碰，组装根只有三个精确上下文
 可以命名 logger；能力被装进容器、mapped/indexed type、接口重声明或解构里带出去
 同样命中；「组装根持有的容器」只认 `createLoggingContext` 与 fastify 自己那两个
-**工厂的声明身份**，不是「initializer 恰好是一个调用」）——该门禁是工程护栏，不是
-形式化安全证明；中央 logger 边界（含 child()/setBindings() 与子 logger options
+**工厂的声明身份**，不是「initializer 恰好是一个调用」；工厂符号本身也计入能力，
+只允许在组装根那一次合法工厂调用的 callee 位置出现，`logging.ts` 的 root 工厂更严、
+边界之外一处都不许出现；形参没有通行证，只能作为成员访问的基出现，工厂注入槽还要求
+那个基是组装根自己的 options 对象）——该门禁是工程护栏，不是形式化安全证明；中央 logger 边界（含 child()/setBindings() 与子 logger options
 的安全包装）保留为**纵深防御**，覆盖 Fastify 自己打的请求日志。event logger 的
 raw `Logger` 只存在于模块词法作用域，`app.eventLog` 不可写不可重定义；日志关机是
-**有界且 fail closed** 的：flush 报错、flush 回调超时、目的地排空超时都会让
-`app.close()` 失败，自建的 logger 才 flush，调用方注入的 logger 与 `Writable`
-既不 flush 也不 end。
+**有界、fail closed 且 failure-safe** 的：close 是一个阶段收集器，每个适用阶段
+（event flush、自建时的 framework flush 与 drain、event drain）都会跑到，一个阶段
+失败不跳过后面的阶段，最后聚合成 `AggregateError` 让 `app.close()` 失败；失败原因
+只由固定文本与归一化错误类型名拼成，取类型名这一步本身也兜了底（敌意的自指 Proxy
+会让归一化再抛一次）。自建的 logger 才 flush，调用方注入的 logger
+不碰，调用方的 `Writable` 绝不 `end`/`destroy`/写入，只读 `writableLength` 等它
+排空。`index.ts` 把失败落成 stderr 上固定中性文本 `shutdown: close failed` 与
+非零退出码。
 覆盖 database URL、connection string、password、DSN 的命名变体与按取值识别的
 连接串/conninfo，口令的原值与 URL 编码形态同时消失；全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何

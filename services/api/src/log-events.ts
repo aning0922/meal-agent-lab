@@ -260,11 +260,12 @@ const createEventLogSink = (root: Logger): EventLogSink => {
  *   - `framework`：调用方注入时归**调用方**所有（测试要捕获框架日志），我们既不
  *     flush 也不 `end` 它；**没注入时由我们新建，那一棵就归我们，必须进 flush**；
  *   - event root：**永远**归我们所有，因此一定进 flush；
- *   - 目的地（`Writable`）：**永远**归调用方所有，我们**绝不 `end`** 它。口径要写
- *     实：flush **自有 root** 时 pino 会把回调转交给目的地自己的 `flush`（如果它
- *     有的话），所以「不碰调用方的东西」只对**调用方的 logger** 成立；调用方给的
- *     目的地会因为我们 flush 自有 root 而被调用一次 `flush`，它报错也会让
- *     `close()` reject。
+ *   - 目的地（`Writable`）：**永远**归调用方所有。我们**绝不 `end`**、绝不
+ *     `destroy`、也绝不 `write` 关机标记——只读它的 `writableLength` 等它排空。
+ *     口径要写实：flush **自有 root** 时 pino 会把回调转交给目的地自己的 `flush`
+ *     （如果它有的话），所以「不碰调用方的东西」只对**调用方的 logger** 成立；
+ *     调用方给的目的地会因为我们 flush 自有 root 而被调用一次 `flush`，它报错也会
+ *     让 `close()` 失败——但那条失败**不会**让别的阶段被跳过。
  */
 export interface LoggingContext {
   readonly framework: Logger;
@@ -276,11 +277,33 @@ export interface LoggingContext {
    * **reject**，不会静默当成关干净了。日志是审计面，「关的时候悄悄丢最后几条」
    * 与「没写过」在事后是分不清的。
    *
+   * **failure-safe**：每一个适用的阶段都会跑到，一个阶段失败不跳过后面的阶段；
+   * 失败在最后一次性聚合抛出（`AggregateError`），消息只由本模块自己的固定文本与
+   * **归一化错误类型名**拼成，绝不带调用方或目的地的原始文本。
+   *
    * **幂等**：重复调用拿到的是**同一个** promise，成功失败都一样。它不会重跑一遍
    * flush，也不会第二次调用就变成成功。
    */
   close: () => Promise<void>;
 }
+
+/**
+ * 关机路径上取错误类型名的**唯一**入口。
+ *
+ * `errorTypeOf` 自己会读输入的原型与属性描述符，因此一个自指 Proxy
+ * （`getPrototypeOf` / `getOwnPropertyDescriptor` 都抛自己）能让它**再抛一次**。
+ * 那样一来抛出来的就是调用方的原始对象：它会穿过阶段收集器，close() 用调用方的值
+ * 拒绝、剩下的阶段全被跳过——恰好把本轮两条保证一起打掉。
+ *
+ * 这里兜到一个固定串。宁可少一点诊断信息，也不能让调用方的取值出现在错误里。
+ */
+const safeErrorType = (error: unknown): string => {
+  try {
+    return errorTypeOf(error);
+  } catch {
+    return "UnreadableError";
+  }
+};
 
 /** flush 与排空的硬上界。到点一律 reject，绝不静默放行。 */
 const flushTimeoutMs = 2_000;
@@ -302,18 +325,16 @@ const sleep = (milliseconds: number): Promise<void> =>
  * 错误消息里只保留**归一化的类型名**：目的地的 error message 是不可信文本，
  * 可能带上路径、连接串或别的取值。
  */
-const flushOwned = (root: Logger, role: string): Promise<void> =>
-  new Promise<void>((resolve, reject) => {
+const flushOwned = (root: Logger, role: string): Promise<string | undefined> =>
+  new Promise<string | undefined>((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) {
         return;
       }
       settled = true;
-      reject(
-        new Error(
-          `log flush timed out after ${String(flushTimeoutMs)}ms (${role})`,
-        ),
+      resolve(
+        `log flush timed out after ${String(flushTimeoutMs)}ms (${role})`,
       );
     }, flushTimeoutMs);
     // **刻意不 `unref()`**。unref 过的定时器不 ref 事件循环，而关机正是「循环里
@@ -328,11 +349,11 @@ const flushOwned = (root: Logger, role: string): Promise<void> =>
       }
       settled = true;
       clearTimeout(timer);
-      if (error === undefined || error === null) {
-        resolve();
-        return;
-      }
-      reject(new Error(`log flush failed (${role}): ${errorTypeOf(error)}`));
+      resolve(
+        error === undefined || error === null
+          ? undefined
+          : `log flush failed (${role}): ${safeErrorType(error)}`,
+      );
     };
     try {
       root.flush(done);
@@ -349,24 +370,30 @@ const flushOwned = (root: Logger, role: string): Promise<void> =>
  * 业务事件」在异步目的地上会丢（实测：延迟 5ms 的写入在 close 返回之后还没落地）。
  *
  * 这里只**等它排空**，绝不 `end()` 它——目的地归调用方所有。等待有硬上界，但到点
- * 是**抛错**而不是接着往下走：一个没排空的目的地意味着日志真的丢了。
+ * 是**报失败**而不是接着往下走：一个没排空的目的地意味着日志真的丢了。
+ *
+ * `writableLength` 是一个访问器，调用方给的对象可以让它抛。所以整段包起来，
+ * 抛出来的东西只按**归一化类型名**记一笔。
  */
 const awaitDrained = async (
   destination: Writable | undefined,
   role: string,
-): Promise<void> => {
+): Promise<string | undefined> => {
   if (destination === undefined) {
-    return;
+    return undefined;
   }
   const deadline = Date.now() + drainTimeoutMs;
-  while (destination.writableLength > 0) {
-    if (Date.now() >= deadline) {
-      throw new Error(
-        `log destination did not drain within ${String(drainTimeoutMs)}ms (${role})`,
-      );
+  try {
+    while (destination.writableLength > 0) {
+      if (Date.now() >= deadline) {
+        return `log destination did not drain within ${String(drainTimeoutMs)}ms (${role})`;
+      }
+      await sleep(1);
     }
-    await sleep(1);
+  } catch (error) {
+    return `log drain check failed (${role}): ${safeErrorType(error)}`;
   }
+  return undefined;
 };
 
 /**
@@ -397,13 +424,46 @@ export const createLoggingContext = (
   // 注入进来的那棵归调用方所有：不 flush、不 end。只有**我们自己建的**才进名单。
   const ownedFramework = framework === undefined ? frameworkLogger : undefined;
   let closing: Promise<void> | undefined;
+  /**
+   * **failure-safe 的阶段收集器**：每一个适用的阶段都要跑到。
+   *
+   * 上一版是一串 `await`，第一处失败就把后面的阶段全跳过了——「event flush 报错，
+   * 于是 framework 那棵根本没 flush」。关机路径上这正好是最坏的顺序：一个坏掉的
+   * 目的地会连累另一个好的目的地一起丢日志。
+   *
+   * 现在每个阶段各自收成一条**本模块自己写的**安全原因（阶段函数不抛，只返回
+   * 原因字符串），跑完再一次性聚合抛出。因此错误里永远不会出现调用方的文本。
+   */
   const runClose = async (): Promise<void> => {
-    await flushOwned(eventRoot, "event");
+    const stages: (() => Promise<string | undefined>)[] = [
+      () => flushOwned(eventRoot, "event"),
+    ];
     if (ownedFramework !== undefined) {
-      await flushOwned(ownedFramework, "framework");
-      await awaitDrained(frameworkDestination, "framework");
+      stages.push(() => flushOwned(ownedFramework, "framework"));
+      stages.push(() => awaitDrained(frameworkDestination, "framework"));
     }
-    await awaitDrained(eventDestination, "event");
+    stages.push(() => awaitDrained(eventDestination, "event"));
+
+    const reasons: string[] = [];
+    for (const stage of stages) {
+      let reason: string | undefined;
+      try {
+        reason = await stage();
+      } catch (error) {
+        // 阶段函数本身不该抛；真抛了也只按归一化类型名记一笔，绝不带调用方文本。
+        reason = `log close stage threw: ${safeErrorType(error)}`;
+      }
+      if (reason !== undefined) {
+        reasons.push(reason);
+      }
+    }
+    if (reasons.length === 0) {
+      return;
+    }
+    throw new AggregateError(
+      reasons.map((reason) => new Error(reason)),
+      `log close failed in ${String(reasons.length)} of ${String(stages.length)} stage(s): ${reasons.join("; ")}`,
+    );
   };
   return {
     framework: frameworkLogger,

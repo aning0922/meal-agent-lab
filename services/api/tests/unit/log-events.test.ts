@@ -847,3 +847,156 @@ test("the flush timeout fires even when nothing else holds the event loop open",
       `an unref'd timer lets the process exit 0 with close() unsettled\n${run.stdout}\n${run.stderr}`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// 第十四轮收尾追加：close 必须是 failure-safe 的阶段收集器
+// ---------------------------------------------------------------------------
+
+/** 把 close 的失败原因拆成一条条，逐条断言「这个阶段确实跑过了」。 */
+const closeFailure = async (context: {
+  close: () => Promise<void>;
+}): Promise<string> => {
+  const error = await context.close().then(
+    () => undefined,
+    (reason: unknown) => reason,
+  );
+  assert.ok(error instanceof Error, "close must reject with an Error");
+  return error.message;
+};
+
+test("an event flush failure does not skip the framework flush", async () => {
+  const events = probeDestination("error");
+  const framework = probeDestination("error");
+  const context = createLoggingContext("info", undefined, events.stream, framework.stream);
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const message = await closeFailure(context);
+  // 上一版是一串 `await`：event flush 一失败，framework 那棵**根本没 flush**。
+  assert.equal(
+    framework.flushes(),
+    1,
+    `the framework flush must still run after the event flush failed\n${message}`,
+  );
+  assert.match(message, /log flush failed \(event\)/);
+  assert.match(message, /log flush failed \(framework\)/);
+  assert.match(message, /log close failed in 2 of 4 stage\(s\)/);
+  assert.ok(!message.includes(opaqueSecret), message);
+});
+
+test("a framework flush failure does not skip the event drain", async () => {
+  const events = probeDestination("ok", { stallWrites: true });
+  const framework = probeDestination("error");
+  const context = createLoggingContext("info", undefined, events.stream, framework.stream);
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const message = await closeFailure(context);
+  // event drain 排在 framework flush 之后：前面失败不得让它被跳过。
+  assert.match(message, /log flush failed \(framework\)/);
+  assert.match(
+    message,
+    /log destination did not drain within 2000ms \(event\)/,
+    `the event drain must still run after the framework flush failed\n${message}`,
+  );
+  assert.equal(events.ended(), false);
+  assert.equal(framework.ended(), false);
+});
+
+test("one failing drain does not block the other drain", async () => {
+  const events = probeDestination("ok", { stallWrites: true });
+  const framework = probeDestination("ok", { stallWrites: true });
+  const context = createLoggingContext("info", undefined, events.stream, framework.stream);
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+  // framework root 自己也写一行，好让它的目的地真的有东西排不掉。
+  context.framework.info("keeping the framework destination busy");
+
+  const message = await closeFailure(context);
+  assert.match(
+    message,
+    /log destination did not drain within 2000ms \(framework\)/,
+    message,
+  );
+  assert.match(
+    message,
+    /log destination did not drain within 2000ms \(event\)/,
+    `a failing framework drain must not skip the event drain\n${message}`,
+  );
+  assert.match(message, /log close failed in 2 of 4 stage\(s\)/);
+  assert.equal(events.ended(), false);
+  assert.equal(framework.ended(), false);
+});
+
+test("every close caller gets the same aggregated failure", async () => {
+  const events = probeDestination("error");
+  const framework = probeDestination("error");
+  const context = createLoggingContext("info", undefined, events.stream, framework.stream);
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const first = context.close();
+  const second = context.close();
+  assert.equal(first, second, "close must return the very same promise");
+  const message = await closeFailure(context);
+  await assert.rejects(second, /log close failed in 2 of 4 stage\(s\)/);
+  assert.equal(events.flushes(), 1, "a second close must not flush again");
+  assert.equal(framework.flushes(), 1, "a second close must not flush again");
+  assert.ok(!message.includes(opaqueSecret), message);
+});
+
+test("a hostile throw from the destination cannot escape close, nor skip a stage", async () => {
+  // `errorTypeOf` 自己会读输入的原型与属性描述符，所以一个**自指** Proxy 能让它
+  // 再抛一次。没兜住的话，抛出来的就是调用方的原始对象：它穿过阶段收集器，
+  // close() 用调用方的值拒绝，剩下的阶段全被跳过——本轮两条保证一起没了。
+  const hostile: unknown = new Proxy(
+    { leaked: opaqueSecret },
+    {
+      getPrototypeOf: () => {
+        throw hostile;
+      },
+      getOwnPropertyDescriptor: () => {
+        throw hostile;
+      },
+    },
+  );
+  const framework = probeDestination("ok");
+  Object.defineProperty(framework.stream, "writableLength", {
+    get: () => {
+      throw hostile;
+    },
+    configurable: true,
+  });
+  // event 目的地卡住：它排在 framework drain **之后**，因此「后续阶段没被跳过」
+  // 这件事是可观测的——它必须真的等满 2 秒才报排空超时。
+  const events = probeDestination("ok", { stallWrites: true });
+  const context = createLoggingContext(
+    "info",
+    undefined,
+    events.stream,
+    framework.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const started = Date.now();
+  const failure = await context.close().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.ok(
+    failure instanceof AggregateError,
+    "close must reject with our own aggregate, never with the caller's value",
+  );
+  assert.ok(
+    !failure.message.includes(opaqueSecret),
+    `the rejection must not carry the caller's object\n${failure.message}`,
+  );
+  assert.match(failure.message, /log drain check failed \(framework\): UnreadableError/);
+  assert.match(
+    failure.message,
+    /log destination did not drain within 2000ms \(event\)/,
+    `the event drain must still run after a hostile framework drain\n${failure.message}`,
+  );
+  assert.ok(
+    Date.now() - started >= 1_900,
+    "the event drain stage must actually have run, not been skipped",
+  );
+  assert.equal(events.ended(), false);
+  assert.equal(framework.ended(), false);
+});

@@ -177,3 +177,90 @@ export const violatingReturnedContext = (options: Wiring): LoggingContext => {
   const logging = createLoggingContext(options.level, options.injected);
   return logging;
 };
+
+// ---------------------------------------------------------------------------
+// 第十四轮收尾追加：形参不是通行证，工厂符号本身也是能力
+// ---------------------------------------------------------------------------
+
+/**
+ * 14. 形参直通：`passthrough(logger: Logger): Logger => logger`。
+ *
+ * 上一版的 `isCompositionInput` 无条件放行**任何**解析到形参的标识符——那不是位置
+ * 判据，是一张通行证。于是这条把 raw `Logger` 原样递出去的函数整个是绿的。
+ */
+export const violatingPassthrough = (logger: Logger): Logger => logger;
+
+/**
+ * 15. 给工厂取个别名。
+ *
+ * 工厂本身就是能力：拿到它就能凭空造一个 `LoggingContext`，`.framework` 也就跟着
+ * 到手了。它只允许出现在组装根那一次合法工厂调用的 callee 位置。
+ */
+export const violatingFactoryAlias = (options: Wiring): EventLogSink => {
+  const build = createLoggingContext;
+  return build(options.level, options.injected).eventLog;
+};
+
+/** 16. 把工厂交给外部持有。 */
+export const violatingFactoryHandover = (): typeof createLoggingContext =>
+  externalRelay(createLoggingContext);
+
+// ---------------------------------------------------------------------------
+// 第十四轮收尾复评二：白名单第 6 条的「基」、以及第二个 root 工厂
+// ---------------------------------------------------------------------------
+
+/**
+ * 17. 把框架容器自己的 logger 喂回工厂。
+ *
+ * 白名单第 6 条上一版只判「第 1 个实参是不是成员访问」，从不看基是什么。于是
+ * `app.log` 落在这个位置整条无报告——raw framework logger 就这样无声进了第二个
+ * `LoggingContext`。
+ */
+export const violatingAppLogIntoFactory = (options: Wiring): EventLogSink => {
+  const boot = createLoggingContext(options.level);
+  const app = Fastify({ bodyLimit: 1, loggerInstance: boot.framework });
+  const second = createLoggingContext(options.level, app.log);
+  return second.eventLog;
+};
+
+/**
+ * 18. 任意第三方对象的 `.logger` 字段喂回工厂，同一条口子。
+ *
+ * 刻意写成「先命名再取 `eventLog`」：直接把工厂调用的结果当表达式用，收紧前就
+ * 已经因为别的判据报红了，那样这条对第 6 条没有回归力。
+ */
+export const violatingForeignLoggerIntoFactory = (
+  options: Wiring,
+  foreign: { readonly logger: Logger },
+): EventLogSink => {
+  const second = createLoggingContext(options.level, foreign.logger);
+  return second.eventLog;
+};
+
+/**
+ * 19. `logging.ts` 的 root 工厂被取别名。
+ *
+ * `createLogger` 直接返回 raw `Logger`，能力严格强于 `createLoggingContext`，
+ * 因此在两个边界文件之外**一处都不许出现**——连做 callee 都不行。
+ */
+export const violatingRootFactoryAlias = (): boolean => {
+  const build = createLogger;
+  // 连调用都没有：报红只可能来自「工厂符号本身即能力」这条判据。
+  return typeof build === "function";
+};
+
+/** 20. 把 root 工厂交给外部持有。 */
+export const violatingRootFactoryHandover = (): typeof createLogger =>
+  externalRelay(createLogger);
+
+/**
+ * 21. 只是把工厂取个别名看一眼，连调用都没有。
+ *
+ * 第 15 号（`violatingFactoryAlias`）在收紧**之前**就已经是红的（它报的是
+ * `build(…)` 的返回值和 `options.injected`），因此对「工厂符号本身即能力」这条
+ * 规则没有回归力。这一条才有：收紧前它整条是绿的。
+ */
+export const violatingFactoryProbe = (): boolean => {
+  const build = createLoggingContext;
+  return typeof build === "function";
+};

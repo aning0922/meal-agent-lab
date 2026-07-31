@@ -87,7 +87,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 171/171 |
+| API unit | 176/176 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -291,7 +291,26 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   `tests/fixtures/stalled-flush-shutdown.ts`：修复前输出 `OUTCOME=NEVER-SETTLED`
   且退出码 0，修复后输出 `OUTCOME=REJECTED`。`src/index.ts` 也补上了 `catch`——
   `void shutdown(…)` 会把这个 rejection 丢掉，最终只剩 Node 对未处理拒绝的默认
-  行为；现在落成 stderr 上一行固定文本加归一化类型名，以及确定的非零退出码。
+  行为；现在落成 stderr 上一行**完全固定的中性文本** `shutdown: close failed`
+  （不带阶段、不带类型名、不带任何来自错误对象的东西），以及确定的非零退出码。
+- **close 是 failure-safe 的阶段收集器**（Round 14 收尾追加）：上一版是一串
+  `await`，第一处失败就把后面的阶段全跳过了——「event flush 报错，于是 framework
+  那棵**根本没 flush**」。关机路径上这恰好是最坏的顺序：一个坏掉的目的地会连累
+  另一个好的目的地一起丢日志。现在四个适用阶段（event flush →（自建时的）
+  framework flush → framework drain → event drain）**每个都会跑到**，失败在最后
+  一次性聚合成 `AggregateError` 抛出。阶段函数**不抛**，只返回本模块自己写的安全
+  原因字符串，因此错误里在结构上就不可能出现调用方的文本。三条反例修复前全部
+  失败、修复后全部通过：event flush 失败后 framework flush 仍执行
+  （`framework.flushes() === 1`）；framework flush 失败后 event drain 仍执行；
+  一个 drain 失败不阻断另一个 drain（两条 `did not drain` 同时出现在聚合消息里）。
+- **调用方的 `Writable` 只读不写**（Round 14 收尾追加）：绝不 `end`、绝不
+  `destroy`、也绝不往里写关机标记，只读 `writableLength` 等它排空。
+- **敌意抛出物兜到固定串**（Round 14 收尾复评二）：`errorTypeOf` 自己要读输入的
+  原型与属性描述符，因此一个**自指** Proxy 能让它再抛一次。三个调用点都没兜的
+  后果不是少一句诊断，而是抛出来的**就是调用方的原始对象**：它穿过阶段收集器，
+  close() 用调用方的值拒绝、后续阶段全被跳过。实测修复前 close 在 2ms 内以调用方
+  对象拒绝（正常应 ≥2000ms），修复后 2003ms、以 `AggregateError` 拒绝、消息不含
+  sentinel。统一走 `safeErrorType()`，兜底 `"UnreadableError"`。
 - **`allowedErrorTypes` 改为模块私有**（第十二轮）：上一版导出的是
   `ReadonlySet<string>`，那只是类型上的只读——`(x as Set<string>).add("EVIL")` 在
   运行期照样成功。现在对外只有一个**冻结的 canonical 数组**与一个 **predicate**；
@@ -331,11 +350,21 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   框架类型（`FastifyRequest` 的第七个类型参数正好就是 `Logger`）不会被误报。
   组装根白名单绑的是**真实变量符号 + 声明来源 + factory initializer**，不是名字或
   类型文本；「组装根持有的容器」只认 `createLoggingContext` 与 **fastify 自己的**
-  工厂这两个**声明身份**。收尾修订前这条写的是「initializer 是不是一个
+  工厂这两个**声明身份**。`createLoggingContext` **这个符号本身也算能力**（拿到它
+  就能凭空造一个 context，`.framework` 跟着到手），只允许出现在组装根那一次合法
+  工厂调用的 callee 位置——取别名或交给别人一律报红。形参也**没有**通行证：上一版
+  无条件放行「任何解析到形参的标识符」，于是
+  `passthrough(logger: Logger): Logger => logger` 整条是绿的；现在形参只能作为
+  **成员访问的基**出现（`options.logger` 可以）。工厂注入槽还要再钉一层：那个成员
+  访问的**基**必须是组装根**自己的 options 对象**（第一个形参）——只判「是不是成员
+  访问」的话，`createLoggingContext(level, app.log)` 与
+  `createLoggingContext(level, foreign.logger)` 都是绿的（实测）。`logging.ts` 的
+  `createLogger` 同样计入能力，而且比 `createLoggingContext` 更严：它直接返回 raw
+  `Logger`，因此在两个边界文件之外**一处都不许出现**。收尾修订前这条写的是「initializer 是不是一个
   `CallExpression`」——**任何**调用的返回值都算，于是
   `const held = externalRelay(logging)` 之后 `held` 怎么用都放行，一个中继函数就能
   把整个 context 带出边界（实测假绿）。Round 13 的 app.ts 假绿是**手工改文件**验证
-  的，跑完就没了；现在十三种违规接线固定在
+  的，跑完就没了；现在二十一种违规接线固定在
   `tests/fixtures/app-wiring-variants.ts` 里，测试把 fixture **当作组装根**喂给
   收集器，白名单从此有自动化回归。
 - **logging.ts 的净化器降级为纵深防御**（第十轮起）：它不再是业务日志的安全依据，

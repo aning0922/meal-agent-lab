@@ -98,15 +98,19 @@ Error / Request / Reply / Config / Secret 在类型上就进不来。
 
 两棵 logger 树的**所有权**在 `LoggingContext`。`app.close` 经 `onClose` flush
 **自建的**那些 logger（event root，以及没被注入时我们自己建的 framework root），
-再等自有 logger 写进去的字节排空。调用方注入的 `Logger` 我们不碰，任何 `Writable`
-都**绝不 `end`**；但口径要写实——flush 自有 root 时 pino 会把回调转交给**目的地
-自己的** `flush`（如果它有），所以调用方给的目的地会因此被调用一次 `flush`，它报错
-同样会让 `close()` 失败。关机是**有界且 fail closed** 的：flush 报错、flush 回调
-超时、排空超时都会 reject 并让 `app.close()` 一起失败——关机时悄悄丢掉最后几条
-日志，事后与「根本没写过」分不清。超时定时器**刻意不 `unref()`**：关机那一刻循环
-里已经没有别的 handle，unref 过的定时器不会到，进程会以 0 退出而不是 reject。
-重复调用拿到的是同一个 promise，成功失败都一样。`index.ts` 把这个失败落成 stderr
-上的一行固定文本加归一化类型名，以及确定的非零退出码。
+再等自有 logger 写进去的字节排空。调用方注入的 `Logger` 我们不碰；任何 `Writable` 都归调用方所有——**绝不 `end`**、
+绝不 `destroy`、也绝不往里写关机标记，只读 `writableLength` 等它排空。但口径要
+写实：flush 自有 root 时 pino 会把回调转交给**目的地自己的** `flush`（如果它有），
+所以调用方给的目的地会因此被调用一次 `flush`，它报错同样会让 `close()` 失败。
+
+关机是**有界、fail closed 且 failure-safe** 的。close 是一个**阶段收集器**：
+event flush、（自建时的）framework flush 与 framework drain、event drain——每一个
+适用的阶段都会跑到，一个阶段失败**不跳过**后面的阶段，最后一次性抛出
+`AggregateError`。失败原因只由本模块自己的固定文本与**归一化错误类型名**拼成，
+不带调用方或目的地的原始文本。超时定时器**刻意不 `unref()`**：关机那一刻循环里
+已经没有别的 handle，unref 过的定时器不会到，进程会以 0 退出而不是 reject。重复
+调用拿到的是同一个 promise，成功失败都一样。`index.ts` 把这个失败落成 stderr 上
+一行**完全固定的中性文本** `shutdown: close failed`，以及确定的非零退出码。
 
 静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
 **声明身份**而不是类型名字符串：任何解析到 pino `LogFn` 声明的表达式只允许出现在
@@ -115,8 +119,14 @@ facade 与 `logging.ts` 里；`child`/`setBindings` 只有 `logging.ts` 可以�
 容器、mapped type、indexed access、接口重声明与解构逐条命中，组装根白名单绑的是
 **真实变量符号 + 声明来源 + factory initializer**，且「组装根持有的容器」只认
 `createLoggingContext` 与 **fastify 自己的**工厂这两个声明身份，不是「initializer
-恰好是一个调用」。十三种违规接线固定在 `tests/fixtures/app-wiring-variants.ts` 里，
-测试把它当作组装根喂给收集器，因此白名单有自动化回归。它是**工程护栏，不是形式化安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
+恰好是一个调用」。`createLoggingContext` **这个符号本身也是能力**——拿到它就能凭空
+造一个 context——因此只允许出现在组装根那一次合法工厂调用的 callee 位置，取别名或
+交给别人一律报红；`logging.ts` 的 `createLogger` 直接返回 raw `Logger`，更严一层，
+在两个边界文件之外一处都不许出现。形参也**没有**通行证：它只能作为**成员访问的基**
+出现（`options.logger` 可以，`(logger: Logger) => logger` 不行），而工厂的注入槽还
+要求那个基必须是组装根**自己的 options 对象**。二十一种违规接线固定在
+`tests/fixtures/app-wiring-variants.ts` 里，测试把它当作组装根喂给收集器，因此
+白名单有自动化回归。它是**工程护栏，不是形式化安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
 
 `logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
 与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖

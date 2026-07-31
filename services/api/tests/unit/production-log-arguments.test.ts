@@ -415,6 +415,29 @@ const collectCapabilityUses = (
     resolvesToExport(checker, node.expression, fastifyEntry, "fastify");
 
   /**
+   * 一个表达式是否**就是** `createLoggingContext` 这个符号本身。
+   *
+   * 工厂本身也是能力：拿到它就能凭空造出一个 `LoggingContext`，`.framework` 也就
+   * 跟着到手了。因此它只允许出现在组装根**那一次**合法的工厂调用的 callee 位置；
+   * 取别名（`const build = createLoggingContext`）或者交给别人
+   * （`relay(createLoggingContext)`）一律报红。
+   */
+  const isFactoryReference = (node: ts.Node, module: string, name: string): boolean =>
+    (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) &&
+    resolvesToExport(checker, node as ts.Expression, module, name);
+
+  const isContextFactoryReference = (node: ts.Node): boolean =>
+    isFactoryReference(node, facadeModule, "createLoggingContext");
+
+  /**
+   * `logging.ts` 的 root 工厂。它**直接返回一个 raw `Logger`**，能力严格强于
+   * `createLoggingContext`，因此在两个边界文件之外**一处都不许出现**——连做 callee
+   * 都不行。
+   */
+  const isRootLoggerFactoryReference = (node: ts.Node): boolean =>
+    isFactoryReference(node, loggingModule, "createLogger");
+
+  /**
    * 组装根里由**工厂 initializer** 声明出来的那些 context 变量的**真实符号**。
    *
    * 白名单绑的是符号身份，不是成员文本：`logging.framework` 之所以放行，是因为
@@ -476,9 +499,20 @@ const collectCapabilityUses = (
     return symbol !== undefined && contextSymbols.has(symbol);
   };
 
-  /** 组装根函数自己的形参：输入，不是能力出口。 */
-  const isCompositionInput = (node: ts.Node): boolean => {
-    if (!ts.isIdentifier(node)) {
+  /**
+   * 组装根函数自己的形参，且**只能作为成员访问的基**出现。
+   *
+   * 上一版是无条件放行「任何解析到形参的标识符」。那不是一个位置判据，是一张
+   * 通行证：`(logger: Logger): Logger => logger` 这种直通函数整条都是绿的，
+   * 因为 `logger` 也是一个形参。现在只认 `options.logger` 这种**取一个字段**的
+   * 写法；`options` 本身被传出去、装进容器或者 return 掉，都不在此列。
+   */
+  const isCompositionInputMember = (node: ts.Node, parent: ts.Node): boolean => {
+    if (
+      !ts.isIdentifier(node) ||
+      !ts.isPropertyAccessExpression(parent) ||
+      parent.expression !== node
+    ) {
       return false;
     }
     const symbol = checker.getSymbolAtLocation(node);
@@ -544,12 +578,33 @@ const collectCapabilityUses = (
    * `Object.defineProperty(<框架容器>, …)`；选项字面量与 `loggerInstance:` 都必须
    * 落在**框架工厂自己**那次调用上。
    */
+  /**
+   * 组装根入口函数**自己的 options 对象**上的一个字段。
+   *
+   * 光是「基是某个形参」不够：多加一个形参就能绕过去
+   * （`(options, foreign: { logger: Logger }) => createLoggingContext(level, foreign.logger)`）。
+   * 注入槽只有一个来源——组装根收到的那个 options 对象，也就是它的**第一个**形参。
+   */
+  const isCompositionOptionsMember = (node: ts.Node, parent: ts.Node): boolean => {
+    if (!isCompositionInputMember(node, parent)) {
+      return false;
+    }
+    const declaration = (
+      checker.getSymbolAtLocation(node)?.getDeclarations() ?? []
+    ).find(ts.isParameter);
+    return (
+      declaration !== undefined &&
+      ts.isFunctionLike(declaration.parent) &&
+      declaration.parent.parameters[0] === declaration
+    );
+  };
+
   const isAllowedAppNode = (node: ts.Node): boolean => {
     const parent = node.parent;
     if (parent === undefined) {
       return false;
     }
-    if (isCompositionInput(node)) {
+    if (isCompositionInputMember(node, parent)) {
       return true;
     }
     // 1. 框架实例本身。组装根建它、配它、最后把它 return 出去——那就是 buildApp 的
@@ -609,11 +664,20 @@ const collectCapabilityUses = (
     if (isFrameworkOptionsLiteral(node)) {
       return true;
     }
-    // 6. `createLoggingContext(level, <options.logger>, …)` 的第 1 个实参。
+    // 6. `createLoggingContext(level, <options.logger>, …)` 的第 1 个实参，且这个
+    //    成员访问的**基**必须是组装根自己的形参。
+    //
+    //    上一版只判 `isPropertyAccessExpression`，从不看基是什么。于是
+    //    `createLoggingContext(level, app.log)` 与
+    //    `createLoggingContext(level, foreign.logger)` 在这个位置上整条无报告——
+    //    任何来源的 `X.logger` 都能无声进入 `LoggingContext.framework`。
+    //    「基是某个形参」也不够：多加一个形参就绕过去了，所以钉的是组装根**自己的
+    //    options 对象**。
     if (
       isContextFactoryCall(parent) &&
       parent.arguments[1] === node &&
-      ts.isPropertyAccessExpression(node)
+      ts.isPropertyAccessExpression(node) &&
+      isCompositionOptionsMember(node.expression, node)
     ) {
       return true;
     }
@@ -670,6 +734,8 @@ const collectCapabilityUses = (
         ts.isTypeNode(node) ||
         (node.parent !== undefined &&
           (ts.isTypeReferenceNode(node.parent) ||
+            // `typeof X`：纯类型层面的引用，不是一次运行期取用。
+            ts.isTypeQueryNode(node.parent) ||
             ts.isImportSpecifier(node.parent) ||
             ts.isImportClause(node.parent)));
       // 声明处的**名字**不是表达式位置：`readonly logger?: Logger` 里的
@@ -703,6 +769,20 @@ const collectCapabilityUses = (
         !isDeclarationName &&
         !ts.isStringLiteralLike(node)
       ) {
+        // 工厂符号本身即能力：只有组装根**那一次**合法工厂调用的 callee 位置放行。
+        if (isContextFactoryReference(node)) {
+          const asCallee =
+            node.parent !== undefined &&
+            ts.isCallExpression(node.parent) &&
+            node.parent.expression === node &&
+            isCompositionRoot &&
+            isAllowedAppNode(node.parent);
+          if (!isBoundary && !asCallee) {
+            record(node, "[factory]");
+          }
+        } else if (isRootLoggerFactoryReference(node) && !isBoundary) {
+          record(node, "[factory]");
+        }
         const type = checker.getTypeAtLocation(node);
         if (typeResolvesTo(type, declarations.logFunction)) {
           if (!isBoundary) {
@@ -930,6 +1010,14 @@ test("the composition-root allowlist admits only the exact wiring nodes", () => 
     "violatingPluginOption",
     "violatingReturnedContextCall",
     "violatingReturnedContext",
+    "violatingPassthrough",
+    "violatingFactoryAlias",
+    "violatingFactoryHandover",
+    "violatingAppLogIntoFactory",
+    "violatingForeignLoggerIntoFactory",
+    "violatingRootFactoryAlias",
+    "violatingRootFactoryHandover",
+    "violatingFactoryProbe",
   ]) {
     assert.ok(
       within(name).length > 0,

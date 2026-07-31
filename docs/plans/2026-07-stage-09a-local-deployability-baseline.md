@@ -1054,7 +1054,8 @@ framework root）；调用方注入的 `Logger` 我们不碰，任何 `Writable`
 **fastify 包自己** `fastify.d.ts` 里那个 `fastify` 工厂（穿过 import alias 后按
 符号名 + 声明文件比对）。认不出 fastify 的声明文件时门禁直接抛错，而不是退化成
 「什么调用都放行」。fixture 的 `allowedWiring` 因此改成调用**真实的** `Fastify`，
-自造工厂降级为违规变体，违规接线从七种增加到九种（收尾复评后为**十三种**）。
+自造工厂降级为违规变体，违规接线从七种增加到九种（收尾复评后十三种，收尾追加后
+十六种，收尾复评二后为**二十一种**）。
 
 #### M3A Round 14 收尾复评整改
 
@@ -1079,7 +1080,8 @@ avvio 的 onClose 是 LIFO，监听 socket 已关、连接池已 end、
 
 同时给 `src/index.ts` 的 `shutdown()` 补上 `catch`：`void shutdown(…)` 会把这个
 rejection 丢掉，最终只剩 Node 对未处理拒绝的默认行为。现在落成 stderr 上一行
-**固定文本 + 归一化类型名**（不是取值），以及确定的非零退出码。
+**完全固定的中性文本** `shutdown: close failed`（不带阶段、不带类型名、不带任何
+来自错误对象的东西），以及确定的非零退出码。
 
 **二、gate 里三条「按形状放行」的规则叠加成一条完整的能力出口（blocking / major）。**
 
@@ -1121,7 +1123,113 @@ rejection 丢掉，最终只剩 Node 对未处理拒绝的默认行为。现在�
 
 `app.ts` 里指向已删除的 `eventSink` 的注释、gate 的 root-held 注释、ADR-0005 的
 实施注记、project-status、本计划与 API README 一并同步，日期统一 **2026-07-31**。
-API unit 163 → **171**。
+API unit 163 → **176**。
+
+**Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
+本轮 diff 为 0 行。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
+#### M3A Round 14 收尾追加
+
+**一、close 改成 failure-safe 的阶段收集器。**
+
+上一版是一串 `await`：第一处失败就把后面的阶段全跳过。关机路径上这恰好是最坏的
+顺序——「event flush 报错，于是 framework 那棵**根本没 flush**」，一个坏掉的目的地
+连累另一个好的目的地一起丢日志。
+
+现在四个适用阶段各自跑到，失败最后一次性聚合成 `AggregateError`：
+
+| 反例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| event flush 失败后 framework flush 仍执行 | `framework.flushes() === 0` | `=== 1`，聚合消息同时含两条 `log flush failed` |
+| framework flush 失败后 event drain 仍执行 | 聚合消息里没有 `did not drain (event)` | 两条都在 |
+| 一个 drain 失败不阻断另一个 drain | 只有 framework 那条 | 两条 `did not drain` 同时出现 |
+
+阶段函数**不抛**，只返回本模块自己写的安全原因字符串（`flushOwned` /
+`awaitDrained` 的签名改成 `Promise<string | undefined>`），因此聚合消息里在结构上
+就不可能出现调用方或目的地的文本。`writableLength` 是访问器、调用方可以让它抛，
+所以排空整段也包了起来，只按归一化类型名记一笔。同一个 promise、不 `end` 调用方
+`Writable` 这两条不变，并补了一条「每个调用方拿到同一个聚合失败、第二次不重跑
+flush」的回归。
+
+**二、gate：形参不是通行证，工厂符号本身也是能力。**
+
+| 反例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `passthrough(logger: Logger): Logger => logger` | 一条都不报 | 报出 |
+| `externalRelay(createLoggingContext)` | 不报 | 报出 |
+| `const build = createLoggingContext; return typeof build === "function";` | 不报 | 报出 |
+
+上一版的 `isCompositionInput` 无条件放行**任何**解析到形参的标识符——那不是位置
+判据，是一张通行证。现在形参只能作为**成员访问的基**出现（`options.logger` 可以，
+把 `options` 或一个 `Logger` 形参整个递出去不行）。工厂符号 `createLoggingContext`
+本身也计入能力：拿到它就能凭空造一个 `LoggingContext`，`.framework` 跟着到手；
+它只允许出现在组装根**那一次**合法工厂调用的 callee 位置。
+
+**三、`shutdown` 文案中性化与所有权口径。**
+
+`index.ts` 的 stderr 文案改成**完全固定**的 `shutdown: close failed`——不带阶段、
+不带类型名、不带任何来自错误对象的东西。`Writable` 的所有权口径补齐为：绝不
+`end`、绝不 `destroy`、也绝不往里写关机标记，只读 `writableLength` 等它排空。
+
+**Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
+本轮 diff 为 0 行。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
+#### M3A Round 14 收尾复评二
+
+阶段收集器与 gate 收紧之后又跑了一轮四视角对抗评审，确认 6 条。
+
+**一、`errorTypeOf` 自己会抛，关机路径必须兜住（major）。**
+
+`errorTypeOf` 要读输入的原型与属性描述符，因此一个**自指** Proxy
+（`getPrototypeOf` / `getOwnPropertyDescriptor` 都抛自己）能让它再抛一次。三个调用点
+（`flushOwned` 的 `done`、`awaitDrained` 的 catch、收集器的兜底 catch）都没兜。后果不是
+少一句诊断，而是**抛出来的就是调用方的原始对象**：它穿过收集器，close() 用调用方的值
+拒绝、剩下的阶段全被跳过——本轮两条保证一起没了。实测：目的地的 `writableLength`
+访问器抛一个自指 Proxy，close 在 **2ms** 内以调用方对象拒绝（正常应 ≥2000ms，因为
+event drain 还要跑）。修复后统一走 `safeErrorType()`，兜底 `"UnreadableError"`；
+同一条用例修复后耗时 2003ms、以 `AggregateError` 拒绝、消息不含 sentinel。
+
+**二、白名单第 6 条还是纯形状（major）。**
+
+它只判「第 1 个实参是不是成员访问」，从不看**基**是什么。于是任何来源的
+`X.logger` 都能无声进入 `LoggingContext.framework`：
+
+| 反例 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `createLoggingContext(level, app.log)`（框架容器自己的 logger 喂回工厂） | 不报 | 报出 |
+| `createLoggingContext(level, foreign.logger)`（第三方对象的字段） | 不报 | 报出 |
+
+「基是某个形参」也不够——多加一个形参就绕过去了。注入槽只有一个来源：组装根收到
+的那个 options 对象，也就是它的**第一个**形参。
+
+**三、第二个 root 工厂没被当成能力（major）。**
+
+「工厂符号本身即能力」只实现了 `createLoggingContext`。`logging.ts` 的
+`createLogger` 直接返回 **raw `Logger`**，能力严格更强，却可以随便取别名、交接。
+现在它在两个边界文件之外**一处都不许出现**——连做 callee 都不行。
+
+**四、`typeof X` 被算成运行期取用（minor）。**
+
+`isTypePosition` 漏了 `TypeQueryNode`，于是 `(): typeof createLoggingContext => …`
+的返回类型标注被记成一次能力取用。已补上。
+
+**五、两条反例没有回归力（minor），一条表格失真（major）。**
+
+`violatingFactoryAlias` 与第一版的 `violatingRootFactoryAlias` 在收紧**之前**就已经
+是红的（报的是 `build(…)` 的返回值），对新规则没有回归力；上面那张表也据此写错了
+「修复前不报」。已改成收紧前实测为 **0 报告**的写法（`typeof build === "function"`，
+连调用都没有），表格同步订正。同理，`violatingForeignLoggerIntoFactory` 改成「先命名
+再取 `eventLog`」，否则它会因为别的判据先红，测不到第 6 条。
+
+**六、启动失败分支的 `app.close()` 没有 catch。**
+
+close 现在会 reject，那条路径上 rejection 会从 top-level await 逃出去，
+`process.exitCode = 1` 根本轮不到执行，整个错误对象还会被打到 stderr。已补 catch，
+文案同样是固定的 `shutdown: close failed`。
 
 **Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
 本轮 diff 为 0 行。
