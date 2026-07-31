@@ -30,7 +30,6 @@ import { secretFiles } from './local-test-secrets-contract.mjs'
 import {
   cleanupRun,
   danglingVolumes,
-  discardOverride,
   imageIdOf,
   inspectStrict,
   overridePathFor,
@@ -151,9 +150,12 @@ const cleanupProbe = async (scene) =>
     secretsDirectory: scene.secretsDirectory,
     secretsPrefix: probeSecretsPrefix,
     imageTag: scene.imageTag,
+    // override 只在**确实创建过**时才交给 cleanup（P1-4）：未创建时引用它会
+    // 让 compose down 以 "no such file" 失败并被报成 residue。
+    overridePath: scene.overrideCreated === true ? scene.overridePath : null,
     composeFile,
     composeEnvironment: scene.composeEnvironment,
-    composeArgs: scene.composeArgs,
+    composeArgs: scene.overrideCreated === true ? scene.composeArgs : [],
     // 匿名悬挂卷同样是六类残留之一：postgres 镜像自带 VOLUME。
     danglingBaseline: scene.danglingBaseline,
     realpath: realpathSync
@@ -165,6 +167,18 @@ const main = async () => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), probeSecretsPrefix))
+  // **第一个资源刚创建就登记现场**（P1-4）：下面的 `await danglingVolumes()`
+  // 是一次真实 Docker 查询，信号可以落在它期间。override 此刻尚未创建。
+  Object.assign(activeProbeScene, {
+    project,
+    secretsDirectory,
+    imageTag: null,
+    overridePath: null,
+    overrideCreated: false,
+    composeEnvironment: { ...process.env, MEAL_AGENT_SECRETS_DIR: secretsDirectory },
+    composeArgs: [],
+    danglingBaseline: null
+  })
   const danglingBaseline = await danglingVolumes()
   const composeEnvironment = {
     ...process.env,
@@ -175,10 +189,12 @@ const main = async () => {
   Object.assign(activeProbeScene, {
     project,
     secretsDirectory,
-    imageTag,
+    // imageTag / override 在 writeImageOverride 之后才登记。
+    imageTag: null,
     overridePath,
+    overrideCreated: false,
     composeEnvironment,
-    composeArgs,
+    composeArgs: [],
     danglingBaseline
   })
   const compose = (args, options = {}) =>
@@ -210,6 +226,9 @@ const main = async () => {
     // 本轮唯一 image tag：经临时 override 注入，绝不覆盖全局 tag，也不会与
     // 并行 worktree/project 互相覆盖。build 之后读取 immutable image ID。
     writeImageOverride(overridePath, imageTag)
+    activeProbeScene.overrideCreated = true
+    activeProbeScene.imageTag = imageTag
+    activeProbeScene.composeArgs = composeArgs
     const build = await compose(['build', 'api'], { timeoutMs: 1_800_000 })
     if (build.status !== 0) {
       throw new Error(`docker compose build api failed:\n${build.stderr.slice(-2000)}`)
@@ -301,8 +320,9 @@ const main = async () => {
       failures.push(
         ...(await verifyNoResidue({
           project,
-          imageTag,
+          imageTag: activeProbeScene.imageTag,
           secretsDirectory,
+          overridePath: activeProbeScene.overrideCreated === true ? overridePath : null,
           danglingBaseline,
           composeEnvironment,
           exists: existsSync
@@ -313,7 +333,6 @@ const main = async () => {
         `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
       )
     }
-    discardOverride(overridePath)
   }
 
   if (terminationSignal() !== null) {
@@ -340,9 +359,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     async () => {
       const residue = []
       if (activeProbeScene.project === null) {
-        if (activeProbeScene.overridePath !== null) {
-          discardOverride(activeProbeScene.overridePath)
-        }
         return residue
       }
       try {
@@ -356,6 +372,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             project: activeProbeScene.project,
             imageTag: activeProbeScene.imageTag,
             secretsDirectory: activeProbeScene.secretsDirectory,
+            overridePath:
+              activeProbeScene.overrideCreated === true ? activeProbeScene.overridePath : null,
             danglingBaseline: activeProbeScene.danglingBaseline,
             composeEnvironment: activeProbeScene.composeEnvironment,
             exists: existsSync
@@ -365,9 +383,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         residue.push(
           `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
         )
-      }
-      if (activeProbeScene.overridePath !== null) {
-        discardOverride(activeProbeScene.overridePath)
       }
       return residue
     },

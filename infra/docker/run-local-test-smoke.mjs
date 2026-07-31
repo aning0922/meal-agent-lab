@@ -42,7 +42,6 @@ import { checkSecretBundle, repositoryRoot } from './local-test-secrets-contract
 import {
   cleanupRun,
   danglingVolumes,
-  discardOverride,
   imageIdOf,
   inspectJsonStrict,
   inspectStrict,
@@ -237,7 +236,13 @@ const waitFor = async (label, predicate, timeoutMs, intervalMs = 2_000) => {
 export const cleanupSmokeProject = async (
   project,
   secretsDirectory = null,
-  { composeEnvironment = process.env, imageTag = null, composeArgs = [], danglingBaseline = null } = {}
+  {
+    composeEnvironment = process.env,
+    imageTag = null,
+    composeArgs = [],
+    danglingBaseline = null,
+    overridePath = null
+  } = {}
 ) =>
   cleanupRun({
     project,
@@ -245,6 +250,9 @@ export const cleanupSmokeProject = async (
     secretsDirectory,
     secretsPrefix: temporarySecretsPrefix,
     imageTag,
+    // override 是**正式 cleanup 阶段**（P1-4），排在 compose down 之后并进入
+    // residue 复查；未创建时传 null，cleanup 不得引用它。
+    overridePath,
     composeFile,
     composeEnvironment,
     composeArgs,
@@ -258,6 +266,21 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
+  // **第一个资源刚创建就登记现场**（P1-4）：下面还有 `await danglingVolumes()`
+  // 等 Docker 查询，信号可以落在那里；此前 scene 要到 runSmoke 里才登记，那段
+  // 窗口内被中断会把明文 Secret 目录留在盘上。override 此刻**尚未创建**，因此
+  // 显式标成 null——cleanup 绝不能引用一个不存在的 override（引用它会让
+  // `compose down` 以 "no such file" 失败并被报成 residue）。
+  smokeState.registerScene?.({
+    project,
+    secretsDirectory,
+    imageTag: null,
+    overridePath: null,
+    overrideCreated: false,
+    composeEnvironment: { ...process.env, MEAL_AGENT_SECRETS_DIR: secretsDirectory },
+    composeArgs: [],
+    danglingBaseline: null
+  })
   const stepResults = []
   let composeEnvironment = {
     ...process.env,
@@ -290,13 +313,16 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     )
 
   /** 现场登记：signal handler 与 finally 用同一份状态跑同一套 cleanup。 */
+  // 现在 baseline 也拿到了：补齐现场。imageTag 与 override 仍标成「未创建」，
+  // 直到 writeImageOverride 真正落盘为止。
   const scene = {
     project,
     secretsDirectory,
-    imageTag,
+    imageTag: null,
     overridePath,
+    overrideCreated: false,
     composeEnvironment,
-    composeArgs,
+    composeArgs: [],
     danglingBaseline
   }
   smokeState.registerScene?.(scene)
@@ -412,6 +438,12 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     // 1. 写临时 override 并构建：本轮 image tag 唯一，绝不覆盖别的 worktree/
     //    project 的镜像。build 后读取 immutable image ID。
     writeImageOverride(overridePath, imageTag)
+    // override 已经落盘：从这一刻起 cleanup 才可以引用它（compose 调用也才
+    // 需要带 `--file <override>`）。
+    scene.overrideCreated = true
+    scene.imageTag = imageTag
+    scene.composeArgs = composeArgs
+    smokeState.registerScene?.(scene)
     const build = await compose(['build', 'api'], { timeoutMs: 1_800_000 })
     if (build.status !== 0) {
       throw new Error(`docker compose build api failed:\n${scrub(build.stderr.slice(-2000))}`)
@@ -610,6 +642,12 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       ],
       { timeoutMs: 120_000 }
     )
+    if (runtimeProbe.status !== 0) {
+      fail(
+        `runtime privilege probe: the probe container exited ${String(runtimeProbe.status)}; ` +
+          'its output cannot be treated as evidence'
+      )
+    }
     const probeOut = runtimeProbe.stdout
     const probeExpectations = [
       ['whoami=meal_agent_runtime_login', 'runtime login connects as itself'],
@@ -622,7 +660,11 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         fail(`runtime privilege probe: expected "${needle}" (${meaning})`)
       }
     }
-    if (probeExpectations.every(([needle]) => probeOut.includes(needle))) {
+    // 成功证据只在**命令 exit 0 且该组一条 problem 都没有**时才输出（P1-7）。
+    if (
+      runtimeProbe.status === 0 &&
+      probeExpectations.every(([needle]) => probeOut.includes(needle))
+    ) {
       log('runtime least privilege: no DDL, no migrator role, app-role ledger read works')
     }
 
@@ -788,8 +830,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       try {
         residue = await cleanupSmokeProject(project, secretsDirectory, {
           composeEnvironment,
-          imageTag,
-          composeArgs,
+          imageTag: scene.imageTag,
+          composeArgs: scene.overrideCreated ? composeArgs : [],
+          overridePath: scene.overrideCreated ? overridePath : null,
           danglingBaseline
         })
       } catch (error) {
@@ -800,8 +843,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         residue.push(
           ...(await verifyNoResidue({
             project,
-            imageTag,
+            imageTag: scene.imageTag,
             secretsDirectory,
+            overridePath: scene.overrideCreated ? overridePath : null,
             danglingBaseline,
             composeEnvironment,
             exists: existsSync
@@ -821,9 +865,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         )
       }
     }
-    if (terminationSignal() === null) {
-      discardOverride(overridePath)
-    }
+
 
     log('--- chain exit codes ---')
     for (const step of stepResults) {
@@ -865,6 +907,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     secretsDirectory: null,
     imageTag: null,
     overridePath: null,
+    overrideCreated: false,
     composeEnvironment: process.env,
     composeArgs: [],
     danglingBaseline: null
@@ -874,9 +917,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     async () => {
       const residue = []
       if (activeScene.project === null) {
-        if (activeScene.overridePath !== null) {
-          discardOverride(activeScene.overridePath)
-        }
         return residue
       }
       try {
@@ -884,7 +924,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           ...(await cleanupSmokeProject(activeScene.project, activeScene.secretsDirectory, {
             composeEnvironment: activeScene.composeEnvironment,
             imageTag: activeScene.imageTag,
-            composeArgs: activeScene.composeArgs,
+            composeArgs: activeScene.overrideCreated ? activeScene.composeArgs : [],
+            overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline
           }))
         )
@@ -897,6 +938,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             project: activeScene.project,
             imageTag: activeScene.imageTag,
             secretsDirectory: activeScene.secretsDirectory,
+            overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline,
             composeEnvironment: activeScene.composeEnvironment,
             exists: existsSync
@@ -904,9 +946,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         )
       } catch (error) {
         residue.push(`residue recheck failed: ${error instanceof Error ? error.message : String(error)}`)
-      }
-      if (activeScene.overridePath !== null) {
-        discardOverride(activeScene.overridePath)
       }
       return residue
     },

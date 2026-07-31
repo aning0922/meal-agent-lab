@@ -659,6 +659,43 @@ templateNegative(
   /contains a full connection string with credentials/
 )
 
+// 模板扫描**只支持 dotenv 形态**：出现 YAML/JSON 等未知格式时必须直接拒绝，
+// 而不是静默跳过（跳过等于给那一类格式发免检通行证）。
+{
+  const name = 'an unsupported template format under infra/environments is rejected'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-repo-'))
+  try {
+    const repo = resolve(parent, 'repo')
+    const templateDirectory = resolve(repo, 'infra/environments/local-test')
+    mkdirSync(templateDirectory, { recursive: true })
+    for (const args of [
+      ['init', '--quiet', repo],
+      ['-C', repo, 'config', 'user.email', 'negatives@example.invalid'],
+      ['-C', repo, 'config', 'user.name', 'M3B negatives']
+    ]) {
+      spawnSync('git', args, { encoding: 'utf8' })
+    }
+    writeFileSync(resolve(templateDirectory, 'local-test.env.example'), 'WECHAT_APP_ID=\n')
+    // 一个 YAML 形态的模板：扫描器没有它的判据，必须拒绝。
+    writeFileSync(
+      resolve(templateDirectory, 'settings.yaml'),
+      'wechat:\n  appSecret: synthetic-value\n'
+    )
+    spawnSync('git', ['-C', repo, 'add', '-A'], { encoding: 'utf8' })
+    spawnSync('git', ['-C', repo, 'commit', '--quiet', '-m', 'baseline'], { encoding: 'utf8' })
+    const problems = scanTrackedTemplates(repo)
+    if (!problems.some((problem) => /unsupported template format/.test(problem))) {
+      fail(name, `NOT CAUGHT — got: ${problems.join('; ') || '(no problems)'}`)
+    } else if (problems.some((problem) => problem.includes('synthetic-value'))) {
+      fail(name, 'the rejection echoed the file content')
+    } else {
+      pass(name, '/unsupported template format/')
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
 // **index-only 反例**：Secret 已经 git add，工作树随后被恢复干净。只扫工作树
 // 的实现会完全看不见它，而它仍会随下一次 commit 进入历史。
 templateNegative(
@@ -1425,7 +1462,7 @@ for (const project of usedNegativeProjects) {
 
 // 反例数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
 // 差额暴露，而不是静默变成「跑得更少的绿」。
-const expectedNegativeCount = 67
+const expectedNegativeCount = 68
 if (caught + failures.length !== expectedNegativeCount) {
   fail(
     'suite completeness',

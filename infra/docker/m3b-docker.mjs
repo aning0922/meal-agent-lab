@@ -153,6 +153,7 @@ const cleanupRunUnsynchronized = async ({
   secretsDirectory = null,
   secretsPrefix,
   imageTag = null,
+  overridePath = null,
   composeFile,
   composeEnvironment = process.env,
   composeArgs = [],
@@ -274,7 +275,19 @@ const cleanupRunUnsynchronized = async ({
     }
   })
 
-  // 阶段 7：匿名悬挂卷前后对照（匿名卷不带 project label，label sweep 看不见）。
+  // 阶段 7：临时 Compose override。它是**正式阶段**（不是随手 rm）：必须排在
+  // compose down 之后（down 还要用它解析配置），并进入下面的 residue 复查。
+  await stage('compose-override', async () => {
+    if (overridePath === null) {
+      return
+    }
+    rmSync(overridePath, { force: true })
+    if (existsSync(overridePath)) {
+      throw new DockerEvidenceError('the temporary compose override still exists')
+    }
+  })
+
+  // 阶段 8：匿名悬挂卷前后对照（匿名卷不带 project label，label sweep 看不见）。
   await stage('dangling-volumes', async () => {
     if (danglingBaseline === null) {
       return
@@ -299,6 +312,7 @@ export const verifyNoResidue = async ({
   project,
   imageTag = null,
   secretsDirectory = null,
+  overridePath = null,
   danglingBaseline = null,
   composeEnvironment = process.env,
   exists
@@ -342,6 +356,9 @@ export const verifyNoResidue = async ({
   }
   if (secretsDirectory !== null && exists(secretsDirectory)) {
     problems.push('the temporary secrets directory still exists')
+  }
+  if (overridePath !== null && exists(overridePath)) {
+    problems.push('the temporary compose override still exists')
   }
   return problems
 }

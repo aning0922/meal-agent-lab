@@ -16,8 +16,14 @@
 // 本模块自身不打印任何 Secret：它只透传调用方给的参数与输出。
 import { spawn } from 'node:child_process'
 
-/** 仍然存活的受控进程组（负值 pgid 直接可用于 process.kill）。 */
-const activeProcessGroups = new Set()
+/**
+ * 仍然存活的受控进程组：pgid → { alive }。
+ *
+ * 只登记**尚未 close 的** child。任何升级（TERM → KILL）都必须在发信号之前
+ * 重新确认这一条仍然 alive——否则一个已经退出的 pgid 可能已被别的进程组复用，
+ * 我们就会把 SIGKILL 发给无关进程。
+ */
+const activeProcessGroups = new Map()
 
 /**
  * 正在处置中的信号（null 表示没有）。CLI 用它给信号处置**让位**：一旦信号
@@ -76,7 +82,7 @@ export const runCommand = (
 
     // spawn 成功后才有 pid；error 事件与 spawn 事件互斥。
     child.once('spawn', () => {
-      activeProcessGroups.add(child.pid)
+      activeProcessGroups.set(child.pid, { alive: true })
     })
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
@@ -85,19 +91,40 @@ export const runCommand = (
       child.stdin.end(stdin)
     }
 
+    // 超时升级：TERM → 宽限 → KILL。升级 timer **绑定这个 child 的生命周期**，
+    // close/error 时被取消，且发信号前再确认一次它仍 alive。
+    let escalation = null
     const timer = setTimeout(() => {
       timedOut = true
       if (child.pid !== undefined) {
         killGroup(child.pid, 'SIGTERM')
-        setTimeout(() => killGroup(child.pid, 'SIGKILL'), 1_000).unref()
+        escalation = setTimeout(() => {
+          if (activeProcessGroups.get(child.pid)?.alive === true) {
+            killGroup(child.pid, 'SIGKILL')
+          }
+        }, 1_000)
+        escalation.unref()
       }
     }, timeoutMs)
 
-    child.once('close', (code, signal) => {
+    const releaseChild = () => {
       clearTimeout(timer)
+      if (escalation !== null) {
+        clearTimeout(escalation)
+        escalation = null
+      }
       if (child.pid !== undefined) {
+        const entry = activeProcessGroups.get(child.pid)
+        if (entry !== undefined) {
+          entry.alive = false
+        }
         activeProcessGroups.delete(child.pid)
       }
+    }
+    child.once('error', releaseChild)
+
+    child.once('close', (code, signal) => {
+      releaseChild()
       if (settled) {
         return
       }
@@ -122,13 +149,20 @@ export const runCommand = (
  * 幂等；signal handler 与超时路径共用。
  */
 export const terminateControlledSubtree = async ({ graceMs = 1_000 } = {}) => {
-  const groups = [...activeProcessGroups]
-  for (const pgid of groups) {
-    killGroup(pgid, 'SIGTERM')
+  const entries = [...activeProcessGroups.entries()]
+  for (const [pgid, state] of entries) {
+    if (state.alive) {
+      killGroup(pgid, 'SIGTERM')
+    }
   }
-  if (groups.length > 0) {
-    await sleep(graceMs)
-    for (const pgid of groups) {
+  if (entries.length === 0) {
+    return
+  }
+  await sleep(graceMs)
+  // **升级前重新确认**：宽限期内自行退出的 child 已被 close 处理器标记为
+  // 非 alive 并从表里移除，绝不能再对那个 pgid 发 SIGKILL——它可能已被复用。
+  for (const [pgid] of entries) {
+    if (activeProcessGroups.get(pgid)?.alive === true) {
       killGroup(pgid, 'SIGKILL')
     }
   }

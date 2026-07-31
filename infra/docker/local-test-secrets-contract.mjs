@@ -568,6 +568,16 @@ const fullDsnPatterns = [
   /postgres(?:ql)?:\/\/\S*[?&][a-z_]*password[a-z_]*=\S/i
 ]
 
+/**
+ * 模板扫描**只支持 dotenv 形态**（`KEY=value`，可带 `export` 前缀与 `#` 注释）。
+ * 这是刻意收窄的：YAML/JSON/TOML 的嵌套结构无法用逐行赋值文法可靠判定，
+ * 「假装支持」等于给一类格式发免检通行证。因此 `infra/environments/` 下出现
+ * 非 `.env*` 形态的 tracked 文件时**直接拒绝**，而不是静默跳过——要新增格式，
+ * 必须先为它写判据与反例。
+ */
+const supportedTemplateFile =
+  /(^|\/)[^/]*\.env(\.[^/]+)?$|(^|\/)(README\.md|\.gitignore|\.gitkeep)$/
+
 export const scanTrackedTemplates = (repository = repositoryRoot) => {
   const problems = []
   const listing = spawnSync(
@@ -634,6 +644,14 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
   }
 
   for (const file of files) {
+    if (!supportedTemplateFile.test(file)) {
+      problems.push(
+        `${file}: unsupported template format under infra/environments; the scanner ` +
+          'only understands dotenv-style files (add explicit rules and negatives ' +
+          'before introducing another format)'
+      )
+      continue
+    }
     // **两层都扫**：工作树内容与 Git index blob。只扫工作树会漏掉「已经
     // git add、随后把工作树恢复干净」的凭据——它仍然会随下一次 commit 进入
     // 历史。index blob 用 `git show :<path>` 读取，读不到即 fail closed。

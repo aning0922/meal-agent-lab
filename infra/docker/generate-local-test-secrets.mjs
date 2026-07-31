@@ -22,11 +22,11 @@ import {
   closeSync,
   fsyncSync,
   lstatSync,
+  linkSync,
   mkdirSync,
   openSync,
   readdirSync,
   realpathSync,
-  renameSync,
   unlinkSync,
   writeSync
 } from 'node:fs'
@@ -62,31 +62,64 @@ export class SecretGeneratorError extends Error {
 }
 
 /**
- * 生成期间已创建的路径。CLI 的信号处置读它，把 rename 窗口里被中断的半套
- * bundle 清掉。测试也用它断言「信号中断后目录里没有任何 Secret 残留」。
+ * 生成期间**本轮自己创建**的路径，以及 bundle 目录。CLI 的信号处置与失败路径
+ * 都读它。`paths` 里只放本进程亲手 create/link 出来的条目——外部文件绝不进入
+ * 这个集合，因此清理永远不会删掉别人的东西。
  */
-export const activeGeneratorScene = { paths: [] }
+export const activeGeneratorScene = { paths: [], directory: null }
+
+const errorCodeOf = (error) =>
+  typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : 'unknown'
 
 /**
- * 删除本轮已创建的一切（暂存与成品），供信号处置与失败路径共用。
- * 返回 `{ removed, residue }`：删不掉的条目**必须**进 residue 让调用方打印
- * ——静默吞掉 unlink 失败等于把真凭据留在盘上还宣称已清理。residue 只含
- * 文件名与 errno，不含路径之外的内容。
+ * 共享 cleanup collector：删除**本轮自己创建**的一切（暂存与成品），
+ * **continue-on-failure**——一条删不掉不阻断其余，全部问题聚合成 residue。
+ * 之后**独立枚举目录**再确认一次零 Secret 残留：只相信 unlink 的返回值是不够
+ * 的（它证明不了目录里没有别的路径指向同一批 Secret）。
+ *
+ * 有任何残留时**绝不**声称 “was removed”；返回的 residue 只含文件名、计数与
+ * errno，不含路径之外的内容，也不含任何 Secret 取值。
  */
-export const discardGeneratedPaths = () => {
+export const discardGeneratedPaths = ({
+  paths = activeGeneratorScene.paths,
+  verifyDirectory = activeGeneratorScene.directory
+} = {}) => {
   const removed = []
   const residue = []
-  for (const path of activeGeneratorScene.paths) {
+  for (const path of paths) {
     try {
       unlinkSync(path)
       removed.push(path)
     } catch (error) {
-      const code =
-        typeof error === 'object' && error !== null && 'code' in error
-          ? String(error.code)
-          : 'unknown'
+      const code = errorCodeOf(error)
+      if (code === 'ENOENT') {
+        // 已经不在了：这既不是移除也不是残留。
+        continue
+      }
       residue.push(
         `could not remove a generated secret file (${code}); it is still on disk`
+      )
+    }
+  }
+  // 独立复查：直接枚举目录，看还有没有属于八份清单的条目（含 `.staging.` 前缀）。
+  if (typeof verifyDirectory === 'string' && verifyDirectory !== '') {
+    try {
+      const remaining = readdirSync(verifyDirectory).filter(
+        (entry) =>
+          secretFilenames.includes(entry) ||
+          secretFilenames.some((filename) => entry === `.staging.${filename}`)
+      )
+      if (remaining.length > 0) {
+        residue.push(
+          `the bundle directory still contains ${String(remaining.length)} secret ` +
+            'file(s) after cleanup (names are deliberately not echoed)'
+        )
+      }
+    } catch (error) {
+      residue.push(
+        `could not verify the bundle directory after cleanup (${errorCodeOf(error)})`
       )
     }
   }
@@ -113,14 +146,53 @@ const writeStagingFile = (target, filename, body, createdPaths) => {
   }
 }
 
-/** 把一份暂存文件提升为成品，并同步更新现场登记。 */
+/**
+ * 把一份暂存文件**原子且不覆盖**地提升为成品。
+ *
+ * 刻意**不用 rename**：POSIX 的 `rename(2)` 语义是「目标存在就静默替换」，
+ * 于是一个并发写者（或上一轮残留）在 promotion 之前放好的同名 final 文件会被
+ * 无声改写。`link(2)` 在目标已存在时以 EEXIST 失败，这正是需要的
+ * no-replace 原子性：先硬链接到 final 名，成功后再删掉 staging 名。
+ *
+ * createdPaths 只登记**本轮亲手创建**的名字，因此失败清理永远不会碰外部文件。
+ */
 const promoteStagingFile = (target, filename, createdPaths) => {
   const stagingPath = resolve(target, stagingName(filename))
   const finalPath = resolve(target, filename)
-  renameSync(stagingPath, finalPath)
-  createdPaths.splice(createdPaths.indexOf(stagingPath), 1)
+  try {
+    linkSync(stagingPath, finalPath)
+  } catch (error) {
+    if (errorCodeOf(error) === 'EEXIST') {
+      throw new SecretGeneratorError(
+        `${filename} already exists in the bundle directory at promotion time; ` +
+          'refusing to replace a file this run did not create'
+      )
+    }
+    throw error
+  }
+  // final 名已经属于本轮：登记它，随后删掉 staging 名。
   createdPaths.push(finalPath)
+  unlinkSync(stagingPath)
+  createdPaths.splice(createdPaths.indexOf(stagingPath), 1)
   return finalPath
+}
+
+/**
+ * 失败后统一清理：走共享 collector（continue-on-failure + 独立目录复查）。
+ * 有残留时聚合成安全错误，**绝不**声称 “was removed”。
+ */
+const discardAfterFailure = (result, error) => {
+  const discarded = discardGeneratedPaths({
+    paths: [...result.files],
+    verifyDirectory: result.directory
+  })
+  if (discarded.residue.length > 0) {
+    return new SecretGeneratorError(
+      `${error instanceof Error ? error.message : String(error)}; the cleanup could ` +
+        `not remove everything: ${discarded.residue.join('; ')}`
+    )
+  }
+  return error
 }
 
 /** 让出一次事件循环：排队中的信号在这里被分发。 */
@@ -206,7 +278,7 @@ const prepareBundleDirectory = (directory) => {
  * 生成一套完整 bundle（**同步**版，供库调用方与反例使用）。返回生成的文件
  * 路径列表；**从不**返回或输出口令。CLI 走的是可中断的异步版。
  */
-export const generateSecretBundle = (directory) => {
+export const generateSecretBundle = (directory, { beforePromotion = null } = {}) => {
   const { target } = prepareBundleDirectory(directory)
   const passwords = {}
   for (const role of passwordRoles) {
@@ -216,12 +288,16 @@ export const generateSecretBundle = (directory) => {
 
   const createdPaths = []
   activeGeneratorScene.paths = createdPaths
+  activeGeneratorScene.directory = target
   try {
     for (const filename of secretFilenames) {
       writeStagingFile(target, filename, bodies.get(filename), createdPaths)
     }
     const finalPaths = []
     for (const filename of secretFilenames) {
+      // 注入点**只给反例**用：让一个并发写者恰好抢在 promotion 之前放好同名
+      // final 文件。生产路径永远不传它。
+      beforePromotion?.(filename)
       finalPaths.push(promoteStagingFile(target, filename, createdPaths))
     }
     // 生成成功：现场登记必须清空。否则此后任何信号处置都会把一套**完好**的
@@ -229,14 +305,15 @@ export const generateSecretBundle = (directory) => {
     activeGeneratorScene.paths = []
     return { directory: target, files: finalPaths }
   } catch (error) {
-    for (const path of createdPaths) {
-      try {
-        unlinkSync(path)
-      } catch {
-        // 清理是尽力而为；留下的暂存条目会被预检当作未知条目拒绝。
-      }
+    // 失败清理走**共享 collector**：continue-on-failure、聚合 residue、并做
+    // 独立目录复查。它只删本轮自己创建的路径，外部同名文件绝不受影响。
+    const discarded = discardGeneratedPaths({ paths: createdPaths, verifyDirectory: null })
+    if (discarded.residue.length > 0) {
+      throw new SecretGeneratorError(
+        `${error instanceof Error ? error.message : String(error)}; additionally the ` +
+          `failure cleanup left residue: ${discarded.residue.join('; ')}`
+      )
     }
-    activeGeneratorScene.paths = []
     throw error
   }
 }
@@ -260,6 +337,7 @@ export const generateSecretBundleInterruptible = async (directory) => {
 
   const createdPaths = []
   activeGeneratorScene.paths = createdPaths
+  activeGeneratorScene.directory = target
   const abortIfSignalled = () => {
     const signal = terminationSignal()
     if (signal !== null) {
@@ -284,14 +362,13 @@ export const generateSecretBundleInterruptible = async (directory) => {
     // 被信号打断时**不**在这里删：现场登记仍持有已创建路径，处置会统一清理
     // 并把删不掉的条目报成 residue。其余失败按原来的 failure-safe 处理。
     if (!(error instanceof SecretGenerationInterrupted)) {
-      for (const path of createdPaths) {
-        try {
-          unlinkSync(path)
-        } catch {
-          // 尽力而为；残留会被预检当作未知条目拒绝。
-        }
+      const discarded = discardGeneratedPaths({ paths: createdPaths, verifyDirectory: null })
+      if (discarded.residue.length > 0) {
+        throw new SecretGeneratorError(
+          `${error instanceof Error ? error.message : String(error)}; additionally the ` +
+            `failure cleanup left residue: ${discarded.residue.join('; ')}`
+        )
       }
-      activeGeneratorScene.paths = []
     }
     throw error
   }
@@ -311,32 +388,26 @@ export const generateAndPreflight = (
   { preflight = checkSecretBundle } = {}
 ) => {
   const result = generateSecretBundle(directory)
+  // 预检期间现场登记必须**保持有效**（P1-3）：信号落在同步 preflight 里时，
+  // 处置要能删掉这八份文件。
+  activeGeneratorScene.paths = [...result.files]
+  activeGeneratorScene.directory = result.directory
   let problems
   try {
     problems = preflight(result.directory).problems
   } catch (error) {
-    for (const path of result.files) {
-      try {
-        unlinkSync(path)
-      } catch {
-        // 清理是尽力而为；残留由下一次预检拒绝。
-      }
-    }
-    throw error
+    throw discardAfterFailure(result, error)
   }
   if (problems.length > 0) {
-    for (const path of result.files) {
-      try {
-        unlinkSync(path)
-      } catch {
-        // 同上：残留由预检拒绝。
-      }
-    }
-    throw new SecretGeneratorError(
-      'the freshly generated bundle failed its own preflight and was removed:\n' +
-        problems.map((problem) => `  - ${problem}`).join('\n')
+    throw discardAfterFailure(
+      result,
+      new SecretGeneratorError(
+        'the freshly generated bundle failed its own preflight:\n' +
+          problems.map((problem) => `  - ${problem}`).join('\n')
+      )
     )
   }
+  activeGeneratorScene.paths = []
   return result
 }
 
@@ -350,32 +421,41 @@ export const generateAndPreflightInterruptible = async (
   { preflight = checkSecretBundle } = {}
 ) => {
   const result = await generateSecretBundleInterruptible(directory)
+  // P1-3：现场登记保持到 preflight 完成为止。
+  activeGeneratorScene.paths = [...result.files]
+  activeGeneratorScene.directory = result.directory
+  // 只给反例用的窗口标记与延时：让 SIGINT 能确定地落在**同步** preflight 中。
+  const preflightDelayMs = Number(process.env['MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS'] ?? '0')
+  if (Number.isInteger(preflightDelayMs) && preflightDelayMs > 0) {
+    process.stderr.write('entering preflight\n')
+    const until = Date.now() + preflightDelayMs
+    while (Date.now() < until) {
+      // 刻意的同步忙等：模拟一次不让出事件循环的 preflight。
+    }
+  }
   let problems
   try {
     problems = preflight(result.directory).problems
   } catch (error) {
-    for (const path of result.files) {
-      try {
-        unlinkSync(path)
-      } catch {
-        // 尽力而为；残留由下一次预检拒绝。
-      }
-    }
-    throw error
+    throw discardAfterFailure(result, error)
   }
   if (problems.length > 0) {
-    for (const path of result.files) {
-      try {
-        unlinkSync(path)
-      } catch {
-        // 同上。
-      }
-    }
-    throw new SecretGeneratorError(
-      'the freshly generated bundle failed its own preflight and was removed:\n' +
-        problems.map((problem) => `  - ${problem}`).join('\n')
+    throw discardAfterFailure(
+      result,
+      new SecretGeneratorError(
+        'the freshly generated bundle failed its own preflight:\n' +
+          problems.map((problem) => `  - ${problem}`).join('\n')
+      )
     )
   }
+  // 成功输出**之前**再让出一次事件循环并复查信号：同步 preflight 期间排队的
+  // SIGINT/SIGTERM 必须在这里被分发，绝不能先打印成功再收场。
+  await tick()
+  const signal = terminationSignal()
+  if (signal !== null) {
+    throw new SecretGenerationInterrupted(signal)
+  }
+  activeGeneratorScene.paths = []
   return result
 }
 

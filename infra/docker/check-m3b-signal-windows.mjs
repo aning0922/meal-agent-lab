@@ -39,6 +39,7 @@ const fail = (name, detail) => {
 
 const docker = (args) => spawnSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
 
+/** 所有 residue 查询都检查退出码：读不到即抛，绝不当成「没有残留」。 */
 const listByLabel = (kind, project) => {
   const base =
     kind === 'container'
@@ -76,7 +77,8 @@ const runAndSignal = async ({
   trigger,
   signal,
   timeoutMs = 900_000,
-  waitForProcess = null
+  waitForProcess = null,
+  signalDelayMs = 1_500
 }) => {
   const child = spawn(process.execPath, [resolve(composeDirectory, script)], {
     cwd: repositoryRoot,
@@ -129,8 +131,8 @@ const runAndSignal = async ({
               }
               await sleep(300)
             }
-          } else {
-            await sleep(1_500)
+          } else if (signalDelayMs > 0) {
+            await sleep(signalDelayMs)
           }
           try {
             child.kill(signal)
@@ -217,17 +219,20 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   if (processAlive(result.pid)) {
     problems.push('the CLI process is still alive')
   }
-  // pgrep 找不到匹配时退出码是 1（正常），其余非零退出说明**无法判定**。
-  const dockerChildren = spawnSync('pgrep', ['-f', scene.project], { encoding: 'utf8' })
-  if (dockerChildren.error !== undefined || ![0, 1].includes(dockerChildren.status)) {
+  // 后代检查只看**被测 CLI 自己的进程组**（它是 detached 起的，pid 即 pgid），
+  // 不做全局 pgrep——全局匹配会把别的 worktree 里同名 project 的进程算进来，
+  // 也会把本套件自己的命令行匹配进去。`pgrep -g <pgid>` 找不到时退出 1，
+  // 其余非零退出说明无法判定。
+  const descendants = spawnSync('pgrep', ['-g', String(result.pid)], { encoding: 'utf8' })
+  if (descendants.error !== undefined || ![0, 1].includes(descendants.status)) {
     problems.push(
-      `could not determine whether docker child processes remain ` +
-        `(pgrep exited ${String(dockerChildren.status)})`
+      `could not determine whether descendants of the CLI remain ` +
+        `(pgrep -g exited ${String(descendants.status)})`
     )
-  } else if (dockerChildren.status === 0) {
-    const alive = dockerChildren.stdout.split('\n').filter(Boolean)
+  } else if (descendants.status === 0) {
+    const alive = descendants.stdout.split('\n').filter(Boolean)
     problems.push(
-      `${String(alive.length)} process(es) referencing this project are still alive`
+      `${String(alive.length)} descendant process(es) of the CLI process group are still alive`
     )
   }
   // tracked compose 文件必须**逐字节**等于 HEAD 里的版本（git status 只说
@@ -324,6 +329,35 @@ assertCleanScene(
   { expectSignal: 'SIGTERM' }
 )
 
+// 窗口 0a：**pre-baseline** 窗口——临时 Secret 目录刚建好、`danglingVolumes()`
+// 这次 Docker 查询还没返回。此前 scene 要到更晚才登记，这段窗口内被中断会把
+// 明文 Secret 目录留在盘上。trigger 是 smoke 打出的第一行（project 名），此时
+// override 与 image tag 都还不存在，cleanup 绝不能引用它们。
+assertCleanScene(
+  'SIGINT in the smoke pre-baseline window',
+  await runAndSignal({
+    script: 'run-local-test-smoke.mjs',
+    trigger: /smoke project: /,
+    signal: 'SIGINT',
+    signalDelayMs: 0
+  }),
+  { expectSignal: 'SIGINT' }
+)
+
+// 窗口 0b：**pre-override** 窗口——secret bundle 已生成、拓扑门禁正在跑，
+// override 仍未写盘。cleanup 必须把明文 bundle 删掉，且**不得**因为引用一个
+// 不存在的 override 而报 residue。
+assertCleanScene(
+  'SIGTERM in the smoke pre-override window',
+  await runAndSignal({
+    script: 'run-local-test-smoke.mjs',
+    trigger: /secret bundle generated and preflighted/,
+    signal: 'SIGTERM',
+    signalDelayMs: 0
+  }),
+  { expectSignal: 'SIGTERM' }
+)
+
 // 窗口 3：probe 的容器运行阶段。
 assertCleanScene(
   'SIGINT during the probe run window',
@@ -335,7 +369,7 @@ assertCleanScene(
   { expectSignal: 'SIGINT' }
 )
 
-const expectedCount = 3
+const expectedCount = 5
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

@@ -29,6 +29,7 @@
 //     级探测必须失败，且对照端口必须同样 accept，否则仍按失败处理；
 //   - postgres 容器没有任何 PublishedPort/PortBinding；
 //   - api 容器恰好一个 host binding：127.0.0.1:<port>→3000/tcp。
+import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { connect, createServer, isIP } from 'node:net'
@@ -308,6 +309,95 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
 }
 
 /**
+ * **全仓 tracked 文件**的 containment 扫描：对每个 tracked 路径**分别**读取
+ * Git index blob 与工作树内容，两者都逐字节比对 needle。
+ *
+ * 只用 `git ls-files` 取路径、再 `readFileSync` 工作树是不够的：一份已经
+ * `git add`、随后把工作树恢复干净的 Secret 在工作树里完全看不见，却会随下一次
+ * commit 进入历史（本轮反例正是这一形态）。
+ *
+ * 返回 hits（label + needle 序号 + 类别），**不含**命中的取值；读不到 index
+ * blob 或工作树内容时记成一条问题 hit，绝不静默跳过。
+ */
+export const scanTrackedRepositoryForNeedles = (repository, needles) => {
+  const hits = []
+  const listing = spawnSync('git', ['ls-files', '-z'], {
+    cwd: repository,
+    encoding: 'buffer',
+    maxBuffer: 64 * 1024 * 1024
+  })
+  if (listing.error !== undefined || listing.status !== 0) {
+    hits.push({
+      label: 'git ls-files',
+      id: 0,
+      category: 'scan-unavailable',
+      problem: `could not list tracked files (exit ${String(listing.status)})`
+    })
+    return hits
+  }
+  const files = listing.stdout
+    .toString('utf8')
+    .split('\u0000')
+    .filter(Boolean)
+  for (const file of files) {
+    // 工作树侧。
+    let worktree = null
+    try {
+      worktree = readFileSync(resolve(repository, file))
+    } catch (error) {
+      // 文件被 delete 但仍在 index 里是合法状态：index 侧照扫。
+      if (String(error?.code ?? '') !== 'ENOENT') {
+        hits.push({
+          label: `tracked file ${file} (worktree)`,
+          id: 0,
+          category: 'scan-unavailable',
+          problem: 'could not be read'
+        })
+      }
+    }
+    if (worktree !== null) {
+      for (const needle of needles) {
+        if (worktree.includes(needle.value)) {
+          hits.push({
+            label: `tracked file ${file} (worktree)`,
+            id: needle.id,
+            category: needle.category
+          })
+        }
+      }
+    }
+    // Git index blob 侧。
+    const blob = spawnSync('git', ['show', `:${file}`], {
+      cwd: repository,
+      encoding: 'buffer',
+      maxBuffer: 64 * 1024 * 1024
+    })
+    if (blob.error !== undefined || blob.status !== 0) {
+      hits.push({
+        label: `tracked file ${file} (git index)`,
+        id: 0,
+        category: 'scan-unavailable',
+        problem: `git show :<path> exited ${String(blob.status)}`
+      })
+      continue
+    }
+    if (worktree !== null && blob.stdout.equals(worktree)) {
+      continue
+    }
+    for (const needle of needles) {
+      if (blob.stdout.includes(needle.value)) {
+        hits.push({
+          label: `tracked file ${file} (git index)`,
+          id: needle.id,
+          category: needle.category
+        })
+      }
+    }
+  }
+  return hits
+}
+
+/**
  * 扫描产物。返回 hits（产物 label + needle 序号 + 类别），**不含**命中的取值；
  * 调用方组装失败消息时同样不得回显取值。
  */
@@ -433,30 +523,26 @@ export const runContainmentAndIsolation = async ({
         `(${hit.category}); the value is not reprinted here`
     )
   }
-  let scannedTrackedFiles = 0
-  for (const file of trackedFiles) {
-    let buffer
-    try {
-      buffer = readFileSync(resolve(repositoryRoot, file))
-    } catch {
-      fail(`containment: tracked file ${file} could not be read for scanning`)
+  // 全仓 tracked 文件：**index blob 与工作树各扫一遍**（见
+  // scanTrackedRepositoryForNeedles 的说明）。
+  const trackedHits = scanTrackedRepositoryForNeedles(repositoryRoot, needles)
+  for (const hit of trackedHits) {
+    if (hit.category === 'scan-unavailable') {
+      fail(`containment: ${hit.label} could not be scanned (${hit.problem})`)
       continue
     }
-    scannedTrackedFiles += 1
-    for (const needle of needles) {
-      if (buffer.includes(needle.value)) {
-        fail(
-          `containment: tracked file ${file} contains secret needle ` +
-            `#${String(needle.id)} (${needle.category}); the value is not reprinted here`
-        )
-      }
-    }
+    fail(
+      `containment: ${hit.label} contains secret needle #${String(hit.id)} ` +
+        `(${hit.category}); the value is not reprinted here`
+    )
   }
+  const scannedTrackedFiles = trackedFiles.length
 
   log(
     `containment scan: ${String(needles.length)} needles against ` +
       `${String(scannedArtifacts.length)} docker/config/log/transcript artifacts ` +
-      `and ${String(scannedTrackedFiles)} tracked files — no hits`
+      `and ${String(scannedTrackedFiles)} tracked files (git index blob + worktree ` +
+      'each scanned) — no hits'
   )
 
   // -------------------------------------------------------------------------
