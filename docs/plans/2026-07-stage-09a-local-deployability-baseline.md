@@ -204,9 +204,10 @@ PostgreSQL healthy
 `DATABASE_URL`、`bootstrap.sh` 只接受三个 `MEAL_AGENT_*_PASSWORD` environment
 value，因此 `api`、`migrate`、`bootstrap-schema`、`bootstrap-logins` 当时必然
 fail closed。**M3A 之后 `_FILE` 契约已被真正消费**（见下面的 M3A 实施记录），
-但 `0000 → handoff → acl → migrate → grants` 的完整链路、备份恢复与阶段总门禁
-**仍未取得运行证据**，属于 M3B 与 M4。备份/恢复服务属于 M4，本轮不在 Compose
-中声明。
+但 `0000 → handoff → acl → migrate → grants` 的完整链路（**当时**未取得运行
+证据，现由 M3B 交付，状态为 implementation complete, pending total-control
+review）、备份恢复与阶段总门禁属于 M3B 与 M4。备份/恢复服务属于 M4，本轮不在
+Compose 中声明。
 
 ### M3：配置和 fake 登录边界
 

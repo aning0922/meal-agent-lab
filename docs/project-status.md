@@ -488,8 +488,10 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 `infra/environments/` 模板、八份 Secret 的生成与交叉一致性预检、database name
 与三个 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
 （`0000 → handoff → acl → migrate → grants`）与 `/readyz=200` 实证、容器级
-sentinel 扫描，以及宿主全部非 loopback 地址的动态隔离证明，**都属于 M3B，尚未
-取得运行证据**。M4、M5 未开始。
+sentinel 扫描，以及宿主全部非 loopback 地址的动态隔离证明，**都属于 M3B**
+（**当时状态：尚未取得运行证据**；这些证据现已由 M3B 取得，状态为
+implementation complete, pending total-control review，见本文档的 M3B 段）。
+M4、M5 未开始。
 
 **R8A 实际交付的**（全部属于**可观察性**，不含任何收敛）
 
