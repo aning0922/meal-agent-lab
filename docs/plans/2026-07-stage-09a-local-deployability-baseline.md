@@ -1316,6 +1316,23 @@ URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
 `config`/`inspect`/`history`/`logs` 的容器级 sentinel 扫描，以及宿主全部非
 loopback 地址的动态隔离证明（第 5 条）。**M4、M5 未开始。**
 
+### M3B 实施记录（进行中）
+
+M3B **已开工，尚未复核**，覆盖：`infra/environments/` 的 local-test 配置模板与
+说明；八份 Secret 的单一来源生成（只生成四个原始口令，派生八个固定文件）、
+属主/权限编排与部署前交叉一致性预检；从空 volume 开始的完整 Compose bootstrap 链
+（`cluster → logins → createdb → schema/0000 → handoff → acl → migrate/0001—0004 →
+grants → api`）与 `/healthz=200`、`/readyz=200`、runtime 最小数据库权限的运行证据；
+`config`/`inspect`/`image history`/`logs`/tracked files 的容器级 sentinel 扫描；
+以及宿主全部非 loopback 地址的动态隔离证明。第一步是在实现之前用**真实 Compose
+Secret** 固化 Docker Desktop 的 UID/mode 行为证据（UID 999 与 UID 10001 两侧都在
+容器内取证，宿主 stat 不作数）。
+
+M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
+备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
+GitHub Actions。本轮保持 fake adapter，不调用任何真实微信服务；不购买服务器、
+不开放公网；ADR-0005 保持 `Proposed`，PR #1 保持 Draft。
+
 ### M4：生命周期、备份和恢复
 
 1. 提供明确命令完成：
