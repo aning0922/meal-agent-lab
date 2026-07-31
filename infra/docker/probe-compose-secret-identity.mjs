@@ -179,7 +179,7 @@ const main = async () => {
     composeArgs: [],
     danglingBaseline: null
   })
-  const danglingBaseline = await danglingVolumes()
+  let danglingBaseline = null
   const composeEnvironment = {
     ...process.env,
     MEAL_AGENT_SECRETS_DIR: secretsDirectory,
@@ -221,6 +221,11 @@ const main = async () => {
   // cleanup residue 与 verifyNoResidue 的结果一起吞掉（此前 build 失败时
   // 操作者只看到一条 build 错误，残留报告完全丢失）。
   try {
+    // baseline 查询放进 try 内（P1-4）：dockerStrict 按设计会抛，放在 try 外
+    // 会把刚建好的明文 Secret 目录留在盘上且不报 residue。
+    danglingBaseline = await danglingVolumes()
+    activeProbeScene.danglingBaseline = danglingBaseline
+
     generateAndPreflight(secretsDirectory)
 
     // 本轮唯一 image tag：经临时 override 注入，绝不覆盖全局 tag，也不会与
@@ -240,6 +245,11 @@ const main = async () => {
     process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
 
     for (const plan of probePlan) {
+      // 信号在飞时**不再新建容器**（成功分支同样要检查——此前只在失败分支里
+      // 检查，信号落在两次 compose run 之间时仍会 spawn 出无人回收的容器）。
+      if (terminationSignal() !== null) {
+        break
+      }
       const targets = plan.secrets.map((name) => `/run/secrets/${name}`)
       const args =
         plan.runtime === 'bash'

@@ -117,6 +117,7 @@ process.stdout.write('P1-1: generator atomic promotion\n')
   const foreignBody = `FOREIGN-KEEP-${randomBytes(8).toString('hex')}\n`
   try {
     mkdirSync(directory, { mode: 0o700 })
+    let promotionRejected = false
     try {
       generateSecretBundle(directory, {
         beforePromotion: (filename) => {
@@ -125,14 +126,22 @@ process.stdout.write('P1-1: generator atomic promotion\n')
           }
         }
       })
-    } catch {
-      // 预期失败：promotion 撞上外部文件。
+    } catch (error) {
+      // **校验错误身份**：不校验的话，任何无关的提前抛错（此时一个文件都还
+      // 没创建）都会让下面两条断言真空成立。
+      promotionRejected =
+        error instanceof SecretGeneratorError && /already exists/.test(String(error))
+      if (!promotionRejected) {
+        fail(name, `wrong error: ${error instanceof Error ? error.message : String(error)}`)
+      }
     }
     const stillThere =
       existsSync(resolve(directory, foreignName)) &&
       readFileSync(resolve(directory, foreignName), 'utf8') === foreignBody
     const ownLeftovers = readdirSync(directory).filter((entry) => entry !== foreignName)
-    if (!stillThere) {
+    if (!promotionRejected) {
+      // 前面已经记过 fail；这里直接返回，避免真空通过。
+    } else if (!stillThere) {
       fail(name, 'the foreign file was removed by the failure cleanup')
     } else if (ownLeftovers.length > 0) {
       fail(name, `the run left ${String(ownLeftovers.length)} of its own file(s) behind`)
@@ -246,7 +255,12 @@ process.stdout.write('P1-3: preflight signal window\n')
     const child = spawn(
       process.execPath,
       [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],
-      { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS: '900' } }
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // detached：pid 即 pgid，下面才能按**进程组**发信号。
+        detached: true,
+        env: { ...process.env, MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS: '900' }
+      }
     )
     const outcome = await new Promise((resolveOutcome) => {
       let stdout = ''
@@ -258,7 +272,11 @@ process.stdout.write('P1-3: preflight signal window\n')
         stderr += chunk.toString('utf8')
         // 生产代码在进入 preflight 时打这一行（只有窗口标记，无 Secret）。
         if (/entering preflight/.test(stderr)) {
-          child.kill('SIGINT')
+          try {
+            process.kill(-child.pid, 'SIGINT')
+          } catch {
+            child.kill('SIGINT')
+          }
         }
       })
       child.once('close', (code, signal) => resolveOutcome({ code, signal, stdout, stderr }))

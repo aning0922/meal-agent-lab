@@ -219,20 +219,35 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   if (processAlive(result.pid)) {
     problems.push('the CLI process is still alive')
   }
-  // 后代检查只看**被测 CLI 自己的进程组**（它是 detached 起的，pid 即 pgid），
-  // 不做全局 pgrep——全局匹配会把别的 worktree 里同名 project 的进程算进来，
-  // 也会把本套件自己的命令行匹配进去。`pgrep -g <pgid>` 找不到时退出 1，
-  // 其余非零退出说明无法判定。
-  const descendants = spawnSync('pgrep', ['-g', String(result.pid)], { encoding: 'utf8' })
-  if (descendants.error !== undefined || ![0, 1].includes(descendants.status)) {
-    problems.push(
-      `could not determine whether descendants of the CLI remain ` +
-        `(pgrep -g exited ${String(descendants.status)})`
+  // 后代检查按**被测 CLI 自己公布的真实 pgid** 逐个确认（它在 stderr 上打
+  // `m3b-descendant-pgid <pgid>`）。不能用 `pgrep -g <cli pid>`：CLI 起的每个
+  // 子进程都是 detached、**自成进程组**，那条查询结构上恒为空（已实测），
+  // 五个窗口的「后代全部消失」会变成空真。也不做全局 pgrep（会误抓别的
+  // worktree）。
+  const announced = [
+    ...new Set(
+      [...result.stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) => Number(match[1]))
     )
-  } else if (descendants.status === 0) {
-    const alive = descendants.stdout.split('\n').filter(Boolean)
+  ]
+  if (announced.length === 0) {
     problems.push(
-      `${String(alive.length)} descendant process(es) of the CLI process group are still alive`
+      'the CLI never announced a descendant pgid; the descendant check would be vacuous'
+    )
+  }
+  const stillAlive = announced.filter((pgid) => {
+    try {
+      // 对**进程组**发 0 号信号：组内还有任何成员就成功。
+      process.kill(-pgid, 0)
+      return true
+    } catch (error) {
+      // ESRCH = 组已空；EPERM = 组还在但不归我们（同样算未消失）。
+      return String(error?.code ?? '') === 'EPERM'
+    }
+  })
+  if (stillAlive.length > 0) {
+    problems.push(
+      `${String(stillAlive.length)} of ${String(announced.length)} announced descendant ` +
+        `process group(s) are still alive: ${stillAlive.join(', ')}`
     )
   }
   // tracked compose 文件必须**逐字节**等于 HEAD 里的版本（git status 只说
@@ -254,20 +269,9 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   } else if (!readFileSync(composeFile).equals(committed.stdout)) {
     problems.push('the tracked compose file differs byte-for-byte from HEAD')
   }
-  // 本套件不应留下任何临时 secret 目录（除了被测 CLI 自己的那一个，已在上面
-  // 单独断言）。
-  const strayBundles = readdirSync(tmpdir()).filter(
-    (entry) =>
-      entry.startsWith('meal-agent-m3b-secrets-') || entry.startsWith('meal-agent-m3b-probe-')
-  )
-  const ownBundle =
-    scene.secretsDirectory === null ? null : scene.secretsDirectory.split('/').pop()
-  const foreignBundles = strayBundles.filter((entry) => entry !== ownBundle)
-  if (foreignBundles.length > 0) {
-    problems.push(
-      `${String(foreignBundles.length)} temporary secret director(y|ies) remain in tmpdir`
-    )
-  }
+  // 临时 secret 目录只按**本轮**判定（上面已单独断言 scene.secretsDirectory
+  // 被删）。刻意**不**做全局 tmpdir 扫描：并行 worktree 的运行、或此前某次
+  // 崩溃留下的空目录，会让本套件的后续每一个窗口连锁误红。
   // **只接受真实的信号终止**。`process.exit(130)` 这类伪装恰恰是本套件要
   // 拒绝的东西，所以不再接受「退出码等于 128+signo」。
   if (result.closeSignal !== expectSignal) {
@@ -278,6 +282,10 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   }
   // G3：被测 CLI 自己报出的 residue/失败必须一并被看见，否则「外部状态干净」
   // 会掩盖「CLI 认为自己没清干净」。
+  // 信号路径**绝不允许**出现 PASS：被中断的运行没有跑完全部证据。
+  if (/local-test smoke PASS|Compose secret identity probe PASS/.test(result.stdout)) {
+    problems.push('the CLI printed a PASS verdict on a signal path')
+  }
   const reportedFailures = result.stdout
     .split('\n')
     .filter((line) => /^FAIL: |cleanup residue:/.test(line))

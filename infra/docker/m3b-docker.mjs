@@ -196,13 +196,30 @@ const cleanupRunUnsynchronized = async ({
   })
 
   if (typeof project !== 'string' || !projectPattern.test(project)) {
-    throw new DockerEvidenceError(
+    // 记成 residue 而不是 throw：裸 throw 会把阶段 1（明文 Secret 目录）已经
+    // 收集到的失败一起丢掉，而那正是最不能丢的一条。
+    residue.push(
       `cleanup refused: project name ${JSON.stringify(project)} is outside the ` +
         'meal-agent-m3b-* smoke scope'
     )
+    return residue
   }
 
   // 阶段 2：compose down（退出码检查，失败不阻断后面的 label sweep）。
+  // 若 override 已被**上一次** cleanup 的阶段 7 删掉，这里就不能再引用它——
+  // 否则 compose 会以 "no such file" 失败并产出一条假 residue。
+  const effectiveComposeArgs = []
+  for (let index = 0; index < composeArgs.length; index += 1) {
+    const argument = composeArgs[index]
+    if (argument === '--file' && index + 1 < composeArgs.length) {
+      const file = composeArgs[index + 1]
+      if (!existsSync(file)) {
+        index += 1
+        continue
+      }
+    }
+    effectiveComposeArgs.push(argument)
+  }
   await stage('compose-down', async () => {
     await dockerStrict(
       [
@@ -210,7 +227,7 @@ const cleanupRunUnsynchronized = async ({
         'compose',
         '--file',
         composeFile,
-        ...composeArgs,
+        ...effectiveComposeArgs,
         '--profile',
         'bootstrap',
         '--project-name',

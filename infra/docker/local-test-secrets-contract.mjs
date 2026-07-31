@@ -527,10 +527,22 @@ const enclosingGitRepository = (directory) => {
       `cannot determine the enclosing git repository (failed to run git: ${result.error.message})`
     )
   }
-  if (result.status !== 0) {
+  if (result.status === 0) {
+    return resolve(result.stdout.trim())
+  }
+  // **只有「确实不在 git 仓库里」才允许跳过**跟踪判定。其余非零退出
+  // （dubious ownership、bare 仓库、子进程被信号杀掉导致 status === null）
+  // 一律 fail closed——此前一律返回 null，等于让整条「Secret 不得被 git
+  // 跟踪 + .gitignore 覆盖」的防线静默消失。
+  const stderr = String(result.stderr ?? '')
+  if (/not a git repository|não é um repositório/i.test(stderr)) {
     return null
   }
-  return resolve(result.stdout.trim())
+  throw new Error(
+    'cannot determine the enclosing git repository ' +
+      `(git rev-parse exited ${String(result.status)}); the tracked-secret checks ` +
+      'cannot be skipped silently'
+  )
 }
 
 /**
@@ -575,8 +587,13 @@ const fullDsnPatterns = [
  * 非 `.env*` 形态的 tracked 文件时**直接拒绝**，而不是静默跳过——要新增格式，
  * 必须先为它写判据与反例。
  */
+// 只认这几种**确定是 dotenv 形态**的文件名：`*.env`、`.env`、`*.env.example`、
+// `*.env.sample`、`*.env.template`，外加三个非配置的元文件。
+// 此前的 `(\.[^/]+)?` 对后缀不设约束，`app.env.yaml` / `app.env.json` /
+// `secrets.env.sh` 都会被当作 dotenv 放行——它们一行都不匹配赋值文法，于是
+// 零 problem 静默通过，正是这条 allowlist 要消灭的形态。
 const supportedTemplateFile =
-  /(^|\/)[^/]*\.env(\.[^/]+)?$|(^|\/)(README\.md|\.gitignore|\.gitkeep)$/
+  /(^|\/)([^/]*\.)?env(\.(example|sample|template))?$|(^|\/)(README\.md|\.gitignore|\.gitkeep)$/
 
 export const scanTrackedTemplates = (repository = repositoryRoot) => {
   const problems = []
@@ -633,7 +650,16 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       }
       const key = match[1].toUpperCase()
       const value = match[2].trim()
-      const sensitive = sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix))
+      // 后缀 + **词元**双判据：`API_KEYS` / `MY_SECRETS` / `WECHAT_APP_SECRET_2`
+      // 这类形态 endsWith 抓不到，但它们同样是敏感键。
+      const keyTokens = key.split(/[^A-Z0-9]+/).filter(Boolean)
+      const sensitive =
+        sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix)) ||
+        keyTokens.some((token) =>
+          sensitiveKeySuffixes.some(
+            (suffix) => token === suffix || token === `${suffix}S` || token.startsWith(suffix)
+          )
+        )
       if (sensitive && value !== '' && value !== '""' && value !== "''") {
         problems.push(
           `${label}:${String(index + 1)}: tracked template assigns a non-empty ` +

@@ -256,11 +256,11 @@ preflightNegative(
   'URL password does not match the password file',
   /the connection URL password does not match the superuser password file/,
   (directory) => {
-    rewriteSecret(
-      directory,
-      'meal_agent_admin_database_url',
-      renderDatabaseUrl('postgres', generatePassword())
-    )
+    // 注入的新口令与新 URL 同样不允许出现在失败消息里。
+    const injected = generatePassword()
+    const url = renderDatabaseUrl('postgres', injected)
+    rewriteSecret(directory, 'meal_agent_admin_database_url', url)
+    return { additionalSensitiveValues: [injected, url] }
   }
 )
 
@@ -269,12 +269,14 @@ preflightNegative(
   /endpoint line 2 password does not match the superuser password file/,
   (directory) => {
     const superuser = readBody(directory, 'postgres_superuser_password')
+    const injected = generatePassword()
     rewriteSecret(
       directory,
       'postgres_admin.pgpass',
       `postgres:5432:postgres:postgres:${superuser}\n` +
-        `postgres:5432:meal_agent:postgres:${generatePassword()}`
+        `postgres:5432:meal_agent:postgres:${injected}`
     )
+    return { additionalSensitiveValues: [injected] }
   }
 )
 
@@ -515,11 +517,13 @@ preflightNegative(
   /meal_agent_runtime_database_url: the connection URL is not byte-identical to the canonical/,
   (directory) => {
     const password = readBody(directory, 'meal_agent_runtime_password')
+    const smuggled = `${password.slice(0, 10)}\t${password.slice(10)}`
     rewriteSecret(
       directory,
       'meal_agent_runtime_database_url',
-      `postgresql://meal_agent_runtime_login:${password.slice(0, 10)}\t${password.slice(10)}@postgres:5432/meal_agent`
+      `postgresql://meal_agent_runtime_login:${smuggled}@postgres:5432/meal_agent`
     )
+    return { additionalSensitiveValues: [smuggled] }
   }
 )
 
@@ -1044,15 +1048,20 @@ for (const outOfScope of [
   'meal-agent-m3b-probe-deadbeef'
 ]) {
   const name = `cleanup refuses the out-of-scope project name ${JSON.stringify(outOfScope)}`
+  // 拒绝现在**记入 residue** 而不是 throw：裸 throw 会把阶段 1（明文 Secret
+  // 目录）已经收集到的失败一起丢掉。调用方仍然因 residue 非空而失败。
   try {
-    await cleanupSmokeProject(outOfScope)
-    fail(name, 'NOT CAUGHT — cleanup accepted an out-of-scope project name')
-  } catch (error) {
-    if (/outside the meal-agent-m3b-\* smoke scope/.test(String(error))) {
+    const residue = await cleanupSmokeProject(outOfScope)
+    if (residue.some((entry) => /outside the meal-agent-m3b-\* smoke scope/.test(String(entry)))) {
       pass(name, '/outside the meal-agent-m3b-\\* smoke scope/')
     } else {
-      fail(name, `wrong reason: ${error instanceof Error ? error.message : String(error)}`)
+      fail(
+        name,
+        `NOT CAUGHT — cleanup accepted an out-of-scope project name (residue: ${residue.join('; ')})`
+      )
     }
+  } catch (error) {
+    fail(name, `unexpected throw: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

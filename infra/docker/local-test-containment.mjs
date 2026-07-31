@@ -268,7 +268,13 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
       onProblem(`containment: docker inspect ${id} failed`)
       continue
     }
-    const parsed = JSON.parse(inspect.stdout)[0] ?? {}
+    let parsed
+    try {
+      parsed = JSON.parse(inspect.stdout)[0] ?? {}
+    } catch {
+      onProblem(`containment: docker inspect ${id} did not return valid JSON`)
+      continue
+    }
     const name = String(parsed.Name ?? id).replace(/^\//, '')
     addArtifact(`container inspect ${name}`, inspect.stdout)
     addArtifact(`container Config.Env ${name}`, JSON.stringify(parsed.Config?.Env ?? []))
@@ -453,22 +459,35 @@ export const runContainmentAndIsolation = async ({
       { env: composeEnvironment, ...options }
     )
 
-  assertNeedleCompleteness(bodies, needles, fail)
+  // containment 这一组的 problem 计数：成功证据只在它为 0 时输出（P1-7）。
+  let containmentProblems = 0
+  const failContainment = (message) => {
+    containmentProblems += 1
+    fail(message)
+  }
+
+  assertNeedleCompleteness(bodies, needles, failContainment)
 
   const resolvedConfig = await compose(['config'], { timeoutMs: 120_000 })
   if (resolvedConfig.status !== 0) {
-    fail(
+    failContainment(
       'containment: docker compose config failed; the resolved configuration ' +
         'cannot be scanned'
     )
   }
-  const artifacts = [
-    { label: 'docker compose config', content: resolvedConfig.stdout }
-  ]
-  const collected = await collectDockerArtifactsForProject({ project, run, onProblem: fail })
+  // 读取失败的配置**不计入**已扫描产物（上面已经 fail 过）。
+  const artifacts =
+    resolvedConfig.status === 0
+      ? [{ label: 'docker compose config', content: resolvedConfig.stdout }]
+      : []
+  const collected = await collectDockerArtifactsForProject({
+    project,
+    run,
+    onProblem: failContainment
+  })
   artifacts.push(...collected.artifacts)
   if (collected.containerIds.length === 0) {
-    fail('containment: no project containers were found to scan')
+    failContainment('containment: no project containers were found to scan')
   }
 
   // Git tracked files：全仓库逐文件字节扫描。
@@ -495,18 +514,23 @@ export const runContainmentAndIsolation = async ({
     ],
     [...needles, sentinelNeedle]
   )
+  let selfTestProblems = 0
   for (const needle of [...needles, sentinelNeedle]) {
     if (!selfTestHits.some((hit) => hit.id === needle.id)) {
+      selfTestProblems += 1
       fail(
         `containment self-test: needle #${String(needle.id)} (${needle.category}) ` +
           'was not detectable in the synthetic artifact; the scanner is broken'
       )
     }
   }
-  log(
-    `containment self-test: ${String(needles.length + 1)} needles (incl. the ` +
-      'per-run random scanner sentinel) all detectable in a synthetic artifact'
-  )
+  // 成功证据只在该组零 problem 时输出（P1-7）。
+  if (selfTestProblems === 0) {
+    log(
+      `containment self-test: ${String(needles.length + 1)} needles (incl. the ` +
+        'per-run random scanner sentinel) all detectable in a synthetic artifact'
+    )
+  }
 
   // 真实产物扫描：命中即失败，只报类别与位置，不回显取值。transcript 快照也
   // 作为一个产物参加扫描（之后的输出只有固定文本与计数）。
@@ -518,7 +542,7 @@ export const runContainmentAndIsolation = async ({
     }
   ]
   for (const hit of scanArtifactsForNeedles(scannedArtifacts, needles)) {
-    fail(
+    failContainment(
       `containment: ${hit.label} contains secret needle #${String(hit.id)} ` +
         `(${hit.category}); the value is not reprinted here`
     )
@@ -528,22 +552,25 @@ export const runContainmentAndIsolation = async ({
   const trackedHits = scanTrackedRepositoryForNeedles(repositoryRoot, needles)
   for (const hit of trackedHits) {
     if (hit.category === 'scan-unavailable') {
-      fail(`containment: ${hit.label} could not be scanned (${hit.problem})`)
+      failContainment(`containment: ${hit.label} could not be scanned (${hit.problem})`)
       continue
     }
-    fail(
+    failContainment(
       `containment: ${hit.label} contains secret needle #${String(hit.id)} ` +
         `(${hit.category}); the value is not reprinted here`
     )
   }
   const scannedTrackedFiles = trackedFiles.length
 
-  log(
-    `containment scan: ${String(needles.length)} needles against ` +
-      `${String(scannedArtifacts.length)} docker/config/log/transcript artifacts ` +
-      `and ${String(scannedTrackedFiles)} tracked files (git index blob + worktree ` +
-      'each scanned) — no hits'
-  )
+  // 成功证据只在该组零 problem 时输出（P1-7）。
+  if (containmentProblems === 0) {
+    log(
+      `containment scan: ${String(needles.length)} needles against ` +
+        `${String(scannedArtifacts.length)} docker/config/log/transcript artifacts ` +
+        `and ${String(scannedTrackedFiles)} tracked files (git index blob + worktree ` +
+        'each scanned) — no hits'
+    )
+  }
 
   // -------------------------------------------------------------------------
   // 2. 动态网络隔离
@@ -762,31 +789,44 @@ export const runContainmentAndIsolation = async ({
 
   // postgres：没有任何 PublishedPort / PortBinding。inspect 失败必须 fail
   // closed——「容器不存在」不能被读成「没有发布端口」。
+  // 返回 `{ value, failed }`：把「读取失败」与「合法的 JSON null」彻底分开，
+  // 后者绝不能让调用方跳过断言。
+  let postgresReadFailed = false
   const strictInspectJson = async (target, format, label) => {
     const result = await run(['docker', 'inspect', '--format', format, target])
     if (result.status !== 0) {
       fail(`isolation: docker inspect ${label} failed; the check cannot pass by default`)
-      return null
+      return { value: null, failed: true }
     }
     try {
-      return JSON.parse(result.stdout.trim() || 'null')
+      return { value: JSON.parse(result.stdout.trim() || 'null'), failed: false }
     } catch {
       fail(`isolation: docker inspect ${label} did not return valid JSON`)
-      return null
+      return { value: null, failed: true }
     }
   }
   const postgresName = `${project}-postgres-1`
-  const postgresPorts = await strictInspectJson(
+  const postgresPortsRead = await strictInspectJson(
     postgresName,
     '{{json .NetworkSettings.Ports}}',
     `${postgresName} ports`
   )
-  const postgresBindings = await strictInspectJson(
+  const postgresBindingsRead = await strictInspectJson(
     postgresName,
     '{{json .HostConfig.PortBindings}}',
     `${postgresName} bindings`
   )
-  if (postgresPorts !== null && postgresBindings !== null) {
+  postgresReadFailed = postgresPortsRead.failed || postgresBindingsRead.failed
+  const postgresPorts = postgresPortsRead.value
+  const postgresBindings = postgresBindingsRead.value
+  // `strictInspectJson` 在**读取失败**时已经 fail 过并返回 null；但一个
+  // **合法解析出的 JSON null**（Ports/PortBindings 在某些容器状态下就是 null）
+  // 同样会回到 null。此前用 `!== null` 守卫会让整条断言在那种情形下**静默
+  // 消失**——既不 log 也不 fail。现在只在读取失败时跳过（那时 fail 已记），
+  // 合法的 null 按「没有发布任何端口」正常参与判定。
+  if (postgresReadFailed) {
+    // 读取失败已由 strictInspectJson 记入 problems，这里不再重复。
+  } else {
     const publishedPostgres = Object.entries(postgresPorts ?? {}).filter(
       ([, bindings]) => Array.isArray(bindings) && bindings.length > 0
     )
@@ -800,7 +840,8 @@ export const runContainmentAndIsolation = async ({
   // api：恰好一个 host binding，127.0.0.1:<port> → 3000/tcp。
   const apiName = `${project}-api-1`
   const apiPorts =
-    (await strictInspectJson(apiName, '{{json .NetworkSettings.Ports}}', `${apiName} ports`)) ?? {}
+    (await strictInspectJson(apiName, '{{json .NetworkSettings.Ports}}', `${apiName} ports`))
+      .value ?? {}
   const apiBindings = Object.entries(apiPorts ?? {}).flatMap(([containerPort, bindings]) =>
     (bindings ?? []).map((binding) => ({ containerPort, ...binding }))
   )

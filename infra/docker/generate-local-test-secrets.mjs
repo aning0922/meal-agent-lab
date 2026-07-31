@@ -68,6 +68,12 @@ export class SecretGeneratorError extends Error {
  */
 export const activeGeneratorScene = { paths: [], directory: null }
 
+/** 成功收尾：paths 与 directory 都必须清空（见下面的 discardGeneratedPaths）。 */
+const clearGeneratorScene = () => {
+  activeGeneratorScene.paths = []
+  activeGeneratorScene.directory = null
+}
+
 const errorCodeOf = (error) =>
   typeof error === 'object' && error !== null && 'code' in error
     ? String(error.code)
@@ -84,7 +90,8 @@ const errorCodeOf = (error) =>
  */
 export const discardGeneratedPaths = ({
   paths = activeGeneratorScene.paths,
-  verifyDirectory = activeGeneratorScene.directory
+  verifyDirectory = activeGeneratorScene.directory,
+  ownNames = null
 } = {}) => {
   const removed = []
   const residue = []
@@ -106,11 +113,17 @@ export const discardGeneratedPaths = ({
   // 独立复查：直接枚举目录，看还有没有属于八份清单的条目（含 `.staging.` 前缀）。
   if (typeof verifyDirectory === 'string' && verifyDirectory !== '') {
     try {
-      const remaining = readdirSync(verifyDirectory).filter(
-        (entry) =>
-          secretFilenames.includes(entry) ||
-          secretFilenames.some((filename) => entry === `.staging.${filename}`)
-      )
+      // ownNames 为 null 时复查整份八文件清单（信号处置路径：本轮拥有整套）；
+      // 给了 ownNames 就只查本轮自己创建过的那些名字——失败清理不能把促发
+      // 失败的外部同名文件误报成本轮残留。
+      const watched =
+        ownNames === null
+          ? [
+              ...secretFilenames,
+              ...secretFilenames.map((filename) => `.staging.${filename}`)
+            ]
+          : ownNames
+      const remaining = readdirSync(verifyDirectory).filter((entry) => watched.includes(entry))
       if (remaining.length > 0) {
         residue.push(
           `the bundle directory still contains ${String(remaining.length)} secret ` +
@@ -300,14 +313,21 @@ export const generateSecretBundle = (directory, { beforePromotion = null } = {})
       beforePromotion?.(filename)
       finalPaths.push(promoteStagingFile(target, filename, createdPaths))
     }
-    // 生成成功：现场登记必须清空。否则此后任何信号处置都会把一套**完好**的
-    // bundle 当成半成品删掉，并谎报「discarded N partially generated files」。
-    activeGeneratorScene.paths = []
+    // 生成成功：现场登记必须**整体**清空（paths 与 directory 都要）。只清
+    // paths 会让此后的信号处置用默认 verifyDirectory 去枚举一套**完好**的
+    // bundle，然后谎报「目录里还残留 8 份 Secret」。
+    clearGeneratorScene()
     return { directory: target, files: finalPaths }
   } catch (error) {
     // 失败清理走**共享 collector**：continue-on-failure、聚合 residue、并做
     // 独立目录复查。它只删本轮自己创建的路径，外部同名文件绝不受影响。
-    const discarded = discardGeneratedPaths({ paths: createdPaths, verifyDirectory: null })
+    // 复查按**本轮自己创建过的名字**收窄（`ownNames`），因此不会把促发失败的
+    // 那个外部同名文件误报成残留。
+    const discarded = discardGeneratedPaths({
+      paths: createdPaths,
+      verifyDirectory: target,
+      ownNames: createdPaths.map((path) => path.slice(path.lastIndexOf('/') + 1))
+    })
     if (discarded.residue.length > 0) {
       throw new SecretGeneratorError(
         `${error instanceof Error ? error.message : String(error)}; additionally the ` +
@@ -356,13 +376,17 @@ export const generateSecretBundleInterruptible = async (directory) => {
       abortIfSignalled()
       finalPaths.push(promoteStagingFile(target, filename, createdPaths))
     }
-    activeGeneratorScene.paths = []
+    clearGeneratorScene()
     return { directory: target, files: finalPaths }
   } catch (error) {
     // 被信号打断时**不**在这里删：现场登记仍持有已创建路径，处置会统一清理
     // 并把删不掉的条目报成 residue。其余失败按原来的 failure-safe 处理。
     if (!(error instanceof SecretGenerationInterrupted)) {
-      const discarded = discardGeneratedPaths({ paths: createdPaths, verifyDirectory: null })
+      const discarded = discardGeneratedPaths({
+        paths: createdPaths,
+        verifyDirectory: target,
+        ownNames: createdPaths.map((path) => path.slice(path.lastIndexOf('/') + 1))
+      })
       if (discarded.residue.length > 0) {
         throw new SecretGeneratorError(
           `${error instanceof Error ? error.message : String(error)}; additionally the ` +
@@ -407,7 +431,7 @@ export const generateAndPreflight = (
       )
     )
   }
-  activeGeneratorScene.paths = []
+  clearGeneratorScene()
   return result
 }
 
@@ -455,7 +479,7 @@ export const generateAndPreflightInterruptible = async (
   if (signal !== null) {
     throw new SecretGenerationInterrupted(signal)
   }
-  activeGeneratorScene.paths = []
+  clearGeneratorScene()
   return result
 }
 
@@ -519,6 +543,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     )
   } catch (error) {
     // 被信号打断不是失败：处置拥有清理与退出语义，这里不再打印错误。
+    // **先让出一次事件循环**再判定：Node 的信号回调只能在事件循环里跑，而
+    // 失败可能是同步 preflight 里的 git 子进程被同一个 Ctrl-C（进程组信号）
+    // 杀掉导致的。不让出就 `process.exit(1)`，会把已经排队的 SIGINT 整个吞
+    // 掉，并把中断误报成「bundle 预检失败」。
+    await new Promise((resolveTick) => {
+      setImmediate(resolveTick)
+    })
     if (error instanceof SecretGenerationInterrupted || terminationSignal() !== null) {
       // 处置会打印它删掉了什么，并按原信号语义收场。
     } else {

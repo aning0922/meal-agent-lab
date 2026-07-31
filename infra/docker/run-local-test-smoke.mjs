@@ -291,7 +291,14 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   let chainStarted = false
   let bundleBodies = null
   let builtImageId = null
-  const danglingBaseline = await danglingVolumes()
+  let danglingBaseline = null
+
+  // **第一行输出必须早于 baseline 查询**（P1-4）：它是外部套件定位
+  // pre-baseline 窗口的唯一锚点。此前第一行打在 `await danglingVolumes()`
+  // 之后，那个窗口在外部看来根本不可达。
+  log(`smoke project: ${project}`)
+  log(`per-run image tag: ${imageTag}`)
+  log(`temporary secrets: ${secretsDirectory} (synthetic, generated fresh)`)
 
   // 唯一 tag 的 override 参与**每一次** compose 调用（含 cleanup 的 down）。
   const composeArgs = ['--file', overridePath]
@@ -323,12 +330,15 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     overrideCreated: false,
     composeEnvironment,
     composeArgs: [],
-    danglingBaseline
+    danglingBaseline: null
   }
   smokeState.registerScene?.(scene)
 
   /** 一次性服务：启动 → 等 exited → 严格读取真实退出码 + StartedAt。 */
   const runOneShot = async (service, timeoutMs) => {
+    // 信号在飞时**不再新建容器**：处置可能已经跑完 label sweep，此后创建的
+    // 容器无人回收。
+    throwIfInterrupted()
     const name = containerNameOf(project, service)
     const started = await compose(['up', '-d', '--no-deps', service], { timeoutMs: 180_000 })
     if (started.status !== 0) {
@@ -354,6 +364,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
   /** 常驻服务：启动 → 等 healthy；容器提前退出时立即失败，不空转到超时。 */
   const runService = async (service, timeoutMs) => {
+    throwIfInterrupted()
     const name = containerNameOf(project, service)
     const started = await compose(['up', '-d', '--no-deps', service], { timeoutMs: 180_000 })
     if (started.status !== 0) {
@@ -380,6 +391,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
   /** 证据查询：以 cluster admin 通过一次性 psql 容器执行（凭据走 PGPASSFILE）。 */
   const adminSql = async (statements, { dbname = 'meal_agent' } = {}) => {
+    throwIfInterrupted()
     const args = [
       'run',
       '--no-deps',
@@ -404,9 +416,12 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   }
 
   try {
-    log(`smoke project: ${project}`)
-    log(`per-run image tag: ${imageTag}`)
-    log(`temporary secrets: ${secretsDirectory} (synthetic, generated fresh)`)
+    // baseline 查询放进 try 内（P1-4）：它是 fail-closed 的 dockerStrict，
+    // 按设计会抛（daemon 不可达等）。放在 try 外时那一抛会绕过整个 finally，
+    // 把刚建好的明文 Secret 目录留在盘上且不报任何 residue。
+    danglingBaseline = await danglingVolumes()
+    scene.danglingBaseline = danglingBaseline
+    smokeState.registerScene?.(scene)
 
     // 0. Secret 生成 + 预检 + 拓扑静态门禁：全部先于任何数据库容器。
     generateAndPreflight(secretsDirectory)
@@ -479,18 +494,23 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     }
 
     // 2b. 三个 API 镜像服务的容器 `.Image` 必须逐一等于本轮 build ID。
+    let imageBindingProblems = 0
     for (const service of apiImageServices) {
       const actual = await inspectStrict(containerNameOf(project, service), '{{.Image}}')
       if (actual !== builtImageId) {
+        imageBindingProblems += 1
         fail(
           `image binding: ${service} container runs image ${actual}, expected the ` +
             `per-run build ${builtImageId}`
         )
       }
     }
-    log(
-      `image binding: bootstrap-schema/migrate/api all run the per-run image id ${builtImageId}`
-    )
+    // 成功证据只在该组零 problem 时输出（P1-7）。
+    if (imageBindingProblems === 0) {
+      log(
+        `image binding: bootstrap-schema/migrate/api all run the per-run image id ${builtImageId}`
+      )
+    }
 
     // 3. migrate 与 grants 重跑：同一 Compose 入口必须幂等。
     for (const service of ['migrate', 'bootstrap-grants']) {
@@ -700,8 +720,13 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     // expectedSecretMounts 的**自有键**、Mounts 结构逐项验证、source/target/
     // 只读标志与**集合**全等比较。
     const containerIds = await listByProject('container', project, { env: composeEnvironment })
+    let secretVisibilityProblems = 0
+    const failVisibility = (message) => {
+      secretVisibilityProblems += 1
+      fail(message)
+    }
     if (containerIds.length === 0) {
-      fail('secret visibility: no project containers were found to check')
+      failVisibility('secret visibility: no project containers were found to check')
     }
     for (const id of containerIds) {
       const service = await inspectStrict(
@@ -709,16 +734,16 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         '{{index .Config.Labels "com.docker.compose.service"}}'
       )
       if (service === '' || service === '<no value>') {
-        fail(`secret visibility: a project container carries no compose service label (${id})`)
+        failVisibility(`secret visibility: a project container carries no compose service label (${id})`)
         continue
       }
       if (!Object.hasOwn(expectedSecretMounts, service)) {
-        fail(`secret visibility: unknown compose service ${service} in this project`)
+        failVisibility(`secret visibility: unknown compose service ${service} in this project`)
         continue
       }
       const mounts = await inspectJsonStrict(id, '{{json .Mounts}}')
       if (!Array.isArray(mounts)) {
-        fail(`secret visibility: ${service} Mounts is not an array`)
+        failVisibility(`secret visibility: ${service} Mounts is not an array`)
         continue
       }
       // **全部** mount 都要看，不只是 /run/secrets/ 前缀内的：把整个 bundle
@@ -726,7 +751,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       const observed = []
       for (const mount of mounts) {
         if (typeof mount !== 'object' || mount === null) {
-          fail(`secret visibility: ${service} has a malformed mount entry`)
+          failVisibility(`secret visibility: ${service} has a malformed mount entry`)
           continue
         }
         const destination = String(mount.Destination ?? '')
@@ -760,7 +785,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         .sort((a, b) => a.target.localeCompare(b.target))
       observed.sort((a, b) => a.target.localeCompare(b.target))
       if (JSON.stringify(observed) !== JSON.stringify(expected)) {
-        fail(
+        failVisibility(
           `secret visibility: ${service} mounts ${JSON.stringify(observed)}, ` +
             `expected exactly ${JSON.stringify(expected)}`
         )
@@ -771,18 +796,20 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       const tmpfsTargets = tmpfs === null ? [] : Object.keys(tmpfs)
       const secretTmpfs = tmpfsTargets.filter((target) => target.startsWith('/run/secrets'))
       if (secretTmpfs.length > 0) {
-        fail(
+        failVisibility(
           `secret visibility: ${service} mounts a tmpfs under /run/secrets ` +
             `(${secretTmpfs.join(', ')})`
         )
       }
     }
-    log(
-      `secret visibility: ${String(containerIds.length)} project containers each mount ` +
-        'exactly their declared secret set (full source path, target, type and ' +
-        'read-only all checked; every non-asset mount and any /run/secrets tmpfs ' +
-        'is in scope)'
-    )
+    if (secretVisibilityProblems === 0) {
+      log(
+        `secret visibility: ${String(containerIds.length)} project containers each mount ` +
+          'exactly their declared secret set (full source path, target, type and ' +
+          'read-only all checked; every non-asset mount and any /run/secrets tmpfs ' +
+          'is in scope)'
+      )
+    }
 
     // 6. Secret containment 扫描与动态网络隔离（api 仍在运行时取证）。
     await runContainmentAndIsolation({
@@ -877,7 +904,13 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         }`
       )
     }
-    if (failures.length > 0) {
+    // **信号路径绝不输出 PASS**：被中断的运行没有跑完全部证据，即使
+    // `failures` 为空也不能声称通过（被打断不记为 failure，正是为了不把
+    // 「被要求停下」写成 smoke 的缺陷）。
+    const interrupted = terminationSignal()
+    if (interrupted !== null) {
+      log(`local-test smoke INTERRUPTED by ${interrupted}; no PASS is claimed`)
+    } else if (failures.length > 0) {
       log(`local-test smoke FAIL (${String(failures.length)} problems)`)
       for (const message of failures) {
         log(`  - ${message}`)

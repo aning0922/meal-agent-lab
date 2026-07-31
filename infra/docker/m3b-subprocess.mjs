@@ -34,6 +34,13 @@ const activeProcessGroups = new Map()
 let pendingSignal = null
 export const terminationSignal = () => pendingSignal
 
+/**
+ * 本进程**曾经**派生过的全部进程组（不因退出而移除）。外部套件读 stderr 上的
+ * `m3b-descendant-pgid <pgid>` 行拿到同一份集合，用它逐个确认后代真的消失。
+ */
+const observedProcessGroups = new Set()
+export const observedDescendantPgids = () => [...observedProcessGroups]
+
 const sleep = (milliseconds) =>
   new Promise((resolveSleep) => {
     setTimeout(resolveSleep, milliseconds)
@@ -83,6 +90,12 @@ export const runCommand = (
     // spawn 成功后才有 pid；error 事件与 spawn 事件互斥。
     child.once('spawn', () => {
       activeProcessGroups.set(child.pid, { alive: true })
+      observedProcessGroups.add(child.pid)
+      // 每个子进程都是 detached，因此**自成进程组**——它们不属于本进程的
+      // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
+      // 返回空）。把真实 pgid 逐个公布出去，外部套件才可能真的核查后代是否
+      // 全部消失，而不是做一次结构性空真的查询。
+      process.stderr.write(`m3b-descendant-pgid ${String(child.pid)}\n`)
     })
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))

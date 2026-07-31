@@ -128,8 +128,9 @@ secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不
 | `node infra/docker/preflight-local-test-secrets.mjs` | 部署前交叉一致性预检（任何数据库容器启动之前必须通过） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
-| `node infra/docker/check-local-test-negatives.mjs` | 67 项反例，全部要求以指定理由失败 |
-| `node infra/docker/check-m3b-signal-windows.mjs` | 三个真实信号窗口（build / chain / probe）的 failure-safe 取证 |
+| `node infra/docker/check-local-test-negatives.mjs` | **68 项**反例（67 + 第二轮新增的未知模板格式），全部要求以指定理由失败 |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | 第二轮阻断整改的 **8 项**窄反例（原子 promotion、cleanup collector、preflight 信号窗口、全仓 index containment、PGID 生命周期） |
+| `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证 |
 
 八份 Secret 的文件清单、角色与固定部署 identity 只有一个事实源：
 [`local-test-secrets-contract.mjs`](local-test-secrets-contract.mjs)。
@@ -233,7 +234,7 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-67 项指定理由反例与三个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+68 项指定理由反例、8 项第二轮窄反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 
 每次 smoke/probe 运行使用**每轮唯一的 image tag**（`meal-agent-api:m3b-<run id>`，
 经临时 Compose override 注入），并断言三个 API 镜像服务容器的 `.Image` 等于本轮
