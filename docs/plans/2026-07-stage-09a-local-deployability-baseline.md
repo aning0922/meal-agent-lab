@@ -1551,6 +1551,103 @@ exit 130/143 的伪装）、检查被测 CLI 自己报出的 FAIL/residue、buil
 与非 postgres DSN、generator 侧不回显未知条目名、预检抛出时的清理回归。全部
 以指定理由捕获、0 漏网。
 
+#### M3B 第二轮总控阻断整改（整改中，未 Accepted）
+
+总控第二轮复验点名七项 P1。每项都是**先写会红的窄反例、再实现、再验证**，新增
+[`check-m3b-round2-negatives.mjs`](../../infra/docker/check-m3b-round2-negatives.mjs)
+（**8 项**）：
+
+1. **原子 promotion**。此前用 `renameSync`——POSIX 语义是「目标存在就静默替换」，
+   并发写者或上一轮残留放好的同名 final 文件会被无声改写。改用「硬链接到 final
+   名（目标已存在时 EEXIST 失败）→ 删除 staging 名」的两步，取得 no-replace
+   原子性。反例注入一个恰好抢在 promotion 之前的写者：修复前 final 被覆盖，
+   修复后拒绝且外部文件逐字节不变；另一条断言失败清理**只删本轮自己创建的路径**。
+2. **failure-safe cleanup**。删掉全部吞错的空 catch（generator 里只剩一个纯存在性
+   判断的 `lstat` catch）；共享 collector 做 continue-on-failure、聚合 residue，
+   并在删除之后**独立枚举目录**复查是否还有八份清单里的条目（含 `.staging.`
+   前缀）。有残留时聚合成安全错误，**绝不**再说 “was removed”。反例把目录设成
+   `0500` 阻断删除，断言八条逐文件 residue + 一条独立复查 residue、`removed` 为空。
+3. **preflight 信号窗口**。active scene 现在保持到 generate 与 preflight **全部**
+   完成；preflight 返回后先让出事件循环、再复查 pending signal，之后才允许输出
+   成功。反例用可注入的同步 preflight 忙等窗口发 SIGINT：修复前照常打印成功并
+   留下八份 Secret，修复后零残留、无成功输出、以 SIGINT 语义收场。
+4. **smoke/probe 最早期窗口**。临时 Secret 目录一创建就登记 cleanup scene（此前
+   要到 `await danglingVolumes()` 之后才登记，那段窗口被中断会把明文目录留在盘
+   上）；override 区分 absent/created，未创建时 cleanup 不引用它；override 删除
+   升级为**正式 cleanup 阶段**并进入 residue 复查。信号窗口因此从 3 个增加到
+   **5 个**（新增 pre-baseline 与 pre-override）。
+5. **全仓 Git index containment**。新增 `scanTrackedRepositoryForNeedles`：对每个
+   tracked 路径**分别**读 Git index blob 与工作树内容。反例在一个普通 tracked
+   文件（`services/api/src/notes.ts`）里 `git add` 一个 Secret 后把工作树恢复
+   干净——只读工作树的实现完全看不见，修复后以 `(git index)` 归因命中且不回显
+   取值。
+6. **子进程 PGID 生命周期**。`activeProcessGroups` 改为 `pgid → { alive }`；
+   TERM 之后的 SIGKILL 升级 timer 绑定该 child，`close`/`error` 时取消，发信号前
+   再确认 alive。反例：child 约 100ms 关闭、宽限 1.5 秒后**不得**出现 SIGKILL
+   （修复前实测会对已关闭的 pgid 发 SIGKILL）；反向保证保留——忽略 TERM 的真实
+   后代照样被 KILL 收掉。
+7. **门禁收口**。runtime privilege probe 先检查容器退出码，成功证据只在
+   `exit 0` 且该组零 problem 时输出；信号窗口的后代检查从全局 `pgrep -f` 改为按
+   **被测 CLI 自己的进程组**查询，不再匹配其它 worktree 或本套件自身；模板扫描
+   显式声明**只支持 dotenv 形态**，未知格式（YAML/JSON 等）直接拒绝并配反例
+   （反例数 67 → **68**）。
+
+本轮的门禁数字：local-test negatives **68**、round-two negatives **8**、
+signal windows **5**。M3B 命令清单见
+[`infra/docker/README.md`](../../infra/docker/README.md) 的「M3B：八份 Secret
+与完整链的一条命令验证」，其中**必须包含**
+`node infra/docker/check-m3b-signal-windows.mjs`。
+
+#### 第二轮阻断整改之后的两路只读审计与定点修复
+
+实现与窄反例落地后，按要求并行跑了两个只读审计（A：Secret / Git index / 模板
+范围 / 输出泄漏；B：runtime / signal / PGID / Docker cleanup / network）。确认级
+发现全部已修，其中五条推翻了刚写下的结论：
+
+1. **信号路径仍然打印 `local-test smoke PASS`**（B）。被中断刻意不记为
+   failure，于是 `failures` 为空就落到 PASS 分支，而此时 cleanup 甚至还没跑完。
+   现在收尾按 `terminationSignal()` 判定，信号路径只输出
+   `local-test smoke INTERRUPTED by <signal>`；信号窗口套件同时新增「信号路径
+   出现 PASS 即失败」的断言——它此前只 grep `FAIL:`/`cleanup residue:`，
+   属结构性假绿。
+2. **后代判据结构性空真**（B）。CLI 起的每个子进程都是 `detached`、**自成
+   进程组**，因此 `pgrep -g <cli pid>` 恒为空（实测：parent pid 39661 的组里
+   只有它自己，子进程 PGID 等于自身）。五个窗口自述的「子进程全部消失」从未
+   被真正验证。现在 `m3b-subprocess` 把每个真实派生的 pgid 以
+   `m3b-descendant-pgid <pgid>` 公布到 stderr，套件按这份集合逐个
+   `kill(-pgid, 0)` 确认进程组已空——既不空真，也不做会误抓其它 worktree 的
+   全局 pgrep。
+3. **postgres 端口断言的 fail-open**（B）。`strictInspectJson` 对**合法解析出
+   的 JSON `null`** 也返回 `null`，`!== null` 守卫因此让整条断言静默消失。
+   现在返回 `{ value, failed }`，只有读取失败才跳过（且那时已经 fail 过）。
+4. **`enclosingGitRepository` 静默 fail-open**（A，本轮危害最高的一条）。任何
+   非零退出——dubious ownership、bare 仓库、子进程被 Ctrl-C 的进程组信号杀掉
+   导致 `status === null`——都被读成「不在 git 仓库里」，于是八份文件的 tracked
+   检查、`.gitignore` 存在性与逐文件 `check-ignore` **整条静默跳过**且不产生
+   任何 problem。现在只有「确实不是 git 仓库」允许跳过，其余 fail closed。
+5. **模板格式 allowlist 被 `*.env.<任意后缀>` 绕过**（A）。实测
+   `app.env.yaml` / `app.env.json` / `secrets.env.sh` 全部被当作 dotenv 放行，
+   而它们一行都不匹配赋值文法 → 零 problem 静默通过，正是这条 allowlist 要
+   消灭的形态。现在只认 `env` / `*.env` / `*.env.{example,sample,template}`
+   与三个元文件。
+
+其余确认级修复：pre-baseline 窗口此前不可达（smoke 的第一行输出在
+`await danglingVolumes()` 之后，现已提前）；第一个资源与 baseline 查询移入
+try/finally（此前 fail-closed 抛出会绕过整个 finally 把明文目录留在盘上）；
+四处成功证据改为按该组 problem 计数 gating；信号在飞时**创建容器之前**就
+检查（此前 probe 只在失败分支查、smoke 在创建之后查）；compose 参数里不存在的
+`--file` 会被剔除（消除双重 cleanup 的假 residue）；project 形状拒绝改为记入
+residue（裸 throw 会丢掉阶段 1 已收集的明文目录失败）；stray-bundle 检查从
+全局 tmpdir 扫描收窄为本轮判定；成功之后收到信号不再谎报「还残留 8 份
+Secret」（`.directory` 未复位）；生产失败路径补上独立目录复查并按本轮自己
+创建过的名字收窄；同步失败判定前先让出事件循环，避免 `process.exit(1)` 吞掉
+排队的 SIGINT；反例改为按**进程组**发信号（真实 Ctrl-C 语义）；promotion 第二
+条反例校验错误身份（此前空 catch 可真空通过）；反例套件的 compose 变异副本
+补进 `.gitignore`；泄漏断言覆盖变异**注入**的新取值；敏感 key 判据从纯
+`endsWith` 扩为「后缀 + 词元」。
+
+**M3B 状态：整改中，未 Accepted。**
+
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
 GitHub Actions。本轮保持 fake adapter，不调用任何真实微信服务；不购买服务器、
