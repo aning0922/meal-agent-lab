@@ -127,7 +127,26 @@ export const imageIdOf = async (tag, { env } = {}) => {
  * project / secretsDirectory / imageTag 三者都有形状约束，范围外一律拒绝，
  * 且拒绝本身记入 residue 而不是静默跳过。
  */
-export const cleanupRun = async ({
+let cleanupChain = Promise.resolve()
+
+/**
+ * cleanup 串行化：信号处置与主流程的 finally 可能同时到达，两次并发的
+ * `docker rm` 会互相看到「资源刚刚消失」的中间态。这里把它们排成一条链，
+ * 第二次执行只会发现已经干净。
+ */
+export const cleanupRun = (options) => {
+  const next = cleanupChain.then(
+    () => cleanupRunUnsynchronized(options),
+    () => cleanupRunUnsynchronized(options)
+  )
+  cleanupChain = next.then(
+    () => undefined,
+    () => undefined
+  )
+  return next
+}
+
+const cleanupRunUnsynchronized = async ({
   project,
   projectPattern,
   secretsDirectory = null,

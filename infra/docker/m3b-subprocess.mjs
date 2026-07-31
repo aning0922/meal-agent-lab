@@ -19,6 +19,15 @@ import { spawn } from 'node:child_process'
 /** 仍然存活的受控进程组（负值 pgid 直接可用于 process.kill）。 */
 const activeProcessGroups = new Set()
 
+/**
+ * 正在处置中的信号（null 表示没有）。CLI 用它给信号处置**让位**：一旦信号
+ * 在飞，主流程就不再自己 `process.exit()`，否则普通退出码会抢在信号语义
+ * 之前收场（实测：build 窗口发 SIGINT，主流程因子进程被杀而失败退出 1，
+ * 信号语义被吞掉）。
+ */
+let pendingSignal = null
+export const terminationSignal = () => pendingSignal
+
 const sleep = (milliseconds) =>
   new Promise((resolveSleep) => {
     setTimeout(resolveSleep, milliseconds)
@@ -141,6 +150,7 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       return
     }
     terminating = true
+    pendingSignal = signal
     process.stderr.write(`\n${signal}: terminating child processes, then running ${label}\n`)
     void (async () => {
       try {

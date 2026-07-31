@@ -37,7 +37,7 @@ import {
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
-import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -192,6 +192,9 @@ const main = async () => {
       { cwd: composeDirectory, env: composeEnvironment, ...options }
     )
 
+  process.stdout.write(`probe project: ${project}\n`)
+  process.stdout.write(`temporary secrets: ${secretsDirectory}\n`)
+
   try {
     generateAndPreflight(secretsDirectory)
 
@@ -291,6 +294,10 @@ const main = async () => {
     discardOverride(overridePath)
   }
 
+  if (terminationSignal() !== null) {
+    // 信号在飞：把收场交给处置，不用普通退出码抢先。
+    return
+  }
   if (failures.length > 0) {
     process.stderr.write('Compose secret identity probe FAIL\n')
     for (const message of failures) {

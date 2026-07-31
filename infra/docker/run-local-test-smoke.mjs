@@ -52,7 +52,7 @@ import {
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
-import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -846,5 +846,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   )
 
   await runSmoke({ keepFailure })
-  process.exit(failures.length > 0 ? 1 : 0)
+  // 信号在飞时不自己退出：处置会跑完 scoped cleanup 再按原信号语义收场。
+  if (terminationSignal() === null) {
+    process.exit(failures.length > 0 ? 1 : 0)
+  }
 }
