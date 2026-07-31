@@ -37,16 +37,24 @@ Node 侧的 [`services/api/src/config-source.ts`](../../../services/api/src/conf
 `<NAME>` 与 `<NAME>_FILE` 互斥：两者都缺、两者同时出现（**内容相同也拒绝，从不
 比较取值**）、空的 `<NAME>`、空的 `<NAME>_FILE` 一律 fail closed。
 
-生成这些文件：
+生成这些文件（M3B）：**只用 generator，不再手写**——它只生成四个原始 CSPRNG
+口令，八个文件由同一份事实源
+[`../local-test-secrets-contract.mjs`](../local-test-secrets-contract.mjs)
+派生，避免 URL/pgpass 与口令文件互相漂移：
 
 ```bash
-umask 077
-printf '%s' "$value" > infra/docker/secrets/meal_agent_runtime_password
-chmod 600 infra/docker/secrets/*
+node infra/docker/generate-local-test-secrets.mjs
 ```
 
-`printf '%s'`（而不是 `echo`）可以避免多写一个末尾换行；写一个末尾 LF 也被接受，
-写两个会被拒绝。
+部署（任何数据库容器启动）之前必须通过交叉一致性预检：
+
+```bash
+node infra/docker/preflight-local-test-secrets.mjs
+```
+
+两条命令都接受 `--directory <绝对路径>`。如确需手工修补（不推荐），用
+`printf '%s'` 避免多写末尾换行——一个末尾 LF 被接受，两个会被拒绝——改完必须
+重新过预检。
 
 ## 权限
 
@@ -56,12 +64,15 @@ secret file 必须只对创建者可读：
 chmod 600 infra/docker/secrets/*
 ```
 
-Compose 在非 swarm 模式下把 secret 直接 bind mount 进容器，宿主文件权限原样带入。
-因此**属主必须与容器内消费进程的 UID 一致**：`postgres` 相关的文件由容器内的
-`postgres`(999) 读取，API 镜像的文件由 `10001` 读取。`postgres_admin.pgpass` 还额外
-受 libpq 自身的 mode 检查约束。八份 secret 的**属主/UID 编排与交叉一致性预检**
-（三个 URL、三个口令与 pgpass 必须描述同一个数据库与同一批角色）属于 **M3B**，
-本轮尚未实现。
+Compose 在非 swarm 模式下把 secret 直接 bind mount 进容器。容器内的呈现已由
+M3B 探针在**容器内**实测（`node infra/docker/probe-compose-secret-identity.mjs`，
+宿主 stat 不作数）：本机 Docker Desktop 把 bind 进来的 secret 呈现为**消费进程
+的 UID 所有**（`postgres` 侧 999、API 镜像侧 10001），mode 0600、普通文件、
+nlink=1、非 symlink、可读，因此 M3A 的 fail-closed 消费判据在真实 Compose
+Secret 上成立。`postgres_admin.pgpass` 还额外受 libpq 自身的 mode 检查约束。
+八份 secret 的**交叉一致性预检**（三个 URL、三个口令与 pgpass 必须描述同一个
+数据库与同一批角色）由 `preflight-local-test-secrets.mjs` 承担（M3B，
+implementation complete, pending total-control review）。
 
 ## 备份与恢复
 

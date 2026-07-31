@@ -118,6 +118,20 @@ docker compose --file infra/docker/compose.local-test.yaml up -d api
 
 `MEAL_AGENT_API_HOST_PORT` 可以改 host 端口，`MEAL_AGENT_SECRETS_DIR` 可以把
 secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不接受变量覆盖。
+非敏感配置模板见 [`infra/environments/local-test/`](../environments/local-test/README.md)。
+
+### M3B：八份 Secret 与完整链的一条命令验证
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/generate-local-test-secrets.mjs` | 生成八份 Secret（四个原始 CSPRNG 口令派生；默认拒绝覆盖；口令不进 stdout/argv/环境变量/Git） |
+| `node infra/docker/preflight-local-test-secrets.mjs` | 部署前交叉一致性预检（任何数据库容器启动之前必须通过） |
+| `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
+| `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
+| `node infra/docker/check-local-test-negatives.mjs` | 32 项反例，全部要求以指定理由失败 |
+
+八份 Secret 的文件清单、角色与固定部署 identity 只有一个事实源：
+[`local-test-secrets-contract.mjs`](local-test-secrets-contract.mjs)。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
@@ -204,20 +218,21 @@ Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前�
 ## 当前状态与边界
 
 M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
-消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。阶段 09A 仍为 In Progress；
-**下一项是 M3B**（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、
-`/readyz=200` 与网络隔离实证），M4、M5 未开始；
+消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
+Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为
+implementation complete, pending total-control review**，未自行标记 Accepted。
+M4、M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
-仍为 `Proposed`。
+仍为 `Proposed`，阶段 09A 仍为 In Progress。
 
-**M2B 的 Accepted 只覆盖 Compose 拓扑本身**：完整 bootstrap 链
-（`0000 → handoff → acl → migrate → grants`）与全栈启动**尚未通过**，不得记为
-Pass。
+**M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
+`MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
+消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。
+**M3B 已取得**：真实 Compose Secret 的容器内 UID/mode 证据、八份 Secret 的单一
+来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
+二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
+身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
+32 项指定理由反例（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 
-`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的
-契约；**M3A 已实现消费**：`services/api/src/config-source.ts` 与
-`postgres/secret-source.sh` 提供同一套互斥语义与 fail-closed 的文件判据。整链
-运行证据、八份 Secret 的生成与交叉一致性预检、`/readyz=200` 与网络隔离实证属于
-**M3B**，仍未取得——**不得记为 Pass**。
-
-备份与恢复命令属于 M4，本拓扑不声明。`infra/environments/` 配置模板属于 M3B。
+备份与恢复命令、停止/重启持久化属于 M4；`pnpm stage09a:check` 聚合门禁与远端
+CI 属于 M5——两者仍未取得证据，阶段 09A **不得记为 Pass**。

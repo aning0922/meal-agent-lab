@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-31 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**下一项 M3B**：环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证；M4、M5 未开始）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」为 implementation complete, pending total-control review**；M4、M5 未开始）
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -1316,22 +1316,91 @@ URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
 `config`/`inspect`/`history`/`logs` 的容器级 sentinel 扫描，以及宿主全部非
 loopback 地址的动态隔离证明（第 5 条）。**M4、M5 未开始。**
 
-### M3B 实施记录（进行中）
+### M3B 实施记录（implementation complete, pending total-control review）
 
-M3B **已开工，尚未复核**，覆盖：`infra/environments/` 的 local-test 配置模板与
-说明；八份 Secret 的单一来源生成（只生成四个原始口令，派生八个固定文件）、
-属主/权限编排与部署前交叉一致性预检；从空 volume 开始的完整 Compose bootstrap 链
-（`cluster → logins → createdb → schema/0000 → handoff → acl → migrate/0001—0004 →
-grants → api`）与 `/healthz=200`、`/readyz=200`、runtime 最小数据库权限的运行证据；
-`config`/`inspect`/`image history`/`logs`/tracked files 的容器级 sentinel 扫描；
-以及宿主全部非 loopback 地址的动态隔离证明。第一步是在实现之前用**真实 Compose
-Secret** 固化 Docker Desktop 的 UID/mode 行为证据（UID 999 与 UID 10001 两侧都在
-容器内取证，宿主 stat 不作数）。
+**状态：M3B implementation complete, pending total-control review。**未自行标记
+Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)、
+[`generate-local-test-secrets.mjs`](../../infra/docker/generate-local-test-secrets.mjs)、
+[`preflight-local-test-secrets.mjs`](../../infra/docker/preflight-local-test-secrets.mjs)、
+[`probe-compose-secret-identity.mjs`](../../infra/docker/probe-compose-secret-identity.mjs)、
+[`run-local-test-smoke.mjs`](../../infra/docker/run-local-test-smoke.mjs)、
+[`local-test-containment.mjs`](../../infra/docker/local-test-containment.mjs)、
+[`check-local-test-negatives.mjs`](../../infra/docker/check-local-test-negatives.mjs)、
+[`infra/environments/local-test/`](../../infra/environments/local-test/README.md)。
+
+1. **第一步先固化了 Compose Secret 的容器内 UID/mode 证据**（宿主 stat 不作数）。
+   `probe-compose-secret-identity.mjs` 用真实 generator 的临时合成 bundle 与唯一
+   project name，把八份 secret 逐一挂进它们真实的消费服务：UID 999 侧
+   （`postgres` 的 superuser 口令；`bootstrap-logins` 的 pgpass 与三个登录口令）
+   与 UID 10001 侧（`bootstrap-schema`/`migrate`/`api` 的三条 URL）在容器内实测
+   全部为 owner==消费进程 EUID、mode 0600、普通文件、nlink=1、非 symlink、可读。
+   Docker Desktop 把 bind 进容器的 secret 呈现为消费 UID 所有，因此 M3A 的
+   fail-closed 文件判据在真实 Compose Secret 上成立，无架构阻断。
+2. **八份 Secret 只有一个来源**：generator 只生成四个原始 CSPRNG 口令
+   （`crypto.randomInt`，48 字符 `[A-Za-z0-9]`——URL userinfo 与 pgpass 双安全，
+   无需任何转义），八个固定文件全部由
+   `local-test-secrets-contract.mjs` 的同一份常量（文件清单、角色、
+   host=postgres、port=5432、database=meal_agent、migration/runtime 用户名带
+   `_login`）派生；generator 与 preflight 共用该事实源，不存在两套手写事实表。
+   pgpass 只覆盖 maintenance 库与目标库**两个精确 endpoint**，无 `*` 通配。
+   目录 0700、文件 0600、默认拒绝覆盖、failure-safe（暂存后统一 rename，失败
+   清光；SIGKILL 窗口的残留会被预检当作未知条目拒绝）；口令不进入
+   stdout/stderr/argv/环境变量/Git。
+3. **部署前交叉一致性预检**在任何数据库容器启动或 mutation 之前 fail closed：
+   缺失/未知条目/symlink/hardlink/非普通文件/弱权限/错属主/空值/超限/多行/CR/
+   NUL/BOM/非法 UTF-8；URL 的 user/host/port/database 精确匹配且口令与对应口令
+   文件逐字节一致（另有 canonical 全等兜底 userinfo 绕过与编码变体，拒绝
+   query/fragment/unix socket）；pgpass 恰好两条 endpoint 且口令与 superuser
+   一致；四个原始口令互不相同；Secret 被 Git 跟踪、tracked 模板出现非空
+   password/token/AppID/AppSecret/DSN 或完整连接串一律拒绝。
+4. **完整 fresh Compose 链已实证**。`run-local-test-smoke.mjs` 只用 Node 内置
+   模块与 Docker CLI：唯一 project name、全新 named volume、临时合成 Secret、
+   127.0.0.1/::1 双侧确认空闲的随机 host port；严格顺序
+   `postgres → bootstrap-cluster → bootstrap-logins → bootstrap-createdb →
+   bootstrap-schema(0000) → bootstrap-handoff → bootstrap-acl →
+   migrate(0001—0004) → bootstrap-grants → api`，每个一次性容器的真实退出码由
+   `docker inspect` 独立读取（全部 0），`migrate` 与 `bootstrap-grants` 重跑
+   第二次仍 exit=0 且容器确实重启（幂等）；`/healthz=200`、`/readyz=200`。
+5. **数据库与 API 运行证据**：ledger 精确 `0000—0004`（名称、sha256、
+   `COLLATE "C"` 顺序与磁盘一致）；M2A 的 containment（`acl`）与 final
+   （`grants`）verify 入口以 exit=0 通过（重跑 grants 再次通过）；database/
+   3 schema/12 relation/16 routine 的 owner 全部为 `meal_agent_migrator`；RLS
+   enable/force 与冻结迁移逐表一致（0000 六张 + invites + link_requests 为
+   true:true，其余 false:false）；角色属性矩阵与身份模型一致；runtime login
+   真实连接下不能 `CREATE TABLE`、不能 `SET ROLE meal_agent_migrator`、
+   `SET ROLE meal_agent_app` 可读 ledger；readiness 触发后目标库上只有
+   runtime login（与观察用 admin 连接）；16 个容器逐一只挂载所属服务声明的
+   secret（api 只有 runtime URL；migrate 只有 migration URL；bootstrap 各取
+   所需）。
+6. **Secret containment 扫描**：12 条 needle（四口令及 URL 编码形态、三条完整
+   URL、两条 pgpass 记录）加本轮随机 scanner sentinel，先在合成产物上自检逐条
+   可命中，再扫 `docker compose config`、全部容器 inspect（单列 Config.Env、
+   Config.Cmd/Args、Mounts）、image inspect、`image history --no-trunc`、全部
+   容器 logs、全仓库 tracked files 与 smoke 自身 transcript——零命中；命中报告
+   只含类别与位置。
+7. **动态网络隔离**：`127.0.0.1` 的 /healthz 与 /readyz 200；`::1` 拒绝；宿主
+   全部非 loopback 地址逐一连接失败（本机 19 个地址：LAN IPv4/IPv6 与
+   link-local 全部 refused/unreachable；Docker Desktop 自有的两个 accept-all
+   utun 地址由无监听对照端口证明其 TCP accept 与本发布无关，HTTP 层探测按要求
+   失败）；postgres 无 PublishedPort/PortBinding；api 恰好一个
+   `127.0.0.1:<port>→3000/tcp` binding。失败也执行按 project label 限定的
+   scoped cleanup，实测零残留；`--keep-failure` 才保留现场。
+8. **反向测试 32 项全部以指定理由捕获、0 漏网**（`check-local-test-negatives.mjs`）：
+   错 user（含 `meal_agent_migration` 漏 `_login`）、错 host/port/database、
+   query 走私、URL 与口令不一致、pgpass 不一致/第三 endpoint/通配、缺文件、
+   多文件、弱权限 0644、错属主（经 expectedOwnerUid 注入 seam——非 root 进程
+   无法真的制造错误属主文件，正向的容器内属主证据由第 1 条探针提供）、
+   symlink、hardlink、tracked Secret（临时 git 仓库）、模板非空 AppSecret 与
+   完整 DSN（改写-还原真实 tracked 模板）、生成器拒绝覆盖/未知条目、postgres
+   发布端口、api 挂载 admin/migration Secret、api `0.0.0.0` 发布、DSN 进
+   migrate argv（改写-还原 + 拓扑门禁指定理由）、sentinel 进
+   environment/argv 必须被同一台扫描器命中且报告不含取值、cleanup 拒绝范围外
+   project 名与范围外目录、decoy 容器存活。全部失败消息不含任何 Secret 取值。
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
 GitHub Actions。本轮保持 fake adapter，不调用任何真实微信服务；不购买服务器、
-不开放公网；ADR-0005 保持 `Proposed`，PR #1 保持 Draft。
+不开放公网；ADR-0005 保持 `Proposed`，PR #1 保持 Draft；M4、M5 未开始。
 
 ### M4：生命周期、备份和恢复
 
@@ -1456,8 +1525,19 @@ node infra/docker/check-compose-topology-mutations.mjs   # 上一条门禁自身
 变异反向测试会**临时改写** tracked 的 `compose.local-test.yaml` 再运行门禁；它在
 文件不干净时拒绝运行，每次变异后立即写回原始字节，并在结束时逐字节复核还原结果。
 
+M3B 另有五条命令（同样尚未并入聚合脚本，属于 M5）：
+
+```bash
+node infra/docker/generate-local-test-secrets.mjs      # 八份 Secret 的单一来源生成
+node infra/docker/preflight-local-test-secrets.mjs     # 部署前交叉一致性预检
+node infra/docker/probe-compose-secret-identity.mjs    # Compose Secret 的容器内 UID/mode 证据
+node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离
+node infra/docker/check-local-test-negatives.mjs       # 32 项指定理由反例
+```
+
 `pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由
-`pnpm stage08:check` 与上面三条命令给出，不得把 `stage08:check` 通过表述为阶段
-09A 通过，也不得把 M2B 的静态断言与 postgres 单服务启动表述为全栈通过。
+`pnpm stage08:check` 与上面各条命令给出，不得把 `stage08:check` 通过表述为阶段
+09A 通过，也不得把 M2B 的静态断言与 postgres 单服务启动表述为全栈通过；M3B 的
+smoke 通过也只覆盖 M3B 自身的范围，不含 M4 的备份恢复与 M5 的聚合门禁。
 
 Compose 运行未完成或备份恢复未验证时，只能记录对应里程碑 `未开始`/`未验证`，不能把阶段状态改为已完成。容器引擎已就绪，`Blocked — 缺少本地容器引擎` 不再适用。

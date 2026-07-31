@@ -179,10 +179,15 @@ M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted
 `ca65275`。**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点
 `5e480803`。**M2B（Compose 拓扑）已由项目总控 Accepted**，验收落点 `d0f2219`；
 **M3A（配置与 Secret file 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。
-**下一项是 M3B**：环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、
-`/readyz=200` 与网络隔离实证；M4、M5 未开始。阶段 09A 仍为 In Progress，完整
-bootstrap 链与全栈启动尚未通过，**不得记为 Pass**。ADR-0005 保持 `Proposed`，
-PR #1 保持 Draft。
+**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、
+`/readyz=200` 与网络隔离实证）为 implementation complete, pending total-control
+review**：从空 volume 起，本目录的 `db:bootstrap`（`bootstrap-schema` 容器）与
+`db:migrate`（`migrate` 容器）已在真实 Compose 链里以 `_FILE` 注入的凭据执行
+`0000` 与 `0001—0004`，`/healthz` 与 `/readyz` 均 200，readiness 只以
+runtime login 连接（证据与工具见
+[`infra/docker/README.md`](../../infra/docker/README.md)）。M4、M5 未开始。
+阶段 09A 仍为 In Progress，备份恢复与阶段总门禁尚无证据，**不得记为 Pass**。
+ADR-0005 保持 `Proposed`，PR #1 保持 Draft。
 
 R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
 断言阶段。R8B 把它接入了 verify 与 converge，结构是：

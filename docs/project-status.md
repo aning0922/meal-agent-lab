@@ -116,7 +116,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M2A 整体 | 总控 **Accepted**，验收落点 `5e480803` |
 | M2B Compose 拓扑 | 总控 **Accepted**，验收落点 `d0f2219` |
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
-| M3B 环境模板与完整 bootstrap 链实证 | **未开始** |
+| M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **implementation complete, pending total-control review** |
 | M4 / M5 | **未开始** |
 
 **M3A 实际交付的**（详见[阶段 09A 计划的 M3A 实施记录](plans/2026-07-stage-09a-local-deployability-baseline.md)）
@@ -700,23 +700,26 @@ sentinel 扫描，以及宿主全部非 loopback 地址的动态隔离证明，*
   数据卷改成只读、删除 `/var/run/postgresql` tmpfs、修改该 tmpfs 的
   mode/uid/gid。
 
-**M2B 的边界（Accepted 只覆盖拓扑本身）**：**拓扑已验证；完整 bootstrap 链与
-全栈启动尚未通过。**M2B 落地时 `services/api/src/config.ts` 只接受
-`DATABASE_URL`、`infra/docker/postgres/bootstrap.sh` 只接受
+**M2B 的边界（Accepted 只覆盖拓扑本身）**：M2B 落地时 `services/api/src/config.ts`
+只接受 `DATABASE_URL`、`infra/docker/postgres/bootstrap.sh` 只接受
 `MEAL_AGENT_*_PASSWORD` 三个 environment value，因此 `api`、`migrate`、
 `bootstrap-schema` 与 `bootstrap-logins` 当时必然 fail closed（实测：`api` 容器
 以 `DATABASE_URL` 缺失的 `ZodError` 退出）。**M3A 之后这四个服务的 `_FILE`
-契约已被真正消费**，但整链运行证据仍属于 M3B。
-`0000 → handoff → acl → migrate → grants` 的完整链路、备份恢复与阶段总门禁因此
-**尚未取得运行证据**，不得记为 Pass。
+契约已被真正消费**；**M3B 已取得
+`postgres → cluster → logins → createdb → 0000 → handoff → acl →
+migrate → grants → api` 的整链运行证据（implementation complete, pending
+total-control review，见下方 M3B 段）**。备份恢复（M4）与阶段总门禁（M5）仍
+**尚未取得运行证据**，阶段 09A 不得记为 Pass。
 
 **证据边界**：数据库身份与授权这条线，R8B 之后已经同时覆盖**观察、策略判断与
 收敛**三层——canonical projector 采集事实，可移植策略判定允许项，收敛按真实
 grantor 执行并由只读断言复验（R8A 当时只交付其中的观察层）。M2B 之后，Compose
 拓扑、镜像固定、端口发布与容器隔离已有实测证据。M3A 之后，secret file 的读取判据、部署暴露级别、endpoint 收紧、中央脱敏与响应
-安全头也有了单元/HTTP 级证据。仍然**未覆盖**的是：环境模板、八份 Secret 的生成
-与交叉一致性、完整 bootstrap 链与全栈启动（M3B）、备份恢复（M4）与阶段总门禁
-（M5）；`pnpm stage09a:check` 尚未创建。
+安全头也有了单元/HTTP 级证据。M3B 之后，环境模板、八份 Secret 的生成与交叉
+一致性、完整 bootstrap 链、`/healthz`/`/readyz`、runtime 最小权限、Secret
+containment 扫描与动态网络隔离也有了真实 Compose 运行证据（implementation
+complete, pending total-control review）。仍然**未覆盖**的是：备份恢复与
+停止/重启持久化（M4）与阶段总门禁（M5）；`pnpm stage09a:check` 尚未创建。
 
 **Large Object 的口径**（两句都不可省略）：只要目标库里存在**任意**真实 LO
 对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，并且
@@ -733,19 +736,50 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**；**下一项是 M3B**（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证），M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；**M3A 的 Accepted 只覆盖代码侧消费能力**，完整 bootstrap 链与全栈启动仍未通过，不得记为 Pass。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
-- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。
+- 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**；**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为 implementation complete, pending total-control review**；M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；**M3A 的 Accepted 只覆盖代码侧消费能力**。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
+- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（pending total-control review）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（32 项反例）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
   不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**408 条规范化行**（manifest 版本 2；`grant` 138、`effective` 138、`default-effective` 78、`routine` 40、`default` 14），只登记**固定允许项**：固定授权、`pg_default_acl` 的**物理行**、叠加后的**有效**默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`（结构化 JSON）/正文摘要；未登记的 `(ledger, phase)` fail closed。canonical digest 覆盖全部顶层字段（version、principals、managedSchemas、deniedRoutines、states）。③**canonical projector**：`services/api/src/database/authorization-projection-sql.ts`。它被拆成「可复用的结构化 projector CTE renderer」与「对外三列只读 SELECT」两层；R8B 起前者同时供给 verify 与 converge，后者仍是不被任何 bootstrap 阶段加载的只读观察出口。可移植策略在 `authorization-policy-sql.ts`。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
 - **恢复/安装流程分为两个阶段**：`bootstrap.sh acl` 是 containment（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），`bootstrap.sh grants` 是 final（migration 之后建立最终 ACL，并**同时**验证 PUBLIC、app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只重建允许项，后验同时比对 catalog ACL 与 `has_*_privilege` 有效权限。
 - 产品声明禁用 Large Object，收敛口径与上面的「Large Object 的口径」完全一致：**只有在目标库确实零真实 LO 时**，收敛才把 `pg_default_acl` 中 `defaclobjtype='L'` 的多余默认权限收敛为空，并收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）上除函数 owner 之外的 `EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。一旦库里存在**任意**真实 LO 对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，只报告 OID 与 owner——**绝不修改它的 `lomacl`**、绝不改归属、绝不改数据、绝不解除链接，LO 的 OID 也不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。M3A 在 `claude/stage-09a-m3-config-secret-consumption` 上实施，基线 `8c99c46`，验收落点 `a839df1`。
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft），从最新本地 `main` 建立独立 worktree。M3A 在 `claude/stage-09a-m3-config-secret-consumption` 上实施，基线 `8c99c46`，验收落点 `a839df1`。M3B 在 `claude/stage-09a-m3b-bootstrap-chain` 上实施，基线 `8292df0`，implementation complete, pending total-control review。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
-- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 与 M3A 均已 Accepted，M3A 验收落点 `a839df1`）；仍缺环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证（M3B）、全栈启动与备份恢复证据（M4）以及阶段总门禁（M5）。
+- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 与 M3A 均已 Accepted，M3A 验收落点 `a839df1`）；环境模板、八份 Secret、完整 bootstrap 链、`/healthz=200`/`/readyz=200`、containment 扫描与网络隔离实证已由 M3B 交付（implementation complete, pending total-control review）；仍缺停止/重启持久化与备份恢复证据（M4）以及阶段总门禁（M5）。
 - 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。
 - GitHub `origin` 与 `main` upstream 已配置，仓库已有 CI workflow；当前只确认配置存在，没有在本次规划中读取或伪造远端 run Pass。
+
+**M3B 实际交付的**（implementation complete, pending total-control review；详见
+[阶段 09A 计划的 M3B 实施记录](plans/2026-07-stage-09a-local-deployability-baseline.md)）：
+
+- **Compose Secret 的容器内 UID/mode 证据先行**：八份真实 Compose Secret 挂进
+  各自消费服务后，在容器内实测 owner==消费进程 EUID（999/10001）、mode 0600、
+  普通文件、nlink=1、非 symlink、可读（`probe-compose-secret-identity.mjs`，
+  宿主 stat 不作数）。M3A 的 fail-closed 文件判据因此在真实 Compose Secret 上
+  成立。
+- **八份 Secret 单一来源**：只生成四个原始 CSPRNG 口令（48 字符 `[A-Za-z0-9]`，
+  URL/pgpass 双安全），八个文件由 `local-test-secrets-contract.mjs` 的同一份
+  常量派生（host=postgres、port=5432、database=meal_agent、migration/runtime
+  用户名带 `_login`；pgpass 只覆盖两个精确 endpoint）。generator 与 preflight
+  共用该事实源；目录 0700、文件 0600、默认拒绝覆盖、failure-safe；口令不进
+  stdout/argv/环境变量/Git。
+- **部署前交叉一致性预检 fail closed**：文件形态（缺失/未知/symlink/hardlink/
+  弱权限/错属主/多行/CR/NUL/BOM/非法 UTF-8/超限/空）、URL 与 pgpass 的
+  identity 精确匹配与口令逐字节一致（canonical 全等兜底）、四口令互异、
+  Git 跟踪与 tracked 模板扫描。
+- **完整 fresh Compose 链**：唯一 project name、全新 volume、临时合成 Secret、
+  随机 host port；十步链全部 exit=0/healthy，退出码由 `docker inspect` 独立
+  读取；migrate 与 grants 二次运行幂等；`/healthz=200`、`/readyz=200`；
+  ledger 精确 `0000—0004`、owner/RLS/角色属性/runtime 最小权限/readiness
+  连接身份/逐服务 secret 可见面逐项断言。
+- **containment 扫描与动态网络隔离**：12 条随机 needle + scanner sentinel
+  先自检再扫 config/inspect/image history/logs/tracked files/transcript 零命
+  中；`::1` 与宿主全部非 loopback 地址逐一失败（Docker Desktop 自有
+  accept-all utun 以对照端口取证并按 HTTP 层判定）；postgres 零
+  PublishedPort；api 单一 `127.0.0.1` binding；scoped cleanup 零残留。
+- **32 项反例全部以指定理由捕获、0 漏网**（`check-local-test-negatives.mjs`），
+  失败消息不含任何 Secret 取值。
 
 ### Deferred — 外部依赖
 
@@ -762,4 +796,4 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M2A 的 R8A、R8B 与 M2A 整体均已由总控 Accepted（M2A 验收落点 `5e480803`），M2B（Compose 拓扑）也已由总控 Accepted（验收落点 `d0f2219`），**M3A 也已由总控 Accepted（验收落点 `a839df1`）**，下一项是 **M3B**（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M2A 的 R8A、R8B 与 M2A 整体均已由总控 Accepted（M2A 验收落点 `5e480803`），M2B（Compose 拓扑）也已由总控 Accepted（验收落点 `d0f2219`），**M3A 也已由总控 Accepted（验收落点 `a839df1`）**；**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为 implementation complete, pending total-control review**；M4、M5 未开始。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
