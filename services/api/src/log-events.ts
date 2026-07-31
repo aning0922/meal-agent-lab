@@ -338,7 +338,8 @@ const sleep = (milliseconds: number): Promise<void> =>
   });
 
 /**
- * flush 一棵**我们自己建的** logger 树，有界且 fail closed。
+ * flush 一棵**我们自己建的** logger 树：在**受信、合作式接口**前提下，对**异步
+ * 拖延**与**有限的同步阻塞** fail closed 且 failure-safe。
  *
  * pino 的 `flush(cb)` 把回调直接交给目的地的 `flush`（`lib/proto.js:253`：
  * `typeof stream.flush === 'function' ? stream.flush(cb || noop) : cb && cb()`）。

@@ -204,8 +204,9 @@ Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前�
 ## 当前状态与边界
 
 M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
-消费核心）implementation complete, pending total-control review**。阶段 09A 仍为
-In Progress，M3B、M4、M5 未开始；
+消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。阶段 09A 仍为 In Progress；
+**下一项是 M3B**（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、
+`/readyz=200` 与网络隔离实证），M4、M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 仍为 `Proposed`。
 
@@ -216,6 +217,7 @@ Pass。
 `DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的
 契约；**M3A 已实现消费**：`services/api/src/config-source.ts` 与
 `postgres/secret-source.sh` 提供同一套互斥语义与 fail-closed 的文件判据。整链
-运行证据、八份 Secret 的生成与交叉一致性预检属于 **M3B**，仍未取得。
+运行证据、八份 Secret 的生成与交叉一致性预检、`/readyz=200` 与网络隔离实证属于
+**M3B**，仍未取得——**不得记为 Pass**。
 
 备份与恢复命令属于 M4，本拓扑不声明。`infra/environments/` 配置模板属于 M3B。

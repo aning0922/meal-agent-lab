@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-07-31 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」Round 14 整改中，未 Accepted**；M3B、M4、M5 未开始）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**下一项 M3B**：环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证；M4、M5 未开始）
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -227,11 +227,12 @@ fail closed。**M3A 之后 `_FILE` 契约已被真正消费**（见下面的 M3A
 9. 认证和家庭私有响应增加 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`；不启用 wildcard CORS。
 10. 阶段 09A 不增加反向代理、TLS、域名、登录限流或 WAF。没有真实微信配置时，禁止把 local-test 拓扑改名或表述为 staging/production。
 
-### M3A 实施记录（实现完成，待总控复核）
+### M3A 实施记录（已由总控 Accepted，验收落点 `a839df1`）
 
 M3 被拆成 **M3A（配置与 Secret file 消费核心）**与 **M3B（环境模板、八份 Secret 的
 生成与交叉一致性、完整 Compose bootstrap 链实证）**两轮。M3A 覆盖上面第 2、3、6、
-7、8、9 条的**代码侧**，状态是 **Round 14 整改中，未 Accepted**。
+7、8、9 条的**代码侧**，状态是 **已由总控 Accepted（验收落点 `a839df1`）**——它只
+覆盖代码侧消费能力，完整 bootstrap 链与全栈启动仍**不得记为 Pass**。
 
 1. **统一的 Node Secret 来源解析器**
    [`services/api/src/config-source.ts`](../../services/api/src/config-source.ts)
@@ -605,7 +606,8 @@ allowlist 漂移扫描补上 `override readonly name = "X"` 类字段与
 `class X extends <RepoError>` 两种写法，并加了三条正向自检——否则「没有漂移」也
 可能只是正则从来没匹配到任何东西。
 
-**M3A 仍为 Round 14 整改中，未标记 Accepted。**
+**（当时状态：M3A 仍为整改中。M3A 已于 Round 14 收口后由总控 Accepted，验收落点
+`a839df1`。）**
 
 #### M3A 第七轮总控复验未通过后的定点修订
 
@@ -1293,12 +1295,19 @@ worker/子进程改造。
 但 flush 自有 root 时 pino 会调用**目的地自己的** `flush`。`index.ts`/`shutdown.ts`
 的文案改成「**应用**关闭失败」——`app.close()` 会跑完所有 onClose hook，日志 flush
 只是其中一个。M3A 的状态口径在 `docs/README.md`、project-status、本计划、ADR-0005
-与 API README 里统一成 **Round 14 整改中，未 Accepted**。
+与 API README 里统一。（**当时**是「Round 14 整改中，未 Accepted」；总控随后
+Accepted，验收落点 `a839df1`。）
 
 **Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
 本轮 diff 为 0 行。
 
-**M3A 仍为整改中，未标记 Accepted。**
+**M3A 状态：已由项目总控 Accepted，验收落点 `a839df1`。** 它只覆盖**代码侧**消费
+能力；完整 bootstrap 链与全栈启动仍未通过，**不得记为 Pass**。上面各轮小节里的
+「仍为整改中」是**当时**的状态记录，保留不改。
+
+**下一项是 M3B**：环境模板、八份 Secret 的生成与交叉一致性、完整 Compose bootstrap
+链、`/readyz=200` 与网络隔离实证。M4、M5 未开始。ADR-0005 保持 `Proposed`，
+PR #1 保持 Draft。
 
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个

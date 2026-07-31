@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
 - 状态：Proposed
-- 日期：2026-07-26（实施注记最后更新 2026-07-31，M3A Round 14）
+- 日期：2026-07-26（实施注记最后更新 2026-07-31，M3A 已 Accepted，验收落点 `a839df1`）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -164,7 +164,7 @@ catalog → 共享结构化 projector CTE → 公开只读 projection adapter / 
 （object + grantee + grantor + privilege + grantable）判定，固定允许授权的 canonical
 grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验收落点
 `5e480803`）；**M2B（Compose 拓扑）也已由总控 Accepted，验收落点 `d0f2219`**。
-**M3A（配置与 Secret file 消费核心）Round 14 整改中，未 Accepted**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
+**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
 §4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
 [§4 的实施注记](#4-secret日志与镜像边界)）。阶段 09A 仍在进行（M3B、M4、M5 未
 开始），完整 bootstrap 链与全栈启动尚未通过，本 ADR 因此保持 `Proposed`。
@@ -281,7 +281,7 @@ sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对
 - 镜像、运行日志、解析后的 Compose 配置和 tracked files 均执行 sentinel/Secret 扫描；
 - 私有和认证响应使用 `Cache-Control: no-store`，响应增加 `X-Content-Type-Options: nosniff`，不启用 wildcard CORS。
 
-**M3A 实施注记**（**M3A Round 14 整改中，未 Accepted**，**不是**阶段完成证据）：`_FILE` 互斥注入由 `services/api/src/config-source.ts`（API、
+**M3A 实施注记**（**已由项目总控 Accepted，验收落点 `a839df1`**；只覆盖代码侧消费能力，**不是**阶段完成证据）：`_FILE` 互斥注入由 `services/api/src/config-source.ts`（API、
 `db:migrate`、`db:bootstrap` 三个入口共用）与 `infra/docker/postgres/secret-source.sh`
 （三对 `MEAL_AGENT_*_PASSWORD`）实现，两侧的互斥语义与内容判据**按条对齐**
 （不是逐字节等价的同一实现，机制差异见 `infra/docker/postgres/README.md`）：绝对路径、
@@ -305,8 +305,9 @@ checker 的静态门禁限制整项 logger capability（按**声明身份**判�
 边界之外一处都不许出现；形参没有通行证，只能作为成员访问的基出现，工厂注入槽还要求
 那个基是组装根自己的 options 对象）——该门禁是工程护栏，不是形式化安全证明；中央 logger 边界（含 child()/setBindings() 与子 logger options
 的安全包装）保留为**纵深防御**，覆盖 Fastify 自己打的请求日志。event logger 的
-raw `Logger` 只存在于模块词法作用域，`app.eventLog` 不可写不可重定义；日志关机是
-**有界、fail closed 且 failure-safe** 的：close 是一个阶段收集器，每个适用阶段
+raw `Logger` 只存在于模块词法作用域，`app.eventLog` 不可写不可重定义；日志关机在
+**受信、合作式接口**前提下对**异步拖延**与**有限的同步阻塞** **fail closed 且
+failure-safe**：close 是一个阶段收集器，每个适用阶段
 （event flush、自建时的 framework flush 与 drain、event drain）都会跑到，一个阶段
 失败不跳过后面的阶段，最后聚合成 `AggregateError` 让 `app.close()` 失败；失败原因
 只由固定文本与归一化错误类型名拼成，取类型名这一步本身也兜了底（敌意的自指 Proxy
