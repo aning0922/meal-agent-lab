@@ -122,15 +122,34 @@ secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不
 
 ### M3B：八份 Secret 与完整链的一条命令验证
 
+两条**运维**命令：
+
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/generate-local-test-secrets.mjs` | 生成八份 Secret（四个原始 CSPRNG 口令派生；默认拒绝覆盖；口令不进 stdout/argv/环境变量/Git） |
 | `node infra/docker/preflight-local-test-secrets.mjs` | 部署前交叉一致性预检（任何数据库容器启动之前必须通过） |
-| `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
-| `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
-| `node infra/docker/check-local-test-negatives.mjs` | **68 项**反例（67 + 第二轮新增的未知模板格式），全部要求以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | 第二轮阻断整改的 **8 项**窄反例（原子 promotion、cleanup collector、preflight 信号窗口、全仓 index containment、PGID 生命周期） |
+
+M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本里程碑的证据）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
+| `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
+| `node infra/docker/check-local-test-negatives.mjs` | **74 cases**：1 个正向 baseline + 73 个反例/边界检查，全部要求以指定理由失败 |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | 第二、三轮阻断整改的 **11 项**窄反例（原子 promotion、cleanup collector 与 inode ownership、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期） |
 | `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证 |
+| `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
+| `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
+
+正向 baseline 是 `check-local-test-negatives.mjs` 里**唯一**一条正向 case，它
+同时断言三件事：刚生成的 bundle 预检零问题、**当前真实 tracked 模板**扫描零
+问题、Git index 与工作树逐字节一致。没有它，「一律判失败」的回归会让其余
+73 条全部恒绿。
+
+[`fixtures/preflight-signal-window.mjs`](fixtures/preflight-signal-window.mjs)
+是**测试夹具**，不是运维入口：它通过库级 `preflight` 注入 seam 制造一段确定性
+的同步 preflight 窗口，跑的是真实的 `runGeneratorCli` 与真实 signal handler。
+生产 generator **不认识**任何用于改变时序的环境变量。
 
 八份 Secret 的文件清单、角色与固定部署 identity 只有一个事实源：
 [`local-test-secrets-contract.mjs`](local-test-secrets-contract.mjs)。
@@ -234,7 +253,10 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-68 项指定理由反例、8 项第二轮窄反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+74 cases（1 个正向 baseline + 73 个反例/边界检查）、11 项第二/三轮窄反例、
+15 项拓扑变异反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+M3B 当前状态：**implementation complete, pending total-control review**，未
+Accepted；M4、M5 未开始；阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
 
 每次 smoke/probe 运行使用**每轮唯一的 image tag**（`meal-agent-api:m3b-<run id>`，
 经临时 Compose override 注入），并断言三个 API 镜像服务容器的 `.Image` 等于本轮

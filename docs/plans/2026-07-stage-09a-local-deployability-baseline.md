@@ -1592,11 +1592,9 @@ exit 130/143 的伪装）、检查被测 CLI 自己报出的 FAIL/residue、buil
    显式声明**只支持 dotenv 形态**，未知格式（YAML/JSON 等）直接拒绝并配反例
    （反例数 67 → **68**）。
 
-本轮的门禁数字：local-test negatives **68**、round-two negatives **8**、
-signal windows **5**。M3B 命令清单见
-[`infra/docker/README.md`](../../infra/docker/README.md) 的「M3B：八份 Secret
-与完整链的一条命令验证」，其中**必须包含**
-`node infra/docker/check-m3b-signal-windows.mjs`。
+本轮（第二轮）收口时的门禁数字是 local-test negatives **68**、round-two
+negatives **8**、signal windows **5**；第三轮把前两项分别改成 **74 cases** 与
+**11**（见下一节）。
 
 #### 第二轮阻断整改之后的两路只读审计与定点修复
 
@@ -1646,7 +1644,68 @@ Secret」（`.directory` 未复位）；生产失败路径补上独立目录复�
 补进 `.gitignore`；泄漏断言覆盖变异**注入**的新取值；敏感 key 判据从纯
 `endsWith` 扩为「后缀 + 词元」。
 
-**M3B 状态：整改中，未 Accepted。**
+#### 第三轮阻断整改（inode ownership、忙等钩子、模板凭据、门禁自身）
+
+四项定点整改。每一条的新窄反例都先在**未整改基线**（`22cc140`）上跑过：
+11 条新判据在基线上 **11/11 全红**，随后才实现修复。
+
+1. **cleanup 的 inode ownership**。路径不是身份：只登记路径的清理会按名字
+   unlink，外部把某份成品 unlink 后放一个同名替身时，它删的是**别人的文件**
+   （基线实测：`generateSecretBundle` 的失败清理与 `generateAndPreflight` 的
+   真实接线**两条路径**都把替身删掉了）。现在登记 `{ path, dev, ino }`，身份
+   取自**创建那一刻的 fd**（`fstat`，`wx` 保证该 inode 由本次调用创建），
+   BigInt 形态以免大 inode 号在 double 上丢精度；promotion 时 final 名继承
+   staging 的 dev/ino（`link(2)` 成功即同一 inode）；删除前 `lstat`（不跟随
+   symlink）复核，对不上**不 unlink**、记 `ownership drift`、替身原样留下；
+   读不到身份同样不删。独立目录复查刻意仍按**名字**判定（宁可多报不漏报）。
+   smoke/probe 的临时 Secret 目录同样在 `mkdtemp` 后登记 inode，递归删除前
+   复核。
+2. **生产 preflight 忙等钩子删除**。`MEAL_AGENT_M3B_PREFLIGHT_DELAY_MS` 曾让
+   生产二进制带着一个可由环境变量打开的同步忙等分支出厂（基线实测：设成
+   5000ms 时真实开销 +4979ms 并打印窗口标记）。该分支已删除；CLI 的全部运行期
+   接线抽成导出的 `runGeneratorCli(directory, { preflight })`，生产入口不传
+   第二个参数。信号窗口回归改由 `infra/docker/fixtures/preflight-signal-window.mjs`
+   驱动：它调**同一个** `runGeneratorCli`，只经**库级** seam 换上「打标记 →
+   同步忙等 → 真实 `checkSecretBundle`」的预检，因此真实 handler、真实
+   `generateAndPreflightInterruptible` 与真实中断判定全部照原样参与。新增反例
+   同时做静态断言（十个生产源文件与 Compose 都不再提及该标识符）与动态断言
+   （设置它之后相对基线运行的耗时增量远低于所请求的延时）。
+3. **模板凭据扫描补全**，判据与赋值键名彻底解耦。userinfo 形改为任意 scheme、
+   任意 userinfo 形态——旧式要求必须有 `:` 且两侧非空，因此 token-only
+   （`https://ghp_X@host`）、password-only（`postgresql://:pw@host/db`）与退化形
+   （`redis://@host`）全部漏网；credential 查询参数形从「postgres + password
+   词干」放开为**任意 scheme** × {password, passwd, pwd, token, secret,
+   api_key, access_token, credential}，键名允许前后缀，取值必须非空（空占位
+   仍然允许）。四条新反例全部用中性键（`CACHE_ENDPOINT` / `CACHE_REPLICA` /
+   `QUEUE_ENDPOINT` / `SEARCH_ENDPOINT`），基线上一条都没抓到。消息只报
+   **类别 + 文件 + 行号**，绝不回显命中的串；当前真实 tracked 模板在新判据下
+   仍然零 problem。
+4. **门禁自身收紧**。收尾的零残留列举、Group C 的 leftover 列举、两处
+   `which docker`、五处 `docker rm`、两处 `docker logs` 与 containment 的容器
+   列举全部检查退出码（含 `status === null` 的信号情形），列举失败**立即返回**
+   而不再让空 stdout 降级成「这里什么都没有」；新增 `containerPresence`，只有
+   「退出码恰好 1 且 stderr 是**锚定整行**的 no such object」才判 absent，其余
+   一律 unknown 并按失败处理（基线：一个恒定 exit 7 的 shim 就能让它判成「容器
+   已被删除」）；`imageIdOf` 同样收紧为 status===1 + 锚定 `no such image: <tag>`
+   （基线：一条关于**别的镜像**的错误就足以被读成「本轮 tag 不存在」）；
+   `inspectJsonStrict` 与 containment 的 `strictInspectJson` 对**空 payload**
+   改判读取失败，不再折叠成 JSON null。输出侧新增
+   [`infra/docker/m3b-safe-output.mjs`](../../infra/docker/m3b-safe-output.mjs)：
+   wrong-reason 分支一律只输出**期望判据与条目计数**，绝不拼接 raw problems /
+   residue / 子进程输出；外来文本按取值 + 按形状打码。正向 baseline 扩为三项
+   同时成立（干净 bundle、**当前真实 tracked 模板**、Git index/工作树逐字节
+   一致）；cleanup 集成反例新增一条走 `generateAndPreflight` 真实接线的
+   ownership 用例。
+
+第三轮之后的门禁数字：**local-test 74 cases（1 个正向 baseline + 73 个反例/
+边界检查）**、round-two/three negatives **11**、signal windows **5**、topology
+mutations **15**。M3B 的完整命令清单（七条）见
+[`infra/docker/README.md`](../../infra/docker/README.md) 的「M3B：八份 Secret
+与完整链的一条命令验证」：topology checker、topology mutations、local-test
+cases、round-two/three negatives、signal windows、smoke、probe。
+
+**M3B 状态：implementation complete, pending total-control review——未
+Accepted。M4、M5 未开始；阶段 09A 仍为 In Progress；ADR-0005 仍为 `Proposed`。**
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
