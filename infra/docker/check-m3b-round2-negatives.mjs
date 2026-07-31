@@ -51,7 +51,11 @@ import {
   SecretGeneratorError
 } from './generate-local-test-secrets.mjs'
 import { scanTrackedRepositoryForNeedles } from './local-test-containment.mjs'
-import { generatePassword, secretFilenames } from './local-test-secrets-contract.mjs'
+import {
+  generatePassword,
+  repositoryRoot,
+  secretFilenames
+} from './local-test-secrets-contract.mjs'
 import { wrongReason } from './m3b-safe-output.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -341,8 +345,8 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
   // R3-2 的反例：**生产 CLI 不认识**任何 preflight 忙等钩子。
   //
   // 两条断言缺一不可：
-  //   1. 静态——生产源码与 Compose 文件里不得再出现 `*_PREFLIGHT_DELAY_MS`
-  //      这个标识符（fixtures/ 与本反例套件除外，它们是测试侧）；
+  //   1. 静态——**全仓任何 tracked 文件**里都不得再出现 `*_PREFLIGHT_DELAY_MS`
+  //      这个标识符（只放行本反例文件、fixtures/ 与 Markdown 文档三处）；
   //   2. 动态——把旧环境变量设成 5 秒，真实 CLI 的耗时相对**不设它**的基线
   //      不得出现任何可归因的增长，也不得打印任何窗口标记。
   const name = 'the production generator CLI never busy-waits on the retired preflight env var'
@@ -403,8 +407,8 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
     if (offenders.length > 0) {
       fail(
         name,
-        `${String(offenders.length)} production file(s) still reference the retired ` +
-          'preflight delay variable'
+        `${String(offenders.length)} tracked file(s) outside the test/documentation ` +
+          'allowlist still reference the retired preflight delay variable'
       )
     } else if (baseline.code !== 0 || withRetiredVariable.code !== 0) {
       fail(
@@ -423,8 +427,8 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
     } else {
       pass(
         name,
-        `no production reference, no window marker, ${String(overhead)}ms overhead against ` +
-          `a requested ${String(requestedDelayMs)}ms delay`
+        `no tracked reference outside the test/doc allowlist, no window marker, ` +
+          `${String(overhead)}ms overhead against a requested ${String(requestedDelayMs)}ms delay`
       )
     }
   } finally {
@@ -501,6 +505,68 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
         name,
         'replacement byte-identical and still the same inode, every own staging/final inode ' +
           'converged, ownership drift reported'
+      )
+    }
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+{
+  // R3-1（staging 侧）：`link(2)` 解析的是**名字**。审计实测：把 staging 名换成
+  // 一个外部 inode 之后，旧实现会 (a) 把**外部** inode 链到成品名上、(b) 用
+  // **我们的** dev/ino 登记它、(c) unlink 掉那个外部 staging 文件、(d) 返回
+  // **成功**——同时删了别人的文件、又把别人的内容留在了一个规范 Secret 名上。
+  // 正确行为：promotion 之前先证明 staging 名仍指向本轮创建的 inode，对不上就
+  // 拒绝，既不链接也不删除。
+  const name = 'promotion refuses a staging name that no longer refers to this run\'s inode'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r3-'))
+  const directory = resolve(parent, 'bundle')
+  const first = secretFilenames[0]
+  const stagingName = `.staging.${first}`
+  const foreignBody = `FOREIGN-STAGING-${randomBytes(8).toString('hex')}\n`
+  try {
+    mkdirSync(directory, { mode: 0o700 })
+    let caughtError = null
+    let foreignIno = null
+    try {
+      generateSecretBundle(directory, {
+        beforePromotion: (filename) => {
+          if (filename !== first) {
+            return
+          }
+          unlinkSync(resolve(directory, stagingName))
+          writeFileSync(resolve(directory, stagingName), foreignBody, { mode: 0o600 })
+          foreignIno = statSync(resolve(directory, stagingName), { bigint: true }).ino
+        }
+      })
+    } catch (error) {
+      caughtError = error
+    }
+    const message = caughtError instanceof Error ? caughtError.message : String(caughtError)
+    const stagingPath = resolve(directory, stagingName)
+    const foreignSurvived =
+      existsSync(stagingPath) &&
+      readFileSync(stagingPath, 'utf8') === foreignBody &&
+      foreignIno !== null &&
+      statSync(stagingPath, { bigint: true }).ino === foreignIno
+    const promotedAnyway = existsSync(resolve(directory, first))
+    const ownLeftovers = readdirSync(directory).filter((entry) => entry !== stagingName)
+
+    if (caughtError === null) {
+      fail(name, 'NOT CAUGHT — the run promoted a swapped staging name and returned success')
+    } else if (promotedAnyway) {
+      fail(name, 'the foreign inode was linked into a canonical secret filename anyway')
+    } else if (!foreignSurvived) {
+      fail(name, "the foreign staging file was unlinked — this run deleted a file it did not create")
+    } else if (ownLeftovers.length > 0) {
+      fail(name, `${String(ownLeftovers.length)} entr(y|ies) created by this run survived`)
+    } else if (!/ownership drift at the staging entry/.test(message)) {
+      fail(name, wrongReason('/ownership drift at the staging entry/', [message]))
+    } else {
+      pass(
+        name,
+        'no promotion, no unlink of the foreign file, every own entry cleaned, drift reported'
       )
     }
   } finally {
@@ -684,7 +750,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 11
+const expectedCount = 12
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

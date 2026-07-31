@@ -53,6 +53,7 @@ import {
 import { cleanupSmokeProject } from './run-local-test-smoke.mjs'
 import {
   imageIdOf,
+  inodeIdentityOf,
   overridePathFor,
   runImageTagFor,
   writeImageOverride
@@ -1582,6 +1583,49 @@ stageIsolationNegative: {
 }
 
 {
+  // R3-1（目录层）：`cleanupRun` 在**递归删除**临时 Secret 目录之前复核 inode
+  // 身份。这一半此前没有任何门禁触及——`secretsIdentity` 只有 smoke 与 probe
+  // 传，四套反例一律走默认的 null，于是把那段守卫整个删掉，所有门禁照样绿。
+  // 这里显式构造 drift：先在 tmp 前缀下建一个目录并记下它的 inode，删掉它，
+  // 再在**同一路径**上建一个新目录（不同 inode），然后带着旧身份跑 cleanup。
+  const name = 'cleanup refuses to recursively delete a secrets directory it does not own'
+  const project = `meal-agent-m3b-neg-inode-${randomBytes(4).toString('hex')}`
+  usedNegativeProjects.push(project)
+  const secretsDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
+  const staleIdentity = inodeIdentityOf(secretsDirectory)
+  let replacementIdentity = null
+  try {
+    rmSync(secretsDirectory, { recursive: true, force: true })
+    mkdirSync(secretsDirectory, { mode: 0o700 })
+    writeFileSync(resolve(secretsDirectory, 'not-ours.txt'), 'foreign\n', { mode: 0o600 })
+    replacementIdentity = inodeIdentityOf(secretsDirectory)
+
+    const residue = await cleanupSmokeProject(project, secretsDirectory, {
+      secretsIdentity: staleIdentity
+    })
+    const reportedDrift = residue.some((entry) =>
+      /secrets-directory: ownership drift at the temporary secrets directory/.test(String(entry))
+    )
+    const survived = existsSync(resolve(secretsDirectory, 'not-ours.txt'))
+    const sameInode =
+      existsSync(secretsDirectory) &&
+      inodeIdentityOf(secretsDirectory).ino === replacementIdentity.ino
+
+    if (staleIdentity.ino === replacementIdentity.ino) {
+      fail(name, 'the precondition failed: the replacement directory reused the same inode')
+    } else if (!reportedDrift) {
+      fail(name, wrongReason('/secrets-directory: ownership drift/', residue))
+    } else if (!survived || !sameInode) {
+      fail(name, 'the foreign directory was recursively deleted despite the identity mismatch')
+    } else {
+      pass(name, 'ownership drift reported and the foreign directory left untouched')
+    }
+  } finally {
+    rmSync(secretsDirectory, { recursive: true, force: true })
+  }
+}
+
+{
   // R3-4：门禁**自身**的读取纪律。用一个恒定非零退出的 PATH shim 证明两条：
   //
   //   1. 「容器还在不在」的判据不得把 daemon 故障读成「已被删除」——旧写法
@@ -1734,7 +1778,7 @@ for (const project of usedNegativeProjects) {
 
 // 反例数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
 // 差额暴露，而不是静默变成「跑得更少的绿」。
-const expectedNegativeCount = 74
+const expectedNegativeCount = 75
 if (caught + failures.length !== expectedNegativeCount) {
   fail(
     'suite completeness',

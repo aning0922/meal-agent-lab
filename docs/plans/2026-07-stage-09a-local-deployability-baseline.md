@@ -1593,8 +1593,8 @@ exit 130/143 的伪装）、检查被测 CLI 自己报出的 FAIL/residue、buil
    （反例数 67 → **68**）。
 
 本轮（第二轮）收口时的门禁数字是 local-test negatives **68**、round-two
-negatives **8**、signal windows **5**；第三轮把前两项分别改成 **74 cases** 与
-**11**（见下一节）。
+negatives **8**、signal windows **5**；第三轮把前两项分别改成 **75 cases** 与
+**12**（见下一节）。
 
 #### 第二轮阻断整改之后的两路只读审计与定点修复
 
@@ -1697,12 +1697,57 @@ Secret」（`.directory` 未复位）；生产失败路径补上独立目录复�
    一致）；cleanup 集成反例新增一条走 `generateAndPreflight` 真实接线的
    ownership 用例。
 
-第三轮之后的门禁数字：**local-test 74 cases（1 个正向 baseline + 73 个反例/
-边界检查）**、round-two/three negatives **11**、signal windows **5**、topology
+第三轮之后的门禁数字：**local-test 75 cases（1 个正向 baseline + 74 个反例/
+边界检查）**、round-two/three negatives **12**、signal windows **5**、topology
 mutations **15**。M3B 的完整命令清单（七条）见
 [`infra/docker/README.md`](../../infra/docker/README.md) 的「M3B：八份 Secret
 与完整链的一条命令验证」：topology checker、topology mutations、local-test
 cases、round-two/three negatives、signal windows、smoke、probe。
+
+#### 第三轮整改之后的两路只读审计与定点修复
+
+实现与窄反例落地并提交（`e6cb9fb`）后，按要求并行跑了两个只读审计（A：Secret /
+inode / Git index / 模板 / 输出；B：runtime / signal / Docker cleanup / 门禁
+fail-closed）。两路共提出 11 条，逐条经独立的「尽力证伪」复核：**6 条被推翻**
+（其中最有价值的一条推翻理由是：`preflightNegative` 的 wrong-reason 分支之后
+仍有一道**更强**的断言——把 `buildNeedles` 的全部取值逐个 `includes` 检查，
+命中就判红，因此那里不打码不是漏，是比打码更硬的判据），**5 条确认并已修复**：
+
+1. **A1（阻断级）：`link(2)` 解析的是名字，不是 inode。** 审计构造了同 uid 的
+   并发写者在 promotion **之前**换掉 staging 名的场景，实测旧实现会把**外部**
+   inode 链到成品名上、用**我们的** dev/ino 登记它、`unlink` 掉那个外部
+   staging 文件，然后**返回成功**——同时删了别人的文件，又把别人的内容留在了
+   一个规范 Secret 名上。这正是本轮要消灭的「路径不是身份」，只是换到了创建
+   成品的那条路径。现在 promotion 之前先证明 staging 名仍指向本轮创建的
+   inode，link 之后再证明成品名指向的也是它；对不上就拒绝，**既不链接也不
+   删除**，只报 drift。新增第 12 条窄反例锁死这条路径（实测：拒绝、成品名未
+   创建、外部 staging 文件逐字节不变、本轮自己的条目全部收敛）。
+2. **A5：形状打码规则过宽。** pgpass 规则替换的是**整行**，且四段之间不要求
+   任何形状，于是 `ts=2026-07-31T23:10:05Z:step:migrate:exit=1 …` 与
+   `MEAL_AGENT_API=http://[::1]:3000/readyz` 这类完全无害的诊断被整行抹成一个
+   占位符——失败信息因此丢掉了它的**指定理由**，正是本轮在别处反对的形态。
+   现在 port 必须是数字、口令段必须无空白且直到行尾，且**只替换最后那一段**。
+   顺带修掉 `wrongReason` 对非数组参数一律记 0 的问题。
+3. **B1：目录层的 inode 守卫没有任何门禁触及。** `secretsIdentity` 只有 smoke
+   与 probe 会传，四套反例一律走默认的 null，因此把那段守卫整个删掉所有门禁
+   照样绿——而它守的是一次**递归删除**。新增第 75 条 case 显式构造 drift
+   （同一路径换成不同 inode 的目录），断言报出 drift 且外部目录逐项存活。
+4. **B2：「生产不再认识该环境变量」的静态断言是一份手写白名单。** 把同一个
+   钩子加进 `check-compose-topology.mjs`（smoke 在生产路径上真的 spawn 它）或
+   `postgres/` 下任何被打进镜像的脚本，白名单版本会判绿。现在改为**全仓
+   tracked 文件逐个扫**，只放行本反例文件、`fixtures/` 与 Markdown 文档三处。
+5. **B3：信号窗口套件里的 per-run image tag 判据没跟上。** 它仍用无锚点子串
+   匹配、且不要求退出码恰好是 1，于是被信号杀掉的 docker CLI 或一条关于**别的
+   镜像**的错误都会被读成「本轮 tag 已被删除」——而这是唯一一处在信号路径上
+   验证 per-run tag 消失的地方。现在与 `imageIdOf` 同判据，并补上 try/catch
+   （此前 spawn 失败会让进程带栈直接死掉，FAIL 汇总与 5 窗口完整性计数都不会
+   打印）。
+
+审计同时记录了若干**已确认正确**的面：inode 模型在本机上 `fstat`/`lstat` 跨
+`link(2)` 给出一致的 dev+ino；happy path 恰好 8 条 owned 记录且 staging 条目
+全部正确摘除；ENOENT 在 lstat 与 unlink 两侧都被正确判为「已不在，不是残留」；
+四条新模板反例确实以正确的两个类别命中，而路径里的 `@`（`https://example.com/a@b`）
+不被误判；正向 baseline 的模板扫描无条件先跑（不因 bundle 断言失败而被跳过）。
 
 **M3B 状态：implementation complete, pending total-control review——未
 Accepted。M4、M5 未开始；阶段 09A 仍为 In Progress；ADR-0005 仍为 `Proposed`。**

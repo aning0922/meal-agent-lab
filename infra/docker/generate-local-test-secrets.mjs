@@ -241,9 +241,10 @@ const writeStagingFile = (target, filename, body, owned) => {
  * no-replace 原子性：先硬链接到 final 名，成功后再删掉 staging 名。
  *
  * owned 只登记**本轮亲手创建**的 inode，因此失败清理永远不会碰外部文件。
- * final 名登记的身份就是 staging 的 dev/ino——`link(2)` 成功意味着两个名字指向
- * **同一个** inode，那正是本轮创建的那一个。之后有人把 final 名换掉，身份复核
- * 会立刻发现并拒绝删除。
+ * final 名登记的身份就是 staging 的 dev/ino——但**必须先证明**那个 staging 名
+ * 此刻仍指向本轮创建的 inode，链接之后再证明成品名指向的也是它：`link(2)` 解析
+ * 的是**名字**，「link 成功 ⇒ 是我的 inode」并不成立。之后有人把 final 名换掉，
+ * cleanup 的身份复核会发现并拒绝删除。
  */
 const promoteStagingFile = (target, filename, owned) => {
   const stagingPath = resolve(target, stagingName(filename))
@@ -254,6 +255,21 @@ const promoteStagingFile = (target, filename, owned) => {
     throw new SecretGeneratorError(
       `${filename} has no registered staging identity; refusing to promote an ` +
         'entry this run cannot prove it created'
+    )
+  }
+  // **link(2) 解析的是名字，不是 inode**。因此 promotion 之前必须先确认那个
+  // staging 名字**此刻仍然**指向本轮创建的 inode：不确认的话，一个同 uid 的
+  // 并发写者把 staging 名换掉之后，我们会把**它的** inode 链到成品名上、并把
+  // 它登记成自己的产物——这正是「路径不是身份」的漏洞，只是换到了创建成品的
+  // 那条路径上。
+  const stagingBefore = lstatSync(stagingPath, { bigint: true })
+  if (
+    stagingBefore.dev !== stagingIdentity.dev ||
+    stagingBefore.ino !== stagingIdentity.ino
+  ) {
+    throw new SecretGeneratorError(
+      `ownership drift at the staging entry for ${filename}: it no longer refers to ` +
+        'the inode this run created; refusing to promote it'
     )
   }
   try {
@@ -267,8 +283,28 @@ const promoteStagingFile = (target, filename, owned) => {
     }
     throw error
   }
+  // link 与上面那次 lstat 之间仍有一个极小的窗口（POSIX 没有「按 inode 链接」
+  // 的原语）。窗口被抢到时**不能**把结果当成自己的：既不登记、也不删除任何一
+  // 边——登记会让 cleanup 认领别人的 inode，删除会毁掉别人的文件。只报 drift。
+  const promoted = lstatSync(finalPath, { bigint: true })
+  if (promoted.dev !== stagingIdentity.dev || promoted.ino !== stagingIdentity.ino) {
+    throw new SecretGeneratorError(
+      `ownership drift while promoting ${filename}: the promoted name refers to an ` +
+        'inode this run did not create; it was neither registered nor removed'
+    )
+  }
   // final 名已经属于本轮（与 staging 同 inode）：登记它，随后删掉 staging 名。
   owned.push({ path: finalPath, dev: stagingIdentity.dev, ino: stagingIdentity.ino })
+  // 这一次 unlink **不走** discardGeneratedPaths，因此身份复核要在这里自己做：
+  // 有人在 link 与 unlink 之间把 staging 名换掉时，按名字删就是删别人的文件。
+  // 对不上就抛——staging 记录留在 owned 里，失败清理会把它报成 ownership drift。
+  const stagingNow = lstatSync(stagingPath, { bigint: true })
+  if (stagingNow.dev !== stagingIdentity.dev || stagingNow.ino !== stagingIdentity.ino) {
+    throw new SecretGeneratorError(
+      `the staging entry for ${filename} no longer refers to the inode this run ` +
+        'created; refusing to unlink it'
+    )
+  }
   unlinkSync(stagingPath)
   owned.splice(stagingIndex, 1)
   return finalPath

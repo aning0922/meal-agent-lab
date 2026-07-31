@@ -206,15 +206,33 @@ const assertCleanScene = (name, result, { expectSignal }) => {
     }
   }
   if (scene.imageTag !== null) {
-    const image = docker(['image', 'inspect', '--format', '{{.Id}}', scene.imageTag])
-    if (image.status === 0) {
-      problems.push(`image tag ${scene.imageTag} still exists`)
-    } else if (!/No such image|no such image/.test(image.stderr ?? '')) {
-      // 只有「镜像不存在」才算已删除；daemon 不可达等非零退出不得被读成通过。
-      problems.push(
-        `could not determine whether ${scene.imageTag} still exists ` +
-          `(docker image inspect exited ${String(image.status)})`
+    // 与 m3b-docker.mjs 的 `imageIdOf` **同一条判据**：退出码必须恰好是 1，且
+    // stderr 必须是**锚定到本轮 tag 的整行** no such image。此前这里用的是无
+    // 锚点子串匹配、也不检查退出码是否为 1，于是被信号杀掉的 docker CLI
+    // （status === null）或一条关于**别的镜像**的错误都会被读成「本轮 tag 已被
+    // 删除」——而这是唯一一处在信号路径上验证 per-run tag 消失的地方。
+    // 整块也要 try/catch：`docker()` 在 spawn 失败时抛，不接住会让进程带着栈
+    // 直接死掉，FAIL 汇总与 5 窗口完整性计数都不会打印。
+    try {
+      const image = docker(['image', 'inspect', '--format', '{{.Id}}', scene.imageTag])
+      const absent = new RegExp(
+        `^\\s*(?:[Ee]rror(?: response from daemon)?:\\s*)?[Nn]o such image:?\\s*${
+          scene.imageTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        }\\s*$`,
+        'm'
       )
+      if (image.status === 0) {
+        problems.push(`image tag ${scene.imageTag} still exists`)
+      } else if (!(image.status === 1 && absent.test(image.stderr ?? ''))) {
+        problems.push(
+          `could not determine whether ${scene.imageTag} still exists ` +
+            `(docker image inspect exited ${
+              image.status === null ? `on signal ${String(image.signal)}` : String(image.status)
+            })`
+        )
+      }
+    } catch (error) {
+      problems.push(`the per-run image tag check could not run: ${String(error)}`)
     }
   }
   if (scene.secretsDirectory !== null && existsSync(scene.secretsDirectory)) {

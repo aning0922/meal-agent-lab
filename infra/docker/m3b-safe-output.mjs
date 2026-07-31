@@ -15,27 +15,33 @@
 //     URL 编码形态……）逐个替换掉。本仓自己写的证据行走这一条，因为 image ID
 //     之类的证据必须保持可读；
 //   - **按取值 + 按形状**（`scrubUntrusted`）：外来文本再加一层形状判据——口令
-//     形态的长串、任何 `scheme://…`、pgpass 形态的整行一律打码。形状层不需要
-//     事先知道取值，因此在「取值尚未生成 / 已被删除 / 根本不在本进程内」的
-//     时刻仍然有效，而按取值那一层在这些时刻是空的。
+//     形态的长串、任何 `scheme://…`、pgpass 行的**口令段**一律打码。形状层不
+//     需要事先知道取值，因此在「取值尚未生成 / 已被删除 / 根本不在本进程内」
+//     的时刻仍然有效，而按取值那一层在这些时刻是空的。形状规则刻意只吃它能
+//     确指的那一段，绝不整行抹掉——失败信息必须保住它的指定理由。
 //
 // 本模块自身不产生任何 Secret，也不保留输入文本。
 export const REDACTED_VALUE = '[redacted-secret]'
 export const REDACTED_TOKEN = '[redacted-token]'
 export const REDACTED_URI = '[redacted-uri]'
-export const REDACTED_PGPASS = '[redacted-pgpass-line]'
+export const REDACTED_PGPASS = '[redacted-pgpass-secret]'
 
 /**
  * 按**形状**打码：与是否知道具体取值无关。
  *
- *   - `[A-Za-z0-9]{32,}`：生成口令是 48 位 base62，这条覆盖它以及任何同形状的
- *     长串（顺带覆盖 sha256 摘要与容器 ID——在失败消息里打掉它们没有损失）；
+ *   - pgpass 行：`host:port:database:user:secret`。**只替换最后一段**（口令），
+ *     前四段原样保留。此前这条规则替换整行，而且四段之间不要求任何形状，于是
+ *     `ts=2026-07-31T23:10:05Z:step:migrate:exit=1 …` 与
+ *     `MEAL_AGENT_API=http://[::1]:3000/readyz` 这类**完全无害的诊断**被整行
+ *     抹成一个占位符——失败信息因此丢掉了它的指定理由，正是本轮要消灭的形态。
+ *     现在 port 必须是数字、口令段必须无空白且直到行尾，两个反例都不再命中；
  *   - `scheme://…`：任何连接串（含 userinfo 与查询参数）；
- *   - pgpass 行：`host:port:database:user:secret` 形态的整行。
+ *   - `[A-Za-z0-9]{32,}`：生成口令是 48 位 base62，这条覆盖它以及任何同形状的
+ *     长串（顺带覆盖 sha256 摘要与容器 ID——在失败消息里打掉它们没有损失）。
  */
 export const redactByShape = (text) =>
   String(text)
-    .replace(/^[^\s:]*:[^\s:]*:[^\s:]*:[^\s:]*:.+$/gm, REDACTED_PGPASS)
+    .replace(/^([^\s:]+:\d{1,5}:[^\s:]*:[^\s:]+:)(\S+)$/gm, `$1${REDACTED_PGPASS}`)
     .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, REDACTED_URI)
     .replace(/[A-Za-z0-9]{32,}/g, REDACTED_TOKEN)
 
@@ -78,13 +84,16 @@ export const createSecretScrubber = () => {
  * 期望的判据、实际条目数、以及固定说明。
  */
 export const wrongReason = (expected, actualItems) => {
-  const count = Array.isArray(actualItems) ? actualItems.length : 0
+  // 非数组也要如实计数：此前一律记 0，于是「传错了参数」看起来像「一条都没
+  // 有」——把调用方的失误说成了被测实现的结论。
+  const count = Array.isArray(actualItems)
+    ? actualItems.length
+    : actualItems === null || actualItems === undefined
+      ? 0
+      : 1
   return (
     `caught, but for the wrong reason (expected ${String(expected)}); ` +
     `${String(count)} reported item(s) did not match and are deliberately not ` +
     'echoed (gate output never re-prints raw problem or residue text)'
   )
 }
-
-/** 「一条都没抓到」的固定类别消息（同样不回显任何实际文本）。 */
-export const notCaught = (what) => `NOT CAUGHT — ${what}`
