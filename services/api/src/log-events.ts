@@ -257,23 +257,90 @@ const createEventLogSink = (root: Logger): EventLogSink => {
  *
  * 所有权也在这里定死：
  *
- *   - `framework`：调用方注入时归**调用方**所有（测试要捕获框架日志），我们不
- *     `end` 它、不 flush 它；没注入时由我们新建；
- *   - event root：**永远**归我们所有，因此 `close()` 只 flush 它这一个。
+ *   - `framework`：调用方注入时归**调用方**所有（测试要捕获框架日志），我们既不
+ *     flush 也不 `end` 它；**没注入时由我们新建，那一棵就归我们，必须进 flush**；
+ *   - event root：**永远**归我们所有，因此一定进 flush；
+ *   - 目的地（`Writable`）：**永远**归调用方所有，我们**绝不 `end`** 它。口径要写
+ *     实：flush **自有 root** 时 pino 会把回调转交给目的地自己的 `flush`（如果它
+ *     有的话），所以「不碰调用方的东西」只对**调用方的 logger** 成立；调用方给的
+ *     目的地会因为我们 flush 自有 root 而被调用一次 `flush`，它报错也会让
+ *     `close()` reject。
  */
 export interface LoggingContext {
   readonly framework: Logger;
   readonly eventLog: EventLogSink;
-  /** flush 自有的 event logger。幂等：重复调用返回同一个 promise。 */
+  /**
+   * flush 自有的那些 logger，并等自有 logger 写进去的字节排空。
+   *
+   * **有界且 fail closed**：flush 报错、flush 回调超时、目的地排空超时——三者都
+   * **reject**，不会静默当成关干净了。日志是审计面，「关的时候悄悄丢最后几条」
+   * 与「没写过」在事后是分不清的。
+   *
+   * **幂等**：重复调用拿到的是**同一个** promise，成功失败都一样。它不会重跑一遍
+   * flush，也不会第二次调用就变成成功。
+   */
   close: () => Promise<void>;
 }
 
+/** flush 与排空的硬上界。到点一律 reject，绝不静默放行。 */
+const flushTimeoutMs = 2_000;
+const drainTimeoutMs = 2_000;
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
 /**
- * 建立分离容器。
+ * flush 一棵**我们自己建的** logger 树，有界且 fail closed。
  *
- * `framework` 允许由调用方注入；event root **永远**由这里新建、当场包成 sink，
- * 调用方没有任何入口拿到它，也没有入口把一个预绑定的 logger 塞进业务事件底座。
+ * pino 的 `flush(cb)` 把回调直接交给目的地的 `flush`（`lib/proto.js:253`：
+ * `typeof stream.flush === 'function' ? stream.flush(cb || noop) : cb && cb()`）。
+ * 因此有三种收场：正常回调、带 error 的回调、以及**回调根本不来**。前一版只写了
+ * `flush(() => resolve())`——后两种一个都没管：报错被吃掉，卡住则永远挂着。
+ *
+ * 错误消息里只保留**归一化的类型名**：目的地的 error message 是不可信文本，
+ * 可能带上路径、连接串或别的取值。
  */
+const flushOwned = (root: Logger, role: string): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(
+        new Error(
+          `log flush timed out after ${String(flushTimeoutMs)}ms (${role})`,
+        ),
+      );
+    }, flushTimeoutMs);
+    // **刻意不 `unref()`**。unref 过的定时器不 ref 事件循环，而关机正是「循环里
+    // 已经没有别的 handle」的那一刻：avvio 的 onClose 是 LIFO，监听 socket 已关、
+    // 连接池已 end、`process.once("SIGTERM", …)` 的监听器本身也不 ref 循环。于是
+    // 进程会直接退出，这条 reject 永远不会发生，退出码还是 0——比静默 resolve 更糟。
+    // 它最多活 2 秒，是有界的。
+    void timer;
+    const done = (error?: Error | null): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      if (error === undefined || error === null) {
+        resolve();
+        return;
+      }
+      reject(new Error(`log flush failed (${role}): ${errorTypeOf(error)}`));
+    };
+    try {
+      root.flush(done);
+    } catch (error) {
+      done(error instanceof Error ? error : new Error("log flush threw"));
+    }
+  });
+
 /**
  * 等目的地把已经交给它的字节写完。
  *
@@ -281,40 +348,76 @@ export interface LoggingContext {
  * `Writable` 时它立刻回调，**不会**等 `_write` 的回调跑完。于是「关机前最后一条
  * 业务事件」在异步目的地上会丢（实测：延迟 5ms 的写入在 close 返回之后还没落地）。
  *
- * 这里只**等它排空**，绝不 `end()` 它——目的地归调用方所有。等待有 2 秒硬上界，
- * 一个卡住的目的地只会让关机慢一点，不会把它挂死。
+ * 这里只**等它排空**，绝不 `end()` 它——目的地归调用方所有。等待有硬上界，但到点
+ * 是**抛错**而不是接着往下走：一个没排空的目的地意味着日志真的丢了。
  */
-const awaitDrained = async (destination: Writable | undefined): Promise<void> => {
+const awaitDrained = async (
+  destination: Writable | undefined,
+  role: string,
+): Promise<void> => {
   if (destination === undefined) {
     return;
   }
-  const deadline = Date.now() + 2_000;
-  while (destination.writableLength > 0 && Date.now() < deadline) {
-    await new Promise((resolve) => {
-      setTimeout(resolve, 1);
-    });
+  const deadline = Date.now() + drainTimeoutMs;
+  while (destination.writableLength > 0) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `log destination did not drain within ${String(drainTimeoutMs)}ms (${role})`,
+      );
+    }
+    await sleep(1);
   }
 };
 
+/**
+ * 建立分离容器。
+ *
+ * `framework` 允许由调用方注入；event root **永远**由这里新建、当场包成 sink，
+ * 调用方没有任何入口拿到它，也没有入口把一个预绑定的 logger 塞进业务事件底座。
+ *
+ * 两个 `Writable` 参数都只是**目的地**，不是能力：给得进来的是「往哪写」，不是
+ * 「用谁写」。`frameworkDestination` 只在**没有**注入 framework logger 时才有意义
+ * ——两个一起给是矛盾的接线，直接抛错（fail closed），而不是默默忽略一个。
+ */
 export const createLoggingContext = (
   level: string,
   framework?: Logger,
   eventDestination?: Writable,
+  frameworkDestination?: Writable,
 ): LoggingContext => {
+  if (framework !== undefined && frameworkDestination !== undefined) {
+    throw new Error(
+      "logging context: an injected framework logger already owns its destination",
+    );
+  }
   // raw event logger 只存在于这个闭包里。它不出现在返回值上，也没有 getter。
   const eventRoot = createLogger(level, eventDestination);
   const eventLog = createEventLogSink(eventRoot);
+  const frameworkLogger = framework ?? createLogger(level, frameworkDestination);
+  // 注入进来的那棵归调用方所有：不 flush、不 end。只有**我们自己建的**才进名单。
+  const ownedFramework = framework === undefined ? frameworkLogger : undefined;
   let closing: Promise<void> | undefined;
+  const runClose = async (): Promise<void> => {
+    await flushOwned(eventRoot, "event");
+    if (ownedFramework !== undefined) {
+      await flushOwned(ownedFramework, "framework");
+      await awaitDrained(frameworkDestination, "framework");
+    }
+    await awaitDrained(eventDestination, "event");
+  };
   return {
-    framework: framework ?? createLogger(level),
+    framework: frameworkLogger,
     eventLog,
     close: () => {
-      // exactly-once：第二次调用拿到的是同一个 promise，不会再 flush 一遍。
-      closing ??= new Promise<void>((resolve) => {
-        eventRoot.flush(() => {
-          resolve();
-        });
-      }).then(() => awaitDrained(eventDestination));
+      // exactly-once：第二次调用拿到的是同一个 promise，不会再 flush 一遍，失败也
+      // 不会因为重试而变成成功。
+      if (closing === undefined) {
+        closing = runClose();
+        // 记住的 promise 可能是 rejected 的。挂一个空 catch 只是为了让「没人 await
+        // 第二次调用」不至于报 unhandled rejection——返回的仍然是原 promise，失败
+        // 照样传播给每一个调用方。
+        void closing.catch(() => undefined);
+      }
       return closing;
     },
   };

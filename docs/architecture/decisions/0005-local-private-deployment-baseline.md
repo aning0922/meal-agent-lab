@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
 - 状态：Proposed
-- 日期：2026-07-26（实施注记最后更新 2026-07-30，M3A Round 13）
+- 日期：2026-07-26（实施注记最后更新 2026-07-31，M3A Round 14）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -300,8 +300,15 @@ facade（闭集事件 + 固定 runtime projector + 专用安全字段类型，�
 Error/Request/Reply/Config/Secret 在类型上进不来），并由基于 TypeScript type
 checker 的静态门禁限制整项 logger capability（按**声明身份**判定，`LogFn` 只允许
 出现在边界文件里，mutation API 只有 `logging.ts` 可碰，组装根只有三个精确上下文
-可以命名 logger）——该门禁是工程护栏，不是形式化安全证明；中央 logger 边界（含 child()/setBindings() 与子 logger options
-的安全包装）保留为**纵深防御**，覆盖 Fastify 自己打的请求日志。
+可以命名 logger；能力被装进容器、mapped/indexed type、接口重声明或解构里带出去
+同样命中；「组装根持有的容器」只认 `createLoggingContext` 与 fastify 自己那两个
+**工厂的声明身份**，不是「initializer 恰好是一个调用」）——该门禁是工程护栏，不是
+形式化安全证明；中央 logger 边界（含 child()/setBindings() 与子 logger options
+的安全包装）保留为**纵深防御**，覆盖 Fastify 自己打的请求日志。event logger 的
+raw `Logger` 只存在于模块词法作用域，`app.eventLog` 不可写不可重定义；日志关机是
+**有界且 fail closed** 的：flush 报错、flush 回调超时、目的地排空超时都会让
+`app.close()` 失败，自建的 logger 才 flush，调用方注入的 logger 与 `Writable`
+既不 flush 也不 end。
 覆盖 database URL、connection string、password、DSN 的命名变体与按取值识别的
 连接串/conninfo，口令的原值与 URL 编码形态同时消失；全部响应统一携带
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何

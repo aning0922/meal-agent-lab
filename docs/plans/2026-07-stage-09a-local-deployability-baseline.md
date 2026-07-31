@@ -1,6 +1,6 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-07-30 更新实施状态）
+- 日期：2026-07-26（2026-07-31 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」implementation complete, pending total-control review**；M3B、M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`
 - 规划基线：`main` `35ddf78`
@@ -1010,6 +1010,121 @@ request 形参都报成泄漏），类型实参只在数组/元组这类**真正
 删除 `logging.ts` 里失真的 `redact.paths` 后备与子 logger censor 包装注释（根
 logger 第七轮起不配置 `redact`，子 logger 第八轮起整条拒绝，因此进程里不存在任何
 一条经过 `@pinojs/redact` 的输出路径）。
+
+**M3A 仍为整改中，未标记 Accepted。**
+
+#### M3A Round 14 收尾修订
+
+**一、日志关机统一成有界、fail closed。**
+
+Round 14 的 `close()` 只写了 `flush(() => resolve())`。pino 把回调**直接交给目的地
+的 `flush`**（`lib/proto.js:253`：`typeof stream.flush === 'function'` 时
+`stream.flush(cb || noop)`，否则 `cb && cb()`），因此有三种收场，而那一版只管了
+第一种：
+
+| 收场 | 修复前实测 | 修复后 |
+| --- | --- | --- |
+| flush 带 error 回调 | close 静默 resolve | reject `log flush failed (event)` |
+| flush 回调根本不来 | 用例**永不返回**（仓库的 `test:unit` 没有超时；加 `--test-timeout=8000` 才会在 8 秒后判超时） | 2 秒上界后 reject `log flush timed out` |
+| 目的地排空超时 | 循环到点后**静默**往下走 | reject `log destination did not drain` |
+| 自建的 framework root | 根本不在 flush 名单里 | 进名单，flush 失败同样 reject |
+| 重复调用 | ——（成功路径已幂等） | 同一个 promise，成功失败都一样 |
+
+所有权口径写进类型注释：**自建的才 flush**（event root，以及没被注入时我们自己建的
+framework root）；调用方注入的 `Logger` 我们不碰，任何 `Writable` 都**绝不 `end`**。
+有一处必须写实：flush 自有 root 时 pino 会把回调转交给**目的地自己的** `flush`，
+所以调用方给的目的地会因此被调用一次 `flush`，它报错同样会让 `close()` 失败——
+「不碰调用方的东西」只对调用方的 **logger** 成立。为了让「自建的 framework root 确实被 flush 了」成为可断言的事实，
+`createLoggingContext` 增加第 4 个参数 `frameworkDestination`——它是**目的地**不是
+能力（给的是「往哪写」不是「用谁写」），并且与注入 framework logger **互斥**，两个
+一起给直接抛错。错误消息只保留**归一化的错误类型名**：目的地的 error message 是
+不可信文本。
+
+**二、capability gate 的 root-held 判据收窄到两个真实工厂。**
+
+上一版是 `ts.isCallExpression(node.initializer)`——组装根里**任何**调用的返回值都
+被当成「组装根持有的容器」。于是：
+
+| 反例 | 收尾修订前 | 修订后 |
+| --- | --- | --- |
+| `violatingForeignFactoryHolder`（`const held = externalRelay(logging); return held;`） | 一条都不报（假绿） | 报出 |
+| `violatingForeignFrameworkHolder`（自造工厂返回带 `log` 的容器） | 一条都不报（假绿） | 报出 |
+
+现在只认两个**声明身份**：`log-events.ts` 真实导出的 `createLoggingContext`，以及
+**fastify 包自己** `fastify.d.ts` 里那个 `fastify` 工厂（穿过 import alias 后按
+符号名 + 声明文件比对）。认不出 fastify 的声明文件时门禁直接抛错，而不是退化成
+「什么调用都放行」。fixture 的 `allowedWiring` 因此改成调用**真实的** `Fastify`，
+自造工厂降级为违规变体，违规接线从七种增加到九种（收尾复评后为**十三种**）。
+
+#### M3A Round 14 收尾复评整改
+
+收尾修订自己又跑了一轮四视角对抗评审（close 生命周期 / gate 判据 / 文档一致性 /
+纪律与冻结面），12 条报告经独立反驳后确认 9 条。下面三类是实质缺陷：
+
+**一、`timer.unref()` 让 flush 超时在真实关机时根本不生效（blocking）。**
+
+unref 过的定时器不 ref 事件循环，而关机正是「循环里已经没有别的 handle」的那一刻：
+avvio 的 onClose 是 LIFO，监听 socket 已关、连接池已 end、
+`process.once("SIGTERM", …)` 的监听器本身也不 ref 循环，`index.ts` 自己那个 10 秒
+`forceClose` 也是 unref 的。于是进程直接退出，`close()` 永不 settle，**退出码还是
+0**——比静默 resolve 更糟。
+
+这条**在 `node --test` 里测不出来**：runner 自己吊着事件循环，用例照样通过。所以
+回归改成**另起一个进程**跑 `tests/fixtures/stalled-flush-shutdown.ts`：
+
+| | 修复前 | 修复后 |
+| --- | --- | --- |
+| runner 内用例 `close rejects when the flush callback never fires` | ✔ 通过（假绿） | ✔ 通过 |
+| 独立进程 | `OUTCOME=NEVER-SETTLED`，退出码 0 | `OUTCOME=REJECTED` |
+
+同时给 `src/index.ts` 的 `shutdown()` 补上 `catch`：`void shutdown(…)` 会把这个
+rejection 丢掉，最终只剩 Node 对未处理拒绝的默认行为。现在落成 stderr 上一行
+**固定文本 + 归一化类型名**（不是取值），以及确定的非零退出码。
+
+**二、gate 里三条「按形状放行」的规则叠加成一条完整的能力出口（blocking / major）。**
+
+| 反例 | 收尾复评前 | 复评后 |
+| --- | --- | --- |
+| `frameworkFactory({ loggerInstance: logging.framework });`（结果被丢弃的裸语句） | 一条都不报 | 报出 |
+| `app.register(auditPlugin, { loggerInstance: logging.framework })` | 一条都不报 | 报出 |
+| `(o) => createLoggingContext(o.level, o.injected)`（直接 return 工厂结果） | 不报 | 报出 |
+| `const logging = createLoggingContext(…); return logging;` | 不报 | 报出 |
+
+根因是三条规则各自只看「形状」：丢弃的调用放行**任何** callee（可是能力顺着**实参**
+出去，不是返回值）；选项对象字面量放行**任何**调用的实参；`loggerInstance:` 从不
+检查外层调用是不是框架工厂。现在丢弃规则只认「callee 是**框架容器**上的成员访问」
+或 `Object.defineProperty(<框架容器>, …)`（后者按 TypeScript lib 里那条声明的身份
+认），选项字面量与 `loggerInstance:` 都必须落在**框架工厂自己**那次调用上。
+
+同时把 `rootHeldSymbols` 拆成两类：`frameworkHeldSymbols` 可以被 return（那就是
+`buildApp` 的契约），`contextSymbols` 只允许作为**成员访问的基**出现。违规变体从
+九种增加到**十三种**。
+
+**三、失真文档。**
+
+`app.ts` 里还剩一条指向已删除的 `logging.events` 的注释；gate 注释里那「三个确切
+位置」的第 3 条（`createEventLogSink(<ctx>.events)`）在代码里根本不存在；
+「调用方注入的……**所有** `Writable` 既不 flush 也不 end」是失真的（flush 自有 root
+会把回调转交给目的地自己的 `flush`）；被当作 pino 源码逐字引用的
+`'flush' in stream` 在锁定的 pino 10.3.1 里其实是
+`typeof stream.flush === 'function'`（差别可观测：目的地上挂一个**非函数**的 flush
+属性时，两种判据的结果不一样）；「修复前实测 8 秒超时」不可复现（仓库的 `test:unit`
+没有超时，挂住就是无限挂住，那个 8 秒来自 `--test-timeout=8000` 的临时探针）。以上
+逐条订正。
+
+**未采纳（写明理由）**：评审还指出 `let app; app = Fastify(…)`、三元 initializer、
+`const f = Fastify; f(…)` 这些**语义等价**的接线会被门禁报红。那是**故意**的：
+判据是「声明身份 + 精确 AST 位置」，放宽任何一条都会把上面刚堵住的口子重新打开。
+组装根是一个文件、十来行接线，保持 canonical 写法的代价远小于放宽判据。
+
+**四、文档与日期。**
+
+`app.ts` 里指向已删除的 `eventSink` 的注释、gate 的 root-held 注释、ADR-0005 的
+实施注记、project-status、本计划与 API README 一并同步，日期统一 **2026-07-31**。
+API unit 163 → **171**。
+
+**Secret 信号状态机、数据库、Compose、contracts、客户端与 generated 文件保持冻结**，
+本轮 diff 为 0 行。
 
 **M3A 仍为整改中，未标记 Accepted。**
 

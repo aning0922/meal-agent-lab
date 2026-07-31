@@ -1,6 +1,6 @@
 # 项目状态
 
-最后更新：2026-07-30
+最后更新：2026-07-31
 
 ## 当前结论
 
@@ -80,14 +80,14 @@
 
 当前门禁包含：
 
-下表是 **2026-07-30 阶段 09A / M3A Round 14 之后**的实际计数（阶段 08 收口时为
+下表是 **2026-07-31 阶段 09A / M3A Round 14 之后**的实际计数（阶段 08 收口时为
 contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A 的 M2A/M3A
 各轮新增测试，业务语义未变）：
 
 | 层 | 通过数量/结果 |
 | --- | --- |
 | contracts | 28/28 |
-| API unit | 163/163 |
+| API unit | 171/171 |
 | API HTTP | 8/8 |
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
@@ -269,10 +269,29 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   错误处理器也不读这个属性，改从**词法闭包**里取 sink——读一个可替换的属性等于把
   「谁来处理业务事件」交给任何拿得到实例的人。反例实测：直接赋值与
   `Object.defineProperty` 均失败，业务事件仍走原 sink。
-- **日志生命周期归属明确**（Round 14）：framework root 与 event root 都由
-  `LoggingContext` 拥有，`app.close` 经 `onClose` 等待自有 event logger flush；
-  调用方注入的 `Writable` / `Logger` **一律不 end**。回归覆盖 delayed-write 与
-  「flush 恰好一次」。
+- **日志关机有界且 fail closed**（Round 14）：`close()` 先 flush **自建的**那些
+  logger（event root，以及没被注入时我们自己建的 framework root），再等自有 logger
+  写进去的字节排空。调用方注入的 `Logger` 我们不碰，任何 `Writable` 都**绝不
+  `end`**；口径写实的部分是——flush 自有 root 时 pino 会把回调转交给**目的地自己
+  的** `flush`（`lib/proto.js:253`，判据是 `typeof stream.flush === "function"`），
+  所以调用方给的目的地会因此被调用一次 `flush`，它报错同样会让 `close()` 失败。
+  三条失败路径全部 **reject**、不静默放行：flush 报错、flush 回调不来、目的地排空
+  超时。重复调用拿到的是**同一个** promise，成功失败都一样。修复前实测：flush 报错
+  → close 静默 resolve；flush 回调不来 → 用例**永不返回**（仓库的 `test:unit` 没有
+  超时；加 `--test-timeout=8000` 跑才会在 8 秒后被判超时）；排空超时 → 静默
+  resolve；自建的 framework root 根本不在 flush 名单里。错误消息只保留**归一化的
+  错误类型名**，不带目的地的原始 message。
+- **超时定时器刻意不 `unref()`**（Round 14 收尾复评）：第一版写了 `timer.unref()`。
+  unref 过的定时器不 ref 事件循环，而关机正是「循环里已经没有别的 handle」的那一
+  刻——avvio 的 onClose 是 LIFO，监听 socket 已关、连接池已 end、
+  `process.once("SIGTERM", …)` 的监听器本身也不 ref 循环。于是超时永远不到、
+  `close()` 永不 settle、进程以 **0** 退出并静默丢日志，比静默 resolve 更糟。
+  这条**在 `node --test` 里测不出来**：runner 自己吊着事件循环，用例照样通过。
+  因此回归改成**另起一个进程**跑
+  `tests/fixtures/stalled-flush-shutdown.ts`：修复前输出 `OUTCOME=NEVER-SETTLED`
+  且退出码 0，修复后输出 `OUTCOME=REJECTED`。`src/index.ts` 也补上了 `catch`——
+  `void shutdown(…)` 会把这个 rejection 丢掉，最终只剩 Node 对未处理拒绝的默认
+  行为；现在落成 stderr 上一行固定文本加归一化类型名，以及确定的非零退出码。
 - **`allowedErrorTypes` 改为模块私有**（第十二轮）：上一版导出的是
   `ReadonlySet<string>`，那只是类型上的只读——`(x as Set<string>).add("EVIL")` 在
   运行期照样成功。现在对外只有一个**冻结的 canonical 数组**与一个 **predicate**；
@@ -311,9 +330,14 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
   与解构（`const { framework } = …`）逐条命中。判据仍是**声明身份**，因此第三方
   框架类型（`FastifyRequest` 的第七个类型参数正好就是 `Logger`）不会被误报。
   组装根白名单绑的是**真实变量符号 + 声明来源 + factory initializer**，不是名字或
-  类型文本。Round 13 的 app.ts 假绿是**手工改文件**验证的，跑完就没了；Round 14
-  把七种违规接线固定进 `tests/fixtures/app-wiring-variants.ts`，测试把 fixture
-  **当作组装根**喂给收集器，白名单从此有自动化回归。
+  类型文本；「组装根持有的容器」只认 `createLoggingContext` 与 **fastify 自己的**
+  工厂这两个**声明身份**。收尾修订前这条写的是「initializer 是不是一个
+  `CallExpression`」——**任何**调用的返回值都算，于是
+  `const held = externalRelay(logging)` 之后 `held` 怎么用都放行，一个中继函数就能
+  把整个 context 带出边界（实测假绿）。Round 13 的 app.ts 假绿是**手工改文件**验证
+  的，跑完就没了；现在十三种违规接线固定在
+  `tests/fixtures/app-wiring-variants.ts` 里，测试把 fixture **当作组装根**喂给
+  收集器，白名单从此有自动化回归。
 - **logging.ts 的净化器降级为纵深防御**（第十轮起）：它不再是业务日志的安全依据，
   只覆盖 Fastify **自己**打的那几条请求日志（`incoming request`、
   `request completed`、defaultErrorLog）——那条路径绕不过 facade。因此**不再为

@@ -372,13 +372,14 @@ const collectCapabilityUses = (
    * 就放行。那等于放行了整棵子树——`loggerInstance: externalRelay(logger)` 与
    * `createEventLogSink(externalRelay(logger))` 都能溜过去（实测两条都假绿）。
    *
-   * 现在只认三个**确切的**位置，而且节点形状也钉死：
+   * 现在只认这些**确切的**位置，而且节点形状也钉死（完整清单见 `isAllowedAppNode`
+   * 上的注释）：
    *
    *   1. `createLoggingContext(level, <node>)` 的第 1 个实参，且 `<node>` 必须是
    *      一个成员访问（`options.logger`）；
-   *   2. `loggerInstance: <node>`，且 `<node>` 必须是 `<ctx>.framework`；
-   *   3. `createEventLogSink(<node>)` 的第 0 个实参，且 `<node>` 必须是
-   *      `<ctx>.events`。
+   *   2. `loggerInstance: <node>`，`<node>` 必须是 `<ctx>.framework`，而且这个属性
+   *      必须写在**框架工厂**自己那次调用的选项字面量里；
+   *   3. `<ctx>` 只能作为**成员访问的基**出现，不能整个被传出去或 return 掉。
    *
    * 任何把 logger 先过一手函数的写法都不满足「节点形状」，因此拿不到放行。
    */
@@ -393,6 +394,27 @@ const collectCapabilityUses = (
     );
 
   /**
+   * 一个调用是否就是 **fastify 自己的** 工厂。
+   *
+   * 判据同样是**声明身份**：callee 解析出来的符号（穿过 import alias）必须叫
+   * `fastify`，而且它的声明必须落在 fastify 包自己的 `fastify.d.ts` 里。一个自造的
+   * 同名工厂、或者任何「返回值恰好长得像 FastifyInstance」的函数都对不上。
+   */
+  const fastifyEntry = program
+    .getSourceFiles()
+    .map((file) => file.fileName)
+    .find((name) => name.endsWith("/node_modules/fastify/fastify.d.ts"));
+  if (fastifyEntry === undefined) {
+    // fail closed：认不出框架工厂就不该退化成「什么调用都放行」。
+    throw new Error(
+      "the capability gate needs fastify's own declaration file to identify the framework factory",
+    );
+  }
+  const isFrameworkFactoryCall = (node: ts.Node): node is ts.CallExpression =>
+    ts.isCallExpression(node) &&
+    resolvesToExport(checker, node.expression, fastifyEntry, "fastify");
+
+  /**
    * 组装根里由**工厂 initializer** 声明出来的那些 context 变量的**真实符号**。
    *
    * 白名单绑的是符号身份，不是成员文本：`logging.framework` 之所以放行，是因为
@@ -402,14 +424,16 @@ const collectCapabilityUses = (
    */
   const contextSymbols = new Set<ts.Symbol>();
   /**
-   * 组装根**持有**的容器符号：`const logging = createLoggingContext(…)` 与
-   * `const app = Fastify(…)`。
+   * 组装根用**框架自己的工厂**建出来的容器符号：`const app = Fastify(…)`。
    *
-   * 组装根当然要拿着这两个东西——它就是干这个的。允许的只是**持有**：容器本身
-   * 可以被命名，但从它身上取出来的 logger 成员照样逐个判定，因此 `app.log` 或
-   * `logging.framework` 出现在白名单之外的位置仍然会被报出来。
+   * 它和 `contextSymbols` 分开，因为两者的允许面**不一样**：`buildApp` 的契约就是
+   * 把 `app` return 出去，门禁改不掉；而 `LoggingContext` 一旦整个离开组装根，
+   * `.framework` 也就跟着出去了，所以它只允许作为**成员访问的基**出现。
+   *
+   * 无论哪一类，从容器身上取出来的 logger 成员都照样逐个判定：`app.log` 或
+   * 白名单之外位置上的 `logging.framework` 仍然会被报出来。
    */
-  const rootHeldSymbols = new Set<ts.Symbol>();
+  const frameworkHeldSymbols = new Set<ts.Symbol>();
   const collectContextSymbols = (file: ts.SourceFile): void => {
     const visit = (node: ts.Node): void => {
       if (
@@ -421,12 +445,16 @@ const collectCapabilityUses = (
         if (symbol !== undefined) {
           if (isContextFactoryCall(node.initializer)) {
             contextSymbols.add(symbol);
-            rootHeldSymbols.add(symbol);
-          } else if (ts.isCallExpression(node.initializer)) {
-            // 组装根用某个工厂建出来的容器（`Fastify(…)` 返回的
+          } else if (isFrameworkFactoryCall(node.initializer)) {
+            // 组装根用**框架自己的**工厂建出来的容器（`Fastify(…)` 返回的
             // `FastifyInstance`）。绑的是**这条声明的符号**加上**它的 factory
-            // initializer**——不是名字，也不是类型文本。
-            rootHeldSymbols.add(symbol);
+            // initializer 的声明身份**——不是名字，也不是类型文本。
+            //
+            // 上一版这里写的是 `ts.isCallExpression(node.initializer)`：**任何**
+            // 调用的返回值都被当成「组装根持有的容器」。那等于说
+            // `const held = externalRelay(logging)` 之后 `held` 随便怎么用都放行
+            // ——一个中继函数就能把整个 context 带出边界（实测假绿）。
+            frameworkHeldSymbols.add(symbol);
           }
         }
       }
@@ -462,6 +490,60 @@ const collectCapabilityUses = (
     );
   };
 
+  /** 一个标识符是否解析到某个已登记的组装根符号。 */
+  const resolvesToHeld = (
+    node: ts.Node,
+    held: ReadonlySet<ts.Symbol>,
+  ): boolean => {
+    if (!ts.isIdentifier(node)) {
+      return false;
+    }
+    const symbol = checker.getSymbolAtLocation(node);
+    return symbol !== undefined && held.has(symbol);
+  };
+
+  /** `Object.defineProperty(…)`：按 TypeScript lib 里那条声明的身份认。 */
+  const isObjectDefinePropertyCall = (node: ts.Node): node is ts.CallExpression => {
+    if (!ts.isCallExpression(node)) {
+      return false;
+    }
+    let symbol = checker.getSymbolAtLocation(node.expression);
+    if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+      symbol = checker.getAliasedSymbol(symbol);
+    }
+    if (symbol?.getName() !== "defineProperty") {
+      return false;
+    }
+    return (symbol.getDeclarations() ?? []).some((declaration) =>
+      /\/node_modules\/typescript\/lib\/lib\..*\.d\.ts$/.test(
+        declaration.getSourceFile().fileName,
+      ),
+    );
+  };
+
+  /** 传给**框架工厂**的选项对象字面量（`Fastify({ … })` 的那个）。 */
+  const isFrameworkOptionsLiteral = (node: ts.Node): boolean =>
+    ts.isObjectLiteralExpression(node) &&
+    node.parent !== undefined &&
+    isFrameworkFactoryCall(node.parent) &&
+    node.parent.arguments.includes(node);
+
+  /**
+   * 组装根里被放行的**精确节点**。
+   *
+   * 每一条都同时钉住「是什么」与「在哪」。收尾修订前有三条是按「形状」放行的，
+   * 叠加起来就是一条完整的能力出口（实测假绿）：
+   *
+   *   - 「结果被丢弃的调用」放行**任何** callee，于是
+   *     `frameworkFactory({ loggerInstance: logging.framework });` 整条语句全绿；
+   *   - 「传给调用的选项对象字面量」放行**任何**调用的实参字面量；
+   *   - 「`loggerInstance:`」从不检查外层调用是不是框架工厂，于是
+   *     `app.register(plugin, { loggerInstance: logging.framework })` 也全绿。
+   *
+   * 现在：丢弃规则只认「callee 是**框架容器**上的成员访问」或
+   * `Object.defineProperty(<框架容器>, …)`；选项字面量与 `loggerInstance:` 都必须
+   * 落在**框架工厂自己**那次调用上。
+   */
   const isAllowedAppNode = (node: ts.Node): boolean => {
     const parent = node.parent;
     if (parent === undefined) {
@@ -470,15 +552,39 @@ const collectCapabilityUses = (
     if (isCompositionInput(node)) {
       return true;
     }
-    // 持有容器本身（`logging` / `app`），以及创建它们的那一次调用。
-    if (ts.isIdentifier(node)) {
-      const symbol = checker.getSymbolAtLocation(node);
-      if (symbol !== undefined && rootHeldSymbols.has(symbol)) {
+    // 1. 框架实例本身。组装根建它、配它、最后把它 return 出去——那就是 buildApp 的
+    //    契约，门禁改不掉，也不该假装改得掉。
+    if (resolvesToHeld(node, frameworkHeldSymbols)) {
+      return true;
+    }
+    // 2. `LoggingContext` 只能作为**成员访问的基**出现：`logging.framework` /
+    //    `logging.eventLog` / `logging.close()`。把 `logging` 本身传出去、装进容器
+    //    或者 return 掉，都不在此列。
+    if (
+      resolvesToHeld(node, contextSymbols) &&
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === node
+    ) {
+      return true;
+    }
+    // 3. 两个真实工厂的调用，且必须**就是**它们那条变量声明的 initializer。
+    if (
+      ts.isVariableDeclaration(parent) &&
+      parent.initializer === node &&
+      ts.isIdentifier(parent.name) &&
+      (isContextFactoryCall(node) || isFrameworkFactoryCall(node))
+    ) {
+      const symbol = checker.getSymbolAtLocation(parent.name);
+      if (
+        symbol !== undefined &&
+        (contextSymbols.has(symbol) || frameworkHeldSymbols.has(symbol))
+      ) {
         return true;
       }
     }
-    // 结果被**丢弃**的调用：`app.register(…)` / `Object.defineProperty(app, …)`
-    // 这类返回容器自身的链式调用。值没有去处，能力就没有离开边界。
+    // 4. 结果被**丢弃**的框架调用：`app.register(…)` / `app.decorate(…)` /
+    //    `Object.defineProperty(app, …)`。callee 必须落在框架容器上——值没有去处
+    //    不等于能力没出去，能力可以顺着**实参**走。
     if (ts.isCallExpression(node)) {
       let cursor: ts.Node = node;
       while (
@@ -487,32 +593,23 @@ const collectCapabilityUses = (
       ) {
         cursor = cursor.parent;
       }
-      if (
-        cursor.parent !== undefined &&
-        ts.isExpressionStatement(cursor.parent)
-      ) {
+      const discarded =
+        cursor.parent !== undefined && ts.isExpressionStatement(cursor.parent);
+      const onFrameworkInstance =
+        (ts.isPropertyAccessExpression(node.expression) &&
+          resolvesToHeld(node.expression.expression, frameworkHeldSymbols)) ||
+        (isObjectDefinePropertyCall(node) &&
+          node.arguments[0] !== undefined &&
+          resolvesToHeld(node.arguments[0], frameworkHeldSymbols));
+      if (discarded && onFrameworkInstance) {
         return true;
       }
     }
-    // 交给框架工厂的选项对象字面量：里面的 `loggerInstance` 另有精确白名单。
-    if (
-      ts.isObjectLiteralExpression(node) &&
-      ts.isCallExpression(parent) &&
-      parent.arguments.includes(node as ts.Expression)
-    ) {
+    // 5. 交给**框架工厂**的选项对象字面量：里面的 `loggerInstance` 另有精确白名单。
+    if (isFrameworkOptionsLiteral(node)) {
       return true;
     }
-    if (
-      ts.isVariableDeclaration(parent) &&
-      parent.initializer === node &&
-      ts.isIdentifier(parent.name)
-    ) {
-      const symbol = checker.getSymbolAtLocation(parent.name);
-      if (symbol !== undefined && rootHeldSymbols.has(symbol)) {
-        return true;
-      }
-    }
-    // 1. `createLoggingContext(level, <options.logger>, …)` 的第 1 个实参。
+    // 6. `createLoggingContext(level, <options.logger>, …)` 的第 1 个实参。
     if (
       isContextFactoryCall(parent) &&
       parent.arguments[1] === node &&
@@ -520,17 +617,16 @@ const collectCapabilityUses = (
     ) {
       return true;
     }
-    // 2. 工厂调用本身，以及它所初始化的那条变量声明。
-    if (isContextFactoryCall(node)) {
-      return true;
-    }
-    // 3. `loggerInstance: <ctx>.framework`——node 必须**就是** initializer。
+    // 7. `loggerInstance: <ctx>.framework`，且这个属性必须写在**框架工厂**的选项
+    //    字面量里——插件选项、自造工厂的选项都不算。
     if (
       ts.isPropertyAssignment(parent) &&
       ts.isIdentifier(parent.name) &&
       parent.name.text === "loggerInstance" &&
       parent.initializer === node &&
-      isContextMemberAccess(node, "framework")
+      isContextMemberAccess(node, "framework") &&
+      parent.parent !== undefined &&
+      isFrameworkOptionsLiteral(parent.parent)
     ) {
       return true;
     }
@@ -811,7 +907,8 @@ test("the composition-root allowlist admits only the exact wiring nodes", () => 
   };
 
   // 合法：工厂调用、`options.injected` 作为第 1 个实参、
-  // `loggerInstance: logging.framework`、以及组装根持有的容器本身。
+  // `loggerInstance: logging.framework`、以及组装根持有的容器本身——「持有」只认
+  // `createLoggingContext` 与 **fastify 自己的**工厂这两个声明身份。
   assert.deepEqual(
     within("allowedWiring"),
     [],
@@ -827,6 +924,12 @@ test("the composition-root allowlist admits only the exact wiring nodes", () => 
     "violatingContainer",
     "violatingIndexedAccess",
     "violatingRawRoot",
+    "violatingForeignFactoryHolder",
+    "violatingForeignFrameworkHolder",
+    "violatingDiscardedForeignCall",
+    "violatingPluginOption",
+    "violatingReturnedContextCall",
+    "violatingReturnedContext",
   ]) {
     assert.ok(
       within(name).length > 0,

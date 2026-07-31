@@ -85,9 +85,12 @@ export interface BuildAppOptions {
   /**
    * **框架** logger（Fastify 的 `loggerInstance`）。测试用它捕获框架请求日志。
    *
-   * 它**不是**业务事件的底座：业务事件走 `eventSink`，而 `eventSink` 的默认值
-   * 由 `createLoggingContext()` 新建的独立 root 提供，调用方没有任何入口把一个
-   * 预绑定的 logger 塞进去。
+   * 它**不是**业务事件的底座：业务事件走 `LoggingContext` 里那个已经包好的
+   * `EventLogSink`，它的 root 由 `createLoggingContext()` 新建，调用方没有任何
+   * 入口把一个预绑定的 logger 塞进去。
+   *
+   * 注入进来的这一棵归**调用方**所有：`app.close` 既不 flush 它也不 `end` 它。
+   * 只有在**没有**注入时由我们自己建的那一棵才进关机 flush 名单。
    */
   readonly logger?: Logger;
   /**
@@ -220,8 +223,9 @@ export const buildApp = async (
     },
   });
 
-  // sink 的底座是 `logging.events`——一个**从不**出现在 `app.log` / `request.log`
-  // / 任何公开返回值上的独立 root。业务代码此后只持有 `app.eventLog`。
+  // sink 的底座是 `createLoggingContext()` 在**它自己的模块词法作用域**里新建的
+  // 那个 event root——它**从不**出现在 `LoggingContext`、`app.log` / `request.log`
+  // 或任何公开返回值上。业务代码此后只持有 `app.eventLog`。
   app.decorate("eventLog", eventLog);
   // `decorate` 只是普通赋值，属性仍然可写可配置。钉成只读且不可重定义：赋值与
   // `Object.defineProperty` 都会失败，业务事件永远走上面那个词法闭包里的 sink。
@@ -333,8 +337,13 @@ export const buildApp = async (
 
   await registerRoutes(app, operations, readiness);
 
-  // 生命周期：只 flush **自有**的 event logger。调用方注入的 framework logger 与
-  // 它的 Writable 归调用方所有，我们既不 flush 也不 end。
+  // 生命周期：flush **自有**的那些 logger（event root，以及没被注入时我们自己建的
+  // framework root），再等自有 logger 写进去的字节排空。调用方注入的 framework
+  // logger 与所有 `Writable` 都归调用方所有，我们既不 flush 也不 end。
+  //
+  // `close` 是**有界且 fail closed** 的：flush 报错、flush 回调超时、排空超时都会
+  // reject，并经由这个 hook 让 `app.close()` 一起失败。关机时悄悄丢掉最后几条日志，
+  // 事后与「根本没写过」分不清。
   app.addHook("onClose", async () => {
     await logging.close();
   });

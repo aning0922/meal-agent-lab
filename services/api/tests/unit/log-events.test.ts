@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { apiErrorStatus } from "@meal-agent/contracts/api";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
 import { Writable } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { buildApp } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
@@ -22,6 +25,7 @@ import { createLogger } from "../../src/logging.js";
  * 这里每一条都扫描真实 Pino 的最终输出，sentinel 命中必须为 0。
  */
 
+const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const opaqueSecret = "OPAQUE-FACADE-SENTINEL";
 const sentinels = [opaqueSecret, "SENTINEL"] as const;
 const requestId = "3f1d1a2c-9b4e-4f6a-8c1d-2e5b7a9c0d31";
@@ -620,4 +624,226 @@ test("the logging context close is idempotent by identity", async () => {
   assert.equal(first, second, "close must return the very same promise");
   await first;
   await second;
+});
+
+// ---------------------------------------------------------------------------
+// 第十四轮收尾：close 必须有界且 fail closed
+// ---------------------------------------------------------------------------
+
+/**
+ * 一个可观测的目的地。
+ *
+ * pino 只在目的地的 `flush` 是**函数**时才把回调交出去（`lib/proto.js:253`:
+ * `typeof stream.flush === 'function'`），所以这里显式挂一个 `flush`，才谈得上
+ * 「flush 报错」与「flush 回调不来」这两种收场。
+ */
+interface ProbeDestination {
+  readonly stream: Writable;
+  flushes: () => number;
+  ended: () => boolean;
+}
+
+const probeDestination = (
+  behaviour: "ok" | "error" | "hang",
+  options: { readonly stallWrites?: boolean } = {},
+): ProbeDestination => {
+  let flushes = 0;
+  let ended = false;
+  const stream = new Writable({
+    write(_chunk, _encoding, callback) {
+      if (options.stallWrites === true) {
+        // 永远不回调：目的地卡住，`writableLength` 一直不降。
+        return;
+      }
+      callback();
+    },
+    final(callback) {
+      ended = true;
+      callback();
+    },
+  });
+  Object.defineProperty(stream, "flush", {
+    value: (callback: (error?: Error | null) => void): void => {
+      flushes += 1;
+      if (behaviour === "hang") {
+        return;
+      }
+      callback(
+        behaviour === "error"
+          ? new Error(`flush failed: ${opaqueSecret}`)
+          : null,
+      );
+    },
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+  return {
+    stream,
+    flushes: () => flushes,
+    ended: () => ended,
+  };
+};
+
+test("close rejects when the owned event logger fails to flush", async () => {
+  const destination = probeDestination("error");
+  const context = createLoggingContext(
+    "info",
+    createLogger("info"),
+    destination.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const failure = await context.close().then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.ok(
+    failure instanceof Error,
+    "a failing flush must reject, not resolve quietly",
+  );
+  assert.match(failure.message, /log flush failed \(event\)/);
+  // 目的地的 error message 是不可信文本：只保留归一化的类型名。
+  assert.ok(
+    !failure.message.includes(opaqueSecret),
+    `the rejection must not carry the destination's message\n${failure.message}`,
+  );
+  assert.equal(
+    destination.ended(),
+    false,
+    "a caller-owned destination must never be ended",
+  );
+});
+
+test("close rejects when the flush callback never fires", async () => {
+  const destination = probeDestination("hang");
+  const context = createLoggingContext(
+    "info",
+    createLogger("info"),
+    destination.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  await assert.rejects(
+    context.close(),
+    /log flush timed out after 2000ms \(event\)/,
+    "a flush callback that never fires must reject, not hang forever",
+  );
+  assert.equal(destination.flushes(), 1);
+  assert.equal(destination.ended(), false);
+});
+
+test("close rejects when the destination never drains", async () => {
+  const destination = probeDestination("ok", { stallWrites: true });
+  const context = createLoggingContext(
+    "info",
+    createLogger("info"),
+    destination.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  await assert.rejects(
+    context.close(),
+    /log destination did not drain within 2000ms \(event\)/,
+    "an un-drained destination means the log really was lost; it must reject",
+  );
+  assert.equal(destination.ended(), false);
+});
+
+test("a failed close is remembered: every caller gets the same rejection", async () => {
+  const destination = probeDestination("error");
+  const context = createLoggingContext(
+    "info",
+    createLogger("info"),
+    destination.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  const first = context.close();
+  const second = context.close();
+  assert.equal(first, second, "close must return the very same promise");
+  await assert.rejects(first, /log flush failed \(event\)/);
+  await assert.rejects(second, /log flush failed \(event\)/);
+  assert.equal(
+    destination.flushes(),
+    1,
+    "a second close must not run the flush again",
+  );
+});
+
+test("the internally created framework root is flushed", async () => {
+  const events = probeDestination("ok");
+  const framework = probeDestination("error");
+  // 没有注入 framework logger：这一棵是**我们建的**，因此归我们，必须进 flush。
+  const context = createLoggingContext(
+    "info",
+    undefined,
+    events.stream,
+    framework.stream,
+  );
+
+  await assert.rejects(
+    context.close(),
+    /log flush failed \(framework\)/,
+    "an internally created framework root must be part of close",
+  );
+  assert.equal(framework.flushes(), 1);
+  assert.equal(framework.ended(), false);
+});
+
+test("an injected framework logger is never flushed or ended", async () => {
+  const events = probeDestination("ok");
+  const framework = probeDestination("error");
+  // 注入进来的这一棵归**调用方**所有。它的目的地 flush 会报错——如果我们碰它，
+  // close 就会 reject。
+  const context = createLoggingContext(
+    "info",
+    createLogger("info", framework.stream),
+    events.stream,
+  );
+  context.eventLog.emit("shutdown.started", { signal: "SIGTERM" });
+
+  await context.close();
+  assert.equal(
+    framework.flushes(),
+    0,
+    "an injected framework logger must never be flushed by us",
+  );
+  assert.equal(framework.ended(), false);
+});
+
+test("an injected framework logger and a framework destination cannot be combined", () => {
+  const framework = probeDestination("ok");
+  const events = probeDestination("ok");
+  assert.throws(
+    () =>
+      createLoggingContext(
+        "info",
+        createLogger("info", framework.stream),
+        events.stream,
+        framework.stream,
+      ),
+    /an injected framework logger already owns its destination/,
+    "a contradictory wiring must fail closed, not silently ignore one side",
+  );
+});
+
+test("the flush timeout fires even when nothing else holds the event loop open", () => {
+  // 这条**必须**另起进程。`node --test` 的 runner 自己吊着事件循环，因此上面那条
+  // 「flush 回调不来」的用例在 runner 里是通过的——哪怕超时定时器被 `unref()` 掉。
+  // 真实关机没有 runner：那一刻循环里没有别的 handle，unref 过的定时器不会到，
+  // `close()` 永不 settle，进程以 **0** 退出并静默丢掉最后几条日志。
+  const script = join(packageRoot, "tests", "fixtures", "stalled-flush-shutdown.ts");
+  const run = spawnSync(process.execPath, ["--import", "tsx", script], {
+    cwd: packageRoot,
+    encoding: "utf8",
+    timeout: 60_000,
+  });
+  assert.equal(run.status, 0, `the probe process failed:\n${run.stderr}`);
+  assert.match(
+    run.stdout,
+    /OUTCOME=REJECTED/,
+    "outside the test runner the flush timeout must still reject; " +
+      `an unref'd timer lets the process exit 0 with close() unsettled\n${run.stdout}\n${run.stderr}`,
+  );
 });

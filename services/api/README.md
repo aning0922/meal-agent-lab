@@ -96,17 +96,27 @@ Error / Request / Reply / Config / Secret 在类型上就进不来。
 （`eventLogDestination?: Writable`），换不掉 sink。`statusCode` 由 `errorCode`
 派生，调用方造不出自相矛盾的组合。
 
-两棵 logger 树的**所有权**在 `LoggingContext`：`app.close` 经 `onClose` 等待自有
-event logger flush（恰好一次），调用方注入的 `Writable` / `Logger` 一律不 end。
+两棵 logger 树的**所有权**在 `LoggingContext`。`app.close` 经 `onClose` flush
+**自建的**那些 logger（event root，以及没被注入时我们自己建的 framework root），
+再等自有 logger 写进去的字节排空。调用方注入的 `Logger` 我们不碰，任何 `Writable`
+都**绝不 `end`**；但口径要写实——flush 自有 root 时 pino 会把回调转交给**目的地
+自己的** `flush`（如果它有），所以调用方给的目的地会因此被调用一次 `flush`，它报错
+同样会让 `close()` 失败。关机是**有界且 fail closed** 的：flush 报错、flush 回调
+超时、排空超时都会 reject 并让 `app.close()` 一起失败——关机时悄悄丢掉最后几条
+日志，事后与「根本没写过」分不清。超时定时器**刻意不 `unref()`**：关机那一刻循环
+里已经没有别的 handle，unref 过的定时器不会到，进程会以 0 退出而不是 reject。
+重复调用拿到的是同一个 promise，成功失败都一样。`index.ts` 把这个失败落成 stderr
+上的一行固定文本加归一化类型名，以及确定的非零退出码。
 
 静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
 **声明身份**而不是类型名字符串：任何解析到 pino `LogFn` 声明的表达式只允许出现在
 facade 与 `logging.ts` 里；`child`/`setBindings` 只有 `logging.ts` 可以碰；组装根
 `src/app.ts` 只有三个**精确上下文**可以命名 logger。能力被装进别的壳子里也算：
 容器、mapped type、indexed access、接口重声明与解构逐条命中，组装根白名单绑的是
-**真实变量符号 + 声明来源 + factory initializer**。七种违规接线固定在
-`tests/fixtures/app-wiring-variants.ts` 里，测试把它当作组装根喂给收集器，因此
-白名单有自动化回归。它是**工程护栏，不是形式化安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
+**真实变量符号 + 声明来源 + factory initializer**，且「组装根持有的容器」只认
+`createLoggingContext` 与 **fastify 自己的**工厂这两个声明身份，不是「initializer
+恰好是一个调用」。十三种违规接线固定在 `tests/fixtures/app-wiring-variants.ts` 里，
+测试把它当作组装根喂给收集器，因此白名单有自动化回归。它是**工程护栏，不是形式化安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
 
 `logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
 与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖
