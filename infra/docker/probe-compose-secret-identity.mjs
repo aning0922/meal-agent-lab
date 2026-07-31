@@ -75,6 +75,9 @@ const run = (args, options = {}) => {
 }
 
 // bash 侧（postgres 镜像，GNU stat）：每个文件输出一行固定格式的 PROBE 记录。
+// 刻意不用 eval：stat 失败时 eval 空串会静默沿用上一个文件的取值。三个字段
+// 各自独立赋值，任何一次 stat 失败都会在 set -e 下让整个探针以非零退出。
+// readable 的判据与 node 侧一致：**读到至少 1 个字节**（空文件不算可读）。
 const bashProbeScript = (targets) => `
 set -euo pipefail
 euid="$(id -u)"
@@ -83,12 +86,14 @@ for f in ${targets.join(' ')}; do
     echo "PROBE $f SYMLINK"
     exit 1
   fi
-  eval "$(stat -c 'uid=%u mode=%04a nlink=%h' "$f")"
+  uid="$(stat -c '%u' "$f")"
+  mode="$(stat -c '%04a' "$f")"
+  nlink="$(stat -c '%h' "$f")"
   case "$(stat -c '%F' "$f")" in
     "regular file") regular=yes ;;
     *) regular=no ;;
   esac
-  if head -c 1 "$f" > /dev/null; then readable=yes; else readable=no; fi
+  if [ -s "$f" ] && head -c 1 "$f" > /dev/null; then readable=yes; else readable=no; fi
   echo "PROBE $f euid=$euid uid=$uid mode=$mode nlink=$nlink regular=$regular readable=$readable symlink=no"
 done
 `
@@ -123,9 +128,14 @@ const parseProbeLine = (line) => {
   return { path: parts[1], fields }
 }
 
+/** CLI 信号处置读取的现场登记。 */
+const activeProbeScene = { project: null, secretsDirectory: null }
+
 const main = () => {
   const project = `meal-agent-m3b-probe-${randomBytes(6).toString('hex')}`
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-probe-'))
+  activeProbeScene.project = project
+  activeProbeScene.secretsDirectory = secretsDirectory
   const composeEnvironment = {
     ...process.env,
     MEAL_AGENT_SECRETS_DIR: secretsDirectory,
@@ -217,20 +227,30 @@ const main = () => {
       }
     }
   } finally {
-    // scoped cleanup：只处理本次 project 与本次临时目录。
+    // scoped cleanup：只处理本次 project 与本次临时目录。明文 Secret 目录
+    // **最先**删除——Docker 侧任何一步失败都不允许把它留在 tmpdir。容器删除
+    // 带 -v（postgres 镜像自带 VOLUME，不带 -v 会泄漏匿名卷），结束后逐类
+    // 复核零残留。
+    rmSync(secretsDirectory, { recursive: true, force: true })
     compose(['down', '--volumes', '--remove-orphans'])
-    for (const [listArgs, removeArgs] of [
-      [['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'rm', '-f']],
+    const sweeps = [
+      [['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'rm', '-f', '-v']],
       [['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'network', 'rm']],
       [['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`], ['docker', 'volume', 'rm', '-f']]
-    ]) {
+    ]
+    for (const [listArgs, removeArgs] of sweeps) {
       const listed = run(listArgs)
       const identifiers = listed.stdout.split('\n').filter(Boolean)
       if (identifiers.length > 0) {
         run([...removeArgs, ...identifiers])
       }
     }
-    rmSync(secretsDirectory, { recursive: true, force: true })
+    for (const [listArgs] of sweeps) {
+      const remaining = run(listArgs).stdout.split('\n').filter(Boolean)
+      if (remaining.length > 0) {
+        failures.push(`cleanup residue: ${remaining.join(', ')}`)
+      }
+    }
   }
 
   if (failures.length > 0) {
@@ -247,6 +267,41 @@ const main = () => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // 信号处置：Ctrl-C 不允许把临时 Secret 目录或 probe 容器留下。main() 在
+  // 进入 try 前就把现场登记到这里。
+  let terminating = false
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    process.on(signal, () => {
+      if (terminating) {
+        return
+      }
+      terminating = true
+      process.stderr.write(`\n${signal}: cleaning up the probe scene before exiting\n`)
+      try {
+        if (activeProbeScene.secretsDirectory !== null) {
+          rmSync(activeProbeScene.secretsDirectory, { recursive: true, force: true })
+        }
+        if (activeProbeScene.project !== null) {
+          const listed = run([
+            'docker',
+            'ps',
+            '-aq',
+            '--filter',
+            `label=com.docker.compose.project=${activeProbeScene.project}`
+          ])
+          const ids = listed.stdout.split('\n').filter(Boolean)
+          if (ids.length > 0) {
+            run(['docker', 'rm', '-f', '-v', ...ids])
+          }
+        }
+      } catch (error) {
+        process.stderr.write(
+          `cleanup on ${signal} failed: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+      }
+      process.exit(code)
+    })
+  }
   try {
     main()
   } catch (error) {

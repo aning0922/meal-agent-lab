@@ -32,15 +32,19 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { generateAndPreflight } from './generate-local-test-secrets.mjs'
-import { runContainmentAndIsolation } from './local-test-containment.mjs'
+import { buildNeedles, runContainmentAndIsolation } from './local-test-containment.mjs'
 import { checkSecretBundle, repositoryRoot } from './local-test-secrets-contract.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
 const migrationsDirectory = resolve(repositoryRoot, 'services/api/migrations')
 
-/** cleanup 只接受这一形状的 project name：范围外的名称一律拒绝处理。 */
-export const smokeProjectPattern = /^meal-agent-m3b-[a-z0-9][a-z0-9-]*$/
+/**
+ * cleanup 只接受这两类 project name（smoke 自己与反例套件），范围外一律拒绝。
+ * probe 的 `meal-agent-m3b-probe-*` 刻意**不在**范围内：并发运行的探针不该能
+ * 被本 cleanup 摸到。
+ */
+export const smokeProjectPattern = /^meal-agent-m3b-(smoke|neg)-[a-z0-9][a-z0-9-]*$/
 
 /** 临时 Secret 目录只允许出现在系统 tmpdir 下的这一前缀里。 */
 const temporarySecretsPrefix = 'meal-agent-m3b-secrets-'
@@ -100,19 +104,38 @@ const expectedRowSecurity = {
 const migrationRole = 'meal_agent_migrator'
 
 // ---------------------------------------------------------------------------
-// transcript 与失败收集
+// transcript 与失败收集。**所有**输出（含失败路径上的容器日志摘录与子进程
+// stderr）都先过 scrub：bundle 生成之后注册的每一条敏感值在输出里一律替换成
+// 固定占位串。因此「本脚本的输出不含 Secret 取值」对成功与失败两条路径同时
+// 成立，而不是只对精心挑选的正常输出成立。
 // ---------------------------------------------------------------------------
 const transcript = []
 const failures = []
 export const smokeState = { transcript, failures }
 
+let scrubValues = []
+const registerScrubValues = (values) => {
+  // 长值优先替换，避免短前缀先替换后破坏长值匹配。
+  scrubValues = [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))]
+    .sort((a, b) => b.length - a.length)
+}
+const scrub = (text) => {
+  let output = text
+  for (const value of scrubValues) {
+    output = output.split(value).join('[redacted-secret]')
+  }
+  return output
+}
+
 const log = (line) => {
-  transcript.push(line)
-  process.stdout.write(`${line}\n`)
+  const safe = scrub(line)
+  transcript.push(safe)
+  process.stdout.write(`${safe}\n`)
 }
 const fail = (message) => {
-  failures.push(message)
-  log(`FAIL: ${message}`)
+  const safe = scrub(message)
+  failures.push(safe)
+  log(`FAIL: ${safe}`)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,8 +175,24 @@ export const cleanupSmokeProject = (
     )
   }
   const residue = []
-  // down 先做一次常规回收（包括 run 创建的一次性容器）。
-  run(
+
+  // 明文 Secret 目录**最先**删除：Docker 侧任何一步失败都不允许把八份明文
+  // 口令留在 tmpdir 里。目录必须位于系统 tmpdir 下的固定前缀内，否则拒绝。
+  if (secretsDirectory !== null) {
+    const realTmp = realpathSync(tmpdir())
+    const realDir = realpathSync(secretsDirectory)
+    if (!realDir.startsWith(resolve(realTmp, temporarySecretsPrefix))) {
+      throw new Error(
+        `cleanup refused: ${secretsDirectory} is not a ${temporarySecretsPrefix}* ` +
+          'directory under the system tmpdir'
+      )
+    }
+    rmSync(realDir, { recursive: true, force: true })
+  }
+
+  // down 做一次常规回收（含 run 创建的一次性容器与匿名卷）。退出码不吞掉：
+  // 失败记入 residue，随后的 label sweep 仍是权威回收路径。
+  const down = run(
     [
       'docker',
       'compose',
@@ -169,14 +208,23 @@ export const cleanupSmokeProject = (
     ],
     { env: composeEnvironment, timeoutMs: 300_000 }
   )
+  if (down.status !== 0) {
+    residue.push(
+      `cleanup-warning: docker compose down exited ${String(down.status)}; ` +
+        'relying on the label sweep below'
+    )
+  }
+
   // 再按 project label 逐类兜底。filter 是精确匹配；这里再核对一遍 label，
-  // 保证永远不会碰到其他 project 的资源。
+  // 保证永远不会碰到其他 project 的资源。容器删除带 -v：bootstrap 系列容器
+  // 基于自带 VOLUME 的 postgres 镜像，不带 -v 会持续泄漏匿名卷。
+  // 单类失败不中断其余类别的回收，错误记入 residue。
   const sweep = [
     {
       list: ['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`],
       inspectLabel: (id) =>
         run(['docker', 'inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}', id]),
-      remove: (ids) => run(['docker', 'rm', '-f', ...ids], { timeoutMs: 300_000 }),
+      remove: (ids) => run(['docker', 'rm', '-f', '-v', ...ids], { timeoutMs: 300_000 }),
       kind: 'container'
     },
     {
@@ -195,37 +243,40 @@ export const cleanupSmokeProject = (
     }
   ]
   for (const { list, inspectLabel, remove, kind } of sweep) {
-    const listed = run(list)
-    const identifiers = listed.stdout.split('\n').filter(Boolean)
-    const owned = identifiers.filter(
-      (id) => inspectLabel(id).stdout.trim() === project
-    )
-    if (owned.length !== identifiers.length) {
-      throw new Error(
-        `cleanup refused: a listed ${kind} does not carry the project label ${project}`
+    try {
+      const listed = run(list)
+      const identifiers = listed.stdout.split('\n').filter(Boolean)
+      const owned = identifiers.filter(
+        (id) => inspectLabel(id).stdout.trim() === project
+      )
+      if (owned.length !== identifiers.length) {
+        throw new Error(
+          `cleanup refused: a listed ${kind} does not carry the project label ${project}`
+        )
+      }
+      if (owned.length > 0) {
+        remove(owned)
+      }
+      const remaining = run(list).stdout.split('\n').filter(Boolean)
+      for (const id of remaining) {
+        residue.push(`${kind} ${id}`)
+      }
+    } catch (error) {
+      residue.push(
+        `cleanup-error (${kind}): ${error instanceof Error ? error.message : String(error)}`
       )
     }
-    if (owned.length > 0) {
-      remove(owned)
-    }
-    const remaining = run(list).stdout.split('\n').filter(Boolean)
-    for (const id of remaining) {
-      residue.push(`${kind} ${id}`)
-    }
-  }
-  if (secretsDirectory !== null) {
-    const realTmp = realpathSync(tmpdir())
-    const realDir = realpathSync(secretsDirectory)
-    if (!realDir.startsWith(resolve(realTmp, temporarySecretsPrefix))) {
-      throw new Error(
-        `cleanup refused: ${secretsDirectory} is not a ${temporarySecretsPrefix}* ` +
-          'directory under the system tmpdir'
-      )
-    }
-    rmSync(realDir, { recursive: true, force: true })
   }
   return residue
 }
+
+/** 当前悬挂（无主）匿名卷集合：smoke 用它做前后对照，证明本轮没有泄漏匿名卷。 */
+export const danglingVolumeSet = () =>
+  new Set(
+    run(['docker', 'volume', 'ls', '-qf', 'dangling=true'])
+      .stdout.split('\n')
+      .filter(Boolean)
+  )
 
 // ---------------------------------------------------------------------------
 // 随机未占用端口（127.0.0.1 与 ::1 双侧确认）
@@ -280,8 +331,20 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   const project = `meal-agent-m3b-smoke-${randomBytes(6).toString('hex')}`
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
   const stepResults = []
-  let composeEnvironment = process.env
+  // composeEnvironment 从第一刻起就带上 Secret 目录：即使在端口选定之前失败，
+  // cleanup 的 `down` 也能用同一份环境解析配置，而不是回落到默认目录。
+  let composeEnvironment = {
+    ...process.env,
+    MEAL_AGENT_SECRETS_DIR: secretsDirectory,
+    MEAL_AGENT_API_HOST_PORT: '3000'
+  }
   let preserved = false
+  let chainStarted = false
+  let bundleBodies = null
+  // 匿名卷对照基线：postgres 镜像自带 VOLUME，容器删除必须带 -v；这里记录
+  // 起点集合，结束时断言没有新增的悬挂匿名卷（匿名卷不带 project label，
+  // 按 label 的 residue 检查在原理上看不见它们）。
+  const danglingBaseline = danglingVolumeSet()
 
   const compose = (args, options = {}) =>
     run(
@@ -299,6 +362,17 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       { env: composeEnvironment, ...options }
     )
 
+  /** inspect 的严格读取：读不到就抛，绝不把「inspect 失败」读成任何默认值。 */
+  const mustInspect = (target, format, label) => {
+    const value = inspectFormat(target, format)
+    if (value === null) {
+      throw new Error(
+        `${label}: docker inspect failed; refusing to substitute a default value`
+      )
+    }
+    return value
+  }
+
   /** 一次性服务：启动 → 等 exited → 独立读取真实退出码 + StartedAt。 */
   const runOneShot = async (service, timeoutMs) => {
     const name = containerNameOf(project, service)
@@ -312,12 +386,18 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       timeoutMs,
       1_000
     )
-    const exitCode = Number(inspectFormat(name, '{{.State.ExitCode}}'))
-    const startedAt = inspectFormat(name, '{{.State.StartedAt}}')
+    // Number('' / '<no value>') 是 NaN 会被下游当失败；Number(null) 却是 0，
+    // 因此必须先经 mustInspect 把「读不到」显式变成错误。
+    const exitCodeText = mustInspect(name, '{{.State.ExitCode}}', `${service} exit code`)
+    const exitCode = Number(exitCodeText)
+    if (!Number.isInteger(exitCode)) {
+      throw new Error(`${service}: unreadable exit code ${JSON.stringify(exitCodeText)}`)
+    }
+    const startedAt = mustInspect(name, '{{.State.StartedAt}}', `${service} StartedAt`)
     return { service, exitCode, startedAt }
   }
 
-  /** 常驻服务：启动 → 等 healthy。 */
+  /** 常驻服务：启动 → 等 healthy；容器提前退出时立即失败，不空转到超时。 */
   const runService = async (service, timeoutMs) => {
     const name = containerNameOf(project, service)
     const started = compose(['up', '-d', '--no-deps', service], { timeoutMs: 180_000 })
@@ -326,10 +406,23 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     }
     await waitFor(
       `${service} health`,
-      () => (inspectFormat(name, '{{.State.Health.Status}}') === 'healthy' ? 'healthy' : null),
+      () => {
+        if (inspectFormat(name, '{{.State.Status}}') === 'exited') {
+          const logs = run(['docker', 'logs', name])
+          throw new Error(
+            `${service} exited before becoming healthy; last log lines:\n` +
+              scrub((logs.stdout + logs.stderr).split('\n').slice(-15).join('\n'))
+          )
+        }
+        return inspectFormat(name, '{{.State.Health.Status}}') === 'healthy' ? 'healthy' : null
+      },
       timeoutMs
     )
-    return { service, exitCode: 0, startedAt: inspectFormat(name, '{{.State.StartedAt}}') }
+    return {
+      service,
+      exitCode: 0,
+      startedAt: mustInspect(name, '{{.State.StartedAt}}', `${service} StartedAt`)
+    }
   }
 
   /** 证据查询：以 cluster admin 通过一次性 psql 容器执行（凭据走 PGPASSFILE）。 */
@@ -358,12 +451,27 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   }
 
   try {
+    // 把现场登记给 CLI 的信号处置（模块被 import 时 registerScene 不存在，
+    // 此时没有信号接管，调用方自行负责）。
+    smokeState.registerScene?.({ project, secretsDirectory, composeEnvironment })
     log(`smoke project: ${project}`)
     log(`temporary secrets: ${secretsDirectory} (synthetic, generated fresh)`)
 
     // 0. Secret 生成 + 预检 + 拓扑静态门禁：全部先于任何数据库容器。
     generateAndPreflight(secretsDirectory)
-    log('secret bundle generated and preflighted (8 files, cross-consistent)')
+    // 只读回一次 bundle（预检刚通过，problems 必须为空），随后：
+    //   - 把全部敏感值注册进输出 scrub（成功与失败路径的输出都过它）；
+    //   - 同一份 bodies 直接交给 containment 阶段，不做第二次「丢弃 problems」
+    //     的读取。
+    const bundleCheck = checkSecretBundle(secretsDirectory, { scanTemplates: false })
+    if (bundleCheck.problems.length > 0) {
+      throw new Error(
+        `the freshly preflighted bundle re-read with problems: ${bundleCheck.problems.join('; ')}`
+      )
+    }
+    bundleBodies = bundleCheck.bodies
+    registerScrubValues(buildNeedles(bundleBodies).map((needle) => needle.value))
+    log('secret bundle generated and preflighted (8 files, cross-consistent; output scrubber armed)')
 
     const gate = run(['node', resolve(composeDirectory, 'check-compose-topology.mjs')], {
       timeoutMs: 300_000,
@@ -376,10 +484,10 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
     const hostPort = await pickFreePort()
     composeEnvironment = {
-      ...process.env,
-      MEAL_AGENT_SECRETS_DIR: secretsDirectory,
+      ...composeEnvironment,
       MEAL_AGENT_API_HOST_PORT: String(hostPort)
     }
+    smokeState.registerScene?.({ composeEnvironment })
     log(`host port: ${String(hostPort)} (free on 127.0.0.1 and ::1)`)
 
     // 1. 构建 API 镜像（compose 的 build stanza，不依赖宿主 dist/pnpm）。
@@ -390,6 +498,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     log('api image built via the compose build stanza')
 
     // 2. 严格顺序执行完整链，独立读取每个一次性容器的退出码。
+    chainStarted = true
     for (const service of chainOrder) {
       let outcome
       if (service === 'postgres') {
@@ -402,10 +511,11 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         outcome = await runOneShot(service, service === 'migrate' ? 660_000 : 300_000)
         log(`chain ${service}: exit=${String(outcome.exitCode)}`)
         if (outcome.exitCode !== 0) {
+          // 摘录容器日志帮助定位；scrub 保证失败路径的输出同样不含 Secret。
           const logs = run(['docker', 'logs', containerNameOf(project, service)])
           throw new Error(
             `${service} exited ${String(outcome.exitCode)}; last log lines:\n` +
-              `${(logs.stdout + logs.stderr).split('\n').slice(-15).join('\n')}`
+              scrub((logs.stdout + logs.stderr).split('\n').slice(-15).join('\n'))
           )
         }
       }
@@ -414,7 +524,11 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
     // 3. migrate 与 grants 重跑：同一 Compose 入口必须幂等。
     for (const service of ['migrate', 'bootstrap-grants']) {
-      const before = inspectFormat(containerNameOf(project, service), '{{.State.StartedAt}}')
+      const before = mustInspect(
+        containerNameOf(project, service),
+        '{{.State.StartedAt}}',
+        `${service} StartedAt before rerun`
+      )
       const rerun = await runOneShot(service, 300_000)
       if (rerun.exitCode !== 0) {
         fail(`${service} rerun exited ${String(rerun.exitCode)}; the entry point is not idempotent`)
@@ -640,12 +754,11 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     )
 
     // 6. Secret containment 扫描与动态网络隔离（api 仍在运行时取证）。
-    // bodies 只在内存中流转，绝不输出；scanTemplates 已在预检做过，这里只取值。
-    const { bodies } = checkSecretBundle(secretsDirectory, { scanTemplates: false })
+    // bodies 是启动前那次读取的同一份（problems 已断言为空），只在内存中流转。
     await runContainmentAndIsolation({
       project,
       hostPort,
-      bodies,
+      bodies: bundleBodies,
       composeFile,
       composeEnvironment,
       transcript,
@@ -659,20 +772,51 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     fail(error instanceof Error ? error.message : String(error))
     return { project, hostPort: null, stepResults }
   } finally {
-    if (failures.length > 0 && keepFailure) {
+    // --keep-failure 只在链路真的启动过（有现场可看）时才保留；启动前的失败
+    // 没有诊断价值，不值得为它留一套明文凭据在 tmpdir。
+    if (failures.length > 0 && keepFailure && chainStarted) {
       preserved = true
       log(
         `--keep-failure: preserving project ${project} and secrets directory ` +
           `${secretsDirectory} for inspection`
       )
+      log(
+        'WARNING: the preserved secrets directory contains real synthetic ' +
+          'credentials for the preserved database; delete it after inspection'
+      )
     } else {
-      const residue = cleanupSmokeProject(project, secretsDirectory, {
-        composeEnvironment
-      })
+      let residue
+      try {
+        residue = cleanupSmokeProject(project, secretsDirectory, {
+          composeEnvironment
+        })
+      } catch (error) {
+        residue = [
+          `cleanup-error: ${error instanceof Error ? error.message : String(error)}`
+        ]
+      }
+      // 匿名卷对照：本轮不允许新增任何悬挂匿名卷（它们不带 project label，
+      // 上面的 residue 检查看不见）。
+      try {
+        const danglingNow = danglingVolumeSet()
+        const newDangling = [...danglingNow].filter((id) => !danglingBaseline.has(id))
+        if (newDangling.length > 0) {
+          residue.push(
+            `anonymous dangling volumes appeared during this run: ${newDangling.join(', ')}`
+          )
+        }
+      } catch (error) {
+        residue.push(
+          `cleanup-error (dangling check): ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
       if (residue.length > 0) {
         fail(`cleanup residue: ${residue.join(', ')}`)
       } else {
-        log('cleanup: no project containers, networks, volumes or temporary secrets remain')
+        log(
+          'cleanup: no project containers, networks, volumes, anonymous ' +
+            'dangling volumes or temporary secrets remain'
+        )
       }
     }
 
@@ -708,6 +852,33 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (unknown.length > 0) {
     process.stderr.write('usage: run-local-test-smoke.mjs [--keep-failure]\n')
     process.exit(2)
+  }
+  // 信号处置：Node 对 SIGINT/SIGTERM 的默认行为是直接终止，finally 不会执行，
+  // 容器、卷与 tmpdir 里的明文 Secret 会整套留下。这里登记 runSmoke 当前的
+  // 现场，在信号到达时做同一套 scoped cleanup 后再以 128+signo 退出。
+  const activeScene = { project: null, secretsDirectory: null, composeEnvironment: process.env }
+  smokeState.registerScene = (scene) => Object.assign(activeScene, scene)
+  let terminating = false
+  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    process.on(signal, () => {
+      if (terminating) {
+        return
+      }
+      terminating = true
+      process.stderr.write(`\n${signal}: cleaning up the smoke scene before exiting\n`)
+      try {
+        if (activeScene.project !== null) {
+          cleanupSmokeProject(activeScene.project, activeScene.secretsDirectory, {
+            composeEnvironment: activeScene.composeEnvironment
+          })
+        }
+      } catch (error) {
+        process.stderr.write(
+          `cleanup on ${signal} failed: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+      }
+      process.exit(code)
+    })
   }
   await runSmoke({ keepFailure })
   process.exit(failures.length > 0 ? 1 : 0)

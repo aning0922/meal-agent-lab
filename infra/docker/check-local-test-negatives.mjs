@@ -84,10 +84,13 @@ const run = (args, options = {}) => {
 // Group A：预检反例（不触碰 Docker）
 // ---------------------------------------------------------------------------
 
-/** 读取一个 bundle 的全部敏感值（口令 + URL + pgpass 行），供「消息不含
- * Secret」断言使用。只在内存中，绝不输出。 */
+/**
+ * 读取一个 bundle 的全部敏感值——与 containment 扫描器**同一个** buildNeedles
+ * （口令、16 字符前缀、URL、pgpass 行与各自的 URL 编码形态）。只在内存中，
+ * 绝不输出。
+ */
 const sensitiveValuesOf = (directory) => {
-  const values = new Set()
+  const bodies = new Map()
   for (const filename of secretFilenames) {
     let content
     try {
@@ -95,26 +98,23 @@ const sensitiveValuesOf = (directory) => {
     } catch {
       continue
     }
-    for (const line of content.split('\n')) {
-      if (line !== '') {
-        values.add(line)
-      }
-    }
+    bodies.set(filename, content.endsWith('\n') ? content.slice(0, -1) : content)
   }
-  return [...values]
+  return buildNeedles(bodies).map((needle) => needle.value)
 }
 
 /**
- * 通用预检反例：建一套新 bundle → mutate → checkSecretBundle 必须给出指定
- * 理由，且所有消息不含任何敏感值。
+ * 通用预检反例：建一套新 bundle →（**先**采集敏感值再）mutate →
+ * checkSecretBundle 必须给出指定理由，且所有消息不含任何敏感值。
+ * 值在 mutate 之前采集：被删除/被改写文件的原值同样不允许出现在消息里。
  */
 const preflightNegative = (name, expected, mutate, options = {}) => {
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-'))
   const directory = resolve(parent, 'bundle')
   try {
     generateSecretBundle(directory)
-    const checkOptions = { scanTemplates: false, ...(mutate(directory, parent) ?? {}) }
     const values = sensitiveValuesOf(directory)
+    const checkOptions = { scanTemplates: false, ...(mutate(directory, parent) ?? {}) }
     const { problems } = checkSecretBundle(directory, checkOptions)
     if (problems.length === 0) {
       fail(name, 'NOT CAUGHT — the preflight still passed')
@@ -208,7 +208,7 @@ preflightNegative(
 
 preflightNegative(
   'URL query string smuggled in',
-  /must not carry a query string/,
+  /meal_agent_runtime_database_url: the connection URL must not carry a query string/,
   (directory) => {
     const password = readBody(directory, 'meal_agent_runtime_password')
     rewriteSecret(
@@ -247,7 +247,7 @@ preflightNegative(
 
 preflightNegative(
   'pgpass carries a third endpoint',
-  /must contain exactly 2 endpoint lines/,
+  /postgres_admin\.pgpass: must contain exactly 2 endpoint lines/,
   (directory) => {
     const superuser = readBody(directory, 'postgres_superuser_password')
     rewriteSecret(
@@ -262,7 +262,7 @@ preflightNegative(
 
 preflightNegative(
   'pgpass uses a wildcard database rule',
-  /must not use wildcard rules/,
+  /postgres_admin\.pgpass: endpoint line 2 must not use wildcard rules/,
   (directory) => {
     const superuser = readBody(directory, 'postgres_superuser_password')
     rewriteSecret(
@@ -284,7 +284,7 @@ preflightNegative(
 
 preflightNegative(
   'an unknown file appears in the bundle',
-  /unknown entry in the bundle directory/,
+  /stray\.txt: unknown entry in the bundle directory/,
   (directory) => {
     writeFileSync(resolve(directory, 'stray.txt'), 'not a secret\n', { mode: 0o600 })
   }
@@ -292,7 +292,7 @@ preflightNegative(
 
 preflightNegative(
   'weak permissions (0644)',
-  /has mode 0644; only owner-only 0400 or 0600 is accepted/,
+  /postgres_superuser_password: has mode 0644; only owner-only 0400 or 0600 is accepted/,
   (directory) => {
     chmodSync(resolve(directory, 'postgres_superuser_password'), 0o644)
   }
@@ -300,7 +300,7 @@ preflightNegative(
 
 preflightNegative(
   'wrong owner uid (via the expectedOwnerUid seam)',
-  /expected owner is uid/,
+  /postgres_superuser_password: is owned by uid \d+ but the expected owner is uid/,
   () => ({ expectedOwnerUid: process.geteuid() + 12_345 })
 )
 
@@ -322,6 +322,161 @@ preflightNegative(
     linkSync(
       resolve(directory, 'meal_agent_migration_password'),
       resolve(parent, 'hardlink-copy')
+    )
+  }
+)
+
+// —— 内容卫生与口令字母表（审计补充：这些判据此前没有回归保护）——
+
+preflightNegative(
+  'a secret file is empty',
+  /postgres_superuser_password: is empty/,
+  (directory) => {
+    const path = resolve(directory, 'postgres_superuser_password')
+    unlinkSync(path)
+    writeFileSync(path, '', { mode: 0o600 })
+  }
+)
+
+preflightNegative(
+  'a secret file exceeds the 4096-byte limit',
+  /the limit is 4096/,
+  (directory) => {
+    rewriteSecret(directory, 'meal_agent_backup_password', 'A'.repeat(5000))
+  }
+)
+
+preflightNegative(
+  'a password file contains a second line',
+  /meal_agent_runtime_password: must contain a single line/,
+  (directory) => {
+    const password = readBody(directory, 'meal_agent_runtime_password')
+    rewriteSecret(directory, 'meal_agent_runtime_password', `${password}\n${password}`)
+  }
+)
+
+preflightNegative(
+  'a secret file contains a carriage return',
+  /meal_agent_runtime_password: contains a carriage return/,
+  (directory) => {
+    const password = readBody(directory, 'meal_agent_runtime_password')
+    rewriteSecret(directory, 'meal_agent_runtime_password', `${password}\r`)
+  }
+)
+
+preflightNegative(
+  'a secret file contains a NUL byte',
+  /meal_agent_runtime_password: contains a NUL byte/,
+  (directory) => {
+    const path = resolve(directory, 'meal_agent_runtime_password')
+    unlinkSync(path)
+    writeFileSync(path, Buffer.from('abc\u0000def\n', 'utf8'), { mode: 0o600 })
+  }
+)
+
+preflightNegative(
+  'a secret file contains a byte order mark',
+  /meal_agent_runtime_password: contains a byte order mark/,
+  (directory) => {
+    const path = resolve(directory, 'meal_agent_runtime_password')
+    unlinkSync(path)
+    writeFileSync(path, Buffer.from('\uFEFFabcdef\n', 'utf8'), { mode: 0o600 })
+  }
+)
+
+preflightNegative(
+  'a secret file is not valid UTF-8',
+  /meal_agent_runtime_password: is not valid UTF-8/,
+  (directory) => {
+    const path = resolve(directory, 'meal_agent_runtime_password')
+    unlinkSync(path)
+    writeFileSync(path, Buffer.from([0xff, 0xfe, 0x41, 0x0a]), { mode: 0o600 })
+  }
+)
+
+preflightNegative(
+  'a secret file is a FIFO',
+  /meal_agent_runtime_password: is not a regular file/,
+  (directory) => {
+    const path = resolve(directory, 'meal_agent_runtime_password')
+    unlinkSync(path)
+    const made = run(['mkfifo', '-m', '600', path])
+    if (made.status !== 0) {
+      throw new Error(`mkfifo failed: ${made.stderr}`)
+    }
+  }
+)
+
+preflightNegative(
+  'a password uses characters outside the URL/pgpass-safe alphabet',
+  /meal_agent_runtime_password: the password must use only \[A-Za-z0-9\]/,
+  (directory) => {
+    rewriteSecret(
+      directory,
+      'meal_agent_runtime_password',
+      'AAAAAAAA:BBBBBBBB\\CCCCCCCC@DDDDDDDD'
+    )
+  }
+)
+
+preflightNegative(
+  'a password is shorter than the minimum length',
+  /meal_agent_runtime_password: the password is shorter than 24 characters/,
+  (directory) => {
+    rewriteSecret(directory, 'meal_agent_runtime_password', 'Abc123')
+  }
+)
+
+preflightNegative(
+  'two raw passwords are identical',
+  /the backup password is identical to the migration password/,
+  (directory) => {
+    rewriteSecret(
+      directory,
+      'meal_agent_backup_password',
+      readBody(directory, 'meal_agent_migration_password')
+    )
+  }
+)
+
+preflightNegative(
+  'a connection URL carries a fragment',
+  /meal_agent_runtime_database_url: the connection URL must not carry a fragment/,
+  (directory) => {
+    const password = readBody(directory, 'meal_agent_runtime_password')
+    rewriteSecret(
+      directory,
+      'meal_agent_runtime_database_url',
+      `postgresql://meal_agent_runtime_login:${password}@postgres:5432/meal_agent#frag`
+    )
+  }
+)
+
+// WHATWG URL parser 会剥离口令里的 tab，因此**全部字段级判据都会通过**
+// （url.password 与口令文件逐字节相等）——这一条只有 canonical 全等兜底能抓。
+// 它是 canonical 那一行的专属回归。
+preflightNegative(
+  'a tab smuggled into the URL password survives every field check',
+  /meal_agent_runtime_database_url: the connection URL is not byte-identical to the canonical/,
+  (directory) => {
+    const password = readBody(directory, 'meal_agent_runtime_password')
+    rewriteSecret(
+      directory,
+      'meal_agent_runtime_database_url',
+      `postgresql://meal_agent_runtime_login:${password.slice(0, 10)}\t${password.slice(10)}@postgres:5432/meal_agent`
+    )
+  }
+)
+
+preflightNegative(
+  'a Unix socket path smuggled as the URL host',
+  /meal_agent_runtime_database_url: the connection URL host must be postgres/,
+  (directory) => {
+    const password = readBody(directory, 'meal_agent_runtime_password')
+    rewriteSecret(
+      directory,
+      'meal_agent_runtime_database_url',
+      `postgresql://meal_agent_runtime_login:${password}@%2Ftmp:5432/meal_agent`
     )
   }
 )
@@ -351,6 +506,8 @@ preflightNegative(
 }
 
 // tracked 模板反例：临时改写真实模板文件，扫描必须拒绝，随后逐字节还原。
+// 还原与逐字节复核都在 finally 里：任何早退路径（wrong-reason、扫描抛出）都
+// 不允许绕过这道复核；复核失败时同时打印手工恢复命令。
 const templateNegative = (name, mutate, expected) => {
   const status = run(['git', 'status', '--porcelain', '--', templateFile], {
     cwd: repositoryRoot
@@ -371,11 +528,14 @@ const templateNegative = (name, mutate, expected) => {
       return
     }
     pass(name, String(expected))
+  } catch (error) {
+    fail(name, `template scan threw: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     writeFileSync(templateFile, original)
-  }
-  if (!readFileSync(templateFile).equals(original)) {
-    fail(name, `FATAL: ${templateFile} was not restored byte-for-byte`)
+    if (!readFileSync(templateFile).equals(original)) {
+      fail(name, `FATAL: ${templateFile} was not restored byte-for-byte`)
+      process.stderr.write(`Run: git restore -- ${templateFile}\n`)
+    }
   }
 }
 
@@ -514,6 +674,7 @@ if (composeStatus.status !== 0 || composeStatus.stdout.trim() !== '') {
     }
   ]
   for (const mutation of composeMutations) {
+    const anchorIndex = source.indexOf(mutation.from)
     const occurrences = source.split(mutation.from).length - 1
     if (occurrences !== 1) {
       fail(
@@ -523,7 +684,14 @@ if (composeStatus.status !== 0 || composeStatus.stdout.trim() !== '') {
       continue
     }
     try {
-      writeFileSync(composeFile, source.replace(mutation.from, mutation.to))
+      // 用 slice 拼接而不是 String.replace：replace 的第二参数会解释 $& / $'
+      // 等替换记号，未来任何含 $ 的变异内容都会被静默改写。
+      writeFileSync(
+        composeFile,
+        source.slice(0, anchorIndex) +
+          mutation.to +
+          source.slice(anchorIndex + mutation.from.length)
+      )
       const result = run([process.execPath, topologyChecker], {
         cwd: repositoryRoot
       })
@@ -538,6 +706,12 @@ if (composeStatus.status !== 0 || composeStatus.stdout.trim() !== '') {
       } else {
         pass(mutation.name, String(mutation.expect))
       }
+    } catch (error) {
+      // run() 抛出（超时/spawn 失败）也不允许绕过 finally 的还原与下面的复核。
+      fail(
+        mutation.name,
+        `checker invocation threw: ${error instanceof Error ? error.message : String(error)}`
+      )
     } finally {
       writeFileSync(composeFile, original)
     }
@@ -623,7 +797,7 @@ if (pinnedImageMatch === null) {
       } else {
         pass(testCase.name, String(testCase.expectLabel))
       }
-      run(['docker', 'rm', '-f', testCase.createArgs[testCase.createArgs.indexOf('--name') + 1]])
+      run(['docker', 'rm', '-f', '-v', testCase.createArgs[testCase.createArgs.indexOf('--name') + 1]])
     }
   } finally {
     const leftover = run([
@@ -636,7 +810,7 @@ if (pinnedImageMatch === null) {
       .stdout.split('\n')
       .filter(Boolean)
     if (leftover.length > 0) {
-      run(['docker', 'rm', '-f', ...leftover])
+      run(['docker', 'rm', '-f', '-v', ...leftover])
     }
   }
 }
@@ -646,7 +820,13 @@ if (pinnedImageMatch === null) {
 // ---------------------------------------------------------------------------
 process.stdout.write('Group D: cleanup scope negatives\n')
 
-for (const outOfScope of ['meal-agent-local-test', 'evil-project', '']) {
+// probe 的 project 名刻意在 cleanup 范围之外：并发运行的探针不该能被摸到。
+for (const outOfScope of [
+  'meal-agent-local-test',
+  'evil-project',
+  '',
+  'meal-agent-m3b-probe-deadbeef'
+]) {
   const name = `cleanup refuses the out-of-scope project name ${JSON.stringify(outOfScope)}`
   try {
     cleanupSmokeProject(outOfScope)
@@ -684,7 +864,9 @@ for (const outOfScope of ['meal-agent-local-test', 'evil-project', '']) {
 }
 
 {
-  const name = 'cleanup leaves other projects untouched (decoy survival)'
+  // 上界 + 下界同时断言：cleanup 必须删掉 target project 里的容器（下界，
+  // 空实现过不了），同时不碰 decoy project 的容器（上界）。
+  const name = 'cleanup removes its own project and leaves other projects untouched'
   const decoyProject = `meal-agent-m3b-neg-decoy-${randomBytes(4).toString('hex')}`
   const targetProject = `meal-agent-m3b-neg-target-${randomBytes(4).toString('hex')}`
   usedNegativeProjects.push(decoyProject, targetProject)
@@ -695,8 +877,9 @@ for (const outOfScope of ['meal-agent-local-test', 'evil-project', '']) {
     fail(name, 'could not find the pinned postgres image in the compose file')
   } else {
     const decoyName = `${decoyProject}-decoy`
+    const targetName = `${targetProject}-victim`
     try {
-      const created = run([
+      const createdDecoy = run([
         'docker',
         'create',
         '--label',
@@ -707,40 +890,64 @@ for (const outOfScope of ['meal-agent-local-test', 'evil-project', '']) {
         'true',
         pinned[1]
       ])
-      if (created.status !== 0) {
-        fail(name, `docker create failed: ${created.stderr.trim()}`)
+      const createdTarget = run([
+        'docker',
+        'create',
+        '--label',
+        `com.docker.compose.project=${targetProject}`,
+        '--name',
+        targetName,
+        '--entrypoint',
+        'true',
+        pinned[1]
+      ])
+      if (createdDecoy.status !== 0 || createdTarget.status !== 0) {
+        fail(name, `docker create failed: ${(createdDecoy.stderr + createdTarget.stderr).trim()}`)
       } else {
         cleanupSmokeProject(targetProject)
         const survived = run(['docker', 'inspect', decoyName])
+        const removed = run(['docker', 'inspect', targetName])
         if (survived.status !== 0) {
           fail(name, 'NOT CAUGHT — the decoy container of another project was removed')
+        } else if (removed.status === 0) {
+          fail(name, 'NOT CAUGHT — cleanup left its own project container behind (a no-op cleanup would pass the decoy check)')
         } else {
-          pass(name, 'label-scoped cleanup only touches its own project')
+          pass(name, 'own project removed (lower bound) and decoy untouched (upper bound)')
         }
       }
     } finally {
-      run(['docker', 'rm', '-f', decoyName])
+      run(['docker', 'rm', '-f', '-v', decoyName])
+      run(['docker', 'rm', '-f', '-v', targetName])
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// 收尾：本套件不得留下任何 Docker 资源。docker 的 label filter 是精确值匹配，
-// 因此按「本套件真实用过的 project 名」逐个断言为空。
+// 收尾：本套件不得留下任何 Docker 资源（容器、网络、卷都查）。docker 的
+// label filter 是精确值匹配，因此按「本套件真实用过的 project 名」逐个断言。
 // ---------------------------------------------------------------------------
 for (const project of usedNegativeProjects) {
-  const residue = run([
-    'docker',
-    'ps',
-    '-aq',
-    '--filter',
-    `label=com.docker.compose.project=${project}`
-  ])
-    .stdout.split('\n')
-    .filter(Boolean)
-  if (residue.length > 0) {
-    fail('suite residue', `containers left behind under ${project}: ${residue.join(', ')}`)
+  for (const [kind, listArgs] of [
+    ['container', ['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`]],
+    ['network', ['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]],
+    ['volume', ['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]]
+  ]) {
+    const residue = run(listArgs).stdout.split('\n').filter(Boolean)
+    if (residue.length > 0) {
+      fail('suite residue', `${kind}s left behind under ${project}: ${residue.join(', ')}`)
+    }
   }
+}
+
+// 反例数量的精确下界：任何新增的早退路径若忘了调 fail()，都会在这里被计数
+// 差额暴露，而不是静默变成「跑得更少的绿」。
+const expectedNegativeCount = 47
+if (caught + failures.length !== expectedNegativeCount) {
+  fail(
+    'suite completeness',
+    `expected ${String(expectedNegativeCount)} negatives to be evaluated, ` +
+      `got ${String(caught)} caught + ${String(failures.length)} failed`
+  )
 }
 
 if (failures.length > 0) {
@@ -751,6 +958,7 @@ if (failures.length > 0) {
   process.exit(1)
 }
 process.stdout.write(
-  `local-test negative suite PASS (${String(caught)} negatives caught with their ` +
-    'named reasons, 0 escapes, no secret values in any failure message)\n'
+  `local-test negative suite PASS (${String(caught)}/${String(expectedNegativeCount)} ` +
+    'negatives caught with their named reasons, 0 escapes, no secret values in ' +
+    'any failure message)\n'
 )

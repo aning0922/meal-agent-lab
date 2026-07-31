@@ -22,8 +22,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
-  realpathSync,
-  statSync
+  realpathSync
 } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -132,7 +131,7 @@ export const secretFiles = Object.freeze([
     filename: 'meal_agent_admin_database_url',
     kind: 'url',
     role: 'superuser',
-    user: 'postgres',
+    user: deploymentIdentity.adminUser,
     consumerUid: 10001
   }),
   Object.freeze({
@@ -140,7 +139,7 @@ export const secretFiles = Object.freeze([
     filename: 'meal_agent_migration_database_url',
     kind: 'url',
     role: 'migration',
-    user: 'meal_agent_migration_login',
+    user: deploymentIdentity.migrationUser,
     consumerUid: 10001
   }),
   Object.freeze({
@@ -148,7 +147,7 @@ export const secretFiles = Object.freeze([
     filename: 'meal_agent_runtime_database_url',
     kind: 'url',
     role: 'runtime',
-    user: 'meal_agent_runtime_login',
+    user: deploymentIdentity.runtimeUser,
     consumerUid: 10001
   })
 ])
@@ -536,21 +535,32 @@ const enclosingGitRepository = (directory) => {
 
 /**
  * tracked 模板扫描：`infra/environments/` 下任何 tracked 文件出现非空的
- * password/token/AppID/AppSecret/DSN 赋值、或任何带 userinfo 的完整连接串，
- * 都 fail closed。空占位（`WECHAT_APP_ID=`）明确允许。
+ * password/token/AppID/AppSecret/key/DSN 赋值、或任何完整连接串（带 userinfo
+ * 或带 password 查询参数），都 fail closed。空占位（`WECHAT_APP_ID=`）明确
+ * 允许。**注释行同样扫描**——被注释掉的真实凭据仍然是泄漏进 Git 的凭据。
+ * 扫描到零个 tracked 文件时抛错：静默零覆盖不是通过。
  */
 const sensitiveKeySuffixes = [
   'PASSWORD',
   'PASSWD',
+  'PASS',
+  'PWD',
   'TOKEN',
   'SECRET',
+  'KEY',
+  'CREDENTIAL',
   'APP_ID',
   'APPID',
   'DSN',
   'DATABASE_URL'
 ]
 const assignmentPattern = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/
-const fullDsnPattern = /postgres(?:ql)?:\/\/\S+@\S+/
+// 两种完整连接串形态都拒绝：userinfo 形（user:pass@host）与查询参数形
+// （…?password=… / …&sslpassword=…）。
+const fullDsnPatterns = [
+  /postgres(?:ql)?:\/\/\S+@\S+/i,
+  /postgres(?:ql)?:\/\/\S*[?&][a-z_]*password[a-z_]*=\S/i
+]
 
 export const scanTrackedTemplates = (repository = repositoryRoot) => {
   const problems = []
@@ -569,7 +579,14 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       `cannot list tracked templates (git ls-files exit=${String(listing.status)})`
     )
   }
+  // 扫描到零个 tracked 文件时抛错：静默零覆盖不是通过。
   const files = listing.stdout.split('\u0000').filter(Boolean)
+  if (files.length === 0) {
+    throw new Error(
+      'the tracked template scan found no files under infra/environments; ' +
+        'a zero-coverage scan must not pass silently'
+    )
+  }
   for (const file of files) {
     const path = resolve(repository, file)
     let content
@@ -581,13 +598,19 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
     }
     const lines = content.split('\n')
     for (const [index, line] of lines.entries()) {
-      if (fullDsnPattern.test(line)) {
-        problems.push(
-          `${file}:${String(index + 1)}: tracked template contains a full ` +
-            'connection string with credentials'
-        )
+      for (const pattern of fullDsnPatterns) {
+        if (pattern.test(line)) {
+          problems.push(
+            `${file}:${String(index + 1)}: tracked template contains a full ` +
+              'connection string with credentials'
+          )
+          break
+        }
       }
-      const match = assignmentPattern.exec(line)
+      // 剥掉行首注释标记后再匹配赋值：`# WECHAT_APP_SECRET=real` 与未注释的
+      // 版本同样是进了 Git 的凭据。
+      const uncommented = line.replace(/^\s*#+\s*/, '')
+      const match = assignmentPattern.exec(uncommented)
       if (match === null) {
         continue
       }
@@ -654,7 +677,7 @@ export const checkSecretBundle = (directory, options = {}) => {
   }
 
   const isDefaultDirectory =
-    realpathSync(directory) === safeRealpath(defaultSecretsDirectory)
+    safeRealpath(directory) === safeRealpath(defaultSecretsDirectory)
 
   // 目录内容：恰好八份 Secret；默认目录额外允许 tracked 的 README 与 .gitignore。
   // 其他任何条目（含暂存残留、点文件、子目录）都是未知条目，一律拒绝。
@@ -735,16 +758,47 @@ export const checkSecretBundle = (directory, options = {}) => {
 
   // git：bundle 内的 Secret 文件绝不能被跟踪；默认目录里除 README/.gitignore
   // 外也不能有别的 tracked 条目。bundle 目录在任何 git 仓库之外时没有可判定的
-  // 跟踪状态，这一段自然不适用。
+  // 跟踪状态，这一段自然不适用。跟踪判据对**每一份**文件执行，与文件级判据
+  // 是否已失败无关——一份既被 track 又权限错误的文件必须两条都报。
   try {
     const repository = enclosingGitRepository(directory)
     if (repository !== null) {
       for (const entry of secretFiles) {
         const path = resolve(directory, entry.filename)
-        if (rawBodies.get(entry.filename) !== null && gitTracksPath(repository, path)) {
+        if (gitTracksPath(repository, path)) {
           problems.push(
             `${entry.filename}: is tracked by git; secrets must stay untracked`
           )
+        }
+      }
+      // 默认目录必须**主动**持有 .gitignore，且八个文件名都真的被忽略
+      // （git check-ignore 逐一验证）：等到 Secret 已经进了 index 才由上面的
+      // 跟踪判据发现，防线次序就反了。
+      if (isDefaultDirectory) {
+        if (!entries.includes('.gitignore')) {
+          problems.push(
+            '.gitignore: missing from the default bundle directory; without it ' +
+              'a git add -A would stage every secret file'
+          )
+        } else {
+          for (const entry of secretFiles) {
+            const ignored = spawnSync(
+              'git',
+              ['check-ignore', '-q', '--', resolve(directory, entry.filename)],
+              { cwd: repository, encoding: 'utf8', maxBuffer: 1024 * 1024 }
+            )
+            if (ignored.error !== undefined || (ignored.status !== 0 && ignored.status !== 1)) {
+              problems.push(
+                `${entry.filename}: cannot determine whether git ignores it ` +
+                  `(git check-ignore ${ignored.error?.message ?? `exit=${String(ignored.status)}`})`
+              )
+            } else if (ignored.status === 1) {
+              problems.push(
+                `${entry.filename}: is not covered by the default directory's ` +
+                  '.gitignore; a git add -A would stage it'
+              )
+            }
+          }
         }
       }
     }
@@ -764,43 +818,14 @@ export const checkSecretBundle = (directory, options = {}) => {
   return { problems, bodies }
 }
 
-const safeRealpath = (path) => {
+/**
+ * realpath 的 fail-safe 版本：解析失败时回落到 resolve。生成器与预检共用，
+ * 保证「是不是默认目录」在两边是同一个判定。
+ */
+export const safeRealpath = (path) => {
   try {
     return realpathSync(path)
   } catch {
     return resolve(path)
-  }
-}
-
-/**
- * 供 smoke 与扫描器使用：从一个已通过预检的 bundle 目录**在内存中**取回
- * 全部敏感 needle（四个口令、三条 URL、两条 pgpass 记录与 URL 编码形态）。
- * 调用方只能拿它们去做「不该出现」的比对，绝不能输出。
- */
-export const collectSecretNeedles = (bodies) => {
-  const needles = new Set()
-  for (const entry of secretFiles) {
-    const body = bodies.get(entry.filename)
-    if (typeof body !== 'string') {
-      continue
-    }
-    if (entry.kind === 'pgpass') {
-      for (const line of body.split('\n')) {
-        needles.add(line)
-      }
-      continue
-    }
-    needles.add(body)
-    needles.add(encodeURIComponent(body))
-  }
-  return [...needles]
-}
-
-/** 目录 stat 帮助器：生成器复用（存在性/类型判断）。 */
-export const statIfExists = (path) => {
-  try {
-    return statSync(path)
-  } catch {
-    return null
   }
 }

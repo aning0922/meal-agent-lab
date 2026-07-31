@@ -21,9 +21,11 @@ import {
   chmodSync,
   closeSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeSync
@@ -38,9 +40,18 @@ import {
   deriveSecretBodies,
   generatePassword,
   passwordRoles,
-  secretFilenames,
-  statIfExists
+  safeRealpath,
+  secretFilenames
 } from './local-test-secrets-contract.mjs'
+
+/** lstat 帮助器：**不**跟随 symlink 的存在性/类型判断。 */
+const lstatIfExists = (path) => {
+  try {
+    return lstatSync(path)
+  } catch {
+    return null
+  }
+}
 
 export class SecretGeneratorError extends Error {
   constructor(message) {
@@ -64,19 +75,29 @@ export const generateSecretBundle = (directory) => {
   }
 
   const target = resolve(directory)
-  const isDefaultDirectory = target === defaultSecretsDirectory
-  const existing = statIfExists(target)
+  // lstat 而不是 stat：目标是 symlink 时直接拒绝，绝不跟随链接把 Secret 写进
+  // 链接指向的目录（预检对 bundle 目录用的是同一条判据）。
+  const existing = lstatIfExists(target)
+  if (existing !== null && existing.isSymbolicLink()) {
+    throw new SecretGeneratorError(
+      `${target} is a symbolic link; the bundle directory must be a real directory`
+    )
+  }
   if (existing !== null && !existing.isDirectory()) {
     throw new SecretGeneratorError(`${target} exists and is not a directory`)
   }
+  // isDefaultDirectory 与预检同口径：按 realpath 比较，不是字符串相等。
+  const isDefaultDirectory =
+    existing !== null
+      ? realpathSync(target) === safeRealpath(defaultSecretsDirectory)
+      : target === defaultSecretsDirectory
 
   if (existing === null) {
     mkdirSync(target, { mode: 0o700 })
   }
-  // 目录必须 owner-only。对 tracked 的默认目录同样生效（git 不记录目录权限）。
-  chmodSync(target, 0o700)
 
   // 默认拒绝覆盖：八份文件任何一份已存在、或目录里有清单之外的条目都失败。
+  // 这一步在任何副作用（chmod）之前：对一个会被拒绝的目录不留任何改动。
   const entries = readdirSync(target).sort()
   const allowed = new Set(isDefaultDirectory ? defaultDirectoryAllowedEntries : [])
   for (const entry of entries) {
@@ -94,6 +115,8 @@ export const generateSecretBundle = (directory) => {
       )
     }
   }
+  // 目录必须 owner-only。对 tracked 的默认目录同样生效（git 不记录目录权限）。
+  chmodSync(target, 0o700)
 
   const passwords = {}
   for (const role of passwordRoles) {
@@ -141,10 +164,26 @@ export const generateSecretBundle = (directory) => {
   }
 }
 
-/** 生成 + 立即预检；预检不过时删除刚生成的全部文件，不留半套。 */
+/**
+ * 生成 + 立即预检；预检不过时删除刚生成的全部文件，不留半套。
+ * 预检**抛出**（而不是返回 problems）时同样删除——「生成失败」的任何形态都
+ * 不允许把一套完整可用的真凭据留在磁盘上。
+ */
 export const generateAndPreflight = (directory) => {
   const result = generateSecretBundle(directory)
-  const { problems } = checkSecretBundle(result.directory)
+  let problems
+  try {
+    problems = checkSecretBundle(result.directory).problems
+  } catch (error) {
+    for (const path of result.files) {
+      try {
+        unlinkSync(path)
+      } catch {
+        // 清理是尽力而为；残留由下一次预检拒绝。
+      }
+    }
+    throw error
+  }
   if (problems.length > 0) {
     for (const path of result.files) {
       try {

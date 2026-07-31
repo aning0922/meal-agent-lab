@@ -31,13 +31,20 @@
 //   - api 容器恰好一个 host binding：127.0.0.1:<port>→3000/tcp。
 import { randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { connect, isIP } from 'node:net'
+import { connect, createServer, isIP } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { resolve } from 'node:path'
 
 import { repositoryRoot, secretFiles } from './local-test-secrets-contract.mjs'
 
-/** 由 bundle bodies 构造分类 needle 清单（只在内存中存在）。 */
+/**
+ * 由 bundle bodies 构造分类 needle 清单（只在内存中存在）。
+ *
+ * 口令字母表是纯字母数字，因此口令的 URL 编码形态与原值相同（原值 needle 已
+ * 覆盖）；URL 与 pgpass 行则各自多一条编码形态。另为每个口令加一条 16 字符
+ * 前缀 needle，兜住「显式截断后再输出」的泄漏形态——48 字符随机值的 16 字符
+ * 前缀独立撞车的概率可以忽略。
+ */
 export const buildNeedles = (bodies) => {
   const needles = []
   const push = (category, value) => {
@@ -52,6 +59,7 @@ export const buildNeedles = (bodies) => {
     }
     if (entry.kind === 'password') {
       push(`password:${entry.role}`, body)
+      push(`password-prefix:${entry.role}`, body.slice(0, 16))
       const encoded = encodeURIComponent(body)
       if (encoded !== body) {
         push(`password-url-encoded:${entry.role}`, encoded)
@@ -62,15 +70,49 @@ export const buildNeedles = (bodies) => {
     } else {
       for (const [index, line] of body.split('\n').entries()) {
         push(`pgpass-line-${String(index + 1)}`, line)
+        push(`pgpass-line-${String(index + 1)}-encoded`, encodeURIComponent(line))
       }
     }
   }
   return needles
 }
 
+/**
+ * needle 完整性：八份 body 一份都不能少，且每个必需类别都必须已构造出来。
+ * bodies 缺项会静默缩小扫描面，因此这里 fail closed。
+ */
+export const assertNeedleCompleteness = (bodies, needles, onProblem) => {
+  for (const entry of secretFiles) {
+    if (typeof bodies.get(entry.filename) !== 'string') {
+      onProblem(
+        `containment: the bundle body for ${entry.filename} is missing; ` +
+          'the needle set would silently shrink'
+      )
+    }
+  }
+  const categories = new Set(needles.map((needle) => needle.category))
+  const required = []
+  for (const entry of secretFiles) {
+    if (entry.kind === 'password') {
+      required.push(`password:${entry.role}`, `password-prefix:${entry.role}`)
+    } else if (entry.kind === 'url') {
+      required.push(`database-url:${entry.role}`, `database-url-encoded:${entry.role}`)
+    } else {
+      required.push('pgpass-line-1', 'pgpass-line-2', 'pgpass-line-1-encoded', 'pgpass-line-2-encoded')
+    }
+  }
+  for (const category of required) {
+    if (!categories.has(category)) {
+      onProblem(`containment: required needle category ${category} was not built`)
+    }
+  }
+}
+
 const attemptConnect = (host, port, timeoutMs = 3_000) =>
   new Promise((resolveAttempt) => {
-    const socket = connect({ host, port, family: isIP(host) === 6 ? 6 : 4 })
+    // zone 后缀（fe80::…%en0）不影响 family 判定：按去掉 zone 的裸地址判。
+    const bare = host.split('%')[0]
+    const socket = connect({ host, port, family: isIP(bare) === 6 ? 6 : 4 })
     let settled = false
     const done = (outcome) => {
       if (!settled) {
@@ -86,9 +128,12 @@ const attemptConnect = (host, port, timeoutMs = 3_000) =>
 
 /** HTTP 层判定「是不是我们的 API」：/healthz 200 且 body 是它的成功形状。 */
 const probeApiHttp = async (host, port) => {
+  // IPv6（含带 zone 的 link-local）用方括号形式；zone 分隔符 % 在 URL 里必须
+  // 编码为 %25。
+  const bare = host.split('%')[0]
   const target =
-    isIP(host) === 6
-      ? `http://[${host}]:${String(port)}/healthz`
+    isIP(bare) === 6
+      ? `http://[${host.replace('%', '%25')}]:${String(port)}/healthz`
       : `http://${host}:${String(port)}/healthz`
   try {
     const response = await fetch(target, { signal: AbortSignal.timeout(4_000) })
@@ -146,6 +191,9 @@ export const collectDockerArtifactsForProject = ({ project, run, onProblem }) =>
       imageIds.add(parsed.Image)
     }
     const logs = run(['docker', 'logs', id], { timeoutMs: 120_000 })
+    if (logs.status !== 0) {
+      onProblem(`containment: docker logs ${name} failed; its output cannot be scanned`)
+    }
     addArtifact(`container logs ${name}`, `${logs.stdout}\n${logs.stderr}`)
   }
   for (const imageId of imageIds) {
@@ -219,11 +267,17 @@ export const runContainmentAndIsolation = async ({
       { env: composeEnvironment, ...options }
     )
 
+  assertNeedleCompleteness(bodies, needles, fail)
+
+  const resolvedConfig = compose(['config'], { timeoutMs: 120_000 })
+  if (resolvedConfig.status !== 0) {
+    fail(
+      'containment: docker compose config failed; the resolved configuration ' +
+        'cannot be scanned'
+    )
+  }
   const artifacts = [
-    {
-      label: 'docker compose config',
-      content: compose(['config'], { timeoutMs: 120_000 }).stdout
-    }
+    { label: 'docker compose config', content: resolvedConfig.stdout }
   ]
   const collected = collectDockerArtifactsForProject({ project, run, onProblem: fail })
   artifacts.push(...collected.artifacts)
@@ -338,20 +392,59 @@ export const runContainmentAndIsolation = async ({
     log(`isolation: [::1]:${String(hostPort)} -> ${ipv6Loopback} (as required)`)
   }
 
-  // 对照端口：本轮随机选择、与 API 端口不同、无任何监听。accept-all 接口会
-  // 连它一起 accept，这让「TCP accept」在那类接口上失去信息量，判定改由
-  // HTTP 层承担。
-  let controlPort = hostPort
-  while (controlPort === hostPort) {
-    controlPort = 20_000 + (randomBytes(2).readUInt16BE(0) % 40_000)
+  // HTTP 探针的正向自检：它必须能在 127.0.0.1 上认出我们自己的 API，否则
+  // 下面 accept-all 分支的「API 级探测失败 = 安全」就没有裁决能力。
+  const selfProbe = await probeApiHttp('127.0.0.1', hostPort)
+  if (selfProbe !== 'api-reachable') {
+    fail(
+      `isolation: the HTTP probe cannot recognise our own API on 127.0.0.1 ` +
+        `(${selfProbe}); every accept-all verdict below would be meaningless`
+    )
+  } else {
+    log('isolation: HTTP probe self-check on 127.0.0.1 recognises the API (positive control)')
   }
 
+  // 对照端口：本轮随机选择、与 API 端口不同，并且**验证过**本机确实没有任何
+  // 监听（127.0.0.1 与 ::1 双侧可绑定——0.0.0.0/:: 的监听会让绑定失败）。
+  // accept-all 接口会连它一起 accept，这让「TCP accept」在那类接口上失去
+  // 信息量，判定改由 HTTP 层承担。
+  const portIsBindable = (host, port) =>
+    new Promise((resolveBindable) => {
+      const server = createServer()
+      server.once('error', () => resolveBindable(false))
+      server.listen({ host, port, exclusive: true }, () => {
+        server.close(() => resolveBindable(true))
+      })
+    })
+  let controlPort = 0
+  for (let attempt = 0; attempt < 20 && controlPort === 0; attempt += 1) {
+    const candidate = 20_000 + (randomBytes(2).readUInt16BE(0) % 40_000)
+    if (candidate === hostPort) {
+      continue
+    }
+    if ((await portIsBindable('127.0.0.1', candidate)) && (await portIsBindable('::1', candidate))) {
+      controlPort = candidate
+    }
+  }
+  if (controlPort === 0) {
+    fail('isolation: could not find a listener-free control port; accept-all verdicts would be unfounded')
+  }
+
+  // link-local IPv6（fe80::/10）必须带 zone（scope id）才能真的被路由：不带
+  // zone 的连接是 EHOSTUNREACH 的空转，不构成证据。os.networkInterfaces() 把
+  // zone 放在 scopeid 字段里，这里拼回 `<address>%<interface>`。
   const nonLoopback = []
   for (const [interfaceName, addresses] of Object.entries(networkInterfaces())) {
     for (const address of addresses ?? []) {
-      if (!address.internal) {
-        nonLoopback.push({ interfaceName, address: address.address })
+      if (address.internal) {
+        continue
       }
+      const isLinkLocal =
+        address.family === 'IPv6' && address.address.toLowerCase().startsWith('fe80:')
+      nonLoopback.push({
+        interfaceName,
+        address: isLinkLocal ? `${address.address}%${interfaceName}` : address.address
+      })
     }
   }
   if (nonLoopback.length === 0) {
@@ -363,50 +456,67 @@ export const runContainmentAndIsolation = async ({
       log(`isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} (as required)`)
       continue
     }
-    const control = await attemptConnect(address, controlPort)
+    const control = controlPort === 0 ? 'unverified' : await attemptConnect(address, controlPort)
     const http = await probeApiHttp(address, hostPort)
     if (http === 'api-reachable') {
       fail(
         `isolation: the API answered /healthz from non-loopback address ` +
           `${interfaceName} ${address}; the loopback boundary is broken`
       )
-    } else if (control === 'connected') {
+    } else if (control === 'connected' && selfProbe === 'api-reachable') {
       log(
         `isolation: ${interfaceName} ${address} is an accept-all interface proxy ` +
-          `(control port ${String(controlPort)} also accepts); API-level probe ` +
-          `failed as required (${http})`
+          `(listener-free control port ${String(controlPort)} also accepts); ` +
+          `API-level probe failed as required (${http})`
       )
     } else {
       fail(
         `isolation: ${interfaceName} ${address}:${String(hostPort)} accepted TCP ` +
-          `while the control port refused, and the HTTP probe returned ${http}; ` +
-          'this port-specific acceptance is unexplained and treated as exposure'
+          `(control=${control}, http=${http}); this acceptance cannot be ` +
+          'attributed to an accept-all proxy and is treated as exposure'
       )
     }
   }
 
-  // postgres：没有任何 PublishedPort / PortBinding。
+  // postgres：没有任何 PublishedPort / PortBinding。inspect 失败必须 fail
+  // closed——「容器不存在」不能被读成「没有发布端口」。
+  const strictInspectJson = (target, format, label) => {
+    const result = run(['docker', 'inspect', '--format', format, target])
+    if (result.status !== 0) {
+      fail(`isolation: docker inspect ${label} failed; the check cannot pass by default`)
+      return null
+    }
+    return JSON.parse(result.stdout.trim() || 'null')
+  }
   const postgresName = `${project}-postgres-1`
-  const postgresPorts = JSON.parse(
-    run(['docker', 'inspect', '--format', '{{json .NetworkSettings.Ports}}', postgresName]).stdout.trim() || '{}'
+  const postgresPorts = strictInspectJson(
+    postgresName,
+    '{{json .NetworkSettings.Ports}}',
+    `${postgresName} ports`
   )
-  const postgresBindings = JSON.parse(
-    run(['docker', 'inspect', '--format', '{{json .HostConfig.PortBindings}}', postgresName]).stdout.trim() || '{}'
+  const postgresBindings = strictInspectJson(
+    postgresName,
+    '{{json .HostConfig.PortBindings}}',
+    `${postgresName} bindings`
   )
-  const publishedPostgres = Object.entries(postgresPorts ?? {}).filter(
-    ([, bindings]) => Array.isArray(bindings) && bindings.length > 0
-  )
-  if (publishedPostgres.length > 0 || Object.keys(postgresBindings ?? {}).length > 0) {
-    fail('isolation: postgres publishes a host port; the database must stay internal-only')
-  } else {
-    log('isolation: postgres has no PublishedPort and no PortBinding')
+  if (postgresPorts !== null && postgresBindings !== null) {
+    const publishedPostgres = Object.entries(postgresPorts ?? {}).filter(
+      ([, bindings]) => Array.isArray(bindings) && bindings.length > 0
+    )
+    if (publishedPostgres.length > 0 || Object.keys(postgresBindings ?? {}).length > 0) {
+      fail('isolation: postgres publishes a host port; the database must stay internal-only')
+    } else {
+      log('isolation: postgres has no PublishedPort and no PortBinding')
+    }
   }
 
   // api：恰好一个 host binding，127.0.0.1:<port> → 3000/tcp。
   const apiName = `${project}-api-1`
-  const apiPorts = JSON.parse(
-    run(['docker', 'inspect', '--format', '{{json .NetworkSettings.Ports}}', apiName]).stdout.trim() || '{}'
-  )
+  const apiPorts = strictInspectJson(
+    apiName,
+    '{{json .NetworkSettings.Ports}}',
+    `${apiName} ports`
+  ) ?? {}
   const apiBindings = Object.entries(apiPorts ?? {}).flatMap(([containerPort, bindings]) =>
     (bindings ?? []).map((binding) => ({ containerPort, ...binding }))
   )
