@@ -1889,13 +1889,43 @@ M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手
 
 三条失败消息实测都只含类别 + 文件 + 行号，不含 `SYNTHETIC`、URL、query key 或
 取值。窄套件从 21 扩到 **25**（括号矩阵、九起点同字段、malformed IPv6、非法端口
-各一条），并精确钉住 25/25。
+各一条），并精确钉住 25/25（**当时**的计数；第七轮扩到 26，见下一节）。
 
 **套件名称不再带轮次。** 文件名保留 `check-m3b-round2-negatives.mjs`（不改已被
 文档与流程引用的入口），但文件头与 stdout/stderr 的套件名统一为
 **M3B targeted negative suite**——轮次编号会随每一次整改过期，写进当前门禁的
 名字就意味着每加一轮都要改名，而且旧名字立刻变成错的。上面各轮小节里的轮次
 编号是**历史实施记录**的锚点，保留不改。
+
+#### 第七轮 bounded 候选边界窄修（标点不再是边界）
+
+第六轮把候选枚举改成了「按 `scheme://` 起点独立枚举」，但**结束**判据里还留着
+一张标点表（`,;'"\`<>|\\`）。那张表本身就是缺陷：这些字符**在合法 URL 里就是
+合法的**，把它们当边界只会把一条完整 URL 拦腰截断。
+
+*修复前*（`a486884` 实测，五种形态**全部 UNCAUGHT，且一条 problem 都不产生**）：
+
+| 形态 | 整体是否合法 URL（`new URL()`） | 解码后的 query key | 扫描结果 |
+| --- | --- | --- | --- |
+| `https://host/path,rest?pass%77ord=…` | 是 | `password` | 无任何 problem |
+| `https://host;path?pass%77ord=…` | 是 | `password` | 无任何 problem |
+| `https://host/path\|rest?pass%77ord=…` | 是 | `password` | 无任何 problem |
+| `https://host/path'rest?pass%77ord=…` | 是 | `password` | 无任何 problem |
+| `https://host\?pass%77ord=…` | 是 | `password` | 无任何 problem |
+
+候选在标点处被截断成 `https://host/path` 之类，query 连同其中的凭据一起消失，
+于是既没报「有凭据」也没报「扫不完」——静默放行。
+
+*修复后*：候选**只**由三件事结束——下一个独立枚举到的 `scheme://` 起点、一个
+ASCII 水平空白（空格或制表符）、`start + 2049` 的长度上限。标点全部交给 WHATWG
+URL 解析器按规范处理；解析不动的候选仍走
+`unscannable connection string candidate`，第 9 个起点与超长候选也仍是固定类别
+fail closed。**不再维护任何标点 allowlist/denylist。**
+
+新增的反例先用真实 `new URL()` 逐条证明「整体合法且解码后的 query key 是
+`password`」，再要求每一条都被判成 **credential query parameter**——而不是靠
+`unscannable` 蒙混过关；每种形态还配了一条不含 credential query 的 benign 对照，
+必须保持干净。targeted negative suite 因此从 25 精确增加到 **26/26**。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2034,7 +2064,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（25 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（26 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

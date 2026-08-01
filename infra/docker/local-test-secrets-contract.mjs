@@ -645,11 +645,16 @@ const maximumCandidates = 8
 const maximumCandidateLength = 2048
 
 /**
- * 候选的**分隔符**。它只是三个终止条件之一，不再是唯一的那个——靠不断往这个
- * 字符类里补字符（先是逗号，然后是括号、方括号、花括号……）来兜住「第二条 URI
- * 被前一条吞掉」是打补丁，不是修结构。
+ * 候选的**空白**边界——只有 ASCII 空格与制表符两个字符。
+ *
+ * 标点**全部**从边界判据里移除了（此前是 `,;'"\`<>|\\`）。维护一张标点
+ * allowlist/denylist 是个错误的方向：这些字符**在合法 URL 里就是合法的**，
+ * 把它们当边界只会把一条完整的 URL 拦腰截断——`https://host/path,rest?…` 会
+ * 被切成 `https://host/path`，query 连同其中的凭据一起消失，扫描器于是既没
+ * 报「有凭据」也没报「扫不完」，静默放行。哪个标点算边界的问题，交给 WHATWG
+ * URL 解析器按规范回答；解析不动的候选走 fail closed 那条路。
  */
-const candidateDelimiter = /[\s,;'"`<>|\\]/
+const candidateWhitespace = /[ \t]/
 
 /**
  * 行内的连接串候选：**先独立枚举全部 `scheme://` 起点**，再各自定界。
@@ -667,8 +672,9 @@ const candidateDelimiter = /[\s,;'"`<>|\\]/
  *      会被枚举到；
  *   2. 候选数量按**起点总数**计算：一旦出现第 9 个起点就立刻 fail closed，不
  *      再「扫前 8 个、剩下的悄悄丢掉」；
- *   3. 每个候选的结束位置取三者中**最早**的一个：下一个 `scheme://` 起点、
- *      一个分隔符、`start + 2048 + 1` 的硬上界。
+ *   3. 每个候选的结束位置**只**取三者中最早的一个：下一个 `scheme://` 起点、
+ *      一个 ASCII 水平空白（空格或制表符）、`start + 2048 + 1` 的硬上界。
+ *      标点不在其中——见 `candidateWhitespace` 的说明。
  *
  * 返回 `{ candidates, unscannable }`。资源上限不是免检额度：起点超过 8 个、
  * 或某个候选超过 2048 字符时 `unscannable` 置位，调用方必须 fail closed。
@@ -690,7 +696,7 @@ const connectionStringCandidates = (line) => {
     const hardLimit = start + maximumCandidateLength + 1
     const scanLimit = Math.min(text.length, nextStart, hardLimit)
     let end = start
-    while (end < scanLimit && !candidateDelimiter.test(text[end])) {
+    while (end < scanLimit && !candidateWhitespace.test(text[end])) {
       end += 1
     }
     if (end - start > maximumCandidateLength) {

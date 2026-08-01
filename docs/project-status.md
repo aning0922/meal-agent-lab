@@ -782,7 +782,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   PublishedPort；api 单一 `127.0.0.1` binding；scoped cleanup 零残留。
 - **75 cases：1 个正向 baseline + 74 个反例/边界检查**，baseline 必须通过、
   其余 74 条全部以指定理由捕获、0 漏网（`check-local-test-negatives.mjs`）；
-  另有 **M3B targeted negative suite 的 25 cases**（`check-m3b-round2-negatives.mjs`）、
+  另有 **M3B targeted negative suite 的 26 cases**（`check-m3b-round2-negatives.mjs`）、
   **15 项**拓扑变异反例（`check-compose-topology-mutations.mjs`）与 **5 个**
   信号窗口（`check-m3b-signal-windows.mjs`）。失败消息不含任何 Secret 取值：
   wrong-reason 分支只输出期望判据与条目计数，不回显 raw problems/residue。

@@ -1168,6 +1168,72 @@ const parseableShapesStillClean = () => {
   }
 }
 
+{
+  // 标点**不再**是候选边界。此前 `,;'"`<>|\` 都会终止候选，于是一条
+  // **完全合法**的 URL 会被拦腰截断：`https://host/path,rest?pass%77ord=…`
+  // 被切成 `https://host/path`，query 连同凭据一起消失——既不报「有凭据」也
+  // 不报「扫不完」，静默放行。哪个标点算边界只能由 WHATWG URL 解析器按规范
+  // 回答，不能靠维护一张标点表。
+  const name = 'legal URL punctuation does not truncate the candidate'
+  const shapes = [
+    ['comma in the path', String.raw`https://host/path,rest?pass%77ord=SYNTHETIC-COMMA`, String.raw`https://host/path,rest?mode=ok`],
+    ['semicolon after the host', String.raw`https://host;path?pass%77ord=SYNTHETIC-SEMI`, String.raw`https://host;path?mode=ok`],
+    ['pipe in the path', String.raw`https://host/path|rest?pass%77ord=SYNTHETIC-PIPE`, String.raw`https://host/path|rest?mode=ok`],
+    ['apostrophe in the path', String.raw`https://host/path'rest?pass%77ord=SYNTHETIC-QUOTE`, String.raw`https://host/path'rest?mode=ok`],
+    ['backslash after the host', String.raw`https://host\?pass%77ord=SYNTHETIC-BACKSLASH`, String.raw`https://host\?mode=ok`]
+  ]
+
+  // 前置事实：每一条**整体**都是合法 URL，且解码后的 query key 就是
+  // `password`。没有这一步，下面的断言可能只是在测一条根本不含凭据的字符串。
+  const notCredential = shapes.filter(([, credentialUrl]) => {
+    try {
+      return ![...new URL(credentialUrl).searchParams.keys()].includes('password')
+    } catch {
+      return true
+    }
+  })
+
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  const dirtyBenign = []
+  for (const [label, credentialUrl, benignUrl] of shapes) {
+    const problems = templateProblemsFor(`NOTES=${credentialUrl}`)
+    // **必须**判成 credential query parameter：靠 unscannable 蒙混过关等于
+    // 「解析不动所以拦下了」，那不是这条反例要证明的能力。
+    if (!problems.some((problem) => /credential query parameter/.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    if (echoesCandidateContent(problems)) {
+      leaking.push(label)
+    }
+    // 同形态但**不含** credential query 的对照必须保持干净。
+    if (templateProblemsFor(`NOTES=${benignUrl}`).some((problem) => /connection string/.test(problem))) {
+      dirtyBenign.push(label)
+    }
+  }
+  if (notCredential.length > 0) {
+    fail(name, `the precondition failed: ${String(notCredential.length)} shape(s) do not decode to a password key`)
+  } else if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} legal-punctuation URL(s) were truncated before their query`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (dirtyBenign.length > 0) {
+    fail(name, `${String(dirtyBenign.length)} benign counterpart(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} legal-punctuation URLs judged as credential query parameters ` +
+        '(not via unscannable), their benign counterparts stay clean, nothing echoed'
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
@@ -1292,7 +1358,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 25
+const expectedCount = 26
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
