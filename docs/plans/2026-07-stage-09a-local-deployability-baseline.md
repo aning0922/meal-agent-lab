@@ -1925,7 +1925,53 @@ fail closed。**不再维护任何标点 allowlist/denylist。**
 新增的反例先用真实 `new URL()` 逐条证明「整体合法且解码后的 query key 是
 `password`」，再要求每一条都被判成 **credential query parameter**——而不是靠
 `unscannable` 蒙混过关；每种形态还配了一条不含 credential query 的 benign 对照，
-必须保持干净。targeted negative suite 因此从 25 精确增加到 **26/26**。
+必须保持干净。targeted negative suite 因此从 25 精确增加到 **26/26**（**当时**的
+计数；第八轮扩到 27，见下一节）。
+
+#### 第八轮 bounded 结构性候选视图修正（边界改由 dotenv 逻辑取值决定）
+
+前几轮一直在**字符表**上打补丁：先是标点表（`candidateDelimiter`），第七轮换成
+空白表（`candidateWhitespace`）。两者都错在同一件事上——把「URL 里哪个字符是
+分隔符」和「一个取值在哪里结束」混成了一个问题。前者只有 WHATWG 解析器有资格
+回答，后者是 **dotenv 语法**的问题。本轮把边界判据整体搬到 dotenv 侧，两张字符
+表全部删除。
+
+*修复前*（`6e154b4` 实测，四种形态**全部 UNCAUGHT，且一条 problem 都不产生**）：
+
+| 形态 | 完整取值的解码 query key | 扫描结果 |
+| --- | --- | --- |
+| `NOTES=https://first.invalid?redirect=https://second.invalid/path&pass%77ord=…` | `redirect`, `password` | 无任何 problem |
+| `NOTES=https://first.invalid?redirect=redis://second:6379/path&pass%77ord=…` | `redirect`, `password` | 无任何 problem |
+| `NOTES="https://host/path rest?pass%77ord=…"` | `password` | 无任何 problem |
+| 同上，path 中是**真实制表符** | `password` | 无任何 problem |
+
+前两条：外层候选在**内层起点**处被截断成 `https://first.invalid?redirect=`，
+带凭据的 query 参数落在被砍掉的部分里；而内层视图 `https://second.invalid/path&…`
+根本没有 `?`，于是两个视图都判不出凭据。后两条：引号内的空格/制表符被当成边界，
+取值被拦腰截断。
+
+*修复后*——`dotenvLogicalSegments()` 明确定义四类边界与异常形态：
+
+- **注释**：行首 `#` 反复剥离后再判定，注释里的凭据照扫；
+- **赋值**：`KEY=` 之后是取值；非赋值行整行作为一个片段（README 散文等）；
+- **quoted**：边界是配对的同种引号，引号内的空格与制表符**原样保留**；
+- **unquoted**：到行尾（去尾部空白），行内 `#` 不当注释起点，宁可多扫；
+- **异常**：引号未闭合、或闭合引号后跟着非空白且非 `#` 的内容 → 取值边界不明确
+  → **fail closed**；闭合引号后的 `#` 注释作为**另一个片段**继续扫描。
+
+候选视图随之改为：在逻辑片段内枚举全部 `scheme://` 起点，**每个起点给出一个
+独立、可重叠的视图，一律延伸到片段末尾**。内层起点仍然计数、仍然各自成一个
+独立视图（`?mode=ok(redis://…?pass%77ord=…)` 这类要靠内层视图才抓得到），
+但**不再截断外层候选**。
+
+保留不变：最多 8 个起点、每个候选视图最多 2048 字符、第 9 个起点与超限一律
+`unscannable connection string candidate`、失败消息只含类别 + 文件 + 行号。
+
+新增反例先用真实 `new URL()` 逐条证明「完整取值可解析且解码后的 query key 是
+`password`」，再要求每条都判成 **credential query parameter**（显式排除靠
+`unscannable` 假通过），并各配一条只含 `mode=ok` 的 benign 对照。targeted
+negative suite 从 26 精确增加到 **27/27**；既有的第 9 起点、2048/2049 边界、
+malformed URL、合法标点与全部 benign 用例复跑通过。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2064,7 +2110,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（26 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（27 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

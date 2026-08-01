@@ -645,64 +645,108 @@ const maximumCandidates = 8
 const maximumCandidateLength = 2048
 
 /**
- * 候选的**空白**边界——只有 ASCII 空格与制表符两个字符。
+ * 一行里**受支持的 dotenv 逻辑取值**片段。
  *
- * 标点**全部**从边界判据里移除了（此前是 `,;'"\`<>|\\`）。维护一张标点
- * allowlist/denylist 是个错误的方向：这些字符**在合法 URL 里就是合法的**，
- * 把它们当边界只会把一条完整的 URL 拦腰截断——`https://host/path,rest?…` 会
- * 被切成 `https://host/path`，query 连同其中的凭据一起消失，扫描器于是既没
- * 报「有凭据」也没报「扫不完」，静默放行。哪个标点算边界的问题，交给 WHATWG
- * URL 解析器按规范回答；解析不动的候选走 fail closed 那条路。
+ * 边界判据不再来自任何 URL 字符表。`candidateDelimiter`（标点表）与
+ * `candidateWhitespace`（空白表）都已删除：URL 里哪个字符是分隔符只有 WHATWG
+ * 解析器有资格回答，而**一个取值在哪里结束**是 dotenv 语法的问题，不是 URL 的
+ * 问题。前几轮反复在字符表上打补丁，正是因为把这两件事混成了一件。
+ *
+ * 判据（逐条明确，含异常形态）：
+ *
+ *   - **注释**：行首的 `#` 反复剥离后再判定。被注释掉的凭据仍然是进了 Git 的
+ *     凭据，必须照扫；
+ *   - **赋值**：`KEY=` 之后的部分是取值。非赋值形态（README 散文等）整行作为
+ *     一个片段，覆盖面与此前一致；
+ *   - **quoted**：取值以 `"` 或 `'` 开头时，边界是**配对的同种引号**。引号内
+ *     的空格与制表符**原样保留**，绝不截断——这正是
+ *     `NOTES="https://host/path rest?…"` 此前被切断的原因；
+ *   - **unquoted**：取值一直到行尾（尾部空白去掉）。行内 `#` 不当作注释起点，
+ *     宁可多扫；
+ *   - **异常/未闭合**：引号没有配对、或闭合引号之后还跟着**非空白且非 `#`**
+ *     的内容——两者都是「这一行的取值边界不明确」，直接 fail closed；闭合引号
+ *     之后的 `#` 注释作为**另一个片段**继续扫描。
  */
-const candidateWhitespace = /[ \t]/
+const dotenvLogicalSegments = (line) => {
+  const text = String(line)
+  // 行首注释标记反复剥离（`# # KEY=value` 同样要还原成赋值形态）。
+  let uncommented = text
+  for (;;) {
+    const stripped = uncommented.replace(/^\s*#+\s*/, '')
+    if (stripped === uncommented) {
+      break
+    }
+    uncommented = stripped
+  }
+  const assignment = assignmentPattern.exec(uncommented)
+  if (assignment === null) {
+    // 非赋值行：整行作为一个片段。
+    return { segments: [uncommented], ambiguous: false }
+  }
+  const rest = assignment[2].replace(/^[ \t]+/, '')
+  const quote = rest[0]
+  if (quote !== '"' && quote !== "'") {
+    return { segments: [rest.replace(/[ \t]+$/, '')], ambiguous: false }
+  }
+  const closing = rest.indexOf(quote, 1)
+  if (closing === -1) {
+    // 未闭合引号：取值边界不明确。
+    return { segments: [], ambiguous: true }
+  }
+  // 引号内原样保留（含空格与制表符）。
+  const segments = [rest.slice(1, closing)]
+  const trailing = rest.slice(closing + 1).replace(/^[ \t]+/, '').replace(/[ \t]+$/, '')
+  if (trailing === '') {
+    return { segments, ambiguous: false }
+  }
+  if (trailing.startsWith('#')) {
+    // 行内注释：作为另一个片段继续扫描（注释里的凭据同样算泄漏）。
+    segments.push(trailing.replace(/^#+\s*/, ''))
+    return { segments, ambiguous: false }
+  }
+  // 闭合引号之后还有别的内容：dotenv 对此没有确定语义。
+  return { segments: [], ambiguous: true }
+}
 
 /**
- * 行内的连接串候选：**先独立枚举全部 `scheme://` 起点**，再各自定界。
+ * 连接串候选：在**逻辑取值**内部枚举 `scheme://` 起点，每个起点给出一个
+ * **独立、可重叠**的候选视图。
  *
- * 这是本轮的结构性修正。此前的实现是「找到一个候选 → 从它的结束位置继续找下
- * 一个」，于是任何**落在前一个候选内部**的起点都被整段跳过：
- * `https://first.invalid?mode=ok(redis://…?pass%77ord=…)` 里的 `redis://` 起点
- * 位于第一个候选的区间内，扫描游标直接越过它，第二条 URI 从未被解析过。括号、
- * 方括号、花括号只是同一个结构缺陷的不同外衣。
+ * 关键改动：候选视图一律延伸到**所在逻辑片段的末尾**，内层起点**不再截断**
+ * 外层候选。此前每个候选都在「下一个起点」处结束，于是
+ * `https://first.invalid?redirect=https://second.invalid/path&pass%77ord=…`
+ * 的外层候选被砍成 `https://first.invalid?redirect=`——真正带凭据的那个
+ * query 参数落在被砍掉的部分里，而内层视图 `https://second.invalid/path&…`
+ * 根本没有 `?`，于是两个视图都判不出凭据，整行静默放行。
  *
- * 现在：
+ * 内层起点仍然**计数**并各自独立成一个视图（`?mode=ok(redis://…?pass%77ord=…)`
+ * 这类要靠内层视图才抓得到），只是不再影响外层视图的长度。
  *
- *   1. 用只匹配 `scheme://` **前缀**的正则枚举出一行里的**全部**起点——前缀很
- *      短，`matchAll` 的 lastIndex 只会越过前缀本身，因此嵌在后面的起点照样
- *      会被枚举到；
- *   2. 候选数量按**起点总数**计算：一旦出现第 9 个起点就立刻 fail closed，不
- *      再「扫前 8 个、剩下的悄悄丢掉」；
- *   3. 每个候选的结束位置**只**取三者中最早的一个：下一个 `scheme://` 起点、
- *      一个 ASCII 水平空白（空格或制表符）、`start + 2048 + 1` 的硬上界。
- *      标点不在其中——见 `candidateWhitespace` 的说明。
- *
- * 返回 `{ candidates, unscannable }`。资源上限不是免检额度：起点超过 8 个、
- * 或某个候选超过 2048 字符时 `unscannable` 置位，调用方必须 fail closed。
+ * 资源上限保持不变，且**都不是免检额度**：起点总数超过 8、或任一候选视图超过
+ * 2048 字符，都置 `unscannable`，调用方 fail closed。
  */
 const connectionStringCandidates = (line) => {
-  const text = String(line)
-  const starts = []
-  const startPattern = /[a-z][a-z0-9+.-]*:\/\//gi
-  for (const match of text.matchAll(startPattern)) {
-    starts.push(match.index)
-    if (starts.length > maximumCandidates) {
-      // 第 9 个起点：立即 fail closed，不再继续枚举。
-      return { candidates: [], unscannable: 1 }
-    }
+  const { segments, ambiguous } = dotenvLogicalSegments(line)
+  if (ambiguous) {
+    return { candidates: [], unscannable: 1 }
   }
+  const startPattern = /[a-z][a-z0-9+.-]*:\/\//gi
   const candidates = []
-  for (const [index, start] of starts.entries()) {
-    const nextStart = index + 1 < starts.length ? starts[index + 1] : text.length
-    const hardLimit = start + maximumCandidateLength + 1
-    const scanLimit = Math.min(text.length, nextStart, hardLimit)
-    let end = start
-    while (end < scanLimit && !candidateWhitespace.test(text[end])) {
-      end += 1
+  let startCount = 0
+  for (const segment of segments) {
+    for (const match of segment.matchAll(startPattern)) {
+      startCount += 1
+      if (startCount > maximumCandidates) {
+        // 第 9 个起点：立即 fail closed，不再继续枚举。
+        return { candidates: [], unscannable: 1 }
+      }
+      // 视图延伸到**片段末尾**：内层起点不截断外层候选。
+      const candidate = segment.slice(match.index)
+      if (candidate.length > maximumCandidateLength) {
+        return { candidates: [], unscannable: 1 }
+      }
+      candidates.push(candidate)
     }
-    if (end - start > maximumCandidateLength) {
-      return { candidates: [], unscannable: 1 }
-    }
-    candidates.push(text.slice(start, end))
   }
   return { candidates, unscannable: 0 }
 }

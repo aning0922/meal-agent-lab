@@ -1002,7 +1002,9 @@ const eightBenignCandidates = Array.from(
 /** 失败消息不得回显取值、URL 或 key。 */
 const echoesCandidateContent = (problems) =>
   problems.some((problem) =>
-    /SYNTHETIC|benign-|oversize\.invalid|first\.invalid|pass%77ord/.test(String(problem))
+    /SYNTHETIC|benign-|oversize\.invalid|first\.invalid|second\.invalid|host\/path|pass%77ord/.test(
+      String(problem)
+    )
   )
 
 {
@@ -1234,6 +1236,91 @@ const parseableShapesStillClean = () => {
   }
 }
 
+{
+  // 候选**视图**必须延伸到所在 dotenv 逻辑取值的末尾，内层起点只计数、不截断
+  // 外层候选；引号内的空格与制表符必须原样保留。
+  //
+  // 此前每个候选都在「下一个起点」处结束，于是
+  // `https://first.invalid?redirect=https://second.invalid/path&pass%77ord=…`
+  // 的外层候选被砍成 `https://first.invalid?redirect=`——带凭据的 query 参数
+  // 落在被砍掉的部分里，而内层视图没有 `?`，两个视图都判不出凭据；引号内的
+  // 空格/制表符则被当成边界，`"https://host/path rest?pass%77ord=…"` 同样被
+  // 拦腰截断。
+  const name = 'a candidate view spans the whole dotenv logical value'
+  const shapes = [
+    [
+      'nested https redirect',
+      String.raw`https://first.invalid?redirect=https://second.invalid/path&pass%77ord=SYNTHETIC-NESTHTTPS`,
+      String.raw`https://first.invalid?redirect=https://second.invalid/path&mode=ok`,
+      (value) => `NOTES=${value}`
+    ],
+    [
+      'nested redis redirect',
+      String.raw`https://first.invalid?redirect=redis://second:6379/path&pass%77ord=SYNTHETIC-NESTREDIS`,
+      String.raw`https://first.invalid?redirect=redis://second:6379/path&mode=ok`,
+      (value) => `NOTES=${value}`
+    ],
+    [
+      'quoted value with a space',
+      String.raw`https://host/path rest?pass%77ord=SYNTHETIC-QUOTEDSPACE`,
+      String.raw`https://host/path rest?mode=ok`,
+      (value) => `NOTES="${value}"`
+    ],
+    [
+      'quoted value with a real tab',
+      `https://host/path\trest?pass%77ord=SYNTHETIC-QUOTEDTAB`,
+      `https://host/path\trest?mode=ok`,
+      (value) => `NOTES="${value}"`
+    ]
+  ]
+
+  // 前置事实：每条**完整取值**都可解析，且解码后的 query key 就是 password。
+  const notCredential = shapes.filter(([, credentialValue]) => {
+    try {
+      return ![...new URL(credentialValue).searchParams.keys()].includes('password')
+    } catch {
+      return true
+    }
+  })
+
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  const dirtyBenign = []
+  for (const [label, credentialValue, benignValue, render] of shapes) {
+    const problems = templateProblemsFor(render(credentialValue))
+    if (!problems.some((problem) => /credential query parameter/.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    if (echoesCandidateContent(problems)) {
+      leaking.push(label)
+    }
+    if (templateProblemsFor(render(benignValue)).some((problem) => /connection string/.test(problem))) {
+      dirtyBenign.push(label)
+    }
+  }
+  if (notCredential.length > 0) {
+    fail(name, `the precondition failed: ${String(notCredential.length)} value(s) do not decode to a password key`)
+  } else if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} logical value(s) were truncated before their credential query`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (dirtyBenign.length > 0) {
+    fail(name, `${String(dirtyBenign.length)} benign counterpart(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} shapes (nested scheme starts, quoted space, quoted tab) judged as ` +
+        'credential query parameters (not via unscannable), benign counterparts clean, nothing echoed'
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
@@ -1358,7 +1445,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 26
+const expectedCount = 27
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

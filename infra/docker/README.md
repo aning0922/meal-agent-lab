@@ -136,7 +136,7 @@ M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
 | `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：26 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、只以空白与长度上限定界、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：27 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、视图覆盖整个 **dotenv 逻辑取值**、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
 | `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证 |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
@@ -253,10 +253,19 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 26 cases、
+75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 27 cases、
 15 项拓扑变异反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
+
+### 模板扫描的候选边界来自 dotenv，不来自 URL 字符表
+
+一个取值在哪里结束是 **dotenv 语法**的问题：quoted 值以配对引号为界（内部的
+空格与制表符原样保留），unquoted 值到行尾，行首 `#` 注释剥离后照扫，引号未闭合
+或闭合后跟着非空白非注释内容一律 **fail closed**。URL 里哪个字符算分隔符则完全
+交给 WHATWG 解析器——扫描器**不维护任何标点或空白字符表**。每个 `scheme://`
+起点给出一个独立、可重叠、延伸到逻辑取值末尾的候选视图；内层起点只计数与独立
+检查，不截断外层候选。
 
 ### 本轮的威胁模型（写清边界，避免过度声称）
 
