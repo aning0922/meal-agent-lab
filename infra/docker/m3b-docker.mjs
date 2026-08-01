@@ -113,20 +113,37 @@ export const parseInspectedExitCode = (raw) => {
 }
 
 /**
- * docker CLI 「这个对象不存在」的**唯一**判据，三处调用点共用。
+ * docker CLI 「这个对象不存在」的**唯一**判据，三处调用点共用
+ * （`imageIdOf`、反例套件的 container presence、信号窗口的 per-run tag 复查）。
  *
- * 判定对**整串** `stderr.trim()` 做锚定匹配，且**不带 `m` 标志**：多行包装的
- * 错误、带前缀或后缀的错误、以及一条关于**别的对象**的错误，全都不算「不存在」。
+ * 判定对**整串** `stderr.trim()` 做锚定匹配，且**不带 `m` 标志**。但仅仅去掉
+ * `m` 是不够的：`\s` 本身就跨行，于是
+ *
+ *   Error response from daemon:\nNo such image: <tag>
+ *   No such image:\n<tag>
+ *
+ * 这类**内嵌换行**的两行 stderr 仍然会整串匹配成功，被读成「资源不存在」。
+ * 因此这里做两件事：
+ *
+ *   1. `trim()` 之后**只要还含 CR 或 LF 就直接判 false**——docker 的
+ *      「找不到对象」永远是**单行**；多行意味着还有别的信息，不能当成不存在；
+ *   2. 正则内部**不使用任何可跨行的 `\s`**，只允许必要的**水平**空白
+ *      `[ \t]*`。
+ *
  * 调用方还必须自己确认退出码恰好是 1——只有那一个组合才是 docker 的
- * 「找不到对象」。
+ * 「找不到对象」。本函数只返回布尔值，不构造任何含外部内容的消息。
  */
 export const isAbsenceMessage = (stderr, { kind, name }) => {
+  const trimmed = String(stderr ?? '').trim()
+  if (/[\r\n]/.test(trimmed)) {
+    return false
+  }
   const noun = kind === 'image' ? 'image' : 'object'
   const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const pattern = new RegExp(
-    `^(?:[Ee]rror(?: response from daemon)?:\\s*)?[Nn]o such ${noun}:?\\s*${escaped}$`
+    `^(?:[Ee]rror(?: response from daemon)?:[ \\t]*)?[Nn]o such ${noun}:?[ \\t]*${escaped}$`
   )
-  return pattern.test(String(stderr ?? '').trim())
+  return pattern.test(trimmed)
 }
 
 /** 严格读取一段 JSON 形态的 inspect 字段（空 payload 由 inspectStrict 拒绝）。 */

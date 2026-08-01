@@ -89,6 +89,39 @@ const fail = (name, detail) => {
 const git = (args, options = {}) =>
   spawnSync('git', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, ...options })
 
+/**
+ * 把一行写进一个**临时 git 仓库**的 tracked 模板，再用真实的
+ * `scanTrackedTemplates` 扫它。绝不变异仓库里的真实模板，因此本套件对工作树的
+ * 副作用恒为零。
+ */
+const templateProblemsFor = (line) => {
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-tmpl-repo-'))
+  try {
+    const repo = resolve(parent, 'repo')
+    const templateDirectory = resolve(repo, 'infra/environments/local-test')
+    mkdirSync(templateDirectory, { recursive: true })
+    for (const args of [
+      ['init', '--quiet', repo],
+      ['-C', repo, 'config', 'user.email', 'templates@example.invalid'],
+      ['-C', repo, 'config', 'user.name', 'M3B template negatives']
+    ]) {
+      const result = git(args)
+      if (result.error !== undefined || result.status !== 0) {
+        throw new Error(`git ${args[0]} failed`)
+      }
+    }
+    writeFileSync(
+      resolve(templateDirectory, 'local-test.env.example'),
+      `WECHAT_APP_ID=\n${line}\n`
+    )
+    git(['-C', repo, 'add', '-A'])
+    git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
+    return scanTrackedTemplates(repo)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 一、generator 的原子 promotion
 // ---------------------------------------------------------------------------
@@ -834,37 +867,10 @@ process.stdout.write('R4-3: encoded credential query keys are decoded before jud
     ['benign query', 'PG_A=postgresql://postgres:5432/db?sslmode=require', false],
     ['empty placeholder', 'CACHE_C=redis://redis:6379?password=', false]
   ]
-  const problemsFor = (line) => {
-    const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r4-repo-'))
-    try {
-      const repo = resolve(parent, 'repo')
-      const templateDirectory = resolve(repo, 'infra/environments/local-test')
-      mkdirSync(templateDirectory, { recursive: true })
-      for (const args of [
-        ['init', '--quiet', repo],
-        ['-C', repo, 'config', 'user.email', 'r4@example.invalid'],
-        ['-C', repo, 'config', 'user.name', 'M3B round four']
-      ]) {
-        const result = git(args)
-        if (result.error !== undefined || result.status !== 0) {
-          throw new Error(`git ${args[0]} failed`)
-        }
-      }
-      writeFileSync(
-        resolve(templateDirectory, 'local-test.env.example'),
-        `WECHAT_APP_ID=\n${line}\n`
-      )
-      git(['-C', repo, 'add', '-A'])
-      git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
-      return scanTrackedTemplates(repo)
-    } finally {
-      rmSync(parent, { recursive: true, force: true })
-    }
-  }
   const misjudged = []
   const leaking = []
   for (const [label, line, expected] of shapes) {
-    const problems = problemsFor(line)
+    const problems = templateProblemsFor(line)
     const caught = problems.some((problem) => /connection string/.test(problem))
     if (caught !== expected) {
       misjudged.push(label)
@@ -884,6 +890,160 @@ process.stdout.write('R4-3: encoded credential query keys are decoded before jud
       `${String(shapes.length)} shapes judged correctly (percent-encoded, case and separator ` +
         'variants caught; benign query and empty placeholder not flagged; no value echoed)'
     )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R5-1：absence 判据对**内嵌换行**的 stderr fail closed
+// ---------------------------------------------------------------------------
+process.stdout.write('R5-1: an absence message that spans lines is refused\n')
+
+// 只去掉 `m` 标志是不够的：正则里的 `\s` 本身就跨行，于是两行 stderr 仍然整串
+// 匹配成功、被读成「资源不存在」。判据现在先看 `trim()` 之后还有没有 CR/LF，
+// 再用只含**水平**空白（`[ \t]*`）的正则。每种换行形态**各一条**反例，并且
+// 都同时走**纯函数**与**真实 imageIdOf + PATH shim** 两条路径。
+const absenceProbeTag = 'meal-agent-api:m3b-r5probe'
+
+/** 用 PATH shim 让 docker 以指定退出码打印指定 stderr，再问真实的 imageIdOf。 */
+const imageIdVerdictThroughShim = async (script) => {
+  const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r5-shim-'))
+  try {
+    writeFileSync(resolve(shimDirectory, 'docker'), `#!/bin/sh\n${script}`, { mode: 0o700 })
+    const env = { ...process.env, PATH: `${shimDirectory}:${process.env.PATH ?? ''}` }
+    return await imageIdOf(absenceProbeTag, { env }).then(
+      (value) => (value === null ? 'read as absent' : 'read as present'),
+      () => 'threw'
+    )
+  } finally {
+    rmSync(shimDirectory, { recursive: true, force: true })
+  }
+}
+
+{
+  const name = 'a daemon prefix followed by a newline is never read as absence'
+  const stderr = `Error response from daemon:\nNo such image: ${absenceProbeTag}`
+  const pure = isAbsenceMessage(stderr, { kind: 'image', name: absenceProbeTag })
+  const crlf = isAbsenceMessage(
+    `Error response from daemon:\r\nNo such image: ${absenceProbeTag}`,
+    { kind: 'image', name: absenceProbeTag }
+  )
+  const throughShim = await imageIdVerdictThroughShim(
+    'echo "Error response from daemon:" >&2\n' +
+      `echo "No such image: ${absenceProbeTag}" >&2\nexit 1\n`
+  )
+  if (pure) {
+    fail(name, 'the pure judge accepted a stderr whose absence message spans two lines')
+  } else if (crlf) {
+    fail(name, 'the pure judge accepted the CRLF variant of the same two-line message')
+  } else if (throughShim !== 'threw') {
+    fail(name, `the real imageIdOf path ${throughShim} instead of failing closed`)
+  } else {
+    pass(name, 'refused by the pure judge (LF and CRLF) and by the real imageIdOf/PATH shim path')
+  }
+}
+
+{
+  const name = 'an absence message split after the noun is never read as absence'
+  const stderr = `No such image:\n${absenceProbeTag}`
+  const pure = isAbsenceMessage(stderr, { kind: 'image', name: absenceProbeTag })
+  const throughShim = await imageIdVerdictThroughShim(
+    `echo "No such image:" >&2\necho "${absenceProbeTag}" >&2\nexit 1\n`
+  )
+  // 反向保证：真正的**单行**消息（以及水平制表符形态）必须仍然判为 absent，
+  // 否则「全都判 false」也能让上面两条恒绿。
+  const genuine = isAbsenceMessage(
+    `Error response from daemon: No such image: ${absenceProbeTag}`,
+    { kind: 'image', name: absenceProbeTag }
+  )
+  const tabbed = isAbsenceMessage(
+    `Error response from daemon:\tNo such image: ${absenceProbeTag}`,
+    { kind: 'image', name: absenceProbeTag }
+  )
+  const genuineThroughShim = await imageIdVerdictThroughShim(
+    `echo "Error response from daemon: No such image: ${absenceProbeTag}" >&2\nexit 1\n`
+  )
+  if (pure) {
+    fail(name, 'the pure judge accepted an absence message split after the noun')
+  } else if (throughShim !== 'threw') {
+    fail(name, `the real imageIdOf path ${throughShim} instead of failing closed`)
+  } else if (!genuine || !tabbed) {
+    fail(name, 'the genuine single-line form is no longer recognised (the judge rejects everything)')
+  } else if (genuineThroughShim !== 'read as absent') {
+    fail(name, `the genuine single-line exit-1 message was ${genuineThroughShim}`)
+  } else {
+    pass(
+      name,
+      'refused by the pure judge and the real imageIdOf path; the genuine single-line and ' +
+        'horizontal-tab forms still read as absent'
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R5-2：连接串候选扫描不得静默免检
+// ---------------------------------------------------------------------------
+process.stdout.write('R5-2: connection string candidates are never silently skipped\n')
+
+// 资源上限（最多 8 个候选、每个最长 2048 字符）保留，但**超限不再是免检额度**：
+// 扫不完就必须以固定类别 fail closed。此前第 9 个候选被 `break` 跳过、超长候选
+// 被长度判断跳过，两者都静默放行；而 `\S+` 还会把逗号后的第二条 URI 吞成第一条
+// 的 query 取值，于是编码后的 key 根本不成其为 key。
+const eightBenignCandidates = Array.from(
+  { length: 8 },
+  (_, index) => `https://benign-${String(index)}.invalid/path?mode=ok`
+).join(' ')
+
+/** 失败消息不得回显取值、URL 或 key。 */
+const echoesCandidateContent = (problems) =>
+  problems.some((problem) =>
+    /SYNTHETIC|benign-|oversize\.invalid|first\.invalid|pass%77ord/.test(String(problem))
+  )
+
+{
+  const name = 'a ninth connection string candidate fails closed instead of being skipped'
+  const problems = templateProblemsFor(
+    `NOTES=${eightBenignCandidates} redis://redis:6379?pass%77ord=SYNTHETIC-NINTH`
+  )
+  const clean = templateProblemsFor(`NOTES=${eightBenignCandidates}`)
+  if (!problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+    fail(name, 'the ninth candidate was skipped instead of failing closed')
+  } else if (echoesCandidateContent(problems)) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (clean.some((problem) => /connection string/.test(problem))) {
+    fail(name, 'eight benign candidates were wrongly flagged (the limit itself must not fire)')
+  } else {
+    pass(name, '/unscannable connection string candidate/ with nothing echoed; eight stay clean')
+  }
+}
+
+{
+  const name = 'an oversize connection string candidate fails closed instead of being skipped'
+  const problems = templateProblemsFor(
+    `NOTES=https://oversize.invalid/${'a'.repeat(2100)}?pass%77ord=SYNTHETIC-OVERSIZE`
+  )
+  const placeholder = templateProblemsFor('CACHE=redis://redis:6379?password=')
+  if (!problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+    fail(name, 'a candidate longer than the 2048 character limit was skipped')
+  } else if (echoesCandidateContent(problems)) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (placeholder.some((problem) => /connection string/.test(problem))) {
+    fail(name, 'an empty placeholder was wrongly flagged')
+  } else {
+    pass(name, '/unscannable connection string candidate/ with nothing echoed; placeholder clean')
+  }
+}
+
+{
+  const name = 'a comma-separated second URI is scanned instead of being swallowed'
+  const problems = templateProblemsFor(
+    'NOTES=https://first.invalid?mode=ok,redis://redis:6379?pass%77ord=SYNTHETIC-COMMA'
+  )
+  if (!problems.some((problem) => /credential query parameter/.test(problem))) {
+    fail(name, 'the second URI was swallowed by the first candidate and never scanned')
+  } else if (echoesCandidateContent(problems)) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else {
+    pass(name, '/credential query parameter/ on the second URI with nothing echoed')
   }
 }
 
@@ -1011,7 +1171,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 16
+const expectedCount = 21
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
@@ -1019,13 +1179,13 @@ if (caught + failures.length !== expectedCount) {
   )
 }
 if (failures.length > 0) {
-  process.stderr.write('M3B round-two/three negative suite FAIL\n')
+  process.stderr.write('M3B round-two/three/four negative suite FAIL\n')
   for (const message of failures) {
     process.stderr.write(`  - ${message}\n`)
   }
   process.exit(1)
 }
 process.stdout.write(
-  `M3B round-two/three negative suite PASS (${String(caught)}/${String(expectedCount)} ` +
+  `M3B round-two/three/four negative suite PASS (${String(caught)}/${String(expectedCount)} ` +
     'negatives caught with their named reasons)\n'
 )

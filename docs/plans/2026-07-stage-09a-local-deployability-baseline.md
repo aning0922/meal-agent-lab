@@ -1386,7 +1386,9 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
    失败）；postgres 无 PublishedPort/PortBinding；api 恰好一个
    `127.0.0.1:<port>→3000/tcp` binding。失败也执行按 project label 限定的
    scoped cleanup，实测零残留；`--keep-failure` 才保留现场。
-8. **反向测试 47 项全部以指定理由捕获、0 漏网**（`check-local-test-negatives.mjs`）：
+8. **反向测试 47 项全部以指定理由捕获、0 漏网**（`check-local-test-negatives.mjs`；
+   47 是**当时**的计数，后续几轮整改把它扩到了 75 cases = 1 正向 baseline + 74
+   反例/边界检查）：
    错 user（含 `meal_agent_migration` 漏 `_login`）、错 host/port/database、
    query 走私、URL 与口令不一致、pgpass 不一致/第三 endpoint/通配、缺文件、
    多文件、弱权限 0644、错属主（经 expectedOwnerUid 注入 seam——非 root 进程
@@ -1433,9 +1435,9 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
    也能通过），现在同时断言下界（自己 project 的容器必须被删掉）；模板扫描补
    `KEY`/`PWD`/`PASS`/`CREDENTIAL` 后缀、注释行、无 userinfo 的 `password=`
    查询参数 DSN 与零覆盖抛错；默认目录强制 `.gitignore` 存在且八个文件名逐一
-   过 `git check-ignore`；反例从 32 项扩到 **47 项**（补内容卫生、口令字母表、
+   过 `git check-ignore`；反例从 32 项扩到**当时的 47 项**（补内容卫生、口令字母表、
    fragment、tab 走私——canonical 全等的专属回归、unix socket host 等），并加
-   47 项精确计数断言。
+   当时的 47 项精确计数断言（该断言现为 75 cases）。
 
 修复后全部门禁重跑：smoke PASS（18 needles、86 产物、315 tracked files 零命
 中）、probe PASS、反例 47/47、拓扑门禁与 15 项变异全绿、悬挂匿名卷零新增。
@@ -1699,7 +1701,7 @@ Secret」（`.directory` 未复位）；生产失败路径补上独立目录复�
 
 第三轮收口时的门禁数字是 local-test 75 cases、round-two/three negatives
 **12**、signal windows **5**、topology mutations **15**；第四轮把第二项改成
-**16**（见下一节）。
+**16**，第五轮再扩到 **21**（见下面两节）。
 
 #### 第三轮整改之后的两路只读审计与定点修复
 
@@ -1788,7 +1790,7 @@ fail-closed）。两路共提出 11 条，逐条经独立的「尽力证伪」�
 
 第四轮之后的门禁数字：**local-test 75 cases = 1 个正向 baseline + 74 个反例/
 边界检查**、round-two/three/four negatives **16**、signal windows **5**、
-topology mutations **15**。
+topology mutations **15**；**第五轮把窄反例扩到 21**（见下一节）。
 
 M3B 的**完整命令清单（七条）**，与 [`infra/docker/README.md`](../../infra/docker/README.md)
 逐条一致：
@@ -1826,6 +1828,37 @@ M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手
   Compose override** 三类**不作为当前 M3B blocker**；
 - 已落地的 inode 身份复核、no-replace promotion 与 scoped cleanup，定位是
   **不误删他人文件、不把读取失败读成阴性证据**，不是抵御同 EUID 敌手。
+
+#### 第五轮 bounded 窄修（absence fail closed、候选扫描不得免检）
+
+两个代码缺陷，都先在 `230371e` 上跑红再修（5/5 全红，证据见每条）。
+
+1. **absence 判据对内嵌换行 fail closed**。第四轮去掉了 `m` 标志，但正则里的
+   `\s` 本身就跨行，于是**两行** stderr 仍然整串匹配成功。
+   *修复前*（`230371e` 实测）：`Error response from daemon:\nNo such image:
+   <tag>` 与 `No such image:\n<tag>` 两种形态，纯函数判据都返回 `true`，走
+   **真实 `imageIdOf` + PATH shim** 也都 `read as absent`。
+   *修复后*：`trim()` 之后只要还含 CR 或 LF 就直接 `false`；正则内部不再有任何
+   `\s`，只保留必要的水平空白 `[ \t]*`；退出码仍必须精确等于 1；三处调用点
+   （image、container presence、signal window）继续共用同一个 helper；判据只
+   返回布尔值，不构造含外部内容的消息。反向保证同时断言：单行与水平制表符
+   形态仍然判为 absent（否则「全判 false」也能让反例恒绿）。
+2. **连接串候选扫描不得静默免检**。资源上限（最多 8 个候选、每个最长 2048
+   字符）保留，但**超限不再是免检额度**。
+   *修复前*（`230371e` 实测）：第 9 个候选被 `break` 跳过、超长候选被长度判断
+   跳过，两者的 `pass%77ord=` 都**零 problem 静默放行**；`\S+` 还会把逗号后的
+   第二条 URI 吞成第一条的 query 取值，`NOTES=https://first.invalid?mode=ok,
+   redis://…?pass%77ord=…` 同样零 problem。
+   *修复后*：提取改为**分隔符感知**（空白、逗号、分号、引号、尖括号、竖线、
+   反斜杠都终止候选），每个 `scheme://` 起点独立识别；扫描本身有界（每个候选
+   最多前进 2049 字符）；超出任一上限时以固定类别
+   `unscannable connection string candidate` fail closed，且该判定**优先于**
+   原始文本层的结论。三条失败消息都只含类别 + 文件 + 行号，实测不含
+   `SYNTHETIC`、URL、key 或取值；八个 benign 候选与空占位 `?password=` 仍然
+   干净。
+
+窄反例套件因此从 16 扩到 **21**（每种要求的形态各一条：两种换行形态、第 9 个
+候选、超长候选、逗号分隔），输出名称统一为 `round-two/three/four`。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -1959,14 +1992,25 @@ node infra/docker/check-compose-topology-mutations.mjs   # 上一条门禁自身
 变异反向测试会**临时改写** tracked 的 `compose.local-test.yaml` 再运行门禁；它在
 文件不干净时拒绝运行，每次变异后立即写回原始字节，并在结束时逐字节复核还原结果。
 
-M3B 另有五条命令（同样尚未并入聚合脚本，属于 M5）：
+M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于 M5）。这一段此前写的
+是「五条命令 / 47 项反例」，那是 M3B 早期的数字，早已被后续几轮整改推翻；现按
+实际实现列出：
+
+```bash
+node infra/docker/check-m3b-round2-negatives.mjs       # 21 项第二/三/四轮窄反例
+node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
+node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
+node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
+node infra/docker/check-compose-topology-mutations.mjs # 15 项拓扑变异反例
+node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离
+node infra/docker/probe-compose-secret-identity.mjs    # Compose Secret 的容器内 UID/mode 证据
+```
+
+另有两条**运维**命令，不属于门禁：
 
 ```bash
 node infra/docker/generate-local-test-secrets.mjs      # 八份 Secret 的单一来源生成
 node infra/docker/preflight-local-test-secrets.mjs     # 部署前交叉一致性预检
-node infra/docker/probe-compose-secret-identity.mjs    # Compose Secret 的容器内 UID/mode 证据
-node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离
-node infra/docker/check-local-test-negatives.mjs       # 47 项指定理由反例
 ```
 
 `pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由

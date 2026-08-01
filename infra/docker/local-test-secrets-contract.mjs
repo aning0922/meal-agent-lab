@@ -603,6 +603,9 @@ const credentialQueryKeyStems = [
   'credential'
 ]
 const credentialQueryCategory = 'contains a connection string with a credential query parameter'
+// 固定类别：扫描器**没能完整扫完**这一行的连接串候选。消息里只有类别、文件与
+// 行号，绝不回显 URL、key 或取值。
+const unscannableCategory = 'contains an unscannable connection string candidate'
 const fullDsnPatterns = [
   {
     // 顺序固定：userinfo 形排在最前，两条既有反例继续命中这条消息。
@@ -637,19 +640,61 @@ const compactCredentialStems = [
   'credential'
 ]
 
-/** 行内的连接串候选：有界（最多 8 个、每个最长 2048 字符），避免病态输入。 */
+/** 资源上限：一行最多扫 8 个候选，每个候选最长 2048 字符。 */
+const maximumCandidates = 8
+const maximumCandidateLength = 2048
+
+/**
+ * 候选的**终止符**。此前用的是 `\S+`——它一路吃到下一个空白为止，于是
+ * `NOTES=https://first.invalid?mode=ok,redis://…?pass%77ord=…` 整行会被当成
+ * **一个** URL：第二条 URI 变成第一条的 query 取值，`pass%77ord` 于是根本
+ * 不是一个 key，解码判据看不见它。逗号、分号、引号、尖括号与竖线都当作分隔符
+ * 之后，每个 `scheme://` 起点都会被独立识别。
+ */
+const candidateDelimiter = /[\s,;'"`<>|\\]/
+
+/**
+ * 行内的连接串候选：**有界**且**分隔符感知**。
+ *
+ * 返回 `{ candidates, unscannable }`。资源上限本身不是免检理由：超过 8 个候选、
+ * 或某个候选超过 2048 字符时，`unscannable` 被置位，调用方必须**fail closed**
+ * ——此前这两种情形都是 `break` / 跳过，等于给「把凭据塞到第 9 个候选里」和
+ * 「把凭据塞进一条超长 URI 里」发免检通行证。
+ *
+ * 扫描本身也是有界的：每个候选最多前进 2049 个字符就停，因此一行超长文本不会
+ * 让扫描退化成无界工作。
+ */
 const connectionStringCandidates = (line) => {
-  const found = []
-  const pattern = /[a-z][a-z0-9+.-]*:\/\/\S+/gi
-  for (const match of String(line).matchAll(pattern)) {
-    if (found.length >= 8) {
+  const text = String(line)
+  const candidates = []
+  let unscannable = 0
+  const starts = /[a-z][a-z0-9+.-]*:\/\//gi
+  let cursor = 0
+  while (cursor < text.length) {
+    starts.lastIndex = cursor
+    const match = starts.exec(text)
+    if (match === null) {
       break
     }
-    if (match[0].length <= 2048) {
-      found.push(match[0])
+    let end = match.index
+    const scanLimit = Math.min(text.length, match.index + maximumCandidateLength + 1)
+    while (end < scanLimit && !candidateDelimiter.test(text[end])) {
+      end += 1
     }
+    if (end - match.index > maximumCandidateLength) {
+      unscannable += 1
+      break
+    }
+    if (candidates.length >= maximumCandidates) {
+      unscannable += 1
+      break
+    }
+    candidates.push(text.slice(match.index, end))
+    // 从分隔符之后继续：下一个 `scheme://` 起点因此被独立识别，而不是被前一个
+    // 候选吞掉。
+    cursor = end + 1
   }
-  return found
+  return { candidates, unscannable }
 }
 
 /**
@@ -661,10 +706,17 @@ const connectionStringCandidates = (line) => {
  * 这里用 WHATWG `URL` + `URLSearchParams` 做有界解析（它按规范解码 key），
  * 解析失败就交回上面那层原始文本判据。
  *
- * **只返回布尔**：key、取值与整条连接串一律不外传，调用方只能拿到类别。
+ * **只返回类别名**：key、取值与整条连接串一律不外传，调用方只能拿到类别。
+ * 返回 `'unscannable'`（超出资源上限，必须 fail closed）、
+ * `'credential'`（解码后的 query key 命中）或 `null`。
  */
-const hasEncodedCredentialQueryKey = (line) => {
-  for (const candidate of connectionStringCandidates(line)) {
+const encodedCredentialVerdict = (line) => {
+  const { candidates, unscannable } = connectionStringCandidates(line)
+  if (unscannable > 0) {
+    // 扫不完就**不许放行**：资源上限是为了防病态输入，不是免检额度。
+    return 'unscannable'
+  }
+  for (const candidate of candidates) {
     let url
     try {
       url = new URL(candidate)
@@ -678,11 +730,11 @@ const hasEncodedCredentialQueryKey = (line) => {
       }
       const compact = key.toLowerCase().replace(/[-_.]/g, '')
       if (compactCredentialStems.some((stem) => compact.includes(stem))) {
-        return true
+        return 'credential'
       }
     }
   }
-  return false
+  return null
 }
 
 /**
@@ -728,15 +780,20 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
   const scanTemplateContent = (label, content) => {
     const lines = content.split('\n')
     for (const [index, line] of lines.entries()) {
-      let dsnCategory = null
-      for (const { pattern, category } of fullDsnPatterns) {
-        if (pattern.test(line)) {
-          dsnCategory = category
-          break
+      // 第二层先判：扫不完的行必须 fail closed，**优先于**原始文本层的结论
+      // ——「有一段没扫到」比「扫到的那段是什么」更要紧。
+      const encodedVerdict = encodedCredentialVerdict(line)
+      let dsnCategory = encodedVerdict === 'unscannable' ? unscannableCategory : null
+      if (dsnCategory === null) {
+        for (const { pattern, category } of fullDsnPatterns) {
+          if (pattern.test(line)) {
+            dsnCategory = category
+            break
+          }
         }
       }
-      // 第二层：解码后的 query key。原始文本层漏掉百分号编码时由它兜住。
-      if (dsnCategory === null && hasEncodedCredentialQueryKey(line)) {
+      // 解码后的 query key：原始文本层漏掉百分号编码时由它兜住。
+      if (dsnCategory === null && encodedVerdict === 'credential') {
         dsnCategory = credentialQueryCategory
       }
       if (dsnCategory !== null) {
