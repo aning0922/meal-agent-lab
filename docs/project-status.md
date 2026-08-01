@@ -639,11 +639,11 @@ M4、M5 未开始。
   `no-new-privileges:true`、非 root 用户、`restart: "no"` 与有界 json-file 日志
   轮转。API 镜像仍是 `10001:10001`，M2B 不修改已 Accepted 的 Dockerfile。
 - **静态门禁**：[`infra/docker/check-compose-topology.mjs`](../infra/docker/check-compose-topology.mjs)
-  断言 `docker compose config` **解析后**的配置。它自身经过 16 项变异测试——
+  断言 `docker compose config` **解析后**的配置。它自身经过**当时的** 16 项变异测试（M2B 期针对 `check-compose-topology.mjs` 的临时演练，不是现在常设的 15 项门禁）——
   数据库发布端口、未限定的 `3000:3000`、明文连接串、明文口令、privileged、
   `network_mode: host`、Docker socket、丢失 digest、bootstrap 脱离 profile、
   api 不再等待 migration、数据库改成 bind mount、`internal` 丢失、加回
-  capability、healthcheck 依赖 curl、root 用户、日志失去轮转——**16 项全部被
+  capability、healthcheck 依赖 curl、root 用户、日志失去轮转——**当时的 16 项全部被
   捕获，0 项漏网**。Docker CLI 缺失时它以「缺少前置工具」失败退出，不降级成
   纯文本检查后宣称通过。并入 `pnpm stage09a:check` 属于 M5。
 - **Compose 中没有凭据**：解析后的配置与 `docker inspect` 的 `Config.Env` 里
@@ -695,7 +695,8 @@ M4、M5 未开始。
   源文本判定的一条——`docker compose config` 会把未被引用的顶层
   network/volume/secret 直接裁掉（`--no-normalize` 同样如此），解析后的配置对它
   结构性失明，脚本里对此有显式注释。
-- **变异测试 41 项全部以指定理由捕获、0 漏网**（27 项回归 + 14 项本轮新增），
+- **当时的变异测试 41 项全部以指定理由捕获、0 漏网**（27 项回归 + 14 项本轮新增；
+  同为 M2B 期计数，现在常设的门禁是 `check-compose-topology-mutations.mjs` 的 15 项），
   含总控先后点名的九项：删除 API build、修改 `bootstrap-acl` command、交换
   API/migrate 的 `DATABASE_URL_FILE`、删除或扩大 handoff 的 `0000` 挂载、
   bind source 指向与仓库同前缀的相邻目录、把 runtime 连接串指向 admin 文件、
@@ -739,7 +740,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 伪造的 ledger 就能冒充已登记状态。
 
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**；**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；**M3A 的 Accepted 只覆盖代码侧消费能力**。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
-- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（pending total-control review）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，27 cases）、`check-m3b-signal-windows.mjs`（5 个信号窗口）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
+- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（pending total-control review）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，29 cases）、`check-m3b-signal-windows.mjs`（5 个信号窗口）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
   不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**408 条规范化行**（manifest 版本 2；`grant` 138、`effective` 138、`default-effective` 78、`routine` 40、`default` 14），只登记**固定允许项**：固定授权、`pg_default_acl` 的**物理行**、叠加后的**有效**默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`（结构化 JSON）/正文摘要；未登记的 `(ledger, phase)` fail closed。canonical digest 覆盖全部顶层字段（version、principals、managedSchemas、deniedRoutines、states）。③**canonical projector**：`services/api/src/database/authorization-projection-sql.ts`。它被拆成「可复用的结构化 projector CTE renderer」与「对外三列只读 SELECT」两层；R8B 起前者同时供给 verify 与 converge，后者仍是不被任何 bootstrap 阶段加载的只读观察出口。可移植策略在 `authorization-policy-sql.ts`。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
@@ -782,7 +783,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   PublishedPort；api 单一 `127.0.0.1` binding；scoped cleanup 零残留。
 - **75 cases：1 个正向 baseline + 74 个反例/边界检查**，baseline 必须通过、
   其余 74 条全部以指定理由捕获、0 漏网（`check-local-test-negatives.mjs`）；
-  另有 **M3B targeted negative suite 的 27 cases**（`check-m3b-round2-negatives.mjs`）、
+  另有 **M3B targeted negative suite 的 29 cases**（`check-m3b-round2-negatives.mjs`）、
   **15 项**拓扑变异反例（`check-compose-topology-mutations.mjs`）与 **5 个**
   信号窗口（`check-m3b-signal-windows.mjs`）。失败消息不含任何 Secret 取值：
   wrong-reason 分支只输出期望判据与条目计数，不回显 raw problems/residue。

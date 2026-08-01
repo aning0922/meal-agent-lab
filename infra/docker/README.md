@@ -136,7 +136,7 @@ M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
 | `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：27 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、视图覆盖整个 **dotenv 逻辑取值**、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：29 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、视图覆盖整个 **dotenv 逻辑取值**、解析成功后 userinfo 与 query 同时判定、行内注释片段与整行走同一份敏感赋值判据、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
 | `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证 |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
@@ -253,7 +253,7 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 27 cases、
+75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 29 cases、
 15 项拓扑变异反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
@@ -266,6 +266,18 @@ M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Propo
 交给 WHATWG 解析器——扫描器**不维护任何标点或空白字符表**。每个 `scheme://`
 起点给出一个独立、可重叠、延伸到逻辑取值末尾的候选视图；内层起点只计数与独立
 检查，不截断外层候选。
+
+解析成功之后 **userinfo、query parameter 与 fragment 同时判定**。判定顺序如实
+记录：原始文本正则**先跑**（它仍是它能覆盖的那些形态的主判据），解析器给出的
+userinfo 是**补漏**——正则要求 `@` 前无空白，引号内合法保留的空格/制表符会绕过
+它。`unscannable`（有一段没扫到）**优先于**任何「扫到的那段是什么」的结论。
+
+tokenizer 返回**带角色**的片段（主取值 / 行内注释 / 非赋值整行）。整行按锚定的
+dotenv 文法判定；**每个片段**再用**非锚定**扫描过同一份敏感赋值判据——片段是自由
+文本，赋值不一定出现在开头。DSN 判据覆盖全部片段，但 unquoted 行的注释片段是主
+取值的**子串**，因此不重复参与 `scheme://` 起点计数。行尾 CR 在切行时去掉，否则
+CRLF 模板会让整条敏感键判据失效。消息只回显**键名**；高熵形态的键名（≥16 位连续
+字母数字，或超过 64 字符）改报「不回显」。
 
 ### 本轮的威胁模型（写清边界，避免过度声称）
 

@@ -603,6 +603,9 @@ const credentialQueryKeyStems = [
   'credential'
 ]
 const credentialQueryCategory = 'contains a connection string with a credential query parameter'
+// userinfo 形的固定类别。**单一来源**：下面的 `fullDsnPatterns[0].category` 直接
+// 引用它，原始文本正则与 URL 解析器两条路径因此不可能各自漂移成两个字符串。
+const userinfoCategory = 'contains a full connection string with credentials'
 // 固定类别：扫描器**没能完整扫完**这一行的连接串候选。消息里只有类别、文件与
 // 行号，绝不回显 URL、key 或取值。
 const unscannableCategory = 'contains an unscannable connection string candidate'
@@ -610,7 +613,7 @@ const fullDsnPatterns = [
   {
     // 顺序固定：userinfo 形排在最前，两条既有反例继续命中这条消息。
     pattern: /[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@[^\s/?#]+/i,
-    category: 'contains a full connection string with credentials'
+    category: userinfoCategory
   },
   {
     // **原始文本**上的词干判据。它抓不到百分号编码（`pass%77ord`），因此下面
@@ -661,8 +664,9 @@ const maximumCandidateLength = 2048
  *   - **quoted**：取值以 `"` 或 `'` 开头时，边界是**配对的同种引号**。引号内
  *     的空格与制表符**原样保留**，绝不截断——这正是
  *     `NOTES="https://host/path rest?…"` 此前被切断的原因；
- *   - **unquoted**：取值一直到行尾（尾部空白去掉）。行内 `#` 不当作注释起点，
- *     宁可多扫；
+ *   - **unquoted**：主取值一直到行尾（尾部空白去掉），**不因行内 `#` 截断**；
+ *     「空白 + `#`」之后的部分**额外**再生成一个 comment 片段供敏感赋值判据使用
+ *     （它是主取值的子串，因此不重复参与 DSN 起点计数）；
  *   - **异常/未闭合**：引号没有配对、或闭合引号之后还跟着**非空白且非 `#`**
  *     的内容——两者都是「这一行的取值边界不明确」，直接 fail closed；闭合引号
  *     之后的 `#` 注释作为**另一个片段**继续扫描。
@@ -680,13 +684,29 @@ const dotenvLogicalSegments = (line) => {
   }
   const assignment = assignmentPattern.exec(uncommented)
   if (assignment === null) {
-    // 非赋值行：整行作为一个片段。
-    return { segments: [uncommented], ambiguous: false }
+    // 非赋值行（README 散文等）：整行作为一个片段。
+    return { segments: [{ text: uncommented, role: 'line', dsn: true }], ambiguous: false }
   }
   const rest = assignment[2].replace(/^[ \t]+/, '')
   const quote = rest[0]
   if (quote !== '"' && quote !== "'") {
-    return { segments: [rest.replace(/[ \t]+$/, '')], ambiguous: false }
+    // unquoted：**主取值仍然是整条 rest**（不截断，DSN 扫描覆盖面不变）。
+    // 「空白 + #」之后的部分**额外**再生成一个 comment 片段——它是同一行里的
+    // 另一段可扫描文本，而不是主取值的替代品。
+    const value = rest.replace(/[ \t]+$/, '')
+    const segments = [{ text: value, role: 'value', dsn: true }]
+    const inlineComment = /(?:^|[ \t])#(.*)$/.exec(value)
+    if (inlineComment !== null) {
+      // `dsn: false`——这个片段是主取值的**子串**，它的 `scheme://` 起点已经被
+      // 主取值数过一次。再数一次会让「一行最多 8 个起点」的预算在带行内注释的
+      // 行上实际只剩 4 个（审计实测：5 个起点加一个行内 `#` 就被判 unscannable）。
+      segments.push({
+        text: inlineComment[1].replace(/^#*\s*/, ''),
+        role: 'comment',
+        dsn: false
+      })
+    }
+    return { segments, ambiguous: false }
   }
   const closing = rest.indexOf(quote, 1)
   if (closing === -1) {
@@ -694,14 +714,15 @@ const dotenvLogicalSegments = (line) => {
     return { segments: [], ambiguous: true }
   }
   // 引号内原样保留（含空格与制表符）。
-  const segments = [rest.slice(1, closing)]
+  const segments = [{ text: rest.slice(1, closing), role: 'value', dsn: true }]
   const trailing = rest.slice(closing + 1).replace(/^[ \t]+/, '').replace(/[ \t]+$/, '')
   if (trailing === '') {
     return { segments, ambiguous: false }
   }
   if (trailing.startsWith('#')) {
-    // 行内注释：作为另一个片段继续扫描（注释里的凭据同样算泄漏）。
-    segments.push(trailing.replace(/^#+\s*/, ''))
+    // 引号之后的行内注释：另一个 comment 片段（注释里的凭据同样算泄漏）。
+    // 引号之后的注释**不是**主取值的子串，必须参与 DSN 枚举。
+    segments.push({ text: trailing.replace(/^#+\s*/, ''), role: 'comment', dsn: true })
     return { segments, ambiguous: false }
   }
   // 闭合引号之后还有别的内容：dotenv 对此没有确定语义。
@@ -733,7 +754,10 @@ const connectionStringCandidates = (line) => {
   const startPattern = /[a-z][a-z0-9+.-]*:\/\//gi
   const candidates = []
   let startCount = 0
-  for (const segment of segments) {
+  for (const { text: segment, dsn } of segments) {
+    if (dsn === false) {
+      continue
+    }
     for (const match of segment.matchAll(startPattern)) {
       startCount += 1
       if (startCount > maximumCandidates) {
@@ -768,12 +792,88 @@ const connectionStringCandidates = (line) => {
  * 返回 `'unscannable'`（超出资源上限，必须 fail closed）、
  * `'credential'`（解码后的 query key 命中）或 `null`。
  */
+/**
+ * 敏感赋值判据——**所有片段共用这一份**。
+ *
+ * 输入是一段「看起来像 dotenv 行」的文本：主取值所在的整行、或行内注释片段。
+ * 返回命中的键名（原样大小写）或 null；**只返回键名，绝不返回取值**。
+ */
+/**
+ * 键名是消息里唯一会被回显的输入。行内注释是自由文本，键位上可以放进任意串，
+ * 因此**高熵形态的键名不回显**——只报类别。
+ */
+const echoableKeyName = (key) =>
+  key.length > 64 || /[A-Za-z0-9]{16,}/.test(key) ? null : key
+
+/**
+ * 在一段文本里找出**全部**敏感赋值（不只是开头那一个）。
+ *
+ * 行内注释是自由文本：`# do not commit: PASSWORD=…` 里的赋值不在片段开头，
+ * 锚定到 `^` 的文法看不见它（审计实测：这一形态与另外七种同类形态全部漏检）。
+ * 因此片段一律用**非锚定**扫描；整行仍走锚定的 dotenv 文法。
+ *
+ * 只返回键名，绝不返回取值。
+ */
+const sensitiveAssignmentsAnywhereIn = (text) => {
+  const found = []
+  const pattern = /(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)[ \t]*=([^\s#]*)/g
+  for (const match of String(text).matchAll(pattern)) {
+    const value = match[2].replace(/^['"]|['"]$/g, '').trim()
+    if (value === '') {
+      continue
+    }
+    if (isSensitiveKeyName(match[1])) {
+      found.push(match[1])
+    }
+  }
+  return found
+}
+
+/** 键名是否属于敏感键族（后缀 + 词元双判据）。 */
+const isSensitiveKeyName = (rawKey) => {
+  const key = rawKey.toUpperCase()
+  const keyTokens = key.split(/[^A-Z0-9]+/).filter(Boolean)
+  return (
+    sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix)) ||
+    keyTokens.some((token) =>
+      sensitiveKeySuffixes.some(
+        (suffix) => token === suffix || token === `${suffix}S` || token.startsWith(suffix)
+      )
+    )
+  )
+}
+
+const sensitiveAssignmentIn = (text) => {
+  // 行首注释标记反复剥离：`# # KEY=value` 与未注释版本同样是进了 Git 的凭据。
+  let uncommented = String(text)
+  for (;;) {
+    const stripped = uncommented.replace(/^\s*#+\s*/, '')
+    if (stripped === uncommented) {
+      break
+    }
+    uncommented = stripped
+  }
+  const match = assignmentPattern.exec(uncommented)
+  if (match === null) {
+    return null
+  }
+  const value = match[2].trim()
+  if (!isSensitiveKeyName(match[1]) || value === '' || value === '""' || value === "''") {
+    return null
+  }
+  return match[1]
+}
+
 const encodedCredentialVerdict = (line) => {
   const { candidates, unscannable } = connectionStringCandidates(line)
   if (unscannable > 0) {
     // 扫不完就**不许放行**：资源上限是为了防病态输入，不是免检额度。
     return 'unscannable'
   }
+  // 先把所有候选走完再下结论：`unscannable`（有一段没扫到）**优先于**
+  // 「扫到的那段是什么」。此前 userinfo 一命中就 return，于是同一行里后面
+  // 一个解析不动的候选被跳过，结论从 unscannable 降级成 userinfo。
+  let verdict = null
   for (const candidate of candidates) {
     let url
     try {
@@ -781,18 +881,32 @@ const encodedCredentialVerdict = (line) => {
     } catch {
       return 'unscannable'
     }
-    for (const [key, value] of url.searchParams) {
-      if (value === '') {
-        // 空占位与模板的「空值允许」规则一致。
-        continue
-      }
-      const compact = key.toLowerCase().replace(/[-_.]/g, '')
-      if (compactCredentialStems.some((stem) => compact.includes(stem))) {
-        return 'credential'
+    // **解析成功之后 userinfo 与 query 同时判定**。原始文本正则要求 `@` 之前
+    // 没有空白，引号内合法保留的空格/制表符（`"https://user:pa ss@host/path"`）
+    // 因此绕得过它；解析器给出的 username/password 把这条补上。
+    if (verdict === null && (url.username !== '' || url.password !== '')) {
+      verdict = 'userinfo'
+    }
+    // query 与 **fragment** 都要看：`#access_token=…` 不出现在 searchParams
+    // 里，此前完全不可见。
+    const pairSources = [url.searchParams]
+    if (url.hash.length > 1) {
+      pairSources.push(new URLSearchParams(url.hash.slice(1)))
+    }
+    for (const pairs of pairSources) {
+      for (const [key, value] of pairs) {
+        if (value === '') {
+          // 空占位与模板的「空值允许」规则一致。
+          continue
+        }
+        const compact = key.toLowerCase().replace(/[-_.]/g, '')
+        if (verdict === null && compactCredentialStems.some((stem) => compact.includes(stem))) {
+          verdict = 'credential'
+        }
       }
     }
   }
-  return null
+  return verdict
 }
 
 /**
@@ -836,8 +950,13 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
     )
   }
   const scanTemplateContent = (label, content) => {
-    const lines = content.split('\n')
+    // **先去掉行尾 CR**。`assignmentPattern` 的 `(.*)$` 里 `.` 不匹配 CR、`$`
+    // 又没有 `m` 标志，于是一份 CRLF 模板里**每一行**都不再被识别成赋值，整条
+    // 敏感键判据静默失效（审计实测：同一份内容 LF 版报 5 条、CRLF 版只报 1 条）。
+    const lines = content.split('\n').map((line) => line.replace(/\r$/, ''))
     for (const [index, line] of lines.entries()) {
+      // 一行只切一次片段，DSN 判据与敏感赋值判据共用同一份切分结果。
+      const { segments: lineSegments } = dotenvLogicalSegments(line)
       // 第二层先判：扫不完的行必须 fail closed，**优先于**原始文本层的结论
       // ——「有一段没扫到」比「扫到的那段是什么」更要紧。
       const encodedVerdict = encodedCredentialVerdict(line)
@@ -850,6 +969,10 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
           }
         }
       }
+      // 解析器给出的 userinfo：原始文本正则漏掉带空白的 userinfo 时由它兜住。
+      if (dsnCategory === null && encodedVerdict === 'userinfo') {
+        dsnCategory = userinfoCategory
+      }
       // 解码后的 query key：原始文本层漏掉百分号编码时由它兜住。
       if (dsnCategory === null && encodedVerdict === 'credential') {
         dsnCategory = credentialQueryCategory
@@ -858,39 +981,37 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         // 只报**类别 + 文件 + 行号**：命中的连接串本身就是凭据，绝不回显。
         problems.push(`${label}:${String(index + 1)}: tracked template ${dsnCategory}`)
       }
-      // 剥掉行首注释标记后再匹配赋值：`# WECHAT_APP_SECRET=real` 与未注释的
-      // 版本同样是进了 Git 的凭据。**反复剥离**直到不再变化——单次剥离会被
-      // `# # KEY=value` 绕过（实测：`#+\s*` 吃掉第一个 `#` 和空格后剩下的
-      // `# KEY=value` 不再匹配赋值文法）。
-      let uncommented = line
-      for (;;) {
-        const stripped = uncommented.replace(/^\s*#+\s*/, '')
-        if (stripped === uncommented) {
-          break
+      // 敏感赋值判据跑在**每一个片段**上，而不只是整行。
+      //
+      // 此前只判定整行：`NOTES="ok" # PASSWORD=SYNTHETIC` 与
+      // `NOTES=ok # PASSWORD=SYNTHETIC` 的赋值键都被读成 `NOTES`（不敏感），
+      // 行内注释里的 `PASSWORD=SYNTHETIC` 于是完全没被看到。现在 tokenizer
+      // 会为这两种形态各生成一个 **comment 片段**，片段与整行走**同一份**
+      // `sensitiveAssignmentIn`。
+      const reportedKeys = new Set()
+      const reportKey = (sensitiveKey) => {
+        if (sensitiveKey === null || reportedKeys.has(sensitiveKey)) {
+          return
         }
-        uncommented = stripped
-      }
-      const match = assignmentPattern.exec(uncommented)
-      if (match === null) {
-        continue
-      }
-      const key = match[1].toUpperCase()
-      const value = match[2].trim()
-      // 后缀 + **词元**双判据：`API_KEYS` / `MY_SECRETS` / `WECHAT_APP_SECRET_2`
-      // 这类形态 endsWith 抓不到，但它们同样是敏感键。
-      const keyTokens = key.split(/[^A-Z0-9]+/).filter(Boolean)
-      const sensitive =
-        sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix)) ||
-        keyTokens.some((token) =>
-          sensitiveKeySuffixes.some(
-            (suffix) => token === suffix || token === `${suffix}S` || token.startsWith(suffix)
-          )
-        )
-      if (sensitive && value !== '' && value !== '""' && value !== "''") {
+        reportedKeys.add(sensitiveKey)
+        const echoable = echoableKeyName(sensitiveKey)
         problems.push(
           `${label}:${String(index + 1)}: tracked template assigns a non-empty ` +
-            `value to the sensitive key ${match[1]}`
+            (echoable === null
+              ? 'value to a sensitive key (its name is high-entropy and deliberately not echoed)'
+              : `value to the sensitive key ${echoable}`)
         )
+      }
+      // 整行走**锚定**的 dotenv 文法（它就是一条 dotenv 行）。
+      reportKey(sensitiveAssignmentIn(line))
+      // **每一个片段**——主取值、行内注释、非赋值整行——都走同一份判据，且用
+      // **非锚定**扫描：片段是自由文本，赋值不一定在开头（审计实测：引号内的
+      // `NOTES="PASSWORD=…"`、注释里的 `# do not commit: PASSWORD=…` 等八种
+      // 形态此前全部漏检）。
+      for (const segment of lineSegments) {
+        for (const sensitiveKey of sensitiveAssignmentsAnywhereIn(segment.text)) {
+          reportKey(sensitiveKey)
+        }
       }
     }
   }

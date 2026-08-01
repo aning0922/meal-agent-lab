@@ -170,7 +170,9 @@ PostgreSQL healthy
    镜像的一次性容器，顺序由 `service_completed_successfully` 固定。
 5. **无 privileged / host network / Docker socket / 数据库 bind mount**；统一
    `read_only` 根文件系统、`cap_drop: [ALL]`、`no-new-privileges`、非 root 用户、
-   有界 json-file 日志轮转。静态门禁经 16 项变异测试，全部捕获、0 项漏网。
+   有界 json-file 日志轮转。静态门禁经 16 项变异测试，全部捕获、0 项漏网
+   （**当时**的 M2B 期计数，针对 `check-compose-topology.mjs` 的临时变异演练；
+   现在的常设门禁是 `check-compose-topology-mutations.mjs` 的 15 项）。
 6. **Compose 中没有口令或完整连接串**。`POSTGRES_PASSWORD_FILE` 与 `PGPASSFILE`
    走镜像与 libpq 自带能力；`DATABASE_URL_FILE` 与 `MEAL_AGENT_*_PASSWORD_FILE`
    是本轮**声明**的 M3 契约。凭据按最小权限逐条固定并由静态门禁断言：`api` 只拿
@@ -1970,8 +1972,78 @@ fail closed。**不再维护任何标点 allowlist/denylist。**
 新增反例先用真实 `new URL()` 逐条证明「完整取值可解析且解码后的 query key 是
 `password`」，再要求每条都判成 **credential query parameter**（显式排除靠
 `unscannable` 假通过），并各配一条只含 `mode=ok` 的 benign 对照。targeted
-negative suite 从 26 精确增加到 **27/27**；既有的第 9 起点、2048/2049 边界、
+negative suite 从 26 精确增加到 **27/27**（**当时**的计数；第九轮扩到 29，见下
+一节）；既有的第 9 起点、2048/2049 边界、
 malformed URL、合法标点与全部 benign 用例复跑通过。
+
+#### M3B 第九轮 bounded 统一扫描管线窄修
+
+两处漏检，都源于同一个结构问题：**同一份事实有两条不同步的判定路径**。
+
+1. **userinfo 的事实源不统一**。`new URL()` 解析成功之后，扫描器只看
+   query key，userinfo 仍然由**原始文本正则**独家判定；而那条正则要求 `@` 之前
+   没有空白。
+   *修复前*（`d4819b3` 实测）：`NOTES="https://user:pa ss@host/path"` 与其
+   制表符变体**一条 problem 都不产生**——引号内合法保留的空白直接把正则绕开。
+   *修复后*：解析成功后 **userinfo 与 query parameter 同时判定**
+   （`url.username` / `url.password` 非空即命中 `full connection string with
+   credentials`）。判定顺序如实记录：原始文本正则**先跑**、仍是它能覆盖的那些
+   形态的主判据，解析器给出的 userinfo 是**补漏**；正则继续负责解析器看不出的
+   退化形态（`redis://@host` 的 userinfo 为空串）。`https://host/path@part`
+   这类普通路径保持干净，`unscannable` 仍**优先于** userinfo。
+2. **敏感赋值判据只跑整行**。
+   *修复前*（`d4819b3` 实测）：`NOTES="ok" # PASSWORD=SYNTHETIC` 与
+   `NOTES=ok # PASSWORD=SYNTHETIC` 的赋值键都被读成 `NOTES`（不敏感），行内
+   注释里的 `PASSWORD=…` 完全没被看到，**一条 problem 都不产生**。
+   *修复后*：tokenizer 返回**带角色**的片段（`value` / `comment` / `line`），
+   quoted 尾随注释与 unquoted 的「空白 + `#`」注释都会**额外**生成一个可扫描的
+   comment 片段；敏感赋值判据抽成共享实现，整行按**锚定**的 dotenv 文法判定，
+   **每个片段**（主取值 / 行内注释 / 非赋值整行）再用**非锚定**扫描过同一份
+   判据——片段是自由文本，赋值不一定在开头。DSN 判据同样覆盖全部片段。
+   **主取值的 DSN 扫描覆盖面不变**——unquoted 的主取值仍是整条 rest，注释片段
+   是额外增加的，不是替代；而且它是主取值的**子串**，因此**不重复参与**
+   `scheme://` 起点计数（否则带行内注释的行上「最多 8 个起点」会实际只剩 4 个）。
+
+判据只返回**键名**，取值一律不出现在消息里；benign 行内注释保持干净。targeted
+negative suite 从 27 精确增加到 **29/29**，原有 27 条全部保留且未弱化。
+
+##### 本轮两路只读审计的确认级发现与定点修复
+
+审计在实现完成、静态门禁通过之后启动（只读，且不与任何会改 Compose / 容器 /
+Secret 的套件并发）。确认级发现全部已修，其中五条是**本轮新代码**的缺陷、三条是
+**先前就存在**但被本轮审计首次坐实的漏检：
+
+- **CRLF 使整条敏感键判据失效**（先前存在，危害最高）。`assignmentPattern` 的
+  `(.*)$` 里 `.` 不匹配 CR、`$` 又无 `m` 标志，于是 CRLF 模板的**每一行**都不再
+  被识别成赋值。实测：同一份内容 LF 版报 5 条 problem，CRLF 版只报 1 条，三条
+  凭据静默消失。切行时去掉行尾 CR。
+- **片段判据只看开头**（本轮新代码）。`# do not commit: PASSWORD=…`、
+  `NOTES=ok#PASSWORD=…`（`#` 前无空格）、注释里的第二个赋值、整行散文注释——
+  八种形态全部漏检。片段改为**非锚定**扫描。
+- **quoted 取值片段根本没进判据**（本轮新代码）。`NOTES="PASSWORD=…"` 零
+  problem。现在每个片段都进。
+- **fragment 里的凭据不可见**（先前存在）。`#access_token=…` 不出现在
+  `searchParams` 里；现在 `url.hash` 也按 query 对解析。
+- **起点预算被重复计数**（本轮新代码）。unquoted 的注释片段是主取值的子串，其
+  `scheme://` 起点被数了两次，带行内注释的行上「最多 8 个」实际只剩 4 个。该
+  片段现在不参与 DSN 起点计数。
+- **userinfo 抢跑 `unscannable`**（本轮新代码）。命中 userinfo 即 return，同一行
+  后面解析不动的候选被跳过，结论从 unscannable 降级。现在跑完全部候选再下结论。
+- **键名回显可能泄漏**（本轮放大）。行内注释是自由文本，键位上可以放进 token；
+  ≥16 位连续字母数字或超过 64 字符的键名改报「不回显」。
+- **一条结构上永不触发的断言**（本轮新代码）。userinfo case 里
+  `/user|pa ss|pass|host\/path/` 对着「只含固定类别 + `file:line`」的消息永远
+  为假，等于死代码。改成**正向形状断言**：每条 problem 必须完全匹配
+  `<file>:<line>: tracked template <已知类别>`。
+
+审计还纠正了两处文档过度声称（README 把「每个片段都进同一份判据」写在代码做到
+之前；「原始文本正则退为纵深防御」与实际执行顺序相反——正则先跑、解析器补漏），
+均已按代码实际行为改写。上述形态全部并入既有两条 case 的断言，**未新增注册**，
+因此计数仍精确为 29。
+
+**一处不修并登记**：`private_key` / `auth` / `signature` / `SESSION` / `SALT`
+等词干不在 `compactCredentialStems` 里（审计 S5）。扩词干是**判据策略变更**，
+需要各自的反例与误报分析，本轮 bounded 范围内不做，登记待总控裁定。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2110,7 +2182,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（27 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（29 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

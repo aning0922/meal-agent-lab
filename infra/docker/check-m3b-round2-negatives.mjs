@@ -1000,6 +1000,14 @@ const eightBenignCandidates = Array.from(
 ).join(' ')
 
 /** 失败消息不得回显取值、URL 或 key。 */
+/**
+ * 模板扫描 problem 的**完整合法形状**：`<file>:<line>: tracked template <类别>`。
+ * 类别取自本仓源码里的固定字符串；敏感键那条额外允许一个键名（键名本身是消息
+ * 的必要信息，高熵形态由扫描器改写成「不回显」）。
+ */
+const allowedProblemShape =
+  /^[^\s:]+(?: \(git index\))?:\d+: tracked template (?:contains a full connection string with credentials|contains a connection string with a credential query parameter|contains an unscannable connection string candidate|assigns a non-empty value to the sensitive key [A-Za-z_][A-Za-z0-9_]*|assigns a non-empty value to a sensitive key \(its name is high-entropy and deliberately not echoed\))$/
+
 const echoesCandidateContent = (problems) =>
   problems.some((problem) =>
     /SYNTHETIC|benign-|oversize\.invalid|first\.invalid|second\.invalid|host\/path|pass%77ord/.test(
@@ -1321,6 +1329,141 @@ const parseableShapesStillClean = () => {
   }
 }
 
+{
+  // userinfo 的事实源必须是**解析器**，原始文本正则退居纵深防御。那条正则要求
+  // `@` 之前没有空白，于是引号内合法保留的空格/制表符直接把它绕过去。
+  const name = 'userinfo is judged after URL parsing, not only by the raw regex'
+  const shapes = [
+    ['space inside the password', 'NOTES="https://user:pa ss@host/path"'],
+    ['tab inside the password', 'NOTES="https://user:pa\tss@host/path"']
+  ]
+  // 审计追加：`unscannable` 必须**优先于** userinfo——同一行里后面还有一个解析
+  // 不动的候选时，结论不得从「有一段没扫到」降级成「扫到的那段是 userinfo」。
+  const precedenceHeld = templateProblemsFor(
+    'NOTES="https://user:pa ss@host/path redis://[invalid?x=1"'
+  ).some((problem) => /unscannable connection string candidate/.test(problem))
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  for (const [label, line] of shapes) {
+    const problems = templateProblemsFor(line)
+    if (!problems.some((problem) => /full connection string with credentials/.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    // 这里**不能**用「消息里出现了输入片段吗」当判据：消息只有固定类别加
+    // `file:line`，那种守卫结构上永远不可能触发，等于一段死代码（审计实测）。
+    // 改成**正向形状断言**：每一条 problem 都必须完全等于
+    // `<file>:<line>: tracked template <已知类别>`——将来任何一次「开始回显
+    // 输入」的回归都会让形状断言失败。
+    if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+      leaking.push(label)
+    }
+  }
+  // 退化 userinfo（解析器给出空 username/password）仍由原始文本正则拒绝；
+  // 普通路径里的 `@` 必须保持干净——否则「一律判 userinfo」也能让上面恒绿。
+  const degenerateKept = templateProblemsFor('NOTES=redis://@host').some((problem) =>
+    /full connection string with credentials/.test(problem)
+  )
+  const pathAtClean = !templateProblemsFor('NOTES=https://host/path@part').some((problem) =>
+    /connection string/.test(problem)
+  )
+  if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} whitespace-bearing userinfo shape(s) went uncaught`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message echoed the URL, the user or the password (not reprinted here)')
+  } else if (!degenerateKept) {
+    fail(name, 'the degenerate userinfo form redis://@host is no longer rejected')
+  } else if (!pathAtClean) {
+    fail(name, 'an ordinary path containing @ was wrongly flagged as userinfo')
+  } else if (!precedenceHeld) {
+    fail(name, 'a userinfo hit preempted the unscannable verdict on the same line')
+  } else {
+    pass(
+      name,
+      'space and tab bearing userinfo caught as a full connection string (not via unscannable); ' +
+        'degenerate redis://@host still rejected; ordinary path @ clean; unscannable still ' +
+        'takes precedence over userinfo on the same line'
+    )
+  }
+}
+
+{
+  // 敏感赋值判据必须跑在**每一个片段**上。此前只判定整行，于是行内注释里的
+  // `PASSWORD=…` 被读成「键是 NOTES，不敏感」，完全没被看到。
+  const name = 'an inline comment fragment goes through the same sensitive-assignment judge'
+  const shapes = [
+    ['quoted value with a trailing comment', 'NOTES="ok" # PASSWORD=SYNTHETIC-QUOTEDCOMMENT'],
+    ['unquoted value with an inline comment', 'NOTES=ok # PASSWORD=SYNTHETIC-INLINECOMMENT'],
+    // 审计追加：赋值不在片段开头、没有空格分隔的 `#`、引号内的赋值、注释里的
+    // 第二个赋值、整行散文注释、以及 CRLF 行尾——六种形态此前全部漏检。
+    ['prose before the assignment', 'NOTES=ok # do not commit: PASSWORD=SYNTHETIC-PROSE'],
+    ['no space before the hash', 'NOTES=ok# PASSWORD=SYNTHETIC-NOSPACE'],
+    ['assignment inside a quoted value', 'NOTES="PASSWORD=SYNTHETIC-QUOTEDVALUE"'],
+    ['a second assignment in the comment', 'NOTES=ok # first=1 # SECRET=SYNTHETIC-SECOND'],
+    ['a prose-only comment line', '# do not commit: PASSWORD=SYNTHETIC-PROSELINE'],
+    ['a CRLF terminated line', 'PASSWORD=SYNTHETIC-CRLF\r']
+  ]
+  const benign = [
+    ['a plain trailing note', 'NOTES="ok" # nothing sensitive in this note'],
+    ['a plain inline note', 'NOTES=ok # nothing sensitive in this note'],
+    ['a note mentioning a key with no value', 'NOTES=ok # remember to set PASSWORD='],
+    ['an ordinary prose line', 'see the deployment notes for the rollout order']
+  ]
+  // 审计追加：高熵键名不得被回显（行内注释是自由文本，键位上可以放进 token）。
+  const entropyProblems = templateProblemsFor('NOTES=ok # ghp_A1B2C3D4E5F6G7H8I9_TOKEN=1')
+  const entropyWithheld =
+    entropyProblems.some((problem) => /high-entropy and deliberately not echoed/.test(problem)) &&
+    !entropyProblems.some((problem) => /ghp_A1B2C3/.test(problem))
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  for (const [label, line] of shapes) {
+    const problems = templateProblemsFor(line)
+    if (!problems.some((problem) => /assigns a non-empty value to the sensitive key/.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    // 键名（PASSWORD）本来就是消息的一部分；这里断言的是**取值**不得出现，
+    // 同时用正向形状断言兜住「消息开始回显别的输入」。
+    if (
+      problems.some(
+        (problem) => /SYNTHETIC/.test(String(problem)) || !allowedProblemShape.test(String(problem))
+      )
+    ) {
+      leaking.push(label)
+    }
+  }
+  const dirtyBenign = benign.filter(([, line]) =>
+    templateProblemsFor(line).some((problem) => /sensitive key|connection string/.test(problem))
+  )
+  if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} inline comment fragment(s) never reached the assignment judge`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message echoed the assigned value (not reprinted here)')
+  } else if (dirtyBenign.length > 0) {
+    fail(name, `${String(dirtyBenign.length)} benign inline comment(s) were wrongly flagged`)
+  } else if (!entropyWithheld) {
+    fail(name, 'a high-entropy key name was echoed instead of being withheld')
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} fragment shapes (including prose-before-assignment, an ` +
+        'assignment inside a quoted value, a second assignment in the comment and a CRLF line) ' +
+        'hit the sensitive-key judge; values never echoed; a high-entropy key name is withheld; ' +
+        `${String(benign.length)} benign shapes stay clean`
+    )
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
@@ -1445,7 +1588,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 27
+const expectedCount = 29
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
