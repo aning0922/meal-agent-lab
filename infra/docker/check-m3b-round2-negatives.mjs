@@ -1,7 +1,13 @@
 #!/usr/bin/env node
-// 阶段 09A / M3B 第二、三轮阻断整改的窄反例。
+// 阶段 09A / M3B：**targeted negative suite**（定点窄反例套件）。
 //
 //   node infra/docker/check-m3b-round2-negatives.mjs
+//
+// 文件名保留 `check-m3b-round2-negatives.mjs` 只是为了不改动已被文档与流程引用
+// 的入口；**套件名称不再带轮次**。轮次编号会随每一次整改过期，把它写进当前门禁
+// 的名字，等于每加一轮就得改一次名字、而且旧名字立刻变成错的。下面各节标题里的
+// `P1-*` / `R3-*` / `R4-*` / `R5-*` / `R6` 是**历史实施记录**的锚点，标明每条
+// 反例是哪一轮加的，不构成套件的当前名称。
 //
 // 本文件里的每一条都是**先写、先跑、先看它红**，再去实现修复的。它们覆盖总控
 // 第二轮点名的七项 P1 里可以在**不启动 Docker 链**的前提下确定性触发的部分：
@@ -1048,6 +1054,121 @@ const echoesCandidateContent = (problems) =>
 }
 
 // ---------------------------------------------------------------------------
+// R6：候选枚举的结构性回归（起点独立枚举 + 解析失败 fail closed）
+// ---------------------------------------------------------------------------
+process.stdout.write('R6: connection string candidates are enumerated by scheme start\n')
+
+// 此前的扫描是「找到一个候选 → 从它的结束位置继续找下一个」，于是任何**落在
+// 前一个候选内部**的 `scheme://` 起点被整段跳过。逗号只是这一结构缺陷最先暴露
+// 的外衣；括号、方括号、花括号是同一个洞。下面四条覆盖的是**结构**，不是某个
+// 分隔符字符。
+
+{
+  const name = 'a second URI wrapped in brackets is still enumerated and scanned'
+  const shapes = [
+    ['parentheses', 'NOTES=https://first.invalid?mode=ok(redis://redis:6379?pass%77ord=SYNTHETIC-PAREN)'],
+    ['square brackets', 'NOTES=https://first.invalid?mode=ok[redis://redis:6379?pass%77ord=SYNTHETIC-SQUARE]'],
+    ['curly braces', 'NOTES=https://first.invalid?mode=ok{redis://redis:6379?pass%77ord=SYNTHETIC-CURLY}']
+  ]
+  const missed = []
+  const leaking = []
+  for (const [label, line] of shapes) {
+    const problems = templateProblemsFor(line)
+    if (!problems.some((problem) => /credential query parameter|unscannable connection string candidate/.test(problem))) {
+      missed.push(label)
+    }
+    if (echoesCandidateContent(problems)) {
+      leaking.push(label)
+    }
+  }
+  if (missed.length > 0) {
+    fail(name, `${String(missed.length)} bracket shape(s) hid a second URI from the scanner`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else {
+    pass(name, `${String(shapes.length)} bracket shapes enumerated and judged, nothing echoed`)
+  }
+}
+
+{
+  const name = 'nine scheme starts inside one whitespace-free field fail closed'
+  // 九个起点全部挤在**同一个无空白字段**里：靠分隔符定界的实现只会看到一个
+  // 候选，起点计数才能发现这是第 9 个。
+  const nine = Array.from(
+    { length: 8 },
+    (_, index) => `https://benign-${String(index)}.invalid/p?mode=ok`
+  ).join('(') + '(redis://redis:6379?pass%77ord=SYNTHETIC-NINTH'
+  const problems = templateProblemsFor(`NOTES=${nine}`)
+  const eight = Array.from(
+    { length: 8 },
+    (_, index) => `https://benign-${String(index)}.invalid/p?mode=ok`
+  ).join('(')
+  const cleanEight = templateProblemsFor(`NOTES=${eight}`)
+  if (!problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+    fail(name, 'the ninth scheme start inside one field was not counted')
+  } else if (echoesCandidateContent(problems)) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (cleanEight.some((problem) => /connection string/.test(problem))) {
+    fail(name, 'eight scheme starts in one field were wrongly flagged (the limit itself must not fire)')
+  } else {
+    pass(name, '/unscannable connection string candidate/ on the ninth start; eight stay clean')
+  }
+}
+
+/**
+ * 解析失败必须 fail closed，但**不能退化成「一律 fail」**：每条都同时断言
+ * 解析得动的 benign 形态仍然干净。
+ */
+const parseableShapesStillClean = () => {
+  const boundary = `https://boundary.invalid/${'a'.repeat(2048 - 'https://boundary.invalid/'.length)}`
+  return [
+    ['a benign URL', 'CACHE=https://benign.invalid/path?mode=ok'],
+    ['the 2048 character boundary', `NOTES=${boundary}`],
+    ['an empty password placeholder', 'CACHE=redis://redis:6379?password=']
+  ].filter(([, line]) =>
+    templateProblemsFor(line).some((problem) => /connection string/.test(problem))
+  )
+}
+
+{
+  const name = 'a malformed IPv6 literal fails closed instead of being skipped'
+  const problems = templateProblemsFor('NOTES=redis://[invalid?pass%77ord=SYNTHETIC-IPV6')
+  const stillClean = parseableShapesStillClean()
+  if (!problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+    fail(name, 'an unparseable IPv6 literal was skipped instead of failing closed')
+  } else if (echoesCandidateContent(problems)) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (stillClean.length > 0) {
+    fail(name, `${String(stillClean.length)} parseable/benign shape(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      '/unscannable connection string candidate/; benign URL, the 2048 character boundary ' +
+        'and the empty placeholder stay clean'
+    )
+  }
+}
+
+{
+  const name = 'an illegal port fails closed instead of being skipped'
+  const problems = templateProblemsFor('NOTES=redis://host:99999?pass%77ord=SYNTHETIC-PORT')
+  const stillClean = parseableShapesStillClean()
+  if (!problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+    fail(name, 'an out-of-range port was skipped instead of failing closed')
+  } else if (echoesCandidateContent(problems)) {
+    fail(name, 'a failure message echoed the value, the URL or the key (not reprinted here)')
+  } else if (stillClean.length > 0) {
+    fail(name, `${String(stillClean.length)} parseable/benign shape(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      '/unscannable connection string candidate/; benign URL, the 2048 character boundary ' +
+        'and the empty placeholder stay clean'
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
 process.stdout.write('P1-5: repository-wide git index containment\n')
@@ -1171,7 +1292,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 21
+const expectedCount = 25
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
@@ -1179,13 +1300,13 @@ if (caught + failures.length !== expectedCount) {
   )
 }
 if (failures.length > 0) {
-  process.stderr.write('M3B round-two/three/four negative suite FAIL\n')
+  process.stderr.write('M3B targeted negative suite FAIL\n')
   for (const message of failures) {
     process.stderr.write(`  - ${message}\n`)
   }
   process.exit(1)
 }
 process.stdout.write(
-  `M3B round-two/three/four negative suite PASS (${String(caught)}/${String(expectedCount)} ` +
-    'negatives caught with their named reasons)\n'
+  `M3B targeted negative suite PASS (${String(caught)}/${String(expectedCount)} ` +
+    'cases caught with their named reasons)\n'
 )

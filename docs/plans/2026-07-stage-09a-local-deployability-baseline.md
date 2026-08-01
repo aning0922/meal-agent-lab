@@ -1789,7 +1789,7 @@ fail-closed）。两路共提出 11 条，逐条经独立的「尽力证伪」�
    连接串都不出现。
 
 第四轮之后的门禁数字：**local-test 75 cases = 1 个正向 baseline + 74 个反例/
-边界检查**、round-two/three/four negatives **16**、signal windows **5**、
+边界检查**、targeted negative suite（**当时**为 16）、signal windows **5**、
 topology mutations **15**；**第五轮把窄反例扩到 21**（见下一节）。
 
 M3B 的**完整命令清单（七条）**，与 [`infra/docker/README.md`](../../infra/docker/README.md)
@@ -1858,11 +1858,48 @@ M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手
    干净。
 
 窄反例套件因此从 16 扩到 **21**（每种要求的形态各一条：两种换行形态、第 9 个
-候选、超长候选、逗号分隔），输出名称统一为 `round-two/three/four`。
+候选、超长候选、逗号分隔）；**当时**的输出名还带轮次，第六轮已改为不带轮次的
+稳定名称（见下一节）。
+
+#### 第六轮 bounded 结构性窄修（候选枚举 + 解析失败 fail closed + 稳定套件名）
+
+前几轮对「第二条 URI 被前一条吞掉」的处理是**往分隔符字符类里补字符**（先补
+逗号）。这一轮改的是**结构**：
+
+1. **独立枚举所有 `scheme://` 起点**。此前是「找到一个候选 → 从它的结束位置
+   继续找下一个」，任何**落在前一个候选内部**的起点被整段跳过。
+   *修复前*（`23c3953` 实测）：括号、方括号、花括号包裹第二条 URI 的三种形态
+   **全部 UNCAUGHT**；把九个起点挤进同一个无空白字段时，扫描器**只看到一个
+   候选**，第 9 个起点根本不存在于它的视野里。
+   *修复后*：先用只匹配 `scheme://` **前缀**的正则枚举出一行里的全部起点（前缀
+   很短，`matchAll` 的 lastIndex 只越过前缀本身，嵌在后面的起点照样枚举得到）；
+   候选数量按**起点总数**计算，出现第 9 个立即以固定类别
+   `unscannable connection string candidate` fail closed；每个候选的结束位置取
+   **下一个起点 / 分隔符 / `start + 2049` 硬上界**三者中最早的一个。分隔符退回
+   成三个终止条件之一，不再是唯一的那个。
+2. **URL 解析失败 fail closed**。
+   *修复前*（`23c3953` 实测）：`redis://[invalid?pass%77ord=…`（malformed IPv6）
+   与 `redis://host:99999?pass%77ord=…`（非法端口）都让 WHATWG 解析器抛错，而
+   `catch { continue }` 把它当成「这里没有凭据」——两条都是零 problem 静默放行，
+   等于任何能让解析器抛错的写法都是一张免检通行证。
+   *修复后*：已经被识别为 `scheme://` 候选的片段，只要 `new URL()` 失败就返回
+   `unscannable connection string candidate`，不再 `continue`。反向保证同时断言
+   benign URL、**2048 字符边界**与空占位 `?password=` 仍然干净，避免退化成
+   「一律 fail」。
+
+三条失败消息实测都只含类别 + 文件 + 行号，不含 `SYNTHETIC`、URL、query key 或
+取值。窄套件从 21 扩到 **25**（括号矩阵、九起点同字段、malformed IPv6、非法端口
+各一条），并精确钉住 25/25。
+
+**套件名称不再带轮次。** 文件名保留 `check-m3b-round2-negatives.mjs`（不改已被
+文档与流程引用的入口），但文件头与 stdout/stderr 的套件名统一为
+**M3B targeted negative suite**——轮次编号会随每一次整改过期，写进当前门禁的
+名字就意味着每加一轮都要改名，而且旧名字立刻变成错的。上面各轮小节里的轮次
+编号是**历史实施记录**的锚点，保留不改。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
-`Proposed`。**
+`Proposed`；PR #1 保持 Draft。M4、M5 未开始。**
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
@@ -1997,7 +2034,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # 21 项第二/三/四轮窄反例
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（25 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

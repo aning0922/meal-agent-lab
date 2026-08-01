@@ -640,61 +640,65 @@ const compactCredentialStems = [
   'credential'
 ]
 
-/** 资源上限：一行最多扫 8 个候选，每个候选最长 2048 字符。 */
+/** 资源上限：一行最多 8 个 `scheme://` 起点，每个候选最长 2048 字符。 */
 const maximumCandidates = 8
 const maximumCandidateLength = 2048
 
 /**
- * 候选的**终止符**。此前用的是 `\S+`——它一路吃到下一个空白为止，于是
- * `NOTES=https://first.invalid?mode=ok,redis://…?pass%77ord=…` 整行会被当成
- * **一个** URL：第二条 URI 变成第一条的 query 取值，`pass%77ord` 于是根本
- * 不是一个 key，解码判据看不见它。逗号、分号、引号、尖括号与竖线都当作分隔符
- * 之后，每个 `scheme://` 起点都会被独立识别。
+ * 候选的**分隔符**。它只是三个终止条件之一，不再是唯一的那个——靠不断往这个
+ * 字符类里补字符（先是逗号，然后是括号、方括号、花括号……）来兜住「第二条 URI
+ * 被前一条吞掉」是打补丁，不是修结构。
  */
 const candidateDelimiter = /[\s,;'"`<>|\\]/
 
 /**
- * 行内的连接串候选：**有界**且**分隔符感知**。
+ * 行内的连接串候选：**先独立枚举全部 `scheme://` 起点**，再各自定界。
  *
- * 返回 `{ candidates, unscannable }`。资源上限本身不是免检理由：超过 8 个候选、
- * 或某个候选超过 2048 字符时，`unscannable` 被置位，调用方必须**fail closed**
- * ——此前这两种情形都是 `break` / 跳过，等于给「把凭据塞到第 9 个候选里」和
- * 「把凭据塞进一条超长 URI 里」发免检通行证。
+ * 这是本轮的结构性修正。此前的实现是「找到一个候选 → 从它的结束位置继续找下
+ * 一个」，于是任何**落在前一个候选内部**的起点都被整段跳过：
+ * `https://first.invalid?mode=ok(redis://…?pass%77ord=…)` 里的 `redis://` 起点
+ * 位于第一个候选的区间内，扫描游标直接越过它，第二条 URI 从未被解析过。括号、
+ * 方括号、花括号只是同一个结构缺陷的不同外衣。
  *
- * 扫描本身也是有界的：每个候选最多前进 2049 个字符就停，因此一行超长文本不会
- * 让扫描退化成无界工作。
+ * 现在：
+ *
+ *   1. 用只匹配 `scheme://` **前缀**的正则枚举出一行里的**全部**起点——前缀很
+ *      短，`matchAll` 的 lastIndex 只会越过前缀本身，因此嵌在后面的起点照样
+ *      会被枚举到；
+ *   2. 候选数量按**起点总数**计算：一旦出现第 9 个起点就立刻 fail closed，不
+ *      再「扫前 8 个、剩下的悄悄丢掉」；
+ *   3. 每个候选的结束位置取三者中**最早**的一个：下一个 `scheme://` 起点、
+ *      一个分隔符、`start + 2048 + 1` 的硬上界。
+ *
+ * 返回 `{ candidates, unscannable }`。资源上限不是免检额度：起点超过 8 个、
+ * 或某个候选超过 2048 字符时 `unscannable` 置位，调用方必须 fail closed。
  */
 const connectionStringCandidates = (line) => {
   const text = String(line)
-  const candidates = []
-  let unscannable = 0
-  const starts = /[a-z][a-z0-9+.-]*:\/\//gi
-  let cursor = 0
-  while (cursor < text.length) {
-    starts.lastIndex = cursor
-    const match = starts.exec(text)
-    if (match === null) {
-      break
+  const starts = []
+  const startPattern = /[a-z][a-z0-9+.-]*:\/\//gi
+  for (const match of text.matchAll(startPattern)) {
+    starts.push(match.index)
+    if (starts.length > maximumCandidates) {
+      // 第 9 个起点：立即 fail closed，不再继续枚举。
+      return { candidates: [], unscannable: 1 }
     }
-    let end = match.index
-    const scanLimit = Math.min(text.length, match.index + maximumCandidateLength + 1)
+  }
+  const candidates = []
+  for (const [index, start] of starts.entries()) {
+    const nextStart = index + 1 < starts.length ? starts[index + 1] : text.length
+    const hardLimit = start + maximumCandidateLength + 1
+    const scanLimit = Math.min(text.length, nextStart, hardLimit)
+    let end = start
     while (end < scanLimit && !candidateDelimiter.test(text[end])) {
       end += 1
     }
-    if (end - match.index > maximumCandidateLength) {
-      unscannable += 1
-      break
+    if (end - start > maximumCandidateLength) {
+      return { candidates: [], unscannable: 1 }
     }
-    if (candidates.length >= maximumCandidates) {
-      unscannable += 1
-      break
-    }
-    candidates.push(text.slice(match.index, end))
-    // 从分隔符之后继续：下一个 `scheme://` 起点因此被独立识别，而不是被前一个
-    // 候选吞掉。
-    cursor = end + 1
+    candidates.push(text.slice(start, end))
   }
-  return { candidates, unscannable }
+  return { candidates, unscannable: 0 }
 }
 
 /**
@@ -703,8 +707,12 @@ const connectionStringCandidates = (line) => {
  * 只在原始文本上匹配词干是不够的：`?pass%77ord=…`、`?%70assword=…`、
  * `?access%5Ftoken=…` 在字节层面根本不含 `password` / `access_token`，但
  * 解析成 URL 之后它们**就是**那些键——写进模板同样是凭据入 Git。
- * 这里用 WHATWG `URL` + `URLSearchParams` 做有界解析（它按规范解码 key），
- * 解析失败就交回上面那层原始文本判据。
+ * 这里用 WHATWG `URL` + `URLSearchParams` 做有界解析（它按规范解码 key）。
+ * **解析失败不再 `continue`**：一个已经被识别为 `scheme://` 候选的片段，如果
+ * WHATWG 解析器都读不懂它（malformed IPv6 字面量 `redis://[invalid?…`、非法
+ * 端口 `redis://host:99999?…`），那就是「这一段没被扫过」，只能 fail closed。
+ * 此前的 `catch { continue }` 把它当成「这里没有凭据」，于是任何能让解析器
+ * 抛错的写法都是一张免检通行证。
  *
  * **只返回类别名**：key、取值与整条连接串一律不外传，调用方只能拿到类别。
  * 返回 `'unscannable'`（超出资源上限，必须 fail closed）、
@@ -721,7 +729,7 @@ const encodedCredentialVerdict = (line) => {
     try {
       url = new URL(candidate)
     } catch {
-      continue
+      return 'unscannable'
     }
     for (const [key, value] of url.searchParams) {
       if (value === '') {
