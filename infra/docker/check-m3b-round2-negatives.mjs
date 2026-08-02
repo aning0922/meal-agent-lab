@@ -999,11 +999,14 @@ const eightBenignCandidates = Array.from(
   (_, index) => `https://benign-${String(index)}.invalid/path?mode=ok`
 ).join(' ')
 
-/** 失败消息不得回显取值、URL 或 key。 */
 /**
- * 模板扫描 problem 的**完整合法形状**：`<file>:<line>: tracked template <类别>`。
- * 类别取自本仓源码里的固定字符串；敏感键那条额外允许一个键名（键名本身是消息
- * 的必要信息，高熵形态由扫描器改写成「不回显」）。
+ * 失败消息不得回显取值、URL 或 key。扫描内部可以持有必要状态，但输出只有固定
+ * 类别、文件标签与行号。
+ */
+/**
+ * 模板扫描 problem 的**完整合法形状**。类别取自本仓源码里的固定字符串——
+ * **没有任何一条允许出现输入派生的 key 或 value**：扫描内部可以持有必要状态，
+ * 但输出只有固定类别、文件标签与行号。
  */
 const allowedProblemShape = (() => {
   // 带行号的**逐行**判定消息。
@@ -1449,8 +1452,8 @@ const parseableShapesStillClean = () => {
         viaUnscannable.push(label)
       }
     }
-    // 键名（PASSWORD）本来就是消息的一部分；这里断言的是**取值**不得出现，
-    // 同时用正向形状断言兜住「消息开始回显别的输入」。
+    // 消息里**既不该有取值也不该有键名**：`/SYNTHETIC/` 盯住取值，正向形状
+    // 断言盯住「消息开始回显任何别的输入」。
     if (
       problems.some(
         (problem) => /SYNTHETIC/.test(String(problem)) || !allowedProblemShape.test(String(problem))
@@ -1655,6 +1658,167 @@ process.stdout.write('R10: assignment values are parsed, not character-classed\n
 }
 
 // ---------------------------------------------------------------------------
+// R11：quoted 取值的空判据、闭合引号之后的收尾、紧邻的嵌套赋值
+// ---------------------------------------------------------------------------
+process.stdout.write('R11: quoted values, trailing ambiguity and nested assignments\n')
+
+{
+  // 只有**长度精确为 0** 的 quoted 取值才是空占位。用 `trim()` 判空会把
+  // `PASSWORD=" "` 这类「操作者显式用引号括起来的空白」抹成空串放行——那些
+  // 字节是写进去的内容。
+  const name = 'a quoted value made of whitespace is a value, not an empty placeholder'
+  const rejected = [
+    ['a single space', 'PASSWORD=" "'],
+    ['a tab', 'PASSWORD="\t"'],
+    ['single-quoted spaces', "PASSWORD='   '"],
+    ['a non-breaking space', 'PASSWORD=" "'],
+    ['a quoted space in a comment fragment', 'NOTES=ok # PASSWORD=" "']
+  ]
+  const allowed = [
+    ['an empty double-quoted value', 'PASSWORD=""'],
+    ['an empty single-quoted value', "PASSWORD=''"],
+    ['a bare placeholder with a comment', 'PASSWORD= # placeholder'],
+    ['an empty quoted value with a comment', 'PASSWORD="" # placeholder']
+  ]
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  for (const [label, line] of rejected) {
+    const problems = templateProblemsFor(line)
+    if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+      leaking.push(label)
+    }
+  }
+  const wronglyFlagged = allowed.filter(([, line]) => templateProblemsFor(line).length > 0)
+  if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} whitespace-only quoted value(s) were read as empty`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else if (wronglyFlagged.length > 0) {
+    fail(name, `${String(wronglyFlagged.length)} genuine empty placeholder(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      `${String(rejected.length)} whitespace-only quoted values rejected (space, tab, NBSP, ` +
+        `single quotes, comment fragment); ${String(allowed.length)} genuine empty placeholders ` +
+        'stay clean'
+    )
+  }
+}
+
+{
+  // 闭合引号之后只允许：输入结束、水平空白后结束、或（按既定语义）注释。
+  // 其余收尾说不清「取值到底是什么」，一律 fail closed。**顶层与片段必须得出
+  // 同一个结论**——两条路径共用同一个 `readAssignmentValue`。
+  const name = 'an ambiguous tail after the closing quote fails closed on both paths'
+  const fragments = [
+    ['text immediately after a double quote', 'NOTES=ok # PASSWORD=""SYNTHETIC-DQTAIL'],
+    ['text immediately after a single quote', "NOTES=ok # PASSWORD=''SYNTHETIC-SQTAIL"],
+    ['whitespace then text', 'NOTES=ok # PASSWORD=""  SYNTHETIC-SPACETAIL'],
+    ['a semicolon', 'NOTES=ok # PASSWORD="";'],
+    ['a comma then text', 'NOTES=ok # PASSWORD="",SYNTHETIC-COMMATAIL']
+  ]
+  // 同样的取值形态放在**顶层**赋值上，必须得到同一个敏感赋值结论。
+  const topLevel = fragments.map(([label, line]) => [label, line.replace(/^NOTES=ok # /, '')])
+  const sensitiveIn = (line) =>
+    templateProblemsFor(line).some((problem) =>
+      /assigns a non-empty value to a sensitive key/.test(problem)
+    )
+  const missedFragment = fragments.filter(([, line]) => !sensitiveIn(line)).map(([l]) => l)
+  const missedTopLevel = topLevel.filter(([, line]) => !sensitiveIn(line)).map(([l]) => l)
+  const leaking = [...fragments, ...topLevel].filter(([, line]) =>
+    templateProblemsFor(line).some((problem) => !allowedProblemShape.test(String(problem)))
+  )
+  const commentStillClean = templateProblemsFor('PASSWORD="" # comment').length === 0
+  if (missedFragment.length > 0) {
+    fail(name, `${String(missedFragment.length)} ambiguous tail(s) passed in a comment fragment`)
+  } else if (missedTopLevel.length > 0) {
+    fail(
+      name,
+      `${String(missedTopLevel.length)} ambiguous tail(s) reached a different conclusion at top level`
+    )
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else if (!commentStillClean) {
+    fail(name, 'an empty quoted value with a trailing comment was wrongly flagged')
+  } else {
+    pass(
+      name,
+      `${String(fragments.length)} ambiguous tails fail closed identically at top level and in a ` +
+        'comment fragment; an empty quoted value with a trailing comment stays clean'
+    )
+  }
+}
+
+{
+  // 内层键紧贴着上一个 `=`：游标必须退回到那个 `=` 上，让它充当下一层赋值的
+  // 分隔符，否则 `NOTES=PASSWORD=…` 这种紧邻嵌套永远匹配不上。
+  const name = 'an assignment nested immediately after another equals sign is caught'
+  const shapes = [
+    ['prose with a nested assignment', 'run NOTES=PASSWORD=SYNTHETIC-PROSENEST then restart'],
+    ['a comment line with a nested assignment', '# run NOTES=PASSWORD=SYNTHETIC-COMMENTNEST then restart'],
+    ['a chained assignment', 'A=B=PASSWORD=SYNTHETIC-CHAINNEST'],
+    ['a nested assignment inside quotes', 'NOTES="x PASSWORD=SYNTHETIC-QUOTENEST y"']
+  ]
+  const clean = [
+    ['an ordinary assignment', 'NOTES=value'],
+    ['an empty sensitive placeholder', 'PASSWORD='],
+    ['an ordinary prose line', 'restart the service after editing the file']
+  ]
+  const missed = []
+  const viaUnscannable = []
+  const duplicated = []
+  const leaking = []
+  for (const [label, line] of shapes) {
+    const problems = templateProblemsFor(line)
+    const hits = problems.filter((problem) =>
+      /assigns a non-empty value to a sensitive key/.test(problem)
+    )
+    if (hits.length === 0) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    } else if (hits.length > 1) {
+      // 「一行至多一条敏感赋值 problem」是**结构性**保证（扫描按行汇总命中数、
+      // 只 push 一条），因此这个分支在当前实现下不会触发。保留它是把那条不变量
+      // 写进断言：哪天改成逐条 push，游标退回一格就会立刻在这里暴露。
+      duplicated.push(label)
+    }
+    if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+      leaking.push(label)
+    }
+  }
+  const wronglyFlagged = clean.filter(([, line]) => templateProblemsFor(line).length > 0)
+  if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} immediately nested assignment(s) went uncaught`)
+  } else if (duplicated.length > 0) {
+    fail(name, `${String(duplicated.length)} line(s) produced a duplicate problem`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else if (wronglyFlagged.length > 0) {
+    fail(name, `${String(wronglyFlagged.length)} ordinary line(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} immediately nested assignments caught, one problem each ` +
+        '(single-problem-per-line is structural, not proven by this guard); no zero-width loop; ' +
+        `${String(clean.length)} ordinary lines stay clean`
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
 process.stdout.write('P1-5: repository-wide git index containment\n')
@@ -1778,7 +1942,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 32
+const expectedCount = 35
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

@@ -136,7 +136,7 @@ M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
 | `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：32 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、视图覆盖整个 **dotenv 逻辑取值**、解析成功后 userinfo 与 query 同时判定、行内注释片段与整行走同一份敏感赋值判据、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：35 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、视图覆盖整个 **dotenv 逻辑取值**、解析成功后 userinfo 与 query 同时判定、行内注释片段与整行走同一份敏感赋值判据、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
 | `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证 |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
@@ -253,7 +253,7 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 32 cases、
+75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 35 cases、
 15 项拓扑变异反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
@@ -278,7 +278,10 @@ dotenv 文法判定；**每个片段**再用**非锚定**扫描过同一份敏�
 取值的**子串**，因此不重复参与 `scheme://` 起点计数。行尾 CR 在切行时去掉，否则
 CRLF 模板会让整条敏感键判据失效。敏感赋值消息**不含任何输入派生的键名或取值**——只有固定类别、文件标签与行号
 （启发式判断「这个键名像不像 Secret」只能缩小泄漏面，不能关掉它）。赋值取值按
-**引号**定界解析，引号内的 `#` 与空白原样保留，空引号仍是允许的空占位。
+**引号**定界解析，引号内的 `#` 与空白原样保留；**只有长度精确为 0 的 quoted 取值
+才是空占位**（`PASSWORD=" "` 是写进去的内容，不能用 `trim()` 抹掉），闭合引号
+之后只允许「输入结束 / 水平空白后结束 / 注释」，其余收尾一律 fail closed，且
+顶层与片段走同一份判据得同一结论。
 
 ### 本轮的威胁模型（写清边界，避免过度声称）
 

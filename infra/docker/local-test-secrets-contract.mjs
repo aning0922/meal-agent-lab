@@ -804,7 +804,10 @@ const connectionStringCandidates = (line) => {
  * 敏感赋值判据——**所有片段共用这一份**。
  *
  * 输入是一段「看起来像 dotenv 行」的文本：主取值所在的整行、或行内注释片段。
- * 返回命中的键名（原样大小写）或 null；**只返回键名，绝不返回取值**。
+ *
+ * 扫描**内部**可以持有必要状态（这里返回命中的键名，调用方据此去重与计数），
+ * 但 **problem 输出只包含固定类别、文件标签和行号**，不包含任何输入派生的
+ * key 或 value。
  */
 /**
  * 从 `=` 之后读出**一个赋值取值**，有界。
@@ -830,19 +833,38 @@ const readAssignmentValue = (text, from) => {
   // 仍然是允许的空占位。紧贴 `=` 的 `#`（`PASSWORD=#secret`）则属于取值。
   const hashIsComment = start !== from && text[start] === '#'
   if (hashIsComment) {
-    return { value: '', end: start }
+    return { value: '', end: start, quoted: false, ambiguous: false }
   }
   const limit = Math.min(text.length, start + maximumCandidateLength + 1)
-  const from2 = start
-  const quote = text[from2]
+  const quote = text[start]
   if (quote === '"' || quote === "'") {
-    const closing = text.indexOf(quote, from2 + 1)
-    if (closing !== -1 && closing < limit) {
-      return { value: text.slice(from2 + 1, closing), end: closing + 1 }
+    const closing = text.indexOf(quote, start + 1)
+    if (closing === -1 || closing >= limit) {
+      // 引号未闭合：取值边界不明确 → fail closed。
+      return { value: text.slice(start + 1, limit), end: limit, quoted: true, ambiguous: true }
     }
-    return { value: text.slice(from2 + 1, limit), end: limit }
+    // **闭合引号之后只允许三种收尾**：输入结束、水平空白后结束、或（按既定
+    // 语义）水平空白/紧随其后的 `#` 注释。其余一律 ambiguous。
+    // `PASSWORD=""SYNTHETIC` / `PASSWORD="";` / `PASSWORD="",X` / 引号后隔着
+    // 空白又出现别的内容——这些形态里「取值到底是什么」没有确定答案，不能按
+    // 空占位放行。
+    let after = closing + 1
+    while (after < text.length && (text[after] === ' ' || text[after] === '\t')) {
+      after += 1
+    }
+    // 收尾合法 = 「吃掉可选的水平空白之后」到了输入末尾，或者遇到 `#` 注释。
+    // （早先这里还 `&&` 了一个 `sawSpace || after === closing + 1`——那是**恒真**
+    // 的：要么消耗过空白、要么根本没消耗，两者必居其一。已删掉，避免留下一段
+    // 任何测试都区分不出来的死条件。）
+    const trailingOk = after >= text.length || text[after] === '#'
+    return {
+      value: text.slice(start + 1, closing),
+      end: closing + 1,
+      quoted: true,
+      ambiguous: !trailingOk
+    }
   }
-  let end = from2
+  let end = start
   // 紧贴 `=` 的第一个字符即使是 `#` 也算取值的一部分；其后的 `#` 才终止。
   if (end < limit && text[end] === '#') {
     end += 1
@@ -850,7 +872,25 @@ const readAssignmentValue = (text, from) => {
   while (end < limit && !/[\s#]/.test(text[end])) {
     end += 1
   }
-  return { value: text.slice(from2, end), end }
+  return { value: text.slice(start, end), end, quoted: false, ambiguous: false }
+}
+
+/**
+ * 一个赋值取值算不算「空占位」。
+ *
+ *   - **quoted**：只有长度**精确为 0** 才是空占位。`PASSWORD=" "`、
+ *     `PASSWORD="\t"`、`PASSWORD='   '`、`PASSWORD="<NBSP>"` 都是**写进了内容**
+ *     的取值——操作者显式用引号把那些字节括起来，它们就是取值的一部分。这里
+ *     **绝不能**用 `trim()`：`trim()` 会把它们统统抹成空串放行；
+ *   - **unquoted**：沿用既定 dotenv 语义，分隔用的空白不算内容，`trim()` 判空。
+ *
+ * `ambiguous`（引号未闭合、闭合引号后跟着说不清的内容）一律按**非空**处理。
+ */
+const assignmentValueIsEmpty = ({ value, quoted, ambiguous }) => {
+  if (ambiguous) {
+    return false
+  }
+  return quoted ? value.length === 0 : value.trim() === ''
 }
 
 /**
@@ -873,18 +913,30 @@ const sensitiveAssignmentsAnywhereIn = (text) => {
     if (match === null) {
       break
     }
-    const { value } = readAssignmentValue(source, match.index + match[0].length)
-    if (value.trim() !== '' && isSensitiveKeyName(match[1])) {
+    const parsed = readAssignmentValue(source, match.index + match[0].length)
+    if (!assignmentValueIsEmpty(parsed) && isSensitiveKeyName(match[1])) {
       hits += 1
     }
-    // **只前进到本次匹配之后**，绝不跳过整个取值。
+    // **退回到本次匹配的 `=` 上**，让它充当下一层赋值的分隔符：
+    // `run NOTES=PASSWORD=… `、`A=B=PASSWORD=…` 里内层的键紧贴着上一个 `=`，
+    // 而 keyPattern 需要一个 `[^A-Za-z0-9_]` 前导字符——停在 `=` 之后就再也
+    // 匹配不上了。
+    //
+    // 不会零宽循环：`match.index >= cursor` 且 `match[0]` 至少是「键 + `=`」
+    // 两个字符，因此 `match.index + |match[0]| - 1 >= cursor + 1`，严格前进。
+    // 下面的 `Math.max` 因此**当前恒不生效**——保留它是把「游标必须前进」这条
+    // 不变量写进代码，而不是依赖 keyPattern 将来也一定至少两个字符。
+    // 不会重复输出：一行只产出一条固定类别消息，命中多少次都只报一条。
+    //
+    // 原先的「只前进到本次匹配之后」保留了下面这条更重要的性质——**绝不跳过
+    // 整个取值**，否则引号取值内部的赋值会整段漏检。
     //
     // 跳过取值曾经是「取值内部的 `KEY=` 不再被当成新的赋值」，但审计实测那是
     // 一次**检测回退**：`NOTES="a PASSWORD=…"` 这种「外层键不敏感、内层赋值在
     // 引号取值里」的形态，旧实现因为 `[^\s#]*` 在空格处停下、`matchAll` 得以
     // 从取值内部继续，反而抓得到；跳过之后就抓不到了。
     // 一行只报一条固定类别，因此重复计数没有任何代价，漏检才有。
-    cursor = match.index + match[0].length
+    cursor = Math.max(cursor + 1, match.index + match[0].length - 1)
   }
   return hits
 }
@@ -920,8 +972,11 @@ const sensitiveAssignmentIn = (text) => {
   // 取值走**同一个** `readAssignmentValue`：整行判据与片段判据从此共用一份
   // 取值文法。此前这里用 `match[2].trim()`，于是 `PASSWORD= # 说明` 把注释
   // 整段读成取值，把一个**允许的空占位**误报成敏感赋值（基线同样如此）。
-  const { value } = readAssignmentValue(uncommented, match.index + match[0].length - match[2].length)
-  if (!isSensitiveKeyName(match[1]) || value.trim() === '') {
+  const parsed = readAssignmentValue(
+    uncommented,
+    match.index + match[0].length - match[2].length
+  )
+  if (!isSensitiveKeyName(match[1]) || assignmentValueIsEmpty(parsed)) {
     return null
   }
   return match[1]

@@ -199,7 +199,7 @@ PostgreSQL healthy
    映射；仓库内判断改用 `path.relative`；`git ls-files` 非零退出不再静默通过。
 10. **worktree 资源隔离**：network 与 volume 改为 project scope 命名，
     `--project-name` 可覆盖，门禁用两个 project name 证明真实名称无交集。
-11. **变异测试 27 项全部以指定理由捕获、0 漏网**。
+11. ****当时的**变异测试 27 项全部以指定理由捕获、0 漏网**。
 
 **边界（M2B 的 Accepted 只覆盖拓扑本身，不得写成 Pass）**：**拓扑已验证；
 完整 bootstrap 链与全栈启动尚未通过。**M2B 落地时 `config.ts` 只接受
@@ -1442,7 +1442,7 @@ Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra
    当时的 47 项精确计数断言（该断言现为 75 cases）。
 
 修复后全部门禁重跑：smoke PASS（18 needles、86 产物、315 tracked files 零命
-中）、probe PASS、反例 47/47、拓扑门禁与 15 项变异全绿、悬挂匿名卷零新增。
+中）、probe PASS、**当时的**反例 47/47、拓扑门禁与 15 项变异全绿、悬挂匿名卷零新增。
 （第二轮阻断整改后的最终数字见下面两节。）
 
 #### M3B 总控阻断整改（第二轮）
@@ -2074,8 +2074,8 @@ Secret 的套件并发）。确认级发现全部已修，其中五条是**本�
    中性消息。既有反例里对键名的断言同步改为中性类别（判据精确度不变——注入的
    敏感键仍然只有一个）。
 
-targeted negative suite 新增 3 条注册 case，从 29 精确增加到 **32/32**，原有 29
-条不得弱化且全部复跑通过。定点测试里的注释同时改成**真实**优先级：
+targeted negative suite 新增 3 条注册 case，从 29 精确增加到 **32/32**（**当时**
+的计数；第十一轮扩到 35，见下一节），原有 29 条不得弱化且全部复跑通过。定点测试里的注释同时改成**真实**优先级：
 `unscannable` > 原始文本正则（覆盖形态的主判据）> 解析后的 URL（补漏）。
 
 ##### 本轮两路只读审计的确认级发现与定点修复
@@ -2112,6 +2112,74 @@ targeted negative suite 新增 3 条注册 case，从 29 精确增加到 **32/32
 未断言本轮 tag 不存在（`--keep-failure` 之外无从触发）；containment 的
 `timeout` 结局与 `refused:*` 记同一行日志；带 zone 的 IPv6 正向对照只探测第一个
 link-local 地址。
+
+#### M3B 第十一轮 bounded parser closure
+
+三项，都先在 `570374a` 上跑红（3 组共 14 个形态里 13 个漏检）。
+
+1. **quoted 取值的空判据**。此前对 quoted 与 unquoted 一律 `trim()` 判空，于是
+   `PASSWORD=" "`、`PASSWORD="\t"`、`PASSWORD='   '`、`PASSWORD="<NBSP>"` 与
+   注释片段里的同形态**五种全部被当成空占位放行**。现在只有**长度精确为 0**
+   的 quoted 取值才是空占位——操作者显式用引号把那些字节括起来，它们就是内容；
+   unquoted 沿用既定 dotenv 语义（分隔空白不算内容）。`PASSWORD=""`、
+   `PASSWORD=''`、`PASSWORD= # 说明`、`PASSWORD="" # 说明` 仍然干净。
+2. **闭合引号之后的收尾**。`readAssignmentValue` 现在返回
+   `{ value, end, quoted, ambiguous }`，两条调用路径（整行判据、片段判据）
+   都消费完整状态。闭合引号之后只允许「输入结束 / 水平空白后结束 / 按既定语义
+   的 `#` 注释」，其余一律 `ambiguous` 并按**非空**处理。
+   *修复前*：`PASSWORD=""SYNTHETIC`、`PASSWORD=''SYNTHETIC`、
+   `PASSWORD=""  SYNTHETIC`、`PASSWORD="";`、`PASSWORD="",SYNTHETIC` 五种
+   **全部放行**。*修复后*：顶层与 inline/comment/自由文本片段得到**同一个**
+   敏感赋值结论（顶层还会额外由 tokenizer 报一条 `unscannable`——那是同一判断
+   的另一条独立证据，不是替代）。
+3. **紧邻的嵌套赋值**。内层键紧贴上一个 `=`，而 keyPattern 需要一个
+   `[^A-Za-z0-9_]` 前导字符，停在 `=` 之后就再也匹配不上。
+   *修复前*：`run NOTES=PASSWORD=… `、`# run NOTES=PASSWORD=… `、
+   `A=B=PASSWORD=…` **三种漏检**。*修复后*：游标退回到本次匹配的 `=` 上，让它
+   充当下一层赋值的分隔符。`match[0]` 至少两个字符，因此游标严格前进（另有
+   `Math.max` 兜底），**不会零宽循环**；一行只产出一条固定类别消息，
+   **不会重复输出**；`NOTES=value` 与 `PASSWORD=` 空占位保持干净。
+
+三处旧口径注释同时订正，统一为：**扫描内部可以持有必要状态，但 problem 输出
+只包含固定类别、文件标签和行号，不包含输入派生的 key 或 value。**
+
+targeted negative suite 新增 3 条注册 case，从 32 精确增加到 **35/35**，原有
+32 条未删未弱化且全部复跑通过。
+
+##### 本轮两路只读审计的确认级发现
+
+审计在 targeted 35/35 与 local-test 75/75 首次全绿后启动，只读、不与 Docker
+套件并发。**两路都没有阻断项。**已修的两条：
+
+- **恒真的死条件**：`trailingOk` 里 `(sawSpace || after === closing + 1)` 是
+  永真式（要么消耗过空白、要么没消耗），任何测试都区分不出来。已删除，有效
+  规则就是「吃掉可选水平空白后到末尾，或遇到 `#` 注释」。
+- **一句真空的通过描述**：嵌套 case 的「no duplicate」是结构性保证（扫描按行
+  汇总命中数、只 push 一条），那个分支当前不可能触发。断言保留（它把不变量写
+  进代码），但通过消息不再声称是它证明的。
+
+**必须如实记录的取舍——本轮引入的误报面**。要求「闭合引号之后只允许结束或
+注释」直接推出：**散文里提到一个空的 quoted 赋值会被判成敏感赋值**。实测：
+
+- `# set PASSWORD="" before starting` → 命中敏感赋值
+- `# leave PASSWORD="" empty`、`# run with PASSWORD="" to disable` → 同上
+- `# PASSWORD="" (leave blank)` → 除敏感赋值外还会多报一条
+  `unscannable connection string candidate`（该行根本没有连接串——这条来自
+  第八轮就存在的 tokenizer 歧义判据，类别措辞对这种行是误导性的）
+
+这**不是**实现偏差：`PASSWORD=""  SYNTHETIC`（要求 fail closed）与
+`PASSWORD="" before starting`（散文）在文法上完全同形，扫描器没有办法区分
+「像取值的词」和「像散文的词」。真实 tracked 模板与两份 README 目前全部干净
+（实测 0 problem），但**今后往 `infra/environments/` 写说明时，不要在散文里
+写出空的 quoted 赋值**。是否放宽这条规则，留待总控裁定。
+
+**登记不修**（超出本轮 bounded 范围）：`sensitiveAssignmentsAnywhereIn` 因为
+游标退回一格，每个 `=` 被访问两次，实测 100 KB 单行由 559 ms 变成 1111 ms
+（**线性**，无超线性输入；模板行长度远达不到该量级）；unquoted 取值里
+`PASSWORD=<NBSP>` 干净而 `PASSWORD=<U+200B>` 被判敏感（unquoted 沿用
+`trim()` 的既定 dotenv 语义所致）；镜像绑定断言在整条链跑完之后才做；
+`cleanupRun` 的 project 形状拒绝会跳过其后阶段（该分支在真实调用下不可达）；
+containment 里非 loopback 地址上的 `not-api` 与 `refused:*` 记同一行通过日志。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2250,7 +2318,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（32 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（35 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
