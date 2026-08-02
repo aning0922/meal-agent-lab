@@ -223,6 +223,16 @@ if (!readFileSync(composeFile).equals(original)) {
   )
 }
 
+// **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
+// 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
+// 补齐。
+const expectedMutationCount = 15
+if (mutations.length !== expectedMutationCount) {
+  failures.push(
+    `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`
+  )
+}
+
 if (failures.length > 0) {
   process.stderr.write('Compose topology mutation check FAIL\n')
   for (const message of failures) {

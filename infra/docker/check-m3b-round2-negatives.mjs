@@ -1819,6 +1819,128 @@ process.stdout.write('R11: quoted values, trailing ambiguity and nested assignme
 }
 
 // ---------------------------------------------------------------------------
+// R12：unquoted whitespace 语义与 Node --env-file 逐项对齐
+// ---------------------------------------------------------------------------
+process.stdout.write('R12: unquoted whitespace matches Node --env-file consumption\n')
+
+{
+  // 判空不能用 `\s` / `trim()`：JS 的 `trim()` 会把 NBSP / U+3000 / VT / FF
+  // 一并抹成空串，而 Node `--env-file` 只吃掉 ASCII SPACE 与 TAB——其余都是
+  // 真实字节，会原样进入 `process.env`。地面真相由实测取得（每个字符跑一次
+  // `node --env-file`），下面的期望直接来自那张表。
+  const name = 'unquoted whitespace follows Node --env-file, not trim()'
+  const NBSP = '\u00a0'
+  const IDEO = '\u3000'
+  const ZWSP = '\u200b'
+  const VT = '\u000b'
+  const FF = '\u000c'
+
+  // Node 实测：`PASSWORD=<c>` 只有 SPACE / TAB 消费为空串。
+  const whitespaceOnlyFlagged = [
+    ['NBSP', `PASSWORD=${NBSP}`],
+    ['U+3000', `PASSWORD=${IDEO}`],
+    ['U+200B', `PASSWORD=${ZWSP}`],
+    ['VT', `PASSWORD=${VT}`],
+    ['FF', `PASSWORD=${FF}`]
+  ]
+  const whitespaceOnlyClean = [
+    ['SPACE', 'PASSWORD= '],
+    ['TAB', 'PASSWORD=\t']
+  ]
+  // 空白 + 取值：七种都必须命中（Node 全部消费出非空取值）。
+  const withValue = [
+    ['SPACE', 'PASSWORD= SYNTHETIC-WSSPACE'],
+    ['TAB', 'PASSWORD=\tSYNTHETIC-WSTAB'],
+    ['NBSP', `PASSWORD=${NBSP}SYNTHETIC-WSNBSP`],
+    ['U+3000', `PASSWORD=${IDEO}SYNTHETIC-WSIDEO`],
+    ['U+200B', `PASSWORD=${ZWSP}SYNTHETIC-WSZWSP`],
+    ['VT', `PASSWORD=${VT}SYNTHETIC-WSVT`],
+    ['FF', `PASSWORD=${FF}SYNTHETIC-WSFF`]
+  ]
+  // 键与 `=` 之间的空白：SPACE/TAB 是 Node 支持的形态（取值非空 → 命中）；
+  // 其余让整行在 Node 里**根本不生效**，属 unsupported → fail closed 同样命中。
+  const keyGap = [
+    ['SPACE', 'PASSWORD =SYNTHETIC-GAPSPACE'],
+    ['TAB', 'PASSWORD\t=SYNTHETIC-GAPTAB'],
+    ['NBSP', `PASSWORD${NBSP}=SYNTHETIC-GAPNBSP`],
+    ['U+3000', `PASSWORD${IDEO}=SYNTHETIC-GAPIDEO`],
+    ['U+200B', `PASSWORD${ZWSP}=SYNTHETIC-GAPZWSP`],
+    ['VT', `PASSWORD${VT}=SYNTHETIC-GAPVT`],
+    ['FF', `PASSWORD${FF}=SYNTHETIC-GAPFF`]
+  ]
+  // 顶层 / 行内注释 / 散文片段三条路径必须得到**同一个**结论。
+  const perPath = [
+    ['top level', (line) => line],
+    ['inline comment', (line) => `NOTES=ok # ${line}`],
+    ['prose fragment', (line) => `run ${line} before starting`]
+  ]
+  // 合法空占位保持干净。
+  const clean = [
+    ['bare', 'PASSWORD='],
+    ['empty double quotes', 'PASSWORD=""'],
+    ['empty single quotes', "PASSWORD=''"],
+    ['bare with a comment', 'PASSWORD= # placeholder'],
+    ['empty quotes with a comment', 'PASSWORD="" # placeholder'],
+    ['a real AppSecret placeholder', 'WECHAT_APP_SECRET=']
+  ]
+
+  const sensitiveIn = (line) =>
+    templateProblemsFor(line).some((problem) =>
+      /assigns a non-empty value to a sensitive key/.test(problem)
+    )
+
+  const missed = []
+  const wronglyFlagged = []
+  const leaking = []
+  const pathDisagreement = []
+
+  for (const [label, line] of whitespaceOnlyFlagged) {
+    if (!sensitiveIn(line)) missed.push(`whitespace-only ${label}`)
+  }
+  for (const [label, line] of whitespaceOnlyClean) {
+    if (sensitiveIn(line)) wronglyFlagged.push(`whitespace-only ${label}`)
+  }
+  for (const [label, line] of [...withValue, ...keyGap]) {
+    // 每一种形态在三条路径上都要判一次，结论必须一致且都命中。
+    const verdicts = perPath.map(([, render]) => sensitiveIn(render(line)))
+    if (verdicts.some((v) => !v)) missed.push(`${label} (${line.includes('=SYNTHETIC') ? 'gap' : 'value'})`)
+    if (new Set(verdicts).size !== 1) pathDisagreement.push(label)
+  }
+  for (const [label, line] of clean) {
+    if (templateProblemsFor(line).length > 0) wronglyFlagged.push(`placeholder ${label}`)
+  }
+  for (const [, line] of [...withValue, ...keyGap]) {
+    for (const [, render] of perPath) {
+      if (templateProblemsFor(render(line)).some((problem) => !allowedProblemShape.test(String(problem)))) {
+        leaking.push(line)
+      }
+    }
+  }
+
+  if (missed.length > 0) {
+    fail(name, `${String(missed.length)} whitespace shape(s) disagreed with the Node consumption`)
+  } else if (pathDisagreement.length > 0) {
+    fail(
+      name,
+      `${String(pathDisagreement.length)} shape(s) reached different conclusions on the three paths`
+    )
+  } else if (wronglyFlagged.length > 0) {
+    fail(name, `${String(wronglyFlagged.length)} genuinely empty form(s) were wrongly flagged`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else {
+    pass(
+      name,
+      `${String(whitespaceOnlyFlagged.length)} non-ASCII whitespace-only values flagged and ` +
+        `${String(whitespaceOnlyClean.length)} ASCII ones treated as empty (Node parity); ` +
+        `${String(withValue.length)} whitespace+value and ${String(keyGap.length)} key/= gap ` +
+        `shapes agree across top level, inline comment and prose; ${String(clean.length)} ` +
+        'genuine placeholders stay clean; nothing echoed'
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 五、全仓 Git index containment
 // ---------------------------------------------------------------------------
 process.stdout.write('P1-5: repository-wide git index containment\n')
@@ -1942,7 +2064,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 35
+const expectedCount = 36
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

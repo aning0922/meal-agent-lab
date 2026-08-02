@@ -572,7 +572,12 @@ const sensitiveKeySuffixes = [
   'URL',
   'URI'
 ]
-const assignmentPattern = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/
+// 分段器用的赋值文法。空白一律**只认 ASCII SPACE / TAB**，与
+// `sensitiveAssignmentsIn` 的文法同源：此前这里是 `^\s*…\s*=`，`\s` 会把 NBSP
+// 之类一并吃掉，于是同一个字符在「分段」和「敏感赋值」两处得到相反结论——
+// `PASSWORD=""<NBSP>` 会被分段器判成 ambiguous，最后以
+// `unscannable connection string candidate` 报出来（那一行根本没有连接串）。
+const assignmentPattern = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$/
 
 /**
  * 连接串里的凭据判据。**两条都与赋值键名无关**：判据看的是行内容本身，因此
@@ -684,7 +689,7 @@ const dotenvLogicalSegments = (line) => {
   // 行首注释标记反复剥离（`# # KEY=value` 同样要还原成赋值形态）。
   let uncommented = text
   for (;;) {
-    const stripped = uncommented.replace(/^\s*#+\s*/, '')
+    const stripped = uncommented.replace(/^[ \t]*#+[ \t]*/, '')
     if (stripped === uncommented) {
       break
     }
@@ -823,14 +828,71 @@ const connectionStringCandidates = (line) => {
  *
  * 有界：最多读 `maximumCandidateLength + 1` 个字符。
  */
+/**
+ * ASCII 水平空白——**只有**这两个字符。
+ *
+ * 与 Node 24.18.0 `--env-file` 的真实消费语义逐项实测对齐：它在 unquoted 取值
+ * 两侧只吃掉 ASCII SPACE 与 TAB，其余「看起来像空白」的字符都是**真实字节**，
+ * 原样进入 `process.env`。因此判空绝不能用 `\s` 或 `trim()`——JS 的 `trim()`
+ * 会把 NBSP / U+3000 / VT / FF 一并抹掉，于是 `PASSWORD=<NBSP>` 这种「Node 眼里
+ * 非空」的取值被当成空占位放行。
+ *
+ *   PASSWORD=<c>       Node 实测消费结果      判定
+ *   ----------------   --------------------   ----
+ *   SPACE  U+0020      ""                     空占位
+ *   TAB    U+0009      ""                     空占位
+ *   NBSP   U+00A0      " "               非空
+ *   IDEO   U+3000      "　"               非空
+ *   ZWSP   U+200B      "​"               非空
+ *   VT     U+000B      ""               非空
+ *   FF     U+000C      ""               非空
+ *
+ * 键与 `=` 之间同理：`PASSWORD =V` Node 读得到，而 `PASSWORD<NBSP>=V`（以及
+ * U+3000 / U+200B / VT / FF 版本）**整行不生效**，`process.env.PASSWORD` 为
+ * `null`——那是 unsupported 形态，按 fail closed 处理。
+ */
+const isAsciiHorizontalWhitespace = (character) =>
+  character === ' ' || character === '\t'
+
+/**
+ * 「非 ASCII 的空白类字符」，用于识别 unsupported 的键/`=` 间隔。`\s` 之外还
+ * 显式加上两个零宽字符：U+200B 与 U+FEFF 不在 `\s` 里，但 Node 同样因它们而
+ * 整行不生效。
+ */
+const isNonAsciiWhitespace = (character) =>
+  character !== undefined &&
+  !isAsciiHorizontalWhitespace(character) &&
+  (/\s/.test(character) || character === '\u200b' || character === '\ufeff')
+
+/**
+ * 从 `=` 之后读出**一个赋值取值**，有界。
+ *
+ * 取值的边界是**引号**（不是某几个字符）：
+ *
+ *   - 以 `"`/`'` 开头 → 边界是配对的同种引号，引号内的 `#` 与空白原样保留；
+ *     未闭合时 fail closed。闭合引号之后只允许「输入结束 / ASCII 水平空白后
+ *     结束 / `#` 注释」，其余收尾一律 ambiguous；
+ *   - 否则 → 读到 **ASCII 水平空白**或 `#` 为止。此前用的是 `/[\s#]/`——那会让
+ *     `PASSWORD=<NBSP>SYNTHETIC` 在第一个字符就终止、取值读成空串，而 Node
+ *     实际消费到的是一整段非空取值。
+ *
+ * 有界：最多读 `maximumCandidateLength + 1` 个字符。
+ */
 const readAssignmentValue = (text, from) => {
-  // `=` 之后的水平空白跳过：`PASSWORD= value` 的取值是 `value`，不是空串。
+  // `=` 之后的 **ASCII** 水平空白跳过：`PASSWORD= value` 的取值是 `value`。
   let start = from
-  while (start < text.length && (text[start] === ' ' || text[start] === '\t')) {
+  while (start < text.length && isAsciiHorizontalWhitespace(text[start])) {
     start += 1
   }
-  // 但**跳过空白之后**遇到 `#` 就是注释起点，取值为空——`PASSWORD= # 说明`
-  // 仍然是允许的空占位。紧贴 `=` 的 `#`（`PASSWORD=#secret`）则属于取值。
+  // 跳过空白之后遇到 `#` 就是注释起点，取值为空——`PASSWORD= # 说明` 仍然是
+  // 允许的空占位。
+  //
+  // 紧贴 `=` 的 `#`（`PASSWORD=#secret`）本实现**当作取值**，这是一处**刻意
+  // 偏离 Node** 的收紧，如实记录：实测 `node --env-file` 对 `PASSWORD=#SYNTH`
+  // 给出 `""`（它把紧贴 `=` 的 `#` 也当注释）。仍然按取值处理，是因为同一份
+  // 模板还会被别的消费者读——compose 的 `env_file` 与常见 dotenv 库对「`#` 前
+  // 没有空白」的处理并不一致，把它读成取值才是 fail closed 的那一侧。
+  // 代价是 `WECHAT_APP_SECRET=#TODO` 这类占位写法会被判成敏感赋值。
   const hashIsComment = start !== from && text[start] === '#'
   if (hashIsComment) {
     return { value: '', end: start, quoted: false, ambiguous: false }
@@ -840,22 +902,13 @@ const readAssignmentValue = (text, from) => {
   if (quote === '"' || quote === "'") {
     const closing = text.indexOf(quote, start + 1)
     if (closing === -1 || closing >= limit) {
-      // 引号未闭合：取值边界不明确 → fail closed。
       return { value: text.slice(start + 1, limit), end: limit, quoted: true, ambiguous: true }
     }
-    // **闭合引号之后只允许三种收尾**：输入结束、水平空白后结束、或（按既定
-    // 语义）水平空白/紧随其后的 `#` 注释。其余一律 ambiguous。
-    // `PASSWORD=""SYNTHETIC` / `PASSWORD="";` / `PASSWORD="",X` / 引号后隔着
-    // 空白又出现别的内容——这些形态里「取值到底是什么」没有确定答案，不能按
-    // 空占位放行。
     let after = closing + 1
-    while (after < text.length && (text[after] === ' ' || text[after] === '\t')) {
+    while (after < text.length && isAsciiHorizontalWhitespace(text[after])) {
       after += 1
     }
-    // 收尾合法 = 「吃掉可选的水平空白之后」到了输入末尾，或者遇到 `#` 注释。
-    // （早先这里还 `&&` 了一个 `sawSpace || after === closing + 1`——那是**恒真**
-    // 的：要么消耗过空白、要么根本没消耗，两者必居其一。已删掉，避免留下一段
-    // 任何测试都区分不出来的死条件。）
+    // 收尾合法 = 「吃掉可选的 ASCII 水平空白之后」到了末尾，或遇到 `#` 注释。
     const trailingOk = after >= text.length || text[after] === '#'
     return {
       value: text.slice(start + 1, closing),
@@ -865,83 +918,36 @@ const readAssignmentValue = (text, from) => {
     }
   }
   let end = start
-  // 紧贴 `=` 的第一个字符即使是 `#` 也算取值的一部分；其后的 `#` 才终止。
+  // 紧贴 `=` 的第一个字符即使是 `#` 也算取值的一部分（见上面「刻意偏离 Node」
+  // 的说明）；其后的 `#` 才终止。
   if (end < limit && text[end] === '#') {
     end += 1
   }
-  while (end < limit && !/[\s#]/.test(text[end])) {
+  while (end < limit && !isAsciiHorizontalWhitespace(text[end]) && text[end] !== '#') {
     end += 1
   }
   return { value: text.slice(start, end), end, quoted: false, ambiguous: false }
 }
 
 /**
- * 一个赋值取值算不算「空占位」。
+ * 一个赋值取值算不算「空占位」——判据与 Node `--env-file` 的消费结果一致。
  *
- *   - **quoted**：只有长度**精确为 0** 才是空占位。`PASSWORD=" "`、
- *     `PASSWORD="\t"`、`PASSWORD='   '`、`PASSWORD="<NBSP>"` 都是**写进了内容**
- *     的取值——操作者显式用引号把那些字节括起来，它们就是取值的一部分。这里
- *     **绝不能**用 `trim()`：`trim()` 会把它们统统抹成空串放行；
- *   - **unquoted**：沿用既定 dotenv 语义，分隔用的空白不算内容，`trim()` 判空。
- *
- * `ambiguous`（引号未闭合、闭合引号后跟着说不清的内容）一律按**非空**处理。
+ * 读取阶段已经只吃掉 ASCII 水平空白，因此这里**只看长度**：长度为 0 才是空。
+ * quoted 与 unquoted 共用同一条判据，不再有 `trim()` 这种会擦除真实字节的宽
+ * 判据。`ambiguous`（引号未闭合、闭合引号后跟着说不清的内容、unsupported 的
+ * 键/`=` 间隔）一律按**非空**处理。
  */
-const assignmentValueIsEmpty = ({ value, quoted, ambiguous }) => {
+const assignmentValueIsEmpty = ({ value, ambiguous }) => {
   if (ambiguous) {
     return false
   }
-  return quoted ? value.length === 0 : value.trim() === ''
+  return value.length === 0
 }
 
 /**
- * 在一段文本里找出**全部**敏感赋值（不只是开头那一个）。
- *
- * 行内注释是自由文本：`# do not commit: PASSWORD=…` 里的赋值不在片段开头，
- * 锚定到 `^` 的文法看不见它（审计实测：这一形态与另外七种同类形态全部漏检）。
- * 因此片段一律用**非锚定**扫描；整行仍走锚定的 dotenv 文法。
- *
- * 返回命中条数，**不返回键名也不返回取值**——两者都是输入派生的内容。
+ * 键名是否属于敏感键族（后缀 + **词元**双判据）。`API_KEYS` / `MY_SECRETS` /
+ * `WECHAT_APP_SECRET_2` 这类形态 endsWith 抓不到，但它们同样是敏感键。
  */
-const sensitiveAssignmentsAnywhereIn = (text) => {
-  const source = String(text)
-  const keyPattern = /(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)[ \t]*=/g
-  let hits = 0
-  let cursor = 0
-  for (;;) {
-    keyPattern.lastIndex = cursor
-    const match = keyPattern.exec(source)
-    if (match === null) {
-      break
-    }
-    const parsed = readAssignmentValue(source, match.index + match[0].length)
-    if (!assignmentValueIsEmpty(parsed) && isSensitiveKeyName(match[1])) {
-      hits += 1
-    }
-    // **退回到本次匹配的 `=` 上**，让它充当下一层赋值的分隔符：
-    // `run NOTES=PASSWORD=… `、`A=B=PASSWORD=…` 里内层的键紧贴着上一个 `=`，
-    // 而 keyPattern 需要一个 `[^A-Za-z0-9_]` 前导字符——停在 `=` 之后就再也
-    // 匹配不上了。
-    //
-    // 不会零宽循环：`match.index >= cursor` 且 `match[0]` 至少是「键 + `=`」
-    // 两个字符，因此 `match.index + |match[0]| - 1 >= cursor + 1`，严格前进。
-    // 下面的 `Math.max` 因此**当前恒不生效**——保留它是把「游标必须前进」这条
-    // 不变量写进代码，而不是依赖 keyPattern 将来也一定至少两个字符。
-    // 不会重复输出：一行只产出一条固定类别消息，命中多少次都只报一条。
-    //
-    // 原先的「只前进到本次匹配之后」保留了下面这条更重要的性质——**绝不跳过
-    // 整个取值**，否则引号取值内部的赋值会整段漏检。
-    //
-    // 跳过取值曾经是「取值内部的 `KEY=` 不再被当成新的赋值」，但审计实测那是
-    // 一次**检测回退**：`NOTES="a PASSWORD=…"` 这种「外层键不敏感、内层赋值在
-    // 引号取值里」的形态，旧实现因为 `[^\s#]*` 在空格处停下、`matchAll` 得以
-    // 从取值内部继续，反而抓得到；跳过之后就抓不到了。
-    // 一行只报一条固定类别，因此重复计数没有任何代价，漏检才有。
-    cursor = Math.max(cursor + 1, match.index + match[0].length - 1)
-  }
-  return hits
-}
-
-/** 键名是否属于敏感键族（后缀 + 词元双判据）。 */
 const isSensitiveKeyName = (rawKey) => {
   const key = rawKey.toUpperCase()
   const keyTokens = key.split(/[^A-Z0-9]+/).filter(Boolean)
@@ -955,32 +961,74 @@ const isSensitiveKeyName = (rawKey) => {
   )
 }
 
-const sensitiveAssignmentIn = (text) => {
-  // 行首注释标记反复剥离：`# # KEY=value` 与未注释版本同样是进了 Git 的凭据。
-  let uncommented = String(text)
+/**
+ * **唯一**的 assignment 文法——顶层 dotenv 行与 inline/comment/prose 片段共用
+ * 这一份实现。
+ *
+ * 此前是两份：顶层走锚定的 `assignmentPattern`（`\s*=` 会把 NBSP 之类一并吞掉，
+ * 于是 `PASSWORD<NBSP>=x` 被当成普通赋值），片段走非锚定扫描（`[ \t]*=` 对同一
+ * 行则根本不匹配）。同一段文本两条路径给出不同结论，正是本轮要消掉的。
+ *
+ * 文法（与 Node `--env-file` 的实测语义对齐）：
+ *
+ *   assignment := [ `export` ASCII_WS+ ] KEY GAP `=` VALUE
+ *   KEY        := [A-Za-z_][A-Za-z0-9_]*
+ *   GAP        := ASCII_WS*                     → supported
+ *               | 含任何非 ASCII 空白的间隔     → **unsupported**（fail closed）
+ *   VALUE      := 见 readAssignmentValue
+ *
+ * 返回命中条数。**不返回键名也不返回取值**——两者都是输入派生的内容。
+ */
+const sensitiveAssignmentsIn = (text) => {
+  const source = String(text)
+  const keyPattern = /(?:^|[^A-Za-z0-9_])(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)/g
+  let hits = 0
+  let cursor = 0
   for (;;) {
-    const stripped = uncommented.replace(/^\s*#+\s*/, '')
-    if (stripped === uncommented) {
+    keyPattern.lastIndex = cursor
+    const match = keyPattern.exec(source)
+    if (match === null) {
       break
     }
-    uncommented = stripped
+    const keyEnd = match.index + match[0].length
+    // GAP：吃掉 ASCII 水平空白；出现任何**非 ASCII** 空白就记成 unsupported。
+    let index = keyEnd
+    let unsupportedGap = false
+    while (index < source.length) {
+      const character = source[index]
+      if (isAsciiHorizontalWhitespace(character)) {
+        index += 1
+        continue
+      }
+      if (isNonAsciiWhitespace(character)) {
+        unsupportedGap = true
+        index += 1
+        continue
+      }
+      break
+    }
+    if (source[index] === '=' && isSensitiveKeyName(match[1])) {
+      const parsed = readAssignmentValue(source, index + 1)
+      // unsupported 的键/`=` 间隔按 ambiguous 处理：Node 那一行整条不生效，但
+      // 文件里确实写着凭据，别的消费者（compose env_file、dotenv 库）未必同样
+      // 忽略它——fail closed。
+      const verdict = { ...parsed, ambiguous: parsed.ambiguous || unsupportedGap }
+      if (!assignmentValueIsEmpty(verdict)) {
+        hits += 1
+      }
+    }
+    // **退回到本次匹配的末字符上**，让紧随其后的 `=` 仍能充当下一层赋值的分隔
+    // 符（`NOTES=PASSWORD=…`、`A=B=PASSWORD=…`）。
+    //
+    // 不会零宽循环：`match.index >= cursor` 且 `|match[0]| >= 1`，因此
+    // `keyEnd >= cursor + 1`；下面的 `Math.max` 把「游标必须前进」写成显式
+    // 不变量。
+    // 不会重复输出：一行只产出一条固定类别消息，命中多少次都只报一条。
+    cursor = Math.max(cursor + 1, keyEnd - 1)
   }
-  const match = assignmentPattern.exec(uncommented)
-  if (match === null) {
-    return null
-  }
-  // 取值走**同一个** `readAssignmentValue`：整行判据与片段判据从此共用一份
-  // 取值文法。此前这里用 `match[2].trim()`，于是 `PASSWORD= # 说明` 把注释
-  // 整段读成取值，把一个**允许的空占位**误报成敏感赋值（基线同样如此）。
-  const parsed = readAssignmentValue(
-    uncommented,
-    match.index + match[0].length - match[2].length
-  )
-  if (!isSensitiveKeyName(match[1]) || assignmentValueIsEmpty(parsed)) {
-    return null
-  }
-  return match[1]
+  return hits
 }
+
 
 const encodedCredentialVerdict = (line) => {
   const { candidates, unscannable } = connectionStringCandidates(line)
@@ -1113,13 +1161,13 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       // 「这个键名像不像 Secret」——而行内注释是自由文本，键位上可以放进任意
       // 内容，任何阈值都只是把泄漏面缩小而不是关掉。一行报一条就够了：定位靠
       // 文件与行号，键名对操作者不是必要信息。
-      let sensitiveHits = sensitiveAssignmentIn(line) === null ? 0 : 1
-      // **每一个片段**——主取值、行内注释、非赋值整行——都走同一份判据，且用
-      // **非锚定**扫描：片段是自由文本，赋值不一定在开头（审计实测：引号内的
-      // `NOTES="PASSWORD=…"`、注释里的 `# do not commit: PASSWORD=…` 等八种
-      // 形态此前全部漏检）。
+      //
+      // 整行与**每一个片段**——主取值、行内注释、非赋值整行——走**同一份**
+      // 文法（`sensitiveAssignmentsIn`），且都是非锚定扫描：片段是自由文本，
+      // 赋值不一定出现在开头。
+      let sensitiveHits = sensitiveAssignmentsIn(line)
       for (const segment of lineSegments) {
-        sensitiveHits += sensitiveAssignmentsAnywhereIn(segment.text)
+        sensitiveHits += sensitiveAssignmentsIn(segment.text)
       }
       if (sensitiveHits > 0) {
         problems.push(

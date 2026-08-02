@@ -2005,7 +2005,7 @@ malformed URL、合法标点与全部 benign 用例复跑通过。
    `scheme://` 起点计数（否则带行内注释的行上「最多 8 个起点」会实际只剩 4 个）。
 
 判据只返回**键名**，取值一律不出现在消息里；benign 行内注释保持干净。targeted
-negative suite 从 27 精确增加到 **29/29**，原有 27 条全部保留且未弱化。
+negative suite 从 27 精确增加到**当时的** **29/29**，原有 27 条全部保留且未弱化。
 
 ##### 本轮两路只读审计的确认级发现与定点修复
 
@@ -2127,11 +2127,16 @@ link-local 地址。
    `{ value, end, quoted, ambiguous }`，两条调用路径（整行判据、片段判据）
    都消费完整状态。闭合引号之后只允许「输入结束 / 水平空白后结束 / 按既定语义
    的 `#` 注释」，其余一律 `ambiguous` 并按**非空**处理。
-   *修复前*：`PASSWORD=""SYNTHETIC`、`PASSWORD=''SYNTHETIC`、
-   `PASSWORD=""  SYNTHETIC`、`PASSWORD="";`、`PASSWORD="",SYNTHETIC` 五种
-   **全部放行**。*修复后*：顶层与 inline/comment/自由文本片段得到**同一个**
-   敏感赋值结论（顶层还会额外由 tokenizer 报一条 `unscannable`——那是同一判断
-   的另一条独立证据，不是替代）。
+   *修复前*（订正：早先这里笼统写成「五种全部放行」，与实测不符，现按路径分述）：
+   - **inline/comment 片段**里的 `PASSWORD=""SYNTHETIC`、`PASSWORD=''SYNTHETIC`、
+     `PASSWORD=""  SYNTHETIC`、`PASSWORD="";`、`PASSWORD="",SYNTHETIC`
+     **五种完全漏检**，一条 problem 都不产生；
+   - **顶层**的同样五种**已经被 tokenizer fail closed**，但报出来的是
+     `unscannable connection string candidate`——那一行根本没有连接串，**分类
+     不准确**；而且顶层与片段**两条路径结论不一致**。
+   *修复后*：两条路径走同一份取值文法，顶层与 inline/comment/自由文本片段都
+   补齐了**敏感赋值**这一分类，得到同一个结论（顶层仍会额外保留 tokenizer 那条
+   `unscannable`——它是同一判断的另一条独立证据，不是替代）。
 3. **紧邻的嵌套赋值**。内层键紧贴上一个 `=`，而 keyPattern 需要一个
    `[^A-Za-z0-9_]` 前导字符，停在 `=` 之后就再也匹配不上。
    *修复前*：`run NOTES=PASSWORD=… `、`# run NOTES=PASSWORD=… `、
@@ -2143,8 +2148,8 @@ link-local 地址。
 三处旧口径注释同时订正，统一为：**扫描内部可以持有必要状态，但 problem 输出
 只包含固定类别、文件标签和行号，不包含输入派生的 key 或 value。**
 
-targeted negative suite 新增 3 条注册 case，从 32 精确增加到 **35/35**，原有
-32 条未删未弱化且全部复跑通过。
+targeted negative suite 新增 3 条注册 case，从 32 精确增加到 **35/35**（**当时**
+的计数；第十二轮扩到 36，见下一节），原有 32 条未删未弱化且全部复跑通过。
 
 ##### 本轮两路只读审计的确认级发现
 
@@ -2180,6 +2185,76 @@ targeted negative suite 新增 3 条注册 case，从 32 精确增加到 **35/35
 `trim()` 的既定 dotenv 语义所致）；镜像绑定断言在整条链跑完之后才做；
 `cleanupRun` 的 project 形状拒绝会跳过其后阶段（该分支在真实调用下不可达）；
 containment 里非 loopback 地址上的 `not-api` 与 `refused:*` 记同一行通过日志。
+
+#### M3B 第十二轮 bounded unquoted whitespace semantics
+
+**先取地面真相**：逐字符实测 Node 24.18.0 `--env-file` 的真实消费结果，再让扫描器
+对齐它，而不是凭 `trim()` 的直觉。
+
+| `PASSWORD=<c>` | Node 消费结果 | 判定 |
+| --- | --- | --- |
+| SPACE U+0020 | `""` | 空占位 |
+| TAB U+0009 | `""` | 空占位 |
+| NBSP U+00A0 | 非空（原样保留） | **取值** |
+| U+3000 | 非空 | **取值** |
+| U+200B | 非空 | **取值** |
+| VT U+000B | 非空 | **取值** |
+| FF U+000C | 非空 | **取值** |
+
+键与 `=` 之间同理：`PASSWORD =V` Node 读得到；`PASSWORD<NBSP>=V`（以及
+U+3000 / U+200B / VT / FF 版本）**整行不生效**，`process.env.PASSWORD` 为
+`null`——属 unsupported 形态，按 fail closed 处理。
+
+1. **统一 assignment 文法**。此前是**两份**：顶层走锚定的 `assignmentPattern`
+   （`\s*=` 把 NBSP 之类一并吞掉，于是 `PASSWORD<NBSP>=x` 被当成普通赋值），
+   片段走非锚定扫描（`[ \t]*=` 对同一行则根本不匹配）——同一段文本两条路径给出
+   不同结论。现在只有一份 `sensitiveAssignmentsIn`，整行与每个片段都用它；
+   锚定判据连同 `assignmentPattern` 在敏感赋值这条链路上不再使用。
+2. **删除会擦除真实字节的宽判据**。取值读取只吃 ASCII SPACE/TAB（此前 unquoted
+   终止符是 `/[\s#]/`，`PASSWORD=<NBSP>SYNTHETIC` 会在第一个字符就终止、取值读成
+   空串）；判空只看长度（此前 `trim()` 把 NBSP/U+3000/VT/FF 抹成空串放行）。
+3. **unsupported/ambiguous 一律 fail closed**：键/`=` 间隔含非 ASCII 空白、引号
+   未闭合、闭合引号后跟着说不清的内容，都按非空处理。
+
+*修复前*（`c9a282a` 实测）：43 项对齐矩阵里 **17 项与 Node 不符**——NBSP/U+3000/
+VT/FF 的 whitespace-only 与 whitespace+value 全部被当成空占位放行，同样的形态在
+inline comment 与 prose 片段里也全部漏检，U+200B 的键/`=` 间隔漏检。
+*修复后*：**43/43 全部与 Node 实测一致**，顶层 / 行内注释 / 散文片段三条路径结论
+一致，六种合法空占位保持干净，消息仍只有固定类别 + 文件标签 + 行号。
+
+targeted negative suite 新增 1 条注册 case，从 35 精确增加到 **36/36**，原有 35
+条未删未弱化且全部复跑通过。
+
+##### 本轮两路只读审计的确认级发现与定点修复
+
+审计在 targeted 36/36 与 local-test 75/75 首次全绿后启动，只读、不与任何 Docker
+套件并发。审计 A **独立重测**了 Node 的消费语义（42 个格位，含本轮矩阵未覆盖的
+**前置**与**后置**空白位置），结论与本轮采用的地面真相一致，且未发现可利用的
+漏检。已修四条：
+
+- **文法统一没做干净（A，MEDIUM）**：`assignmentPattern` 与行首注释剥离仍是
+  `\s` 文法，只有敏感赋值那条链换成了 ASCII 判据——于是**同一个 NBSP 在「分段」
+  与「敏感赋值」两处得到相反结论**。两处已一并收成 `[ \t]`。
+- **`#` 紧贴 `=` 的 ground truth 写反了（A，MEDIUM）**：代码注释断言
+  `PASSWORD=#secret` 的 `#` 属于取值，而 Node 实测给出 `""`（它把紧贴 `=` 的
+  `#` 也当注释）。**行为保持不变**（仍按取值处理、fail closed），但注释改成如实
+  记录：这是一处**刻意偏离 Node** 的收紧，理由是 compose `env_file` 与常见
+  dotenv 库对「`#` 前无空白」的处理并不一致；代价是 `WECHAT_APP_SECRET=#TODO`
+  这类占位写法会被判成敏感赋值。
+- **变异条数没有硬门禁（B，MEDIUM）**：`check-compose-topology-mutations.mjs`
+  的通过消息分母直接取自数组长度，删掉一条变异照样报 PASS，而文档把「15 项」
+  当事实写着。已补 `expectedMutationCount = 15` 的字面量门禁（该文件是**已披露
+  的受控例外**，本次是第二次触碰，同样只加诊断/门禁、不改判据集）。
+- **两处文档口径（B）**：project-status 的计数表标签仍写 Round 11；一处轮次
+  增量（27 → 29/29）缺「当时」限定。均已订正。
+
+**登记不修**（超出本轮 bounded 范围）：ambiguous 取值边界仍以
+`unscannable connection string candidate` 这一**分类**报出，而那种行往往根本没有
+连接串——两路审计都点名了这处**措辞**误导。改类别会牵动 `allowedProblemShape`
+与三个套件的断言，留待总控裁定。同类登记项还有：unsupportedGap 命中时消息仍写
+「assigns a non-empty value」，而 Node 那一行其实什么都没赋值；`allowedProblemShape`
+的两条 per-file 分支尾部未锚定，且 `^[^\s:]+` 匹配不了含空格的 tracked 路径
+（均为测试侧形状表的潜在弱点，当前不可达）。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2318,7 +2393,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（35 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（36 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
