@@ -565,6 +565,8 @@ const sensitiveKeySuffixes = [
   'CREDENTIALS',
   'APP_ID',
   'APPID',
+  // `PRIVATE_KEY` 已由 `KEY` 后缀覆盖；`SIGNATURE` 需要单列。
+  'SIGNATURE',
   'DSN',
   'DATABASE_URL',
   'URL',
@@ -640,7 +642,13 @@ const compactCredentialStems = [
   'secret',
   'apikey',
   'accesstoken',
-  'credential'
+  'credential',
+  // 精确追加（审计 S5 的一部分）：`private_key` 与 `signature`。紧凑化之后
+  // `private%5Fkey` / `signa%74ure` 解码出来的键同样命中。**刻意不加**宽泛的
+  // `auth` / `session` / `salt`——那三个词在非凭据语境里太常见，扩进来需要各自
+  // 的误报分析与反例，不属于本轮 bounded 范围。
+  'privatekey',
+  'signature'
 ]
 
 /** 资源上限：一行最多 8 个 `scheme://` 起点，每个候选最长 2048 字符。 */
@@ -799,11 +807,51 @@ const connectionStringCandidates = (line) => {
  * 返回命中的键名（原样大小写）或 null；**只返回键名，绝不返回取值**。
  */
 /**
- * 键名是消息里唯一会被回显的输入。行内注释是自由文本，键位上可以放进任意串，
- * 因此**高熵形态的键名不回显**——只报类别。
+ * 从 `=` 之后读出**一个赋值取值**，有界。
+ *
+ * 此前用的是 `([^\s#]*)`——那个字符类把 `#` 和空白都当成取值的终点，于是
+ * `PASSWORD="#SYNTHETIC"` 只截到一个引号、`PASSWORD=" SYNTHETIC"` 同理，
+ * 去掉引号后变成空串，被「空占位允许」规则放行。取值的边界是**引号**，不是
+ * 某几个字符：
+ *
+ *   - 以 `"` 或 `'` 开头 → 边界是配对的同种引号，**引号内的 `#` 与空白原样
+ *     保留**；未闭合时 fail closed（把有界的剩余内容当作取值，宁可多报）；
+ *   - 否则 → 读到空白或 `#` 为止（unquoted 的常规形态）。
+ *
+ * 有界：最多读 `maximumCandidateLength + 1` 个字符。
  */
-const echoableKeyName = (key) =>
-  key.length > 64 || /[A-Za-z0-9]{16,}/.test(key) ? null : key
+const readAssignmentValue = (text, from) => {
+  // `=` 之后的水平空白跳过：`PASSWORD= value` 的取值是 `value`，不是空串。
+  let start = from
+  while (start < text.length && (text[start] === ' ' || text[start] === '\t')) {
+    start += 1
+  }
+  // 但**跳过空白之后**遇到 `#` 就是注释起点，取值为空——`PASSWORD= # 说明`
+  // 仍然是允许的空占位。紧贴 `=` 的 `#`（`PASSWORD=#secret`）则属于取值。
+  const hashIsComment = start !== from && text[start] === '#'
+  if (hashIsComment) {
+    return { value: '', end: start }
+  }
+  const limit = Math.min(text.length, start + maximumCandidateLength + 1)
+  const from2 = start
+  const quote = text[from2]
+  if (quote === '"' || quote === "'") {
+    const closing = text.indexOf(quote, from2 + 1)
+    if (closing !== -1 && closing < limit) {
+      return { value: text.slice(from2 + 1, closing), end: closing + 1 }
+    }
+    return { value: text.slice(from2 + 1, limit), end: limit }
+  }
+  let end = from2
+  // 紧贴 `=` 的第一个字符即使是 `#` 也算取值的一部分；其后的 `#` 才终止。
+  if (end < limit && text[end] === '#') {
+    end += 1
+  }
+  while (end < limit && !/[\s#]/.test(text[end])) {
+    end += 1
+  }
+  return { value: text.slice(from2, end), end }
+}
 
 /**
  * 在一段文本里找出**全部**敏感赋值（不只是开头那一个）。
@@ -812,21 +860,33 @@ const echoableKeyName = (key) =>
  * 锚定到 `^` 的文法看不见它（审计实测：这一形态与另外七种同类形态全部漏检）。
  * 因此片段一律用**非锚定**扫描；整行仍走锚定的 dotenv 文法。
  *
- * 只返回键名，绝不返回取值。
+ * 返回命中条数，**不返回键名也不返回取值**——两者都是输入派生的内容。
  */
 const sensitiveAssignmentsAnywhereIn = (text) => {
-  const found = []
-  const pattern = /(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)[ \t]*=([^\s#]*)/g
-  for (const match of String(text).matchAll(pattern)) {
-    const value = match[2].replace(/^['"]|['"]$/g, '').trim()
-    if (value === '') {
-      continue
+  const source = String(text)
+  const keyPattern = /(?:^|[^A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)[ \t]*=/g
+  let hits = 0
+  let cursor = 0
+  for (;;) {
+    keyPattern.lastIndex = cursor
+    const match = keyPattern.exec(source)
+    if (match === null) {
+      break
     }
-    if (isSensitiveKeyName(match[1])) {
-      found.push(match[1])
+    const { value } = readAssignmentValue(source, match.index + match[0].length)
+    if (value.trim() !== '' && isSensitiveKeyName(match[1])) {
+      hits += 1
     }
+    // **只前进到本次匹配之后**，绝不跳过整个取值。
+    //
+    // 跳过取值曾经是「取值内部的 `KEY=` 不再被当成新的赋值」，但审计实测那是
+    // 一次**检测回退**：`NOTES="a PASSWORD=…"` 这种「外层键不敏感、内层赋值在
+    // 引号取值里」的形态，旧实现因为 `[^\s#]*` 在空格处停下、`matchAll` 得以
+    // 从取值内部继续，反而抓得到；跳过之后就抓不到了。
+    // 一行只报一条固定类别，因此重复计数没有任何代价，漏检才有。
+    cursor = match.index + match[0].length
   }
-  return found
+  return hits
 }
 
 /** 键名是否属于敏感键族（后缀 + 词元双判据）。 */
@@ -857,8 +917,11 @@ const sensitiveAssignmentIn = (text) => {
   if (match === null) {
     return null
   }
-  const value = match[2].trim()
-  if (!isSensitiveKeyName(match[1]) || value === '' || value === '""' || value === "''") {
+  // 取值走**同一个** `readAssignmentValue`：整行判据与片段判据从此共用一份
+  // 取值文法。此前这里用 `match[2].trim()`，于是 `PASSWORD= # 说明` 把注释
+  // 整段读成取值，把一个**允许的空占位**误报成敏感赋值（基线同样如此）。
+  const { value } = readAssignmentValue(uncommented, match.index + match[0].length - match[2].length)
+  if (!isSensitiveKeyName(match[1]) || value.trim() === '') {
     return null
   }
   return match[1]
@@ -988,30 +1051,26 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       // 行内注释里的 `PASSWORD=SYNTHETIC` 于是完全没被看到。现在 tokenizer
       // 会为这两种形态各生成一个 **comment 片段**，片段与整行走**同一份**
       // `sensitiveAssignmentIn`。
-      const reportedKeys = new Set()
-      const reportKey = (sensitiveKey) => {
-        if (sensitiveKey === null || reportedKeys.has(sensitiveKey)) {
-          return
-        }
-        reportedKeys.add(sensitiveKey)
-        const echoable = echoableKeyName(sensitiveKey)
-        problems.push(
-          `${label}:${String(index + 1)}: tracked template assigns a non-empty ` +
-            (echoable === null
-              ? 'value to a sensitive key (its name is high-entropy and deliberately not echoed)'
-              : `value to the sensitive key ${echoable}`)
-        )
-      }
-      // 整行走**锚定**的 dotenv 文法（它就是一条 dotenv 行）。
-      reportKey(sensitiveAssignmentIn(line))
+      // 敏感赋值只报**一条固定类别**：类别 + 文件标签 + 行号，**不含任何
+      // 输入派生的键名或取值**。
+      //
+      // 此前回显键名（对高熵形态做启发式改写）。启发式的问题在于它要先判断
+      // 「这个键名像不像 Secret」——而行内注释是自由文本，键位上可以放进任意
+      // 内容，任何阈值都只是把泄漏面缩小而不是关掉。一行报一条就够了：定位靠
+      // 文件与行号，键名对操作者不是必要信息。
+      let sensitiveHits = sensitiveAssignmentIn(line) === null ? 0 : 1
       // **每一个片段**——主取值、行内注释、非赋值整行——都走同一份判据，且用
       // **非锚定**扫描：片段是自由文本，赋值不一定在开头（审计实测：引号内的
       // `NOTES="PASSWORD=…"`、注释里的 `# do not commit: PASSWORD=…` 等八种
       // 形态此前全部漏检）。
       for (const segment of lineSegments) {
-        for (const sensitiveKey of sensitiveAssignmentsAnywhereIn(segment.text)) {
-          reportKey(sensitiveKey)
-        }
+        sensitiveHits += sensitiveAssignmentsAnywhereIn(segment.text)
+      }
+      if (sensitiveHits > 0) {
+        problems.push(
+          `${label}:${String(index + 1)}: tracked template assigns a non-empty ` +
+            'value to a sensitive key'
+        )
       }
     }
   }

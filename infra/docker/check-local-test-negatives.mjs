@@ -796,7 +796,7 @@ const templateNegative = (name, mutate, expected, { stageOnly = false } = {}) =>
 templateNegative(
   'a tracked template assigns a non-empty AppSecret',
   (source) => source.replace('WECHAT_APP_SECRET=\n', 'WECHAT_APP_SECRET=synthetic-value\n'),
-  /assigns a non-empty value to the sensitive key WECHAT_APP_SECRET/
+  /assigns a non-empty value to a sensitive key/
 )
 
 templateNegative(
@@ -810,7 +810,7 @@ templateNegative(
 templateNegative(
   'a double-commented secret assignment is still caught',
   (source) => source.replace('WECHAT_APP_SECRET=\n', '# WECHAT_APP_SECRET=double-commented\n'),
-  /assigns a non-empty value to the sensitive key WECHAT_APP_SECRET/
+  /assigns a non-empty value to a sensitive key/
 )
 
 templateNegative(
@@ -890,7 +890,7 @@ templateNegative(
 templateNegative(
   'a staged secret with a clean worktree is still caught (git index scan)',
   (source) => source.replace('WECHAT_APP_SECRET=\n', 'WECHAT_APP_SECRET=staged-only-value\n'),
-  /\(git index\).*assigns a non-empty value to the sensitive key WECHAT_APP_SECRET/,
+  /\(git index\).*assigns a non-empty value to a sensitive key/,
   { stageOnly: true }
 )
 

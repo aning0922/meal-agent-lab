@@ -1,6 +1,6 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-07-31 更新实施状态）
+- 日期：2026-07-26（2026-08-02 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
@@ -2039,11 +2039,79 @@ Secret 的套件并发）。确认级发现全部已修，其中五条是**本�
 审计还纠正了两处文档过度声称（README 把「每个片段都进同一份判据」写在代码做到
 之前；「原始文本正则退为纵深防御」与实际执行顺序相反——正则先跑、解析器补漏），
 均已按代码实际行为改写。上述形态全部并入既有两条 case 的断言，**未新增注册**，
-因此计数仍精确为 29。
+因此计数**当时**精确为 29（第十轮新增 3 条注册 case，扩到 32，见下一节）。
 
 **一处不修并登记**：`private_key` / `auth` / `signature` / `SESSION` / `SALT`
 等词干不在 `compactCredentialStems` 里（审计 S5）。扩词干是**判据策略变更**，
 需要各自的反例与误报分析，本轮 bounded 范围内不做，登记待总控裁定。
+
+#### M3B 第十轮 bounded 扫描器收口
+
+三项，都先在 `79255a0` 上跑红（3/3 组）。
+
+1. **赋值取值改成有界解析，不再靠字符类**。此前取值用 `([^\s#]*)`——把 `#` 与
+   空白当成取值终点，于是 `PASSWORD="#SYNTHETIC"` 只截到一个引号，去引号后成
+   空串，被「空占位允许」规则放行。
+   *修复前*（`79255a0` 实测）：四种形态（双引号 `#` 开头、双引号空格开头、单引号
+   两种）**全部「no problems at all」**。
+   *修复后*：取值边界是**引号**——以 `"`/`'` 开头就读到配对引号，引号内的 `#`
+   与空白原样保留；未闭合时 fail closed（把有界剩余当取值）；否则读到空白或 `#`。
+   `PASSWORD=""` / `PASSWORD=''` 仍是允许的空占位。
+2. **精确追加 `private_key` 与 `signature`**，覆盖 query、fragment 与百分号编码
+   （`private%5Fkey`、`signa%74ure`）以及 `SIGNATURE=` 赋值。
+   *修复前*：7 种形态里 **5 种**完全没被抓到（`private_key` 的 query/fragment
+   两种是经**敏感赋值**那条路径命中的，因为 `PRIVATE_KEY` 已被 `KEY` 后缀覆盖
+   ——如实记录，不夸大）。
+   **刻意不加**宽泛的 `auth` / `SESSION` / `SALT`：这三个词在非凭据语境里太常见，
+   扩进来需要各自的误报分析与反例，不属于本轮 bounded 范围。反例里有三条反向
+   断言钉住这一点。
+3. **错误消息彻底不回显输入派生的键名**。删掉高熵启发式（`echoableKeyName`）。
+   启发式要先判断「这个键名像不像 Secret」，而行内注释是自由文本、键位上可以放进
+   任意内容——任何阈值都只是缩小泄漏面而不是关掉它。
+   *修复前*：UUID 形、sentinel 形与普通短键名产出**三条不同**的消息，且**三条都
+   回显了键名**。
+   *修复后*：一律只输出**固定类别 + 文件标签 + 行号**，三种键名形态得到**同一条**
+   中性消息。既有反例里对键名的断言同步改为中性类别（判据精确度不变——注入的
+   敏感键仍然只有一个）。
+
+targeted negative suite 新增 3 条注册 case，从 29 精确增加到 **32/32**，原有 29
+条不得弱化且全部复跑通过。定点测试里的注释同时改成**真实**优先级：
+`unscannable` > 原始文本正则（覆盖形态的主判据）> 解析后的 URL（补漏）。
+
+##### 本轮两路只读审计的确认级发现与定点修复
+
+审计在实现完成、targeted 32/32 与 local-test 75/75 首次全绿之后启动，只读且不与
+任何 Docker 套件并发。
+
+- **本轮引入又修掉的检测回退（审计 A，HIGH）**。第 1 项把游标推进改成「跳过
+  整个已解析的取值」，本意是别把取值内部的 `KEY=` 当成新赋值；实测那是一次
+  **检测回退**：`DB_HOST=localhost # NOTES="a PASSWORD=…"` 这类「外层键不敏感、
+  敏感赋值嵌在引号取值里」的形态，旧的字符类实现因为在空格处停下、扫描得以从
+  取值内部继续，**反而抓得到**，跳过之后就抓不到了（五种形态实测 baseline 命中、
+  本轮一度全部 `[]`）。修复：游标**只前进到本次匹配之后**，绝不跳过取值。一行
+  只报一条固定类别，重复计数没有代价，漏检才有。
+- **取值边界的其余缺口（审计 A，MEDIUM-LOW，两版皆有）**：`PASSWORD= 值`
+  （`=` 后有空白）、`PASSWORD = 值`、`PASSWORD=#值`（不带引号、`#` 紧贴 `=`）、
+  `X=1;PASSWORD=值`。前三种由「跳过 `=` 后的水平空白；紧贴 `=` 的 `#` 属于取值、
+  跳过空白之后的 `#` 是注释起点」修复，第四种由上面的游标修复顺带解决。
+- **空占位误报（两版皆有）**：`PASSWORD= # 说明` 与 `PASSWORD="" # 说明` 被整段
+  读成取值而误报。整行判据改为走**同一个** `readAssignmentValue`，两条判定路径
+  从此共用一份取值文法。
+- **消息形状允许表不完整（审计 A，LOW）**：`allowedProblemShape` 只覆盖带行号的
+  逐行消息，扫描器还能发出三条**逐文件**消息（格式不受支持、工作树读不到、
+  index blob 读不到）。已改成两种形状的并集，否则那张表只是「碰巧覆盖了被测到的
+  那几条」。
+
+**审计对「不回显」的一处澄清**：`label` 是 tracked 文件路径，会原样出现在消息里。
+这是**规格明确允许**的（「固定类别、文件标签、行号」），文档措辞也一直写的是
+「不含任何输入派生的**键名或取值**」，与代码一致；但若某天 `infra/environments`
+下出现一个**文件名本身带凭据**的 tracked 文件，路径会被打印——登记备案。
+
+**登记不修**（超出本轮 bounded 范围，待总控裁定）：`SIGNATURE` 走词元前缀判据，
+`SIGNATURES=` / `SIGNATURE_HEADER=` 会被一并标记（保守误报）；smoke 在 build 之前
+未断言本轮 tag 不存在（`--keep-failure` 之外无从触发）；containment 的
+`timeout` 结局与 `refused:*` 记同一行日志；带 zone 的 IPv6 正向对照只探测第一个
+link-local 地址。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2182,7 +2250,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（29 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（32 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

@@ -1005,8 +1005,17 @@ const eightBenignCandidates = Array.from(
  * 类别取自本仓源码里的固定字符串；敏感键那条额外允许一个键名（键名本身是消息
  * 的必要信息，高熵形态由扫描器改写成「不回显」）。
  */
-const allowedProblemShape =
-  /^[^\s:]+(?: \(git index\))?:\d+: tracked template (?:contains a full connection string with credentials|contains a connection string with a credential query parameter|contains an unscannable connection string candidate|assigns a non-empty value to the sensitive key [A-Za-z_][A-Za-z0-9_]*|assigns a non-empty value to a sensitive key \(its name is high-entropy and deliberately not echoed\))$/
+const allowedProblemShape = (() => {
+  // 带行号的**逐行**判定消息。
+  const perLine =
+    /^[^\s:]+(?: \(git index\))?:\d+: tracked template (?:contains a full connection string with credentials|contains a connection string with a credential query parameter|contains an unscannable connection string candidate|assigns a non-empty value to a sensitive key)$/
+  // 不带行号的**逐文件**消息（格式不受支持、工作树读不到、index blob 读不到）。
+  // 它们同样必须在允许表里——否则这张表只是「碰巧覆盖了被测到的那几条」，
+  // 一旦某条反例触发到它们就会误报成「消息回显了输入」。
+  const perFile =
+    /^[^\s:]+: (?:unsupported template format under infra\/environments; |tracked template could not be read from the worktree$|the git index blob could not be read \()/
+  return { test: (text) => perLine.test(text) || perFile.test(text) }
+})()
 
 const echoesCandidateContent = (problems) =>
   problems.some((problem) =>
@@ -1330,8 +1339,14 @@ const parseableShapesStillClean = () => {
 }
 
 {
-  // userinfo 的事实源必须是**解析器**，原始文本正则退居纵深防御。那条正则要求
-  // `@` 之前没有空白，于是引号内合法保留的空格/制表符直接把它绕过去。
+  // 真实的判定优先级（按代码执行顺序，不是理想化说法）：
+  //
+  //   1. `unscannable`——有一段没扫到，压过任何「扫到的那段是什么」的结论；
+  //   2. **原始文本正则**——它**先跑**，是它覆盖的那些形态的主判据；
+  //   3. **解析后的 URL**——补漏，负责正则看不见的形态。
+  //
+  // 这一条 case 针对的正是第 3 层：正则要求 `@` 之前没有空白，于是引号内合法
+  // 保留的空格/制表符直接把它绕过去，只有解析器给出的 username/password 能补上。
   const name = 'userinfo is judged after URL parsing, not only by the raw regex'
   const shapes = [
     ['space inside the password', 'NOTES="https://user:pa ss@host/path"'],
@@ -1414,17 +1429,21 @@ const parseableShapesStillClean = () => {
     ['a note mentioning a key with no value', 'NOTES=ok # remember to set PASSWORD='],
     ['an ordinary prose line', 'see the deployment notes for the rollout order']
   ]
-  // 审计追加：高熵键名不得被回显（行内注释是自由文本，键位上可以放进 token）。
+  // 键名一律不回显（行内注释是自由文本，键位上可以放进 token）。第十轮把
+  // 「高熵才不回显」的启发式整个删掉，改成**任何**敏感赋值都只报固定类别。
   const entropyProblems = templateProblemsFor('NOTES=ok # ghp_A1B2C3D4E5F6G7H8I9_TOKEN=1')
   const entropyWithheld =
-    entropyProblems.some((problem) => /high-entropy and deliberately not echoed/.test(problem)) &&
-    !entropyProblems.some((problem) => /ghp_A1B2C3/.test(problem))
+    entropyProblems.some((problem) =>
+      /assigns a non-empty value to a sensitive key/.test(problem)
+    ) &&
+    entropyProblems.every((problem) => allowedProblemShape.test(String(problem))) &&
+    !entropyProblems.some((problem) => /ghp_A1B2C3|TOKEN/.test(problem))
   const missed = []
   const viaUnscannable = []
   const leaking = []
   for (const [label, line] of shapes) {
     const problems = templateProblemsFor(line)
-    if (!problems.some((problem) => /assigns a non-empty value to the sensitive key/.test(problem))) {
+    if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
       missed.push(label)
       if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
         viaUnscannable.push(label)
@@ -1452,14 +1471,185 @@ const parseableShapesStillClean = () => {
   } else if (dirtyBenign.length > 0) {
     fail(name, `${String(dirtyBenign.length)} benign inline comment(s) were wrongly flagged`)
   } else if (!entropyWithheld) {
-    fail(name, 'a high-entropy key name was echoed instead of being withheld')
+    fail(name, 'a key name was echoed instead of being withheld')
   } else {
     pass(
       name,
       `${String(shapes.length)} fragment shapes (including prose-before-assignment, an ` +
         'assignment inside a quoted value, a second assignment in the comment and a CRLF line) ' +
-        'hit the sensitive-key judge; values never echoed; a high-entropy key name is withheld; ' +
+        'hit the sensitive-key judge; values never echoed; the key name is never echoed; ' +
         `${String(benign.length)} benign shapes stay clean`
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R10：赋值取值解析、精确词干、键名零回显
+// ---------------------------------------------------------------------------
+process.stdout.write('R10: assignment values are parsed, not character-classed\n')
+
+{
+  // 取值的边界是**引号**，不是某几个字符。此前用 `([^\s#]*)` 取值，于是
+  // `PASSWORD="#SYNTHETIC"` 只截到一个引号，去引号后成空串，被「空占位允许」
+  // 规则放行。
+  const name = 'a quoted assignment value containing # or a space is still a credential'
+  const rejected = [
+    ['double-quoted value starting with #', 'NOTES=ok # PASSWORD="#SYNTHETIC-DQHASH"'],
+    ['double-quoted value starting with a space', 'NOTES=ok # PASSWORD=" SYNTHETIC-DQSPACE"'],
+    ["single-quoted value starting with #", "NOTES=ok # PASSWORD='#SYNTHETIC-SQHASH'"],
+    ["single-quoted value starting with a space", "NOTES=ok # PASSWORD=' SYNTHETIC-SQSPACE'"],
+    // 审计追加：**引号取值内部**的赋值。跳过整个取值继续扫描曾经让这一族
+    // 形态全部漏检（而旧的字符类实现因为在空格处停下反而抓得到）——这条是
+    // 本轮引入又修掉的**检测回退**，必须钉死。
+    ['a nested assignment inside a quoted value', 'DB_HOST=localhost # NOTES="a PASSWORD=SYNTHETIC-NESTED"'],
+    ['a nested assignment in single quotes', "DB_HOST=x # CMD='psql PASSWORD=SYNTHETIC-NESTSQ'"],
+    ['a nested assignment in a prose line', 'run with NOTES="x PASSWORD=SYNTHETIC-PROSE" then restart'],
+    // 审计追加：取值边界的其余缺口。
+    ['a space after the equals sign', 'NOTES=ok # PASSWORD= SYNTHETIC-SPACEAFTER'],
+    ['a tab after the equals sign', 'NOTES=ok # PASSWORD=\tSYNTHETIC-TABAFTER'],
+    ['spaces around the equals sign', 'NOTES=ok # PASSWORD = SYNTHETIC-SPACEAROUND'],
+    ['an unquoted value starting with #', 'NOTES=ok # PASSWORD=#SYNTHETIC-HASHLEAD'],
+    ['a semicolon separated second assignment', 'NOTES=ok # X=1;PASSWORD=SYNTHETIC-SEMI']
+  ]
+  const allowed = [
+    ['an empty double-quoted placeholder', 'PASSWORD=""'],
+    ['an empty single-quoted placeholder', "PASSWORD=''"],
+    // 反向：空占位后面跟一句注释仍然必须干净（基线把注释整段读成取值，误报）。
+    ['an empty value followed by a comment', 'PASSWORD= # placeholder note'],
+    ['an empty quoted value followed by a comment', 'PASSWORD="" # placeholder note']
+  ]
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  for (const [label, line] of rejected) {
+    const problems = templateProblemsFor(line)
+    if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+      leaking.push(label)
+    }
+  }
+  const wronglyFlagged = allowed.filter(([, line]) =>
+    templateProblemsFor(line).some((problem) => /sensitive key/.test(problem))
+  )
+  if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} quoted assignment value(s) were truncated into an empty value`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else if (wronglyFlagged.length > 0) {
+    fail(name, `${String(wronglyFlagged.length)} empty quoted placeholder(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      `${String(rejected.length)} quoted values containing # or a leading space rejected as ` +
+        `sensitive assignments (not via unscannable); ${String(allowed.length)} empty quoted ` +
+        'placeholders stay clean'
+    )
+  }
+}
+
+{
+  // 精确追加两个词干。**刻意不加**宽泛的 auth / session / salt。
+  const name = 'private_key and signature are covered in query, fragment and encoded form'
+  const caught = [
+    ['private_key in the query', 'NOTES=https://h.invalid/p?private_key=SYNTHETIC-PKQ', /credential query parameter/],
+    ['private_key in the fragment', 'NOTES=https://h.invalid/p#private_key=SYNTHETIC-PKF', /credential query parameter/],
+    ['percent-encoded private%5Fkey', 'NOTES=https://h.invalid/p?private%5Fkey=SYNTHETIC-PKE', /credential query parameter/],
+    ['signature in the query', 'NOTES=https://h.invalid/p?signature=SYNTHETIC-SGQ', /credential query parameter/],
+    ['signature in the fragment', 'NOTES=https://h.invalid/p#signature=SYNTHETIC-SGF', /credential query parameter/],
+    ['percent-encoded signa%74ure', 'NOTES=https://h.invalid/p?signa%74ure=SYNTHETIC-SGE', /credential query parameter/],
+    ['a SIGNATURE assignment', 'SIGNATURE=SYNTHETIC-SGA', /assigns a non-empty value to a sensitive key/]
+  ]
+  // 反向保证：本轮**没有**引入宽泛词干，否则「什么都判敏感」也能让上面全绿。
+  const mustStayClean = [
+    ['a broad auth query key', 'NOTES=https://h.invalid/p?auth=SYNTHETIC-AUTH'],
+    ['a broad SESSION assignment', 'SESSION=SYNTHETIC-SESSION'],
+    ['a SALT assignment', 'SALT=SYNTHETIC-SALT']
+  ]
+  const missed = []
+  const viaUnscannable = []
+  const leaking = []
+  for (const [label, line, expected] of caught) {
+    const problems = templateProblemsFor(line)
+    if (!problems.some((problem) => expected.test(problem))) {
+      missed.push(label)
+      if (problems.some((problem) => /unscannable connection string candidate/.test(problem))) {
+        viaUnscannable.push(label)
+      }
+    }
+    if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+      leaking.push(label)
+    }
+  }
+  const overreach = mustStayClean.filter(([, line]) => templateProblemsFor(line).length > 0)
+  if (viaUnscannable.length > 0) {
+    fail(name, `${String(viaUnscannable.length)} shape(s) only passed via the unscannable category`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} private_key/signature shape(s) went uncaught`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else if (overreach.length > 0) {
+    fail(name, `${String(overreach.length)} deliberately-excluded stem(s) were flagged (scope creep)`)
+  } else {
+    pass(
+      name,
+      `${String(caught.length)} private_key/signature shapes caught across query, fragment and ` +
+        `percent-encoded forms; ${String(mustStayClean.length)} deliberately-excluded stems ` +
+        '(auth / SESSION / SALT) stay clean'
+    )
+  }
+}
+
+{
+  // 敏感赋值消息里**不得出现任何输入派生的键名或取值**。启发式（「这个键名
+  // 像不像 Secret」）只能缩小泄漏面：行内注释是自由文本，键位上可以放进任意
+  // 内容。现在一律只报固定类别 + 文件标签 + 行号。
+  const name = 'a sensitive assignment never echoes the input key or value'
+  const shapes = [
+    ['a UUID-shaped key', 'NOTES=ok # A1B2C3D4-E5F6-4711-8899-AABBCCDDEEFF_TOKEN=SYNTHETIC-UUIDKEY'],
+    ['a sentinel-shaped key', 'NOTES=ok # M3B-SENTINEL-DEADBEEF_SECRET=SYNTHETIC-SENTINELKEY'],
+    ['an ordinary short key', 'PASSWORD=SYNTHETIC-SHORTKEY']
+  ]
+  const messages = []
+  const missed = []
+  for (const [label, line] of shapes) {
+    const problems = templateProblemsFor(line)
+    const hit = problems.filter((problem) =>
+      /assigns a non-empty value to a sensitive key/.test(problem)
+    )
+    if (hit.length === 0) {
+      missed.push(label)
+      continue
+    }
+    messages.push(...hit.map((problem) => problem.replace(/^[^:]+:\d+: /, '')))
+  }
+  // 三者必须得到**同一条**中性消息（去掉 file:line 之后完全相同）。
+  const distinct = [...new Set(messages)]
+  const echoes = shapes.filter(([, line]) => {
+    const problems = templateProblemsFor(line)
+    return problems.some(
+      (problem) =>
+        !allowedProblemShape.test(String(problem)) ||
+        /SYNTHETIC|A1B2C3|DEADBEEF|PASSWORD|TOKEN|SECRET/.test(String(problem))
+    )
+  })
+  if (missed.length > 0) {
+    fail(name, `${String(missed.length)} key shape(s) were not judged sensitive at all`)
+  } else if (echoes.length > 0) {
+    fail(name, `${String(echoes.length)} message(s) echoed an input-derived key or value`)
+  } else if (distinct.length !== 1) {
+    fail(name, `the three key shapes produced ${String(distinct.length)} different messages`)
+  } else {
+    pass(
+      name,
+      `${String(shapes.length)} key shapes (UUID-like, sentinel-like, ordinary) all produce the ` +
+        'same neutral category with no input-derived key or value'
     )
   }
 }
@@ -1588,7 +1778,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 29
+const expectedCount = 32
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
