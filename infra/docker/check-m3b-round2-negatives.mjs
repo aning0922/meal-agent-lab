@@ -100,7 +100,7 @@ const git = (args, options = {}) =>
  * `scanTrackedTemplates` 扫它。绝不变异仓库里的真实模板，因此本套件对工作树的
  * 副作用恒为零。
  */
-const templateProblemsFor = (line) => {
+const templateProblemsFor = (line, filename = 'local-test.env.example') => {
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-tmpl-repo-'))
   try {
     const repo = resolve(parent, 'repo')
@@ -116,10 +116,12 @@ const templateProblemsFor = (line) => {
         throw new Error(`git ${args[0]} failed`)
       }
     }
-    writeFileSync(
-      resolve(templateDirectory, 'local-test.env.example'),
-      `WECHAT_APP_ID=\n${line}\n`
-    )
+    // 文件名决定角色：`.env` 家族走 strict dotenv，README 等走 prose-aware。
+    writeFileSync(resolve(templateDirectory, filename), `WECHAT_APP_ID=\n${line}\n`)
+    if (filename !== 'local-test.env.example') {
+      // 始终留一份合法的 .env.example，避免「零 tracked 模板」抛错。
+      writeFileSync(resolve(templateDirectory, 'local-test.env.example'), 'WECHAT_APP_ID=\n')
+    }
     git(['-C', repo, 'add', '-A'])
     git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
     return scanTrackedTemplates(repo)
@@ -1671,7 +1673,7 @@ process.stdout.write('R11: quoted values, trailing ambiguity and nested assignme
     ['a single space', 'PASSWORD=" "'],
     ['a tab', 'PASSWORD="\t"'],
     ['single-quoted spaces', "PASSWORD='   '"],
-    ['a non-breaking space', 'PASSWORD=" "'],
+    ['a non-breaking space', 'PASSWORD="\u00a0"'],
     ['a quoted space in a comment fragment', 'NOTES=ok # PASSWORD=" "']
   ]
   const allowed = [
@@ -1839,18 +1841,31 @@ const GAP_ZWJ = '\u200d'
 const GAP_VISIBLE = '\u2020'
 const GAP_BOM = '\ufeff'
 
+/** oracle 钉死的 Node 版本：换了版本，消费语义可能变，证据就不再成立。 */
+const oracleNodeVersion = 'v24.18.0'
+
 /**
- * **真实**的 Node 消费结果——不是测试里手写的预期。
+ * **真实**的 Node 消费结果——不是测试里手写的预期，而且**自身 fail closed**。
  *
- * 起一个 `process.execPath --env-file=<临时文件>` 子进程，把它看到的
- * `process.env.PASSWORD` 打印回来。矩阵的期望值由这个结果推导，因此「地面真相」
- * 始终来自当前实际运行的 Node，而不是某次人工抄写。
+ * 起一个 `process.execPath --env-file=<临时文件>` 子进程，把它看到的目标环境
+ * 变量打印回来。硬性要求：
+ *
+ *   - `process.version` 必须精确等于 `oracleNodeVersion`；
+ *   - 子进程环境里**先删掉被探测的那个键**，否则 ambient `PASSWORD` 会让
+ *     「Node 没定义它」这条判定失真；
+ *   - spawn error、被信号杀死、非零退出、空输出、非法 JSON、非预期形状——
+ *     任何一种都是 **oracle failure**，直接让整组失败；
+ *   - oracle failure **绝不**转换成 `expectFlag = true`：那等于用坏掉的量具
+ *     去证明被测物合格。
  */
-const envFileConsumption = (line, key = 'PASSWORD') => {
+const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-envfile-'))
   try {
     const file = resolve(directory, 'probe.env')
     writeFileSync(file, `${line}\n`, 'utf8')
+    // ambient 清洗：被探测的键绝不能从父进程漏进去。
+    const childEnv = { ...env }
+    delete childEnv[key]
     const result = spawnSync(
       process.execPath,
       [
@@ -1860,20 +1875,37 @@ const envFileConsumption = (line, key = 'PASSWORD') => {
         // 去读 PASSWORD 而永远得到 undefined，把一个合法空占位判成 unsupported。
         `process.stdout.write(JSON.stringify(process.env[${JSON.stringify(key)}] ?? null))`
       ],
-      { encoding: 'utf8' }
+      { encoding: 'utf8', env: childEnv }
     )
-    if (result.error !== undefined || result.status !== 0) {
-      return { readable: false, defined: false, empty: false }
+    if (result.error !== undefined) {
+      return { ok: false, reason: 'spawn error' }
     }
-    const value = JSON.parse(result.stdout)
-    return { readable: true, defined: value !== null, empty: value === '' }
+    if (result.signal !== null) {
+      return { ok: false, reason: 'killed by a signal' }
+    }
+    if (result.status !== 0) {
+      return { ok: false, reason: 'non-zero exit' }
+    }
+    if (typeof result.stdout !== 'string' || result.stdout === '') {
+      return { ok: false, reason: 'empty output' }
+    }
+    let value
+    try {
+      value = JSON.parse(result.stdout)
+    } catch {
+      return { ok: false, reason: 'invalid JSON' }
+    }
+    if (value !== null && typeof value !== 'string') {
+      return { ok: false, reason: 'unexpected result shape' }
+    }
+    return { ok: true, defined: value !== null, empty: value === '' }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 }
 
 {
-  // 55 行对齐矩阵。每一行的期望都由**真实 --env-file 消费结果**推导：
+  // 69 行对齐矩阵。每一行的期望都由**真实 --env-file 消费结果**推导：
   //   - Node 消费出**非空**取值        → 必须命中；
   //   - Node 消费出空串                → 空占位，必须干净；
   //   - Node **整行不生效**（undefined）→ unsupported，fail closed，必须命中。
@@ -1895,8 +1927,11 @@ const envFileConsumption = (line, key = 'PASSWORD') => {
   for (const [label, c] of whitespace) rows.push({ group: 'whitespace-only', label, envLine: `PASSWORD=${c}`, scanLine: `PASSWORD=${c}` })
   // 2) 空白 + 取值（7）
   for (const [label, c] of whitespace) rows.push({ group: 'whitespace+value', label, envLine: `PASSWORD=${c}SYNTHETIC-WSV`, scanLine: `PASSWORD=${c}SYNTHETIC-WSV` })
-  // 3) 键与 `=` 之间的空白（7）
+  // 3) 键与 `=` 之间的空白（7），以及它在 inline comment / prose 两条路径上的
+  //    格位（各 7）——第十二轮把这 14 个格位漏掉了，本轮恢复。
   for (const [label, c] of whitespace) rows.push({ group: 'key-gap', label, envLine: `PASSWORD${c}=SYNTHETIC-GAP`, scanLine: `PASSWORD${c}=SYNTHETIC-GAP` })
+  for (const [label, c] of whitespace) rows.push({ group: 'key-gap-inline', label, envLine: `PASSWORD${c}=SYNTHETIC-GAPINL`, scanLine: `NOTES=ok # PASSWORD${c}=SYNTHETIC-GAPINL` })
+  for (const [label, c] of whitespace) rows.push({ group: 'key-gap-prose', label, envLine: `PASSWORD${c}=SYNTHETIC-GAPPRO`, scanLine: `run PASSWORD${c}=SYNTHETIC-GAPPRO now` })
   // 4) 同形态在行内注释里（7）与散文片段里（7）
   for (const [label, c] of whitespace) rows.push({ group: 'inline-comment', label, envLine: `PASSWORD=${c}SYNTHETIC-INL`, scanLine: `NOTES=ok # PASSWORD=${c}SYNTHETIC-INL` })
   for (const [label, c] of whitespace) rows.push({ group: 'prose-fragment', label, envLine: `PASSWORD=${c}SYNTHETIC-PRO`, scanLine: `run PASSWORD=${c}SYNTHETIC-PRO now` })
@@ -1921,16 +1956,22 @@ const envFileConsumption = (line, key = 'PASSWORD') => {
   for (const [label, c] of structural) rows.push({ group: 'structural-gap', label, envLine: `PASSWORD${c}=SYNTHETIC-STG`, scanLine: `PASSWORD${c}=SYNTHETIC-STG` })
 
   // **矩阵条数的硬门禁**：少一行不得静默通过。
-  const expectedWhitespaceMatrixCount = 55
+  const expectedWhitespaceMatrixCount = 69
   const mismatches = []
   const leaking = []
+  const oracleFailures = []
   let evaluated = 0
   for (const row of rows) {
     evaluated += 1
     const consumption = envFileConsumption(row.envLine, row.key ?? 'PASSWORD')
-    // 期望：Node 读出非空 → 命中；Node 读出空串 → 干净；Node 整行不生效 →
-    // unsupported → fail closed → 命中。
-    const expectFlag = !consumption.readable || !consumption.defined || !consumption.empty
+    if (!consumption.ok) {
+      // **量具坏了就整组失败**，绝不把它变成「期望命中」。
+      oracleFailures.push(`${row.group}/${row.label}: ${consumption.reason}`)
+      continue
+    }
+    // 期望：Node 读出非空 → 命中；读出空串 → 干净；整行不生效 → unsupported
+    // → fail closed → 命中。
+    const expectFlag = !consumption.defined || !consumption.empty
     const problems = templateProblemsFor(row.scanLine)
     const flagged = problems.some((problem) =>
       /assigns a non-empty value to a sensitive key/.test(problem)
@@ -1942,10 +1983,22 @@ const envFileConsumption = (line, key = 'PASSWORD') => {
       leaking.push(`${row.group}/${row.label}`)
     }
   }
-  // **互不相同**的输入数也必须等于 55：只数行数挡不住「用重复行把数字凑够」
-  // ——审计实测本轮一度就是 55 行 / 53 个输入。
-  const distinctInputs = new Set(rows.map((row) => `${row.group}\u0000${row.scanLine}`)).size
-  if (evaluated !== expectedWhitespaceMatrixCount) {
+  // **互不相同**的输入数也必须等于矩阵条数：只数行数挡不住「用重复行把数字
+  // 凑够」——审计实测第十三轮一度就是 55 行 / 53 个输入。identity 里**不带
+  // group 标签**，否则把同一输入放进两个分组又能凑数。
+  // identity **不含 group 标签**：把同一个输入放进两个分组不得再算作两个不同
+  // 的输入（那正是「用重复行凑数」躲过门禁的方式）。
+  const identityOf = (row) =>
+    JSON.stringify([row.key ?? 'PASSWORD', row.envLine, row.scanLine])
+  const distinctInputs = new Set(rows.map(identityOf)).size
+  if (process.version !== oracleNodeVersion) {
+    fail(
+      name,
+      `the oracle is pinned to Node ${oracleNodeVersion}; this run is ${process.version}`
+    )
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} oracle probe(s) failed; the matrix is void`)
+  } else if (evaluated !== expectedWhitespaceMatrixCount) {
     fail(
       name,
       `expected ${String(expectedWhitespaceMatrixCount)} matrix rows, evaluated ${String(evaluated)}`
@@ -2031,7 +2084,10 @@ const envFileConsumption = (line, key = 'PASSWORD') => {
     const line = `PASSWORD${character}=SYNTHETIC-PROSECTL`
     for (const [pathLabel, render] of paths) {
       evaluated += 1
-      if (templateProblemsFor(render(line)).length > 0) {
+      // **prose 角色**（README.md）：可见字符说明这是散文，必须干净。同一行
+      // 放进 `.env.example` 则是 strict 角色，必须 fail closed——见 file-role
+      // 那条 case。
+      if (templateProblemsFor(render(line), 'README.md').length > 0) {
         wronglyFlagged.push(`${label}/${pathLabel}`)
       }
     }
@@ -2071,6 +2127,285 @@ const envFileConsumption = (line, key = 'PASSWORD') => {
         `U+200C, U+200D) fail closed identically on all ${String(paths.length)} paths; a gap ` +
         'beyond the scan bound also fails closed; a visible U+2020 reads as prose and stays ' +
         `clean on all paths; ${String(benign.length)} benign mentions without an equals stay clean`
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R14：星平面码点、文件角色、oracle 自身 fail closed、64 边界
+// ---------------------------------------------------------------------------
+process.stdout.write('R14: astral code points, file roles, oracle integrity, gap boundary\n')
+
+/** 星平面（>BMP）的格式字符：UTF-16 下各占两个 code unit。 */
+const ASTRAL_GAPS = [
+  ['U+110BD', String.fromCodePoint(0x110bd)],
+  ['U+1BCA0', String.fromCodePoint(0x1bca0)],
+  ['U+13430', String.fromCodePoint(0x13430)]
+]
+
+{
+  // `text[index]` 取的是 UTF-16 code unit，星平面字符被拆成孤立代理项，
+  // `\p{Cf}` 对代理项为假——基线实测这三个字符在三条路径上 **9/9 全部漏检**。
+  const name = 'an astral code point gap fails closed on every path'
+  const paths = [
+    ['top level', (line) => line],
+    ['inline comment', (line) => `NOTES=ok # ${line}`],
+    ['prose fragment', (line) => `run ${line} before starting`]
+  ]
+  const expectedAstralCount = 9
+  let evaluated = 0
+  const missed = []
+  const leaking = []
+  const identities = new Set()
+  for (const [label, character] of ASTRAL_GAPS) {
+    const line = `PASSWORD${character}=SYNTHETIC-ASTRAL`
+    for (const [pathLabel, render] of paths) {
+      evaluated += 1
+      const scanLine = render(line)
+      identities.add(JSON.stringify(['PASSWORD', line, scanLine]))
+      const problems = templateProblemsFor(scanLine)
+      if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+        missed.push(`${label}/${pathLabel}`)
+      }
+      if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+        leaking.push(`${label}/${pathLabel}`)
+      }
+    }
+  }
+  // BMP 的既有回归必须仍然成立。
+  const bmpStillCaught = [GAP_NEL, GAP_MONGOL, GAP_WORDJOIN, GAP_ZWNJ, GAP_ZWJ].every(
+    (character) =>
+      templateProblemsFor(`PASSWORD${character}=SYNTHETIC-BMP`).some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  if (evaluated !== expectedAstralCount) {
+    fail(name, `expected ${String(expectedAstralCount)} astral rows, evaluated ${String(evaluated)}`)
+  } else if (identities.size !== expectedAstralCount) {
+    fail(name, `expected ${String(expectedAstralCount)} distinct astral inputs, got ${String(identities.size)}`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} astral gap(s) were not failed closed`)
+  } else if (!bmpStillCaught) {
+    fail(name, 'a BMP gap character regressed while adding astral coverage')
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else {
+    pass(
+      name,
+      `${String(expectedAstralCount)} astral gap rows (U+110BD, U+1BCA0, U+13430 × 3 paths, all ` +
+        'distinct) fail closed; the five BMP gap characters still fail closed'
+    )
+  }
+}
+
+{
+  // 同一行取值，两种**文件角色**必须得到相反结论：`.env` 家族里的可见间隔是
+  // 可疑的，README 里的同一写法是散文。两者共用同一个 parser，只是 context 不同。
+  const name = 'a visible gap is judged by file role, not by a second grammar'
+  const visible = `PASSWORD${GAP_VISIBLE}=SYNTHETIC-ROLE`
+  const strictFiles = ['local-test.env.example', 'local-test.env', 'sample.env.template']
+  const proseFiles = ['README.md', '.gitignore', '.gitkeep']
+  const proseLines = [
+    '- `POSTGRES_PASSWORD` = 数据库密码',
+    'keys += 1',
+    '# TOKEN >= 32 chars',
+    'if (token != null) { }'
+  ]
+  // `.env` 家族里的**注释**同样是散文——Node 不消费注释。这四条是审计实测的
+  // 假阳性原文：strict 曾经把它们逐条报成「敏感赋值」。
+  const strictCommentLines = [
+    '# POSTGRES_PASSWORD >= 32 chars',
+    '# keys += 1',
+    '# - `POSTGRES_PASSWORD` = 数据库密码',
+    `# DATABASE_PASSWORD ${'-'.repeat(70)}`
+  ]
+  // strict 角色要按**渲染逐格**给出期望，不能笼统地「三种都命中」：会被 dotenv
+  // 消费的两种渲染必须 fail closed，行内注释体则和 README 一样是散文。
+  const renderings = [
+    ['top level', (line) => line, true],
+    ['prose fragment', (line) => `run ${line} before starting`, true],
+    ['inline comment', (line) => `NOTES=ok # ${line}`, false]
+  ]
+  const flagged = (line, file) =>
+    templateProblemsFor(line, file).some((problem) =>
+      /assigns a non-empty value to a sensitive key/.test(problem)
+    )
+  const strictWrong = []
+  for (const file of strictFiles) {
+    for (const [renderLabel, render, expected] of renderings) {
+      if (flagged(render(visible), file) !== expected) {
+        strictWrong.push(`${file}/${renderLabel}`)
+      }
+    }
+    for (const [index, line] of strictCommentLines.entries()) {
+      if (templateProblemsFor(line, file).length > 0) {
+        strictWrong.push(`${file}/comment#${String(index + 1)}`)
+      }
+    }
+  }
+  const proseFlagged = proseFiles.filter((file) => templateProblemsFor(visible, file).length > 0)
+  const proseLineFlagged = proseLines.filter(
+    (line) => templateProblemsFor(line, 'README.md').length > 0
+  )
+  // strict 角色下真实 `.env.example` 里的凭据必须照旧被捕获。
+  const realShapeCaught = flagged('WECHAT_APP_SECRET=synthetic-value', 'local-test.env.example')
+  // **角色与「受支持格式」必须同步**：两个判定各写各的，一旦有人只放宽
+  // `supportedTemplateFile`，新文件就会被当成散文扫描 = 静默漏掉凭据。这里按
+  // 结果断言该不变式：env 形态的文件名要么被判不支持，要么必须 fail closed。
+  const roleProbeFiles = [
+    'local-test.env.local',
+    'local-test.ENV',
+    'local-test.env.example.bak',
+    'local-test.env.yaml',
+    'myenv',
+    'prod.env.template'
+  ]
+  const roleDrift = roleProbeFiles.filter(
+    (file) => templateProblemsFor(visible, file).length === 0
+  )
+  if (strictWrong.length > 0) {
+    fail(name, `${String(strictWrong.length)} strict dotenv cell(s) judged a visible gap wrongly`)
+  } else if (roleDrift.length > 0) {
+    fail(name, `${String(roleDrift.length)} env-shaped filename(s) neither strict nor rejected`)
+  } else if (proseFlagged.length > 0) {
+    fail(name, `${String(proseFlagged.length)} prose file(s) flagged a visible gap`)
+  } else if (proseLineFlagged.length > 0) {
+    fail(name, `${String(proseLineFlagged.length)} ordinary prose line(s) were flagged`)
+  } else if (!realShapeCaught) {
+    fail(name, 'an ordinary sensitive assignment stopped being caught under the strict role')
+  } else {
+    pass(
+      name,
+      `${String(strictFiles.length)} strict dotenv files × ` +
+        `${String(renderings.length)} renderings + ${String(strictCommentLines.length)} ` +
+        'comment forms match their per-cell expectations; ' +
+        `${String(roleProbeFiles.length)} env-shaped filenames stay fail closed; ` +
+        `${String(proseFiles.length)} prose files and ${String(proseLines.length)} ordinary ` +
+        'prose lines stay clean; ordinary sensitive assignments still caught'
+    )
+  }
+}
+
+{
+  // 量具自身必须 fail closed：坏掉的 oracle 不能被当成「期望命中」。
+  const name = 'a broken Node oracle fails the gate instead of satisfying it'
+  const pinned = process.version === oracleNodeVersion
+  // 1) 非零退出：探测一个不存在的 env 文件。
+  const missingFile = envFileConsumption('PASSWORD=x', 'PASSWORD')
+  const brokenDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-oracle-'))
+  let nonZero = { ok: true }
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [`--env-file=${resolve(brokenDirectory, 'does-not-exist.env')}`, '-e', 'process.stdout.write("{}")'],
+      { encoding: 'utf8' }
+    )
+    nonZero = { ok: result.status === 0 }
+  } finally {
+    rmSync(brokenDirectory, { recursive: true, force: true })
+  }
+  // 2) ambient 污染：父进程里放一个 PASSWORD，探针必须不受影响。
+  const ambient = envFileConsumption('PASSWORD=', 'PASSWORD', {
+    env: { ...process.env, PASSWORD: 'AMBIENT-SYNTHETIC' }
+  })
+  if (!pinned) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (!missingFile.ok) {
+    fail(name, 'the healthy oracle probe did not succeed')
+  } else if (nonZero.ok) {
+    fail(name, 'a missing --env-file did not make Node exit non-zero; the self-check is vacuous')
+  } else if (!ambient.ok || !ambient.defined || !ambient.empty) {
+    fail(name, 'an ambient value leaked into the oracle probe')
+  } else {
+    pass(
+      name,
+      `pinned to ${oracleNodeVersion}; a missing env file exits non-zero (so a broken probe is ` +
+        'an oracle failure, never expectFlag=true); an ambient value does not reach the child'
+    )
+  }
+}
+
+{
+  // 64 是 **inclusive** 上限：消费完 64 个 gap code point 之后仍然检查终止字符，
+  // 只有第 65 个 gap 才 exhausted。基线在 n=64 就越界，于是
+  // `PASSWORD` + 64 空格 + `+=`（根本不是赋值）被误判成 fail closed（实测）。
+  const name = 'the 64 code point gap bound is inclusive and 65 fails closed'
+  const expectedBoundaryCount = 9
+  let evaluated = 0
+  const wrong = []
+  const identities = new Set()
+  for (const size of [63, 64, 65]) {
+    const gap = ' '.repeat(size)
+    const exhausted = size > 64
+    const shapes = [
+      ['empty value', `PASSWORD${gap}=`, exhausted],
+      ['non-empty value', `PASSWORD${gap}=SYNTHETIC-B${String(size)}`, true],
+      ['not an assignment', `PASSWORD${gap}+=SYNTHETIC-B${String(size)}`, exhausted]
+    ]
+    for (const [label, line, expectFlag] of shapes) {
+      evaluated += 1
+      identities.add(JSON.stringify(['PASSWORD', line, line]))
+      // prose 角色：`+=` 在散文里就是「不是赋值」；strict 角色下它是可见间隔，
+      // 由上面的 file-role case 覆盖。
+      const flagged = templateProblemsFor(line, 'README.md').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+      if (flagged !== expectFlag) {
+        wrong.push(`${String(size)}/${label}`)
+      }
+      // oracle 记录 Node 对该行的真实消费（证据留痕，不用来推导 prose 期望）。
+      const consumption = envFileConsumption(line, 'PASSWORD')
+      if (!consumption.ok) {
+        wrong.push(`${String(size)}/${label}: oracle ${consumption.reason}`)
+      }
+    }
+  }
+  if (evaluated !== expectedBoundaryCount) {
+    fail(name, `expected ${String(expectedBoundaryCount)} boundary rows, evaluated ${String(evaluated)}`)
+  } else if (identities.size !== expectedBoundaryCount) {
+    fail(name, `expected ${String(expectedBoundaryCount)} distinct boundary inputs, got ${String(identities.size)}`)
+  } else if (wrong.length > 0) {
+    fail(name, `${String(wrong.length)} boundary row(s) disagreed with the inclusive bound`)
+  } else {
+    pass(
+      name,
+      '63 and 64 code point gaps still check the terminator (empty stays clean, a value is ' +
+        'caught, `+=` reads as not-an-assignment); 65 exhausts the bound and fails closed on ' +
+        'all three shapes; every row probed against the live oracle'
+    )
+  }
+}
+
+{
+  // 反身检查：同一个输入放进两个 group，distinct 门禁必须失败——否则「用重复行
+  // 凑数」又能躲过去（审计实测上一轮就是 55 行 / 53 个输入）。
+  const name = 'the distinct-input gate rejects the same input filed under two groups'
+  const identityOf = (row) => JSON.stringify([row.key ?? 'PASSWORD', row.envLine, row.scanLine])
+  const duplicated = [
+    { group: 'alpha', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' },
+    { group: 'beta', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' }
+  ]
+  const distinctRows = [
+    { group: 'alpha', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' },
+    { group: 'beta', key: 'PASSWORD', envLine: 'PASSWORD=y', scanLine: 'PASSWORD=y' }
+  ]
+  const duplicatedDistinct = new Set(duplicated.map(identityOf)).size
+  const genuineDistinct = new Set(distinctRows.map(identityOf)).size
+  // 旧口径（identity 里带 group 标签）会把重复行算成两个不同输入。
+  const groupTagged = new Set(
+    duplicated.map((row) => `${row.group}|${row.scanLine}`)
+  ).size
+  if (duplicatedDistinct !== 1) {
+    fail(name, 'two identical inputs did not collapse to one identity')
+  } else if (genuineDistinct !== 2) {
+    fail(name, 'two genuinely different inputs collapsed to one identity')
+  } else if (groupTagged !== 2) {
+    fail(name, 'the superseded group-tagged identity no longer demonstrates the defect')
+  } else {
+    pass(
+      name,
+      'identity is [key, envLine, scanLine] with no group tag: duplicates collapse to 1 while ' +
+        'the superseded group-tagged form counted them as 2'
     )
   }
 }
@@ -2199,7 +2534,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 37
+const expectedCount = 42
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

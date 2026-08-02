@@ -2297,6 +2297,14 @@ prose-fragment 4、structural-value 1、structural-gap 5。这个数字取决于
 targeted negative suite 新增 1 条注册 case（structural gap），从 36 精确增加到
 **37/37**，原有 36 条未删未弱化且全部复跑通过。
 
+**订正（第十四轮，经复核后撤回）**：本轮曾把上面这句改写成「第十三轮改动了两条
+既有 case 的构成」。复核基线后撤回——`git show e875ba9`（第十三轮基线）里
+`GAP_VISIBLE` 0 处、U+2020 0 处、`structural-gap` 0 处、注册 case 36 条。被当成
+「改动既有 case」的那两处（矩阵里的可见字符行、structural-gap case 的 U+2020
+归属与 benign 条数）**都是第十三轮当轮自己新建的内容**，改的是自己当轮的草稿，
+属轮内反复，不构成对既有 case 的删改或弱化。原句成立，予以保留；这条订正记录的
+是**上一版订正本身是错的**——把轮内反复误报成了对既有资产的改动。
+
 ##### 本轮两路只读审计的确认级发现与定点修复
 
 审计在 targeted 全绿后启动，只读、不与任何 Docker 套件并发。**两条都推翻了本轮
@@ -2313,7 +2321,12 @@ targeted negative suite 新增 1 条注册 case（structural gap），从 36 精
 - **越界即放行（A，fail-open 回退）**。`PASSWORD` + **65** 个空格 + `=SYNTHETIC`
   在 Node 里是一条**活的**凭据，而扫描器扫到 64 字符上界后直接判成「不是赋值」
   静默放行（基线反而抓得到）。现在「放弃扫描」与 `unscannable` 同侧：越界一律
-  fail closed。64 与 65 两个边界都已进反例。
+  fail closed。
+
+  **订正（第十四轮）**：上一句原写「64 与 65 两个边界都已进反例」。实际当时只有
+  **65** 那一侧进了反例，64 从未被断言；而 64 恰恰是错的——上界被写成「扫描位置
+  不得越过 from+64」，于是 n=64 的间隔在检查终止字符**之前**就越界，
+  `PASSWORD` + 64 空格 + `+=`（根本不是赋值）被误判成 fail closed。
 - **55 行里有 2 行逐字节重复（B）**：`trailing SPACE/TAB` 与 whitespace-only 的
   SPACE/TAB 行完全相同，55 行只有 53 个互不相同的输入。已换成两条真正不同的
   输入，并新增**互不相同输入数**的硬门禁（只数行数挡不住用重复行凑数）。
@@ -2331,6 +2344,81 @@ targeted negative suite 新增 1 条注册 case（structural gap），从 36 精
 同时清理：删除两段**脱离函数**的旧 JSDoc（一段是敏感赋值判据的说明，一段是
 `readAssignmentValue` 的旧版描述，都在重构中与函数分离了），以及「返回键名供
 去重与计数」这句已经不成立的旧注释。
+
+#### M3B 第十四轮 bounded 总控整改
+
+每一条都先在基线 `a8c48f0` 上取得失败证据，再实施。
+
+1. **按 Unicode code point 扫描 gap**。`readAssignmentGap` 原来用 `text[index]`
+   取 UTF-16 **code unit**，星平面字符被拆成孤立代理项，`\p{Cf}` 对代理项为假。
+   *基线实测*：U+110BD / U+1BCA0 / U+13430 × 顶层/inline/prose 三条路径——
+   **9/9 全部漏检**。*修复后*：`codePointAt` + `String.fromCodePoint` 读完整
+   码点、按 `character.length` 前进，上限以 **code point** 计；同样 9 格
+   **9/9 全部 fail closed**，BMP 的 NEL/MVS/WJ/ZWNJ/ZWJ 五项回归保持命中。
+
+2. **按文件角色裁定可见 gap**。同一个 parser、两个 context，不复制第二套文法：
+   `.env` / `*.env` / `*.env.{example,sample,template}` 走 **strict dotenv**，
+   敏感键与 `=` 之间有界的**可见** Unicode gap 必须 fail closed；
+   `README.md` / `.gitignore` / `.gitkeep` 走 **prose-aware**，同样的写法是散文。
+   *基线实测*：`PASSWORD†=SYNTHETIC` 在真实 `.env.example` 里**未被捕获**；
+   *修复后* 三种 strict 文件全部捕获，三种 prose 文件与四条普通 markdown/英文行
+   保持干净。
+
+3. **live Node oracle 自身 fail closed**。钉死 `process.version === "v24.18.0"`；
+   每次 spawn 前从子进程环境里**删掉被探测的键**（否则 ambient `PASSWORD` 会让
+   「Node 没定义它」失真）；spawn error / 信号 / 非零退出 / 空输出 / 非法 JSON /
+   非预期形状一律记为 **oracle failure 并使整组失败**，**绝不**转成
+   `expectFlag = true`。另加自检反例：缺失的 `--env-file` 确实让 Node 非零退出
+   （证明自检不空转），ambient 值确实进不到子进程。没有引入任何生产环境测试开关。
+
+4. **64 边界改为 inclusive**。消费完 64 个 gap code point 之后**仍然检查终止
+   字符**，只有第 **65** 个 gap 才 exhausted。*基线实测*：n=64 时
+   `PASSWORD`+64 空格+`+=` 被误判成 fail closed。*修复后*：63/64 的
+   「空值 / 非空值 / `+=`」三种形态判定一致，65 三种全部 fail closed；九个格位
+   每一个都对 live oracle 探测留痕。
+
+5. **证据门禁重建**。distinct identity 改为
+   `JSON.stringify([key, envLine, scanLine])`，**不含 group 标签**，并加了反身
+   反例：同一输入放进两个 group 时旧口径算 2、新口径算 1。恢复第十二轮被删掉的
+   **14 个 key-gap × inline/prose 格位**。astral 与 boundary 两组各有精确条数与
+   distinct 门禁。
+
+**矩阵真实组成（69 行 / 69 个互不相同的输入）**：whitespace-only 7、
+whitespace+value 7、key-gap 7、key-gap-inline 7、key-gap-prose 7、
+inline-comment 7、prose-fragment 7、empty-placeholder 8、structural-value 6、
+structural-gap 6。**不再按 55 声称**。
+
+targeted negative suite 从 37 增加到 **42/42**（新增：astral code point、
+file role、oracle 完整性、64 边界、distinct 反身各一条）。
+
+6. **注释体在 `.env` 家族里同样按散文裁定**（审计 A 确认级发现，本轮自伤自修）。
+   第 2 条把 `.env` 家族切到 strict 之后，strict 文法会把注释里的 ` >`、
+   `` ` ``、`+` 当成间隔、把后面的 `=` 当成赋值——`# POSTGRES_PASSWORD >= 32
+   chars` 这类**普通说明行**被报成「敏感赋值」，而报文是固定类别，操作者拿不到
+   任何可排查信息。审计端到端实测 **4/4 假阳性**，其中三条正是扫描器自己文档里
+   声明「必须保持干净」的写法（仓库现有模板没踩到，属潜伏）。修复：strict 只作用
+   在 `dotenvConsumedText(line)`——**这一行真正会被 dotenv 消费的那段文本**，整行
+   注释直接跳过；prose 扫描仍然覆盖整行与每个片段，所以注释里普通形态的
+   `PASSWORD=REAL` 照旧被抓。文件角色反例改成**逐格给期望**：顶层与散文片段两种
+   渲染必须 fail closed，行内注释体必须干净，另加那 4 条注释原文作对照。
+
+7. **角色与「受支持格式」的同步改为按结果断言**（审计 A 潜伏项）。
+   `strictDotenvFile` 与 `supportedTemplateFile` 的 env 半边目前逐字节相同，所以
+   没有真实误判；风险在于只放宽后者会让新文件被当散文扫描 = 静默漏凭据。新增
+   6 个 env 形态文件名的不变式断言：**要么被判不支持，要么必须 fail closed**。
+
+**已知边界（审计 A 确认，按设计保留）**：prose 角色下 `PASSWORD†=REALSECRET`
+（可见字符间隔）在 README/.gitignore 里不报——这正是第 2 条要的取舍，代价是散文
+文件里这一种写法的凭据会漏。零宽与空白间隔在 prose 下照旧命中。
+
+**未修边界（记录不改）**：`readAssignmentValue` 的 2048 上限按 **code unit** 计，
+与间隔上限的 code point 口径不一致；取值从不回显、判空只看长度，今天不产生误判。
+oracle 版本钉死在矩阵组与自检组，boundary 组没有单独再钉一次（自检组失败即整轮
+失败）。非 `PASSWORD` 键的 ambient 清洗有结构保证但没有单独自检。
+
+**基线 mismatch 数仍按实测记录，不改写成 27**：第十三轮在 `c9a282a` 上按 55 行
+构成实测 23；本轮矩阵构成已变为 69 行，两者不可直接比较，本轮的失败证据按上面
+各条分别列出。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2469,7 +2557,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（37 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（42 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

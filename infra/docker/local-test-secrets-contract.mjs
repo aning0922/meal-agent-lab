@@ -684,6 +684,26 @@ const maximumCandidateLength = 2048
  *     的内容——两者都是「这一行的取值边界不明确」，直接 fail closed；闭合引号
  *     之后的 `#` 注释作为**另一个片段**继续扫描。
  */
+/**
+ * 这一行里**真正会被 dotenv 消费**的那段文本；整行注释返回 `null`。
+ *
+ * strict 角色只作用在这段文本上。注释体在 `.env` 家族里同样是**散文**：Node
+ * 完全不消费注释，可它按 strict 文法解析时 ` >`、`` ` ``、`+` 都会被当成间隔，
+ * 于是 `# POSTGRES_PASSWORD >= 32 chars` 这类说明被报成「敏感赋值」——而报文
+ * 是固定类别，操作者拿不到任何可据以排查的信息。审计实测 4/4 假阳性，其中三条
+ * 正是本文件文档里声明「必须保持干净」的写法。
+ *
+ * 行内注释的起点与取值解析同源：`#` 前是行首或 ASCII 空白。
+ */
+const dotenvConsumedText = (line) => {
+  const text = String(line)
+  if (/^[ \t]*#/.test(text)) {
+    return null
+  }
+  const inlineComment = /(?:^|[ \t])#/.exec(text)
+  return inlineComment === null ? text : text.slice(0, inlineComment.index)
+}
+
 const dotenvLogicalSegments = (line) => {
   const text = String(line)
   // 行首注释标记反复剥离（`# # KEY=value` 同样要还原成赋值形态）。
@@ -819,7 +839,7 @@ const connectionStringCandidates = (line) => {
  *   SPACE  U+0020      ""                     空占位
  *   TAB    U+0009      ""                     空占位
  *   NBSP   U+00A0      "\u00a0"               非空
- *   IDEO   U+3000      "　"               非空
+ *   IDEO   U+3000      "\u3000"               非空
  *   ZWSP   U+200B      "\u200b"               非空
  *   VT     U+000B      "\u000b"(原样保留)   非空
  *   FF     U+000C      "\u000c"(原样保留)   非空
@@ -834,61 +854,75 @@ const isAsciiHorizontalWhitespace = (character) =>
 /**
  * 「间隔字符」——Unicode **属性**判定，不是手写清单。
  *
- * dotenv 里键与 `=` 之间只可能隔着空白类字符。判据用两个通用属性：
- * `\p{White_Space}`（含 ASCII SPACE/TAB、NBSP、U+3000、VT、FF、U+0085 NEL……）
- * 与 `\p{Cf}`（格式/零宽：U+200B、U+200C、U+200D、U+2060、U+FEFF、U+180E……）。
- *
- * 这仍然**不是枚举**：没有一张需要逐个补字符的名单，属性由 Unicode 数据决定，
- * 新增字符自动落到正确的一侧。
- *
- * 其余字符（可见标点、符号、字母、数字）都**不是间隔**——遇到它们说明这根本
- * 不是一条赋值，而是散文。这一条是审计实测逼出来的：早先「任何非词字符都算
- * 间隔」使得 `` - `POSTGRES_PASSWORD` = 数据库密码 ``、`keys += 1`、
- * `# TOKEN >= 32 chars`、`if (token != null) { }` 等 **20 种**普通 markdown /
- * 英文行全部被判成敏感赋值，而两份 tracked README 正在扫描范围内。
+ * `\p{White_Space}`（ASCII SPACE/TAB、NBSP、U+3000、VT、FF、U+0085 NEL……）与
+ * `\p{Cf}`（格式/零宽：U+200B、U+200C、U+200D、U+2060、U+FEFF、U+180E，以及
+ * **星平面**的 U+110BD、U+1BCA0、U+13430……）。属性由 Unicode 数据决定，新增
+ * 字符自动落到正确的一侧，不需要逐个补名单。
  */
 const isGapCharacter = (character) =>
   character !== undefined && /[\p{White_Space}\p{Cf}]/u.test(character)
 
-/** 间隔扫描的硬上界：`键` 与 `=` 之间不可能有意义地隔着这么多字符。 */
+/** 「词字符」——任何书写系统的字母/数字加 `_`：遇到它说明这是另一个词。 */
+const isWordCharacter = (character) =>
+  character !== undefined && /[\p{L}\p{N}_]/u.test(character)
+
+/**
+ * 间隔扫描的上限，**以 Unicode code point 计**（不是 UTF-16 code unit）。
+ *
+ * **inclusive**：允许消费 64 个 gap code point **之后**再检查那个终止字符。
+ * 只有当第 **65** 个 gap code point 出现时才判 exhausted。此前把上限写成
+ * 「扫描位置不得越过 from+64」，于是 n=64 的间隔在检查终止符**之前**就越界，
+ * `PASSWORD` + 64 空格 + `+=`（根本不是赋值）被误判成 fail closed（实测）。
+ */
 const maximumAssignmentGap = 64
 
 /**
  * 读取「敏感键」与 `=` 之间的**间隔**，判定它是否被支持。
  *
- * 三种结局：
+ * **按 code point 读**：`text[index]` 取的是 UTF-16 code unit，星平面字符会被
+ * 拆成孤立代理项，`\p{Cf}` 对代理项为假——实测 U+110BD / U+1BCA0 / U+13430 的
+ * 间隔在三条路径上 **9/9 全部漏检**。这里用 `codePointAt` + `String.fromCodePoint`
+ * 取完整码点，并按 `character.length` 前进。
  *
- *   - 间隔全部由 ASCII SPACE / TAB 组成并抵达 `=` → **supported**（Node 读得到）；
- *   - 间隔里出现其他空白/格式字符并抵达 `=` → **unsupported** → fail closed
- *     （Node 那一行整条不生效，但文件里确实写着凭据）；
- *   - 出现任何**非间隔字符** → 这不是一条赋值 → 不判定（散文）。
+ * 结局：
  *
- * 还有第四种：扫到 `maximumAssignmentGap` 仍未定论。**放弃扫描必须 fail
- * closed**——审计实测 `PASSWORD` + 65 个空格 + `=SYNTHETIC` 在 Node 里是一条
- * **活的**凭据，而早先的实现在越界后直接判成「不是赋值」，静默放行（基线反而
- * 抓得到）。有界是为了防病态输入，不是免检额度。
+ *   - 间隔全是 ASCII SPACE/TAB 并抵达 `=` → **supported**；
+ *   - 间隔含其他空白/格式字符并抵达 `=` → **unsupported** → fail closed；
+ *   - 遇到词字符 → 这不是赋值（另一个词）；
+ *   - 遇到**可见字符**（既非间隔也非词，例如 `†`）→ 取决于 `strict`：
+ *       · strict（`.env` 家族）→ 计入间隔并 unsupported → fail closed；
+ *       · prose（README 等）→ 这不是赋值，是散文；
+ *   - 第 65 个 gap code point → **exhausted** → fail closed（放弃扫描绝不等于放行）。
  */
-const readAssignmentGap = (text, from) => {
+const readAssignmentGap = (text, from, { strict = false } = {}) => {
   let index = from
+  let consumed = 0
   let supported = true
-  const limit = Math.min(text.length, from + maximumAssignmentGap)
-  while (index < limit) {
-    const character = text[index]
+  while (index < text.length) {
+    const codePoint = text.codePointAt(index)
+    const character = String.fromCodePoint(codePoint)
     if (character === '=') {
       return { reachedEquals: true, index, supported, exhausted: false }
     }
-    if (!isGapCharacter(character)) {
-      // 非间隔字符：这不是赋值。
+    if (isWordCharacter(character)) {
       return { reachedEquals: false, index, supported: true, exhausted: false }
     }
-    if (!isAsciiHorizontalWhitespace(character)) {
+    const gapLike = isGapCharacter(character)
+    if (!gapLike && !strict) {
+      // prose 模式：可见字符说明这是散文，不是赋值。
+      return { reachedEquals: false, index, supported: true, exhausted: false }
+    }
+    if (consumed === maximumAssignmentGap) {
+      // 第 65 个 gap：放弃扫描 → fail closed。
+      return { reachedEquals: true, index, supported: false, exhausted: true }
+    }
+    if (!gapLike || !isAsciiHorizontalWhitespace(character)) {
       supported = false
     }
-    index += 1
+    index += character.length
+    consumed += 1
   }
-  // 越界：`=` 可能就在后面，也可能没有——不知道就 fail closed。
-  const exhausted = index === from + maximumAssignmentGap && index < text.length
-  return { reachedEquals: exhausted, index, supported: exhausted ? false : supported, exhausted }
+  return { reachedEquals: false, index, supported: true, exhausted: false }
 }
 
 /**
@@ -1006,7 +1040,7 @@ const isSensitiveKeyName = (rawKey) => {
  *
  * 返回命中条数。**不返回键名也不返回取值**——两者都是输入派生的内容。
  */
-const sensitiveAssignmentsIn = (text) => {
+const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
   const source = String(text)
   const keyPattern = /(?:^|[^A-Za-z0-9_])(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)/g
   let hits = 0
@@ -1019,7 +1053,7 @@ const sensitiveAssignmentsIn = (text) => {
     }
     const keyEnd = match.index + match[0].length
     // GAP：结构性判定，不枚举字符（见 readAssignmentGap）。
-    const gap = readAssignmentGap(source, keyEnd)
+    const gap = readAssignmentGap(source, keyEnd, { strict })
     if (gap.reachedEquals && isSensitiveKeyName(match[1])) {
       const unsupportedGap = !gap.supported
       // 越界那一支没有真正看到 `=`，取值从越界点之后读；它已经被标成
@@ -1103,6 +1137,25 @@ const encodedCredentialVerdict = (line) => {
 // 此前的 `(\.[^/]+)?` 对后缀不设约束，`app.env.yaml` / `app.env.json` /
 // `secrets.env.sh` 都会被当作 dotenv 放行——它们一行都不匹配赋值文法，于是
 // 零 problem 静默通过，正是这条 allowlist 要消灭的形态。
+/**
+ * **文件角色**决定 gap 判据的严格程度——同一份 parser，两个 context。
+ *
+ *   - `strict-dotenv`：`.env` / `*.env` / `*.env.{example,sample,template}`。
+ *     这些文件里每一行都**应该**是 dotenv 赋值，因此敏感键与 `=` 之间出现
+ *     有界的**可见** Unicode 间隔（`PASSWORD†=…`）是可疑的，必须 fail closed。
+ *   - `prose`：`README.md` / `.gitignore` / `.gitkeep`。这些是给人读的，
+ *     `` - `POSTGRES_PASSWORD` = 数据库密码 ``、`keys += 1`、`# TOKEN >= 32`
+ *     都是正常写法，可见字符说明「这不是赋值」，必须保持干净（审计实测：按
+ *     strict 判据扫 README 会有 18/18 种普通写法误报）。
+ *
+ * 两种角色**共用同一个** `sensitiveAssignmentsIn`/`readAssignmentGap`，只是传入
+ * 不同的 context——不复制第二套赋值文法。
+ */
+const strictDotenvFile = /(^|\/)([^/]*\.)?env(\.(example|sample|template))?$/
+
+const templateFileRole = (file) =>
+  strictDotenvFile.test(file) ? 'strict-dotenv' : 'prose'
+
 const supportedTemplateFile =
   /(^|\/)([^/]*\.)?env(\.(example|sample|template))?$|(^|\/)(README\.md|\.gitignore|\.gitkeep)$/
 
@@ -1131,7 +1184,8 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         'a zero-coverage scan must not pass silently'
     )
   }
-  const scanTemplateContent = (label, content) => {
+  const scanTemplateContent = (label, content, role) => {
+    const strict = role === 'strict-dotenv'
     // **先去掉行尾 CR**。`assignmentPattern` 的 `(.*)$` 里 `.` 不匹配 CR、`$`
     // 又没有 `m` 标志，于是一份 CRLF 模板里**每一行**都不再被识别成赋值，整条
     // 敏感键判据静默失效（审计实测：同一份内容 LF 版报 5 条、CRLF 版只报 1 条）。
@@ -1181,9 +1235,19 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       // 整行与**每一个片段**——主取值、行内注释、非赋值整行——走**同一份**
       // 文法（`sensitiveAssignmentsIn`），且都是非锚定扫描：片段是自由文本，
       // 赋值不一定出现在开头。
+      //
+      // **prose 扫描覆盖整行与每个片段**；strict 扫描**只覆盖会被 dotenv 消费的
+      // 那段文本**（`dotenvConsumedText`）。片段本身不参与 strict：unquoted 取值
+      // 片段仍然包含行内注释子串，拿它跑 strict 等于把注释又扫了一遍。
       let sensitiveHits = sensitiveAssignmentsIn(line)
       for (const segment of lineSegments) {
         sensitiveHits += sensitiveAssignmentsIn(segment.text)
+      }
+      if (strict) {
+        const consumed = dotenvConsumedText(line)
+        if (consumed !== null) {
+          sensitiveHits += sensitiveAssignmentsIn(consumed, { strict: true })
+        }
       }
       if (sensitiveHits > 0) {
         problems.push(
@@ -1214,7 +1278,7 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       problems.push(`${file}: tracked template could not be read from the worktree`)
     }
     if (worktreeContent !== null) {
-      scanTemplateContent(file, worktreeContent)
+      scanTemplateContent(file, worktreeContent, templateFileRole(file))
     }
     const indexBlob = spawnSync('git', ['show', `:${file}`], {
       cwd: repository,
@@ -1229,7 +1293,7 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       continue
     }
     if (indexBlob.stdout !== worktreeContent) {
-      scanTemplateContent(`${file} (git index)`, indexBlob.stdout)
+      scanTemplateContent(`${file} (git index)`, indexBlob.stdout, templateFileRole(file))
     }
   }
   return problems
