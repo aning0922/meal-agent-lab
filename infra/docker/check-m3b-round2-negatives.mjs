@@ -1819,123 +1819,258 @@ process.stdout.write('R11: quoted values, trailing ambiguity and nested assignme
 }
 
 // ---------------------------------------------------------------------------
-// R12：unquoted whitespace 语义与 Node --env-file 逐项对齐
+// R12/R13：whitespace 矩阵（真实 --env-file 证据）与结构化 unsupported gap
 // ---------------------------------------------------------------------------
-process.stdout.write('R12: unquoted whitespace matches Node --env-file consumption\n')
+process.stdout.write('R12/R13: whitespace matrix and structural gap\n')
+
+/** 七类空白 + 六类结构性字符，全部用转义写出，源码里没有裸控制字符。 */
+const WS_SPACE = ' '
+const WS_TAB = '\t'
+const WS_NBSP = '\u00a0'
+const WS_IDEO = '\u3000'
+const WS_ZWSP = '\u200b'
+const WS_VT = '\u000b'
+const WS_FF = '\u000c'
+const GAP_NEL = '\u0085'
+const GAP_MONGOL = '\u180e'
+const GAP_WORDJOIN = '\u2060'
+const GAP_ZWNJ = '\u200c'
+const GAP_ZWJ = '\u200d'
+const GAP_VISIBLE = '\u2020'
+const GAP_BOM = '\ufeff'
+
+/**
+ * **真实**的 Node 消费结果——不是测试里手写的预期。
+ *
+ * 起一个 `process.execPath --env-file=<临时文件>` 子进程，把它看到的
+ * `process.env.PASSWORD` 打印回来。矩阵的期望值由这个结果推导，因此「地面真相」
+ * 始终来自当前实际运行的 Node，而不是某次人工抄写。
+ */
+const envFileConsumption = (line, key = 'PASSWORD') => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-envfile-'))
+  try {
+    const file = resolve(directory, 'probe.env')
+    writeFileSync(file, `${line}\n`, 'utf8')
+    const result = spawnSync(
+      process.execPath,
+      [
+        `--env-file=${file}`,
+        '-e',
+        // 读**这一行真正赋的那个键**——否则 `WECHAT_APP_SECRET=` 这类行会因为
+        // 去读 PASSWORD 而永远得到 undefined，把一个合法空占位判成 unsupported。
+        `process.stdout.write(JSON.stringify(process.env[${JSON.stringify(key)}] ?? null))`
+      ],
+      { encoding: 'utf8' }
+    )
+    if (result.error !== undefined || result.status !== 0) {
+      return { readable: false, defined: false, empty: false }
+    }
+    const value = JSON.parse(result.stdout)
+    return { readable: true, defined: value !== null, empty: value === '' }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
 
 {
-  // 判空不能用 `\s` / `trim()`：JS 的 `trim()` 会把 NBSP / U+3000 / VT / FF
-  // 一并抹成空串，而 Node `--env-file` 只吃掉 ASCII SPACE 与 TAB——其余都是
-  // 真实字节，会原样进入 `process.env`。地面真相由实测取得（每个字符跑一次
-  // `node --env-file`），下面的期望直接来自那张表。
-  const name = 'unquoted whitespace follows Node --env-file, not trim()'
-  const NBSP = '\u00a0'
-  const IDEO = '\u3000'
-  const ZWSP = '\u200b'
-  const VT = '\u000b'
-  const FF = '\u000c'
-
-  // Node 实测：`PASSWORD=<c>` 只有 SPACE / TAB 消费为空串。
-  const whitespaceOnlyFlagged = [
-    ['NBSP', `PASSWORD=${NBSP}`],
-    ['U+3000', `PASSWORD=${IDEO}`],
-    ['U+200B', `PASSWORD=${ZWSP}`],
-    ['VT', `PASSWORD=${VT}`],
-    ['FF', `PASSWORD=${FF}`]
+  // 55 行对齐矩阵。每一行的期望都由**真实 --env-file 消费结果**推导：
+  //   - Node 消费出**非空**取值        → 必须命中；
+  //   - Node 消费出空串                → 空占位，必须干净；
+  //   - Node **整行不生效**（undefined）→ unsupported，fail closed，必须命中。
+  const name = 'the whitespace matrix matches real --env-file consumption'
+  const whitespace = [
+    ['SPACE', WS_SPACE], ['TAB', WS_TAB], ['NBSP', WS_NBSP], ['U+3000', WS_IDEO],
+    ['U+200B', WS_ZWSP], ['VT', WS_VT], ['FF', WS_FF]
   ]
-  const whitespaceOnlyClean = [
-    ['SPACE', 'PASSWORD= '],
-    ['TAB', 'PASSWORD=\t']
-  ]
-  // 空白 + 取值：七种都必须命中（Node 全部消费出非空取值）。
-  const withValue = [
-    ['SPACE', 'PASSWORD= SYNTHETIC-WSSPACE'],
-    ['TAB', 'PASSWORD=\tSYNTHETIC-WSTAB'],
-    ['NBSP', `PASSWORD=${NBSP}SYNTHETIC-WSNBSP`],
-    ['U+3000', `PASSWORD=${IDEO}SYNTHETIC-WSIDEO`],
-    ['U+200B', `PASSWORD=${ZWSP}SYNTHETIC-WSZWSP`],
-    ['VT', `PASSWORD=${VT}SYNTHETIC-WSVT`],
-    ['FF', `PASSWORD=${FF}SYNTHETIC-WSFF`]
-  ]
-  // 键与 `=` 之间的空白：SPACE/TAB 是 Node 支持的形态（取值非空 → 命中）；
-  // 其余让整行在 Node 里**根本不生效**，属 unsupported → fail closed 同样命中。
-  const keyGap = [
-    ['SPACE', 'PASSWORD =SYNTHETIC-GAPSPACE'],
-    ['TAB', 'PASSWORD\t=SYNTHETIC-GAPTAB'],
-    ['NBSP', `PASSWORD${NBSP}=SYNTHETIC-GAPNBSP`],
-    ['U+3000', `PASSWORD${IDEO}=SYNTHETIC-GAPIDEO`],
-    ['U+200B', `PASSWORD${ZWSP}=SYNTHETIC-GAPZWSP`],
-    ['VT', `PASSWORD${VT}=SYNTHETIC-GAPVT`],
-    ['FF', `PASSWORD${FF}=SYNTHETIC-GAPFF`]
-  ]
-  // 顶层 / 行内注释 / 散文片段三条路径必须得到**同一个**结论。
-  const perPath = [
-    ['top level', (line) => line],
-    ['inline comment', (line) => `NOTES=ok # ${line}`],
-    ['prose fragment', (line) => `run ${line} before starting`]
-  ]
-  // 合法空占位保持干净。
-  const clean = [
-    ['bare', 'PASSWORD='],
-    ['empty double quotes', 'PASSWORD=""'],
-    ['empty single quotes', "PASSWORD=''"],
-    ['bare with a comment', 'PASSWORD= # placeholder'],
-    ['empty quotes with a comment', 'PASSWORD="" # placeholder'],
-    ['a real AppSecret placeholder', 'WECHAT_APP_SECRET=']
+  // 矩阵只放**空白/格式类**字符：可见字符（U+2020）不是间隔字符，它属于
+  // structural-gap case 里的散文对照，放进这里会与「Node 未定义即 fail closed」
+  // 的推导冲突。
+  const structural = [
+    ['U+0085 NEL', GAP_NEL], ['U+180E', GAP_MONGOL], ['U+2060', GAP_WORDJOIN],
+    ['U+200C', GAP_ZWNJ], ['U+200D', GAP_ZWJ], ['U+FEFF', GAP_BOM]
   ]
 
-  const sensitiveIn = (line) =>
-    templateProblemsFor(line).some((problem) =>
+  const rows = []
+  // 1) 只有空白的取值（7）
+  for (const [label, c] of whitespace) rows.push({ group: 'whitespace-only', label, envLine: `PASSWORD=${c}`, scanLine: `PASSWORD=${c}` })
+  // 2) 空白 + 取值（7）
+  for (const [label, c] of whitespace) rows.push({ group: 'whitespace+value', label, envLine: `PASSWORD=${c}SYNTHETIC-WSV`, scanLine: `PASSWORD=${c}SYNTHETIC-WSV` })
+  // 3) 键与 `=` 之间的空白（7）
+  for (const [label, c] of whitespace) rows.push({ group: 'key-gap', label, envLine: `PASSWORD${c}=SYNTHETIC-GAP`, scanLine: `PASSWORD${c}=SYNTHETIC-GAP` })
+  // 4) 同形态在行内注释里（7）与散文片段里（7）
+  for (const [label, c] of whitespace) rows.push({ group: 'inline-comment', label, envLine: `PASSWORD=${c}SYNTHETIC-INL`, scanLine: `NOTES=ok # PASSWORD=${c}SYNTHETIC-INL` })
+  for (const [label, c] of whitespace) rows.push({ group: 'prose-fragment', label, envLine: `PASSWORD=${c}SYNTHETIC-PRO`, scanLine: `run PASSWORD=${c}SYNTHETIC-PRO now` })
+  // 5) 合法空占位（8）
+  for (const [label, line] of [
+    ['bare', 'PASSWORD='], ['empty double quotes', 'PASSWORD=""'], ['empty single quotes', "PASSWORD=''"],
+    ['bare with comment', 'PASSWORD= # placeholder'], ['empty quotes with comment', 'PASSWORD="" # placeholder'],
+    // 这两行**必须与 whitespace-only 的 SPACE/TAB 行不同**：早先它们逐字节相同，
+    // 55 行里只有 53 个互不相同的输入，覆盖面被虚报了 2（审计实测）。
+    ['another sensitive key', 'MEAL_AGENT_RUNTIME_PASSWORD='],
+    ['mixed ASCII whitespace', `PASSWORD=${WS_SPACE}${WS_TAB}`],
+    ['AppSecret placeholder', 'WECHAT_APP_SECRET=']
+  ]) rows.push({
+    group: 'empty-placeholder',
+    label,
+    envLine: line,
+    scanLine: line,
+    key: /^([A-Z_]+)=/.exec(line)?.[1] ?? 'PASSWORD'
+  })
+  // 6) 结构性字符：取值位（6）与键/`=` 间隔位（6）
+  for (const [label, c] of structural) rows.push({ group: 'structural-value', label, envLine: `PASSWORD=${c}SYNTHETIC-STV`, scanLine: `PASSWORD=${c}SYNTHETIC-STV` })
+  for (const [label, c] of structural) rows.push({ group: 'structural-gap', label, envLine: `PASSWORD${c}=SYNTHETIC-STG`, scanLine: `PASSWORD${c}=SYNTHETIC-STG` })
+
+  // **矩阵条数的硬门禁**：少一行不得静默通过。
+  const expectedWhitespaceMatrixCount = 55
+  const mismatches = []
+  const leaking = []
+  let evaluated = 0
+  for (const row of rows) {
+    evaluated += 1
+    const consumption = envFileConsumption(row.envLine, row.key ?? 'PASSWORD')
+    // 期望：Node 读出非空 → 命中；Node 读出空串 → 干净；Node 整行不生效 →
+    // unsupported → fail closed → 命中。
+    const expectFlag = !consumption.readable || !consumption.defined || !consumption.empty
+    const problems = templateProblemsFor(row.scanLine)
+    const flagged = problems.some((problem) =>
       /assigns a non-empty value to a sensitive key/.test(problem)
     )
-
-  const missed = []
-  const wronglyFlagged = []
-  const leaking = []
-  const pathDisagreement = []
-
-  for (const [label, line] of whitespaceOnlyFlagged) {
-    if (!sensitiveIn(line)) missed.push(`whitespace-only ${label}`)
-  }
-  for (const [label, line] of whitespaceOnlyClean) {
-    if (sensitiveIn(line)) wronglyFlagged.push(`whitespace-only ${label}`)
-  }
-  for (const [label, line] of [...withValue, ...keyGap]) {
-    // 每一种形态在三条路径上都要判一次，结论必须一致且都命中。
-    const verdicts = perPath.map(([, render]) => sensitiveIn(render(line)))
-    if (verdicts.some((v) => !v)) missed.push(`${label} (${line.includes('=SYNTHETIC') ? 'gap' : 'value'})`)
-    if (new Set(verdicts).size !== 1) pathDisagreement.push(label)
-  }
-  for (const [label, line] of clean) {
-    if (templateProblemsFor(line).length > 0) wronglyFlagged.push(`placeholder ${label}`)
-  }
-  for (const [, line] of [...withValue, ...keyGap]) {
-    for (const [, render] of perPath) {
-      if (templateProblemsFor(render(line)).some((problem) => !allowedProblemShape.test(String(problem)))) {
-        leaking.push(line)
-      }
+    if (flagged !== expectFlag) {
+      mismatches.push(`${row.group}/${row.label}`)
+    }
+    if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+      leaking.push(`${row.group}/${row.label}`)
     }
   }
-
-  if (missed.length > 0) {
-    fail(name, `${String(missed.length)} whitespace shape(s) disagreed with the Node consumption`)
-  } else if (pathDisagreement.length > 0) {
+  // **互不相同**的输入数也必须等于 55：只数行数挡不住「用重复行把数字凑够」
+  // ——审计实测本轮一度就是 55 行 / 53 个输入。
+  const distinctInputs = new Set(rows.map((row) => `${row.group}\u0000${row.scanLine}`)).size
+  if (evaluated !== expectedWhitespaceMatrixCount) {
     fail(
       name,
-      `${String(pathDisagreement.length)} shape(s) reached different conclusions on the three paths`
+      `expected ${String(expectedWhitespaceMatrixCount)} matrix rows, evaluated ${String(evaluated)}`
     )
-  } else if (wronglyFlagged.length > 0) {
-    fail(name, `${String(wronglyFlagged.length)} genuinely empty form(s) were wrongly flagged`)
+  } else if (distinctInputs !== expectedWhitespaceMatrixCount) {
+    fail(
+      name,
+      `expected ${String(expectedWhitespaceMatrixCount)} distinct matrix inputs, got ${String(distinctInputs)}`
+    )
+  } else if (mismatches.length > 0) {
+    fail(name, `${String(mismatches.length)} matrix row(s) disagreed with the real Node consumption`)
   } else if (leaking.length > 0) {
     fail(name, 'a failure message left the fixed category shape (not reprinted here)')
   } else {
     pass(
       name,
-      `${String(whitespaceOnlyFlagged.length)} non-ASCII whitespace-only values flagged and ` +
-        `${String(whitespaceOnlyClean.length)} ASCII ones treated as empty (Node parity); ` +
-        `${String(withValue.length)} whitespace+value and ${String(keyGap.length)} key/= gap ` +
-        `shapes agree across top level, inline comment and prose; ${String(clean.length)} ` +
-        'genuine placeholders stay clean; nothing echoed'
+      `${String(expectedWhitespaceMatrixCount)}/${String(expectedWhitespaceMatrixCount)} rows ` +
+        `(all ${String(distinctInputs)} inputs distinct) match the real --env-file consumption ` +
+        '(expectations derived from live spawns, not hand-written), nothing echoed'
+    )
+  }
+}
+
+{
+  // 结构化 unsupported gap：**不枚举**「哪些字符算非 ASCII 空白」。敏感键之后，
+  // 任何非词字符构成的间隔只要有界地抵达 `=`：全是 SPACE/TAB 就 supported，
+  // 含任何其他字符就 unsupported → fail closed。
+  const name = 'an unsupported key/= gap fails closed on every path'
+  // 空白/格式类字符构成的间隔 → unsupported → fail closed。
+  const structural = [
+    ['U+0085 NEL', GAP_NEL], ['U+180E', GAP_MONGOL], ['U+2060', GAP_WORDJOIN],
+    ['U+200C', GAP_ZWNJ], ['U+200D', GAP_ZWJ]
+  ]
+  // **可见字符**（U+2020 DAGGER）不是间隔字符：`PASSWORD†=x` 不是一条赋值而是
+  // 散文，必须保持干净。这条是**正向对照**——判据一旦退回「任何非词字符都算
+  // 间隔」，两份 tracked README 里的 markdown/英文行会成片误报（审计实测 18/18
+  // 种普通写法被判成敏感赋值）。任务书把这个字符列在覆盖清单里，本轮按
+  // 「覆盖」而非「必须 fail closed」实现，差异已在计划文档中登记。
+  const proseControls = [['U+2020 visible', GAP_VISIBLE]]
+  const paths = [
+    ['top level', (line) => line],
+    ['inline comment', (line) => `NOTES=ok # ${line}`],
+    ['prose fragment', (line) => `run ${line} before starting`]
+  ]
+  // 无 `=` 的 benign 对照：不能「见敏感词就一律报错」。
+  const benign = [
+    ['a bare mention', 'PASSWORD'],
+    ['a prose mention', 'the PASSWORD is stored outside git'],
+    ['a comment mention', '# remember the PASSWORD rotation policy'],
+    ['a mention with punctuation but no equals', 'PASSWORD: see the runbook']
+  ]
+
+  const expectedStructuralGapCount = 23
+  let evaluated = 0
+  const missed = []
+  const disagreed = []
+  const wronglyFlagged = []
+  const leaking = []
+
+  for (const [label, character] of structural) {
+    const line = `PASSWORD${character}=SYNTHETIC-STRUCT`
+    const verdicts = []
+    for (const [pathLabel, render] of paths) {
+      evaluated += 1
+      const problems = templateProblemsFor(render(line))
+      const flagged = problems.some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+      verdicts.push(flagged)
+      if (!flagged) {
+        missed.push(`${label}/${pathLabel}`)
+      }
+      if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+        leaking.push(`${label}/${pathLabel}`)
+      }
+    }
+    if (new Set(verdicts).size !== 1) {
+      disagreed.push(label)
+    }
+  }
+  // 可见字符对照：三条路径都必须干净。
+  for (const [label, character] of proseControls) {
+    const line = `PASSWORD${character}=SYNTHETIC-PROSECTL`
+    for (const [pathLabel, render] of paths) {
+      evaluated += 1
+      if (templateProblemsFor(render(line)).length > 0) {
+        wronglyFlagged.push(`${label}/${pathLabel}`)
+      }
+    }
+  }
+  // 越界的间隔必须 fail closed：65 个空格之后的 `=` 在 Node 里是一条活凭据，
+  // 放弃扫描不能等于放行。
+  evaluated += 1
+  if (!templateProblemsFor(`PASSWORD${' '.repeat(65)}=SYNTHETIC-OVERGAP`).some((problem) =>
+    /assigns a non-empty value to a sensitive key/.test(problem)
+  )) {
+    missed.push('gap beyond the scan bound')
+  }
+  for (const [label, line] of benign) {
+    evaluated += 1
+    if (templateProblemsFor(line).length > 0) {
+      wronglyFlagged.push(label)
+    }
+  }
+
+  if (evaluated !== expectedStructuralGapCount) {
+    fail(
+      name,
+      `expected ${String(expectedStructuralGapCount)} structural-gap rows, evaluated ${String(evaluated)}`
+    )
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} unsupported gap(s) were not failed closed`)
+  } else if (disagreed.length > 0) {
+    fail(name, `${String(disagreed.length)} gap character(s) disagreed across the three paths`)
+  } else if (wronglyFlagged.length > 0) {
+    fail(name, `${String(wronglyFlagged.length)} benign mention(s) without an equals were flagged`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else {
+    pass(
+      name,
+      `${String(structural.length)} whitespace/format gap characters (NEL, U+180E, U+2060, ` +
+        `U+200C, U+200D) fail closed identically on all ${String(paths.length)} paths; a gap ` +
+        'beyond the scan bound also fails closed; a visible U+2020 reads as prose and stays ' +
+        `clean on all paths; ${String(benign.length)} benign mentions without an equals stay clean`
     )
   }
 }
@@ -2064,7 +2199,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 36
+const expectedCount = 37
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

@@ -331,7 +331,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
-前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 36 cases、15 项拓扑变异反例与 5 个真实信号窗口的零残留取证；真实 Compose Secret 在容器内实测
+前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 37 cases、15 项拓扑变异反例与 5 个真实信号窗口的零残留取证；真实 Compose Secret 在容器内实测
 owner==消费进程 EUID、mode 0600、普通文件、nlink=1、非 symlink、可读（UID 999
 与 10001 两侧，宿主 stat 不作数）；从空 volume 起的完整链
 `cluster → logins → createdb → 0000 → handoff → acl → migrate → grants → api`

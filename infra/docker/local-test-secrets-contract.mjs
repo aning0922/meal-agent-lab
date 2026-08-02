@@ -806,29 +806,6 @@ const connectionStringCandidates = (line) => {
  * `'credential'`（解码后的 query key 命中）或 `null`。
  */
 /**
- * 敏感赋值判据——**所有片段共用这一份**。
- *
- * 输入是一段「看起来像 dotenv 行」的文本：主取值所在的整行、或行内注释片段。
- *
- * 扫描**内部**可以持有必要状态（这里返回命中的键名，调用方据此去重与计数），
- * 但 **problem 输出只包含固定类别、文件标签和行号**，不包含任何输入派生的
- * key 或 value。
- */
-/**
- * 从 `=` 之后读出**一个赋值取值**，有界。
- *
- * 此前用的是 `([^\s#]*)`——那个字符类把 `#` 和空白都当成取值的终点，于是
- * `PASSWORD="#SYNTHETIC"` 只截到一个引号、`PASSWORD=" SYNTHETIC"` 同理，
- * 去掉引号后变成空串，被「空占位允许」规则放行。取值的边界是**引号**，不是
- * 某几个字符：
- *
- *   - 以 `"` 或 `'` 开头 → 边界是配对的同种引号，**引号内的 `#` 与空白原样
- *     保留**；未闭合时 fail closed（把有界的剩余内容当作取值，宁可多报）；
- *   - 否则 → 读到空白或 `#` 为止（unquoted 的常规形态）。
- *
- * 有界：最多读 `maximumCandidateLength + 1` 个字符。
- */
-/**
  * ASCII 水平空白——**只有**这两个字符。
  *
  * 与 Node 24.18.0 `--env-file` 的真实消费语义逐项实测对齐：它在 unquoted 取值
@@ -841,11 +818,11 @@ const connectionStringCandidates = (line) => {
  *   ----------------   --------------------   ----
  *   SPACE  U+0020      ""                     空占位
  *   TAB    U+0009      ""                     空占位
- *   NBSP   U+00A0      " "               非空
+ *   NBSP   U+00A0      "\u00a0"               非空
  *   IDEO   U+3000      "　"               非空
- *   ZWSP   U+200B      "​"               非空
- *   VT     U+000B      ""               非空
- *   FF     U+000C      ""               非空
+ *   ZWSP   U+200B      "\u200b"               非空
+ *   VT     U+000B      "\u000b"(原样保留)   非空
+ *   FF     U+000C      "\u000c"(原样保留)   非空
  *
  * 键与 `=` 之间同理：`PASSWORD =V` Node 读得到，而 `PASSWORD<NBSP>=V`（以及
  * U+3000 / U+200B / VT / FF 版本）**整行不生效**，`process.env.PASSWORD` 为
@@ -855,14 +832,64 @@ const isAsciiHorizontalWhitespace = (character) =>
   character === ' ' || character === '\t'
 
 /**
- * 「非 ASCII 的空白类字符」，用于识别 unsupported 的键/`=` 间隔。`\s` 之外还
- * 显式加上两个零宽字符：U+200B 与 U+FEFF 不在 `\s` 里，但 Node 同样因它们而
- * 整行不生效。
+ * 「间隔字符」——Unicode **属性**判定，不是手写清单。
+ *
+ * dotenv 里键与 `=` 之间只可能隔着空白类字符。判据用两个通用属性：
+ * `\p{White_Space}`（含 ASCII SPACE/TAB、NBSP、U+3000、VT、FF、U+0085 NEL……）
+ * 与 `\p{Cf}`（格式/零宽：U+200B、U+200C、U+200D、U+2060、U+FEFF、U+180E……）。
+ *
+ * 这仍然**不是枚举**：没有一张需要逐个补字符的名单，属性由 Unicode 数据决定，
+ * 新增字符自动落到正确的一侧。
+ *
+ * 其余字符（可见标点、符号、字母、数字）都**不是间隔**——遇到它们说明这根本
+ * 不是一条赋值，而是散文。这一条是审计实测逼出来的：早先「任何非词字符都算
+ * 间隔」使得 `` - `POSTGRES_PASSWORD` = 数据库密码 ``、`keys += 1`、
+ * `# TOKEN >= 32 chars`、`if (token != null) { }` 等 **20 种**普通 markdown /
+ * 英文行全部被判成敏感赋值，而两份 tracked README 正在扫描范围内。
  */
-const isNonAsciiWhitespace = (character) =>
-  character !== undefined &&
-  !isAsciiHorizontalWhitespace(character) &&
-  (/\s/.test(character) || character === '\u200b' || character === '\ufeff')
+const isGapCharacter = (character) =>
+  character !== undefined && /[\p{White_Space}\p{Cf}]/u.test(character)
+
+/** 间隔扫描的硬上界：`键` 与 `=` 之间不可能有意义地隔着这么多字符。 */
+const maximumAssignmentGap = 64
+
+/**
+ * 读取「敏感键」与 `=` 之间的**间隔**，判定它是否被支持。
+ *
+ * 三种结局：
+ *
+ *   - 间隔全部由 ASCII SPACE / TAB 组成并抵达 `=` → **supported**（Node 读得到）；
+ *   - 间隔里出现其他空白/格式字符并抵达 `=` → **unsupported** → fail closed
+ *     （Node 那一行整条不生效，但文件里确实写着凭据）；
+ *   - 出现任何**非间隔字符** → 这不是一条赋值 → 不判定（散文）。
+ *
+ * 还有第四种：扫到 `maximumAssignmentGap` 仍未定论。**放弃扫描必须 fail
+ * closed**——审计实测 `PASSWORD` + 65 个空格 + `=SYNTHETIC` 在 Node 里是一条
+ * **活的**凭据，而早先的实现在越界后直接判成「不是赋值」，静默放行（基线反而
+ * 抓得到）。有界是为了防病态输入，不是免检额度。
+ */
+const readAssignmentGap = (text, from) => {
+  let index = from
+  let supported = true
+  const limit = Math.min(text.length, from + maximumAssignmentGap)
+  while (index < limit) {
+    const character = text[index]
+    if (character === '=') {
+      return { reachedEquals: true, index, supported, exhausted: false }
+    }
+    if (!isGapCharacter(character)) {
+      // 非间隔字符：这不是赋值。
+      return { reachedEquals: false, index, supported: true, exhausted: false }
+    }
+    if (!isAsciiHorizontalWhitespace(character)) {
+      supported = false
+    }
+    index += 1
+  }
+  // 越界：`=` 可能就在后面，也可能没有——不知道就 fail closed。
+  const exhausted = index === from + maximumAssignmentGap && index < text.length
+  return { reachedEquals: exhausted, index, supported: exhausted ? false : supported, exhausted }
+}
 
 /**
  * 从 `=` 之后读出**一个赋值取值**，有界。
@@ -991,24 +1018,13 @@ const sensitiveAssignmentsIn = (text) => {
       break
     }
     const keyEnd = match.index + match[0].length
-    // GAP：吃掉 ASCII 水平空白；出现任何**非 ASCII** 空白就记成 unsupported。
-    let index = keyEnd
-    let unsupportedGap = false
-    while (index < source.length) {
-      const character = source[index]
-      if (isAsciiHorizontalWhitespace(character)) {
-        index += 1
-        continue
-      }
-      if (isNonAsciiWhitespace(character)) {
-        unsupportedGap = true
-        index += 1
-        continue
-      }
-      break
-    }
-    if (source[index] === '=' && isSensitiveKeyName(match[1])) {
-      const parsed = readAssignmentValue(source, index + 1)
+    // GAP：结构性判定，不枚举字符（见 readAssignmentGap）。
+    const gap = readAssignmentGap(source, keyEnd)
+    if (gap.reachedEquals && isSensitiveKeyName(match[1])) {
+      const unsupportedGap = !gap.supported
+      // 越界那一支没有真正看到 `=`，取值从越界点之后读；它已经被标成
+      // unsupported，因此无论取值读成什么都会 fail closed。
+      const parsed = readAssignmentValue(source, gap.exhausted ? gap.index : gap.index + 1)
       // unsupported 的键/`=` 间隔按 ambiguous 处理：Node 那一行整条不生效，但
       // 文件里确实写着凭据，别的消费者（compose env_file、dotenv 库）未必同样
       // 忽略它——fail closed。

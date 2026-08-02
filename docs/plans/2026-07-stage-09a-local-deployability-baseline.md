@@ -2219,15 +2219,15 @@ U+3000 / U+200B / VT / FF 版本）**整行不生效**，`process.env.PASSWORD` 
 *修复前*（`c9a282a` 实测）：43 项对齐矩阵里 **17 项与 Node 不符**——NBSP/U+3000/
 VT/FF 的 whitespace-only 与 whitespace+value 全部被当成空占位放行，同样的形态在
 inline comment 与 prose 片段里也全部漏检，U+200B 的键/`=` 间隔漏检。
-*修复后*：**43/43 全部与 Node 实测一致**，顶层 / 行内注释 / 散文片段三条路径结论
+*修复后*：**当时的 43/43** 全部与 Node 实测一致，顶层 / 行内注释 / 散文片段三条路径结论
 一致，六种合法空占位保持干净，消息仍只有固定类别 + 文件标签 + 行号。
 
-targeted negative suite 新增 1 条注册 case，从 35 精确增加到 **36/36**，原有 35
-条未删未弱化且全部复跑通过。
+targeted negative suite 新增 1 条注册 case，从 35 精确增加到 **36/36**（**当时**
+的计数；第十三轮扩到 37，见下一节），原有 35 条未删未弱化且全部复跑通过。
 
 ##### 本轮两路只读审计的确认级发现与定点修复
 
-审计在 targeted 36/36 与 local-test 75/75 首次全绿后启动，只读、不与任何 Docker
+审计在**当时的** targeted 36/36 与 local-test 75/75 首次全绿后启动，只读、不与任何 Docker
 套件并发。审计 A **独立重测**了 Node 的消费语义（42 个格位，含本轮矩阵未覆盖的
 **前置**与**后置**空白位置），结论与本轮采用的地面真相一致，且未发现可利用的
 漏检。已修四条：
@@ -2255,6 +2255,82 @@ targeted negative suite 新增 1 条注册 case，从 35 精确增加到 **36/36
 「assigns a non-empty value」，而 Node 那一行其实什么都没赋值；`allowedProblemShape`
 的两条 per-file 分支尾部未锚定，且 `^[^\s:]+` 匹配不了含空格的 tracked 路径
 （均为测试侧形状表的潜在弱点，当前不可达）。
+
+#### M3B 第十三轮 structural gap + evidence matrix closure
+
+1. **结构化 unsupported gap（不再枚举字符）**。上一轮用
+   `isNonAsciiWhitespace` 枚举「哪些字符算非 ASCII 空白」——那是条走不到头的路：
+   U+0085、U+180E、U+2060、U+200C、U+200D、U+FEFF……每发现一个补一个，而 `\s`
+   的成员资格本身还随 Unicode 版本变（U+180E 在 6.3 之后就不再是空白）。判据
+   改成**结构性**的：敏感键之后**有界**地读到 `=`（最多 64 字符，遇到任何书写
+   系统的字母/数字就停），间隔**全是 SPACE/TAB** 才 supported，**含任何其他
+   字符**即 unsupported → fail closed。枚举函数已删除。
+
+   *实现期发现并修掉的一处误报*：最初把「停止条件」写成 ASCII
+   `[A-Za-z0-9_]`，于是中文说明
+   `# Secret 目录。留空 = 默认 infra/docker/secrets/` 被读成「敏感键 `Secret`
+   + 一段非 identifier 间隔 + `=`」，**真实模板多出 1 条误报**。停止条件改用
+   Unicode 通用类别 `[\p{L}\p{N}_]` 后恢复干净。
+
+2. **真实消费证据固化进门禁**。矩阵的期望值不再是测试里手写的常量，而是每一行
+   都起一个 `process.execPath --env-file=<临时文件>` 子进程、读回它真正看到的
+   环境变量后推导：Node 读出非空 → 必须命中；读出空串 → 空占位、必须干净；
+   整行不生效 → unsupported → fail closed。探针按**该行真正赋的那个键**读取
+   （否则 `WECHAT_APP_SECRET=` 会因为去读 `PASSWORD` 而永远 undefined，把合法
+   空占位判成 unsupported——这正是实现期第一次跑出的那条 mismatch）。
+
+3. **矩阵硬门禁**：`expectedWhitespaceMatrixCount = 55`，当前实现 **55/55**。
+   结构化 gap 的注册 case 另有独立字面量计数 `expectedStructuralGapCount = 23`
+   （6 个字符 × 3 条路径 + 5 条无 `=` 的 benign 对照），删一项同样不会静默 PASS。
+
+   矩阵构成（55）：whitespace-only 7、whitespace+value 7、key-gap 7、
+   inline-comment 7、prose-fragment 7、empty-placeholder 8、structural-value 6、
+   structural-gap 6。
+
+**基线证据（`c9a282a`）实测 23 项 mismatch，不是任务书写的 27。**逐组分布：
+whitespace-only 4、whitespace+value 4、key-gap 1、inline-comment 4、
+prose-fragment 4、structural-value 1、structural-gap 5。这个数字取决于矩阵的具体构成，而任务书没有
+规定构成；上面 55 行的分组是本轮的设计，23 是在该构成下的**实测值**。同时，
+结构化 gap 那条 case 在基线上有 **18/18** 未 fail closed。差额如何认定，留待
+总控裁定——本轮按实测数字记录，不按任务书的 27 改写。
+
+targeted negative suite 新增 1 条注册 case（structural gap），从 36 精确增加到
+**37/37**，原有 36 条未删未弱化且全部复跑通过。
+
+##### 本轮两路只读审计的确认级发现与定点修复
+
+审计在 targeted 全绿后启动，只读、不与任何 Docker 套件并发。**两条都推翻了本轮
+的中间实现**：
+
+- **间隔判据造成成片误报（A，18/18 实测）**。「敏感键之后任何非词字符都算间隔」
+  使得 `` - `POSTGRES_PASSWORD` = 数据库密码 ``、`keys += 1`、
+  `# TOKEN >= 32 chars`、`if (token != null) { }`、markdown 表格与 `<KEY> = <v>`
+  等 **18 种**普通英文/markdown 行全部被判成敏感赋值——而两份 tracked README
+  正在扫描范围内。判据改成 Unicode **属性**判定：间隔只能由
+  `\p{White_Space}` 或 `\p{Cf}`（格式/零宽）字符组成，其余字符一律说明「这不是
+  赋值，是散文」。仍然不是枚举——没有需要逐个补字符的名单。修复后同一组 18 种
+  写法 **0/18** 误报。
+- **越界即放行（A，fail-open 回退）**。`PASSWORD` + **65** 个空格 + `=SYNTHETIC`
+  在 Node 里是一条**活的**凭据，而扫描器扫到 64 字符上界后直接判成「不是赋值」
+  静默放行（基线反而抓得到）。现在「放弃扫描」与 `unscannable` 同侧：越界一律
+  fail closed。64 与 65 两个边界都已进反例。
+- **55 行里有 2 行逐字节重复（B）**：`trailing SPACE/TAB` 与 whitespace-only 的
+  SPACE/TAB 行完全相同，55 行只有 53 个互不相同的输入。已换成两条真正不同的
+  输入，并新增**互不相同输入数**的硬门禁（只数行数挡不住用重复行凑数）。
+- **两处源码里的裸控制字节（B）**：上一轮写进对照表的原始 VT/FF/NBSP/ZWSP 已
+  改成转义写法；新增测试数据本来就全用转义。
+- **两处未加限定的历史数字（B）**：第十二轮段落里的 43/43 与 36/36 已补「当时」。
+
+**必须报告的一处与任务书的偏差**：任务书把「一个非 whitespace 的可见 Unicode
+字符」列进 unsupported gap 的覆盖清单。按上面的属性判据，`PASSWORD†=x` 里的
+`†` **不是**间隔字符，因此该行被判成散文、保持干净（Node 同样不会定义
+`PASSWORD`）。它仍在反例里，但角色改成**正向对照**——正是这条对照挡住了上面那
+18 种误报。若总控要求它 fail closed，就必须接受 markdown/英文说明成片误报，两者
+不可兼得；本轮选择了不误报，差异在此登记待裁定。
+
+同时清理：删除两段**脱离函数**的旧 JSDoc（一段是敏感赋值判据的说明，一段是
+`readAssignmentValue` 的旧版描述，都在重构中与函数分离了），以及「返回键名供
+去重与计数」这句已经不成立的旧注释。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2393,7 +2469,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（36 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（37 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
