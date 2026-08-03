@@ -693,15 +693,25 @@ const maximumCandidateLength = 2048
  * 是固定类别，操作者拿不到任何可据以排查的信息。审计实测 4/4 假阳性，其中三条
  * 正是本文件文档里声明「必须保持干净」的写法。
  *
- * 行内注释的起点与取值解析同源：`#` 前是行首或 ASCII 空白。
+ * 行内注释的起点与取值解析同源：`#` 前是行首或 ASCII 空白——但**只有第一个
+ * `=` 之后**的 `#` 才是注释。`=` 之前的 `#` 对 Node 只是普通的**键名字符**：
+ * 实测 v24.18.0，`FOO # PASSWORD\u00e9=SECRET` 定义了键 `FOO # PASSWORD\u00e9`，
+ * 取值 `SECRET`——一条**活的**凭据。此前这里在第一个 ` #` 处就把整行截断，于是
+ * strict 根本看不到后面那段，prose 又在 `\u00e9` 上按词字符终止，两条通路一起
+ * 报 0（审计实测 5/5 这种形态全部漏检）。
  */
 const dotenvConsumedText = (line) => {
   const text = String(line)
   if (/^[ \t]*#/.test(text)) {
     return null
   }
-  const inlineComment = /(?:^|[ \t])#/.exec(text)
-  return inlineComment === null ? text : text.slice(0, inlineComment.index)
+  const equals = text.indexOf('=')
+  if (equals === -1) {
+    // 没有 `=`：这一行不定义任何变量，整段都按可扫描文本处理。
+    return text
+  }
+  const inlineComment = /(?:^|[ \t])#/.exec(text.slice(equals))
+  return inlineComment === null ? text : text.slice(0, equals + inlineComment.index)
 }
 
 const dotenvLogicalSegments = (line) => {
@@ -854,6 +864,11 @@ const isAsciiHorizontalWhitespace = (character) =>
 /**
  * 「间隔字符」——Unicode **属性**判定，不是手写清单。
  *
+ * **注意**：非 ASCII 间隔让 `PASSWORD` 这个名字读不到，但**不等于整行不生效**。
+ * 实测 v24.18.0：`PASSWORD<NBSP>=V` 定义的是**扩展键** `PASSWORD<NBSP>`，取值
+ * `V`——仍然是一条活凭据，只是名字不同。fail closed 的理由因此不是「这一行没
+ * 作用」，而是「这一行确实定义了凭据，而别的消费者未必按同一个名字解析」。
+ *
  * `\p{White_Space}`（ASCII SPACE/TAB、NBSP、U+3000、VT、FF、U+0085 NEL……）与
  * `\p{Cf}`（格式/零宽：U+200B、U+200C、U+200D、U+2060、U+FEFF、U+180E，以及
  * **星平面**的 U+110BD、U+1BCA0、U+13430……）。属性由 Unicode 数据决定，新增
@@ -888,11 +903,15 @@ const maximumAssignmentGap = 64
  *
  *   - 间隔全是 ASCII SPACE/TAB 并抵达 `=` → **supported**；
  *   - 间隔含其他空白/格式字符并抵达 `=` → **unsupported** → fail closed；
- *   - 遇到词字符 → 这不是赋值（另一个词）；
- *   - 遇到**可见字符**（既非间隔也非词，例如 `†`）→ 取决于 `strict`：
- *       · strict（`.env` 家族）→ 计入间隔并 unsupported → fail closed；
+ *   - 遇到**词字符**或**可见字符**（既非间隔也非词，例如 `†`）→ 取决于 `strict`：
+ *       · strict（`.env` 家族）→ 都算「键与 `=` 之间的续字符」，计入有界间隔
+ *         并 unsupported → fail closed；
  *       · prose（README 等）→ 这不是赋值，是散文；
- *   - 第 65 个 gap code point → **exhausted** → fail closed（放弃扫描绝不等于放行）。
+ *   - 第 65 个 code point → **exhausted** → fail closed（放弃扫描绝不等于放行）。
+ *
+ * strict 里**不能**用「词字符 ⇒ 不是赋值」终止：ASCII 键名已经被调用方的
+ * `[A-Za-z_][A-Za-z0-9_]*` 贪婪吃完，停在这里的词字符必然是**非 ASCII 续字符**，
+ * 而 Node 把它算进键名并真的定义出一个活凭据（见函数体内的实测记录）。
  */
 const readAssignmentGap = (text, from, { strict = false } = {}) => {
   let index = from
@@ -904,12 +923,23 @@ const readAssignmentGap = (text, from, { strict = false } = {}) => {
     if (character === '=') {
       return { reachedEquals: true, index, supported, exhausted: false }
     }
-    if (isWordCharacter(character)) {
-      return { reachedEquals: false, index, supported: true, exhausted: false }
-    }
     const gapLike = isGapCharacter(character)
-    if (!gapLike && !strict) {
-      // prose 模式：可见字符说明这是散文，不是赋值。
+    if (!strict && (isWordCharacter(character) || !gapLike)) {
+      // **只有 prose 模式**允许「词字符 / 可见字符 ⇒ 这不是赋值」这条终止判据。
+      //
+      // strict 模式不能用它。键名的 ASCII 部分由 `sensitiveAssignmentsIn` 的
+      // `[A-Za-z_][A-Za-z0-9_]*` 贪婪吃完，所以**第一次**停在这里的词字符必然是
+      // 非 ASCII 续字符；实测 v24.18.0：`PASSWORDé=AUDITVALUE` 定义
+      // `PASSWORDé`、`PASSWORD٣=` 定义 `PASSWORD٣`、`PASSWORD密码=` 定义
+      // `PASSWORD密码`，三条都是**活的**凭据，而按词字符终止会让它们全部漏检
+      // （基线 3/3 漏）。组合附标（U+0301 / U+0327）不是 `\p{L}\p{N}_`，此前就
+      // 已经走可见字符那一支 fail closed。
+      //
+      // **后续迭代不止于此**：消费掉一个 ASCII 标点之后，下一个字符可以是 ASCII
+      // 词字符，于是 `POSTGRES_PASSWORD-FILE=…`、`SECRET/v2=…` 这类键也一并
+      // fail closed。这是**有意的**——Node 同样把它们定义成活的环境变量（逐条
+      // 实测），判据覆盖的是「词干之后、`=` 之前的任何有界续字符」，不只是非
+      // ASCII 的那部分。两类都有注册反例。
       return { reachedEquals: false, index, supported: true, exhausted: false }
     }
     if (consumed === maximumAssignmentGap) {
@@ -1244,9 +1274,16 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         sensitiveHits += sensitiveAssignmentsIn(segment.text)
       }
       if (strict) {
+        // strict 的续字符规则只对**键区**成立：dotenv 的键就是第一个 `=` 之前的
+        // 那一段，Node 只在那里把「词字符/可见字符」算进键名。把它套到取值内部
+        // 会平白多报——审计实测 `TIP="token 有效期=7天"` 这类**取值里**带 CJK 与
+        // `=` 的普通写法被判成敏感赋值（Node 只定义了 `TIP`）。键区之外仍由
+        // prose 扫描覆盖，判据与基线一致。
         const consumed = dotenvConsumedText(line)
         if (consumed !== null) {
-          sensitiveHits += sensitiveAssignmentsIn(consumed, { strict: true })
+          const equals = consumed.indexOf('=')
+          const keyRegion = equals === -1 ? consumed : consumed.slice(0, equals + 1)
+          sensitiveHits += sensitiveAssignmentsIn(keyRegion, { strict: true })
         }
       }
       if (sensitiveHits > 0) {

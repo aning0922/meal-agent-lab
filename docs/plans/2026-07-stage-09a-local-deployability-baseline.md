@@ -1,6 +1,6 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-02 更新实施状态）
+- 日期：2026-07-26（2026-08-03 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
@@ -2149,7 +2149,7 @@ link-local 地址。
 只包含固定类别、文件标签和行号，不包含输入派生的 key 或 value。**
 
 targeted negative suite 新增 3 条注册 case，从 32 精确增加到 **35/35**（**当时**
-的计数；第十二轮扩到 36，见下一节），原有 32 条未删未弱化且全部复跑通过。
+的计数；第十二轮扩到 36，见下一节），原有 32 条**注册 case** 未删（覆盖格位口径见第十五轮的订正）且全部复跑通过。
 
 ##### 本轮两路只读审计的确认级发现
 
@@ -2223,7 +2223,7 @@ inline comment 与 prose 片段里也全部漏检，U+200B 的键/`=` 间隔漏�
 一致，六种合法空占位保持干净，消息仍只有固定类别 + 文件标签 + 行号。
 
 targeted negative suite 新增 1 条注册 case，从 35 精确增加到 **36/36**（**当时**
-的计数；第十三轮扩到 37，见下一节），原有 35 条未删未弱化且全部复跑通过。
+的计数；第十三轮扩到 37，见下一节），原有 35 条**注册 case** 未删（覆盖格位口径见第十五轮的订正）且全部复跑通过。
 
 ##### 本轮两路只读审计的确认级发现与定点修复
 
@@ -2279,31 +2279,41 @@ targeted negative suite 新增 1 条注册 case，从 35 精确增加到 **36/36
    （否则 `WECHAT_APP_SECRET=` 会因为去读 `PASSWORD` 而永远 undefined，把合法
    空占位判成 unsupported——这正是实现期第一次跑出的那条 mismatch）。
 
-3. **矩阵硬门禁**：`expectedWhitespaceMatrixCount = 55`，当前实现 **55/55**。
-   结构化 gap 的注册 case 另有独立字面量计数 `expectedStructuralGapCount = 23`
-   （6 个字符 × 3 条路径 + 5 条无 `=` 的 benign 对照），删一项同样不会静默 PASS。
+3. **矩阵硬门禁**：`expectedWhitespaceMatrixCount = 55`，**当时**实现 55/55（当前口径见第十四、十五轮：69 行）。
+   结构化 gap 的注册 case 另有独立字面量计数 `expectedStructuralGapCount = 23`，
+   删一项同样不会静默 PASS。**订正（第十五轮）**：这里原写的构成「6 个字符 ×
+   3 条路径 + 5 条无 `=` 的 benign 对照」（18+5）**从来没有成立过**——
+   `git show a8c48f0` 里当时就已经是 5×3 unsupported + 1×3 visible prose +
+   1 overbound + 4 benign。正确构成见第十五轮一节。
 
-   矩阵构成（55）：whitespace-only 7、whitespace+value 7、key-gap 7、
+   **当时**的矩阵构成（55）：whitespace-only 7、whitespace+value 7、key-gap 7、
    inline-comment 7、prose-fragment 7、empty-placeholder 8、structural-value 6、
    structural-gap 6。
 
-**基线证据（`c9a282a`）实测 23 项 mismatch，不是任务书写的 27。**逐组分布：
+**基线证据（`c9a282a`）当时实测 23 项 mismatch，不是任务书写的 27。**逐组分布：
 whitespace-only 4、whitespace+value 4、key-gap 1、inline-comment 4、
 prose-fragment 4、structural-value 1、structural-gap 5。这个数字取决于矩阵的具体构成，而任务书没有
-规定构成；上面 55 行的分组是本轮的设计，23 是在该构成下的**实测值**。同时，
+规定构成；上面 55 行的分组是**当时**的设计，23 是在该构成下的**实测值**。同时，
 结构化 gap 那条 case 在基线上有 **18/18** 未 fail closed。差额如何认定，留待
 总控裁定——本轮按实测数字记录，不按任务书的 27 改写。
 
 targeted negative suite 新增 1 条注册 case（structural gap），从 36 精确增加到
-**37/37**，原有 36 条未删未弱化且全部复跑通过。
+**37/37**（当时口径），**注册 case 数没有减少**。
 
-**订正（第十四轮，经复核后撤回）**：本轮曾把上面这句改写成「第十三轮改动了两条
-既有 case 的构成」。复核基线后撤回——`git show e875ba9`（第十三轮基线）里
-`GAP_VISIBLE` 0 处、U+2020 0 处、`structural-gap` 0 处、注册 case 36 条。被当成
-「改动既有 case」的那两处（矩阵里的可见字符行、structural-gap case 的 U+2020
-归属与 benign 条数）**都是第十三轮当轮自己新建的内容**，改的是自己当轮的草稿，
-属轮内反复，不构成对既有 case 的删改或弱化。原句成立，予以保留；这条订正记录的
-是**上一版订正本身是错的**——把轮内反复误报成了对既有资产的改动。
+**订正（第十五轮，按 git 复核后定稿）**：这里原先写的是「原有 36 条未删未弱化」。
+**该表述已删除**，因为它把两件事混成了一句：
+
+- **注册 case 数未变**——第十三轮 36 → 37，没有删除任何一条注册 case。这部分成立。
+- **内部覆盖格位被弱化**——同一轮把 whitespace 矩阵改写成 55 行时，**删掉了第十二
+  轮就已存在的 14 个覆盖格位**：`git show e875ba9`（第十二轮的产物）里那条 case 按
+  `[...withValue, ...keyGap] × perPath` 展开，key-gap 的 7 种形态在
+  **inline comment 与 prose fragment 两种渲染**上各有一格；`a8c48f0` 的 55 行只留下
+  key-gap 的顶层渲染。第十四轮把这 14 格恢复（`key-gap-inline` / `key-gap-prose`）。
+
+因此正确口径是：**Round 12 已有这 14 个格位 → Round 13 删除 → Round 14 恢复**。
+第十四轮曾把责任写成「第十二轮漏掉」，随后又用一版订正把「未删未弱化」整句判为
+成立——两次都不准确，以本节为准。注册 case 数与覆盖格位数是两个独立事实，此后
+分开陈述，不再用一句话同时担保。
 
 ##### 本轮两路只读审计的确认级发现与定点修复
 
@@ -2327,7 +2337,7 @@ targeted negative suite 新增 1 条注册 case（structural gap），从 36 精
   **65** 那一侧进了反例，64 从未被断言；而 64 恰恰是错的——上界被写成「扫描位置
   不得越过 from+64」，于是 n=64 的间隔在检查终止字符**之前**就越界，
   `PASSWORD` + 64 空格 + `+=`（根本不是赋值）被误判成 fail closed。
-- **55 行里有 2 行逐字节重复（B）**：`trailing SPACE/TAB` 与 whitespace-only 的
+- **当时 55 行里有 2 行逐字节重复（B）**：`trailing SPACE/TAB` 与 whitespace-only 的
   SPACE/TAB 行完全相同，55 行只有 53 个互不相同的输入。已换成两条真正不同的
   输入，并新增**互不相同输入数**的硬门禁（只数行数挡不住用重复行凑数）。
 - **两处源码里的裸控制字节（B）**：上一轮写进对照表的原始 VT/FF/NBSP/ZWSP 已
@@ -2379,8 +2389,9 @@ targeted negative suite 新增 1 条注册 case（structural gap），从 36 精
 
 5. **证据门禁重建**。distinct identity 改为
    `JSON.stringify([key, envLine, scanLine])`，**不含 group 标签**，并加了反身
-   反例：同一输入放进两个 group 时旧口径算 2、新口径算 1。恢复第十二轮被删掉的
-   **14 个 key-gap × inline/prose 格位**。astral 与 boundary 两组各有精确条数与
+   反例：同一输入放进两个 group 时旧口径算 2、新口径算 1。恢复**第十三轮**删掉的
+   **14 个 key-gap × inline/prose 格位**（这 14 格第十二轮就已存在，见下一轮的
+   订正）。astral 与 boundary 两组各有精确条数与
    distinct 门禁。
 
 **矩阵真实组成（69 行 / 69 个互不相同的输入）**：whitespace-only 7、
@@ -2388,7 +2399,7 @@ whitespace+value 7、key-gap 7、key-gap-inline 7、key-gap-prose 7、
 inline-comment 7、prose-fragment 7、empty-placeholder 8、structural-value 6、
 structural-gap 6。**不再按 55 声称**。
 
-targeted negative suite 从 37 增加到 **42/42**（新增：astral code point、
+targeted negative suite 从 37 增加到 **42/42**（当时口径；第十五轮起为 43）（新增：astral code point、
 file role、oracle 完整性、64 边界、distinct 反身各一条）。
 
 6. **注释体在 `.env` 家族里同样按散文裁定**（审计 A 确认级发现，本轮自伤自修）。
@@ -2419,6 +2430,134 @@ oracle 版本钉死在矩阵组与自检组，boundary 组没有单独再钉一�
 **基线 mismatch 数仍按实测记录，不改写成 27**：第十三轮在 `c9a282a` 上按 55 行
 构成实测 23；本轮矩阵构成已变为 69 行，两者不可直接比较，本轮的失败证据按上面
 各条分别列出。
+
+#### M3B 第十五轮 bounded 最终整改
+
+每一项都先在基线 `d98955f` 上取得失败证据，再实施。
+
+1. **strict dotenv 的 Unicode 键绕过**。敏感 ASCII 词干之后的**非 ASCII 续字符**
+   会被 Node 算进键名，整行因此定义出一条**活的**凭据，只是键名不叫 `PASSWORD`。
+   基线实测（Node v24.18.0，探针查询 **Node 实际创建的完整键名**）：
+
+   | 行 | Node 建的键 | 基线 strict | 修复后 strict | prose |
+   | --- | --- | --- | --- | --- |
+   | `PASSWORDé=AUDITVALUE` | `PASSWORDé` | **漏检** | fail closed | 干净 |
+   | `PASSWORD٣=AUDITVALUE` | `PASSWORD٣` | **漏检** | fail closed | 干净 |
+   | `PASSWORD密码=AUDITVALUE` | `PASSWORD密码` | **漏检** | fail closed | 干净 |
+   | `PASSWORD` + U+0301 + `=…` | `PASSWORD` + U+0301 | 已 fail closed | fail closed | 干净 |
+   | `PASSWORD` + U+0327 + `=…` | `PASSWOR` + `Ḑ` | 已 fail closed | fail closed | 干净 |
+
+   三条字母/数字形态 **3/3 漏检**；两条组合附标此前就命中，因为附标不是
+   `\p{L}\p{N}_`，走的是可见字符那一支。修复：**只有 prose 模式**保留
+   「词字符 ⇒ 这不是赋值」这条终止判据；strict 模式下词字符与可见字符一样算
+   「键与 `=` 之间的有界续字符」，unsupported → fail closed。ASCII 键名由调用方的
+   `[A-Za-z_][A-Za-z0-9_]*` 贪婪吃完，所以停在那里的词字符必然是非 ASCII 的，
+   `PASSWORD_HASH=` 这类普通 ASCII 键不受影响。另加 63/64/65 **码点**续字符边界，
+   三档都 fail closed 且都对 live oracle 证明是活凭据。失败消息仍只有固定类别 +
+   文件标签 + 行号。
+
+2. **唯一一份证据门禁**。抽出 `evidenceGateProblems`，由真实矩阵、structural、
+   astral、boundary、Unicode 键与自反例**共同调用**——门禁只有一份实现，自反例
+   证明的就是生产路径。两种 identity 分开：扫描器的 identity **直接就是
+   `scanLine`**；需要证明送进 Node 的输入互异时另设 `[key, envLine]`。两者都不带
+   group 标签，都对硬字面量断言。自反例调用同一个 helper：同一 `scanLine` 放进
+   两个 group → distinct=1 且门禁失败；两个不同 `scanLine` → distinct=2 且门禁
+   通过。structural 那条也改为建立 23 个 identity 并断言 **23/23 互不相同**。
+
+3. **oracle failure 自检穿过真实实现**。把 spawn 结果的解释抽成纯函数
+   `interpretEnvFileProbe`——它就是 `envFileConsumption` 内部真正调用的那个；
+   `envFileConsumption` 另加 `run` 注入 seam。六种结果逐项注入，**两条路径各判
+   一次**（纯函数 + 真实 `envFileConsumption`）：spawn error、signal、non-zero
+   exit、empty stdout、invalid JSON、unexpected result shape——全部为 oracle
+   failure，原因只能取自冻结的固定类别表，绝不回显 stdout/stderr/键名/取值。
+   再证明任一 oracle failure 会让**共享门禁**整体失败（而不是转成
+   `expectFlag = true`）。Node 版本钉死与 ambient target-key 清洗两条断言保留。
+
+4. **boundary 九格绑定真实 Node 语义**。每格断言**完整 tuple**，不再只看
+   `oracle.ok`：`=` → defined=true/empty=true；`=<取值>` → defined=true/
+   empty=false；`+=<取值>` → defined=false/empty=false。63 与 64 的扫描结论与
+   Node 完全一致。**n=65 的 Node 语义与 63/64 完全相同**（ASCII 空格照样被吃掉），
+   scanner 在那里**刻意偏离**：越过资源上限就放弃解析并 fail closed。偏离的格位
+   精确断言为 `65/empty value` 与 `65/not an assignment` **两格，一个不多一个
+   不少**。
+
+**本轮的实际计数**：targeted negative suite 42 → **43**（新增 Unicode 键续字符
+一条）。任务书第五条写的 current 数字是 42，那是基线 `d98955f` 的值；本轮新增了
+一条注册 case，因此按实测记 **43**。矩阵仍是 **69 行 / 69 个互异扫描输入 /
+69 个互异 oracle 输入**；structural **23** = 5×3 unsupported + 3 visible prose +
+1 overbound + 4 benign；astral 9；boundary 9；Unicode 键 8。
+
+##### 本轮两路只读审计的确认级发现与定点修复
+
+审计在 targeted / local-test 全绿后启动，只读、不与任何 Docker 套件并发。
+
+**审计 A（Unicode 键 / strict-prose / oracle 安全语义）**
+
+- **确认级 HIGH：键区里的 `#` 让凭据两条通路一起漏检。** Node 只把**第一个 `=`
+  之后**的 ` #` 当注释；`=` 之前的 `#` 是普通**键名字符**。实测 v24.18.0，
+  `FOO # PASSWORDé=SECRET` 定义键 `FOO # PASSWORDé`、取值 `SECRET`——一条活凭据。
+  而 `dotenvConsumedText` 在第一个 ` #` 处就截断整行，strict 看不到后半段，prose
+  又在 `é` 上按词字符终止，两条通路一起报 0（这一族审计实测 **5/5 漏检**，
+  基线同样漏，属既有缺陷，但正是本轮宣称要关掉的那一类）。已修：注释起点只在
+  第一个 `=` 之后寻找。新增 5 条注册反例，每条都先用 oracle 证明 Node 确实建出
+  了活凭据。
+- **确认级 MEDIUM：矩阵 21 行的推导依据是假的。** `key-gap*` 与 `structural-gap`
+  的探针一律读 `PASSWORD`，据此断言「Node 整行不生效」。实际上非 ASCII 间隔留在
+  键名里，Node 建的是**扩展键** `PASSWORD<c>`，取值非空。两种前提碰巧都得出
+  「必须命中」，所以没有判定翻转，但依据是错的。已修：这三组按 `gapKeyOf(c)`
+  探测 Node 真正建立的键（ASCII SPACE/TAB 被吃掉时仍是 `PASSWORD`）。
+- **确认级 MEDIUM：strict 规则被套到了取值内部。** `sensitiveAssignmentsIn` 是
+  非锚定扫描，于是 `TIP="token 有效期=7天"` 这类**取值里**带 CJK 与 `=` 的普通写法
+  被判成敏感赋值（Node 只定义了 `TIP`）。已修：strict 的续字符规则只作用在
+  **键区**（第一个 `=` 之前），键区之外仍由 prose 覆盖，与基线一致。新增 4 条
+  取值区对照。
+- **确认级 LOW：真实 spawn 无界。** 卡住的子进程会把整个套件挂住而不是变成一次
+  oracle failure。已加 `timeout` / `maxBuffer` / `killSignal`。
+- **确认级 LOW：局部变量遮蔽了导入的 `wrongReason` helper。** 已改名。
+- 审计判定 **CLEAN**：1365 行 Unicode 键扫描（5 个词干 × 39 种续字符 × 7 种包裹）
+  **0 漏检**；oracle 六路自检**非空转**（把 `run` seam 换回直接 `spawnSync` 会让
+  自检 6/6 失败）；固定类别不泄漏；ambient 清洗对任意键成立；版本钉死覆盖全部
+  oracle 站点。
+
+**审计 B（共享门禁 / distinct / 计数 / 文档 / 冻结范围）**
+
+- **确认级 MEDIUM：门禁不校验「声明的互异数 == 行数」。** 实测把 69 行逐字节
+  重复的 rows 配上 `expectedScanDistinct: 1`，旧版一条问题都不报——凑数从行数
+  挪到了期望值上。已修：门禁自身要求两个 distinct 期望都等于行数。
+- **确认级 LOW：自反例没覆盖 oracle identity 分支。** 已补：同一 `[key, envLine]`
+  换一个 scanLine，必须塌成 1 并让门禁失败；另加「声明值低于行数必须被拒」。
+- **确认级 MEDIUM（文档）**：`docs/project-status.md` 的 Markdown 链接行仍写
+  58 files / 180 local links，实测 **60 files / 214 local links**；本轮又把该表的
+  抬头改成 Round 15，等于替一行陈旧数据背书。已订正。
+- **确认级 MEDIUM（文档）**：同一份文档对 23 给出两种互斥构成——旧处写
+  「6 个字符 × 3 条路径 + 5 条 benign」（18+5），`git show a8c48f0` 证明那从来
+  没有成立过。已订正并指向正确构成。
+- **确认级 LOW（文档）**：第十一、十二轮仍留着「原有 N 条未删未弱化」的复合
+  表述，第十四轮的 42 缺 `当时` 限定。已按「注册 case 数 / 覆盖格位」两分口径
+  分别改写。
+- 审计判定 **CLEAN**：唯一门禁实现、8 个调用点无私有副本、九个硬字面量逐一
+  独立重数通过、范围 7 文件、冻结面零改动、状态措辞未动、零残留。
+
+**已知边界（按设计保留，不得含混）**：
+
+1. 可见字符间隔形态 `PASSWORD†=…` 在 `README.md`、`.gitignore`、`.gitkeep` 里按
+   **散文**处理，不会命中；`.env` 家族里的**整行注释与行内注释**同样按散文处理，
+   也不会命中（Node 不消费注释）。
+2. 同理，**注释里带非 ASCII 键续字符**的凭据也不会命中：`# PASSWORDé=…` 与
+   `NOTES=ok # PASSWORDé=…` 报 0，而 `# PASSWORD=…` 报 1。Node 对这两者都不定义
+   任何变量，所以这是**纯 containment 面**的取舍——把它关掉就要让 prose 也吃词
+   字符，那会让 README 里「`POSTGRES_PASSWORD 由脚本生成，长度 >= 32`」这类句子
+   成片误报（第十三轮实测 18/18）。
+3. **词干内部**的同形异义字不被识别：`TOKЕN=…`（西里尔 Е）Node 定义活凭据，
+   扫描器报 0。词干匹配是 ASCII 表，识别 confusables 需要新的映射与误报分析，
+   不属于本轮 bounded 范围。
+4. oracle failure 对象只带 `{ok, reason}`，不带 `defined`/`empty`。所有调用点都
+   先判 `ok` 再用，且 `oracleFailures` 一律进共享门禁，**今天没有任何一条能变成
+   `expectFlag = true`**；但这个形状本身不强制该守卫，属登记在案的潜伏项。
+
+因此**不得再声称通用的 Secret-in-Git containment 覆盖 `PASSWORD†=…` 这一形态**
+——它只在 `.env` 家族**会被 dotenv 消费的键区**里 fail closed。零宽/空白/格式
+字符间隔、非 ASCII 键续字符、以及键区里的 `#` 不受此限。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2557,7 +2696,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（42 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（43 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
 - 状态：Proposed
-- 日期：2026-07-26（实施注记最后更新 2026-08-02，M3A 已 Accepted（验收落点 `a839df1`）；M3B 已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收）
+- 日期：2026-07-26（实施注记最后更新 2026-08-03，M3A 已 Accepted（验收落点 `a839df1`）；M3B 已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -331,7 +331,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
-前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 42 cases、15 项拓扑变异反例与 5 个真实信号窗口的零残留取证；真实 Compose Secret 在容器内实测
+前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 43 cases、15 项拓扑变异反例与 5 个真实信号窗口的零残留取证；真实 Compose Secret 在容器内实测
 owner==消费进程 EUID、mode 0600、普通文件、nlink=1、非 symlink、可读（UID 999
 与 10001 两侧，宿主 stat 不作数）；从空 volume 起的完整链
 `cluster → logins → createdb → 0000 → handoff → acl → migrate → grants → api`

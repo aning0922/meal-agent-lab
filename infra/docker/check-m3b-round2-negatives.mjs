@@ -1858,7 +1858,52 @@ const oracleNodeVersion = 'v24.18.0'
  *   - oracle failure **绝不**转换成 `expectFlag = true`：那等于用坏掉的量具
  *     去证明被测物合格。
  */
-const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) => {
+const oracleFailureReasons = Object.freeze([
+  'spawn error',
+  'killed by a signal',
+  'non-zero exit',
+  'empty output',
+  'invalid JSON',
+  'unexpected result shape'
+])
+
+/**
+ * spawn 结果 → oracle 判定。**纯函数**，`envFileConsumption` 真正调用的就是它，
+ * 因此自检注入的六种结果穿过的是**生产实现**而不是复制品。
+ *
+ * 失败只回 `oracleFailureReasons` 里的**固定类别**：绝不带 stdout、stderr、
+ * 键名或取值。
+ */
+const interpretEnvFileProbe = (result) => {
+  if (result.error !== undefined) {
+    return { ok: false, reason: 'spawn error' }
+  }
+  if (result.signal !== null && result.signal !== undefined) {
+    return { ok: false, reason: 'killed by a signal' }
+  }
+  if (result.status !== 0) {
+    return { ok: false, reason: 'non-zero exit' }
+  }
+  if (typeof result.stdout !== 'string' || result.stdout === '') {
+    return { ok: false, reason: 'empty output' }
+  }
+  let value
+  try {
+    value = JSON.parse(result.stdout)
+  } catch {
+    return { ok: false, reason: 'invalid JSON' }
+  }
+  if (value !== null && typeof value !== 'string') {
+    return { ok: false, reason: 'unexpected result shape' }
+  }
+  return { ok: true, defined: value !== null, empty: value === '' }
+}
+
+const envFileConsumption = (
+  line,
+  key = 'PASSWORD',
+  { env = process.env, run = spawnSync } = {}
+) => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-envfile-'))
   try {
     const file = resolve(directory, 'probe.env')
@@ -1866,49 +1911,118 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
     // ambient 清洗：被探测的键绝不能从父进程漏进去。
     const childEnv = { ...env }
     delete childEnv[key]
-    const result = spawnSync(
+    // **走注入 seam**：默认就是 `spawnSync`，自检把六种失败结果从这里送进来，
+    // 因此它们穿过的是这条生产路径本身，而不是一份复制的判定。
+    const result = run(
       process.execPath,
       [
         `--env-file=${file}`,
         '-e',
-        // 读**这一行真正赋的那个键**——否则 `WECHAT_APP_SECRET=` 这类行会因为
-        // 去读 PASSWORD 而永远得到 undefined，把一个合法空占位判成 unsupported。
+        // 读**这一行真正赋的那个键**——不是一律读 `PASSWORD`。`WECHAT_APP_SECRET=`
+        // 这类行去读 PASSWORD 会永远得到 undefined，把合法空占位判成 unsupported；
+        // `PASSWORD\u00e9=…` 这类行 Node 建的键是 `PASSWORD\u00e9`，只读 `PASSWORD`
+        // 会把一条**活凭据**读成「未定义」。
         `process.stdout.write(JSON.stringify(process.env[${JSON.stringify(key)}] ?? null))`
       ],
-      { encoding: 'utf8', env: childEnv }
+      // 有界：卡住的子进程必须变成一次 oracle failure，而不是把整个套件挂住。
+      { encoding: 'utf8', env: childEnv, timeout: 30_000, maxBuffer: 1 << 20, killSignal: 'SIGKILL' }
     )
-    if (result.error !== undefined) {
-      return { ok: false, reason: 'spawn error' }
-    }
-    if (result.signal !== null) {
-      return { ok: false, reason: 'killed by a signal' }
-    }
-    if (result.status !== 0) {
-      return { ok: false, reason: 'non-zero exit' }
-    }
-    if (typeof result.stdout !== 'string' || result.stdout === '') {
-      return { ok: false, reason: 'empty output' }
-    }
-    let value
-    try {
-      value = JSON.parse(result.stdout)
-    } catch {
-      return { ok: false, reason: 'invalid JSON' }
-    }
-    if (value !== null && typeof value !== 'string') {
-      return { ok: false, reason: 'unexpected result shape' }
-    }
-    return { ok: true, defined: value !== null, empty: value === '' }
+    return interpretEnvFileProbe(result)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 }
 
+/**
+ * **唯一一份证据门禁**。真实矩阵、structural、astral、boundary、Unicode 键与
+ * 自反例都调用它——门禁只有一份实现，自反例证明的就是生产路径本身。
+ *
+ * 两种 identity 分开：
+ *
+ *   - `scanIdentityOf`：扫描器实际收到的**原始输入**，直接就是 `scanLine`。
+ *     不带 group 标签——带了就能把同一个输入放进两个分组把数字凑够。
+ *   - `oracleIdentityOf`：`[key, envLine]`，只在需要证明**送进 Node 的输入
+ *     互异**时才设。同样不带 group 标签。
+ *
+ * 两个 distinct 都对**硬字面量**断言，不跟行数联动：行数与互异数是两回事。
+ */
+const evidenceGateProblems = ({
+  rows,
+  expectedRows,
+  scanIdentityOf,
+  expectedScanDistinct,
+  oracleIdentityOf = null,
+  expectedOracleDistinct = null,
+  requiresOracle = false,
+  oracleFailures = [],
+  mismatches = [],
+  leaking = []
+}) => {
+  const problems = []
+  // **声明的互异数不得低于行数**。审计实测：把 69 行逐字节重复的 rows 配上
+  // `expectedScanDistinct: 1`，旧版门禁一条问题都不报——那正是它要挡住的
+  // 「用重复行凑数」，只是把凑数挪到了期望值上。这里把「行数 == 互异数」写成
+  // 门禁自身的结构性不变式，调用方无法用一个低期望值绕过去。
+  if (expectedScanDistinct !== expectedRows) {
+    problems.push(
+      `the declared scanner distinct count ${String(expectedScanDistinct)} does not equal the ` +
+        `row count ${String(expectedRows)}`
+    )
+  }
+  if (oracleIdentityOf !== null && expectedOracleDistinct !== expectedRows) {
+    problems.push(
+      `the declared oracle distinct count ${String(expectedOracleDistinct)} does not equal the ` +
+        `row count ${String(expectedRows)}`
+    )
+  }
+  if (requiresOracle && process.version !== oracleNodeVersion) {
+    problems.push(`the oracle is pinned to Node ${oracleNodeVersion}; this run is ${process.version}`)
+  }
+  if (oracleFailures.length > 0) {
+    // 量具坏了整组作废，绝不转成 `expectFlag = true`。
+    problems.push(`${String(oracleFailures.length)} oracle probe(s) failed; the evidence is void`)
+  }
+  if (rows.length !== expectedRows) {
+    problems.push(`expected ${String(expectedRows)} rows, got ${String(rows.length)}`)
+  }
+  const scanDistinct = new Set(rows.map(scanIdentityOf)).size
+  if (scanDistinct !== expectedScanDistinct) {
+    problems.push(
+      `expected ${String(expectedScanDistinct)} distinct scanner inputs, got ${String(scanDistinct)}`
+    )
+  }
+  let oracleDistinct = null
+  if (oracleIdentityOf !== null) {
+    oracleDistinct = new Set(rows.map(oracleIdentityOf)).size
+    if (oracleDistinct !== expectedOracleDistinct) {
+      problems.push(
+        `expected ${String(expectedOracleDistinct)} distinct oracle inputs, got ${String(oracleDistinct)}`
+      )
+    }
+  }
+  if (mismatches.length > 0) {
+    problems.push(`${String(mismatches.length)} row(s) disagreed with the real --env-file consumption`)
+  }
+  if (leaking.length > 0) {
+    problems.push('a failure message left the fixed category shape (not reprinted here)')
+  }
+  return { problems, scanDistinct, oracleDistinct }
+}
+
+/** 扫描器实际收到的原始输入。 */
+const scanIdentityOfRow = (row) => row.scanLine
+/** 送进 `node --env-file` 的输入。 */
+const oracleIdentityOfRow = (row) => JSON.stringify([row.key ?? 'PASSWORD', row.envLine])
+
 {
   // 69 行对齐矩阵。每一行的期望都由**真实 --env-file 消费结果**推导：
   //   - Node 消费出**非空**取值        → 必须命中；
   //   - Node 消费出空串                → 空占位，必须干净；
-  //   - Node **整行不生效**（undefined）→ unsupported，fail closed，必须命中。
+  //   - Node 连**这个键**都没定义       → unsupported，fail closed，必须命中。
+  //
+  // 第三支说的是「这个键」而不是「整行」：键与 `=` 之间的非 ASCII 间隔并不会让
+  // 整行失效，它让 Node 建出一个**扩展键**（`PASSWORD<NBSP>`）。因此这些行的
+  // 探针读的就是那个扩展键，见下面的 `gapKeyOf`。
   const name = 'the whitespace matrix matches real --env-file consumption'
   const whitespace = [
     ['SPACE', WS_SPACE], ['TAB', WS_TAB], ['NBSP', WS_NBSP], ['U+3000', WS_IDEO],
@@ -1928,10 +2042,18 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
   // 2) 空白 + 取值（7）
   for (const [label, c] of whitespace) rows.push({ group: 'whitespace+value', label, envLine: `PASSWORD=${c}SYNTHETIC-WSV`, scanLine: `PASSWORD=${c}SYNTHETIC-WSV` })
   // 3) 键与 `=` 之间的空白（7），以及它在 inline comment / prose 两条路径上的
-  //    格位（各 7）——第十二轮把这 14 个格位漏掉了，本轮恢复。
-  for (const [label, c] of whitespace) rows.push({ group: 'key-gap', label, envLine: `PASSWORD${c}=SYNTHETIC-GAP`, scanLine: `PASSWORD${c}=SYNTHETIC-GAP` })
-  for (const [label, c] of whitespace) rows.push({ group: 'key-gap-inline', label, envLine: `PASSWORD${c}=SYNTHETIC-GAPINL`, scanLine: `NOTES=ok # PASSWORD${c}=SYNTHETIC-GAPINL` })
-  for (const [label, c] of whitespace) rows.push({ group: 'key-gap-prose', label, envLine: `PASSWORD${c}=SYNTHETIC-GAPPRO`, scanLine: `run PASSWORD${c}=SYNTHETIC-GAPPRO now` })
+  //    格位（各 7）。**这 14 个格位第十二轮就有**（当时按 `[...withValue,
+  //    ...keyGap] \u00d7 perPath` 展开），第十三轮改写成 55 行矩阵时把 keyGap 的
+  //    inline/prose 两种渲染删掉了，第十四轮恢复。
+  // 探针必须读 **Node 真正建立的那个键**：ASCII SPACE/TAB 会被 Node 吃掉，键仍是
+  // `PASSWORD`；其余间隔字符**留在键名里**，键是 `PASSWORD<c>`。此前这三组一律
+  // 读 `PASSWORD`，于是「Node 整行不生效」的推导对其中 15 行是假的（审计实测，
+  // 连同 structural-gap 共 21 行）——两种前提碰巧都得出「必须命中」，结论没错但
+  // 依据是错的。
+  const gapKeyOf = (c) => (c === WS_SPACE || c === WS_TAB ? 'PASSWORD' : `PASSWORD${c}`)
+  for (const [label, c] of whitespace) rows.push({ group: 'key-gap', label, key: gapKeyOf(c), envLine: `PASSWORD${c}=SYNTHETIC-GAP`, scanLine: `PASSWORD${c}=SYNTHETIC-GAP` })
+  for (const [label, c] of whitespace) rows.push({ group: 'key-gap-inline', label, key: gapKeyOf(c), envLine: `PASSWORD${c}=SYNTHETIC-GAPINL`, scanLine: `NOTES=ok # PASSWORD${c}=SYNTHETIC-GAPINL` })
+  for (const [label, c] of whitespace) rows.push({ group: 'key-gap-prose', label, key: gapKeyOf(c), envLine: `PASSWORD${c}=SYNTHETIC-GAPPRO`, scanLine: `run PASSWORD${c}=SYNTHETIC-GAPPRO now` })
   // 4) 同形态在行内注释里（7）与散文片段里（7）
   for (const [label, c] of whitespace) rows.push({ group: 'inline-comment', label, envLine: `PASSWORD=${c}SYNTHETIC-INL`, scanLine: `NOTES=ok # PASSWORD=${c}SYNTHETIC-INL` })
   for (const [label, c] of whitespace) rows.push({ group: 'prose-fragment', label, envLine: `PASSWORD=${c}SYNTHETIC-PRO`, scanLine: `run PASSWORD=${c}SYNTHETIC-PRO now` })
@@ -1953,16 +2075,14 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
   })
   // 6) 结构性字符：取值位（6）与键/`=` 间隔位（6）
   for (const [label, c] of structural) rows.push({ group: 'structural-value', label, envLine: `PASSWORD=${c}SYNTHETIC-STV`, scanLine: `PASSWORD=${c}SYNTHETIC-STV` })
-  for (const [label, c] of structural) rows.push({ group: 'structural-gap', label, envLine: `PASSWORD${c}=SYNTHETIC-STG`, scanLine: `PASSWORD${c}=SYNTHETIC-STG` })
+  for (const [label, c] of structural) rows.push({ group: 'structural-gap', label, key: `PASSWORD${c}`, envLine: `PASSWORD${c}=SYNTHETIC-STG`, scanLine: `PASSWORD${c}=SYNTHETIC-STG` })
 
   // **矩阵条数的硬门禁**：少一行不得静默通过。
   const expectedWhitespaceMatrixCount = 69
   const mismatches = []
   const leaking = []
   const oracleFailures = []
-  let evaluated = 0
   for (const row of rows) {
-    evaluated += 1
     const consumption = envFileConsumption(row.envLine, row.key ?? 'PASSWORD')
     if (!consumption.ok) {
       // **量具坏了就整组失败**，绝不把它变成「期望命中」。
@@ -1983,41 +2103,31 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
       leaking.push(`${row.group}/${row.label}`)
     }
   }
-  // **互不相同**的输入数也必须等于矩阵条数：只数行数挡不住「用重复行把数字
-  // 凑够」——审计实测第十三轮一度就是 55 行 / 53 个输入。identity 里**不带
-  // group 标签**，否则把同一输入放进两个分组又能凑数。
-  // identity **不含 group 标签**：把同一个输入放进两个分组不得再算作两个不同
-  // 的输入（那正是「用重复行凑数」躲过门禁的方式）。
-  const identityOf = (row) =>
-    JSON.stringify([row.key ?? 'PASSWORD', row.envLine, row.scanLine])
-  const distinctInputs = new Set(rows.map(identityOf)).size
-  if (process.version !== oracleNodeVersion) {
-    fail(
-      name,
-      `the oracle is pinned to Node ${oracleNodeVersion}; this run is ${process.version}`
-    )
-  } else if (oracleFailures.length > 0) {
-    fail(name, `${String(oracleFailures.length)} oracle probe(s) failed; the matrix is void`)
-  } else if (evaluated !== expectedWhitespaceMatrixCount) {
-    fail(
-      name,
-      `expected ${String(expectedWhitespaceMatrixCount)} matrix rows, evaluated ${String(evaluated)}`
-    )
-  } else if (distinctInputs !== expectedWhitespaceMatrixCount) {
-    fail(
-      name,
-      `expected ${String(expectedWhitespaceMatrixCount)} distinct matrix inputs, got ${String(distinctInputs)}`
-    )
-  } else if (mismatches.length > 0) {
-    fail(name, `${String(mismatches.length)} matrix row(s) disagreed with the real Node consumption`)
-  } else if (leaking.length > 0) {
-    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  // 互不相同的输入数由**共享门禁** `evidenceGateProblems` 判定，两种 identity
+  // 各自对硬字面量断言。
+  const expectedMatrixScanDistinct = 69
+  const expectedMatrixOracleDistinct = 69
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: expectedWhitespaceMatrixCount,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: expectedMatrixScanDistinct,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: expectedMatrixOracleDistinct,
+    requiresOracle: true,
+    oracleFailures,
+    mismatches,
+    leaking
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
   } else {
     pass(
       name,
       `${String(expectedWhitespaceMatrixCount)}/${String(expectedWhitespaceMatrixCount)} rows ` +
-        `(all ${String(distinctInputs)} inputs distinct) match the real --env-file consumption ` +
-        '(expectations derived from live spawns, not hand-written), nothing echoed'
+        `(${String(gate.scanDistinct)} distinct scanner inputs, ${String(gate.oracleDistinct)} ` +
+        'distinct oracle inputs) match the real --env-file consumption (expectations derived ' +
+        'from live spawns, not hand-written), nothing echoed'
     )
   }
 }
@@ -2052,7 +2162,8 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
   ]
 
   const expectedStructuralGapCount = 23
-  let evaluated = 0
+  // 23 条各自建一个 identity，由共享门禁断言 23/23 互不相同。
+  const rows = []
   const missed = []
   const disagreed = []
   const wronglyFlagged = []
@@ -2062,8 +2173,9 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
     const line = `PASSWORD${character}=SYNTHETIC-STRUCT`
     const verdicts = []
     for (const [pathLabel, render] of paths) {
-      evaluated += 1
-      const problems = templateProblemsFor(render(line))
+      const scanLine = render(line)
+      rows.push({ envLine: line, scanLine })
+      const problems = templateProblemsFor(scanLine)
       const flagged = problems.some((problem) =>
         /assigns a non-empty value to a sensitive key/.test(problem)
       )
@@ -2083,7 +2195,7 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
   for (const [label, character] of proseControls) {
     const line = `PASSWORD${character}=SYNTHETIC-PROSECTL`
     for (const [pathLabel, render] of paths) {
-      evaluated += 1
+      rows.push({ envLine: line, scanLine: render(line) })
       // **prose 角色**（README.md）：可见字符说明这是散文，必须干净。同一行
       // 放进 `.env.example` 则是 strict 角色，必须 fail closed——见 file-role
       // 那条 case。
@@ -2094,24 +2206,29 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
   }
   // 越界的间隔必须 fail closed：65 个空格之后的 `=` 在 Node 里是一条活凭据，
   // 放弃扫描不能等于放行。
-  evaluated += 1
-  if (!templateProblemsFor(`PASSWORD${' '.repeat(65)}=SYNTHETIC-OVERGAP`).some((problem) =>
+  const overboundLine = `PASSWORD${' '.repeat(65)}=SYNTHETIC-OVERGAP`
+  rows.push({ envLine: overboundLine, scanLine: overboundLine })
+  if (!templateProblemsFor(overboundLine).some((problem) =>
     /assigns a non-empty value to a sensitive key/.test(problem)
   )) {
     missed.push('gap beyond the scan bound')
   }
   for (const [label, line] of benign) {
-    evaluated += 1
+    rows.push({ envLine: line, scanLine: line })
     if (templateProblemsFor(line).length > 0) {
       wronglyFlagged.push(label)
     }
   }
 
-  if (evaluated !== expectedStructuralGapCount) {
-    fail(
-      name,
-      `expected ${String(expectedStructuralGapCount)} structural-gap rows, evaluated ${String(evaluated)}`
-    )
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: expectedStructuralGapCount,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: expectedStructuralGapCount,
+    leaking
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
   } else if (missed.length > 0) {
     fail(name, `${String(missed.length)} unsupported gap(s) were not failed closed`)
   } else if (disagreed.length > 0) {
@@ -2126,7 +2243,9 @@ const envFileConsumption = (line, key = 'PASSWORD', { env = process.env } = {}) 
       `${String(structural.length)} whitespace/format gap characters (NEL, U+180E, U+2060, ` +
         `U+200C, U+200D) fail closed identically on all ${String(paths.length)} paths; a gap ` +
         'beyond the scan bound also fails closed; a visible U+2020 reads as prose and stays ' +
-        `clean on all paths; ${String(benign.length)} benign mentions without an equals stay clean`
+        `clean on all paths; ${String(benign.length)} benign mentions without an equals stay ` +
+        `clean (${String(expectedStructuralGapCount)} rows = 5\u00d73 unsupported + 3 visible ` +
+        `prose + 1 overbound + 4 benign, all ${String(gate.scanDistinct)} distinct)`
     )
   }
 }
@@ -2153,16 +2272,14 @@ const ASTRAL_GAPS = [
     ['prose fragment', (line) => `run ${line} before starting`]
   ]
   const expectedAstralCount = 9
-  let evaluated = 0
+  const rows = []
   const missed = []
   const leaking = []
-  const identities = new Set()
   for (const [label, character] of ASTRAL_GAPS) {
     const line = `PASSWORD${character}=SYNTHETIC-ASTRAL`
     for (const [pathLabel, render] of paths) {
-      evaluated += 1
       const scanLine = render(line)
-      identities.add(JSON.stringify(['PASSWORD', line, scanLine]))
+      rows.push({ envLine: line, scanLine })
       const problems = templateProblemsFor(scanLine)
       if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
         missed.push(`${label}/${pathLabel}`)
@@ -2179,16 +2296,19 @@ const ASTRAL_GAPS = [
         /assigns a non-empty value to a sensitive key/.test(problem)
       )
   )
-  if (evaluated !== expectedAstralCount) {
-    fail(name, `expected ${String(expectedAstralCount)} astral rows, evaluated ${String(evaluated)}`)
-  } else if (identities.size !== expectedAstralCount) {
-    fail(name, `expected ${String(expectedAstralCount)} distinct astral inputs, got ${String(identities.size)}`)
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: expectedAstralCount,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: expectedAstralCount,
+    leaking
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
   } else if (missed.length > 0) {
     fail(name, `${String(missed.length)} astral gap(s) were not failed closed`)
   } else if (!bmpStillCaught) {
     fail(name, 'a BMP gap character regressed while adding astral coverage')
-  } else if (leaking.length > 0) {
-    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
   } else {
     pass(
       name,
@@ -2288,39 +2408,91 @@ const ASTRAL_GAPS = [
 
 {
   // 量具自身必须 fail closed：坏掉的 oracle 不能被当成「期望命中」。
-  const name = 'a broken Node oracle fails the gate instead of satisfying it'
+  //
+  // 六种失败结果**逐项注入**，而且穿过的是生产实现：`interpretEnvFileProbe` 就是
+  // `envFileConsumption` 内部真正调用的那个纯函数，`run` 是它的注入 seam。
+  const name = 'every broken-oracle result fails the gate instead of satisfying it'
   const pinned = process.version === oracleNodeVersion
-  // 1) 非零退出：探测一个不存在的 env 文件。
-  const missingFile = envFileConsumption('PASSWORD=x', 'PASSWORD')
+  const injected = [
+    ['spawn error', { error: new Error('SYNTHETIC-SPAWN'), signal: null, status: null, stdout: '' }, 'spawn error'],
+    ['signal', { error: undefined, signal: 'SIGKILL', status: null, stdout: '' }, 'killed by a signal'],
+    ['non-zero exit', { error: undefined, signal: null, status: 3, stdout: '"x"' }, 'non-zero exit'],
+    ['empty stdout', { error: undefined, signal: null, status: 0, stdout: '' }, 'empty output'],
+    ['invalid JSON', { error: undefined, signal: null, status: 0, stdout: 'SYNTHETIC-NOT-JSON' }, 'invalid JSON'],
+    ['unexpected shape', { error: undefined, signal: null, status: 0, stdout: '{"PASSWORD":1}' }, 'unexpected result shape']
+  ]
+  const wrongVerdict = []
+  const wrongCategoryLocal = []
+  const notFixedCategory = []
+  for (const [label, result, expectedReason] of injected) {
+    // a) 纯函数直判
+    const direct = interpretEnvFileProbe(result)
+    // b) 同一个结果经**真实** `envFileConsumption`（注入 runner）再判一次
+    const throughProduction = envFileConsumption('PASSWORD=x', 'PASSWORD', { run: () => result })
+    for (const verdict of [direct, throughProduction]) {
+      if (verdict.ok !== false) {
+        wrongVerdict.push(label)
+      } else if (verdict.reason !== expectedReason) {
+        wrongCategoryLocal.push(label)
+      }
+      // 原因只能是固定类别：既不回显 stdout/stderr，也不回显键名或取值。
+      if (!oracleFailureReasons.includes(verdict.reason ?? '')) {
+        notFixedCategory.push(label)
+      }
+    }
+  }
+  // 任一 oracle failure 必须让**共享门禁**整体失败。
+  const voidedByFailure = evidenceGateProblems({
+    rows: [{ envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' }],
+    expectedRows: 1,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 1,
+    requiresOracle: true,
+    oracleFailures: ['synthetic']
+  }).problems.length
+  // 健康探针仍然必须成功，且缺失的 env 文件确实让 Node 非零退出（自检不空转）。
+  const healthy = envFileConsumption('PASSWORD=x', 'PASSWORD')
   const brokenDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-oracle-'))
-  let nonZero = { ok: true }
+  let missingFileExitsNonZero = false
   try {
     const result = spawnSync(
       process.execPath,
       [`--env-file=${resolve(brokenDirectory, 'does-not-exist.env')}`, '-e', 'process.stdout.write("{}")'],
       { encoding: 'utf8' }
     )
-    nonZero = { ok: result.status === 0 }
+    missingFileExitsNonZero = result.status !== 0
   } finally {
     rmSync(brokenDirectory, { recursive: true, force: true })
   }
-  // 2) ambient 污染：父进程里放一个 PASSWORD，探针必须不受影响。
+  // ambient 污染：父进程里放一个 PASSWORD，探针必须不受影响。
   const ambient = envFileConsumption('PASSWORD=', 'PASSWORD', {
     env: { ...process.env, PASSWORD: 'AMBIENT-SYNTHETIC' }
   })
   if (!pinned) {
     fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
-  } else if (!missingFile.ok) {
+  } else if (wrongVerdict.length > 0) {
+    fail(name, `${String(wrongVerdict.length)} injected failure(s) were not treated as oracle failures`)
+  } else if (wrongCategoryLocal.length > 0) {
+    fail(name, `${String(wrongCategoryLocal.length)} injected failure(s) reported the wrong category`)
+  } else if (notFixedCategory.length > 0) {
+    fail(name, `${String(notFixedCategory.length)} oracle reason(s) left the fixed category list`)
+  } else if (voidedByFailure === 0) {
+    fail(name, 'an oracle failure did not void the shared evidence gate')
+  } else if (!healthy.ok) {
     fail(name, 'the healthy oracle probe did not succeed')
-  } else if (nonZero.ok) {
+  } else if (!missingFileExitsNonZero) {
     fail(name, 'a missing --env-file did not make Node exit non-zero; the self-check is vacuous')
   } else if (!ambient.ok || !ambient.defined || !ambient.empty) {
     fail(name, 'an ambient value leaked into the oracle probe')
   } else {
     pass(
       name,
-      `pinned to ${oracleNodeVersion}; a missing env file exits non-zero (so a broken probe is ` +
-        'an oracle failure, never expectFlag=true); an ambient value does not reach the child'
+      `pinned to ${oracleNodeVersion}; all ${String(injected.length)} broken-oracle results ` +
+        '(spawn error, signal, non-zero exit, empty stdout, invalid JSON, unexpected shape) are ' +
+        'oracle failures through both the pure interpreter and the real envFileConsumption, each ' +
+        'reporting only a fixed category; one such failure voids the shared gate (never ' +
+        'expectFlag=true); a missing env file still exits non-zero; an ambient value does not ' +
+        'reach the child'
     )
   }
 }
@@ -2329,58 +2501,100 @@ const ASTRAL_GAPS = [
   // 64 是 **inclusive** 上限：消费完 64 个 gap code point 之后仍然检查终止字符，
   // 只有第 65 个 gap 才 exhausted。基线在 n=64 就越界，于是
   // `PASSWORD` + 64 空格 + `+=`（根本不是赋值）被误判成 fail closed（实测）。
-  const name = 'the 64 code point gap bound is inclusive and 65 fails closed'
+  //
+  // 九个格位都断言**完整的 Node tuple**，不是只看 `oracle.ok`：
+  //
+  //   - `=`（空值） → defined=true、empty=true   → Node 里是合法空占位；
+  //   - `=<取值>`   → defined=true、empty=false  → Node 里是活凭据；
+  //   - `+=<取值>`  → defined=false、empty=false → Node 根本不定义这个键。
+  //
+  // n=65 的 Node 语义与 63/64 **完全相同**（ASCII 空格照样被吃掉）；scanner 在
+  // 那里**刻意偏离** Node：越过资源上限就放弃解析并 fail closed。偏离的格位必须
+  // 精确列出，不能含混过去。
+  const name = 'the 64 code point gap bound is inclusive and 65 deviates from Node deliberately'
   const expectedBoundaryCount = 9
-  let evaluated = 0
+  const rows = []
   const wrong = []
-  const identities = new Set()
+  const oracleFailures = []
+  const deviations = []
   for (const size of [63, 64, 65]) {
     const gap = ' '.repeat(size)
     const exhausted = size > 64
     const shapes = [
-      ['empty value', `PASSWORD${gap}=`, exhausted],
-      ['non-empty value', `PASSWORD${gap}=SYNTHETIC-B${String(size)}`, true],
-      ['not an assignment', `PASSWORD${gap}+=SYNTHETIC-B${String(size)}`, exhausted]
+      ['empty value', `PASSWORD${gap}=`, exhausted, { defined: true, empty: true }],
+      ['non-empty value', `PASSWORD${gap}=SYNTHETIC-B${String(size)}`, true, { defined: true, empty: false }],
+      ['not an assignment', `PASSWORD${gap}+=SYNTHETIC-B${String(size)}`, exhausted, { defined: false, empty: false }]
     ]
-    for (const [label, line, expectFlag] of shapes) {
-      evaluated += 1
-      identities.add(JSON.stringify(['PASSWORD', line, line]))
+    for (const [label, line, expectFlag, expectedTuple] of shapes) {
+      rows.push({ envLine: line, scanLine: line })
       // prose 角色：`+=` 在散文里就是「不是赋值」；strict 角色下它是可见间隔，
-      // 由上面的 file-role case 覆盖。
+      // 由 file-role 那条 case 覆盖。
       const flagged = templateProblemsFor(line, 'README.md').some((problem) =>
         /assigns a non-empty value to a sensitive key/.test(problem)
       )
       if (flagged !== expectFlag) {
         wrong.push(`${String(size)}/${label}`)
       }
-      // oracle 记录 Node 对该行的真实消费（证据留痕，不用来推导 prose 期望）。
       const consumption = envFileConsumption(line, 'PASSWORD')
       if (!consumption.ok) {
-        wrong.push(`${String(size)}/${label}: oracle ${consumption.reason}`)
+        oracleFailures.push(`${String(size)}/${label}: ${consumption.reason}`)
+        continue
+      }
+      if (
+        consumption.defined !== expectedTuple.defined ||
+        consumption.empty !== expectedTuple.empty
+      ) {
+        wrong.push(`${String(size)}/${label}: node tuple`)
+        continue
+      }
+      // Node 认为这一行是活凭据吗？scanner 的判定与它不一致的格位就是偏离。
+      const nodeSaysCredential = consumption.defined && !consumption.empty
+      if (flagged !== nodeSaysCredential) {
+        deviations.push(`${String(size)}/${label}`)
       }
     }
   }
-  if (evaluated !== expectedBoundaryCount) {
-    fail(name, `expected ${String(expectedBoundaryCount)} boundary rows, evaluated ${String(evaluated)}`)
-  } else if (identities.size !== expectedBoundaryCount) {
-    fail(name, `expected ${String(expectedBoundaryCount)} distinct boundary inputs, got ${String(identities.size)}`)
-  } else if (wrong.length > 0) {
-    fail(name, `${String(wrong.length)} boundary row(s) disagreed with the inclusive bound`)
+  // scanner **只在**越过资源上限的两个非取值格位上偏离 Node，一个不多一个不少。
+  const expectedDeviations = ['65/empty value', '65/not an assignment']
+  const deviationsMatch =
+    deviations.length === expectedDeviations.length &&
+    expectedDeviations.every((entry) => deviations.includes(entry))
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: expectedBoundaryCount,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: expectedBoundaryCount,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: expectedBoundaryCount,
+    requiresOracle: true,
+    oracleFailures,
+    mismatches: wrong
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
+  } else if (!deviationsMatch) {
+    fail(
+      name,
+      `${String(deviations.length)} row(s) deviate from the real Node consumption, expected ` +
+        `exactly ${String(expectedDeviations.length)} at the resource bound`
+    )
   } else {
     pass(
       name,
-      '63 and 64 code point gaps still check the terminator (empty stays clean, a value is ' +
-        'caught, `+=` reads as not-an-assignment); 65 exhausts the bound and fails closed on ' +
-        'all three shapes; every row probed against the live oracle'
+      `63 and 64 code point gaps still check the terminator; all ${String(expectedBoundaryCount)} ` +
+        'cells assert the full Node tuple (empty => defined+empty, value => defined+non-empty, ' +
+        '`+=` => not defined); at 65 Node reads exactly as it does at 63/64 and the scanner ' +
+        `deviates on purpose in exactly ${String(expectedDeviations.length)} cells (resource ` +
+        'bound => fail closed)'
     )
   }
 }
 
 {
-  // 反身检查：同一个输入放进两个 group，distinct 门禁必须失败——否则「用重复行
-  // 凑数」又能躲过去（审计实测上一轮就是 55 行 / 53 个输入）。
-  const name = 'the distinct-input gate rejects the same input filed under two groups'
-  const identityOf = (row) => JSON.stringify([row.key ?? 'PASSWORD', row.envLine, row.scanLine])
+  // 反身检查：走的是**同一个生产门禁** `evidenceGateProblems`，不是复制的判定。
+  // 同一个 scanLine 放进两个 group 必须 distinct=1 且门禁失败；两个不同的
+  // scanLine 必须 distinct=2 且门禁通过。
+  const name = 'the shared evidence gate rejects the same input filed under two groups'
   const duplicated = [
     { group: 'alpha', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' },
     { group: 'beta', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' }
@@ -2389,23 +2603,239 @@ const ASTRAL_GAPS = [
     { group: 'alpha', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' },
     { group: 'beta', key: 'PASSWORD', envLine: 'PASSWORD=y', scanLine: 'PASSWORD=y' }
   ]
-  const duplicatedDistinct = new Set(duplicated.map(identityOf)).size
-  const genuineDistinct = new Set(distinctRows.map(identityOf)).size
+  // 两条 identity **各自**都要有自反例：只测 scan 那一条的话，oracle identity
+  // 分支回归了没人会发现（审计实测这个缺口）。
+  const duplicatedGate = evidenceGateProblems({
+    rows: duplicated,
+    expectedRows: 2,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 2,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: 2
+  })
+  const distinctGate = evidenceGateProblems({
+    rows: distinctRows,
+    expectedRows: 2,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 2,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: 2
+  })
+  // 同一个 `[key, envLine]` 换一个 scanLine：scan 那条看着是 2，oracle 那条必须
+  // 塌成 1 并让门禁失败。
+  const sameOracleInput = [
+    { group: 'alpha', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'PASSWORD=x' },
+    { group: 'beta', key: 'PASSWORD', envLine: 'PASSWORD=x', scanLine: 'NOTES=ok # PASSWORD=x' }
+  ]
+  const oracleGate = evidenceGateProblems({
+    rows: sameOracleInput,
+    expectedRows: 2,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 2,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: 2
+  })
+  // 声明一个低于行数的互异期望，门禁必须自己拒绝。
+  const understatedGate = evidenceGateProblems({
+    rows: duplicated,
+    expectedRows: 2,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 1
+  })
   // 旧口径（identity 里带 group 标签）会把重复行算成两个不同输入。
-  const groupTagged = new Set(
-    duplicated.map((row) => `${row.group}|${row.scanLine}`)
-  ).size
-  if (duplicatedDistinct !== 1) {
-    fail(name, 'two identical inputs did not collapse to one identity')
-  } else if (genuineDistinct !== 2) {
-    fail(name, 'two genuinely different inputs collapsed to one identity')
+  const groupTagged = new Set(duplicated.map((row) => `${row.group}|${row.scanLine}`)).size
+  if (duplicatedGate.scanDistinct !== 1) {
+    fail(name, 'two identical scanner inputs did not collapse to one identity')
+  } else if (duplicatedGate.problems.length === 0) {
+    fail(name, 'the shared gate accepted two identical scanner inputs as two')
+  } else if (distinctGate.scanDistinct !== 2) {
+    fail(name, 'two genuinely different scanner inputs collapsed to one identity')
+  } else if (distinctGate.problems.length > 0) {
+    fail(name, 'the shared gate rejected two genuinely different scanner inputs')
+  } else if (oracleGate.oracleDistinct !== 1 || oracleGate.problems.length === 0) {
+    fail(name, 'the same oracle input under two scan lines did not collapse and fail the gate')
+  } else if (understatedGate.problems.length === 0) {
+    fail(name, 'the gate accepted a declared distinct count below the row count')
   } else if (groupTagged !== 2) {
     fail(name, 'the superseded group-tagged identity no longer demonstrates the defect')
   } else {
     pass(
       name,
-      'identity is [key, envLine, scanLine] with no group tag: duplicates collapse to 1 while ' +
-        'the superseded group-tagged form counted them as 2'
+      'the same helper the matrices use: identity is the raw scanLine (and [key, envLine] for the ' +
+        'oracle) with no group tag, so identical inputs collapse to 1 and fail the gate on both ' +
+        'axes while genuinely different inputs stay 2 and pass; a declared distinct count below ' +
+        'the row count is refused; the superseded group-tagged form counted the duplicates as 2'
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// R15：strict dotenv 下的 Unicode 键续字符
+// ---------------------------------------------------------------------------
+process.stdout.write('R15: Unicode key continuation under the strict dotenv role\n')
+
+{
+  // 敏感 ASCII 词干之后的**非 ASCII 续字符**：Node 把它算进键名，于是整行定义出
+  // 一个**活的**凭据，只是键名不叫 `PASSWORD`。基线实测 v24.18.0：
+  // `PASSWORDé=` 定义 `PASSWORDé`、`PASSWORD٣=` 定义 `PASSWORD٣`、
+  // `PASSWORD密码=` 定义 `PASSWORD密码`，而 strict 扫描器按「词字符
+  // ⇒ 这不是赋值」终止，三条 **3/3 全部漏检**。组合附标（U+0301 / U+0327）不是
+  // `\p{L}\p{N}_`，此前就走可见字符那一支 fail closed。
+  //
+  // 探针查询的是 **Node 实际创建的完整键名**，不是一律查 `PASSWORD`。
+  const name = 'a key continuation after an ASCII stem fails closed under strict dotenv'
+  const continuations = [
+    ['latin small letter e with acute', 'é'],
+    ['arabic-indic digit three', '٣'],
+    ['han characters', '密码'],
+    ['combining acute accent', '\u0301'],
+    ['combining cedilla', '\u0327']
+  ]
+  const rows = []
+  for (const [label, continuation] of continuations) {
+    const key = `PASSWORD${continuation}`
+    rows.push({ label, key, envLine: `${key}=AUDITVALUE-UNI`, scanLine: `${key}=AUDITVALUE-UNI` })
+  }
+  // ASCII 标点之后再接 ASCII 词字符：判据覆盖的是「词干之后、`=` 之前的任何
+  // 有界续字符」，不只是非 ASCII 的那部分。Node 把这些同样定义成活的环境变量，
+  // 所以它们必须有自己的注册反例，而不是靠上面几条顺带覆盖。
+  for (const [label, continuation] of [
+    ['ascii hyphen then words', '-FILE'],
+    ['ascii dot then words', '.FILE'],
+    ['ascii slash then words', '/v2'],
+    ['ascii parentheses', '(old)']
+  ]) {
+    const key = `PASSWORD${continuation}`
+    rows.push({ label, key, envLine: `${key}=AUDITVALUE-ASCII`, scanLine: `${key}=AUDITVALUE-ASCII` })
+  }
+  // 63 / 64 / 65 个续字符：**以 code point 计**的边界，确认没有新的 off-by-one。
+  for (const size of [63, 64, 65]) {
+    const key = `PASSWORD${'é'.repeat(size)}`
+    const line = `${key}=AUDITVALUE-UNI${String(size)}`
+    rows.push({ label: `${String(size)} continuation code points`, key, envLine: line, scanLine: line })
+  }
+  const expectedUnicodeKeyCount = 12
+  const strictFiles = ['local-test.env.example', 'local-test.env', 'sample.env.template']
+  const oracleFailures = []
+  const mismatches = []
+  const leaking = []
+  const notLive = []
+  const proseFlagged = []
+  for (const row of rows) {
+    // a) Node 真的用这个完整键名定义了一条非空取值吗？
+    const consumption = envFileConsumption(row.envLine, row.key)
+    if (!consumption.ok) {
+      oracleFailures.push(`${row.label}: ${consumption.reason}`)
+      continue
+    }
+    if (!consumption.defined || consumption.empty) {
+      notLive.push(row.label)
+      continue
+    }
+    // b) strict 角色的三种文件都必须 fail closed。
+    for (const file of strictFiles) {
+      const problems = templateProblemsFor(row.scanLine, file)
+      if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+        mismatches.push(`${row.label}/${file}`)
+      }
+      if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+        leaking.push(`${row.label}/${file}`)
+      }
+    }
+    // c) prose 角色保持「词字符 ⇒ 这不是赋值」，同一行必须干净。
+    if (templateProblemsFor(row.scanLine, 'README.md').length > 0) {
+      proseFlagged.push(row.label)
+    }
+  }
+  // **键区里的 `#`**：`=` 之前的 `#` 对 Node 只是普通键名字符，整行照样定义出
+  // 一条活凭据。审计实测这一族 5/5 漏检（strict 被截断、prose 按词字符终止）。
+  const keyPositionHash = [
+    ['ascii stem after a hash', 'FOO # PASSWORD=SECRET-KEYHASH', 'FOO # PASSWORD'],
+    ['unicode continuation after a hash', 'FOO # PASSWORD\u00e9=SECRET-KEYHASH', 'FOO # PASSWORD\u00e9'],
+    ['visible gap after a hash', 'FOO # PASSWORD\u2020=SECRET-KEYHASH', 'FOO # PASSWORD\u2020'],
+    ['app secret after a hash', 'FOO # WECHAT_APP_SECRET\u5bc6=SECRET-KEYHASH', 'FOO # WECHAT_APP_SECRET\u5bc6'],
+    ['stem embedded in a longer key', 'A # api_key\u00e9=SECRET-KEYHASH', 'A # api_key\u00e9']
+  ]
+  const keyHashMissed = []
+  const keyHashNotLive = []
+  for (const [label, line, nodeKey] of keyPositionHash) {
+    const consumption = envFileConsumption(line, nodeKey)
+    if (!consumption.ok) {
+      oracleFailures.push(`${label}: ${consumption.reason}`)
+      continue
+    }
+    if (!consumption.defined || consumption.empty) {
+      keyHashNotLive.push(label)
+      continue
+    }
+    for (const file of strictFiles) {
+      if (
+        !templateProblemsFor(line, file).some((problem) =>
+          /assigns a non-empty value to a sensitive key/.test(problem)
+        )
+      ) {
+        keyHashMissed.push(`${label}/${file}`)
+      }
+    }
+  }
+  // strict 的续字符规则只覆盖**键区**：取值内部的同样写法不得因此多报。
+  const valueRegionControls = [
+    'TIP="token \u6709\u6548\u671f=7\u5929"',
+    'NOTE="password \u5bc6\u7801=x"',
+    'NOTE_CN="\u8bbe\u7f6e token \u540e=\u751f\u6548"',
+    'HELP="secret \u5bc6\u94a5=\u89c1 vault"'
+  ]
+  const valueRegionFlagged = valueRegionControls.filter((line) =>
+    templateProblemsFor(line, 'local-test.env.example').length > 0
+  )
+  // prose 的既定普通文本对照仍然干净。
+  const proseControls = [
+    '- `POSTGRES_PASSWORD` = 数据库密码',
+    'keys += 1',
+    '# TOKEN >= 32 chars',
+    'if (token != null) { }'
+  ]
+  const proseControlFlagged = proseControls.filter(
+    (line) => templateProblemsFor(line, 'README.md').length > 0
+  )
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: expectedUnicodeKeyCount,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: expectedUnicodeKeyCount,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: expectedUnicodeKeyCount,
+    requiresOracle: true,
+    oracleFailures,
+    mismatches,
+    leaking
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
+  } else if (notLive.length > 0) {
+    fail(name, `${String(notLive.length)} Unicode key row(s) are not live credentials in Node`)
+  } else if (proseFlagged.length > 0) {
+    fail(name, `${String(proseFlagged.length)} Unicode key row(s) were flagged in a prose file`)
+  } else if (proseControlFlagged.length > 0) {
+    fail(name, `${String(proseControlFlagged.length)} ordinary prose line(s) were flagged`)
+  } else if (keyHashNotLive.length > 0) {
+    fail(name, `${String(keyHashNotLive.length)} key-position hash row(s) are not live in Node`)
+  } else if (keyHashMissed.length > 0) {
+    fail(name, `${String(keyHashMissed.length)} key-position hash credential(s) went uncaught`)
+  } else if (valueRegionFlagged.length > 0) {
+    fail(name, `${String(valueRegionFlagged.length)} value-region line(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      `${String(expectedUnicodeKeyCount)} key continuations (5 non-ASCII forms + 4 ASCII ` +
+        'punctuation-then-word forms + the 63/64/65 code point boundary, all distinct) are live ' +
+        `credentials in Node ${oracleNodeVersion} and fail ` +
+        `closed in all ${String(strictFiles.length)} strict dotenv files; the same lines stay ` +
+        `clean under the prose role, as do ${String(proseControls.length)} ordinary prose lines; ` +
+        `${String(keyPositionHash.length)} credentials hidden behind a key-position \`#\` are live ` +
+        'in Node and fail closed in every strict file, while ' +
+        `${String(valueRegionControls.length)} value-region lines with CJK and an equals sign stay ` +
+        'clean (strict only governs the key region); no key or value echoed'
     )
   }
 }
@@ -2534,7 +2964,7 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 42
+const expectedCount = 43
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
