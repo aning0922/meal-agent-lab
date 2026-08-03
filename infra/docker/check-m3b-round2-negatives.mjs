@@ -10,7 +10,8 @@
 // 反例是哪一轮加的，不构成套件的当前名称。
 //
 // 本文件里的每一条都是**先写、先跑、先看它红**，再去实现修复的。它们覆盖总控
-// 第二轮点名的七项 P1 里可以在**不启动 Docker 链**的前提下确定性触发的部分：
+// 第二轮点名的七项 P1 里可以确定性触发的部分。**注意：本套件会启动真实 Docker
+// 链**——P1-4 那条 case 通过 PATH shim 跑真实的 `run-local-test-smoke.mjs`：
 //
 //   一 generator 的原子 promotion（禁止覆盖式 rename、只清理自己创建的路径）
 //   二 generator 的 failure-safe cleanup（无吞错、continue-on-failure、独立复查）
@@ -69,6 +70,7 @@ import {
 import { scanTrackedRepositoryForNeedles } from './local-test-containment.mjs'
 import {
   generatePassword,
+  nodeActiveAssignment,
   repositoryRoot,
   scanTrackedTemplates,
   secretFilenames
@@ -2191,15 +2193,22 @@ const oracleIdentityOfRow = (row) => JSON.stringify([row.key ?? 'PASSWORD', row.
       disagreed.push(label)
     }
   }
-  // 可见字符对照：三条路径都必须干净。
+  // 可见字符对照**逐路径给期望**：顶层与散文片段在 prose 角色里是散文，必须
+  // 干净；但**行内注释体**里的同一串是「被注释掉的凭据」，有界注释赋值判据必须
+  // 抓住它（第十六轮起）。
+  const proseControlExpectations = new Map([
+    ['top level', false],
+    ['inline comment', true],
+    ['prose fragment', false]
+  ])
   for (const [label, character] of proseControls) {
     const line = `PASSWORD${character}=SYNTHETIC-PROSECTL`
     for (const [pathLabel, render] of paths) {
       rows.push({ envLine: line, scanLine: render(line) })
-      // **prose 角色**（README.md）：可见字符说明这是散文，必须干净。同一行
-      // 放进 `.env.example` 则是 strict 角色，必须 fail closed——见 file-role
-      // 那条 case。
-      if (templateProblemsFor(render(line), 'README.md').length > 0) {
+      const flagged = templateProblemsFor(render(line), 'README.md').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+      if (flagged !== proseControlExpectations.get(pathLabel)) {
         wronglyFlagged.push(`${label}/${pathLabel}`)
       }
     }
@@ -2242,8 +2251,9 @@ const oracleIdentityOfRow = (row) => JSON.stringify([row.key ?? 'PASSWORD', row.
       name,
       `${String(structural.length)} whitespace/format gap characters (NEL, U+180E, U+2060, ` +
         `U+200C, U+200D) fail closed identically on all ${String(paths.length)} paths; a gap ` +
-        'beyond the scan bound also fails closed; a visible U+2020 reads as prose and stays ' +
-        `clean on all paths; ${String(benign.length)} benign mentions without an equals stay ` +
+        'beyond the scan bound also fails closed; a visible U+2020 reads as prose at top level ' +
+        'and in a prose fragment but is caught inside a comment body; ' +
+        `${String(benign.length)} benign mentions without an equals stay ` +
         `clean (${String(expectedStructuralGapCount)} rows = 5\u00d73 unsupported + 3 visible ` +
         `prose + 1 overbound + 4 benign, all ${String(gate.scanDistinct)} distinct)`
     )
@@ -2341,10 +2351,11 @@ const ASTRAL_GAPS = [
   ]
   // strict 角色要按**渲染逐格**给出期望，不能笼统地「三种都命中」：会被 dotenv
   // 消费的两种渲染必须 fail closed，行内注释体则和 README 一样是散文。
+  // 行内注释体从第十六轮起也必须命中：注释掉的凭据同样进 Git。
   const renderings = [
     ['top level', (line) => line, true],
     ['prose fragment', (line) => `run ${line} before starting`, true],
-    ['inline comment', (line) => `NOTES=ok # ${line}`, false]
+    ['inline comment', (line) => `NOTES=ok # ${line}`, true]
   ]
   const flagged = (line, file) =>
     templateProblemsFor(line, file).some((problem) =>
@@ -2964,7 +2975,329 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 // ---------------------------------------------------------------------------
 // 结果
 // ---------------------------------------------------------------------------
-const expectedCount = 43
+// ---------------------------------------------------------------------------
+// R16：Node-active 键文法、注释里的赋值、`export` 前缀的真实语义
+// ---------------------------------------------------------------------------
+process.stdout.write('R16: the real Node key grammar\n')
+
+{
+  // 数字开头的键：Node **接受**，自由文本的 `[A-Za-z_][A-Za-z0-9_]*` 匹配不上。
+  // 基线实测 9 条非空形态 **9/9 全部漏检**（每条都先由 oracle 证明是活凭据）。
+  const name = 'keys the free-text grammar cannot reach are scanned by the real dotenv grammar'
+  const rows = []
+  for (const [label, key] of [
+    ['0PASSWD', '0PASSWD'],
+    ['1PASSWORD', '1PASSWORD'],
+    ['3TOKEN', '3TOKEN'],
+    ['0DATABASE_URL', '0DATABASE_URL'],
+    ['1PASSWORD + non-ASCII continuation', '1PASSWORD\u00e9'],
+    ['1_POSTGRES_PASSWORD', '1_POSTGRES_PASSWORD']
+  ]) {
+    rows.push({ label, key, envLine: `${key}=AUDITVALUE-DIGIT`, scanLine: `${key}=AUDITVALUE-DIGIT` })
+  }
+  // `export` 前缀被 Node 认掉之后，键仍然是数字开头的那个。
+  rows.push({
+    label: 'export 9PASSWORD',
+    key: '9PASSWORD',
+    envLine: 'export 9PASSWORD=AUDITVALUE-DIGIT',
+    scanLine: 'export 9PASSWORD=AUDITVALUE-DIGIT'
+  })
+  // 前导 ASCII 空白同样被 Node 吃掉。
+  rows.push({
+    label: 'leading spaces 0PASSWD',
+    key: '0PASSWD',
+    envLine: '  0PASSWD=AUDITVALUE-DIGITWS',
+    scanLine: '  0PASSWD=AUDITVALUE-DIGITWS'
+  })
+  rows.push({
+    label: 'leading tab 1PASSWORD',
+    key: '1PASSWORD',
+    envLine: '\t1PASSWORD=AUDITVALUE-DIGITTAB',
+    scanLine: '\t1PASSWORD=AUDITVALUE-DIGITTAB'
+  })
+  // **行首多打一个 `=`**：Node 会跳过空键继续往后找，键仍然是后面那个。审计实测
+  // 这一族 6/6 全漏，其中 `=0PASSWD=` 正好绕过上面那几条数字开头键。
+  for (const [label, line, key] of [
+    ['leading equals', '=0PASSWD=AUDITVALUE-LEADEQ', '0PASSWD'],
+    ['double leading equals', '==0PASSWD=AUDITVALUE-LEADEQ2', '0PASSWD'],
+    ['leading equals + non-ASCII', '=1PASSWORD\u00e9=AUDITVALUE-LEADEQ3', '1PASSWORD\u00e9'],
+    ['leading equals + punctuation', '=WECHAT_APP_SECRET/v2=AUDITVALUE-LEADEQ4', 'WECHAT_APP_SECRET/v2']
+  ]) {
+    rows.push({ label, key, envLine: line, scanLine: line })
+  }
+  // 词干被 ASCII 标点从**内部**切断：`APP_ID` 散成 `APP` + `ID` 就不再命中。
+  for (const [label, key] of [
+    ['hyphen inside the stem', 'WECHAT_APP-ID'],
+    ['dot inside the stem', 'WECHAT_APP.ID']
+  ]) {
+    rows.push({ label, key, envLine: `${key}=AUDITVALUE-STEM`, scanLine: `${key}=AUDITVALUE-STEM` })
+  }
+  // 63 / 64 / 65 码点续字符：资源边界上也不得漏。
+  for (const size of [63, 64, 65]) {
+    const key = `0PASSWORD${'\u00e9'.repeat(size)}`
+    rows.push({
+      label: `${String(size)} continuation code points`,
+      key,
+      envLine: `${key}=AUDITVALUE-DIGIT${String(size)}`,
+      scanLine: `${key}=AUDITVALUE-DIGIT${String(size)}`
+    })
+  }
+  const expectedDigitKeyCount = 18
+  const strictFiles = ['local-test.env.example', 'local-test.env', 'sample.env.template']
+  const oracleFailures = []
+  const mismatches = []
+  const leaking = []
+  const notLive = []
+  for (const row of rows) {
+    const consumption = envFileConsumption(row.envLine, row.key)
+    if (!consumption.ok) {
+      oracleFailures.push(`${row.label}: ${consumption.reason}`)
+      continue
+    }
+    if (!consumption.defined || consumption.empty) {
+      notLive.push(row.label)
+      continue
+    }
+    for (const file of strictFiles) {
+      const problems = templateProblemsFor(row.scanLine, file)
+      if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+        mismatches.push(`${row.label}/${file}`)
+      }
+      if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+        leaking.push(`${row.label}/${file}`)
+      }
+    }
+  }
+  // 同结构的**空占位**必须干净（Node 建的键存在但取值是空串）。
+  const emptyPlaceholders = ['0PASSWD=', '1PASSWORD=', '3TOKEN=', 'export 9PASSWORD=']
+  const placeholderFlagged = emptyPlaceholders.filter(
+    (line) => templateProblemsFor(line, 'local-test.env.example').length > 0
+  )
+  // benign 散文对照。
+  const benignProse = [
+    '0 PASSWORD entries were rotated',
+    'step 1 PASSWORD rotation is manual',
+    '3 tokens remain',
+    '`0PASSWD` 是历史遗留键名'
+  ]
+  const benignFlagged = benignProse.filter(
+    (line) => templateProblemsFor(line, 'README.md').length > 0
+  )
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: expectedDigitKeyCount,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: expectedDigitKeyCount,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: expectedDigitKeyCount,
+    requiresOracle: true,
+    oracleFailures,
+    mismatches,
+    leaking
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
+  } else if (notLive.length > 0) {
+    fail(name, `${String(notLive.length)} digit-leading key row(s) are not live credentials in Node`)
+  } else if (placeholderFlagged.length > 0) {
+    fail(name, `${String(placeholderFlagged.length)} empty placeholder(s) were wrongly flagged`)
+  } else if (benignFlagged.length > 0) {
+    fail(name, `${String(benignFlagged.length)} benign prose line(s) were flagged`)
+  } else {
+    pass(
+      name,
+      `${String(expectedDigitKeyCount)} Node-active keys the free-text grammar cannot reach ` +
+        '(digit-leading plain / non-ASCII continuation / export prefix / leading whitespace, a ' +
+        'leading `=` that Node skips, a stem split by ASCII punctuation, and the 63/64/65 ' +
+        'code point boundary, ' +
+        `all distinct) are live credentials in Node ${oracleNodeVersion} and fail closed in all ` +
+        `${String(strictFiles.length)} strict dotenv files; ${String(emptyPlaceholders.length)} ` +
+        `empty placeholders and ${String(benignProse.length)} benign prose lines stay clean; no ` +
+        'key or value echoed'
+    )
+  }
+}
+
+{
+  // 注释里的凭据同样会随 commit 进 Git。此前只有纯词字符键名能命中，含 ASCII
+  // 标点续字符的形态实测 **6/6 全漏**（4 条整行 + 2 条行内；`# PASSWORD_OLD=` 与
+  // `# PASSWORD=` 是能命中的
+  // 正向对照，证明漏的是续字符而不是整条注释通路）。
+  const name = 'a commented credential with an ASCII continuation is caught'
+  const commented = [
+    ['hyphen', '# PASSWORD-FILE=AUDITVALUE-CMT'],
+    ['dot', '# PASSWORD.FILE=AUDITVALUE-CMT'],
+    ['slash', '# PASSWORD/v2=AUDITVALUE-CMT'],
+    ['parentheses', '# PASSWORD(old)=AUDITVALUE-CMT'],
+    ['inline hyphen', 'NOTES=ok # PASSWORD-FILE=AUDITVALUE-CMTINL'],
+    ['inline dot', 'NOTES=ok # PASSWORD.FILE=AUDITVALUE-CMTINL'],
+    ['underscore control', '# PASSWORD_OLD=AUDITVALUE-CMT'],
+    ['plain control', '# PASSWORD=AUDITVALUE-CMT']
+  ]
+  const files = ['local-test.env.example', 'README.md']
+  const missed = []
+  const leaking = []
+  for (const [label, line] of commented) {
+    for (const file of files) {
+      const problems = templateProblemsFor(line, file)
+      if (!problems.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+        missed.push(`${label}/${file}`)
+      }
+      if (problems.some((problem) => !allowedProblemShape.test(String(problem)))) {
+        leaking.push(`${label}/${file}`)
+      }
+    }
+  }
+  // 同结构的空占位必须干净。
+  const emptyComments = [
+    '# PASSWORD-FILE=',
+    '# PASSWORD.FILE=',
+    '# PASSWORD(old)=',
+    '# PASSWORD_OLD=',
+    'NOTES=ok # PASSWORD-FILE='
+  ]
+  const emptyFlagged = emptyComments.filter(
+    (line) => templateProblemsFor(line, 'local-test.env.example').length > 0
+  )
+  // 普通 README / Markdown 散文必须保持干净——判据是有界的，不是「让散文吃
+  // 可见字符」。
+  const proseControls = [
+    '- `POSTGRES_PASSWORD` = 数据库密码',
+    'keys += 1',
+    '# TOKEN >= 32 chars',
+    'if (token != null) { }',
+    '| `PASSWORD-FILE` | 说明 |',
+    'see docs/setup.md#password-file for details',
+    '# 说明：留空 = 使用默认值',
+    '# PASSWORD rotation policy lives in the runbook',
+    // 文档链接与 Markdown 标题：注释判据不得把 URL / query 当成 dotenv 键。
+    '# See https://api.example.com/v1/keys?limit=10',
+    '# GET /api/secrets?page=2',
+    '# docs https://example.com/docs/tokens?lang=zh',
+    '# [keys](https://example.com/keys?ref=doc)'
+  ]
+  const proseFlagged = proseControls.filter(
+    (line) => templateProblemsFor(line, 'README.md').length > 0
+  )
+  // Node 对这些行**不定义任何变量**——这是纯 containment 面，证据要留痕。
+  const wholeLineProbe = envFileConsumption('# PASSWORD-FILE=AUDITVALUE-CMT', 'PASSWORD-FILE')
+  if (missed.length > 0) {
+    fail(name, `${String(missed.length)} commented credential(s) went uncaught`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} commented empty placeholder(s) were wrongly flagged`)
+  } else if (proseFlagged.length > 0) {
+    fail(name, `${String(proseFlagged.length)} ordinary prose line(s) were flagged`)
+  } else if (leaking.length > 0) {
+    fail(name, 'a failure message left the fixed category shape (not reprinted here)')
+  } else if (!wholeLineProbe.ok || wholeLineProbe.defined) {
+    fail(name, 'the containment premise is wrong: Node defined a variable for a comment line')
+  } else {
+    pass(
+      name,
+      `${String(commented.length)} commented credentials (hyphen, dot, slash, parentheses, two ` +
+        'inline forms and the underscore/plain controls) are caught in both a strict dotenv file ' +
+        `and a prose file; ${String(emptyComments.length)} commented empty placeholders and ` +
+        `${String(proseControls.length)} ordinary prose lines stay clean; Node defines nothing ` +
+        'for a comment line, so this surface is containment only'
+    )
+  }
+}
+
+{
+  // `export` 前缀的真实语义：Node 只认 `export` + **SPACE**。
+  const name = 'the export prefix follows Node exactly, including the TAB case'
+  const cases = [
+    ['one space', 'export PASSWORD=AUDITVALUE-EXP', 'PASSWORD', true],
+    ['two spaces', 'export  PASSWORD=AUDITVALUE-EXP', 'PASSWORD', true],
+    ['space then tab', 'export \tPASSWORD=AUDITVALUE-EXP', 'PASSWORD', true],
+    ['tab keeps export in the key', 'export\tPASSWORD=AUDITVALUE-EXP', 'export\tPASSWORD', false],
+    ['tab keeps export in the key (token)', 'export\tTOKEN=AUDITVALUE-EXP', 'export\tTOKEN', false]
+  ]
+  const wrongKey = []
+  const missed = []
+  const oracleFailures = []
+  for (const [label, line, expectedKey, plainKeyDefined] of cases) {
+    const onExpected = envFileConsumption(line, expectedKey)
+    const onPlain = envFileConsumption(line, expectedKey.replace(/^export\t/, ''))
+    if (!onExpected.ok || !onPlain.ok) {
+      oracleFailures.push(label)
+      continue
+    }
+    // Node 必须用**这个**键定义出非空取值……
+    if (!onExpected.defined || onExpected.empty) {
+      wrongKey.push(`${label}: expected key not defined`)
+      continue
+    }
+    // ……而 TAB 那两条里，去掉 `export\t` 之后的裸键必须**没有**被定义。
+    if (onPlain.defined !== plainKeyDefined) {
+      wrongKey.push(`${label}: bare key definition disagrees with Node`)
+      continue
+    }
+    if (
+      !templateProblemsFor(line, 'local-test.env.example').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+    ) {
+      missed.push(label)
+    }
+  }
+  // `export\tPASSWORD=` 是空占位，必须干净。
+  const emptyExport = templateProblemsFor('export\tPASSWORD=', 'local-test.env.example').length
+  // **行为判据**（不是文本匹配）：扫描器自己解析出来的键，必须与 Node 真正建立的
+  // 键逐条一致。审计实测：原先那条 `export[ \t]+` 源码文本断言挡不住把同一个缺陷
+  // 换个拼法（`export[\t ]+`）写回来，而且五条 scanner 侧断言在有/无该缺陷时**结论
+  // 完全相同**——它根本不具备判别力。现在改成拿 `nodeActiveAssignment` 的输出与
+  // oracle 对质：一旦 TAB 又被当成前缀分隔符，键就会变成 `PASSWORD`，而 oracle 会
+  // 证明 Node 根本没定义这个键，整条 case 立刻失败。
+  const grammarDisagrees = []
+  for (const [label, line, expectedKey] of cases) {
+    const parsed = nodeActiveAssignment(line)
+    if (parsed === null || parsed.key !== expectedKey) {
+      grammarDisagrees.push(label)
+    }
+  }
+  // 源码文本判据保留为第二道保险（便宜，但**不是**主判据）。
+  const grammarSource = readFileSync(
+    resolve(repositoryRoot, 'infra/docker/local-test-secrets-contract.mjs'),
+    'utf8'
+  )
+  const fabricatedGrammar = grammarSource
+    .split('\n')
+    .filter((sourceLine) => {
+      const trimmed = sourceLine.trim()
+      return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*')
+    })
+    .some((sourceLine) => /export\[[^\]]*\]/.test(sourceLine))
+  if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} oracle probe(s) failed; the evidence is void`)
+  } else if (wrongKey.length > 0) {
+    fail(name, `${String(wrongKey.length)} export form(s) disagreed with the real Node key`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} export-prefixed credential(s) went uncaught`)
+  } else if (grammarDisagrees.length > 0) {
+    fail(
+      name,
+      `${String(grammarDisagrees.length)} export form(s): the scanner's parsed key disagrees ` +
+        'with the key Node actually creates'
+    )
+  } else if (emptyExport > 0) {
+    fail(name, 'an export-prefixed empty placeholder was wrongly flagged')
+  } else if (fabricatedGrammar) {
+    fail(name, 'the scanner still carries an `export[ \\t]+` grammar Node does not implement')
+  } else {
+    pass(
+      name,
+      `${String(cases.length)} export forms match Node ${oracleNodeVersion} exactly: one space, ` +
+        'two spaces and space-then-tab all yield the bare key, while `export<TAB>KEY` keeps ' +
+        '`export<TAB>` inside the key and the bare key stays undefined; every form is still a ' +
+        'live sensitive key and fails closed, the empty placeholder stays clean; the ' +
+        "scanner's own parsed key matches the oracle-confirmed key on every form (a behavioural " +
+        'guard, so respelling the character class cannot defeat it)'
+    )
+  }
+}
+
+const expectedCount = 46
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

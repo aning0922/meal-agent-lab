@@ -2399,7 +2399,7 @@ whitespace+value 7、key-gap 7、key-gap-inline 7、key-gap-prose 7、
 inline-comment 7、prose-fragment 7、empty-placeholder 8、structural-value 6、
 structural-gap 6。**不再按 55 声称**。
 
-targeted negative suite 从 37 增加到 **42/42**（当时口径；第十五轮起为 43）（新增：astral code point、
+targeted negative suite 从 37 增加到 **42/42**（当时口径；第十五轮为 43，第十六轮起为 46）（新增：astral code point、
 file role、oracle 完整性、64 边界、distinct 反身各一条）。
 
 6. **注释体在 `.env` 家族里同样按散文裁定**（审计 A 确认级发现，本轮自伤自修）。
@@ -2445,7 +2445,7 @@ oracle 版本钉死在矩阵组与自检组，boundary 组没有单独再钉一�
    | `PASSWORD٣=AUDITVALUE` | `PASSWORD٣` | **漏检** | fail closed | 干净 |
    | `PASSWORD密码=AUDITVALUE` | `PASSWORD密码` | **漏检** | fail closed | 干净 |
    | `PASSWORD` + U+0301 + `=…` | `PASSWORD` + U+0301 | 已 fail closed | fail closed | 干净 |
-   | `PASSWORD` + U+0327 + `=…` | `PASSWOR` + `Ḑ` | 已 fail closed | fail closed | 干净 |
+   | `PASSWORD\u0327=…` | `PASSWORD\u0327`（组合附标不做预组合） | 已 fail closed | fail closed | 干净 |
 
    三条字母/数字形态 **3/3 漏检**；两条组合附标此前就命中，因为附标不是
    `\p{L}\p{N}_`，走的是可见字符那一支。修复：**只有 prose 模式**保留
@@ -2485,7 +2485,7 @@ oracle 版本钉死在矩阵组与自检组，boundary 组没有单独再钉一�
 一条）。任务书第五条写的 current 数字是 42，那是基线 `d98955f` 的值；本轮新增了
 一条注册 case，因此按实测记 **43**。矩阵仍是 **69 行 / 69 个互异扫描输入 /
 69 个互异 oracle 输入**；structural **23** = 5×3 unsupported + 3 visible prose +
-1 overbound + 4 benign；astral 9；boundary 9；Unicode 键 8。
+1 overbound + 4 benign；astral 9；boundary 9；键续字符 **12**（第十五轮收尾时从 8 扩到 12：5 个非 ASCII 形态 + 4 个 ASCII 标点续字符 + 63/64/65 边界）。
 
 ##### 本轮两路只读审计的确认级发现与定点修复
 
@@ -2535,7 +2535,7 @@ oracle 版本钉死在矩阵组与自检组，boundary 组没有单独再钉一�
 - **确认级 LOW（文档）**：第十一、十二轮仍留着「原有 N 条未删未弱化」的复合
   表述，第十四轮的 42 缺 `当时` 限定。已按「注册 case 数 / 覆盖格位」两分口径
   分别改写。
-- 审计判定 **CLEAN**：唯一门禁实现、8 个调用点无私有副本、九个硬字面量逐一
+- 审计判定 **CLEAN**：唯一门禁实现、调用点无私有副本、九个硬字面量逐一
   独立重数通过、范围 7 文件、冻结面零改动、状态措辞未动、零残留。
 
 **已知边界（按设计保留，不得含混）**：
@@ -2558,6 +2558,168 @@ oracle 版本钉死在矩阵组与自检组，boundary 组没有单独再钉一�
 因此**不得再声称通用的 Secret-in-Git containment 覆盖 `PASSWORD†=…` 这一形态**
 ——它只在 `.env` 家族**会被 dotenv 消费的键区**里 fail closed。零宽/空白/格式
 字符间隔、非 ASCII 键续字符、以及键区里的 `#` 不受此限。
+
+#### M3B 第十六轮 bounded 最终整改
+
+每一项都先在基线 `5c6b5a6` 上取得失败证据（Node v24.18.0，探针按**完整键名**
+查询），再实施。
+
+1. **数字开头的 Node-active 键**。Node 的键名**没有字符集限制**，而 strict 走的是
+   自由文本的 `[A-Za-z_][A-Za-z0-9_]*`，数字开头的键一条都匹配不上。基线实测：
+   `0PASSWD` / `1PASSWORD` / `3TOKEN` / `0DATABASE_URL` / `1PASSWORDé` /
+   `1_POSTGRES_PASSWORD` / `export 9PASSWORD` / 两种前导空白形态——Node 逐条建出
+   完整键并赋非空取值，扫描器 **9/9 报 0 problems**。修复：strict 通路改成解析
+   第一个 `=` 之前的**完整 Node-active 键**（`nodeActiveAssignment`），键里任何一段
+   ASCII 词 run 命中 `isSensitiveKeyName` 即为敏感键。**没有**放宽自由文本
+   /prose 的 keyPattern。空占位（`0PASSWD=`）与 benign 散文对照保持干净，
+   63/64/65 码点续字符边界一并覆盖。
+
+2. **注释里的 ASCII 续字符凭据**。本文件的契约一直是「注释里的赋值也要扫」，可
+   基线只有纯词字符键名能命中：`# PASSWORD-FILE=`、`# PASSWORD.FILE=`、
+   `# PASSWORD/v2=`、`# PASSWORD(old)=` 与两种行内形态 **6/6 全漏**，而
+   `# PASSWORD_OLD=` 与 `# PASSWORD=` 是能命中的正向对照——漏的是续字符，不是整条
+   注释通路。修复：`sensitiveCommentAssignments` 是一条**有界**判据——注释体里每个
+   `=` 往前取一段不含 ASCII 空白的 run（长度与候选个数都有上限），run 非空、
+   不以复合运算符（`>=`、`+=`、`!=`……只看紧挨 `=` 的那一个字符）结尾、且含敏感词
+   run，才按 dotenv 取值文法判定取值是否非空。**没有**让散文吃可见字符：
+   `# TOKEN >= 32 chars`、`keys += 1`、``- `POSTGRES_PASSWORD` = 数据库密码``、
+   markdown 表格与 `#password-file` 锚点 8 条对照全部保持干净。这条通路
+   **与文件角色无关**（注释里的凭据同样进 Git），Node 对注释行不定义任何变量，
+   所以它是**纯 containment 面**，case 里对这个前提单独取证。
+
+   **连带的期望变更**：行内注释体里的凭据现在会命中，于是 file-role 与
+   structural 两条既有 case 的 inline-comment 格位从「必须干净」改成「必须命中」。
+   这正是第十五轮登记为已知边界的那处不对称，本轮把它关掉了。
+
+3. **`export` 前缀的真实语义**。实测 v24.18.0：`export PASSWORD=A`、
+   `export  PASSWORD=B`、`export \tPASSWORD=E` 的键都是 `PASSWORD`；但
+   `export\tPASSWORD=C` 的键是**完整的** `export\tPASSWORD`——TAB 不是前缀分隔符。
+   此前 `assignmentPattern` 与自由文本 keyPattern 都写 `export[ \t]+`，那是**冒充**
+   Node 文法。两处都改成 `export +`，`exportPrefixPattern` 是唯一事实源；
+   `export\tPASSWORD` 仍是活敏感键，strict 照常 fail closed，空占位保持干净。
+   case 里另加一条断言：扫描器的**可执行**代码里不得再出现 `export[ \t]+`。
+
+**boundary 九格按角色的实测**（`PASSWORD` + n 个空格 + 形态）：
+
+| n | `=`（空值） | `=<取值>` | `+=<取值>` |
+| --- | --- | --- | --- |
+| 63 | prose 0 / strict 0 | prose 1 / strict 1 | prose **0** / strict **1** |
+| 64 | prose 0 / strict 0 | prose 1 / strict 1 | prose **0** / strict **1** |
+| 65 | prose **1** / strict **1** | prose 1 / strict 1 | prose **1** / strict **1** |
+
+n=63/64 的 `+=` 在 prose 里是「不是赋值」，在 strict 里必须报——Node 确实建出了
+`PASSWORD…+` 这个键并赋了非空取值。n=65 三种形态在**两种角色**下都报：strict
+文件同样跑 prose 扫描，越过资源上限即 fail closed。因此「**恰好两格刻意偏离
+Node**」这句只对 **prose 角色**成立（`65/empty value` 与 `65/not an assignment`）；
+strict 角色下 `+=` 的命中不是偏离，而是 Node 真的定义了那个键。
+
+**证据门禁调用点**：`evidenceGateProblems` 共 **11** 处调用 =
+**6 个主证据组**（真实矩阵、structural、astral、boundary、键续字符、数字开头键）
++ **1 个 oracle-failure void** + **4 个自反例**。第十五轮文档曾写「8 个」（当时实际为 10，该处措辞已在本轮删除），本轮新增的
+数字开头键组把它变成 11。
+
+**本轮计数**：targeted negative suite 43 → **46/46**（数字开头键、注释续字符、
+`export` 语义各一条独立注册 case，没有折进旧 case）。矩阵仍 69 行；structural 23；
+astral 9；boundary 9；键续字符 12；数字开头键 12。
+
+##### 本轮两路只读审计的确认级发现与定点修复
+
+审计在纯 Node 反例全绿后启动。**两路都推翻了本轮的中间实现。**
+
+**审计 A（安全 / 文法）**
+
+- **确认级 HIGH：行首多打一个 `=` 就让整条 strict 通路失效。** Node **不是**在第一个
+  `=` 处停下——`=` 之前 trim 后为空时它会跳过继续往后找。实测 v24.18.0：
+  `=0PASSWD=AUDITVALUE` 建的键是 `0PASSWD`、`=1PASSWORDé=` 建的是 `1PASSWORDé`、
+  `=WECHAT_APP_SECRET/v2=` 建的是 `WECHAT_APP_SECRET/v2`，而 `nodeActiveAssignment`
+  取到空键就返回 `null`，strict 一步都没走——**6/6 全漏**，其中 `=0PASSWD=` 正好绕过
+  本轮刚加的数字开头键判据。这是既有缺陷（base==head），但它直接证伪了本轮
+  「strict 通路 = Node 真实文法」这句话。已修：按 Node 的规则跳过空键段，段数有上限
+  且越界 fail closed；文档里「键 = 第一个 `=` 之前」那条规则一并订正。新增 4 条
+  注册反例。
+- **确认级 MEDIUM：词干被 ASCII 标点从内部切断。** `WECHAT_APP-ID=`、
+  `WECHAT_APP.ID=`、`APP-ID=` 都是 Node 真实建立的键，但 `containsSensitiveKeyToken`
+  按 `[^A-Za-z0-9_]+` 切分之后，已声明的词干 `APP_ID` 散成了 `APP` + `ID`——**3/3
+  漏**，而 `WECHAT_APP_ID` 正是模板里必须保持空值的两个键之一。已修：把标点归一成
+  `_` 再判一次。新增 2 条注册反例。
+- **确认级 MEDIUM：注释判据把文档 URL 当成 dotenv 键。** 本轮新引入的误报，
+  base 0 → head 1：`# See https://api.example.com/v1/keys?limit=10`、
+  `# GET /api/secrets?page=2`、`# docs …/tokens?lang=zh`、
+  Markdown 链接写法的 `keys?ref=doc`——Node 对它们不定义任何变量，而 Markdown 的 `#` 标题
+  也会被当成注释体。已修：run 里含 `://`、`?`、`&` 即判为 URL/query，不是键；
+  `PASSWORD/v2=` 这类真正的续字符不含这些字符，照旧命中。4 条加入 prose 对照。
+- **确认级 MEDIUM-LOW：注释判据的两个上限是 fail-open 的。** run 超过 256 码点、
+  或一行里 `=` 超过 8 个，原实现直接 `continue`/`break` 放行（实测各 1 条漏），
+  与本文件「放弃扫描绝不等于放行」的既定口径相反。已修：越界且含敏感词即 fail closed。
+- **确认级 MEDIUM：`export` 文法的「单一事实源」说法当时不成立。** 三处是手抄的
+  独立字面量；把 `exportPrefixPattern` 改成 `\s+` 在 308 个 export 形态上**零行为
+  差异**，也就是说声明的 SSOT 可以无声漂回被删掉的文法。已修：三处统一从
+  `exportPrefixSource` 派生；`export` case 的判据也从源码文本匹配改成**行为判据**
+  （见审计 B）。
+- 审计判定 **CLEAN**：真实模板 0 problems；含容 36 条报文无一泄漏键名/取值/URL；
+  既有已关闭的类别（非 ASCII 续字符、ASCII 标点续字符、键区 `#`、星平面/零宽间隔、
+  63/64/65 两侧）base==head 全部保持；`nodeActiveAssignment` 在 13 种 `export`
+  形态上与 Node 完全一致。
+
+**审计 B（证据 / 范围 / 文档）**
+
+- **确认级 MEDIUM：`export` 回归判据可以被换个拼法绕过。** 原判据是对源码文本匹配
+  `export[ \t]+`；审计实测把同一个缺陷写成 `export[\t ]+` 就完全静默，而且该 case
+  的五条 scanner 侧断言在有/无缺陷时**结论完全相同**——它不具备判别力。已修：改成
+  拿 `nodeActiveAssignment` 解析出的键与 oracle 确认的键逐条对质，TAB 一旦又被当成
+  分隔符，键会变成 `PASSWORD` 而 oracle 会证明 Node 没定义它，case 立刻失败。
+- **确认级 MEDIUM（文档）**：`local-test-secrets-contract.mjs` 的文法 docblock 仍写
+  `export ASCII_WS+`（含 TAB），正是本轮删掉的那条口径。已改成 `SPACE+`。
+- **确认级 LOW**：注释里写「实测 4/4 全漏」，实测是 **6/6**（4 条整行 + 2 条行内）；
+  套件头部写「不启动 Docker 链」，而 P1-4 那条 case 通过 PATH shim 跑的是**真实的**
+  `run-local-test-smoke.mjs`。两处已订正。
+- 审计判定 **CLEAN**：九个硬字面量逐一独立重数通过；三条新 case 确为独立注册 case
+  且无空转（对基线重放：注释 6/6 漏 → 6/6 抓，数字开头 9/9 漏 → 9/9 抓）；
+  `evidenceGateProblems` 11 处调用的 6+1+4 归类正确；范围 7 文件；冻结面
+  `git diff 5c6b5a6 -- apps packages services/api/src services/api/tests infra/docker/postgres`
+  为空；mutations 文件未动；状态措辞正确；零残留。
+
+**未修边界（记录不改）**：词干被**内部**的字母数字或同形异义字污染仍不识别
+（`XPASSWORDX`、`PGPASSWORD1`、`TОKEN`（西里尔 О）、`SEC_RET`）——那属于词干匹配器
+本身，需要新的映射与误报分析，不在本轮 bounded 范围。既有误报同样记录在案：
+`# token==null`、`# POSTGRES_PASSWORD= 由 make secrets 生成` 会命中（prose gap 扫描
+读到第二个 `=`），合法的多行取值会报成 `unscannable connection string candidate`。
+以上均 base==head，不是本轮引入。
+
+**审计后的计数**：注册 case 仍 **46**；「自由文本文法够不着的键」这条从 12 行扩到
+**18 行**（新增 4 条行首 `=` + 2 条词干被标点切断），注释 case 的 prose 对照从 8 条
+扩到 **12 条**（新增 4 条 URL/Markdown 标题）。
+
+##### 第十六轮追加：受控进程组的生命周期
+
+第十六轮门禁把 signal-window 套件跑红，两个窗口各留下 1 个仍存活的 announced
+pgid，**两次独立运行稳定复现**（第一次在负载高的机器上，我一度怀疑是抖动；第二次
+在完全空闲的机器上同样复现，那个怀疑被推翻）。
+
+**根因**：`runCommand` 的 `close` 处理器直接把 pgid 从受控表里删掉。可 `close`
+只说明**我们 spawn 的那个 leader** 退出且 stdio 关闭了——它 detach 出去的后代仍在
+同一个 pgid 里。删表之后 `terminateControlledSubtree()` 再也不会对它发信号，孤儿
+就此存活。smoke 与 probe 都会起 `docker compose`，正是这种「组长先走、后代还在」
+的形态，所以红的恰好是那两个窗口。
+
+**不依赖 Docker 的确定性反例**（`sh -c 'sleep 30 & exit 0'`）实测：
+
+| | 组长已 close | close 后 PGID 存活 | `terminateControlledSubtree()` 后存活 |
+| --- | --- | --- | --- |
+| 旧实现 | 是 | **是** | **是**（孤儿存活） |
+| 新实现 | 是（exit 0） | 是（孤儿确实存在，反例非空转） | **否**；survivors 报 0 |
+
+**修复**：`close` 只登记 `leaderClosed`，绝不遗忘 pgid；只有 `kill(-pgid, 0)` 得到
+**ESRCH** 才退休，退休后永不再对该 pgid 发信号（pid 会被复用）；EPERM 算「还在」。
+TERM → 有界宽限（轮询）→ 对仍存活整组 KILL → 有界等待直到 ESRCH，统一由
+`terminateGroups` 实现，**超时路径走同一套**。信号处置在 cleanup 之后、重投原信号
+之前**再做一次统一终止与确认**；任一 pgid 未确认消失就只报个数并 exit 1，不再用
+「干净的信号语义」收场。生产代码没有新增故障注入开关或忙等钩子。
+
+**套件**：announced pgid 改为**有界轮询**确认消失（此前是一次瞬时 `kill(0)`，会把
+「正在退出」读成「没退出」）。确定性反例**单独成节、单独计数**，不伪装成第六个
+窗口：完整性判据按 `1 个确定性回归 + 5 个真实窗口` 之和断言，摘要也分开报数。
+验收连跑 **3 轮独立** signal-window，均为 1/1 + 5/5。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2696,7 +2858,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（43 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（46 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

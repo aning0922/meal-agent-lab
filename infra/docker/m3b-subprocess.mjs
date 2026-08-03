@@ -17,13 +17,21 @@
 import { spawn } from 'node:child_process'
 
 /**
- * 仍然存活的受控进程组：pgid → { alive }。
+ * 尚未确认消失的受控进程组：pgid → { leaderClosed }。
  *
- * 只登记**尚未 close 的** child。任何升级（TERM → KILL）都必须在发信号之前
- * 重新确认这一条仍然 alive——否则一个已经退出的 pgid 可能已被别的进程组复用，
- * 我们就会把 SIGKILL 发给无关进程。
+ * **组长 close 不等于整组消失。** `close` 只说明我们 spawn 的那个 leader 退出且
+ * stdio 关闭了；它 detach 出去的后代仍然留在同一个 pgid 里。此前 close 处理器
+ * 直接把 pgid 从表里删掉，于是 `terminateControlledSubtree` 再也不会对它发信号，
+ * 孤儿就此存活——signal-window 套件实测两个窗口各留下 1 个仍存活的 announced
+ * pgid，两次独立运行稳定复现。
+ *
+ * 现在 close 只登记 `leaderClosed`；只有 `kill(-pgid, 0)` 得到 **ESRCH** 才把
+ * 这一条**退休**。退休之后绝不再对该 pgid 发任何信号（pid 会被系统复用）。
  */
 const activeProcessGroups = new Map()
+
+/** 已确认消失的 pgid。一旦进入这里就永远不再被发信号。 */
+const retiredProcessGroups = new Set()
 
 /**
  * 正在处置中的信号（null 表示没有）。CLI 用它给信号处置**让位**：一旦信号
@@ -53,6 +61,66 @@ const killGroup = (pgid, signal) => {
   } catch {
     return false
   }
+}
+
+/**
+ * 这个进程组还在吗？
+ *
+ * `kill(-pgid, 0)` 只做权限/存在性检查，不投递信号。**只有 ESRCH 才算消失**：
+ * EPERM 说明组还在、只是不归我们管，那绝不能当成「已经没了」。
+ */
+const groupIsAlive = (pgid) => {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (error) {
+    return error?.code !== 'ESRCH'
+  }
+}
+
+/** 确认消失即退休；返回是否已退休。 */
+const retireIfGone = (pgid) => {
+  if (retiredProcessGroups.has(pgid)) {
+    return true
+  }
+  if (groupIsAlive(pgid)) {
+    return false
+  }
+  retiredProcessGroups.add(pgid)
+  activeProcessGroups.delete(pgid)
+  return true
+}
+
+/** 有界轮询等待一个进程组消失；返回是否确认消失。 */
+const waitForGroupExit = async (pgid, budgetMs, stepMs = 25) => {
+  const steps = Math.max(1, Math.ceil(budgetMs / stepMs))
+  for (let attempt = 0; attempt < steps; attempt += 1) {
+    if (retireIfGone(pgid)) {
+      return true
+    }
+    await sleep(stepMs)
+  }
+  return retireIfGone(pgid)
+}
+
+/**
+ * 对**本次调用真实派生出来的** pgid 走完整生命周期：
+ * TERM → 有界宽限 → 对仍存活的整组 KILL → 有界等待，直到 `kill(-pgid, 0)`
+ * 得到 ESRCH。返回**仍未确认消失**的 pgid 列表——调用方据此 fail closed。
+ */
+const terminateGroups = async (pgids, { graceMs = 1_000, killWaitMs = 3_000 } = {}) => {
+  const pending = pgids.filter((pgid) => !retireIfGone(pgid))
+  for (const pgid of pending) {
+    killGroup(pgid, 'SIGTERM')
+  }
+  await Promise.all(pending.map((pgid) => waitForGroupExit(pgid, graceMs)))
+  const survivors = pending.filter((pgid) => !retireIfGone(pgid))
+  for (const pgid of survivors) {
+    // 升级前再确认一次：宽限期内自己走掉的组已经退休，绝不对复用的 pgid 发 KILL。
+    killGroup(pgid, 'SIGKILL')
+  }
+  await Promise.all(survivors.map((pgid) => waitForGroupExit(pgid, killWaitMs)))
+  return survivors.filter((pgid) => !retireIfGone(pgid))
 }
 
 /**
@@ -89,7 +157,7 @@ export const runCommand = (
 
     // spawn 成功后才有 pid；error 事件与 spawn 事件互斥。
     child.once('spawn', () => {
-      activeProcessGroups.set(child.pid, { alive: true })
+      activeProcessGroups.set(child.pid, { leaderClosed: false })
       observedProcessGroups.add(child.pid)
       // 每个子进程都是 detached，因此**自成进程组**——它们不属于本进程的
       // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
@@ -104,34 +172,23 @@ export const runCommand = (
       child.stdin.end(stdin)
     }
 
-    // 超时升级：TERM → 宽限 → KILL。升级 timer **绑定这个 child 的生命周期**，
-    // close/error 时被取消，且发信号前再确认一次它仍 alive。
-    let escalation = null
+    // 超时**走同一套组生命周期**：不再自己写一遍 TERM/KILL 的时序。
     const timer = setTimeout(() => {
       timedOut = true
       if (child.pid !== undefined) {
-        killGroup(child.pid, 'SIGTERM')
-        escalation = setTimeout(() => {
-          if (activeProcessGroups.get(child.pid)?.alive === true) {
-            killGroup(child.pid, 'SIGKILL')
-          }
-        }, 1_000)
-        escalation.unref()
+        void terminateGroups([child.pid])
       }
     }, timeoutMs)
 
     const releaseChild = () => {
       clearTimeout(timer)
-      if (escalation !== null) {
-        clearTimeout(escalation)
-        escalation = null
-      }
       if (child.pid !== undefined) {
         const entry = activeProcessGroups.get(child.pid)
         if (entry !== undefined) {
-          entry.alive = false
+          entry.leaderClosed = true
         }
-        activeProcessGroups.delete(child.pid)
+        // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
+        retireIfGone(child.pid)
       }
     }
     child.once('error', releaseChild)
@@ -158,28 +215,19 @@ export const runCommand = (
   })
 
 /**
- * 终止全部仍存活的受控进程组：先整组 TERM，宽限后对残余整组 KILL。
- * 幂等；signal handler 与超时路径共用。
+ * 终止全部尚未确认消失的受控进程组，并**确认**它们真的消失。
+ *
+ * 返回仍未确认消失的 pgid 列表；空数组表示全部确认 ESRCH。幂等；signal
+ * handler 与超时路径共用同一套原语。
  */
-export const terminateControlledSubtree = async ({ graceMs = 1_000 } = {}) => {
-  const entries = [...activeProcessGroups.entries()]
-  for (const [pgid, state] of entries) {
-    if (state.alive) {
-      killGroup(pgid, 'SIGTERM')
-    }
-  }
-  if (entries.length === 0) {
-    return
-  }
-  await sleep(graceMs)
-  // **升级前重新确认**：宽限期内自行退出的 child 已被 close 处理器标记为
-  // 非 alive 并从表里移除，绝不能再对那个 pgid 发 SIGKILL——它可能已被复用。
-  for (const [pgid] of entries) {
-    if (activeProcessGroups.get(pgid)?.alive === true) {
-      killGroup(pgid, 'SIGKILL')
-    }
-  }
-}
+export const terminateControlledSubtree = async ({
+  graceMs = 1_000,
+  killWaitMs = 3_000
+} = {}) => terminateGroups([...activeProcessGroups.keys()], { graceMs, killWaitMs })
+
+/** 尚未确认消失的受控进程组（测试与门禁用）。 */
+export const unconfirmedProcessGroups = () =>
+  [...activeProcessGroups.keys()].filter((pgid) => !retiredProcessGroups.has(pgid))
 
 /**
  * 安装 SIGINT/SIGTERM 处置。收到信号：
@@ -200,8 +248,9 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
     pendingSignal = signal
     process.stderr.write(`\n${signal}: terminating child processes, then running ${label}\n`)
     void (async () => {
+      let survivors = []
       try {
-        await terminateControlledSubtree()
+        survivors = await terminateControlledSubtree()
       } catch (error) {
         process.stderr.write(
           `subtree termination failed: ${error instanceof Error ? error.message : String(error)}\n`
@@ -220,8 +269,25 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
           `${label} on ${signal} failed: ${error instanceof Error ? error.message : String(error)}\n`
         )
       }
+      // cleanup 期间可能又派生了子进程（scoped cleanup 自己要跑 docker 命令）。
+      // **重投原信号之前再做一次统一终止与确认**。
+      try {
+        survivors = await terminateControlledSubtree()
+      } catch (error) {
+        process.stderr.write(
+          `subtree termination failed: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+      }
       process.removeListener('SIGINT', handler)
       process.removeListener('SIGTERM', handler)
+      if (survivors.length > 0) {
+        // **fail closed**：有后代进程组没能确认消失，就不能用「干净的信号语义」
+        // 收场。只报个数，不回显任何命令内容。
+        process.stderr.write(
+          `${String(survivors.length)} descendant process group(s) were not confirmed gone\n`
+        )
+        process.exit(1)
+      }
       // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。
       process.kill(process.pid, signal)
     })()

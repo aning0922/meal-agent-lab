@@ -577,7 +577,24 @@ const sensitiveKeySuffixes = [
 // 之类一并吃掉，于是同一个字符在「分段」和「敏感赋值」两处得到相反结论——
 // `PASSWORD=""<NBSP>` 会被分段器判成 ambiguous，最后以
 // `unscannable connection string candidate` 报出来（那一行根本没有连接串）。
-const assignmentPattern = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=(.*)$/
+/**
+ * `export` 前缀：Node 只认 `export` + **一个或多个 SPACE**。
+ *
+ * 实测 v24.18.0：`export PASSWORD=A` 与 `export  PASSWORD=B` 建的键都是
+ * `PASSWORD`；`export \tPASSWORD=E` 也是 `PASSWORD`（前缀认掉之后键的前导空白被
+ * 去掉）；但 `export\tPASSWORD=C` 建的键是**完整的** `export\tPASSWORD`——TAB 不是
+ * 前缀分隔符。`export[ \t]+` 那种写法把 TAB 也算进去，等于凭空发明了一条 Node
+ * 没有的文法。
+ */
+const exportPrefixSource = 'export +'
+const exportPrefixPattern = new RegExp(`^${exportPrefixSource}`)
+
+// `export` 前缀的唯一事实源见 `exportPrefixPattern`：Node 只认 `export` + 一个或
+// 多个 **SPACE**。此前这里写 `export[ \t]+`，那是**冒充** Node 文法——实测
+// v24.18.0，`export\tPASSWORD=C` 建的键是完整的 `export\tPASSWORD`，不是 PASSWORD。
+const assignmentPattern = new RegExp(
+  `^[ \\t]*(?:${exportPrefixSource})?([A-Za-z_][A-Za-z0-9_]*)[ \\t]*=(.*)$`
+)
 
 /**
  * 连接串里的凭据判据。**两条都与赋值键名无关**：判据看的是行内容本身，因此
@@ -684,6 +701,198 @@ const maximumCandidateLength = 2048
  *     的内容——两者都是「这一行的取值边界不明确」，直接 fail closed；闭合引号
  *     之后的 `#` 注释作为**另一个片段**继续扫描。
  */
+
+/** Node-active 键的扫描上限（code point）。越界即无法判定 → fail closed。 */
+const maximumActiveKeyLength = 2048
+
+/** 连续空键（`=`、`==`、`= =`……）最多跳过多少段，越界即 fail closed。 */
+const maximumActiveKeySegments = 16
+
+/**
+ * 这一行按 **Node `--env-file` 真实文法**解析出来的键与取值起点；不是赋值返回
+ * `null`。strict 扫描、`export` 前缀语义与注释赋值判据都从这里取，**只有一份**。
+ *
+ * 文法（逐条实测得到）：
+ *
+ *   1. 整行注释（首个非空白字符是 `#`）不定义任何变量；
+ *   2. 没有 `=` 不定义任何变量；
+ *   3. 键 = **第一个使键非空的** `=` 之前的那段文本，去掉前导/尾随 ASCII 空白；
+ *      `=` 之前 trim 后为空时 Node 会跳过它继续往后找（`=0PASSWD=V` 的键是
+ *      `0PASSWD`），跳过的段数有上限，越界 fail closed；
+ *   4. 键前可以有 `export` + SPACE（见 `exportPrefixPattern`），去掉之后再去一次
+ *      前导空白。
+ *
+ * 键**没有字符集限制**：`0PASSWD`、`1PASSWORD`、`PASSWORD-FILE`、
+ * `FOO # PASSWORDé` 全都是 Node 真实建立的键（实测）。此前 strict 走的是
+ * `[A-Za-z_][A-Za-z0-9_]*` 的自由文本 keyPattern，数字开头的键一条都匹配不上——
+ * `0PASSWD=AUDITVALUE` 这类**活凭据** 8/8 全部漏检。
+ */
+export const nodeActiveAssignment = (line) => {
+  const text = String(line)
+  if (/^[ \t]*#/.test(text)) {
+    return null
+  }
+  // Node **不是**在第一个 `=` 处停下：如果 `=` 之前的文本 trim 之后是空的，它会
+  // 跳过这个 `=` 继续往后找。实测 v24.18.0：`=0PASSWD=AUDITVALUE` 建的键是
+  // `0PASSWD`、`=PASSWORDé=AUDITVALUE` 建的是 `PASSWORDé`、`==…`/`= …`/`  =…`
+  // 同理。此前这里只看 `indexOf('=')`，键取到空串就返回 null——于是**在行首多打
+  // 一个 `=` 就能让整条 strict 通路失效**（审计实测 6/6，其中 `=0PASSWD=` 正好
+  // 绕过本轮新增的数字开头键判据）。
+  let segmentFrom = 0
+  for (let seen = 0; seen < maximumActiveKeySegments; seen += 1) {
+    const equals = text.indexOf('=', segmentFrom)
+    if (equals === -1) {
+      return null
+    }
+    let key = text.slice(segmentFrom, equals).replace(/^[ \t]+/, '')
+    const exported = exportPrefixPattern.exec(key)
+    if (exported !== null) {
+      key = key.slice(exported[0].length).replace(/^[ \t]+/, '')
+    }
+    key = key.replace(/[ \t]+$/, '')
+    if (key !== '') {
+      return {
+        key,
+        valueFrom: equals + 1,
+        // 超长键无法可靠判定 → 按 ambiguous 处理 → fail closed。
+        overLength: [...key].length > maximumActiveKeyLength
+      }
+    }
+    segmentFrom = equals + 1
+  }
+  // 连续空键超出上限：放弃解析不等于放行。
+  return { key: '', valueFrom: segmentFrom, overLength: true, exhausted: true }
+}
+
+/**
+ * 键里**任何一段 ASCII 词 run** 命中敏感判据即算敏感键。
+ *
+ * 判据本身仍是 `isSensitiveKeyName`（单一事实源）；这里只负责把 Node 允许的任意
+ * 键切成它看得懂的片段：`0PASSWD` → `0PASSWD`（endsWith）、`PASSWORD-FILE` →
+ * `PASSWORD` + `FILE`、`export\tPASSWORD` → `EXPORT` + `PASSWORD`、
+ * `1PASSWORDé` → `1PASSWORD`。
+ */
+const containsSensitiveKeyToken = (key) => {
+  const text = String(key)
+  if (
+    text
+      .split(/[^A-Za-z0-9_]+/)
+      .filter(Boolean)
+      .some((run) => isSensitiveKeyName(run))
+  ) {
+    return true
+  }
+  // 词干本身可能被 ASCII 标点从**内部**切断：`WECHAT_APP-ID` / `WECHAT_APP.ID`
+  // 都是 Node 真实建立的键，而 `APP_ID` 这个已声明的词干在按 `[^A-Za-z0-9_]+`
+  // 切分之后就散成了 `APP` + `ID`（审计实测 3/3 漏，其中 `WECHAT_APP_ID` 正是
+  // 模板里必须保持空值的两个键之一）。把标点归一成 `_` 再判一次。
+  return isSensitiveKeyName(text.replace(/[^A-Za-z0-9]+/g, '_'))
+}
+
+/** 注释赋值判据的上限：键 run 长度与一行里的候选个数都有界。 */
+const maximumCommentKeyLength = 256
+const maximumCommentAssignments = 8
+
+/**
+ * `X>=`、`X+=`、`X!=`、`X<=` 这类**复合运算符**不是 dotenv 赋值。
+ *
+ * 这是注释判据里唯一的字符表，而且刻意只看**紧挨 `=` 的那一个字符**：
+ * `# TOKEN >= 32 chars`、`# keys += 1`、`if (token != null)` 因此保持干净，而
+ * `# PASSWORD-FILE=...`、`# PASSWORD(old)=...` 照常命中。
+ */
+const compoundOperatorTail = /[<>!+\-*/%&|^~?:=]$/
+
+/**
+ * URL / query 形状：`://`、`?`、`&` 出现在 run 里就不是 dotenv 键。
+ *
+ * 注释体里最常见的就是文档链接，而 Markdown 的 `#` 标题也会被当成注释体。审计
+ * 实测新增 4 条误报：`# See https://api.example.com/v1/keys?limit=10`、
+ * `# GET /api/secrets?page=2`、`# docs …/tokens?lang=zh`、
+ * `# [keys](https://example.com/keys?ref=doc)`——Node 对它们不定义任何变量。
+ * `PASSWORD/v2=…` 这类真正的键名续字符不含 `://`/`?`/`&`，照旧命中。
+ */
+const urlShapedRun = /:\/\/|[?&]/
+
+/**
+ * 这一行里的**注释体**（可能 0 或 1 段）。
+ *
+ * 整行注释取 `#` 之后的全部；否则只有**第一个 `=` 之后**出现的 ` #` 才是行内
+ * 注释（`=` 之前的 `#` 对 Node 是普通键名字符）。
+ */
+const commentBodiesOf = (line) => {
+  const text = String(line)
+  const wholeLine = /^[ \t]*#+[ \t]*(.*)$/.exec(text)
+  if (wholeLine !== null) {
+    return [wholeLine[1]]
+  }
+  const equals = text.indexOf('=')
+  if (equals === -1) {
+    return []
+  }
+  const inline = /(?:^|[ \t])#+[ \t]*/.exec(text.slice(equals))
+  if (inline === null) {
+    return []
+  }
+  return [text.slice(equals + inline.index + inline[0].length)]
+}
+
+/**
+ * 注释体里的**敏感赋值**。有界判据，不是「让散文吃可见字符」。
+ *
+ * 被注释掉的凭据同样会随 commit 进 Git，本文件的契约一直是「注释里的赋值也要
+ * 扫」。可此前只有 `KEY=` 这种纯词字符键名能命中：`# PASSWORD-FILE=AUDITVALUE`、
+ * `# PASSWORD.FILE=`、`# PASSWORD/v2=`、`# PASSWORD(old)=` 这些**含 ASCII 标点
+ * 续字符**的形态 4/4 全漏（实测；`# PASSWORD_OLD=` 与 `# PASSWORD=` 是能命中的
+ * 正向对照）。
+ *
+ * 判据：注释体里每个 `=` 往前取一段**不含 ASCII 空白**的 run（有界），
+ * run 非空、不以复合运算符结尾、且含敏感词 run，则按 dotenv 取值文法读取
+ * `=` 之后的取值；取值非空即命中。候选个数同样有界。
+ */
+const sensitiveCommentAssignments = (body) => {
+  const text = String(body)
+  let hits = 0
+  let cursor = 0
+  let exhausted = false
+  for (let seen = 0; ; seen += 1) {
+    if (seen === maximumCommentAssignments) {
+      exhausted = text.indexOf('=', cursor) !== -1
+      break
+    }
+    const equals = text.indexOf('=', cursor)
+    if (equals === -1) {
+      break
+    }
+    cursor = equals + 1
+    let start = equals
+    while (start > 0 && text[start - 1] !== ' ' && text[start - 1] !== '\t') {
+      start -= 1
+    }
+    const key = text.slice(start, equals)
+    if (key === '' || compoundOperatorTail.test(key) || urlShapedRun.test(key)) {
+      continue
+    }
+    if ([...key].length > maximumCommentKeyLength) {
+      // **越界不是免检额度**：run 太长无法判定，只要它含敏感词就 fail closed。
+      if (containsSensitiveKeyToken(key)) {
+        hits += 1
+      }
+      continue
+    }
+    if (!containsSensitiveKeyToken(key)) {
+      continue
+    }
+    if (!assignmentValueIsEmpty(readAssignmentValue(text, equals + 1))) {
+      hits += 1
+    }
+  }
+  if (exhausted && containsSensitiveKeyToken(text)) {
+    // 候选个数越界同理：放弃扫描绝不等于放行。
+    hits += 1
+  }
+  return hits
+}
+
 /**
  * 这一行里**真正会被 dotenv 消费**的那段文本；整行注释返回 `null`。
  *
@@ -1062,7 +1271,7 @@ const isSensitiveKeyName = (rawKey) => {
  *
  * 文法（与 Node `--env-file` 的实测语义对齐）：
  *
- *   assignment := [ `export` ASCII_WS+ ] KEY GAP `=` VALUE
+ *   assignment := [ `export` SPACE+ ] KEY GAP `=` VALUE
  *   KEY        := [A-Za-z_][A-Za-z0-9_]*
  *   GAP        := ASCII_WS*                     → supported
  *               | 含任何非 ASCII 空白的间隔     → **unsupported**（fail closed）
@@ -1072,7 +1281,12 @@ const isSensitiveKeyName = (rawKey) => {
  */
 const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
   const source = String(text)
-  const keyPattern = /(?:^|[^A-Za-z0-9_])(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)/g
+  // `export` 前缀与 `exportPrefixPattern` 同源：只认 SPACE。自由文本扫描本来就是
+  // 非锚定的，这里保留它只为让 `export KEY=` 的键从 `export` 之后开始匹配。
+  const keyPattern = new RegExp(
+    `(?:^|[^A-Za-z0-9_])(?:${exportPrefixSource})?([A-Za-z_][A-Za-z0-9_]*)`,
+    'g'
+  )
   let hits = 0
   let cursor = 0
   for (;;) {
@@ -1274,17 +1488,27 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         sensitiveHits += sensitiveAssignmentsIn(segment.text)
       }
       if (strict) {
-        // strict 的续字符规则只对**键区**成立：dotenv 的键就是第一个 `=` 之前的
-        // 那一段，Node 只在那里把「词字符/可见字符」算进键名。把它套到取值内部
-        // 会平白多报——审计实测 `TIP="token 有效期=7天"` 这类**取值里**带 CJK 与
-        // `=` 的普通写法被判成敏感赋值（Node 只定义了 `TIP`）。键区之外仍由
-        // prose 扫描覆盖，判据与基线一致。
-        const consumed = dotenvConsumedText(line)
-        if (consumed !== null) {
-          const equals = consumed.indexOf('=')
-          const keyRegion = equals === -1 ? consumed : consumed.slice(0, equals + 1)
-          sensitiveHits += sensitiveAssignmentsIn(keyRegion, { strict: true })
+        // strict 通路 = **Node 真实文法**：解析第一个 `=` 之前的完整 Node-active
+        // 键（`nodeActiveAssignment`），键里含敏感词 run 且取值非空就命中。
+        // 它同时覆盖了非 ASCII 续字符、ASCII 标点续字符、数字开头的键、
+        // `export\tPASSWORD` 与键区里的 `#`——都是同一条文法的自然结果，不再
+        // 需要第二套「间隔」判据。取值内部不受它管辖（那里仍走 prose）。
+        const active = nodeActiveAssignment(line)
+        if (active !== null && active.exhausted === true) {
+          // 空键段数越界：无法判定这一行到底给哪个键赋值 → fail closed。
+          sensitiveHits += 1
+        } else if (active !== null && containsSensitiveKeyToken(active.key)) {
+          const parsed = readAssignmentValue(line, active.valueFrom)
+          const verdict = { ...parsed, ambiguous: parsed.ambiguous || active.overLength }
+          if (!assignmentValueIsEmpty(verdict)) {
+            sensitiveHits += 1
+          }
         }
+      }
+      // **注释体**：无论文件角色，被注释掉的凭据都要扫（有界判据，见
+      // `sensitiveCommentAssignments`）。
+      for (const body of commentBodiesOf(line)) {
+        sensitiveHits += sensitiveCommentAssignments(body)
       }
       if (sensitiveHits > 0) {
         problems.push(

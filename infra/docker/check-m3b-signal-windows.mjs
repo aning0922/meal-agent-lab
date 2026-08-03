@@ -16,6 +16,11 @@
 // 窗口由 smoke/probe 自己的输出定位（build 阶段、链路运行阶段），因此命中是
 // 确定的，不靠猜时间。
 import { spawn, spawnSync } from 'node:child_process'
+import {
+  runCommand,
+  terminateControlledSubtree,
+  unconfirmedProcessGroups
+} from './m3b-subprocess.mjs'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -33,6 +38,34 @@ const pass = (name, reason) => {
   caught += 1
   process.stdout.write(`  caught: ${name} (${reason})\n`)
 }
+/** 组内还有成员吗？ESRCH = 已空；EPERM = 还在但不归我们（同样算未消失）。 */
+const groupAlive = (pgid) => {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (error) {
+    return String(error?.code ?? '') !== 'ESRCH'
+  }
+}
+
+/** 有界轮询：预算内一直没消失才算「仍存活」。 */
+const groupSurvives = (pgid, budgetMs, stepMs = 50) => {
+  const deadline = Date.now() + budgetMs
+  for (;;) {
+    if (!groupAlive(pgid)) {
+      return false
+    }
+    if (Date.now() >= deadline) {
+      return true
+    }
+    const until = Math.min(Date.now() + stepMs, deadline)
+    // 同步等待：这条判据必须在拿到结论之前不放行。
+    while (Date.now() < until) {
+      /* bounded spin */
+    }
+  }
+}
+
 const fail = (name, detail) => {
   failures.push(`${name}: ${detail}`)
 }
@@ -265,16 +298,9 @@ const assertCleanScene = (name, result, { expectSignal }) => {
       'the CLI never announced a descendant pgid; the descendant check would be vacuous'
     )
   }
-  const stillAlive = announced.filter((pgid) => {
-    try {
-      // 对**进程组**发 0 号信号：组内还有任何成员就成功。
-      process.kill(-pgid, 0)
-      return true
-    } catch (error) {
-      // ESRCH = 组已空；EPERM = 组还在但不归我们（同样算未消失）。
-      return String(error?.code ?? '') === 'EPERM'
-    }
-  })
+  // **有界轮询**确认消失，而不是做一次瞬时 kill(0)：被测 CLI 是在收到信号之后
+  // 才走完整组终止流程的，瞬时快照会把「正在退出」误判成「没退出」。
+  const stillAlive = announced.filter((pgid) => groupSurvives(pgid, 5_000))
   if (stillAlive.length > 0) {
     problems.push(
       `${String(stillAlive.length)} of ${String(announced.length)} announced descendant ` +
@@ -416,11 +442,86 @@ assertCleanScene(
   { expectSignal: 'SIGINT' }
 )
 
+// ---------------------------------------------------------------------------
+// 确定性进程组回归（**不依赖 Docker**，与下面 5 个真实信号窗口分开计数）
+// ---------------------------------------------------------------------------
+//
+// 组长 close **不等于**整组消失：`sh -c 'sleep 30 & exit 0'` 的 leader 立刻退出，
+// 而它 detach 出去的 `sleep` 仍留在同一个 pgid 里。此前 close 处理器直接把 pgid
+// 从受控表里删掉，`terminateControlledSubtree()` 再也不会碰它——孤儿就此存活。
+// 这条反例把那个场景钉死，不用起任何容器。
+const regressionProblems = []
+let orphanPgid = null
+try {
+  const result = await runCommand([
+    '/bin/sh',
+    '-c',
+    'sleep 30 </dev/null >/dev/null 2>&1 & exit 0'
+  ])
+  orphanPgid = [...String(result.stderr).matchAll(/m3b-descendant-pgid (\d+)/g)]
+    .map((match) => Number(match[1]))
+    .at(-1) ?? null
+  if (orphanPgid === null) {
+    // runCommand 把 pgid 公布在**自己**的 stderr 上，而不是子进程的 stderr。
+    orphanPgid = unconfirmedProcessGroups().at(-1) ?? null
+  }
+  if (result.status !== 0) {
+    regressionProblems.push('the leader did not exit cleanly; the fixture is not measuring what it claims')
+  }
+  if (orphanPgid === null) {
+    regressionProblems.push('no descendant pgid was observed; the fixture would be vacuous')
+  } else {
+    // a) 组长已经 close，但整组**仍然存活**——这正是旧实现放过的状态。
+    if (!groupAlive(orphanPgid)) {
+      regressionProblems.push('the detached grandchild did not survive the leader; the fixture is vacuous')
+    }
+    // b) 修复后：terminateControlledSubtree() 必须确认整组消失。
+    const survivors = await terminateControlledSubtree()
+    if (survivors.length > 0) {
+      regressionProblems.push(
+        `${String(survivors.length)} process group(s) were not confirmed gone by terminateControlledSubtree`
+      )
+    }
+    if (groupSurvives(orphanPgid, 5_000)) {
+      regressionProblems.push('the orphaned process group is still alive after termination')
+    }
+  }
+} catch (error) {
+  regressionProblems.push(
+    `the deterministic fixture threw: ${error instanceof Error ? error.message : String(error)}`
+  )
+} finally {
+  // 按**精确 pgid** 兜底清理，绝不做模糊匹配。
+  if (orphanPgid !== null && groupAlive(orphanPgid)) {
+    try {
+      process.kill(-orphanPgid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  }
+}
+const expectedRegressionChecks = 1
+let regressionCaught = 0
+if (regressionProblems.length > 0) {
+  fail('deterministic process-group regression', regressionProblems[0])
+} else {
+  regressionCaught = 1
+  pass(
+    'deterministic process-group regression',
+    'a detached grandchild outlives its leader, and terminateControlledSubtree confirms the ' +
+      'whole group reaches ESRCH (no Docker involved)'
+  )
+}
+
 const expectedCount = 5
-if (caught + failures.length !== expectedCount) {
+// `caught` 同时计入确定性反例与 5 个真实窗口，因此完整性判据按**两部分之和**。
+const expectedTotal = expectedCount + expectedRegressionChecks
+if (caught + failures.length !== expectedTotal) {
   fail(
     'suite completeness',
-    `expected ${String(expectedCount)} signal windows, got ${String(caught)} caught + ${String(failures.length)} failed`
+    `expected ${String(expectedRegressionChecks)} deterministic regression check + ` +
+      `${String(expectedCount)} signal windows, got ${String(caught)} caught + ` +
+      `${String(failures.length)} failed`
   )
 }
 
@@ -432,6 +533,10 @@ if (failures.length > 0) {
   process.exit(1)
 }
 process.stdout.write(
-  `M3B signal-window suite PASS (${String(caught)}/${String(expectedCount)} windows: ` +
-    'children gone, tracked files unchanged, zero docker/secret/image residue)\n'
+  'M3B signal-window suite PASS (' +
+    `${String(regressionCaught)}/${String(expectedRegressionChecks)} deterministic ` +
+    'process-group regression (no Docker) + ' +
+    `${String(caught - regressionCaught)}/${String(expectedCount)} real signal windows: ` +
+    'announced descendant pgids confirmed gone by bounded polling, tracked files unchanged, ' +
+    'zero docker/secret/image residue)\n'
 )
