@@ -168,7 +168,7 @@ grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验
 §4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
 [§4 的实施注记](#4-secret日志与镜像边界)）。**M3B（环境模板、八份 Secret、
 完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为 implementation complete,
-pending total-control review**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
+pending re-run of both independent read-only audits**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
 （M4、M5 未开始），备份恢复与阶段总门禁尚无证据，本 ADR 因此保持 `Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
@@ -331,7 +331,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
-前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 58 cases、15 项拓扑变异反例、5 个不依赖 Docker 的确定性进程组回归与 5 个真实信号窗口的零残留取证；总控审计阻断整改已把 tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、split-stem 的 nested/prose/comment 视图、空壳/截断/对象身份不符的 Docker inspect/image/history 与 resolved Compose config 证据、scoped cleanup residue/非法返回/异常及受控进程组的 mutation-closed 有界收敛统一改为 fail closed；真实 Compose Secret 在容器内实测
+前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 60 cases、15 项拓扑变异反例、5 个不依赖 Docker 的确定性进程组回归与 5 个真实信号窗口的零残留取证；总控审计阻断整改已把 tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、split-stem 的 nested/prose/comment 视图、空壳/截断/对象身份不符的 Docker inspect/image/history 与 resolved Compose config 证据、scoped cleanup residue/非法返回/异常及受控进程组的 mutation-closed 有界收敛统一改为 fail closed；真实 Compose Secret 在容器内实测
 owner==消费进程 EUID、mode 0600、普通文件、nlink=1、非 symlink、可读（UID 999
 与 10001 两侧，宿主 stat 不作数）；从空 volume 起的完整链
 `cluster → logins → createdb → 0000 → handoff → acl → migrate → grants → api`
@@ -349,8 +349,12 @@ Compose config helper 只验证成功状态、stdout 为字符串且非空，结
 
 `08da379` 的两路独立复验再次给出 **BLOCK**。Round 19 候选进一步收紧 scanner
 跨视图 crossing 判据、Docker evidence 深层 shape/物化边界、空 resolved Compose
-config 与进程组 mutation-closed 收敛；它仍须同样两路复验，不能据此把 M3B 或本
-ADR 标为 Accepted。既定 `1PASSWORDOLD2` 无分隔 scanner 边界及无 pidfd 平台的极端
+config 与进程组 mutation-closed 收敛；该候选 `c8d7236` 随后由项目总控第一阶段
+只读裁定为 **BLOCK**——crossing 判据与键/`=` 之间的 gap 文法分居两条路径，
+**交叉处零覆盖**（140 格全漏），另有外层 closing quote 空占位在 legacy 路径未
+生效的误报。Round 20 候选闭合了这两项并新增 2 条注册 case（targeted 58 → 60），
+同时把 `compoundOperatorTail` 造成的运算符尾残留单列登记；它仍须同样两路复验，
+不能据此把 M3B 或本 ADR 标为 Accepted。既定 `1PASSWORDOLD2` 无分隔 scanner 边界及无 pidfd 平台的极端
 OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 
 ### 5. 运行、迁移和恢复均需有界

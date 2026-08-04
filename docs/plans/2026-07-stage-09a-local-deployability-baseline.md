@@ -2868,7 +2868,9 @@ suite = **4/4 确定性回归 + 5/5 真实窗口**；local-test **75/75**；topo
 证据门，不把已登记的无分隔 `1PASSWORDOLD2` 边界或无 pidfd 平台的极端 OS PGID
 复用 TOCTOU 伪写成已消除：
 
-1. **scanner 多视图共享同一 crossing 判据**：active strict 视图之外，nested/
+1. **scanner 多视图共享同一 crossing 判据**（**这条声明当轮过宽，已由 Round 20
+   收窄——见下一节**：它只在敏感键与 `=` **紧贴**时成立，键与 `=` 之间有 ASCII
+   空白时 140 格全漏）：active strict 视图之外，nested/
    quoted/prose/comment 也识别跨标点的敏感 stem；slash-crossing 的真实键名与
    `/api/private/key`、`docs/private/key` 等 URL/path/Markdown 对照分开裁决。门禁
    覆盖 56 个 nested/prose crossing 形态及 56 个空占位、315 个 benign compound ×
@@ -2889,12 +2891,76 @@ suite = **4/4 确定性回归 + 5/5 真实窗口**；local-test **75/75**；topo
    close、timeout settlement、generation 隔离和 termination primitive 回归合计为
    **5/5 确定性回归 + 5/5 真实信号窗口**。
 4. **证据口径保持窄且可复验**：本轮没有再次修改已 Accepted 的 M2B topology checker；
-   Round 18 的 canonical Git 跨冻结修订仍单列为受控例外。当前 targeted suite 为
-   **58/58**，local-test 为 **75/75**，topology mutation 为 **15/15**。全绿仍不等于
-   Accepted，必须让同样两路独立审计对本轮新 SHA 重新给出结论。
+   Round 18 的 canonical Git 跨冻结修订仍单列为受控例外。**Round 19 当时** targeted
+   suite 为 **58/58**，local-test 为 **75/75**，topology mutation 为 **15/15**。全绿
+   仍不等于 Accepted，必须让同样两路独立审计对本轮新 SHA 重新给出结论。
 
-**Round 19 当前状态**：implementation complete, pending total-control review。阶段
-09A 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。
+**Round 19 结果**：`c8d7236` 经项目总控复核判为 **BLOCK**（1 项确认级 P1 + 1 项
+确认级 P2），未标记 Accepted。整改见下一节。
+
+##### M3B Round 20：`c8d7236` 总控复核 BLOCK 后的 crossing × gap 闭合
+
+项目总控对 `c8d7236` 的第一阶段只读裁定为 **BLOCK**。两路审计一路 BLOCK、一路
+CLEAN，总控独立复现后确认前者的两项发现成立，且**都不是 Round 19 的新回退**，
+而是 `08da379` 即已存在、Round 19 未闭合的历史缺口：
+
+1. **crossing stem × ASCII gap 的交叉处零覆盖（确认级 P1，阻断）**。最小反例
+   `NOTES=XPA-SSWORD =<value>`：crossing 判据在 `sensitiveCompactAssignments` 上，
+   键/`=` 之间的 gap 文法在 legacy 非锚定 scanner 上，**两个维度各自完备而交叉处
+   无人负责**。compact 逆扫从 `=` 起步、遇 SPACE/TAB 即停，得到空 key 就 continue；
+   legacy 的 ASCII `keyPattern` 跨不过标点，只看到 `XPA` 与 `SSWORD`，两者都不敏感。
+   实测 14 个 crossing 键 × {SPACE, TAB} × {nested, quoted, whole-comment,
+   inline-comment, prose} = **140 格全漏**，基线与 `c8d7236` 一致。
+   **修复**：compact 逆扫在**开始 run 扫描之前**先吃掉一段有界 ASCII 水平间隔，
+   上界复用 `readAssignmentGap` 的同一个 `maximumAssignmentGap`，只认 SPACE/TAB
+   ——与前向文法的 supported 间隔同源，**唯一 assignment 文法**的不变量保持。
+   **该间隔只在 `crossingOnly` 判据下开启**：非 crossing 的敏感键带 gap 本来就由
+   legacy 路径完整覆盖（`# PASSWORD =v` 一直命中），在注释体那条
+   `containsSensitiveKeyToken` 通路上再开一次只会多吃散文——实测会把注册写法
+   `` # - `POSTGRES_PASSWORD` = 数据库密码 `` 判成赋值（该回退由既有第十四轮
+   case 当场拦下，随后收窄）。
+2. **外层 closing quote 的空占位在 legacy 路径未生效（确认级 P2，不阻断）**。
+   `OUTER="PASS_WORD="` 被判成「非空敏感赋值」，而 `OUTER="XPA-SSWORD="` 干净：
+   Round 19 的 `enclosingQuote` 空占位规则只写在 compact 路径上，普通敏感键仍从
+   legacy 分支穿过去，闭合引号被当成新的 opening quote，未闭合 → ambiguous →
+   判非空。同一形态两种结论。**修复**：把同一条规则搬到 legacy 分支，用已经算好的
+   `compactStart` 取外层引号。方向是 fail-closed 收敛，不放宽任何命中。
+
+**本轮新增 2 条注册 case，targeted suite 从 58 精确增加到 60**：
+
+- `a crossing stem separated from the value delimiter by ASCII whitespace fails
+  closed in every non-active view`：140 格 oracle 背书的正例全部 fail closed；
+  140 个同形态空占位、315 键 benign compound × gap 维度共 1890 格、已登记的
+  无分隔 `1PASSWORDOLD2` 边界与 URL/path 对照全部保持干净；28 格 active strict
+  正向对照仍命中（防止把职责从 `nodeActiveAssignment` 挪走）；固定消息不回显
+  sentinel。
+- `an enclosing closing quote is an empty placeholder on the legacy path too`：
+  6 个 quoted 空占位在两条路径上都干净，4 个非空 nested 取值仍 fail closed，
+  且**已登记的散文取舍** `# set PASSWORD="" before starting` 未被顺手消掉。
+
+**本轮新登记、明确不修的残留**：run 以复合运算符结尾时 `compoundOperatorTail`
+短路，因此 `XPA-SSWORD>=v`、`XPA-SSWORD+=v` 在非 active 视图里**仍不命中**。它与
+保护 `# POSTGRES_PASSWORD >= 32 chars`、`# keys += 1` 的那条规则**结构性耦合**，
+放宽它会直接把那批注册散文写法重新变成误报。新 case 已把这 8 格钉成当前行为，
+任何一侧变动都必须重新裁定。active strict 视图不受影响——`nodeActiveAssignment`
+照常覆盖真正会被 Node 消费的那一行。
+
+**冻结面**：本轮**零跨冻结例外**。改动只落在
+[`local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)
+与 [`check-m3b-round2-negatives.mjs`](../../infra/docker/check-m3b-round2-negatives.mjs)
+两个文件加计数同步的文档；M2B topology checker、containment、subprocess、Compose、
+`infra/environments/`、generated 文件与迁移一律未触碰。Round 18 的 canonical Git
+跨冻结修订仍单列为既有受控例外，本轮未扩大。
+
+**Round 20 门禁计数**：targeted **60/60**；local-test **75/75**；topology PASS +
+mutation **15/15**；signal-window 连续三轮各 **5/5 确定性 + 5/5 真实窗口**；两轮
+fresh full-stack smoke PASS；Secret identity probe PASS；`pnpm stage08:check` 在
+Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
+
+**Round 20 当前状态**：implementation complete，**pending re-run of both
+independent read-only audits**。全绿仍不等于 Accepted：本轮修改的正是两路审计都
+实际探到的 scanner 判据面，`c8d7236` 的既有审计结论**不可继承**，必须让同样两路
+独立只读审计对本轮新 SHA 重新给出结论，再回到项目总控复核第一阶段。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A
 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**
@@ -3027,7 +3093,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（58 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（60 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

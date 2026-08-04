@@ -1166,7 +1166,33 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
       break
     }
     cursor = equals + 1
-    let start = equals
+    // 键 run 与 `=` 之间的**有界 ASCII 水平间隔**——**只在 crossing 判据下开启**。
+    //
+    // 此前逆扫直接从 `=` 起步、遇 SPACE/TAB 即停，于是 `NOTES=XPA-SSWORD =v` 只
+    // 得到一个空 key 就 continue：crossing 判据在这条路径上，gap 文法在下面的
+    // legacy 路径上，两个维度各自完备而**交叉处零覆盖**（审计实测 14 键 ×
+    // {SPACE,TAB} × 5 个非 active 视图共 140 格全漏）。
+    //
+    // 为什么只给 crossingOnly：**非** crossing 的敏感键带 gap 本来就由 legacy 路径
+    // 完整覆盖（`# PASSWORD =v` 一直命中），这里再开一次只会多吃散文——实测
+    // `# - \`POSTGRES_PASSWORD\` = 数据库密码` 会因为 run 吞掉反引号而被判成赋值，
+    // 那正是本文件明确要求保持干净的注册写法。crossing 视图没有这个代价：
+    // 反引号包裹的 `POSTGRES_PASSWORD` 里 PASSWORD 本身就是完整词元，不构成跨越。
+    //
+    // 上界复用 `readAssignmentGap` 的同一个 `maximumAssignmentGap`，只认 SPACE/TAB
+    // 也与前向文法的 supported 间隔同源——**唯一 assignment 文法**的不变量保持。
+    let runEnd = equals
+    let gapWidth = 0
+    while (
+      crossingOnly &&
+      runEnd > 0 &&
+      (text[runEnd - 1] === ' ' || text[runEnd - 1] === '\t') &&
+      gapWidth < maximumAssignmentGap
+    ) {
+      runEnd -= 1
+      gapWidth += 1
+    }
+    let start = runEnd
     // `=` 与引号同样是嵌套赋值的左边界。若只在空白处停，
     // `NOTES=COMP-ASSION=...` 会把外层 `NOTES=` 粘进 candidate，导致完整 benign
     // compound 的短路失效；`NOTES=XPA-SSWORD=...` 也无法证明命中的是内层键。
@@ -1180,7 +1206,7 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
     ) {
       start -= 1
     }
-    const key = text.slice(start, equals)
+    const key = text.slice(start, runEnd)
     if (
       key === '' ||
       compoundOperatorTail.test(key) ||
@@ -1713,9 +1739,21 @@ const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
     const gap = readAssignmentGap(source, keyEnd, { strict })
     if (gap.reachedEquals && isSensitiveKeyName(match[1])) {
       const unsupportedGap = !gap.supported
+      // 外层 closing quote 与 compact 路径同源：`OUTER="PASS_WORD="` 的第二个 `=`
+      // 后面跟的是**外层**引号，不是新一段 quoted value 的 opening quote。此前
+      // 这条规则只写在 compact 路径上（`OUTER="XPA-SSWORD="` 因此干净），普通
+      // 敏感键仍从这里穿过去，被 readAssignmentValue 当成未闭合引号读到行尾，
+      // 于是空占位被判成 ambiguous 非空——同一形态两种结论。
+      const enclosingQuote =
+        compactStart > 0 && (source[compactStart - 1] === '"' || source[compactStart - 1] === "'")
+          ? source[compactStart - 1]
+          : null
       // 越界那一支没有真正看到 `=`，取值从越界点之后读；它已经被标成
       // unsupported，因此无论取值读成什么都会 fail closed。
-      const parsed = readAssignmentValue(source, gap.exhausted ? gap.index : gap.index + 1)
+      const parsed =
+        enclosingQuote !== null && !gap.exhausted && source[gap.index + 1] === enclosingQuote
+          ? { value: '', ambiguous: false }
+          : readAssignmentValue(source, gap.exhausted ? gap.index : gap.index + 1)
       // unsupported 的键/`=` 间隔按 ambiguous 处理：Node 那一行整条不生效，但
       // 文件里确实写着凭据，别的消费者（compose env_file、dotenv 库）未必同样
       // 忽略它——fail closed。

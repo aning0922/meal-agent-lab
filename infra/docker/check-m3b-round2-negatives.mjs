@@ -4963,6 +4963,249 @@ process.stdout.write('R17: scanner candidate closure\n')
 }
 
 {
+  // crossing 判据在 compact 路径上，键/`=` 之间的 gap 文法在 legacy 路径上。
+  // 上一轮两个维度**各自**完备（56 格 crossing 全部键与 `=` 紧贴；14 格 key-gap
+  // 只用普通键 `PASSWORD`），**交叉处零覆盖**：总控复核给出的最小反例
+  // `NOTES=XPA-SSWORD =…` 在 5 个非 active 视图里 140/140 全漏。这条 case 钉住的
+  // 就是那个笛卡尔积，外加它必须**不**碰的三类对照。
+  const name =
+    'a crossing stem separated from the value delimiter by ASCII whitespace fails closed in every non-active view'
+  const sentinel = 'R20_GAP_CROSSING_SENTINEL_DO_NOT_ECHO'
+  const separators = ['-', '_', '.', '/', '(', ')', '†']
+  const gaps = [' ', '\t']
+  const keys = separators.flatMap((separator) => [
+    `XPA${separator}SSWORD`,
+    `PA${separator}SSWORDX`
+  ])
+  const strictView = 'local-test.env.example'
+  const proseView = 'README.md'
+  // 大矩阵一次进同一个真实 scanner；命中按**行号**归位，不是按问题总数。
+  const viewHits = (strictLines, proseLines) => {
+    const problems = templateProblemsForViews({ strictLines, proseLines })
+    const strictHits = new Set()
+    const proseHits = new Set()
+    for (const problem of problems) {
+      const match =
+        /(local-test\.env\.example|README\.md):(\d+): tracked template assigns a non-empty value to a sensitive key/.exec(
+          problem
+        )
+      if (match === null) {
+        continue
+      }
+      if (match[1] === proseView) {
+        proseHits.add(Number(match[2]))
+      } else {
+        strictHits.add(Number(match[2]))
+      }
+    }
+    return { problems, strictHits, proseHits }
+  }
+  const positives = keys.flatMap((key) =>
+    gaps.flatMap((gap) => [
+      {
+        line: `NOTES=${key}${gap}=${sentinel}`,
+        nodeKey: 'NOTES',
+        expectedDefined: true,
+        view: strictView
+      },
+      {
+        line: `NOTES="${key}${gap}=${sentinel}"`,
+        nodeKey: 'NOTES',
+        expectedDefined: true,
+        view: strictView
+      },
+      // 整行注释：Node 什么都不定义，但被注释掉的凭据照样随 commit 进 Git。
+      {
+        line: `# ${key}${gap}=${sentinel}`,
+        nodeKey: key,
+        expectedDefined: false,
+        view: strictView
+      },
+      {
+        line: `NOTES=ok # ${key}${gap}=${sentinel}`,
+        nodeKey: 'NOTES',
+        expectedDefined: true,
+        view: strictView
+      },
+      {
+        line: `prose ${key}${gap}=${sentinel}`,
+        nodeKey: `prose ${key}`,
+        expectedDefined: true,
+        view: proseView
+      }
+    ])
+  )
+  const oracleFailures = []
+  for (const row of positives) {
+    const oracle = envFileConsumption(row.line, row.nodeKey)
+    if (
+      !oracle.ok ||
+      oracle.defined !== row.expectedDefined ||
+      (row.expectedDefined && oracle.empty)
+    ) {
+      oracleFailures.push(row.line)
+    }
+  }
+  const positiveStrict = positives.filter((row) => row.view === strictView).map((row) => row.line)
+  const positiveProse = positives.filter((row) => row.view === proseView).map((row) => row.line)
+  const positiveScan = viewHits(positiveStrict, positiveProse)
+  // strict 文件的第一行是 `WECHAT_APP_ID=`，因此第 i 条落在第 i + 2 行。
+  const missed = [
+    ...positiveStrict.filter((_, index) => !positiveScan.strictHits.has(index + 2)),
+    ...positiveProse.filter((_, index) => !positiveScan.proseHits.has(index + 1))
+  ]
+  const leaked = JSON.stringify(positiveScan.problems).includes(sentinel)
+  // 同形态空占位：140 格必须**零** problem。
+  const emptyProblems = templateProblemsForViews({
+    strictLines: positiveStrict.map((line) => line.replace(sentinel, '')),
+    proseLines: positiveProse.map((line) => line.replace(sentinel, ''))
+  })
+  // benign compound 在**新开的 gap 维度**上必须同样干净。
+  const compounds = ['COMPASSION', 'SECRETARY', 'PASSAGE', 'KEYBOARD', 'SIGNATURED', 'TOKENYA']
+  const benignKeys = compounds.flatMap((compound) =>
+    Array.from({ length: compound.length - 1 }, (_, index) => index + 1).flatMap((cut) =>
+      separators.map(
+        (separator) => `${compound.slice(0, cut)}${separator}${compound.slice(cut)}`
+      )
+    )
+  )
+  const benignGapProblems = templateProblemsForViews({
+    strictLines: benignKeys.flatMap((key) =>
+      gaps.flatMap((gap) => [`NOTES=${key}${gap}=ordinary`, `# ${key}${gap}=ordinary`])
+    ),
+    proseLines: benignKeys.flatMap((key) => gaps.map((gap) => `prose ${key}${gap}=ordinary`))
+  })
+  // **已登记未覆盖的残留**：run 以复合运算符结尾时 `compoundOperatorTail` 短路，
+  // 因此 `XPA-SSWORD>=v` / `XPA-SSWORD+=v` 在非 active 视图里仍不命中。它与保护
+  // `# POSTGRES_PASSWORD >= 32 chars`、`# keys += 1` 的那条规则**结构性耦合**，
+  // 本轮不修；这里把它钉成当前行为，任何一侧变动都必须重新裁定。
+  const operatorTailGaps = ['>', '+']
+  const operatorTailProblems = templateProblemsForViews({
+    strictLines: keys.flatMap((key) =>
+      operatorTailGaps.flatMap((gap) => [
+        `NOTES=${key}${gap}=${sentinel}`,
+        `# ${key}${gap}=${sentinel}`
+      ])
+    ),
+    proseLines: keys.flatMap((key) =>
+      operatorTailGaps.map((gap) => `prose ${key}${gap}=${sentinel}`)
+    )
+  })
+  // 已登记边界与 URL/path 对照带上 gap 之后仍不得移动。
+  const boundaryProblems = templateProblemsForViews({
+    strictLines: gaps.flatMap((gap) => [
+      `NOTES=1PASSWORDOLD2${gap}=ordinary`,
+      `# 1PASSWORDOLD2${gap}=ordinary`
+    ]),
+    proseLines: gaps.flatMap((gap) => [
+      `prose 1PASSWORDOLD2${gap}=ordinary`,
+      `prose https://example.invalid/password${gap}=placeholder`,
+      `prose /api/password${gap}=placeholder`,
+      `prose docs/private/key${gap}=placeholder`
+    ])
+  })
+  // active strict 视图是正向对照：修复不得把职责从 nodeActiveAssignment 挪走。
+  const activeLines = keys.flatMap((key) => gaps.map((gap) => `${key}${gap}=${sentinel}`))
+  const activeScan = viewHits(activeLines, [])
+  const activeMissed = activeLines.filter((_, index) => !activeScan.strictHits.has(index + 2))
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (keys.length !== 14 || positives.length !== 140) {
+    fail(name, 'the crossing x gap matrix drifted from 14 keys / 140 cells')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} crossing-with-gap assignment(s) went uncaught`)
+  } else if (emptyProblems.length > 0) {
+    fail(name, `${String(emptyProblems.length)} matching empty placeholder(s) were flagged`)
+  } else if (benignKeys.length !== 315 || new Set(benignKeys).size !== 315) {
+    fail(name, 'the 315-key benign compound matrix drifted or is not unique')
+  } else if (benignGapProblems.length > 0) {
+    fail(name, `${String(benignGapProblems.length)} benign compound problem(s) in the gap dimension`)
+  } else if (operatorTailProblems.length > 0) {
+    fail(name, 'the registered compound-operator-tail residual changed; re-adjudicate before moving it')
+  } else if (boundaryProblems.length > 0) {
+    fail(name, 'a registered boundary or URL/path control moved once a gap was introduced')
+  } else if (activeMissed.length > 0) {
+    fail(name, `${String(activeMissed.length)} active strict control(s) stopped failing closed`)
+  } else if (leaked) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '140/140 oracle-backed crossing-with-gap cells fail closed across nested/quoted/whole-comment/' +
+        'inline-comment/prose; 140 matching empty placeholders, 1890 benign compound cells in the ' +
+        'gap dimension, the registered compound-operator-tail residual, the no-separator boundary ' +
+        'and the URL/path controls all stay put, and 28 active controls still fail closed'
+    )
+  }
+}
+
+{
+  // compact 路径在 Round 19 就认得「外层 closing quote 之后是空占位」
+  // （`OUTER="XPA-SSWORD="` 干净），但普通敏感键仍从 legacy 分支穿过去，
+  // 闭合引号被当成新的 opening quote，未闭合 → ambiguous → 判非空。
+  // 同一形态两种结论；这条 case 钉住两边一致。
+  const name = 'an enclosing closing quote is an empty placeholder on the legacy path too'
+  const sentinel = 'R20_QUOTED_EMPTY_SENTINEL_DO_NOT_ECHO'
+  const cleanRows = [
+    { line: 'OUTER="PASS_WORD="', nodeKey: 'OUTER' },
+    { line: "OUTER='PASS_WORD='", nodeKey: 'OUTER' },
+    { line: 'NOTES="PASSWORD="', nodeKey: 'NOTES' },
+    { line: "NOTES='PASSWORD='", nodeKey: 'NOTES' },
+    // Round 19 已经干净的 crossing 形态：两条路径的结论必须一致。
+    { line: 'OUTER="XPA-SSWORD="', nodeKey: 'OUTER' },
+    { line: "OUTER='XPA-SSWORD='", nodeKey: 'OUTER' }
+  ]
+  const hitRows = [
+    { line: `NOTES="PASSWORD=${sentinel}"`, nodeKey: 'NOTES' },
+    { line: `NOTES='PASSWORD=${sentinel}'`, nodeKey: 'NOTES' },
+    { line: `OUTER="PASS_WORD=${sentinel}"`, nodeKey: 'OUTER' },
+    { line: `NOTES="XPA-SSWORD=${sentinel}"`, nodeKey: 'NOTES' },
+    // 计划里**已登记的取舍**：散文提到空 quoted 赋值仍然命中，不得被这条修复
+    // 顺手消掉。
+    { line: '# set PASSWORD="" before starting', nodeKey: 'PASSWORD' }
+  ]
+  const oracleFailures = []
+  for (const row of [...cleanRows, ...hitRows]) {
+    if (row.line.startsWith('#')) {
+      continue
+    }
+    const oracle = envFileConsumption(row.line, row.nodeKey)
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(row.line)
+    }
+  }
+  const flaggedClean = cleanRows.filter((row) => templateProblemsFor(row.line).length > 0)
+  const missedHits = hitRows.filter(
+    (row) =>
+      !templateProblemsFor(row.line).some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  const leaks = hitRows.filter((row) =>
+    JSON.stringify(templateProblemsFor(row.line)).includes(sentinel)
+  )
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (flaggedClean.length > 0) {
+    fail(name, `${String(flaggedClean.length)} quoted empty placeholder(s) were flagged`)
+  } else if (missedHits.length > 0) {
+    fail(name, `${String(missedHits.length)} non-empty quoted assignment(s) went uncaught`)
+  } else if (leaks.length > 0) {
+    fail(name, `${String(leaks.length)} fixed failure message(s) echoed the sentinel`)
+  } else {
+    pass(
+      name,
+      '6 quoted empty placeholders stay clean on both the compact and the legacy path, while ' +
+        '4 non-empty nested values and the registered prose trade-off still fail closed'
+    )
+  }
+}
+
+{
   const name = 'registered sensitive compounds crossing a slash are not suppressed as paths'
   const sentinel = 'R19_SLASH_COMPOUND_SENTINEL_DO_NOT_ECHO'
   const keys = [
@@ -5197,7 +5440,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 58
+const expectedCount = 60
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
