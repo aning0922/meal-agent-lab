@@ -3211,7 +3211,11 @@ process.stdout.write('R16: the real Node key grammar\n')
     ['two spaces', 'export  PASSWORD=AUDITVALUE-EXP', 'PASSWORD', true],
     ['space then tab', 'export \tPASSWORD=AUDITVALUE-EXP', 'PASSWORD', true],
     ['tab keeps export in the key', 'export\tPASSWORD=AUDITVALUE-EXP', 'export\tPASSWORD', false],
-    ['tab keeps export in the key (token)', 'export\tTOKEN=AUDITVALUE-EXP', 'export\tTOKEN', false]
+    ['tab keeps export in the key (token)', 'export\tTOKEN=AUDITVALUE-EXP', 'export\tTOKEN', false],
+    // `export` 后只有空白再遇 `=` 时，Node 把 `export` 本身当键；不能剥空之后
+    // 错把后面的 PASSWORD 当成 active key。整行仍会因嵌套的赋值形文本按
+    // containment fail closed，但 parser identity 必须与 Node 一致。
+    ['empty prefixed key keeps export as the key', 'export =PASSWORD=V', 'export', true]
   ]
   const wrongKey = []
   const missed = []
@@ -3289,15 +3293,285 @@ process.stdout.write('R16: the real Node key grammar\n')
       name,
       `${String(cases.length)} export forms match Node ${oracleNodeVersion} exactly: one space, ` +
         'two spaces and space-then-tab all yield the bare key, while `export<TAB>KEY` keeps ' +
-        '`export<TAB>` inside the key and the bare key stays undefined; every form is still a ' +
-        'live sensitive key and fails closed, the empty placeholder stays clean; the ' +
+        '`export<TAB>` inside the key and the bare key stays undefined; the five sensitive-key ' +
+        'forms fail closed, while the neutral `export` key is reported only because its value ' +
+        'contains a nested credential assignment; the empty placeholder stays clean; the ' +
         "scanner's own parsed key matches the oracle-confirmed key on every form (a behavioural " +
         'guard, so respelling the character class cannot defeat it)'
     )
   }
 }
 
-const expectedCount = 46
+// ---------------------------------------------------------------------------
+// R17：Round 16 总控复验发现的相邻绕过与误报边界
+// ---------------------------------------------------------------------------
+process.stdout.write('R17: scanner candidate closure\n')
+
+{
+  const name = 'digits on both sides of a sensitive stem cannot hide a live Node key'
+  const rows = [
+    ['password', '1PASSWORD2'],
+    ['token', '0TOKEN9'],
+    ['pass', '3PASS4'],
+    ['passwd', '9PASSWD0'],
+    ['secret', '1SECRET2'],
+    ['split token', '1TOK-EN2'],
+    ['split secret', '0SEC-RET9']
+  ].map(([label, key]) => ({
+    label,
+    key,
+    envLine: `${key}=AUDITVALUE-R17-DIGIT`,
+    scanLine: `${key}=AUDITVALUE-R17-DIGIT`
+  }))
+  const oracleFailures = []
+  const mismatches = []
+  for (const row of rows) {
+    const consumption = envFileConsumption(row.envLine, row.key)
+    if (!consumption.ok) {
+      oracleFailures.push(`${row.label}: ${consumption.reason}`)
+    } else if (!consumption.defined || consumption.empty) {
+      oracleFailures.push(`${row.label}: Node did not create the expected non-empty key`)
+    }
+    if (
+      !templateProblemsFor(row.scanLine, 'local-test.env.example').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+    ) {
+      mismatches.push(row.label)
+    }
+  }
+  const emptyFlagged = rows.filter(
+    (row) => templateProblemsFor(`${row.key}=`, 'local-test.env.example').length > 0
+  )
+  const benign = ['1NORMAL2=AUDITVALUE', '2ROTATION3=AUDITVALUE', '7MEAL8=AUDITVALUE']
+  const benignFlagged = benign.filter(
+    (line) => templateProblemsFor(line, 'local-test.env.example').length > 0
+  )
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: 7,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 7,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: 7,
+    requiresOracle: true,
+    oracleFailures,
+    mismatches
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} empty placeholder(s) were wrongly flagged`)
+  } else if (benignFlagged.length > 0) {
+    fail(name, `${String(benignFlagged.length)} benign digit-wrapped key(s) were wrongly flagged`)
+  } else {
+    pass(
+      name,
+      '7/7 oracle-proven live keys fail closed (including digit-wrapped split stems); matching ' +
+        'empty placeholders and 3 benign digit-wrapped keys stay clean'
+    )
+  }
+}
+
+{
+  const name = 'punctuation inside a sensitive stem cannot split it out of view'
+  const keys = [
+    'TOK-EN',
+    'SEC-RET',
+    'SIGN-ATURE',
+    'CREDEN-TIAL',
+    'WECHAT_APP_SE-CRET',
+    'MY_TOK-EN_VALUE',
+    'PREFIX_SEC-RET_VALUE',
+    'MY_SIGN-ATURE_ALGORITHM',
+    'MY_CREDEN-TIAL_VALUE',
+    'WECHAT-APP-ID',
+    'APP-ID-VALUE',
+    'PRIVATE-KEY-PEM',
+    'API-KEY-VALUE',
+    'PASS-PHRASE',
+    'PWD-FILE',
+    'KEY-FILE',
+    'DSN-VALUE',
+    'ACCESS-KEY-ID',
+    'KEY-MATERIAL',
+    'KEY-CONTENT',
+    'PASS-PIN',
+    'PWD-HASH',
+    'DSN-STRING',
+    'X-P-A-S-S-W-O-R-D-Y',
+    'PRE-T-O-K-EN-SUF',
+    'MY-S-E-C-R-ET-VALUE',
+    'PRE-C-R-E-D-E-N-T-I-A-L-SUF'
+  ]
+  const rows = keys.map((key) => ({
+    label: key,
+    key,
+    envLine: `${key}=AUDITVALUE-R17-STEM`,
+    scanLine: `${key}=AUDITVALUE-R17-STEM`
+  }))
+  const oracleFailures = []
+  const mismatches = []
+  for (const row of rows) {
+    const consumption = envFileConsumption(row.envLine, row.key)
+    if (!consumption.ok || !consumption.defined || consumption.empty) {
+      oracleFailures.push(row.label)
+    }
+    if (
+      !templateProblemsFor(row.scanLine, 'local-test.env.example').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+    ) {
+      mismatches.push(row.label)
+    }
+  }
+  const emptyFlagged = keys.filter(
+    (key) => templateProblemsFor(`${key}=`, 'local-test.env.example').length > 0
+  )
+  const benign = [
+    'ROT-ATION=AUDITVALUE',
+    'ME-AL=AUDITVALUE',
+    'PLA-N=AUDITVALUE',
+    'SE-CRETARY=AUDITVALUE',
+    'PASS-AGE=AUDITVALUE',
+    'KEY-BOARD=AUDITVALUE',
+    'TO-KENYA=AUDITVALUE',
+    'SIGN-ATURED=AUDITVALUE',
+    'X-R-O-T-A-T-I-O-N-Y=AUDITVALUE',
+    'PRE-M-E-A-L-SUF=AUDITVALUE',
+    'MY-P-L-A-N-VALUE=AUDITVALUE',
+    'C-O-M-P-A-S-S-I-O-N=AUDITVALUE',
+    'S-E-C-R-E-T-A-R-Y=AUDITVALUE',
+    'P-A-S-S-A-G-E=AUDITVALUE',
+    'K-E-Y-B-O-A-R-D=AUDITVALUE',
+    'S-I-G-N-A-T-U-R-E-D=AUDITVALUE',
+    'T-O-K-E-N-Y-A=AUDITVALUE'
+  ]
+  const benignFlagged = benign.filter(
+    (line) => templateProblemsFor(line, 'local-test.env.example').length > 0
+  )
+  const gate = evidenceGateProblems({
+    rows,
+    expectedRows: 27,
+    scanIdentityOf: scanIdentityOfRow,
+    expectedScanDistinct: 27,
+    oracleIdentityOf: oracleIdentityOfRow,
+    expectedOracleDistinct: 27,
+    requiresOracle: true,
+    oracleFailures,
+    mismatches
+  })
+  if (gate.problems.length > 0) {
+    fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} empty placeholder(s) were wrongly flagged`)
+  } else if (benignFlagged.length > 0) {
+    fail(name, `${String(benignFlagged.length)} benign punctuation-bearing key(s) were flagged`)
+  } else {
+    pass(
+      name,
+      '27/27 oracle-proven live keys fail closed, including underscore/punctuation-delimited ' +
+        'prefix/suffix combinations, ' +
+        'unknown weak-stem compounds and 4+ piece split stems; matching empty placeholders and 17 explicitly ' +
+        'registered benign compounds / near-miss punctuation keys stay clean'
+    )
+  }
+}
+
+{
+  const name = 'a comment glued directly to the value delimiter is still scanned for credentials'
+  const lines = [
+    'NOTES=#PASSWORD-FILE=AUDITVALUE-R17-COMMENT',
+    'NOTES=#PASSWORD/v2=AUDITVALUE-R17-COMMENT'
+  ]
+  const oracleFailures = lines.filter((line) => {
+    const consumption = envFileConsumption(line, 'NOTES')
+    return !consumption.ok || !consumption.defined || !consumption.empty
+  })
+  const missed = lines.filter((line) =>
+    ['local-test.env.example', 'README.md'].some(
+      (file) =>
+        !templateProblemsFor(line, file).some((problem) =>
+          /assigns a non-empty value to a sensitive key/.test(problem)
+        )
+    )
+  )
+  const empty = ['NOTES=#PASSWORD-FILE=', 'NOTES=#PASSWORD/v2=']
+  const emptyFlagged = empty.filter((line) => templateProblemsFor(line).length > 0)
+  const benign = ['NOTES=#rotation-policy', 'NOTES=#docs-only', 'NOTES=#mode=ok']
+  const benignFlagged = benign.filter((line) => templateProblemsFor(line).length > 0)
+  if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle premise(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} glued comment credential(s) went uncaught`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} glued empty placeholder(s) were flagged`)
+  } else if (benignFlagged.length > 0) {
+    fail(name, `${String(benignFlagged.length)} benign glued comment(s) were flagged`)
+  } else {
+    pass(
+      name,
+      'Node proves NOTES is defined as the empty string; 2 credential comments are caught in ' +
+        'strict and prose roles, while 2 empty and 3 benign controls stay clean'
+    )
+  }
+}
+
+{
+  const name = 'URL paths and Markdown links do not become prose assignments'
+  const benign = [
+    '# See https://example.invalid/password=placeholder',
+    '# [reset](https://example.invalid/password=placeholder)',
+    'See https://example.invalid/token=value',
+    '| docs | https://example.invalid/secret=placeholder |',
+    '# GET /api/password=placeholder?limit=10',
+    '# [reset](docs/password=placeholder)',
+    '# See ../docs/token=value',
+    '| docs | docs/secret=placeholder |'
+  ]
+  const flagged = benign.filter((line) => templateProblemsFor(line, 'README.md').length > 0)
+  const positives = ['# PASSWORD/v2=AUDITVALUE-R17', '# PASSWORD-FILE=AUDITVALUE-R17']
+  const missed = positives.filter(
+    (line) =>
+      !templateProblemsFor(line, 'README.md').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  if (flagged.length > 0) {
+    fail(name, `${String(flagged.length)} benign URL/Markdown path(s) were flagged`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} positive comment credential(s) went uncaught`)
+  } else {
+    pass(
+      name,
+      '8 benign absolute/relative URL/path controls stay clean and 2 comment credentials remain caught'
+    )
+  }
+}
+
+{
+  const name = 'the active-key segment limit has an exact benign boundary'
+  const clean = ['='.repeat(15), '='.repeat(16)]
+  const cleanFlagged = clean.filter(
+    (line) => templateProblemsFor(line, 'local-test.env.example').length > 0
+  )
+  const failClosed = ['='.repeat(17), `${'='.repeat(16)}0PASSWD=AUDITVALUE-R17`]
+  const missed = failClosed.filter(
+    (line) =>
+      !templateProblemsFor(line, 'local-test.env.example').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  if (cleanFlagged.length > 0) {
+    fail(name, `${String(cleanFlagged.length)} in-bound empty-segment line(s) were flagged`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} over-bound segment line(s) did not fail closed`)
+  } else {
+    pass(name, '15/16 empty segments stay clean; 17 and 16-plus-live-key fail closed')
+  }
+}
+
+const expectedCount = 51
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

@@ -1,6 +1,6 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-03 更新实施状态）
+- 日期：2026-07-26（2026-08-04 更新实施状态）
 - 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
@@ -2399,7 +2399,7 @@ whitespace+value 7、key-gap 7、key-gap-inline 7、key-gap-prose 7、
 inline-comment 7、prose-fragment 7、empty-placeholder 8、structural-value 6、
 structural-gap 6。**不再按 55 声称**。
 
-targeted negative suite 从 37 增加到 **42/42**（当时口径；第十五轮为 43，第十六轮起为 46）（新增：astral code point、
+targeted negative suite 从 37 增加到 **42/42**（当时口径；第十五轮为 43，第十六轮当时为 46，第十七轮为 51）（新增：astral code point、
 file role、oracle 完整性、64 边界、distinct 反身各一条）。
 
 6. **注释体在 `.env` 家族里同样按散文裁定**（审计 A 确认级发现，本轮自伤自修）。
@@ -2721,6 +2721,57 @@ TERM → 有界宽限（轮询）→ 对仍存活整组 KILL → 有界等待直
 窗口：完整性判据按 `1 个确定性回归 + 5 个真实窗口` 之和断言，摘要也分开报数。
 验收连跑 **3 轮独立** signal-window，均为 1/1 + 5/5。
 
+#### M3B 第十七轮 bounded 候选闭包与进程组代际收口
+
+基线 `202be45`，日期 2026-08-04。每条 scanner 缺口都先由 Node v24.18.0
+`--env-file` oracle 证明是**真实、非空的键**，再进入实现：
+
+1. **Node-active key 的组合闭包**。基线漏掉数字包裹词干（`1PASSWORD2`、
+   `0TOKEN9`）、内部标点拆分（`TOK-EN`、`SEC-RET`、`SIGN-ATURE`、
+   `CREDEN-TIAL`）、`NOTES=#PASSWORD-FILE=…` 这种紧贴 `=` 的注释，以及
+   prefix/suffix 包住的四段以上 split stem。最终 matcher 不再维护有限的
+   credential qualifier 表，也不再用固定三段窗口：weak stem 成为完整标点词元时
+   默认 fail closed；连续窗口只由「累计 compact 长度不得超过最长已登记敏感词干」
+   这一事实源上界决定。已登记的完整 benign compound（`PASSAGE`、`KEYBOARD`、
+   `COMPASSION`、`SECRETARY`、`SIGNATURED`、`TOKENYA`）在子窗口扫描前短路；
+   未登记普通词仍采用保守 fail-closed 判定。每组都有 oracle、非空、匹配空占位与 benign 对照；相对/
+   绝对 URL、Markdown path 保持干净，真实 tracked 模板为 0 problems。
+   已知 bounded 边界：同一个无分隔 ASCII component 里同时在 stem 前后增加普通字母
+   （例如 `1PASSWORDOLD2`）在基线与本轮都不命中；它不是 Round 17 回退，也不在本轮
+   exact 数字包裹与下划线/标点分隔的证据范围内。若要纳入正式威胁模型，需单独做
+   普通词误报分析，不在本轮盲目扩张 matcher。
+2. **timeout settlement 与组长 close 解耦**。timeout 自己持有同一份 termination
+   promise；即使 leader 永远不发 `close`，调用方也只会在 TERM → KILL → 有界确认
+   ESRCH 完成（或预算耗尽并带固定 survivor 数）后收到 rejection。确定性夹具使用
+   忽略 TERM 的孙进程证明：基线在 caller 退出时仍有 1 个进程组，新实现为 0。
+3. **生命周期按 `(pgid, generation)` 持有**。同号新代登记会结束旧 handle 的
+   所有权；真正的副作用边界再次核对 generation。注册回归把旧代停在 TERM 后的
+   wait，登记同号新代，再恢复旧 sweep，精确证明旧代不会补发 KILL、新代只收到
+   自己的 TERM/KILL。夹具自身有独立 2 秒 watchdog，所有路径都释放暂停点。
+   无 pidfd 平台上，`kill(0)` 与紧随的 signal 之间被**无关 OS 进程**复用仍是已知
+   TOCTOU 边界，不写成形式化消除。
+4. **信号失败必须 fail closed**。终止原语本身异常时仍执行 scoped cleanup，以固定
+   文案和 exit 1 收场，不回显调用方错误，不伪装成干净信号语义。真实窗口的
+   announced PGID 在任何 Docker/Git/目录探针之前解析，并由词法 `finally` 精确
+   KILL + 有界确认 ESRCH，证据探针异常不能跳过测试自身收尾。
+5. **实时供应链门禁的独立收口**。本轮完整门禁先被 2026-08-03 入库的 PostCSS、
+   `fast-uri` 与 `brace-expansion` 公告依次 fail closed；经总控明确授权扩大依赖范围后，
+   独立提交 `f3e3099` 把 PostCSS 固定为 8.5.23（只对
+   `miniprogram-simulate@1.6.2` 使用定向 override）、`fast-uri` 固定为
+   3.1.5/4.1.2、`brace-expansion` 固定为 1.1.18/2.1.4/5.0.9，并删除已失效的旧
+   `brace-expansion` 审计例外。专项 WXSS 编译、客户端完整 check/E2E、API 全门禁与
+   生产审计均通过；该提交不改变 M3B scanner / subprocess 语义，也未新增例外。
+
+本轮两路只读审计分别覆盖 scanner 的组合绕过/误报/证据非空转，以及 timeout、
+generation、signal handler、leader-close 与 real-window 收尾。审计确认的 qualifier
+绕过、固定窗口上限、in-flight generation 断言代偿与缺 watchdog、PGID cleanup
+不在 lexical finally 均已定点修复并登记。
+
+**本轮当前计数**：M3B targeted negative suite **51/51 cases**（注册 case 数不因一个
+case 内扩充矩阵而虚增）；signal-window suite = **4/4 不依赖 Docker 的确定性进程组
+回归 + 5/5 真实信号窗口**。其他 M3B 门禁口径不变：local-test 75/75、拓扑变异
+15/15。
+
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
 `Proposed`；PR #1 保持 Draft。M4、M5 未开始。**
@@ -2858,9 +2909,9 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（46 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（51 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
-node infra/docker/check-m3b-signal-windows.mjs         # 5 个真实信号窗口的零残留取证
+node infra/docker/check-m3b-signal-windows.mjs         # 4 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
 node infra/docker/check-compose-topology-mutations.mjs # 15 项拓扑变异反例
 node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离

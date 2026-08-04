@@ -136,8 +136,8 @@ M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
 | `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：46 cases**（原子 promotion、cleanup collector 与 inode ownership、staging 与 final 两侧的 promotion 身份复核、preflight 信号窗口与已删除的忙等钩子、全仓 index containment、PGID 生命周期、one-shot ExitCode fail-closed（含真实调用链）、整串 stderr 的「不存在」判据与内嵌换行拒绝、解码后的 credential query key、连接串候选按 `scheme://` 起点独立枚举、视图覆盖整个 **dotenv 逻辑取值**、解析成功后 userinfo 与 query 同时判定、行内注释片段与整行走同一份敏感赋值判据、**星平面码点间隔**、按**文件角色**（`.env` 家族 strict dotenv / README 等 prose-aware，注释体一律按散文）裁定可见间隔、live Node oracle 自身 fail closed 并钉死版本（六种失败结果逐项注入，穿过生产实现）、**inclusive 的 64 码点间隔上界**（九格断言完整 Node tuple）、strict dotenv 下按**真实 Node 键文法**解析第一个 `=` 之前的完整键（含非 ASCII 与 ASCII 标点续字符、**数字开头的键**、`export` 前缀只认 SPACE）、注释体里**有界的**赋值判据、以及 fail-closed 的解析失败与资源上限）。文件名保留旧入口名，**套件名称不带轮次** |
-| `node infra/docker/check-m3b-signal-windows.mjs` | **1 个**不依赖 Docker 的确定性进程组回归（组长 close 之后孤儿仍在，必须确认整组 ESRCH）+ **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证；announced pgid 按有界轮询确认消失 |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：51 cases**；在既有 promotion / cleanup / Git index / Docker 证据 / dotenv、URL 与 Node oracle 门禁上，追加 Round 17 的候选闭包：数字包裹 exact stem、内部 ASCII 标点、由下划线/标点分隔的前后缀、紧贴 `=` 的注释、相对/绝对 URL/Markdown path 对照，以及 15/16/17 空键段边界。文件名保留旧入口名，**套件名称不带轮次** |
+| `node infra/docker/check-m3b-signal-windows.mjs` | **4 个**不依赖 Docker 的确定性进程组回归（leader close 与孤儿整组收敛、timeout 不依赖 close、同号 PGID generation 隔离、终止原语异常 fail closed）+ **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证；announced pgid 按有界轮询确认消失 |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
 
@@ -253,8 +253,8 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 46 cases、
-15 项拓扑变异反例与 5 个信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 51 cases、
+15 项拓扑变异反例、4 个确定性进程组回归与 5 个真实信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
 

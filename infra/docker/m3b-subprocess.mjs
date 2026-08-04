@@ -5,8 +5,8 @@
 //   1. **不用 spawnSync 冒充可响应信号的实现**——长时间运行的子进程（docker
 //      build/up/logs、node 门禁）全部走异步 spawn，事件循环保持存活，
 //      SIGINT/SIGTERM 随时可被处理；
-//   2. 每个子进程 `detached: true` 自成进程组并登记进 activeProcessGroups，
-//      终止时对**整个组** TERM → 宽限 → KILL，不留孤儿；
+//   2. 每个子进程 `detached: true` 自成进程组并以 `(pgid, generation)` 登记，
+//      终止时对**当前代的整个组** TERM → 宽限 → KILL，并有界确认 ESRCH；
 //   3. 超时同样按组终止，并以明确错误 reject；
 //   4. `installSignalHandlers` 的次序固定：先终止受控子树 → 再执行调用方的
 //      scoped cleanup（其 residue 必须被打印，不得丢弃）→ 最后卸下自身 handler
@@ -28,10 +28,7 @@ import { spawn } from 'node:child_process'
  * 现在 close 只登记 `leaderClosed`；只有 `kill(-pgid, 0)` 得到 **ESRCH** 才把
  * 这一条**退休**。退休之后绝不再对该 pgid 发任何信号（pid 会被系统复用）。
  */
-const activeProcessGroups = new Map()
-
-/** 已确认消失的 pgid。一旦进入这里就永远不再被发信号。 */
-const retiredProcessGroups = new Set()
+const generationKey = (pgid, generation) => `${String(pgid)}:${String(generation)}`
 
 /**
  * 正在处置中的信号（null 表示没有）。CLI 用它给信号处置**让位**：一旦信号
@@ -58,8 +55,11 @@ const killGroup = (pgid, signal) => {
   try {
     process.kill(-pgid, signal)
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if (error?.code === 'ESRCH' || error?.code === 'EPERM') {
+      return false
+    }
+    throw error
   }
 }
 
@@ -78,50 +78,132 @@ const groupIsAlive = (pgid) => {
   }
 }
 
-/** 确认消失即退休；返回是否已退休。 */
-const retireIfGone = (pgid) => {
-  if (retiredProcessGroups.has(pgid)) {
-    return true
-  }
-  if (groupIsAlive(pgid)) {
-    return false
-  }
-  retiredProcessGroups.add(pgid)
-  activeProcessGroups.delete(pgid)
-  return true
-}
+/**
+ * 一份按 `(pgid, generation)` 持有所有权的进程组 registry。
+ *
+ * 工厂接受的三个原语也让回归可以**确定性**构造同号 PGID 复用：不再依赖
+ * OS 恰好在一次测试里复用 pid。这是正常的库级抽象，不是环境变量或忙等注入钩子。
+ *
+ * 已确认 ESRCH 之后，旧 handle 永不再对那个数字 PGID 发信号。若本 registry 后续
+ * 登记同号新代，旧 handle 会先因 generation 不同而退休，不会触碰新代。
+ * 无 pidfd 平台上，在一次同步 `kill(0)` 与紧随的 signal 之间被**无关进程**复用
+ * 仍是 OS 级 TOCTOU 边界；不把它写成已被形式化消除。
+ */
+export const createProcessGroupLifecycle = ({
+  probeGroup = groupIsAlive,
+  signalGroup = killGroup,
+  delay = sleep
+} = {}) => {
+  const active = new Map()
+  const retired = new Set()
+  let generationCounter = 0
 
-/** 有界轮询等待一个进程组消失；返回是否确认消失。 */
-const waitForGroupExit = async (pgid, budgetMs, stepMs = 25) => {
-  const steps = Math.max(1, Math.ceil(budgetMs / stepMs))
-  for (let attempt = 0; attempt < steps; attempt += 1) {
-    if (retireIfGone(pgid)) {
+  const currentEntry = ({ pgid, generation }) => {
+    const entry = active.get(pgid)
+    return entry !== undefined && entry.generation === generation ? entry : null
+  }
+
+  const retire = (handle) => {
+    retired.add(generationKey(handle.pgid, handle.generation))
+    if (currentEntry(handle) !== null) {
+      active.delete(handle.pgid)
+    }
+  }
+
+  const register = (pgid) => {
+    const previous = active.get(pgid)
+    if (previous !== undefined) {
+      retire(previous)
+    }
+    generationCounter += 1
+    const handle = Object.freeze({ pgid, generation: generationCounter })
+    active.set(pgid, { ...handle, leaderClosed: false })
+    return handle
+  }
+
+  const markLeaderClosed = (handle) => {
+    const entry = currentEntry(handle)
+    if (entry !== null) {
+      entry.leaderClosed = true
+    }
+  }
+
+  const retireIfGone = (handle) => {
+    const key = generationKey(handle.pgid, handle.generation)
+    if (retired.has(key)) {
       return true
     }
-    await sleep(stepMs)
+    // 同号新代已由本 registry 登记：旧 handle 的所有权已结束，绝不对
+    // 这个数字再做 probe/signal。
+    if (currentEntry(handle) === null) {
+      retired.add(key)
+      return true
+    }
+    if (probeGroup(handle.pgid)) {
+      return false
+    }
+    retire(handle)
+    return true
   }
-  return retireIfGone(pgid)
+
+  const waitForExit = async (handle, budgetMs, stepMs = 25) => {
+    const steps = Math.max(1, Math.ceil(budgetMs / stepMs))
+    for (let attempt = 0; attempt < steps; attempt += 1) {
+      if (retireIfGone(handle)) {
+        return true
+      }
+      await delay(stepMs)
+    }
+    return retireIfGone(handle)
+  }
+
+  const signalIfCurrent = (handle, signal) => {
+    if (retireIfGone(handle)) {
+      return false
+    }
+    // probe 与 signal 都是同步调用；JS 无法在两者之间登记一个新代。仍在
+    // signal 前再查一次 generation，把所有权判据写在真正的副作用边界上。
+    if (currentEntry(handle) === null) {
+      retire(handle)
+      return false
+    }
+    return signalGroup(handle.pgid, signal)
+  }
+
+  const terminate = async (
+    handles,
+    { graceMs = 1_000, killWaitMs = 3_000 } = {}
+  ) => {
+    const pending = handles.filter((handle) => !retireIfGone(handle))
+    for (const handle of pending) {
+      signalIfCurrent(handle, 'SIGTERM')
+    }
+    await Promise.all(pending.map((handle) => waitForExit(handle, graceMs)))
+    const survivors = pending.filter((handle) => !retireIfGone(handle))
+    for (const handle of survivors) {
+      signalIfCurrent(handle, 'SIGKILL')
+    }
+    await Promise.all(survivors.map((handle) => waitForExit(handle, killWaitMs)))
+    return survivors.filter((handle) => !retireIfGone(handle))
+  }
+
+  const terminateAll = (options = {}) => terminate([...active.values()], options)
+  const unconfirmed = () =>
+    [...active.values()]
+      .filter((handle) => !retired.has(generationKey(handle.pgid, handle.generation)))
+      .map(({ pgid }) => pgid)
+
+  return Object.freeze({
+    register,
+    markLeaderClosed,
+    retireIfGone,
+    terminate,
+    terminateAll,
+    unconfirmed
+  })
 }
 
-/**
- * 对**本次调用真实派生出来的** pgid 走完整生命周期：
- * TERM → 有界宽限 → 对仍存活的整组 KILL → 有界等待，直到 `kill(-pgid, 0)`
- * 得到 ESRCH。返回**仍未确认消失**的 pgid 列表——调用方据此 fail closed。
- */
-const terminateGroups = async (pgids, { graceMs = 1_000, killWaitMs = 3_000 } = {}) => {
-  const pending = pgids.filter((pgid) => !retireIfGone(pgid))
-  for (const pgid of pending) {
-    killGroup(pgid, 'SIGTERM')
-  }
-  await Promise.all(pending.map((pgid) => waitForGroupExit(pgid, graceMs)))
-  const survivors = pending.filter((pgid) => !retireIfGone(pgid))
-  for (const pgid of survivors) {
-    // 升级前再确认一次：宽限期内自己走掉的组已经退休，绝不对复用的 pgid 发 KILL。
-    killGroup(pgid, 'SIGKILL')
-  }
-  await Promise.all(survivors.map((pgid) => waitForGroupExit(pgid, killWaitMs)))
-  return survivors.filter((pgid) => !retireIfGone(pgid))
-}
+const processGroupLifecycle = createProcessGroupLifecycle()
 
 /**
  * 异步执行一个命令并收集输出。接口与旧的 spawnSync wrapper 对齐：
@@ -143,28 +225,21 @@ export const runCommand = (
     })
     let settled = false
     let timedOut = false
+    let childHandle = null
     const stdoutChunks = []
     const stderrChunks = []
 
-    child.once('error', (error) => {
-      if (!settled) {
-        settled = true
-        rejectPromise(
-          new Error(`failed to run ${args.join(' ')}: ${error.message}`)
-        )
-      }
-    })
-
-    // spawn 成功后才有 pid；error 事件与 spawn 事件互斥。
-    child.once('spawn', () => {
-      activeProcessGroups.set(child.pid, { leaderClosed: false })
+    // `spawn()` 成功返回后 pid 已经可用；在任何 timer / event 之前登记，
+    // `timeoutMs: 0` 也不会落进「pid 存在但还没 generation」的窗口。
+    if (Number.isSafeInteger(child.pid) && child.pid > 0) {
+      childHandle = processGroupLifecycle.register(child.pid)
       observedProcessGroups.add(child.pid)
       // 每个子进程都是 detached，因此**自成进程组**——它们不属于本进程的
       // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
       // 返回空）。把真实 pgid 逐个公布出去，外部套件才可能真的核查后代是否
       // 全部消失，而不是做一次结构性空真的查询。
       process.stderr.write(`m3b-descendant-pgid ${String(child.pid)}\n`)
-    })
+    }
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     child.stderr.on('data', (chunk) => stderrChunks.push(chunk))
@@ -172,39 +247,61 @@ export const runCommand = (
       child.stdin.end(stdin)
     }
 
-    // 超时**走同一套组生命周期**：不再自己写一遍 TERM/KILL 的时序。
+    // 超时调用方自己拥有 settlement：即使 leader 永远不发 `close`，
+    // TERM → KILL → 有界确认的预算到期后也会 reject，不把 hard bound 寄托给 close。
     const timer = setTimeout(() => {
-      timedOut = true
-      if (child.pid !== undefined) {
-        void terminateGroups([child.pid])
+      if (settled || timedOut) {
+        return
       }
+      timedOut = true
+      void (async () => {
+        let survivors = []
+        let terminationFailed = false
+        try {
+          survivors =
+            childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
+        } catch {
+          terminationFailed = true
+          survivors = childHandle === null ? [] : [childHandle]
+        }
+        if (settled) {
+          return
+        }
+        settled = true
+        const suffix =
+          terminationFailed || survivors.length > 0
+            ? `; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
+            : ''
+        rejectPromise(new Error(`${args.join(' ')} timed out after ${String(timeoutMs)}ms${suffix}`))
+      })()
     }, timeoutMs)
 
     const releaseChild = () => {
       clearTimeout(timer)
-      if (child.pid !== undefined) {
-        const entry = activeProcessGroups.get(child.pid)
-        if (entry !== undefined) {
-          entry.leaderClosed = true
-        }
+      if (childHandle !== null) {
+        processGroupLifecycle.markLeaderClosed(childHandle)
         // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
-        retireIfGone(child.pid)
+        processGroupLifecycle.retireIfGone(childHandle)
       }
     }
-    child.once('error', releaseChild)
+    child.once('error', (error) => {
+      releaseChild()
+      if (!settled && !timedOut) {
+        settled = true
+        rejectPromise(new Error(`failed to run ${args.join(' ')}: ${error.message}`))
+      }
+    })
 
     child.once('close', (code, signal) => {
       releaseChild()
       if (settled) {
         return
       }
-      settled = true
       if (timedOut) {
-        rejectPromise(
-          new Error(`${args.join(' ')} timed out after ${String(timeoutMs)}ms`)
-        )
+        // timeout 分支独占 settlement；close 只做 release，不能抢先 reject。
         return
       }
+      settled = true
       resolvePromise({
         status: signal !== null ? null : code,
         signal,
@@ -223,11 +320,12 @@ export const runCommand = (
 export const terminateControlledSubtree = async ({
   graceMs = 1_000,
   killWaitMs = 3_000
-} = {}) => terminateGroups([...activeProcessGroups.keys()], { graceMs, killWaitMs })
+} = {}) =>
+  processGroupLifecycle.terminateAll({ graceMs, killWaitMs })
 
 /** 尚未确认消失的受控进程组（测试与门禁用）。 */
 export const unconfirmedProcessGroups = () =>
-  [...activeProcessGroups.keys()].filter((pgid) => !retiredProcessGroups.has(pgid))
+  processGroupLifecycle.unconfirmed()
 
 /**
  * 安装 SIGINT/SIGTERM 处置。收到信号：
@@ -249,12 +347,12 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
     process.stderr.write(`\n${signal}: terminating child processes, then running ${label}\n`)
     void (async () => {
       let survivors = []
+      let terminationFailed = false
       try {
         survivors = await terminateControlledSubtree()
-      } catch (error) {
-        process.stderr.write(
-          `subtree termination failed: ${error instanceof Error ? error.message : String(error)}\n`
-        )
+      } catch {
+        terminationFailed = true
+        process.stderr.write('subtree termination failed\n')
       }
       try {
         const residue = await cleanup(signal)
@@ -273,18 +371,17 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       // **重投原信号之前再做一次统一终止与确认**。
       try {
         survivors = await terminateControlledSubtree()
-      } catch (error) {
-        process.stderr.write(
-          `subtree termination failed: ${error instanceof Error ? error.message : String(error)}\n`
-        )
+      } catch {
+        terminationFailed = true
+        process.stderr.write('subtree termination failed\n')
       }
       process.removeListener('SIGINT', handler)
       process.removeListener('SIGTERM', handler)
-      if (survivors.length > 0) {
+      if (terminationFailed || survivors.length > 0) {
         // **fail closed**：有后代进程组没能确认消失，就不能用「干净的信号语义」
         // 收场。只报个数，不回显任何命令内容。
         process.stderr.write(
-          `${String(survivors.length)} descendant process group(s) were not confirmed gone\n`
+          'descendant process groups were not confirmed gone\n'
         )
         process.exit(1)
       }

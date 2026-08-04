@@ -747,7 +747,12 @@ export const nodeActiveAssignment = (line) => {
     let key = text.slice(segmentFrom, equals).replace(/^[ \t]+/, '')
     const exported = exportPrefixPattern.exec(key)
     if (exported !== null) {
-      key = key.slice(exported[0].length).replace(/^[ \t]+/, '')
+      // 只有**剥掉之后仍有键名**时才认这个前缀。实测 `export =PASSWORD=V` 的键
+      // 就是 `export` 本身（Node 没把它当前缀），剥空会让我们错认成 `PASSWORD`。
+      const stripped = key.slice(exported[0].length).replace(/^[ \t]+/, '').replace(/[ \t]+$/, '')
+      if (stripped !== '') {
+        key = stripped
+      }
     }
     key = key.replace(/[ \t]+$/, '')
     if (key !== '') {
@@ -760,33 +765,99 @@ export const nodeActiveAssignment = (line) => {
     }
     segmentFrom = equals + 1
   }
+  // 恰好消费完上限且后面已经没有另一个 `=` 时，没有任何未扫描候选：
+  // `================`（16 个）只是 16 个空段，必须保持干净。只有余下文本里
+  // **确实还有一个赋值候选**时才算 exhausted；第 17 个 `=` 或 16 个空段后再跟
+  // `0PASSWD=...` 都走 fail closed。
+  if (text.indexOf('=', segmentFrom) === -1) {
+    return null
+  }
   // 连续空键超出上限：放弃解析不等于放行。
   return { key: '', valueFrom: segmentFrom, overLength: true, exhausted: true }
 }
 
+const compactSensitiveTokens = new Set(
+  sensitiveKeySuffixes.flatMap((suffix) => {
+    const compact = suffix.replace(/[^A-Z0-9]/g, '')
+    return [compact, `${compact}S`]
+  })
+)
+for (const token of ['PRIVATEKEY', 'APIKEY', 'XAPIKEY']) {
+  compactSensitiveTokens.add(token)
+}
+const maximumCompactSensitiveTokenLength = Math.max(
+  ...[...compactSensitiveTokens].map((token) => token.length)
+)
+const weakPunctuationTokens = new Set(['PASS', 'PWD', 'KEY', 'URL', 'URI', 'DSN'])
+// 标点把 weak stem 独立成一个完整词元时默认 fail closed。不能维护一份有限的
+// 「credential qualifier」表：`KEY-MATERIAL`、`PASS-PIN`、`DSN-STRING` 只需换
+// 一个新后缀就能绕过。少量**完整 compound** 例外只为钉住已实证的普通英文词；
+// 默认方向仍是拒绝未知 compound，而不是猜它是否像凭据。
+const benignWeakPunctuationCompounds = new Set([
+  'COMPASSION',
+  'KEYBOARD',
+  'PASSAGE',
+  'SECRETARY',
+  'SIGNATURED',
+  'TOKENYA'
+])
+const stripBoundaryDigits = (value) => value.replace(/^\d+/, '').replace(/\d+$/, '')
+const isExactCompactSensitiveToken = (value) =>
+  value !== '' && compactSensitiveTokens.has(stripBoundaryDigits(value))
+
+const tokenSequenceContainsSensitive = (tokens, { allowWeakSingleton }) => {
+  const normalized = tokens.map((token) => stripBoundaryDigits(token.replace(/[^A-Z0-9]/g, '')))
+  for (let start = 0; start < normalized.length; start += 1) {
+    let joined = ''
+    for (let end = start; end < normalized.length; end += 1) {
+      joined += normalized[end]
+      if (joined.length > maximumCompactSensitiveTokenLength) {
+        break
+      }
+      const width = end - start + 1
+      if (
+        isExactCompactSensitiveToken(joined) &&
+        (width > 1 || allowWeakSingleton || !weakPunctuationTokens.has(joined))
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
 /**
- * 键里**任何一段 ASCII 词 run** 命中敏感判据即算敏感键。
- *
- * 判据本身仍是 `isSensitiveKeyName`（单一事实源）；这里只负责把 Node 允许的任意
- * 键切成它看得懂的片段：`0PASSWD` → `0PASSWD`（endsWith）、`PASSWORD-FILE` →
- * `PASSWORD` + `FILE`、`export\tPASSWORD` → `EXPORT` + `PASSWORD`、
- * `1PASSWORDé` → `1PASSWORD`。
+ * Node-active 键的有界 stem matcher。下划线是词边界；词元内的 ASCII 标点可折叠，
+ * 折叠后再剥首尾数字。因此 `1TOK-EN2` 与 `MY_TOK-EN_VALUE` 都找到 TOKEN。
+ * weak stem 一旦成为完整标点词元就默认 fail closed；只有上面登记的完整 benign
+ * compound（如 `PASS-AGE`）保持干净，未知后缀不再形成绕过词表。
  */
 const containsSensitiveKeyToken = (key) => {
-  const text = String(key)
-  if (
-    text
-      .split(/[^A-Za-z0-9_]+/)
-      .filter(Boolean)
-      .some((run) => isSensitiveKeyName(run))
-  ) {
+  const components = String(key).toUpperCase().split(/_+/).filter(Boolean)
+  if (tokenSequenceContainsSensitive(components, { allowWeakSingleton: true })) {
     return true
   }
-  // 词干本身可能被 ASCII 标点从**内部**切断：`WECHAT_APP-ID` / `WECHAT_APP.ID`
-  // 都是 Node 真实建立的键，而 `APP_ID` 这个已声明的词干在按 `[^A-Za-z0-9_]+`
-  // 切分之后就散成了 `APP` + `ID`（审计实测 3/3 漏，其中 `WECHAT_APP_ID` 正是
-  // 模板里必须保持空值的两个键之一）。把标点归一成 `_` 再判一次。
-  return isSensitiveKeyName(text.replace(/[^A-Za-z0-9]+/g, '_'))
+  for (const component of components) {
+    if (/[^A-Z0-9]/.test(component)) {
+      const pieces = component.split(/[^A-Z0-9]+/).filter(Boolean)
+      const normalizedPieces = pieces.map((piece) =>
+        stripBoundaryDigits(piece.replace(/[^A-Z0-9]/g, ''))
+      )
+      const wholeCompound = normalizedPieces.join('')
+      // 完整 benign compound 必须在任何子窗口扫描**之前**短路；否则
+      // `P-A-S-S-A-G-E` 仍会被动态窗口里的 `PASS` 重新命中。
+      if (benignWeakPunctuationCompounds.has(wholeCompound)) {
+        continue
+      }
+      if (normalizedPieces.some((piece) => weakPunctuationTokens.has(piece))) {
+        return true
+      }
+      if (tokenSequenceContainsSensitive(pieces, { allowWeakSingleton: false })) {
+        return true
+      }
+    }
+  }
+  return false
 }
 
 /** 注释赋值判据的上限：键 run 长度与一行里的候选个数都有界。 */
@@ -829,11 +900,14 @@ const commentBodiesOf = (line) => {
   if (equals === -1) {
     return []
   }
-  const inline = /(?:^|[ \t])#+[ \t]*/.exec(text.slice(equals))
+  // **不要求 `#` 前面有空白**：实测 v24.18.0，`NOTES=#PASSWORD-FILE=AUDITVALUE`
+  // 里 `NOTES` 的取值是**空串**——`#` 紧贴 `=` 同样开启注释。此前这里沿用
+  // `(?:^|[ \t])#`，于是这一行根本没有注释体，藏在里面的凭据 1/1 漏检。
+  const inline = /#+[ \t]*/.exec(text.slice(equals + 1))
   if (inline === null) {
     return []
   }
-  return [text.slice(equals + inline.index + inline[0].length)]
+  return [text.slice(equals + 1 + inline.index + inline[0].length)]
 }
 
 /**
@@ -869,7 +943,12 @@ const sensitiveCommentAssignments = (body) => {
       start -= 1
     }
     const key = text.slice(start, equals)
-    if (key === '' || compoundOperatorTail.test(key) || urlShapedRun.test(key)) {
+    if (
+      key === '' ||
+      compoundOperatorTail.test(key) ||
+      urlShapedRun.test(key) ||
+      (key.includes('/') && !containsSensitiveKeyToken(key.slice(0, key.indexOf('/'))))
+    ) {
       continue
     }
     if ([...key].length > maximumCommentKeyLength) {
@@ -1296,6 +1375,38 @@ const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
       break
     }
     const keyEnd = match.index + match[0].length
+    const keyStart = keyEnd - match[1].length
+    if (!strict) {
+      // prose 里的 URL / absolute-path 片段不是 dotenv 赋值：
+      //
+      //   https://example.invalid/password=placeholder
+      //   [reset](https://example.invalid/password=placeholder)
+      //   /api/password=placeholder?limit=10
+      //
+      // 新的 comment scanner 已经会跳过 URL-shaped run，但整行仍会先经过这条旧的
+      // 非锚定 prose scanner；如果这里不共享同一边界，`password=` 会在 URL path
+      // 里被重新解释成赋值。只看**键之前的同一 ASCII token**：含 `://`，或去掉
+      // Markdown 包装后以 `/` 开头，才按 URL/path 跳过。键本身起始的
+      // `PASSWORD/v2=secret` 没有这样的前缀，仍然命中。
+      let tokenStart = keyStart
+      while (
+        tokenStart > 0 &&
+        source[tokenStart - 1] !== ' ' &&
+        source[tokenStart - 1] !== '\t'
+      ) {
+        tokenStart -= 1
+      }
+      const tokenPrefix = source.slice(tokenStart, keyStart)
+      const unwrappedPrefix = tokenPrefix.replace(/^[#>*\[\](){}`'"|]+/, '')
+      if (
+        tokenPrefix.includes('://') ||
+        tokenPrefix.includes('/') ||
+        unwrappedPrefix.startsWith('/')
+      ) {
+        cursor = Math.max(cursor + 1, keyEnd - 1)
+        continue
+      }
+    }
     // GAP：结构性判定，不枚举字符（见 readAssignmentGap）。
     const gap = readAssignmentGap(source, keyEnd, { strict })
     if (gap.reachedEquals && isSensitiveKeyName(match[1])) {

@@ -17,14 +17,17 @@
 // 确定的，不靠猜时间。
 import { spawn, spawnSync } from 'node:child_process'
 import {
+  createProcessGroupLifecycle,
   runCommand,
   terminateControlledSubtree,
   unconfirmedProcessGroups
 } from './m3b-subprocess.mjs'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+const moduleDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 
 import { isAbsenceMessage, runImageTagPrefix } from './m3b-docker.mjs'
 
@@ -64,6 +67,22 @@ const groupSurvives = (pgid, budgetMs, stepMs = 50) => {
       /* bounded spin */
     }
   }
+}
+
+/** 测试自身的 failure-safe 收尾：精确 PGID、整组 KILL、有界确认 ESRCH。 */
+const killAndConfirmGroups = (pgids, budgetMs = 5_000) => {
+  const unique = [...new Set(pgids.filter((pgid) => Number.isSafeInteger(pgid) && pgid > 0))]
+  for (const pgid of unique) {
+    if (!groupAlive(pgid)) {
+      continue
+    }
+    try {
+      process.kill(-pgid, 'SIGKILL')
+    } catch {
+      // 下面的有界确认给最终结论。
+    }
+  }
+  return unique.filter((pgid) => groupSurvives(pgid, budgetMs))
 }
 
 const fail = (name, detail) => {
@@ -211,31 +230,38 @@ const runAndSignal = async ({
 
 const assertCleanScene = (name, result, { expectSignal }) => {
   const { scene } = result
+  const problems = []
+  // 先从已经收集完的 stderr 中取得精确 PGID，再进入任何可能抛错的证据读取。
+  // cleanup 必须位于词法 finally：即使后面的目录、Git 或 Docker 探针异常，
+  // 被测 CLI 公布过的进程组也不能因此逃过测试自身的 failure-safe 收尾。
+  const announced = [
+    ...new Set(
+      [...result.stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) => Number(match[1]))
+    )
+  ]
+  try {
   if (!result.signalled) {
-    fail(name, `the trigger never matched; output was:\n${result.stdout.slice(-500)}`)
-    return
+    problems.push('the trigger never matched')
   }
   if (!result.windowConfirmed) {
-    fail(
-      name,
+    problems.push(
       'the expected child process never appeared, so the signal did not land in ' +
         'the intended window (the residue assertions would be vacuously true)'
     )
-    return
   }
   if (scene.project === null) {
-    fail(name, 'could not observe the project name from the output')
-    return
+    problems.push('could not observe the project name from the output')
   }
-  const problems = []
-  for (const kind of ['container', 'network', 'volume']) {
-    try {
-      const remaining = listByLabel(kind, scene.project)
-      if (remaining.length > 0) {
-        problems.push(`${kind}(s) left: ${remaining.join(', ')}`)
+  if (scene.project !== null) {
+    for (const kind of ['container', 'network', 'volume']) {
+      try {
+        const remaining = listByLabel(kind, scene.project)
+        if (remaining.length > 0) {
+          problems.push(`${kind}(s) left: ${remaining.join(', ')}`)
+        }
+      } catch (error) {
+        problems.push(String(error))
       }
-    } catch (error) {
-      problems.push(String(error))
     }
   }
   if (scene.imageTag !== null) {
@@ -288,11 +314,6 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   // 子进程都是 detached、**自成进程组**，那条查询结构上恒为空（已实测），
   // 五个窗口的「后代全部消失」会变成空真。也不做全局 pgrep（会误抓别的
   // worktree）。
-  const announced = [
-    ...new Set(
-      [...result.stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) => Number(match[1]))
-    )
-  ]
   if (announced.length === 0) {
     problems.push(
       'the CLI never announced a descendant pgid; the descendant check would be vacuous'
@@ -360,8 +381,19 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   if (reportedResidue.length > 0) {
     problems.push(
       `the signal handler reported ${String(reportedResidue.length)} residue line(s) ` +
-        '(deliberately not echoed)'
+      '(deliberately not echoed)'
     )
+  }
+  } catch {
+    problems.push('an evidence probe threw before the scene could be fully verified')
+  } finally {
+    const cleanupSurvivors = killAndConfirmGroups(announced)
+    if (cleanupSurvivors.length > 0) {
+      problems.push(
+        `fixture cleanup could not confirm ${String(cleanupSurvivors.length)} exact process ` +
+          'group(s) reached ESRCH'
+      )
+    }
   }
   if (problems.length > 0) {
     fail(name, problems.join('; '))
@@ -492,24 +524,290 @@ try {
   )
 } finally {
   // 按**精确 pgid** 兜底清理，绝不做模糊匹配。
-  if (orphanPgid !== null && groupAlive(orphanPgid)) {
-    try {
-      process.kill(-orphanPgid, 'SIGKILL')
-    } catch {
-      /* already gone */
-    }
+  const cleanupSurvivors = killAndConfirmGroups(orphanPgid === null ? [] : [orphanPgid])
+  if (cleanupSurvivors.length > 0) {
+    regressionProblems.push('fixture cleanup could not confirm the orphaned pgid is gone')
   }
 }
-const expectedRegressionChecks = 1
+const expectedRegressionChecks = 4
 let regressionCaught = 0
 if (regressionProblems.length > 0) {
   fail('deterministic process-group regression', regressionProblems[0])
 } else {
-  regressionCaught = 1
+  regressionCaught += 1
   pass(
     'deterministic process-group regression',
     'a detached grandchild outlives its leader, and terminateControlledSubtree confirms the ' +
       'whole group reaches ESRCH (no Docker involved)'
+  )
+}
+
+// --- timeout settlement：调用方拿到 rejection 之后立即退出，整组仍必须已 ESRCH ---
+//
+// 判别形态必须让**孙进程扛住 TERM**：否则 leader 一死 `close` 就到，rejection
+// 天然排在终止之后，反例无法区分新旧实现（实测基线同样通过）。用
+// `(trap "" TERM; sleep 45)` 之后，基线在调用方退出时**留下 1 个存活组**，
+// 修复后为 0。
+const timeoutFixture = resolve(tmpdir(), `m3b-timeout-settlement-${String(process.pid)}.mjs`)
+const timeoutProblems = []
+let timeoutPgids = []
+try {
+  writeFileSync(
+    timeoutFixture,
+    [
+      `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
+      "const originalKill = process.kill.bind(process)",
+      "if (process.argv[2] === 'stubborn') {",
+      "  process.kill = (pid, signal) => pid < 0 && signal !== 0 ? true : originalKill(pid, signal)",
+      '}',
+      'try {',
+      "  await m.runCommand(['/bin/sh','-c'," +
+        JSON.stringify('(trap "" TERM; sleep 45) </dev/null >/dev/null 2>&1 & sleep 45') +
+        '], { timeoutMs: 400 })',
+      "  process.stdout.write('NO-REJECTION')",
+      "} catch (error) {",
+      "  const suffix = String(error?.message ?? '').includes('not confirmed gone') ? '-UNCONFIRMED' : ''",
+      "  process.stdout.write('REJECTED' + suffix); process.exit(7)",
+      '}',
+      ''
+    ].join('\n'),
+    'utf8'
+  )
+  const run = spawnSync(process.execPath, [timeoutFixture], {
+    encoding: 'utf8',
+    timeout: 15_000,
+    killSignal: 'SIGKILL'
+  })
+  if (run.error !== undefined) {
+    timeoutProblems.push('the real-signal timeout fixture exceeded its independent watchdog')
+  }
+  timeoutPgids = [...String(run.stderr ?? '').matchAll(/m3b-descendant-pgid (\d+)/g)].map((m) =>
+    Number(m[1])
+  )
+  if (run.status !== 7 || !String(run.stdout ?? '').includes('REJECTED')) {
+    timeoutProblems.push('the timeout did not reject; the fixture is not measuring settlement')
+  }
+  if (timeoutPgids.length === 0) {
+    timeoutProblems.push('no descendant pgid was announced; the fixture would be vacuous')
+  }
+  const survivors = timeoutPgids.filter((pgid) => groupSurvives(pgid, 5_000))
+  if (survivors.length > 0) {
+    timeoutProblems.push(
+      `${String(survivors.length)} process group(s) outlived the caller after a timeout rejection`
+    )
+  }
+
+  // 信号调用返回成功、但 leader 与孙进程始终不 close：timeout 仍必须
+  // 在 grace + KILL-wait 预算结束后自主 reject，不能等 close 才 settle。
+  const stubbornStarted = Date.now()
+  const stubborn = spawnSync(process.execPath, [timeoutFixture, 'stubborn'], {
+    encoding: 'utf8',
+    timeout: 8_000,
+    killSignal: 'SIGKILL'
+  })
+  const stubbornElapsed = Date.now() - stubbornStarted
+  const stubbornPgids = [
+    ...String(stubborn.stderr ?? '').matchAll(/m3b-descendant-pgid (\d+)/g)
+  ].map((match) => Number(match[1]))
+  timeoutPgids.push(...stubbornPgids)
+  if (stubborn.error !== undefined) {
+    timeoutProblems.push('the close-independent timeout fixture exceeded its watchdog')
+  } else if (
+    stubborn.status !== 7 ||
+    !String(stubborn.stdout ?? '').includes('REJECTED-UNCONFIRMED') ||
+    stubbornElapsed > 7_000
+  ) {
+    timeoutProblems.push('timeout settlement still depended on the child close event')
+  }
+  if (stubbornPgids.length === 0) {
+    timeoutProblems.push('the close-independent fixture announced no pgid and is vacuous')
+  }
+} catch (error) {
+  timeoutProblems.push(
+    `the timeout fixture threw: ${error instanceof Error ? error.message : String(error)}`
+  )
+} finally {
+  const cleanupSurvivors = killAndConfirmGroups(timeoutPgids)
+  if (cleanupSurvivors.length > 0) {
+    timeoutProblems.push(
+      `fixture cleanup could not confirm ${String(cleanupSurvivors.length)} pgid(s) are gone`
+    )
+  }
+  try {
+    rmSync(timeoutFixture, { force: true })
+  } catch {
+    /* best effort */
+  }
+}
+if (timeoutProblems.length > 0) {
+  fail('timeout settlement waits for the whole group', timeoutProblems[0])
+} else {
+  regressionCaught += 1
+  pass(
+    'timeout settlement waits for the whole group',
+    'a timeout rejection is settled only after TERM -> KILL -> bounded ESRCH, so a caller that ' +
+      'exits immediately still leaves no surviving process group'
+  )
+}
+
+// --- generation：确定性复用**同一个数字** PGID ---
+const generationProblems = []
+try {
+  let alive = true
+  const delivered = []
+  let releaseOldDelay = null
+  let markOldDelayEntered = null
+  const oldDelayEntered = new Promise((resolveEntered) => {
+    markOldDelayEntered = resolveEntered
+  })
+  const resumeOldSweep = new Promise((resolveDelay) => {
+    releaseOldDelay = resolveDelay
+  })
+  let delayCalls = 0
+  const lifecycle = createProcessGroupLifecycle({
+    probeGroup: () => alive,
+    signalGroup: (pgid, signal) => {
+      delivered.push(`${String(pgid)}:${signal}`)
+      if (signal === 'SIGKILL') {
+        alive = false
+      }
+      return true
+    },
+    delay: async () => {
+      delayCalls += 1
+      if (delayCalls === 1) {
+        markOldDelayEntered()
+        await resumeOldSweep
+      }
+    }
+  })
+  const first = lifecycle.register(42)
+  const oldSweep = lifecycle.terminate([first], { graceMs: 1, killWaitMs: 1 })
+  let delayWatchdog = null
+  let second = null
+  let beforeOldSweepResumes = 0
+  try {
+    await Promise.race([
+      oldDelayEntered,
+      new Promise((_, rejectWait) => {
+        delayWatchdog = setTimeout(
+          () => rejectWait(new Error('the old generation never reached its TERM wait')),
+          2_000
+        )
+      })
+    ])
+    if (delivered.join(',') !== '42:SIGTERM') {
+      generationProblems.push('the in-flight old sweep did not reach its TERM wait')
+    }
+    second = lifecycle.register(42)
+    beforeOldSweepResumes = delivered.length
+  } finally {
+    if (delayWatchdog !== null) {
+      clearTimeout(delayWatchdog)
+    }
+    // 即使 watchdog 或断言失败，也必须放开旧 sweep，不能让确定性夹具自己挂住。
+    releaseOldDelay()
+  }
+  const oldSurvivors = await oldSweep
+  if (oldSurvivors.length !== 0) {
+    generationProblems.push('the superseded old generation remained a reported survivor')
+  }
+  if (delivered.length !== beforeOldSweepResumes) {
+    generationProblems.push(
+      'an in-flight old generation delivered a late signal to the same-number new generation'
+    )
+  }
+  if (lifecycle.unconfirmed().join(',') !== '42') {
+    generationProblems.push('the same-number new generation inherited retired state')
+  }
+  const beforeNewSweep = delivered.length
+  const survivors = await lifecycle.terminate([second], { graceMs: 1, killWaitMs: 1 })
+  const newGenerationSignals = delivered.slice(beforeNewSweep)
+  if (
+    survivors.length > 0 ||
+    lifecycle.unconfirmed().length > 0 ||
+    JSON.stringify(newGenerationSignals) !== JSON.stringify(['42:SIGTERM', '42:SIGKILL'])
+  ) {
+    generationProblems.push('the new generation did not receive its own TERM/KILL lifecycle')
+  }
+} catch (error) {
+  generationProblems.push(
+    `the generation fixture threw: ${error instanceof Error ? error.message : String(error)}`
+  )
+}
+if (generationProblems.length > 0) {
+  fail('process-group generation is not inherited', generationProblems[0])
+} else {
+  regressionCaught += 1
+  pass(
+    'process-group generation is not inherited',
+    'an in-flight old TERM wait cannot deliver a late KILL after the same numeric pgid is ' +
+      'registered as a new generation'
+  )
+}
+
+// --- signal handler：终止原语异常不得伪装成干净信号退出 ---
+const handlerFixture = resolve(tmpdir(), `m3b-handler-failclosed-${String(process.pid)}.mjs`)
+const handlerProblems = []
+let handlerPgids = []
+try {
+  writeFileSync(
+    handlerFixture,
+    [
+      `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
+      "const nativeTimer = globalThis.setTimeout",
+      "m.installSignalHandlers(async () => [], { label: 'fixture cleanup' })",
+      "void m.runCommand(['/bin/sh','-c','trap \"\" TERM; sleep 45'], { timeoutMs: 60000 })",
+      'nativeTimer(() => {',
+      "  globalThis.setTimeout = () => { throw new Error('CALLER-SENTINEL') }",
+      "  process.kill(process.pid, 'SIGTERM')",
+      '}, 150)',
+      ''
+    ].join('\n'),
+    'utf8'
+  )
+  const run = spawnSync(process.execPath, [handlerFixture], {
+    encoding: 'utf8',
+    timeout: 10_000,
+    killSignal: 'SIGKILL'
+  })
+  handlerPgids = [...String(run.stderr ?? '').matchAll(/m3b-descendant-pgid (\d+)/g)].map(
+    (match) => Number(match[1])
+  )
+  if (run.error !== undefined) {
+    handlerProblems.push('the signal-handler fixture exceeded its watchdog')
+  } else if (run.status !== 1 || run.signal !== null) {
+    handlerProblems.push('a termination exception was presented as clean signal semantics')
+  }
+  if (String(run.stderr ?? '').includes('CALLER-SENTINEL')) {
+    handlerProblems.push('a caller-controlled termination exception leaked to stderr')
+  }
+  if (handlerPgids.length === 0) {
+    handlerProblems.push('the signal-handler fixture announced no pgid and is vacuous')
+  }
+} catch (error) {
+  handlerProblems.push(
+    `the signal-handler fixture threw: ${error instanceof Error ? error.message : String(error)}`
+  )
+} finally {
+  const cleanupSurvivors = killAndConfirmGroups(handlerPgids)
+  if (cleanupSurvivors.length > 0) {
+    handlerProblems.push('fixture cleanup could not confirm the announced pgid is gone')
+  }
+  try {
+    rmSync(handlerFixture, { force: true })
+  } catch {
+    /* best effort */
+  }
+}
+if (handlerProblems.length > 0) {
+  fail('signal-handler termination failure is fail closed', handlerProblems[0])
+} else {
+  regressionCaught += 1
+  pass(
+    'signal-handler termination failure is fail closed',
+    'a termination primitive exception yields fixed exit 1, never clean signal semantics, and ' +
+      'the fixture cleans its exact announced pgid'
   )
 }
 
