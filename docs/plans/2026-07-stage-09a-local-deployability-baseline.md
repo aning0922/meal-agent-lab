@@ -2957,10 +2957,10 @@ mutation **15/15**；signal-window 连续三轮各 **5/5 确定性 + 5/5 真实�
 fresh full-stack smoke PASS；Secret identity probe PASS；`pnpm stage08:check` 在
 Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
 
-**Round 20 当前状态**：implementation complete，**pending re-run of both
-independent read-only audits**。全绿仍不等于 Accepted：本轮修改的正是两路审计都
-实际探到的 scanner 判据面，`c8d7236` 的既有审计结论**不可继承**，必须让同样两路
-独立只读审计对本轮新 SHA 重新给出结论，再回到项目总控复核第一阶段。
+**Round 20 当前状态**：**M3B implementation complete, pending total-control
+review**。全绿仍不等于 Accepted：本轮修改的正是两路审计都实际探到的 scanner
+判据面，`c8d7236` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮
+新 SHA 重新给出结论，再回到项目总控复核第一阶段。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A
 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**

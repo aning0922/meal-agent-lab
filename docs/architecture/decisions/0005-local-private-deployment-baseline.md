@@ -168,7 +168,7 @@ grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验
 §4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
 [§4 的实施注记](#4-secret日志与镜像边界)）。**M3B（环境模板、八份 Secret、
 完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为 implementation complete,
-pending re-run of both independent read-only audits**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
+pending total-control review**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
 （M4、M5 未开始），备份恢复与阶段总门禁尚无证据，本 ADR 因此保持 `Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按

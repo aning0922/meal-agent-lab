@@ -11,9 +11,8 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 > `08da379` 与 `c8d7236` 的复验都给出 **BLOCK**：后者由项目总控第一阶段只读裁定，
 > 确认 1 项 P1（crossing stem 与 `=` 之间有 ASCII 空白时，5 个非 active 视图 140 格
 > 全漏）与 1 项 P2（外层 closing quote 的空占位在 legacy 路径未生效）。当前是
-> M3B Round 20 整改候选：implementation complete, pending re-run of both independent
-> read-only audits；必须重跑同样两路审计后才可讨论 Accepted，不能用现有全绿门禁
-> 替代独立复验。
+> M3B Round 20 整改候选：implementation complete, pending total-control review；
+> 必须重跑同样两路独立只读审计后才可讨论 Accepted，不能用现有全绿门禁替代独立复验。
 
 ## 当前状态与计划
 
