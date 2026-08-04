@@ -22,7 +22,14 @@ import {
   terminateControlledSubtree,
   unconfirmedProcessGroups
 } from './m3b-subprocess.mjs'
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -529,7 +536,7 @@ try {
     regressionProblems.push('fixture cleanup could not confirm the orphaned pgid is gone')
   }
 }
-const expectedRegressionChecks = 4
+const expectedRegressionChecks = 5
 let regressionCaught = 0
 if (regressionProblems.length > 0) {
   fail('deterministic process-group regression', regressionProblems[0])
@@ -743,6 +750,191 @@ if (generationProblems.length > 0) {
     'process-group generation is not inherited',
     'an in-flight old TERM wait cannot deliver a late KILL after the same numeric pgid is ' +
       'registered as a new generation'
+  )
+}
+
+// --- mutation-closed cleanup：最终 sweep 快照后登记的新组仍必须被收掉 ---
+//
+// cleanup 启动 A 后返回；A 收到最终 sweep 的 TERM 才写 marker。测试侧看到 marker
+// 后才启动 B，因此 B 的登记确定发生在 A 已进入那份快照**之后**。旧实现只处置 A
+// 便重投 SIGTERM，B 稳定存活；收敛实现必须在下一轮快照看到 B，并在重投前确认
+// A/B 两组均 ESRCH。
+// 独占目录让两个 marker 的初始不存在成为结构事实。若复用基于 PID 的固定路径，
+// 前一次 SIGKILL 遗留的 marker + PID 复用会让 B 在 A 真正收到 TERM 前启动，使旧的
+// 单快照实现也可能假绿。
+const mutationDirectory = mkdtempSync(resolve(tmpdir(), 'm3b-mutation-closed-'))
+const mutationFixture = resolve(mutationDirectory, 'fixture.mjs')
+const mutationReadyMarker = resolve(mutationDirectory, 'group-a.ready')
+const mutationTermMarker = resolve(mutationDirectory, 'group-a.term')
+const mutationProblems = []
+let mutationPgids = []
+try {
+  if (existsSync(mutationReadyMarker) || existsSync(mutationTermMarker)) {
+    mutationProblems.push('the exclusive mutation fixture directory did not start marker-free')
+  }
+  writeFileSync(
+    mutationFixture,
+    [
+      `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
+      `const readyMarker = ${JSON.stringify(mutationReadyMarker)}`,
+      `const termMarker = ${JSON.stringify(mutationTermMarker)}`,
+      'const nativeKill = process.kill.bind(process)',
+      'const nativeTimer = globalThis.setTimeout',
+      "const { existsSync } = await import('node:fs')",
+      'const sleep = (ms) => new Promise((resolveSleep) => nativeTimer(resolveSleep, ms))',
+      "m.installSignalHandlers(async () => {",
+      "  void m.runCommand(['/bin/sh','-c'," +
+        JSON.stringify(
+          "trap 'printf A_TERM > \"$2\"' TERM; " +
+            "printf A_READY > \"$1\"; while :; do sleep 1; done"
+        ) +
+        ",'fixture-a',readyMarker,termMarker], { timeoutMs: 60000 })",
+      '  const readyDeadline = Date.now() + 5000',
+      '  while (!existsSync(readyMarker) && Date.now() < readyDeadline) {',
+      '    await sleep(10)',
+      '  }',
+      '  if (!existsSync(readyMarker)) {',
+      "    process.stderr.write('MUTATION_GROUP_A_NOT_READY' + String.fromCharCode(10))",
+      '    return []',
+      '  }',
+      '  void (async () => {',
+      '    const deadline = Date.now() + 5000',
+      '    while (!existsSync(termMarker) && Date.now() < deadline) {',
+      '      await sleep(10)',
+      '    }',
+      '    if (!existsSync(termMarker)) {',
+      "      process.stderr.write('MUTATION_GROUP_B_MISSING' + String.fromCharCode(10))",
+      '      return',
+      '    }',
+      "    void m.runCommand(['/bin/sh','-c'," +
+        JSON.stringify('trap "" TERM; sleep 45 </dev/null >/dev/null 2>&1') +
+        "], { timeoutMs: 60000 })",
+      "    process.stderr.write('MUTATION_GROUP_B_STARTED' + String.fromCharCode(10))",
+      '  })()',
+      '  return []',
+      "}, { label: 'mutation-closed cleanup' })",
+      "nativeTimer(() => nativeKill(process.pid, 'SIGTERM'), 100)",
+      'await sleep(60000)',
+      ''
+    ].join('\n'),
+    'utf8'
+  )
+  const run = spawnSync(process.execPath, [mutationFixture], {
+    encoding: 'utf8',
+    timeout: 12_000,
+    killSignal: 'SIGKILL'
+  })
+  const stderr = String(run.stderr ?? '')
+  mutationPgids = [...stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) =>
+    Number(match[1])
+  )
+  if (run.error !== undefined) {
+    mutationProblems.push('the mutation-closed fixture exceeded its watchdog')
+  } else if (run.status !== null || run.signal !== 'SIGTERM') {
+    mutationProblems.push('clean mutation-closed cleanup did not preserve SIGTERM semantics')
+  }
+  if (!stderr.includes('MUTATION_GROUP_B_STARTED')) {
+    mutationProblems.push(
+      'group B was not registered after group A entered the final sweep ' +
+        `(a-not-ready=${String(stderr.includes('MUTATION_GROUP_A_NOT_READY'))}, ` +
+        `term-marker-missing=${String(stderr.includes('MUTATION_GROUP_B_MISSING'))}, ` +
+        `pgids=${String(mutationPgids.length)}, status=${String(run.status)}, ` +
+        `signal=${String(run.signal)})`
+    )
+  }
+  if (mutationPgids.length !== 2 || new Set(mutationPgids).size !== 2) {
+    mutationProblems.push('the fixture did not announce exactly two distinct process groups')
+  }
+  const survivors = mutationPgids.filter((pgid) => groupSurvives(pgid, 5_000))
+  if (survivors.length > 0) {
+    mutationProblems.push(
+      `${String(survivors.length)} process group(s) survived the mutation-closed cleanup`
+    )
+  }
+
+  // 固定轮数不是装饰：若每个 stability window 都登记新代，不能在某个瞬时
+  // 空快照上返回成功。用注入原语确定性证明达到上限会 fail closed，且已看到的
+  // generation 仍逐一被处置。
+  const syntheticAlive = new Map([[100, true]])
+  let syntheticLifecycle = null
+  let syntheticNextPgid = 100
+  let syntheticMutationsOpen = true
+  syntheticLifecycle = createProcessGroupLifecycle({
+    probeGroup: (pgid) => syntheticAlive.get(pgid) === true,
+    signalGroup: (pgid) => {
+      syntheticAlive.set(pgid, false)
+      return true
+    },
+    delay: async () => {
+      if (!syntheticMutationsOpen) {
+        return
+      }
+      syntheticNextPgid += 1
+      syntheticAlive.set(syntheticNextPgid, true)
+      syntheticLifecycle.register(syntheticNextPgid)
+    }
+  })
+  syntheticLifecycle.register(100)
+  let cappedFailure = null
+  try {
+    await syntheticLifecycle.terminateAll({
+      graceMs: 1,
+      killWaitMs: 1,
+      maxSweeps: 8,
+      stablePasses: 2,
+      stabilityMs: 1
+    })
+  } catch (error) {
+    cappedFailure = error
+  }
+  if (
+    !(cappedFailure instanceof Error) ||
+    cappedFailure.message !== 'process-group cleanup did not reach a stable state'
+  ) {
+    mutationProblems.push('a continuously mutating registry did not fail closed at the sweep cap')
+  }
+  if (syntheticLifecycle.unconfirmed().length !== 1) {
+    mutationProblems.push('the sweep-cap fixture did not create its final tail generation')
+  }
+  syntheticMutationsOpen = false
+  const finalSyntheticSurvivors = await syntheticLifecycle.terminateAll({
+    graceMs: 1,
+    killWaitMs: 1,
+    maxSweeps: 8,
+    stablePasses: 2,
+    stabilityMs: 1
+  })
+  if (
+    finalSyntheticSurvivors.length > 0 ||
+    syntheticLifecycle.unconfirmed().length > 0
+  ) {
+    mutationProblems.push('the closed final convergence left an observed generation unconfirmed')
+  }
+} catch (error) {
+  mutationProblems.push(
+    `the mutation-closed fixture threw: ${error instanceof Error ? error.message : String(error)}`
+  )
+} finally {
+  const cleanupSurvivors = killAndConfirmGroups(mutationPgids)
+  if (cleanupSurvivors.length > 0) {
+    mutationProblems.push(
+      `fixture cleanup could not confirm ${String(cleanupSurvivors.length)} pgid(s) are gone`
+    )
+  }
+  try {
+    rmSync(mutationDirectory, { recursive: true, force: true })
+  } catch {
+    mutationProblems.push('the mutation fixture directory could not be removed')
+  }
+}
+if (mutationProblems.length > 0) {
+  fail('signal cleanup is closed over process-group mutations', mutationProblems[0])
+} else {
+  regressionCaught += 1
+  pass(
+    'signal cleanup is closed over process-group mutations',
+    'group B is registered only after snapshotted group A receives TERM, yet both announced ' +
+      'process groups reach ESRCH before the clean SIGTERM rethrow'
   )
 }
 

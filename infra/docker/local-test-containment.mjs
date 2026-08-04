@@ -260,6 +260,13 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
   const isStringArray = (value) =>
     Array.isArray(value) && value.every((entry) => typeof entry === 'string')
   const isNullableStringArray = (value) => value === null || isStringArray(value)
+  const isImageConfig = (value) =>
+    isRecord(value) &&
+    Object.hasOwn(value, 'Env') &&
+    isNullableStringArray(value.Env) &&
+    Object.hasOwn(value, 'Cmd') &&
+    isNullableStringArray(value.Cmd) &&
+    (!Object.hasOwn(value, 'Entrypoint') || isNullableStringArray(value.Entrypoint))
   const isContainerId = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
   const isImageId = (value) =>
     typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
@@ -363,8 +370,11 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
     const logs = await run(['docker', 'logs', id], { timeoutMs: 120_000 })
     if (logs.status !== 0) {
       onProblem('containment: container logs failed')
+    } else if (typeof logs.stdout !== 'string' || typeof logs.stderr !== 'string') {
+      onProblem('containment: container logs returned invalid evidence')
+    } else {
+      addArtifact(`container logs ${safeContainerLabel}`, `${logs.stdout}\n${logs.stderr}`)
     }
-    addArtifact(`container logs ${safeContainerLabel}`, `${logs.stdout}\n${logs.stderr}`)
   }
 
   const imageLayerCounts = new Map()
@@ -391,7 +401,7 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
           image.Os === '' ||
           !Object.hasOwn(image, 'RepoTags') ||
           (image.RepoTags !== null && !isStringArray(image.RepoTags)) ||
-          !isRecord(image.Config) ||
+          !isImageConfig(image.Config) ||
           !isRecord(image.RootFS) ||
           image.RootFS.Type !== 'layers' ||
           !isStringArray(image.RootFS.Layers) ||
@@ -586,6 +596,27 @@ export const scanArtifactsForNeedles = (artifacts, needles) => {
   return hits
 }
 
+/**
+ * `docker compose config` 的成功状态本身不是证据：空/非字符串 payload 同样表示
+ * 没有任何配置字节可扫描。集中在这一条 helper 里，供真实 smoke 与无 Docker
+ * 反例共用，避免测试复制一份较弱的判据。
+ */
+export const resolvedComposeConfigArtifacts = (result, onProblem) => {
+  if (result.status !== 0) {
+    onProblem(
+      'containment: docker compose config failed; the resolved configuration cannot be scanned'
+    )
+    return []
+  }
+  if (typeof result.stdout !== 'string' || result.stdout.trim() === '') {
+    onProblem(
+      'containment: docker compose config returned invalid evidence; the resolved configuration cannot be scanned'
+    )
+    return []
+  }
+  return [{ label: 'docker compose config', content: result.stdout }]
+}
+
 export const runContainmentAndIsolation = async ({
   project,
   hostPort,
@@ -636,17 +667,8 @@ export const runContainmentAndIsolation = async ({
   assertNeedleCompleteness(bodies, needles, failContainment)
 
   const resolvedConfig = await compose(['config'], { timeoutMs: 120_000 })
-  if (resolvedConfig.status !== 0) {
-    failContainment(
-      'containment: docker compose config failed; the resolved configuration ' +
-        'cannot be scanned'
-    )
-  }
-  // 读取失败的配置**不计入**已扫描产物（上面已经 fail 过）。
-  const artifacts =
-    resolvedConfig.status === 0
-      ? [{ label: 'docker compose config', content: resolvedConfig.stdout }]
-      : []
+  // 读取失败或空的配置**不计入**已扫描产物。判据与无 Docker 反例共用同一 helper。
+  const artifacts = resolvedComposeConfigArtifacts(resolvedConfig, failContainment)
   const collected = await collectDockerArtifactsForProject({
     project,
     run,

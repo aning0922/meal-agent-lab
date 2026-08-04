@@ -187,7 +187,49 @@ export const createProcessGroupLifecycle = ({
     return survivors.filter((handle) => !retireIfGone(handle))
   }
 
-  const terminateAll = (options = {}) => terminate([...active.values()], options)
+  /**
+   * 把 registry 收敛到一个**稳定**状态，而不是只处置一次 `active` 快照。
+   *
+   * signal cleanup 自己也会派生 docker 子进程；旧实现的最终 sweep 若已快照 A，
+   * 此时新登记的 B 不在那份数组里，A 消失后函数便直接返回，B 会跟着「干净」
+   * 的原信号语义一起被遗忘。这里反复取新快照：每一代只处置一次，连续两个
+   * stability window 都没有新代才算收敛。达到固定轮数仍不稳定则抛出固定错误，
+   * 调用方必须 fail closed。
+   */
+  const terminateAll = async ({
+    graceMs = 1_000,
+    killWaitMs = 3_000,
+    maxSweeps = 8,
+    stablePasses = 2,
+    stabilityMs = 25
+  } = {}) => {
+    const failed = new Set()
+    let emptyPasses = 0
+
+    for (let sweep = 0; sweep < maxSweeps; sweep += 1) {
+      const current = [...active.values()].filter((handle) => !retireIfGone(handle))
+      const pending = current.filter(
+        (handle) => !failed.has(generationKey(handle.pgid, handle.generation))
+      )
+
+      if (pending.length === 0) {
+        emptyPasses += 1
+        if (emptyPasses >= stablePasses) {
+          return current
+        }
+        await delay(stabilityMs)
+        continue
+      }
+
+      emptyPasses = 0
+      const survivors = await terminate(pending, { graceMs, killWaitMs })
+      for (const survivor of survivors) {
+        failed.add(generationKey(survivor.pgid, survivor.generation))
+      }
+    }
+
+    throw new Error('process-group cleanup did not reach a stable state')
+  }
   const unconfirmed = () =>
     [...active.values()]
       .filter((handle) => !retired.has(generationKey(handle.pgid, handle.generation)))
@@ -205,6 +247,21 @@ export const createProcessGroupLifecycle = ({
 
 const processGroupLifecycle = createProcessGroupLifecycle()
 
+// scoped cleanup 完成后的最终收敛一旦稳定，立即同步关闭新派生入口；随后再做一轮
+// registry 复核。赋值与复核之间不会让事件循环运行，因此不存在「最后一次空快照
+// 之后、重投信号之前」又登记一个新组的窗口。
+let childProcessStartsClosed = false
+
+const refuseChildProcessStart = () => {
+  const refusal = Promise.reject(
+    new Error('child process start refused during final signal convergence')
+  )
+  // 调用方 await 时仍收到 rejection；内部 handler 只防止一个已经返回的
+  // fire-and-forget callback 在 signal cleanup 中制造 unhandled-rejection 竞态。
+  void refusal.catch(() => undefined)
+  return refusal
+}
+
 /**
  * 异步执行一个命令并收集输出。接口与旧的 spawnSync wrapper 对齐：
  * resolve 为 { status, stdout, stderr }；spawn 自身失败或超时才 reject。
@@ -212,7 +269,7 @@ const processGroupLifecycle = createProcessGroupLifecycle()
  * 超时处理：对整个进程组先 SIGTERM，1 秒宽限后 SIGKILL，随后以
  * 「timed out」reject——绝不静默把超时当成功。
  */
-export const runCommand = (
+const runCommandUnchecked = (
   args,
   { env = process.env, cwd, timeoutMs = 120_000, stdin = null } = {}
 ) =>
@@ -311,6 +368,11 @@ export const runCommand = (
     })
   })
 
+export const runCommand = (args, options = {}) =>
+  childProcessStartsClosed
+    ? refuseChildProcessStart()
+    : runCommandUnchecked(args, options)
+
 /**
  * 终止全部尚未确认消失的受控进程组，并**确认**它们真的消失。
  *
@@ -349,32 +411,65 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       let survivors = []
       let terminationFailed = false
       let cleanupFailed = false
+      let cleanupMayRun = true
       try {
         survivors = await terminateControlledSubtree()
       } catch {
         terminationFailed = true
         process.stderr.write('subtree termination failed\n')
       }
-      try {
-        const residue = await cleanup(signal)
-        if (!Array.isArray(residue)) {
-          cleanupFailed = true
-          process.stderr.write(`${label} returned an invalid cleanup result\n`)
-        } else if (residue.length > 0) {
-          cleanupFailed = true
-          process.stderr.write(`${label} left ${String(residue.length)} residue item(s)\n`)
+
+      // 达到 sweep 上限或仍有未确认组时，不能带着活跃子进程进入 scoped cleanup。
+      // 先同步关闭普通派生入口，再做一次 mutation-free 收敛；只有确认清空后才
+      // 临时重开入口给 cleanup 使用。首次异常仍保留，最终必须 exit 1。
+      if (terminationFailed || survivors.length > 0) {
+        terminationFailed = true
+        childProcessStartsClosed = true
+        try {
+          survivors = await terminateControlledSubtree()
+          cleanupMayRun = survivors.length === 0
+        } catch {
+          cleanupMayRun = false
         }
-      } catch {
-        cleanupFailed = true
-        process.stderr.write(`${label} failed during signal cleanup\n`)
+        if (cleanupMayRun) {
+          childProcessStartsClosed = false
+        }
+      }
+
+      if (cleanupMayRun) {
+        try {
+          const residue = await cleanup(signal)
+          if (!Array.isArray(residue)) {
+            cleanupFailed = true
+            process.stderr.write(`${label} returned an invalid cleanup result\n`)
+          } else if (residue.length > 0) {
+            cleanupFailed = true
+            process.stderr.write(`${label} left ${String(residue.length)} residue item(s)\n`)
+          }
+        } catch {
+          cleanupFailed = true
+          process.stderr.write(`${label} failed during signal cleanup\n`)
+        }
       }
       // cleanup 期间可能又派生了子进程（scoped cleanup 自己要跑 docker 命令）。
-      // **重投原信号之前再做一次统一终止与确认**。
+      // **重投原信号之前反复收敛到稳定空集**。第一次稳定返回后同步关闭新派生
+      // 入口，再复核一次 registry；这样最终判定既能抓到 sweep 期间登记的新组，
+      // 也不会在最后一次空快照与重投信号之间重新打开竞态窗口。
       try {
         survivors = await terminateControlledSubtree()
       } catch {
         terminationFailed = true
         process.stderr.write('subtree termination failed\n')
+      }
+      childProcessStartsClosed = true
+      try {
+        const finalSurvivors = await terminateControlledSubtree()
+        survivors = [...new Set([...survivors, ...finalSurvivors])]
+      } catch {
+        if (!terminationFailed) {
+          process.stderr.write('subtree termination failed\n')
+        }
+        terminationFailed = true
       }
       process.removeListener('SIGINT', handler)
       process.removeListener('SIGTERM', handler)

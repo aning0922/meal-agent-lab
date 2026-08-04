@@ -2833,11 +2833,13 @@ GitHub Actions。本轮保持 fake adapter，不调用任何真实微信服务�
    边界覆盖 tracked template、全仓 containment 与 Compose topology，并在任何
    Docker 调用前生效；race fixture 会在 preflight 后真实插入 replacement ref，删除
    任一 per-read guard 都会转红。
-3. **Docker evidence 不是“能 parse 就算扫过”**：container listing/inspect 与 image
-   inspect/history 逐层钉住 canonical ID、singleton envelope、非空 `Path`、数组元素
-   shape、Mount 字段、RootFS layer digest 和 history 行数下界；坏证据不物化 artifact。
-   42 个唯一向量同时断言固定 problem/label、完整 argv、四路非零 status 与
-   stdout/stderr sentinel 零回显；生产 helper 抛异常不能算通过。
+3. **Docker evidence 不是“能 parse 就算扫过”**：当轮为 container listing/inspect 与
+   image inspect/history 增加 canonical ID、singleton envelope、非空 `Path`、部分数组
+   元素 shape、Mount 字段、RootFS layer digest 和 history 行数下界，并以 42 个唯一
+   向量断言固定 problem/label、完整 argv、五个 collector 阶段的非零 status 与
+   stdout/stderr sentinel 零回显。后续对 `08da379` 的复验推翻了“坏证据均不物化”
+   这一过强结论：失败 logs 仍被加入 artifact，image Config 深层字段与空成功的
+   resolved Compose config 也仍可形成空壳证据。
 4. **最终信号重投同样 fail closed**：最终 `process.kill(process.pid, signal)` 抛错时
    固定输出 `final signal rethrow failed` 并 exit 1，不让调用方 Error/stack 进入
    stdout 或 stderr。handler 表精确钉住 clean、residue、throw、invalid-return、
@@ -2856,10 +2858,43 @@ Git view 是三条生产扫描路径共享的同一安全边界，因此本轮�
 路径自身含敏感文本则会显示；禁止的是输入派生的键名、URL、Secret 取值与 Docker
 原始证据。Round 18 不把这一 P2 边界伪写成已消除。
 
-**Round 18 当前门禁计数**：M3B targeted negative suite **54/54 cases**；signal-window
+**Round 18 当时门禁计数**：M3B targeted negative suite **54/54 cases**；signal-window
 suite = **4/4 确定性回归 + 5/5 真实窗口**；local-test **75/75**；topology mutation
-**15/15**。本轮状态仍为 **implementation complete, pending total-control review**；
-只有同样两路独立审计对新 SHA 给出非阻断结论后，才可讨论 Accepted。
+**15/15**。这些门禁随后未能阻止 `08da379` 的双审计 BLOCK，不能替代独立复验。
+
+##### M3B Round 19：`08da379` 双审计 BLOCK 后的跨视图、证据与收敛修订
+
+两路独立审计都把 `08da379` 判为 **BLOCK**。本轮只处理已确认的生产缺口及对应
+证据门，不把已登记的无分隔 `1PASSWORDOLD2` 边界或无 pidfd 平台的极端 OS PGID
+复用 TOCTOU 伪写成已消除：
+
+1. **scanner 多视图共享同一 crossing 判据**：active strict 视图之外，nested/
+   quoted/prose/comment 也识别跨标点的敏感 stem；slash-crossing 的真实键名与
+   `/api/private/key`、`docs/private/key` 等 URL/path/Markdown 对照分开裁决。门禁
+   覆盖 56 个 nested/prose crossing 形态及 56 个空占位、315 个 benign compound ×
+   6 个视图、9 个注册 slash compound × 6 个视图及其 54 个空占位与 29 个 path
+   对照，以及 8 个 slash comment 正例、8 个空占位和 8 个 path 对照。错误消息仍
+   不回显输入派生的键、URL、userinfo、Secret 或 sentinel。
+2. **collector 深层证据与物化边界**：image Config 必须含合法的 `Env` 与 `Cmd`，
+   `Entrypoint` 若出现也必须为 null 或 string array；失败 logs 只产生固定问题，
+   不再物化原始 stdout/stderr。`docker compose config` 的 status 0 只有在 stdout 为
+   非空字符串时才算可扫描 artifact。51 个唯一 collector 向量与 5 个 resolved-config
+   向量同时钉住 envelope、identity、深层 shape、完整性、固定问题、精确 argv 与
+   原始输出零回显；wrong-ID fixture 也必须按 identity 分支失败，而不是因未捕获
+   `unexpected fixture command` 偶然转红。
+3. **受控进程组 mutation-closed 有界收敛**：`terminateAll()` 不再只取一次 active
+   快照，而是反复收敛到连续两个空快照；最多 8 轮，越界或未确认 ESRCH 固定失败。
+   handler 在收敛后封住新的 child start，并在最终重投原信号前再次验证。新增“第二次
+   sweep 已开始后才注册新组”的确定性回归，以及上限尾部固定失败回归；与既有 leader
+   close、timeout settlement、generation 隔离和 termination primitive 回归合计为
+   **5/5 确定性回归 + 5/5 真实信号窗口**。
+4. **证据口径保持窄且可复验**：本轮没有再次修改已 Accepted 的 M2B topology checker；
+   Round 18 的 canonical Git 跨冻结修订仍单列为受控例外。当前 targeted suite 为
+   **58/58**，local-test 为 **75/75**，topology mutation 为 **15/15**。全绿仍不等于
+   Accepted，必须让同样两路独立审计对本轮新 SHA 重新给出结论。
+
+**Round 19 当前状态**：implementation complete, pending total-control review。阶段
+09A 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A
 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**
@@ -2992,9 +3027,9 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（54 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（58 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
-node infra/docker/check-m3b-signal-windows.mjs         # 4 个确定性进程组回归 + 5 个真实信号窗口
+node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
 node infra/docker/check-compose-topology-mutations.mjs # 15 项拓扑变异反例
 node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离

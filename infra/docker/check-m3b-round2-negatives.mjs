@@ -69,6 +69,7 @@ import {
 } from './generate-local-test-secrets.mjs'
 import {
   collectDockerArtifactsForProject,
+  resolvedComposeConfigArtifacts,
   scanTrackedRepositoryForNeedles
 } from './local-test-containment.mjs'
 import {
@@ -127,6 +128,39 @@ const templateProblemsFor = (line, filename = 'local-test.env.example') => {
       // 始终留一份合法的 .env.example，避免「零 tracked 模板」抛错。
       writeFileSync(resolve(templateDirectory, 'local-test.env.example'), 'WECHAT_APP_ID=\n')
     }
+    git(['-C', repo, 'add', '-A'])
+    git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
+    return scanTrackedTemplates(repo)
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+/** 大矩阵一次进同一真实 scanner，避免每个格位各建一个 Git 仓库。 */
+const templateProblemsForViews = ({ strictLines, proseLines }) => {
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-tmpl-views-'))
+  try {
+    const repo = resolve(parent, 'repo')
+    const templateDirectory = resolve(repo, 'infra/environments/local-test')
+    mkdirSync(templateDirectory, { recursive: true })
+    for (const args of [
+      ['init', '--quiet', repo],
+      ['-C', repo, 'config', 'user.email', 'templates@example.invalid'],
+      ['-C', repo, 'config', 'user.name', 'M3B template negatives']
+    ]) {
+      const result = git(args)
+      if (result.error !== undefined || result.status !== 0) {
+        throw new Error(`git ${args[0]} failed`)
+      }
+    }
+    writeFileSync(
+      resolve(templateDirectory, 'local-test.env.example'),
+      ['WECHAT_APP_ID=', ...strictLines].join('\n') + '\n'
+    )
+    writeFileSync(
+      resolve(templateDirectory, 'README.md'),
+      proseLines.join('\n') + '\n'
+    )
     git(['-C', repo, 'add', '-A'])
     git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
     return scanTrackedTemplates(repo)
@@ -3312,7 +3346,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     Architecture: 'arm64',
     Os: 'linux',
     RepoTags: ['meal-agent-api:m3b-fixture'],
-    Config: {},
+    Config: { Env: [], Cmd: [], Entrypoint: [] },
     RootFS: { Type: 'layers', Layers: [`sha256:${'d'.repeat(64)}`] }
   })
   const validHistoryRow = () => ({
@@ -3359,6 +3393,15 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
           stdout: JSON.stringify([validContainerInspect(otherContainerId)]),
           stderr: ''
         }
+      }
+      if (args[1] === 'logs') {
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      if (args[1] === 'image' && args[2] === 'inspect') {
+        return { status: 0, stdout: JSON.stringify([validImageInspect()]), stderr: '' }
+      }
+      if (args[1] === 'image' && args[2] === 'history') {
+        return { status: 0, stdout: validHistory(), stderr: '' }
       }
       throw new Error(`unexpected fixture command: ${args.join(' ')}`)
     }
@@ -3582,6 +3625,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
   const problems = []
   const sentinel = 'AUDIT-COLLECTOR-SENTINEL-DO-NOT-ECHO'
   const containerId = 'a'.repeat(64)
+  const otherContainerId = 'c'.repeat(64)
   const imageId = `sha256:${'b'.repeat(64)}`
   const layerId = (character) => `sha256:${character.repeat(64)}`
   const containerLabel = containerId.slice(0, 12)
@@ -3593,6 +3637,9 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     `container Mounts ${containerLabel}`,
     `container logs ${containerLabel}`
   ]
+  const containerArtifactLabelsWithoutLogs = containerArtifactLabels.filter(
+    (label) => label !== `container logs ${containerLabel}`
+  )
   const completeArtifactLabels = [
     ...containerArtifactLabels,
     `image inspect ${imageLabel}`,
@@ -3625,7 +3672,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     Architecture: 'arm64',
     Os: 'linux',
     RepoTags: ['meal-agent-api:m3b-fixture'],
-    Config: {},
+    Config: { Env: [], Cmd: [], Entrypoint: [] },
     RootFS: { Type: 'layers', Layers: layers }
   })
   const historyRow = (id = imageId) => ({
@@ -3729,6 +3776,13 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       expectedCommands: ['ps', 'inspect']
     },
     {
+      label: 'container object for a different canonical identity',
+      containerStdout: mutateContainer((value) => (value.Id = otherContainerId)),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
       label: 'missing Config never throws',
       containerStdout: mutateContainer((value) => delete value.Config),
       expectedProblems: [fixed.container],
@@ -3802,6 +3856,12 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     },
     ...[
       ['RepoTags element', (value) => (value.RepoTags = [42])],
+      ['image missing Config.Env', (value) => delete value.Config.Env],
+      ['image Config.Env element', (value) => (value.Config.Env = [42])],
+      ['image missing Config.Cmd', (value) => delete value.Config.Cmd],
+      ['image Config.Cmd element', (value) => (value.Config.Cmd = [{}])],
+      ['image Config.Entrypoint shape', (value) => (value.Config.Entrypoint = { bad: true })],
+      ['image Config.Entrypoint element', (value) => (value.Config.Entrypoint = [42])],
       ['RootFS Type', (value) => (value.RootFS.Type = 'not-layers')],
       ['RootFS.Layers element', (value) => (value.RootFS.Layers = [42])],
       ['RootFS.Layers digest', (value) => (value.RootFS.Layers = ['not-a-digest'])]
@@ -3878,11 +3938,37 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       logsStdout: sentinel,
       logsStderr: sentinel,
       expectedProblems: [fixed.logs],
-      expectedLabels: completeArtifactLabels,
+      expectedLabels: [
+        ...containerArtifactLabelsWithoutLogs,
+        `image inspect ${imageLabel}`,
+        `image history ${imageLabel}`
+      ],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'logs success with a non-string payload is invalid evidence',
+      logsStdout: null,
+      expectedProblems: ['containment: container logs returned invalid evidence'],
+      expectedLabels: [
+        ...containerArtifactLabelsWithoutLogs,
+        `image inspect ${imageLabel}`,
+        `image history ${imageLabel}`
+      ],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'logs success with non-string stderr is invalid evidence',
+      logsStderr: null,
+      expectedProblems: ['containment: container logs returned invalid evidence'],
+      expectedLabels: [
+        ...containerArtifactLabelsWithoutLogs,
+        `image inspect ${imageLabel}`,
+        `image history ${imageLabel}`
+      ],
       expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
     }
   ]
-  const expectedVectorCount = 42
+  const expectedVectorCount = 51
   if (
     vectors.length !== expectedVectorCount ||
     new Set(vectors.map((vector) => vector.label)).size !== expectedVectorCount
@@ -3946,8 +4032,8 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
           if (args[1] === 'logs') {
             return {
               status: vector.logsStatus ?? 0,
-              stdout: vector.logsStdout ?? '',
-              stderr: vector.logsStderr ?? ''
+              stdout: Object.hasOwn(vector, 'logsStdout') ? vector.logsStdout : '',
+              stderr: Object.hasOwn(vector, 'logsStderr') ? vector.logsStderr : ''
             }
           }
           if (args[1] === 'image' && args[2] === 'inspect') {
@@ -3982,9 +4068,14 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       problems.push(`${vector.label}: exact command argv drifted`)
     } else if (
       vectorProblems.join('\n').includes(sentinel) ||
-      labels.join('\n').includes(sentinel)
+      labels.join('\n').includes(sentinel) ||
+      (vector.expectedProblems.length > 0 &&
+        collected.artifacts.some((artifact) => String(artifact.content).includes(sentinel)))
     ) {
-      problems.push(`${vector.label}: untrusted evidence leaked into a problem or label`)
+      problems.push(
+        `${vector.label}: untrusted evidence leaked into a problem/label or failed evidence ` +
+          'was materialized as an artifact'
+      )
     }
     if (commandKinds.includes('unexpected')) {
       problems.push(`${vector.label}: an unexpected command shape was executed`)
@@ -3998,6 +4089,82 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       `${String(expectedVectorCount)}/${String(expectedVectorCount)} unique vectors pin ` +
         'container/image/history envelopes, deep element shapes, identity, completeness, ' +
         'fixed output and exact argv without accepting thrown exceptions'
+    )
+  }
+}
+
+{
+  const name = 'resolved Compose config requires non-empty successful evidence'
+  const sentinel = 'AUDIT-COMPOSE-CONFIG-SENTINEL-DO-NOT-ECHO'
+  const fixedFailure =
+    'containment: docker compose config failed; the resolved configuration cannot be scanned'
+  const fixedInvalid =
+    'containment: docker compose config returned invalid evidence; the resolved configuration cannot be scanned'
+  const vectors = [
+    {
+      label: 'valid config',
+      result: { status: 0, stdout: 'services:\n  api: {}\n', stderr: '' },
+      expectedProblems: [],
+      expectedArtifacts: 1
+    },
+    {
+      label: 'command failure',
+      result: { status: 7, stdout: sentinel, stderr: sentinel },
+      expectedProblems: [fixedFailure],
+      expectedArtifacts: 0
+    },
+    {
+      label: 'empty success',
+      result: { status: 0, stdout: '', stderr: sentinel },
+      expectedProblems: [fixedInvalid],
+      expectedArtifacts: 0
+    },
+    {
+      label: 'whitespace success',
+      result: { status: 0, stdout: ' \t\n', stderr: sentinel },
+      expectedProblems: [fixedInvalid],
+      expectedArtifacts: 0
+    },
+    {
+      label: 'non-string success',
+      result: { status: 0, stdout: null, stderr: sentinel },
+      expectedProblems: [fixedInvalid],
+      expectedArtifacts: 0
+    }
+  ]
+  const problems = []
+  const expectedVectorCount = 5
+  if (
+    vectors.length !== expectedVectorCount ||
+    new Set(vectors.map((vector) => vector.label)).size !== expectedVectorCount
+  ) {
+    problems.push('resolved Compose config vector declarations drifted or are not unique')
+  }
+  for (const vector of vectors) {
+    const vectorProblems = []
+    const artifacts = resolvedComposeConfigArtifacts(vector.result, (problem) =>
+      vectorProblems.push(problem)
+    )
+    if (JSON.stringify(vectorProblems) !== JSON.stringify(vector.expectedProblems)) {
+      problems.push(`${vector.label}: fixed problem set drifted`)
+    } else if (artifacts.length !== vector.expectedArtifacts) {
+      problems.push(`${vector.label}: artifact count drifted`)
+    } else if (
+      vectorProblems.join('\n').includes(sentinel) ||
+      artifacts.some(
+        (artifact) => artifact.label.includes(sentinel) || artifact.content.includes(sentinel)
+      )
+    ) {
+      problems.push(`${vector.label}: failed evidence leaked into output or an artifact`)
+    }
+  }
+  if (problems.length > 0) {
+    fail(name, problems[0])
+  } else {
+    pass(
+      name,
+      `${String(expectedVectorCount)}/${String(expectedVectorCount)} production-helper ` +
+        'vectors reject failed, empty and non-string evidence'
     )
   }
 }
@@ -4702,6 +4869,281 @@ process.stdout.write('R17: scanner candidate closure\n')
 }
 
 {
+  const name = 'nested and prose split-stem assignments use the complete key candidate'
+  const sentinel = 'R19_VIEW_SENTINEL_DO_NOT_ECHO'
+  const separators = ['-', '_', '.', '/', '(', ')', '\u2020']
+  const keys = separators.flatMap((separator) => [
+    `XPA${separator}SSWORD`,
+    `PA${separator}SSWORDX`
+  ])
+  const positives = keys.flatMap((key) => [
+    { line: `NOTES=${key}=${sentinel}`, nodeKey: 'NOTES', filename: 'local-test.env.example' },
+    { line: `NOTES="${key}=${sentinel}"`, nodeKey: 'NOTES', filename: 'local-test.env.example' },
+    { line: `NOTES='${key}=${sentinel}'`, nodeKey: 'NOTES', filename: 'local-test.env.example' },
+    { line: `prose ${key}=${sentinel}`, nodeKey: `prose ${key}`, filename: 'README.md' }
+  ])
+  const empties = keys.flatMap((key) => [
+    { line: `NOTES=${key}=`, filename: 'local-test.env.example' },
+    { line: `NOTES="${key}="`, filename: 'local-test.env.example' },
+    { line: `NOTES='${key}='`, filename: 'local-test.env.example' },
+    { line: `prose ${key}=`, filename: 'README.md' }
+  ])
+  const missed = []
+  const oracleFailures = []
+  const leaks = []
+  for (const row of positives) {
+    const oracle = envFileConsumption(row.line, row.nodeKey)
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(row.line)
+      continue
+    }
+    const found = templateProblemsFor(row.line, row.filename)
+    if (!found.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+      missed.push(row.line)
+    }
+    if (JSON.stringify(found).includes(sentinel)) {
+      leaks.push(row.line)
+    }
+  }
+  const emptyFlagged = empties.filter(
+    (row) => templateProblemsFor(row.line, row.filename).length > 0
+  )
+  const compounds = ['COMPASSION', 'SECRETARY', 'PASSAGE', 'KEYBOARD', 'SIGNATURED', 'TOKENYA']
+  const benignKeys = compounds.flatMap((compound) =>
+    Array.from({ length: compound.length - 1 }, (_, index) => index + 1).flatMap((cut) =>
+      separators.map(
+        (separator) => `${compound.slice(0, cut)}${separator}${compound.slice(cut)}`
+      )
+    )
+  )
+  const strictBenign = benignKeys.flatMap((key) => [
+    `${key}=ordinary`,
+    `NOTES=${key}=ordinary`,
+    `NOTES="${key}=ordinary"`,
+    `# ${key}=ordinary`,
+    `NOTES=ok # ${key}=ordinary`
+  ])
+  const proseBenign = benignKeys.map((key) => `prose ${key}=ordinary`)
+  const benignProblems = templateProblemsForViews({
+    strictLines: strictBenign,
+    proseLines: proseBenign
+  })
+  const boundaries = [
+    '1PASSWORDOLD2=ordinary',
+    'NOTES=1PASSWORDOLD2=ordinary',
+    'prose 1PASSWORDOLD2=ordinary'
+  ]
+  const boundaryFlagged = boundaries.filter(
+    (line, index) =>
+      templateProblemsFor(line, index === 2 ? 'README.md' : 'local-test.env.example').length > 0
+  )
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} nested/prose split-stem assignment(s) were missed`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} empty placeholder(s) were flagged`)
+  } else if (benignKeys.length !== 315 || new Set(benignKeys).size !== 315) {
+    fail(name, 'the 315-key benign compound matrix drifted or is not unique')
+  } else if (benignProblems.length > 0) {
+    fail(name, `${String(benignProblems.length)} six-view benign compound problem(s) were reported`)
+  } else if (boundaryFlagged.length > 0) {
+    fail(name, 'the documented no-separator boundary changed in a nested/prose view')
+  } else if (leaks.length > 0) {
+    fail(name, `${String(leaks.length)} fixed failure message(s) echoed the sentinel`)
+  } else {
+    pass(
+      name,
+      '56/56 oracle-backed nested/prose views are caught; 56 matching empty placeholders, ' +
+        '315 benign keys across 6 views and the documented no-separator boundary stay clean'
+    )
+  }
+}
+
+{
+  const name = 'registered sensitive compounds crossing a slash are not suppressed as paths'
+  const sentinel = 'R19_SLASH_COMPOUND_SENTINEL_DO_NOT_ECHO'
+  const keys = [
+    'PRIVATE/KEY',
+    'XPRIVATE/KEY',
+    '1PRIVATE/KEY2',
+    'DATABASE/URL',
+    'XDATABASE/URL',
+    '1DATABASE/URL2',
+    'API/KEY',
+    'XAPI/KEY',
+    '1API/KEY2'
+  ]
+  const positives = keys.flatMap((key) => [
+    { line: `${key}=${sentinel}`, nodeKey: key, expectedDefined: true, filename: 'local-test.env.example' },
+    { line: `NOTES=${key}=${sentinel}`, nodeKey: 'NOTES', expectedDefined: true, filename: 'local-test.env.example' },
+    { line: `NOTES="${key}=${sentinel}"`, nodeKey: 'NOTES', expectedDefined: true, filename: 'local-test.env.example' },
+    { line: `prose ${key}=${sentinel}`, nodeKey: `prose ${key}`, expectedDefined: true, filename: 'README.md' },
+    { line: `# ${key}=${sentinel}`, nodeKey: key, expectedDefined: false, filename: 'README.md' },
+    { line: `NOTES=ok # ${key}=${sentinel}`, nodeKey: 'NOTES', expectedDefined: true, filename: 'local-test.env.example' }
+  ])
+  const oracleFailures = []
+  const missed = []
+  const leaks = []
+  for (const row of positives) {
+    const oracle = envFileConsumption(row.line, row.nodeKey)
+    if (
+      !oracle.ok ||
+      oracle.defined !== row.expectedDefined ||
+      (row.expectedDefined && oracle.empty)
+    ) {
+      oracleFailures.push(row.line)
+      continue
+    }
+    const found = templateProblemsFor(row.line, row.filename)
+    if (!found.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+      missed.push(row.line)
+    }
+    if (JSON.stringify(found).includes(sentinel)) {
+      leaks.push(row.line)
+    }
+  }
+  const empties = keys.flatMap((key) => [
+      { line: `${key}=`, filename: 'local-test.env.example' },
+      { line: `NOTES=${key}=`, filename: 'local-test.env.example' },
+      { line: `NOTES="${key}="`, filename: 'local-test.env.example' },
+      { line: `prose ${key}=`, filename: 'README.md' },
+      { line: `# ${key}=`, filename: 'README.md' },
+      { line: `NOTES=ok # ${key}=`, filename: 'local-test.env.example' }
+    ])
+  const emptyFlagged = empties
+    .filter((row) => templateProblemsFor(row.line, row.filename).length > 0)
+  const pathControls = [
+    '# GET /api/private-key=placeholder?limit=10',
+    '# docs/private-key=placeholder',
+    '# GET /api/database-url=placeholder?limit=10',
+    '# docs/database-url=placeholder',
+    '# GET /api/api-key=placeholder?limit=10',
+    '# docs/api-key=placeholder',
+    '# https://example.invalid/private-key=placeholder',
+    '# [database](https://example.invalid/database-url=placeholder)',
+    '# [api](docs/api-key=placeholder)',
+    '# GET /api/private/key=placeholder?limit=10',
+    '# docs/private/key=placeholder',
+    '# GET /api/database/url=placeholder?limit=10',
+    '# docs/database/url=placeholder',
+    '# GET /api/api/key=placeholder?limit=10',
+    '# docs/api/key=placeholder',
+    '# docs/xpa/ssword=placeholder',
+    '# /private/key=placeholder',
+    '# ./private/key=placeholder',
+    '# ../private/key=placeholder',
+    '# 2026/private/key=placeholder',
+    '# 1/private/key=placeholder',
+    '# _/private/key=placeholder',
+    '# @/private/key=placeholder',
+    'prose docs/private/key=placeholder',
+    'prose docs/database/url=placeholder',
+    'prose docs/api/key=placeholder'
+  ].map((line) => ({ line, filename: 'README.md' }))
+  pathControls.push(
+    { line: 'NOTES=/api/private/key=placeholder', filename: 'local-test.env.example' },
+    { line: 'DOCS=docs/database/url=placeholder', filename: 'local-test.env.example' },
+    { line: 'NOTES=docs/xpa/ssword=placeholder', filename: 'local-test.env.example' }
+  )
+  const pathFlagged = pathControls.filter(
+    (row) => templateProblemsFor(row.line, row.filename).length > 0
+  )
+  const distinctRows = (rows) =>
+    new Set(rows.map((row) => `${row.filename}\u0000${row.line}`)).size
+  const declarationsValid =
+    keys.length === 9 &&
+    new Set(keys).size === 9 &&
+    positives.length === 54 &&
+    distinctRows(positives) === 54 &&
+    empties.length === 54 &&
+    distinctRows(empties) === 54 &&
+    pathControls.length === 29 &&
+    distinctRows(pathControls) === 29
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (!declarationsValid) {
+    fail(name, 'the 9-key/54-positive/54-empty/29-path declaration matrix drifted')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} slash-crossing registered compound(s) were missed`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} empty compound placeholder(s) were flagged`)
+  } else if (pathFlagged.length > 0) {
+    fail(name, `${String(pathFlagged.length)} URL/path control(s) were flagged`)
+  } else if (leaks.length > 0) {
+    fail(name, `${String(leaks.length)} fixed failure message(s) echoed the sentinel`)
+  } else {
+    pass(
+      name,
+      '54/54 oracle-backed views are caught; 54 empty placeholders and 29 URL/path ' +
+        'controls stay clean'
+    )
+  }
+}
+
+{
+  const name = 'slash-crossing comment assignments are not mistaken for paths'
+  const sentinel = 'R19_SLASH_COMMENT_SENTINEL_DO_NOT_ECHO'
+  const keys = ['XPA/SSWORD', 'PA/SSWORDX', 'XTO/KEN', 'TO/KENX']
+  const positives = keys.flatMap((key) => [
+    { line: `# ${key}=${sentinel}`, nodeKey: key, expectedDefined: false },
+    { line: `NOTES=ok # ${key}=${sentinel}`, nodeKey: 'NOTES', expectedDefined: true }
+  ])
+  const missed = []
+  const oracleFailures = []
+  const leaks = []
+  for (const row of positives) {
+    const oracle = envFileConsumption(row.line, row.nodeKey)
+    if (!oracle.ok || oracle.defined !== row.expectedDefined || (row.expectedDefined && oracle.empty)) {
+      oracleFailures.push(row.line)
+      continue
+    }
+    const found = templateProblemsFor(row.line)
+    if (!found.some((problem) => /assigns a non-empty value to a sensitive key/.test(problem))) {
+      missed.push(row.line)
+    }
+    if (JSON.stringify(found).includes(sentinel)) {
+      leaks.push(row.line)
+    }
+  }
+  const emptyFlagged = keys
+    .flatMap((key) => [`# ${key}=`, `NOTES=ok # ${key}=`])
+    .filter((line) => templateProblemsFor(line).length > 0)
+  const pathControls = [
+    '# GET /api/pa-ssword=placeholder?limit=10',
+    '# docs/pa-ssword=placeholder',
+    '# https://example.invalid/pa-ssword=placeholder',
+    '# [reset](https://example.invalid/pa-ssword=placeholder)',
+    '# GET /api/to-ken=placeholder?limit=10',
+    '# docs/to-ken=placeholder',
+    '# https://example.invalid/to-ken=placeholder',
+    '# [reset](docs/to-ken=placeholder)'
+  ]
+  const pathFlagged = pathControls.filter(
+    (line) => templateProblemsFor(line, 'README.md').length > 0
+  )
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} slash-crossing comment assignment(s) were missed`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} empty slash placeholder(s) were flagged`)
+  } else if (pathFlagged.length > 0) {
+    fail(name, `${String(pathFlagged.length)} URL/path control(s) were flagged`)
+  } else if (leaks.length > 0) {
+    fail(name, `${String(leaks.length)} fixed failure message(s) echoed the sentinel`)
+  } else {
+    pass(name, '8/8 slash comments are caught; 8 empty and 8 URL/path controls stay clean')
+  }
+}
+
+{
   const name = 'URL paths and Markdown links do not become prose assignments'
   const benign = [
     '# See https://example.invalid/password=placeholder',
@@ -4755,7 +5197,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 54
+const expectedCount = 58
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

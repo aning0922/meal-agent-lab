@@ -944,6 +944,68 @@ const punctuationBoundaryCrossesSensitiveToken = (normalizedPieces) => {
   return false
 }
 
+const keyCrossesSensitivePunctuationBoundary = (key) => {
+  // 完整 benign compound 的裁决必须先于任何子片段拼接。否则
+  // `COMP-ASSION` 会被下面的 crossing matcher 重新拼成 `COMPASSION`，再从中
+  // 找到 `PASS`，使 direct 视图虽已短路，nested / quoted / prose 三个视图仍
+  // 误报。这里与 `containsSensitiveKeyToken` 共用同一份完整键 allowlist，不再
+  // 让调用视图决定结论。
+  if (isBenignWeakPunctuationCompound(key)) {
+    return false
+  }
+  const pieces = String(key).toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+  const normalizedPieces = pieces.map((piece) => stripBoundaryDigits(piece))
+  return punctuationBoundaryCrossesSensitiveToken(normalizedPieces)
+}
+
+/**
+ * 敏感 token 是否真正跨过 `/` 本身，而不只是跨过同一 path segment 里的其他标点。
+ *
+ * `PRIVATE/KEY`、`DATABASE/URL`、`API/KEY` 都是注册 token 跨 slash；反过来，
+ * `/api/pa-ssword` 与 `docs/pa-ssword` 的 `PASSWORD` 完全位于 slash 后的 segment，
+ * 只是 segment 内又跨过 `-`。把两类形态混用一个宽泛 crossing boolean，会在
+ * “关闭凭据绕过”和“保留文档 path”之间来回回退。
+ */
+const slashSensitiveOccurrencePosition = (key) => {
+  if (isBenignWeakPunctuationCompound(key)) {
+    return 'none'
+  }
+  const normalizedSegments = String(key)
+    .toUpperCase()
+    .split('/')
+    .map((segment) => stripBoundaryDigits(segment.replace(/[^A-Z0-9]/g, '')))
+  // 空 normalized segment 也保留它的**原始 path 位置**：`.` / `..` / `2026` /
+  // `_` / `@` 都会归一成空串，但它们仍是 token 之前真实存在的 path segment。
+  // 过滤它们会把 `./private/key` 错看成从第一个 segment 开始的 `PRIVATE/KEY`。
+  const compact = normalizedSegments.join('')
+  const segmentStarts = []
+  const slashBoundaries = []
+  let offset = 0
+  for (const [index, segment] of normalizedSegments.entries()) {
+    segmentStarts.push(offset)
+    offset += segment.length
+    if (index < normalizedSegments.length - 1) {
+      slashBoundaries.push(offset)
+    }
+  }
+  let suffixOccurrence = false
+  for (const token of compactSensitiveTokens) {
+    let start = compact.indexOf(token)
+    while (start !== -1) {
+      const end = start + token.length
+      if (slashBoundaries.some((boundary) => boundary > start && boundary < end)) {
+        const segmentIndex = segmentStarts.findLastIndex((segmentStart) => segmentStart <= start)
+        if (segmentIndex === 0) {
+          return 'first-segment'
+        }
+        suffixOccurrence = true
+      }
+      start = compact.indexOf(token, start + 1)
+    }
+  }
+  return suffixOccurrence ? 'path-suffix' : 'none'
+}
+
 /**
  * Node-active 键的有界 stem matcher。下划线是词边界；词元内的 ASCII 标点可折叠，
  * 折叠后再剥首尾数字。因此 `1TOK-EN2` 与 `MY_TOK-EN_VALUE` 都找到 TOKEN。
@@ -1008,6 +1070,28 @@ const containsSensitiveKeyToken = (key) => {
 const maximumCommentKeyLength = 256
 const maximumCommentAssignments = 8
 
+const isSensitivePathSuffix = (key) => {
+  const slash = key.indexOf('/')
+  if (slash === -1) {
+    return false
+  }
+  const slashOccurrence = slashSensitiveOccurrencePosition(key)
+  // 绝对 path，或敏感 occurrence 在一个完整 path segment **之后**才开始，均按
+  // path suffix 处理：`/api/private/key`、`docs/private/key`、
+  // `docs/xpa/ssword`。只有 occurrence 从第一个实际 segment 内开始并跨 slash 的
+  // `PRIVATE/KEY` / `XPA/SSWORD` 才属于本轮要关闭的键名绕过。
+  if (key.startsWith('/') || slashOccurrence === 'path-suffix') {
+    return true
+  }
+  if (slashOccurrence === 'first-segment') {
+    return false
+  }
+  return (
+    !containsSensitiveKeyToken(key.slice(0, slash)) &&
+    containsSensitiveKeyToken(key.slice(slash + 1))
+  )
+}
+
 /**
  * `X>=`、`X+=`、`X!=`、`X<=` 这类**复合运算符**不是 dotenv 赋值。
  *
@@ -1067,7 +1151,7 @@ const commentBodiesOf = (line) => {
  * run 非空、不以复合运算符结尾、且含敏感词 run，则按 dotenv 取值文法读取
  * `=` 之后的取值；取值非空即命中。候选个数同样有界。
  */
-const sensitiveCommentAssignments = (body) => {
+const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
   const text = String(body)
   let hits = 0
   let cursor = 0
@@ -1083,7 +1167,17 @@ const sensitiveCommentAssignments = (body) => {
     }
     cursor = equals + 1
     let start = equals
-    while (start > 0 && text[start - 1] !== ' ' && text[start - 1] !== '\t') {
+    // `=` 与引号同样是嵌套赋值的左边界。若只在空白处停，
+    // `NOTES=COMP-ASSION=...` 会把外层 `NOTES=` 粘进 candidate，导致完整 benign
+    // compound 的短路失效；`NOTES=XPA-SSWORD=...` 也无法证明命中的是内层键。
+    while (
+      start > 0 &&
+      text[start - 1] !== ' ' &&
+      text[start - 1] !== '\t' &&
+      text[start - 1] !== '=' &&
+      text[start - 1] !== '"' &&
+      text[start - 1] !== "'"
+    ) {
       start -= 1
     }
     const key = text.slice(start, equals)
@@ -1091,25 +1185,44 @@ const sensitiveCommentAssignments = (body) => {
       key === '' ||
       compoundOperatorTail.test(key) ||
       urlShapedRun.test(key) ||
-      (key.includes('/') && !containsSensitiveKeyToken(key.slice(0, key.indexOf('/'))))
+      isSensitivePathSuffix(key)
     ) {
       continue
     }
+    const keyIsSensitive = crossingOnly
+      ? keyCrossesSensitivePunctuationBoundary(key)
+      : containsSensitiveKeyToken(key)
     if ([...key].length > maximumCommentKeyLength) {
       // **越界不是免检额度**：run 太长无法判定，只要它含敏感词就 fail closed。
-      if (containsSensitiveKeyToken(key)) {
+      if (keyIsSensitive) {
         hits += 1
       }
       continue
     }
-    if (!containsSensitiveKeyToken(key)) {
+    if (!keyIsSensitive) {
       continue
     }
-    if (!assignmentValueIsEmpty(readAssignmentValue(text, equals + 1))) {
+    const enclosingQuote =
+      start > 0 && (text[start - 1] === '"' || text[start - 1] === "'")
+        ? text[start - 1]
+        : null
+    // `NOTES="XPA-SSWORD="` 的第二个 `=` 后面紧跟的是**外层** closing quote，
+    // 不是一段新 quoted value 的 opening quote。把这一格认成真正的空占位；
+    // 非空 nested value 仍由同一个 readAssignmentValue 读取并 fail closed。
+    const value =
+      enclosingQuote !== null && text[equals + 1] === enclosingQuote
+        ? { value: '', ambiguous: false }
+        : readAssignmentValue(text, equals + 1)
+    if (!assignmentValueIsEmpty(value)) {
       hits += 1
     }
   }
-  if (exhausted && containsSensitiveKeyToken(text)) {
+  if (
+    exhausted &&
+    (crossingOnly
+      ? keyCrossesSensitivePunctuationBoundary(text)
+      : containsSensitiveKeyToken(text))
+  ) {
     // 候选个数越界同理：放弃扫描绝不等于放行。
     hits += 1
   }
@@ -1525,7 +1638,11 @@ const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
     `(?:^|[^A-Za-z0-9_])(?:${exportPrefixSource})?([A-Za-z_][A-Za-z0-9_]*)`,
     'g'
   )
-  let hits = 0
+  // 所有视图先走同一条 compact-run matcher。它从每个 `=` 往后/往前解析，
+  // 因而能保留嵌套键里的标点边界：`NOTES=XPA-SSWORD=...`、quoted nested 与
+  // 注释体不再退回旧 ASCII key regex。下面的 legacy gap scanner 仍负责
+  // `PASSWORD = ...` 这类键与 `=` 之间含空白/结构性 gap 的形态。
+  let hits = sensitiveCompactAssignments(source, { crossingOnly: true })
   // 如果这整段本身就是一个已登记的 benign Node-active assignment，只跳过它的
   // **键区**，从 value 起点继续非锚定扫描。这样 `PASS_AGE=AUDITVALUE` 不会被
   // 拆成 `PASS` 再误报，而 `PASS_AGE=PASSWORD=secret` 里的嵌套凭据仍然命中。
@@ -1538,6 +1655,29 @@ const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
     }
     const keyEnd = match.index + match[0].length
     const keyStart = keyEnd - match[1].length
+    // legacy ASCII matcher 可能落在同一个 punctuation-bearing candidate 的**中间**。
+    // 先恢复完整 candidate：否则 compact prepass 已把 `COM-PASSION` 判为 benign，
+    // 这里仍会从子片段 `PASSION` 重新制造一次命中。只跳过完整键区，游标停在
+    // candidate 的 `=`，value 内下一层 assignment 仍会继续扫描。
+    let compactStart = keyStart
+    while (
+      compactStart > 0 &&
+      source[compactStart - 1] !== ' ' &&
+      source[compactStart - 1] !== '\t' &&
+      source[compactStart - 1] !== '=' &&
+      source[compactStart - 1] !== '"' &&
+      source[compactStart - 1] !== "'"
+    ) {
+      compactStart -= 1
+    }
+    const compactEquals = source.indexOf('=', keyEnd)
+    if (
+      compactEquals !== -1 &&
+      isBenignWeakPunctuationCompound(source.slice(compactStart, compactEquals))
+    ) {
+      cursor = Math.max(cursor + 1, compactEquals)
+      continue
+    }
     if (!strict) {
       // prose 里的 URL / absolute-path 片段不是 dotenv 赋值：
       //
@@ -1734,7 +1874,7 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         problems.push(`${label}:${String(index + 1)}: tracked template ${dsnCategory}`)
       }
       // 通用敏感赋值判据只跑在 **dotenv 实际消费文本**上；整行/行内注释只交给
-      // 后面的 `sensitiveCommentAssignments`。此前原始整行、value/comment segments
+      // 后面的 shared compact-run matcher。此前原始整行、value/comment segments
       // 与专用 comment scanner 三路重叠：专用路径会把 `COM-PASSION` 正确判成
       // benign，通用路径却又从子片段 `PASSION` 误报，225 格 benign matrix 在两种
       // comment 视图各红 3 格。职责分开后，真实 value 内的嵌套 assignment 仍在
@@ -1769,12 +1909,14 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         }
       }
       // **注释体**：无论文件角色，被注释掉的凭据都要扫（有界判据，见
-      // `sensitiveCommentAssignments`）。注释体内还可能有嵌套 assignment（例如
+      // `sensitiveCompactAssignments`）。注释体内还可能有嵌套 assignment（例如
       // `NOTES="a PASSWORD=secret"`），因此同一**已剥离的 body**再走通用 scanner；
       // 不能退回扫描原始整行，否则 exact benign compound 会从子片段重新误报。
       for (const body of commentBodiesOf(line)) {
         sensitiveHits += sensitiveAssignmentsIn(body)
-        sensitiveHits += sensitiveCommentAssignments(body)
+        // 注释 containment 比 prose 更严格：`PASSWORD/v2=` 这类 token 位于
+        // separator 前、并未“跨过”边界，但它仍是被注释掉的完整凭据键。
+        sensitiveHits += sensitiveCompactAssignments(body)
       }
       if (sensitiveHits > 0) {
         problems.push(

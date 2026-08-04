@@ -331,7 +331,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
-前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 54 cases、15 项拓扑变异反例、4 个不依赖 Docker 的确定性进程组回归与 5 个真实信号窗口的零残留取证；总控审计阻断整改已把 tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、空壳/截断/对象身份不符的 Docker inspect/image/history 证据、scoped cleanup residue/非法返回/异常统一改为 fail closed；真实 Compose Secret 在容器内实测
+前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 58 cases、15 项拓扑变异反例、5 个不依赖 Docker 的确定性进程组回归与 5 个真实信号窗口的零残留取证；总控审计阻断整改已把 tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、split-stem 的 nested/prose/comment 视图、空壳/截断/对象身份不符的 Docker inspect/image/history 与 resolved Compose config 证据、scoped cleanup residue/非法返回/异常及受控进程组的 mutation-closed 有界收敛统一改为 fail closed；真实 Compose Secret 在容器内实测
 owner==消费进程 EUID、mode 0600、普通文件、nlink=1、非 symlink、可读（UID 999
 与 10001 两侧，宿主 stat 不作数）；从空 volume 起的完整链
 `cluster → logins → createdb → 0000 → handoff → acl → migrate → grants → api`
@@ -343,9 +343,15 @@ loopback 地址逐一连接失败，postgres 无 PublishedPort，api 只有一�
 `127.0.0.1` binding。**仍未取得**：停止/重启持久化、备份恢复（M4）与
 `pnpm stage09a:check` 聚合门禁、远端 CI run（M5）。
 
-`9995212` 的两路独立复验再次给出 **BLOCK**。Round 18 候选进一步收紧 scanner
-组合闭包、Git replace-object view、Docker evidence 深层 shape/identity/完整性与
-最终 self-signal 异常；它仍须同样两路复验，不能据此把 M3B 或本 ADR 标为 Accepted。
+这里的深层 shape、identity 与完整性只描述 Docker inspect/image/history；resolved
+Compose config helper 只验证成功状态、stdout 为字符串且非空，结构与拓扑另由专门
+门禁负责。
+
+`08da379` 的两路独立复验再次给出 **BLOCK**。Round 19 候选进一步收紧 scanner
+跨视图 crossing 判据、Docker evidence 深层 shape/物化边界、空 resolved Compose
+config 与进程组 mutation-closed 收敛；它仍须同样两路复验，不能据此把 M3B 或本
+ADR 标为 Accepted。既定 `1PASSWORDOLD2` 无分隔 scanner 边界及无 pidfd 平台的极端
+OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 
 ### 5. 运行、迁移和恢复均需有界
 
