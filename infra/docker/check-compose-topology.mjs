@@ -20,6 +20,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { assertCanonicalGitRepositoryView } from './local-test-secrets-contract.mjs'
+
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
 
@@ -341,6 +343,19 @@ const fail = (message) => {
 const abort = (message) => {
   process.stderr.write(`${message}\n`)
   process.exit(1)
+}
+
+// Git 的 ambient plumbing 变量能把 index/worktree/object database 整体替换掉；
+// 必须在第一次 Docker/Git 调用之前拒绝，而不是让后面的 `git ls-files` 在一张
+// alternate index 上得出「Secret 没被跟踪」的假结论。
+try {
+  assertCanonicalGitRepositoryView()
+} catch (error) {
+  abort(
+    `compose topology check requires the canonical Git repository view: ${
+      error instanceof Error ? error.message : 'Git repository view validation failed'
+    }`
+  )
 }
 // 对象按键排序后再比较（Compose 输出的键序不稳定），数组保持顺序——argv 与
 // 挂载顺序是语义的一部分，不能被规范化掉。

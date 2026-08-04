@@ -746,68 +746,130 @@ if (generationProblems.length > 0) {
   )
 }
 
-// --- signal handler：终止原语异常不得伪装成干净信号退出 ---
-const handlerFixture = resolve(tmpdir(), `m3b-handler-failclosed-${String(process.pid)}.mjs`)
+// --- signal handler：终止原语、scoped cleanup residue/异常都不得伪装成干净信号退出 ---
 const handlerProblems = []
-let handlerPgids = []
-try {
-  writeFileSync(
-    handlerFixture,
-    [
-      `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
-      "const nativeTimer = globalThis.setTimeout",
-      "m.installSignalHandlers(async () => [], { label: 'fixture cleanup' })",
-      "void m.runCommand(['/bin/sh','-c','trap \"\" TERM; sleep 45'], { timeoutMs: 60000 })",
-      'nativeTimer(() => {',
-      "  globalThis.setTimeout = () => { throw new Error('CALLER-SENTINEL') }",
-      "  process.kill(process.pid, 'SIGTERM')",
-      '}, 150)',
-      ''
-    ].join('\n'),
-    'utf8'
+const handlerCases = [
+  {
+    label: 'clean',
+    cleanup: 'async () => []',
+    beforeSignal: '',
+    expectedStatus: null,
+    expectedSignal: 'SIGTERM',
+    expectedReason: /terminating child processes/
+  },
+  {
+    label: 'residue',
+    cleanup:
+      "async () => { void m.runCommand(['/bin/sh','-c','trap \\\"\\\" TERM; sleep 45'], " +
+      "{ timeoutMs: 60000 }); await new Promise((resolve) => nativeTimer(resolve, 50)); " +
+      "return ['CALLER-SENTINEL'] }",
+    beforeSignal: '',
+    expectedStatus: 1,
+    expectedSignal: null,
+    expectedReason: /fixture cleanup left 1 residue item/
+  },
+  {
+    label: 'throw',
+    cleanup: "async () => { throw new Error('CALLER-SENTINEL') }",
+    beforeSignal: '',
+    expectedStatus: 1,
+    expectedSignal: null,
+    expectedReason: /fixture cleanup failed during signal cleanup/
+  },
+  {
+    label: 'invalid-return',
+    cleanup: "async () => ({ residue: ['CALLER-SENTINEL'] })",
+    beforeSignal: '',
+    expectedStatus: 1,
+    expectedSignal: null,
+    expectedReason: /fixture cleanup returned an invalid cleanup result/
+  },
+  {
+    label: 'termination-primitive',
+    cleanup: 'async () => []',
+    beforeSignal:
+      "globalThis.setTimeout = () => { throw new Error('CALLER-SENTINEL') }",
+    expectedStatus: 1,
+    expectedSignal: null,
+    expectedReason: /subtree termination failed/
+  }
+]
+for (const handlerCase of handlerCases) {
+  const handlerFixture = resolve(
+    tmpdir(),
+    `m3b-handler-${handlerCase.label}-${String(process.pid)}.mjs`
   )
-  const run = spawnSync(process.execPath, [handlerFixture], {
-    encoding: 'utf8',
-    timeout: 10_000,
-    killSignal: 'SIGKILL'
-  })
-  handlerPgids = [...String(run.stderr ?? '').matchAll(/m3b-descendant-pgid (\d+)/g)].map(
-    (match) => Number(match[1])
-  )
-  if (run.error !== undefined) {
-    handlerProblems.push('the signal-handler fixture exceeded its watchdog')
-  } else if (run.status !== 1 || run.signal !== null) {
-    handlerProblems.push('a termination exception was presented as clean signal semantics')
-  }
-  if (String(run.stderr ?? '').includes('CALLER-SENTINEL')) {
-    handlerProblems.push('a caller-controlled termination exception leaked to stderr')
-  }
-  if (handlerPgids.length === 0) {
-    handlerProblems.push('the signal-handler fixture announced no pgid and is vacuous')
-  }
-} catch (error) {
-  handlerProblems.push(
-    `the signal-handler fixture threw: ${error instanceof Error ? error.message : String(error)}`
-  )
-} finally {
-  const cleanupSurvivors = killAndConfirmGroups(handlerPgids)
-  if (cleanupSurvivors.length > 0) {
-    handlerProblems.push('fixture cleanup could not confirm the announced pgid is gone')
-  }
+  let handlerPgids = []
   try {
-    rmSync(handlerFixture, { force: true })
-  } catch {
-    /* best effort */
+    writeFileSync(
+      handlerFixture,
+      [
+        `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
+        'const nativeTimer = globalThis.setTimeout',
+        `m.installSignalHandlers(${handlerCase.cleanup}, { label: 'fixture cleanup' })`,
+        "void m.runCommand(['/bin/sh','-c','trap \"\" TERM; sleep 45'], { timeoutMs: 60000 })",
+        'nativeTimer(() => {',
+        `  ${handlerCase.beforeSignal}`,
+        "  process.kill(process.pid, 'SIGTERM')",
+        '}, 150)',
+        ''
+      ].join('\n'),
+      'utf8'
+    )
+    const run = spawnSync(process.execPath, [handlerFixture], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      killSignal: 'SIGKILL'
+    })
+    const stderr = String(run.stderr ?? '')
+    handlerPgids = [...stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) =>
+      Number(match[1])
+    )
+    if (run.error !== undefined) {
+      handlerProblems.push(`${handlerCase.label}: fixture exceeded its watchdog`)
+    } else if (
+      run.status !== handlerCase.expectedStatus ||
+      run.signal !== handlerCase.expectedSignal
+    ) {
+      handlerProblems.push(`${handlerCase.label}: cleanup outcome used the wrong exit semantics`)
+    } else if (!handlerCase.expectedReason.test(stderr)) {
+      handlerProblems.push(`${handlerCase.label}: cleanup outcome used the wrong reason`)
+    }
+    if (stderr.includes('CALLER-SENTINEL')) {
+      handlerProblems.push(`${handlerCase.label}: caller-controlled cleanup text leaked to stderr`)
+    }
+    if (handlerPgids.length === 0) {
+      handlerProblems.push(`${handlerCase.label}: fixture announced no pgid and is vacuous`)
+    }
+  } catch (error) {
+    handlerProblems.push(
+      `${handlerCase.label}: fixture threw: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  } finally {
+    const cleanupSurvivors = killAndConfirmGroups(handlerPgids)
+    if (cleanupSurvivors.length > 0) {
+      handlerProblems.push(
+        `${handlerCase.label}: fixture cleanup could not confirm the announced pgid is gone`
+      )
+    }
+    try {
+      rmSync(handlerFixture, { force: true })
+    } catch {
+      /* best effort */
+    }
   }
 }
 if (handlerProblems.length > 0) {
-  fail('signal-handler termination failure is fail closed', handlerProblems[0])
+  fail('signal-handler subtree and scoped-cleanup failures are fail closed', handlerProblems[0])
 } else {
   regressionCaught += 1
   pass(
-    'signal-handler termination failure is fail closed',
-    'a termination primitive exception yields fixed exit 1, never clean signal semantics, and ' +
-      'the fixture cleans its exact announced pgid'
+    'signal-handler subtree and scoped-cleanup failures are fail closed',
+    'clean cleanup preserves SIGTERM, while residue, invalid return, cleanup throw and ' +
+      'termination-primitive failure use fixed exit 1 without caller text; every announced ' +
+      'pgid reaches ESRCH'
   )
 }
 

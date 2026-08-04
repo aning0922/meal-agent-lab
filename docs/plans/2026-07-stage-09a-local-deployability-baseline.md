@@ -25,8 +25,8 @@
 - production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
-- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现（`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh`）、显式部署维度与响应安全边界。仍然缺席的是 `infra/environments/` 配置模板、八份 Secret 的生成与交叉一致性预检、容器 smoke test、备份恢复脚本与部署运行手册。
-- 当前总控机器可用 Node.js 24.14.0（M1 镜像内固定为 Node 24.18.0）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有实际 Compose 运行与备份恢复证据前仍不得把本阶段记为完成。
+- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现（`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh`）、显式部署维度与响应安全边界；M3B 已交付 `infra/environments/local-test/` 模板、八份 Secret 的生成与交叉一致性预检、容器 smoke、containment 与网络隔离实证（仍待总控验收）。仍然缺席的是 M4 的生命周期/备份恢复与相应 runbook，以及 M5 的 `stage09a:check`、CI 与阶段文档总收口。
+- 当前总控机器可用 Node.js 24.18.0（与 M1 镜像和 `.node-version` 一致）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有备份恢复证据前仍不得把本阶段记为完成。
 - **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），五个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
 - 现有 local/weapp-only 依赖审计例外将在 2026-08-08 到期并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
@@ -2767,10 +2767,45 @@ generation、signal handler、leader-close 与 real-window 收尾。审计确认
 绕过、固定窗口上限、in-flight generation 断言代偿与缺 watchdog、PGID cleanup
 不在 lexical finally 均已定点修复并登记。
 
-**本轮当前计数**：M3B targeted negative suite **51/51 cases**（注册 case 数不因一个
-case 内扩充矩阵而虚增）；signal-window suite = **4/4 不依赖 Docker 的确定性进程组
-回归 + 5/5 真实信号窗口**。其他 M3B 门禁口径不变：local-test 75/75、拓扑变异
-15/15。
+**Round 17 候选 `ae3ee17` 当时计数**：M3B targeted negative suite **51/51 cases**
+（注册 case 数不因一个 case 内扩充矩阵而虚增）；signal-window suite = **4/4 不依赖
+Docker 的确定性进程组回归 + 5/5 真实信号窗口**。
+
+##### Round 17 总控双审计阻断整改
+
+两路独立复验都把 `ae3ee17` 判为 **BLOCK**。去重后的四个 P1 均先用生产 helper
+稳定复现，再定点修复：
+
+1. `XPASS-WORD=AUDITVALUE` 是 Node 24.18.0 实际建立的非空活键；Round 17 候选
+   把它拼成 `XPASSWORD` 后只做 exact token 判定，形成相对 `202be45` 的新回退。
+   matcher 现恢复标点分段后的后缀/token 语义，同时保持已登记 benign compound 与
+   `1PASSWORDOLD2` 这一既定范围外边界不变；反例加入既有 Round 17 matrix。
+2. Git 扫描不再继承可替换 repository view 的 ambient `GIT_*`。任何 index、worktree、
+   object database、namespace 或 config 重定向都固定类别 fail closed；canonical index
+   枚举为零也不得报告「扫描零命中」。同一个守卫覆盖 tracked template、全仓
+   containment 与 Compose topology 的 secret tracked 判据，并在任何 Docker 调用前
+   生效。targeted suite 用 alternate index、空仓库与 Docker PATH marker 证明这不是
+   计数空转。
+3. Docker artifact collector 不再把 `docker inspect` 的 `[]`、缺失字段、错 container
+   identity，或退出 0 但空白/截断的 image inspect/history 合成「已扫描证据」。
+   container inspect 必须匹配请求的 ID 并包含完整的 Config/State/HostConfig/
+   NetworkSettings/Mounts 证据；image inspect 必须满足 identity、Config、RootFS 与平台
+   字段，history 改为逐行结构化 JSON 并校验首行 image identity 与每行字段。任何失败
+   都记录固定问题且不加入空壳 artifact。
+4. 外部信号收尾只有在受控子树与 scoped cleanup **同时成功**时才重投原信号。
+   cleanup residue、cleanup 抛错、非法返回形状均置失败 latch；第二次进程组 sweep
+   仍无条件执行，最后固定 exit 1，不再伪装成干净的 `SIGTERM`/143。既有第 4 个
+   确定性 case 扩为 clean / residue / invalid return / throw / termination primitive
+   五态表，因此
+   signal 注册数仍为 4+5，不虚增。
+
+审计 A 的「tracked 文件标签会原样输出」仍按既定边界处理：允许固定类别、文件标签
+与行号，禁止回显输入派生的键名、URL 或 Secret 取值；若路径本身含敏感文本仍会出现，
+本轮不把它伪写成已消除。
+
+**阻断整改后的当前计数**：M3B targeted negative suite **53/53 cases**；signal-window
+suite = **4/4 不依赖 Docker 的确定性进程组回归 + 5/5 真实信号窗口**。其他 M3B
+门禁口径不变：local-test 75/75、拓扑变异 15/15。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
@@ -2909,7 +2944,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（51 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（53 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 4 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

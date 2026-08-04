@@ -136,8 +136,8 @@ M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
 | `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
-| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：51 cases**；在既有 promotion / cleanup / Git index / Docker 证据 / dotenv、URL 与 Node oracle 门禁上，追加 Round 17 的候选闭包：数字包裹 exact stem、内部 ASCII 标点、由下划线/标点分隔的前后缀、紧贴 `=` 的注释、相对/绝对 URL/Markdown path 对照，以及 15/16/17 空键段边界。文件名保留旧入口名，**套件名称不带轮次** |
-| `node infra/docker/check-m3b-signal-windows.mjs` | **4 个**不依赖 Docker 的确定性进程组回归（leader close 与孤儿整组收敛、timeout 不依赖 close、同号 PGID generation 隔离、终止原语异常 fail closed）+ **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证；announced pgid 按有界轮询确认消失 |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：53 cases**；在既有 promotion / cleanup / Git index / Docker 证据 / dotenv、URL 与 Node oracle 门禁上，追加 Round 17 的候选闭包及总控审计阻断反例：`XPASS-WORD` 回退、tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、成功但空壳、截断或对象身份不符的 Docker inspect/image/history 证据。文件名保留旧入口名，**套件名称不带轮次** |
+| `node infra/docker/check-m3b-signal-windows.mjs` | **4 个**不依赖 Docker 的确定性进程组回归（leader close 与孤儿整组收敛、timeout 不依赖 close、同号 PGID generation 隔离、终止原语或 scoped cleanup residue/非法返回/异常 fail closed）+ **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证；announced pgid 按有界轮询确认消失 |
 | `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
 
@@ -253,7 +253,7 @@ M4、M5 未开始；
 来源生成与部署前预检、从空 volume 起的十步链真实退出码全 0、migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
-75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 51 cases、
+75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 53 cases、
 15 项拓扑变异反例、4 个确定性进程组回归与 5 个真实信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。

@@ -330,9 +330,9 @@ export const unconfirmedProcessGroups = () =>
 /**
  * 安装 SIGINT/SIGTERM 处置。收到信号：
  *   1. 终止受控子树（等待宽限）；
- *   2. 执行调用方的 scoped cleanup（异步；其返回的 residue 列表被完整打印，
- *      异常也被打印——绝不静默丢弃）；
- *   3. 卸下自身 handler 后**重投同名信号**，按原信号语义退出。
+ *   2. 执行调用方的 scoped cleanup（异步；只报告固定原因与 residue 数量，不回显
+ *      调用方内容）；
+ *   3. 再次收敛受控子树；只有两类清理都成功时才重投同名信号，否则 exit 1。
  *
  * 第二个同名/异名信号在清理期间只登记不重入。
  */
@@ -348,6 +348,7 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
     void (async () => {
       let survivors = []
       let terminationFailed = false
+      let cleanupFailed = false
       try {
         survivors = await terminateControlledSubtree()
       } catch {
@@ -356,16 +357,16 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       }
       try {
         const residue = await cleanup(signal)
-        if (Array.isArray(residue) && residue.length > 0) {
-          process.stderr.write(`${label} residue after ${signal}:\n`)
-          for (const item of residue) {
-            process.stderr.write(`  - ${String(item)}\n`)
-          }
+        if (!Array.isArray(residue)) {
+          cleanupFailed = true
+          process.stderr.write(`${label} returned an invalid cleanup result\n`)
+        } else if (residue.length > 0) {
+          cleanupFailed = true
+          process.stderr.write(`${label} left ${String(residue.length)} residue item(s)\n`)
         }
-      } catch (error) {
-        process.stderr.write(
-          `${label} on ${signal} failed: ${error instanceof Error ? error.message : String(error)}\n`
-        )
+      } catch {
+        cleanupFailed = true
+        process.stderr.write(`${label} failed during signal cleanup\n`)
       }
       // cleanup 期间可能又派生了子进程（scoped cleanup 自己要跑 docker 命令）。
       // **重投原信号之前再做一次统一终止与确认**。
@@ -377,12 +378,12 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       }
       process.removeListener('SIGINT', handler)
       process.removeListener('SIGTERM', handler)
-      if (terminationFailed || survivors.length > 0) {
-        // **fail closed**：有后代进程组没能确认消失，就不能用「干净的信号语义」
-        // 收场。只报个数，不回显任何命令内容。
-        process.stderr.write(
-          'descendant process groups were not confirmed gone\n'
-        )
+      if (terminationFailed || cleanupFailed || survivors.length > 0) {
+        // **fail closed**：受控子树或 scoped cleanup 任一失败，都不能用「干净的
+        // 信号语义」收场。子树失败只报固定原因，不回显任何命令内容。
+        if (terminationFailed || survivors.length > 0) {
+          process.stderr.write('descendant process groups were not confirmed gone\n')
+        }
         process.exit(1)
       }
       // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。

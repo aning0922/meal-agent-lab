@@ -32,6 +32,48 @@ const moduleDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 /** 仓库根（infra/docker/ 的上两级）。模板扫描与 git 判定都锚定在这里。 */
 export const repositoryRoot = resolve(moduleDirectory, '..', '..')
 
+// 这些变量会改写 Git 命令看到的 repository / worktree / index / object database
+// 或 pathspec。containment 的安全边界必须是调用方传入的 canonical repository，
+// 不能继承 ambient Git plumbing view；存在任意一项时只报告变量名并 fail closed。
+const gitRepositoryViewVariables = new Set([
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
+  'GIT_GLOB_PATHSPECS',
+  'GIT_NOGLOB_PATHSPECS',
+  'GIT_LITERAL_PATHSPECS',
+  'GIT_ICASE_PATHSPECS',
+  'GIT_CONFIG',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_NOSYSTEM',
+  'GIT_CONFIG_PARAMETERS'
+])
+
+export const ambientGitRepositoryViewOverrides = (environment = process.env) =>
+  Object.keys(environment)
+    .filter(
+      (name) =>
+        gitRepositoryViewVariables.has(name) ||
+        /^GIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)$/.test(name)
+    )
+    .sort()
+
+export const assertCanonicalGitRepositoryView = (environment = process.env) => {
+  const overrides = ambientGitRepositoryViewOverrides(environment)
+  if (overrides.length > 0) {
+    throw new Error(
+      `ambient Git repository view overrides are not permitted: ${overrides.join(', ')}`
+    )
+  }
+}
+
 /** Compose 契约的默认 secret 目录（`MEAL_AGENT_SECRETS_DIR` 未设置时的回落）。 */
 export const defaultSecretsDirectory = resolve(moduleDirectory, 'secrets')
 
@@ -496,6 +538,7 @@ const checkPgpassBody = (filename, body, superuserBody, problems) => {
 
 /** git 无法判定时抛错（缺前置工具/意外退出码不等于「未跟踪」）。 */
 const gitTracksPath = (repository, path) => {
+  assertCanonicalGitRepositoryView()
   const result = spawnSync(
     'git',
     ['ls-files', '--error-unmatch', '--', path],
@@ -518,6 +561,7 @@ const gitTracksPath = (repository, path) => {
 }
 
 const enclosingGitRepository = (directory) => {
+  assertCanonicalGitRepositoryView()
   const result = spawnSync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024
@@ -848,6 +892,12 @@ const containsSensitiveKeyToken = (key) => {
       // `P-A-S-S-A-G-E` 仍会被动态窗口里的 `PASS` 重新命中。
       if (benignWeakPunctuationCompounds.has(wholeCompound)) {
         continue
+      }
+      // 保留 Round 16 之前已经覆盖的 suffix/token 语义。`XPASS-WORD` 的第一个
+      // piece 是 `XPASS`，旧判据会因 endsWith(PASS) fail closed；Round 17 一度
+      // 只判 compact exact token，把这个 Node-active 键回退成了漏检。
+      if (pieces.some((piece) => isSensitiveKeyName(stripBoundaryDigits(piece)))) {
+        return true
       }
       if (normalizedPieces.some((piece) => weakPunctuationTokens.has(piece))) {
         return true
@@ -1515,6 +1565,7 @@ const supportedTemplateFile =
   /(^|\/)([^/]*\.)?env(\.(example|sample|template))?$|(^|\/)(README\.md|\.gitignore|\.gitkeep)$/
 
 export const scanTrackedTemplates = (repository = repositoryRoot) => {
+  assertCanonicalGitRepositoryView()
   const problems = []
   const listing = spawnSync(
     'git',

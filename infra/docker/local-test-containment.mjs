@@ -36,7 +36,11 @@ import { connect, createServer, isIP } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import { resolve } from 'node:path'
 
-import { repositoryRoot, secretFiles } from './local-test-secrets-contract.mjs'
+import {
+  ambientGitRepositoryViewOverrides,
+  repositoryRoot,
+  secretFiles
+} from './local-test-secrets-contract.mjs'
 
 /**
  * 由 bundle bodies 构造分类 needle 清单（只在内存中存在）。
@@ -274,9 +278,60 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
     }
     let parsed
     try {
-      parsed = JSON.parse(inspect.stdout)[0] ?? {}
+      const payload = JSON.parse(inspect.stdout)
+      if (
+        !Array.isArray(payload) ||
+        payload.length !== 1 ||
+        payload[0] === null ||
+        typeof payload[0] !== 'object' ||
+        Array.isArray(payload[0])
+      ) {
+        throw new Error('unexpected container inspect shape')
+      }
+      parsed = payload[0]
     } catch {
-      onProblem(`containment: docker inspect ${id} did not return valid JSON`)
+      onProblem(`containment: docker inspect ${id} did not return one container object`)
+      continue
+    }
+    const requestedId = String(id).trim()
+    if (
+      typeof parsed.Id !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(parsed.Id) ||
+      !/^[a-f0-9]{12,64}$/.test(requestedId) ||
+      !parsed.Id.startsWith(requestedId)
+    ) {
+      onProblem(`containment: docker inspect ${id} did not identify the requested container`)
+      continue
+    }
+    if (
+      typeof parsed.Created !== 'string' ||
+      parsed.Created === '' ||
+      typeof parsed.Name !== 'string' ||
+      parsed.Name === '' ||
+      parsed.Config === null ||
+      typeof parsed.Config !== 'object' ||
+      Array.isArray(parsed.Config) ||
+      !Array.isArray(parsed.Config.Env) ||
+      !Object.hasOwn(parsed.Config, 'Cmd') ||
+      (parsed.Config.Cmd !== null && !Array.isArray(parsed.Config.Cmd)) ||
+      !Object.hasOwn(parsed.Config, 'Entrypoint') ||
+      (parsed.Config.Entrypoint !== null && !Array.isArray(parsed.Config.Entrypoint)) ||
+      !Array.isArray(parsed.Mounts) ||
+      parsed.State === null ||
+      typeof parsed.State !== 'object' ||
+      Array.isArray(parsed.State) ||
+      parsed.HostConfig === null ||
+      typeof parsed.HostConfig !== 'object' ||
+      Array.isArray(parsed.HostConfig) ||
+      parsed.NetworkSettings === null ||
+      typeof parsed.NetworkSettings !== 'object' ||
+      Array.isArray(parsed.NetworkSettings) ||
+      !Array.isArray(parsed.Args) ||
+      typeof parsed.Path !== 'string' ||
+      typeof parsed.Image !== 'string' ||
+      parsed.Image === ''
+    ) {
+      onProblem(`containment: docker inspect ${id} omitted required evidence fields`)
       continue
     }
     const name = String(parsed.Name ?? id).replace(/^\//, '')
@@ -306,13 +361,78 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
     if (inspect.status !== 0) {
       onProblem(`containment: docker image inspect ${imageId} failed`)
     } else {
-      addArtifact(`image inspect ${imageId.slice(0, 19)}`, inspect.stdout)
+      try {
+        const payload = JSON.parse(inspect.stdout)
+        const image = payload[0]
+        if (
+          !Array.isArray(payload) ||
+          payload.length !== 1 ||
+          image === null ||
+          typeof image !== 'object' ||
+          Array.isArray(image) ||
+          image.Id !== imageId ||
+          typeof image.Created !== 'string' ||
+          image.Created === '' ||
+          typeof image.Architecture !== 'string' ||
+          image.Architecture === '' ||
+          typeof image.Os !== 'string' ||
+          image.Os === '' ||
+          !Object.hasOwn(image, 'RepoTags') ||
+          (image.RepoTags !== null && !Array.isArray(image.RepoTags)) ||
+          image.Config === null ||
+          typeof image.Config !== 'object' ||
+          Array.isArray(image.Config) ||
+          image.RootFS === null ||
+          typeof image.RootFS !== 'object' ||
+          Array.isArray(image.RootFS) ||
+          !Array.isArray(image.RootFS.Layers) ||
+          image.RootFS.Layers.length === 0
+        ) {
+          throw new Error('unexpected image inspect shape')
+        }
+        addArtifact(`image inspect ${imageId.slice(0, 19)}`, inspect.stdout)
+      } catch {
+        onProblem(`containment: docker image inspect ${imageId} returned invalid evidence`)
+      }
     }
-    const history = await run(['docker', 'image', 'history', '--no-trunc', imageId])
+    const history = await run([
+      'docker',
+      'image',
+      'history',
+      '--no-trunc',
+      '--format',
+      '{{json .}}',
+      imageId
+    ])
     if (history.status !== 0) {
       onProblem(`containment: docker image history ${imageId} failed`)
     } else {
-      addArtifact(`image history ${imageId.slice(0, 19)}`, history.stdout)
+      try {
+        const lines = String(history.stdout).trim().split(/\r?\n/).filter(Boolean)
+        const rows = lines.map((line) => JSON.parse(line))
+        if (
+          rows.length === 0 ||
+          rows[0]?.ID !== imageId ||
+          rows.some(
+            (row) =>
+              row === null ||
+              typeof row !== 'object' ||
+              Array.isArray(row) ||
+              typeof row.ID !== 'string' ||
+              typeof row.CreatedAt !== 'string' ||
+              row.CreatedAt === '' ||
+              typeof row.CreatedBy !== 'string' ||
+              typeof row.Size !== 'string' ||
+              !Object.hasOwn(row, 'Comment') ||
+              typeof row.Comment !== 'string'
+          )
+        ) {
+          throw new Error('unexpected image history shape')
+        }
+        addArtifact(`image history ${imageId.slice(0, 19)}`, history.stdout)
+      } catch {
+        onProblem(`containment: docker image history ${imageId} returned invalid evidence`)
+      }
     }
   }
   return { artifacts, containerIds }
@@ -331,6 +451,16 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
  */
 export const scanTrackedRepositoryForNeedles = (repository, needles) => {
   const hits = []
+  const overrides = ambientGitRepositoryViewOverrides()
+  if (overrides.length > 0) {
+    hits.push({
+      label: 'git repository view',
+      id: 0,
+      category: 'scan-unavailable',
+      problem: `ambient overrides are not permitted: ${overrides.join(', ')}`
+    })
+    return { hits, scannedFiles: 0 }
+  }
   const listing = spawnSync('git', ['ls-files', '-z'], {
     cwd: repository,
     encoding: 'buffer',
@@ -343,12 +473,20 @@ export const scanTrackedRepositoryForNeedles = (repository, needles) => {
       category: 'scan-unavailable',
       problem: `could not list tracked files (exit ${String(listing.status)})`
     })
-    return hits
+    return { hits, scannedFiles: 0 }
   }
   const files = listing.stdout
     .toString('utf8')
     .split('\u0000')
     .filter(Boolean)
+  if (files.length === 0) {
+    hits.push({
+      label: 'git ls-files',
+      id: 0,
+      category: 'scan-unavailable',
+      problem: 'the canonical tracked-file set is empty'
+    })
+  }
   for (const file of files) {
     // 工作树侧。
     let worktree = null
@@ -404,7 +542,7 @@ export const scanTrackedRepositoryForNeedles = (repository, needles) => {
       }
     }
   }
-  return hits
+  return { hits, scannedFiles: files.length }
 }
 
 /**
@@ -494,19 +632,6 @@ export const runContainmentAndIsolation = async ({
     failContainment('containment: no project containers were found to scan')
   }
 
-  // Git tracked files：全仓库逐文件字节扫描。
-  const tracked = await run(['git', 'ls-files', '-z'], {
-    cwd: repositoryRoot,
-    timeoutMs: 60_000
-  })
-  if (tracked.status !== 0) {
-    // failContainment（不是 fail）：只有前者会给 containmentProblems 计数，
-    // 而成功行是按那个计数 gating 的——用 fail 会让「tracked 文件没扫成」与
-    // 「containment scan: no hits」同时出现在输出里。
-    failContainment('containment: git ls-files failed; tracked files cannot be scanned')
-  }
-  const trackedFiles = tracked.stdout.split('\u0000').filter(Boolean)
-
   // 自检：合成产物包含每一条 needle 与 sentinel，必须被**同一个**
   // scanArtifactsForNeedles 逐条命中，证明匹配机制对本轮随机值真实有效。
   const selfTestHits = scanArtifactsForNeedles(
@@ -556,7 +681,8 @@ export const runContainmentAndIsolation = async ({
   }
   // 全仓 tracked 文件：**index blob 与工作树各扫一遍**（见
   // scanTrackedRepositoryForNeedles 的说明）。
-  const trackedHits = scanTrackedRepositoryForNeedles(repositoryRoot, needles)
+  const trackedScan = scanTrackedRepositoryForNeedles(repositoryRoot, needles)
+  const trackedHits = trackedScan.hits
   for (const hit of trackedHits) {
     if (hit.category === 'scan-unavailable') {
       failContainment(`containment: ${hit.label} could not be scanned (${hit.problem})`)
@@ -567,7 +693,10 @@ export const runContainmentAndIsolation = async ({
         `(${hit.category}); the value is not reprinted here`
     )
   }
-  const scannedTrackedFiles = trackedFiles.length
+  const scannedTrackedFiles = trackedScan.scannedFiles
+  if (scannedTrackedFiles === 0) {
+    failContainment('containment: the canonical tracked-file scan covered zero files')
+  }
 
   // 成功证据只在该组零 problem 时输出（P1-7）。
   if (containmentProblems === 0) {

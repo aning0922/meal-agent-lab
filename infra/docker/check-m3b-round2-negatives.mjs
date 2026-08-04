@@ -67,7 +67,10 @@ import {
   generateSecretBundle,
   SecretGeneratorError
 } from './generate-local-test-secrets.mjs'
-import { scanTrackedRepositoryForNeedles } from './local-test-containment.mjs'
+import {
+  collectDockerArtifactsForProject,
+  scanTrackedRepositoryForNeedles
+} from './local-test-containment.mjs'
 import {
   generatePassword,
   nodeActiveAssignment,
@@ -2887,7 +2890,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     writeFileSync(ordinary, pristine)
 
     const needles = [{ id: 1, category: 'password:runtime', value: secret }]
-    const hits = scanTrackedRepositoryForNeedles(repo, needles)
+    const { hits } = scanTrackedRepositoryForNeedles(repo, needles)
     const indexHit = hits.some((hit) => /git index/.test(String(hit.label)))
     const leaks = hits.some((hit) => JSON.stringify(hit).includes(secret))
     if (hits.length === 0) {
@@ -2901,6 +2904,455 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     }
   } finally {
     rmSync(parent, { recursive: true, force: true })
+  }
+}
+
+{
+  const name = 'ambient Git repository views and zero tracked files fail closed'
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-git-view-'))
+  const problems = []
+  const sentinel = 'M3B-GIT-VIEW-SENTINEL'
+  const previousIndex = process.env.GIT_INDEX_FILE
+  try {
+    const repo = resolve(parent, 'repo')
+    const templateDirectory = resolve(repo, 'infra/environments/local-test')
+    mkdirSync(templateDirectory, { recursive: true })
+    for (const args of [
+      ['init', '--quiet', repo],
+      ['-C', repo, 'config', 'user.email', 'git-view@example.invalid'],
+      ['-C', repo, 'config', 'user.name', 'M3B git view']
+    ]) {
+      const result = git(args)
+      if (result.error !== undefined || result.status !== 0) {
+        throw new Error(`git ${args.join(' ')} failed`)
+      }
+    }
+    writeFileSync(resolve(templateDirectory, 'local-test.env.example'), 'SAFE_VALUE=\n')
+    git(['-C', repo, 'add', '-A'])
+    git(['-C', repo, 'commit', '--quiet', '-m', 'baseline'])
+
+    const alternateIndex = resolve(parent, `${sentinel}.index`)
+    const alternate = git(['-C', repo, 'read-tree', 'HEAD'], {
+      env: { ...process.env, GIT_INDEX_FILE: alternateIndex }
+    })
+    if (alternate.error !== undefined || alternate.status !== 0) {
+      throw new Error('could not create the alternate index precondition')
+    }
+
+    // canonical index 里确实暂存一份工作树看不见的 Secret；先证明正常视图会命中，
+    // 再切到干净 alternate index。否则「拒绝 GIT_INDEX_FILE」虽然会绿，却没有证明
+    // 这个 override 真能把待提交的 Secret 从扫描面里拿掉。
+    writeFileSync(
+      resolve(templateDirectory, 'local-test.env.example'),
+      `PASSWORD=${sentinel}\n`,
+      'utf8'
+    )
+    const staged = git([
+      '-C',
+      repo,
+      'add',
+      '--',
+      'infra/environments/local-test/local-test.env.example'
+    ])
+    writeFileSync(resolve(templateDirectory, 'local-test.env.example'), 'SAFE_VALUE=\n', 'utf8')
+    if (staged.error !== undefined || staged.status !== 0) {
+      throw new Error('could not stage the canonical-index Secret precondition')
+    }
+    const canonicalTemplateProblems = scanTrackedTemplates(repo)
+    const canonicalNeedleScan = scanTrackedRepositoryForNeedles(repo, [
+      { id: 1, category: 'probe', value: sentinel }
+    ])
+    if (
+      canonicalTemplateProblems.length === 0 ||
+      !canonicalNeedleScan.hits.some((hit) => /git index/.test(String(hit.label))) ||
+      JSON.stringify(canonicalTemplateProblems).includes(sentinel) ||
+      JSON.stringify(canonicalNeedleScan).includes(sentinel)
+    ) {
+      throw new Error('the canonical-index Secret precondition was not detected safely')
+    }
+
+    process.env.GIT_INDEX_FILE = alternateIndex
+    try {
+      scanTrackedTemplates(repo)
+      problems.push('the tracked-template scanner accepted an alternate index')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('GIT_INDEX_FILE') || message.includes(sentinel)) {
+        problems.push('the tracked-template refusal used the wrong or unsafe reason')
+      }
+    }
+    const overridden = scanTrackedRepositoryForNeedles(repo, [
+      { id: 1, category: 'probe', value: sentinel }
+    ])
+    if (
+      overridden.scannedFiles !== 0 ||
+      !overridden.hits.some(
+        (hit) => hit.category === 'scan-unavailable' && /GIT_INDEX_FILE/.test(hit.problem)
+      ) ||
+      JSON.stringify(overridden).includes(alternateIndex)
+    ) {
+      problems.push('the repository containment scan accepted or echoed an alternate index')
+    }
+
+    const shimDirectory = resolve(parent, 'bin')
+    const dockerMarker = resolve(parent, 'docker-was-called')
+    mkdirSync(shimDirectory)
+    writeFileSync(
+      resolve(shimDirectory, 'docker'),
+      '#!/bin/sh\n: > "$M3B_DOCKER_MARKER"\nexit 99\n',
+      'utf8'
+    )
+    chmodSync(resolve(shimDirectory, 'docker'), 0o755)
+    const topology = spawnSync(
+      process.execPath,
+      [resolve(composeDirectory, 'check-compose-topology.mjs')],
+      {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          GIT_INDEX_FILE: alternateIndex,
+          M3B_DOCKER_MARKER: dockerMarker,
+          PATH: `${shimDirectory}:${process.env.PATH ?? ''}`
+        }
+      }
+    )
+    if (
+      topology.error !== undefined ||
+      topology.status !== 1 ||
+      !/canonical Git repository view.*GIT_INDEX_FILE/.test(String(topology.stderr)) ||
+      String(topology.stderr).includes(alternateIndex) ||
+      existsSync(dockerMarker)
+    ) {
+      problems.push('the compose topology gate accepted an alternate index or reached Docker')
+    }
+    delete process.env.GIT_INDEX_FILE
+
+    const emptyRepo = resolve(parent, 'empty')
+    const initialized = git(['init', '--quiet', emptyRepo])
+    if (initialized.error !== undefined || initialized.status !== 0) {
+      throw new Error('could not create the empty repository precondition')
+    }
+    const empty = scanTrackedRepositoryForNeedles(emptyRepo, [
+      { id: 1, category: 'probe', value: sentinel }
+    ])
+    if (
+      empty.scannedFiles !== 0 ||
+      !empty.hits.some(
+        (hit) => hit.category === 'scan-unavailable' && /tracked-file set is empty/.test(hit.problem)
+      )
+    ) {
+      problems.push('an empty canonical tracked-file set did not fail closed')
+    }
+  } catch (error) {
+    problems.push(`fixture failed: ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    if (previousIndex === undefined) {
+      delete process.env.GIT_INDEX_FILE
+    } else {
+      process.env.GIT_INDEX_FILE = previousIndex
+    }
+    rmSync(parent, { recursive: true, force: true })
+  }
+  if (problems.length > 0) {
+    fail(name, problems[0])
+  } else {
+    pass(
+      name,
+      'GIT_INDEX_FILE is refused by every production scanner/gate before Docker without ' +
+        'echoing its value, and an empty canonical index is scan-unavailable'
+    )
+  }
+}
+
+{
+  const name = 'Docker artifact collection rejects empty or malformed successful evidence'
+  const problems = []
+  const containerId = 'a'.repeat(64)
+  const otherContainerId = 'c'.repeat(64)
+  const imageId = `sha256:${'b'.repeat(64)}`
+  const validContainerInspect = (id = containerId) => ({
+    Id: id,
+    Created: '2026-08-04T00:00:00.000000000Z',
+    Name: '/fixture',
+    Config: { Env: [], Cmd: [], Entrypoint: [] },
+    State: {},
+    HostConfig: {},
+    NetworkSettings: {},
+    Mounts: [],
+    Args: [],
+    Path: '/fixture',
+    Image: imageId
+  })
+  const validImageInspect = () => ({
+    Id: imageId,
+    Created: '2026-08-04T00:00:00.000000000Z',
+    Architecture: 'arm64',
+    Os: 'linux',
+    RepoTags: ['meal-agent-api:m3b-fixture'],
+    Config: {},
+    RootFS: { Layers: [`sha256:${'d'.repeat(64)}`] }
+  })
+  const validHistoryRow = () => ({
+      ID: imageId,
+      CreatedAt: '2026-08-04T00:00:00Z',
+      CreatedBy: '/bin/sh -c fixture',
+      Size: '0B',
+      Comment: ''
+    })
+  const validHistory = () => `${JSON.stringify(validHistoryRow())}\n`
+  const emptyInspectProblems = []
+  const emptyInspect = await collectDockerArtifactsForProject({
+    project: 'm3b-artifact-fixture',
+    onProblem: (problem) => emptyInspectProblems.push(problem),
+    run: async (args) => {
+      if (args[1] === 'ps') {
+        return { status: 0, stdout: `${containerId}\n`, stderr: '' }
+      }
+      if (args[1] === 'inspect') {
+        return { status: 0, stdout: '[]', stderr: '' }
+      }
+      throw new Error(`unexpected fixture command: ${args.join(' ')}`)
+    }
+  })
+  if (
+    emptyInspectProblems.length !== 1 ||
+    !/did not return one container object/.test(emptyInspectProblems[0]) ||
+    emptyInspect.artifacts.length !== 0
+  ) {
+    problems.push('container inspect=[] was accepted or materialised as evidence')
+  }
+
+  const mismatchedContainerProblems = []
+  const mismatchedContainer = await collectDockerArtifactsForProject({
+    project: 'm3b-artifact-fixture',
+    onProblem: (problem) => mismatchedContainerProblems.push(problem),
+    run: async (args) => {
+      if (args[1] === 'ps') {
+        return { status: 0, stdout: `${containerId}\n`, stderr: '' }
+      }
+      if (args[1] === 'inspect') {
+        return {
+          status: 0,
+          stdout: JSON.stringify([validContainerInspect(otherContainerId)]),
+          stderr: ''
+        }
+      }
+      throw new Error(`unexpected fixture command: ${args.join(' ')}`)
+    }
+  })
+  if (
+    !mismatchedContainerProblems.some((problem) =>
+      /did not identify the requested container/.test(problem)
+    ) ||
+    mismatchedContainer.artifacts.length !== 0
+  ) {
+    problems.push('an inspect object for the wrong container was accepted as evidence')
+  }
+
+  const containerEvidenceMutations = [
+    ['Created', (value) => delete value.Created],
+    ['empty Created', (value) => (value.Created = '')],
+    ['Name', (value) => delete value.Name],
+    ['empty Name', (value) => (value.Name = '')],
+    ['null Config', (value) => (value.Config = null)],
+    ['array Config', (value) => (value.Config = [])],
+    ['Config.Env', (value) => delete value.Config.Env],
+    ['invalid Config.Env', (value) => (value.Config.Env = {})],
+    ['Config.Cmd', (value) => delete value.Config.Cmd],
+    ['invalid Config.Cmd', (value) => (value.Config.Cmd = {})],
+    ['Config.Entrypoint', (value) => delete value.Config.Entrypoint],
+    ['invalid Config.Entrypoint', (value) => (value.Config.Entrypoint = {})],
+    ['State', (value) => delete value.State],
+    ['null State', (value) => (value.State = null)],
+    ['array State', (value) => (value.State = [])],
+    ['HostConfig', (value) => delete value.HostConfig],
+    ['null HostConfig', (value) => (value.HostConfig = null)],
+    ['array HostConfig', (value) => (value.HostConfig = [])],
+    ['NetworkSettings', (value) => delete value.NetworkSettings],
+    ['null NetworkSettings', (value) => (value.NetworkSettings = null)],
+    ['array NetworkSettings', (value) => (value.NetworkSettings = [])],
+    ['Mounts', (value) => delete value.Mounts],
+    ['invalid Mounts', (value) => (value.Mounts = {})],
+    ['Args', (value) => delete value.Args],
+    ['invalid Args', (value) => (value.Args = {})],
+    ['Path', (value) => delete value.Path],
+    ['invalid Path', (value) => (value.Path = {})],
+    ['Image', (value) => delete value.Image],
+    ['empty Image', (value) => (value.Image = '')]
+  ]
+  for (const [field, mutate] of containerEvidenceMutations) {
+    const payload = validContainerInspect()
+    mutate(payload)
+    const fieldProblems = []
+    const collected = await collectDockerArtifactsForProject({
+      project: 'm3b-artifact-fixture',
+      onProblem: (problem) => fieldProblems.push(problem),
+      run: async (args) => {
+        if (args[1] === 'ps') {
+          return { status: 0, stdout: `${containerId}\n`, stderr: '' }
+        }
+        if (args[1] === 'inspect') {
+          return { status: 0, stdout: JSON.stringify([payload]), stderr: '' }
+        }
+        throw new Error(`unexpected fixture command after missing ${field}: ${args.join(' ')}`)
+      }
+    })
+    if (
+      fieldProblems.length !== 1 ||
+      !/omitted required evidence fields/.test(fieldProblems[0]) ||
+      collected.artifacts.length !== 0
+    ) {
+      problems.push(`container inspect missing ${field} was accepted as evidence`)
+    }
+  }
+
+  const imageEvidenceVariants = [
+    {
+      label: 'empty',
+      inspect: '',
+      history: '',
+      inspectInvalid: true,
+      historyInvalid: true
+    }
+  ]
+  const imageInspectMutations = [
+    ['wrong Id', (value) => (value.Id = `sha256:${'e'.repeat(64)}`)],
+    ['missing Created', (value) => delete value.Created],
+    ['empty Created', (value) => (value.Created = '')],
+    ['missing Architecture', (value) => delete value.Architecture],
+    ['empty Architecture', (value) => (value.Architecture = '')],
+    ['missing Os', (value) => delete value.Os],
+    ['empty Os', (value) => (value.Os = '')],
+    ['missing RepoTags', (value) => delete value.RepoTags],
+    ['invalid RepoTags', (value) => (value.RepoTags = {})],
+    ['missing Config', (value) => delete value.Config],
+    ['null Config', (value) => (value.Config = null)],
+    ['invalid Config', (value) => (value.Config = [])],
+    ['missing RootFS', (value) => delete value.RootFS],
+    ['null RootFS', (value) => (value.RootFS = null)],
+    ['invalid RootFS', (value) => (value.RootFS = [])],
+    ['missing RootFS.Layers', (value) => delete value.RootFS.Layers],
+    ['invalid RootFS.Layers', (value) => (value.RootFS.Layers = {})],
+    ['empty RootFS.Layers', (value) => (value.RootFS.Layers = [])]
+  ]
+  for (const [label, mutate] of imageInspectMutations) {
+    const image = validImageInspect()
+    mutate(image)
+    imageEvidenceVariants.push({
+      label: `image inspect ${label}`,
+      inspect: JSON.stringify([image]),
+      history: validHistory(),
+      inspectInvalid: true,
+      historyInvalid: false
+    })
+  }
+  const historyMutations = [
+    ['wrong ID', (value) => (value.ID = `sha256:${'e'.repeat(64)}`)],
+    ['missing CreatedAt', (value) => delete value.CreatedAt],
+    ['empty CreatedAt', (value) => (value.CreatedAt = '')],
+    ['missing CreatedBy', (value) => delete value.CreatedBy],
+    ['missing Size', (value) => delete value.Size],
+    ['missing Comment', (value) => delete value.Comment],
+    ['invalid Comment', (value) => (value.Comment = 42)]
+  ]
+  for (const [label, mutate] of historyMutations) {
+    const row = validHistoryRow()
+    mutate(row)
+    imageEvidenceVariants.push({
+      label: `image history ${label}`,
+      inspect: JSON.stringify([validImageInspect()]),
+      history: `${JSON.stringify(row)}\n`,
+      inspectInvalid: false,
+      historyInvalid: true
+    })
+  }
+  imageEvidenceVariants.push({
+    label: 'image history second row is not an object',
+    inspect: JSON.stringify([validImageInspect()]),
+    history: `${validHistory()}null\n`,
+    inspectInvalid: false,
+    historyInvalid: true
+  })
+  imageEvidenceVariants.push({
+    label: 'image history second row has a non-string ID',
+    inspect: JSON.stringify([validImageInspect()]),
+    history: `${validHistory()}${JSON.stringify({ ...validHistoryRow(), ID: 42 })}\n`,
+    inspectInvalid: false,
+    historyInvalid: true
+  })
+  for (const variant of imageEvidenceVariants) {
+    const imageProblems = []
+    const historyCommands = []
+    const collected = await collectDockerArtifactsForProject({
+      project: 'm3b-artifact-fixture',
+      onProblem: (problem) => imageProblems.push(problem),
+      run: async (args) => {
+        if (args[1] === 'ps') {
+          return { status: 0, stdout: `${containerId}\n`, stderr: '' }
+        }
+        if (args[1] === 'inspect') {
+          return {
+            status: 0,
+            stdout: JSON.stringify([validContainerInspect()]),
+            stderr: ''
+          }
+        }
+        if (args[1] === 'logs') {
+          return { status: 0, stdout: '', stderr: '' }
+        }
+        if (args[1] === 'image' && args[2] === 'inspect') {
+          return { status: 0, stdout: variant.inspect, stderr: '' }
+        }
+        if (args[1] === 'image' && args[2] === 'history') {
+          historyCommands.push(args)
+          return { status: 0, stdout: variant.history, stderr: '' }
+        }
+        throw new Error(`unexpected fixture command: ${args.join(' ')}`)
+      }
+    })
+    const imageArtifactLabels = collected.artifacts.map((artifact) => artifact.label)
+    const inspectRejected = imageProblems.some((problem) =>
+      /image inspect .* invalid evidence/.test(problem)
+    )
+    const historyRejected = imageProblems.some((problem) =>
+      /image history .* invalid evidence/.test(problem)
+    )
+    const expectedHistoryCommand = [
+      'docker',
+      'image',
+      'history',
+      '--no-trunc',
+      '--format',
+      '{{json .}}',
+      imageId
+    ]
+    if (
+      inspectRejected !== variant.inspectInvalid ||
+      historyRejected !== variant.historyInvalid ||
+      imageProblems.length !== Number(variant.inspectInvalid) + Number(variant.historyInvalid) ||
+      imageArtifactLabels.some(
+        (label) =>
+          (variant.inspectInvalid && /^image inspect/.test(label)) ||
+          (variant.historyInvalid && /^image history/.test(label))
+      ) ||
+      (!variant.inspectInvalid && !imageArtifactLabels.some((label) => /^image inspect/.test(label))) ||
+      (!variant.historyInvalid && !imageArtifactLabels.some((label) => /^image history/.test(label))) ||
+      historyCommands.length !== 1 ||
+      JSON.stringify(historyCommands[0]) !== JSON.stringify(expectedHistoryCommand)
+    ) {
+      problems.push(`${variant.label} image evidence was accepted as scanned evidence`)
+    }
+  }
+  if (problems.length > 0) {
+    fail(name, problems[0])
+  } else {
+    pass(
+      name,
+      'container inspect=[]/wrong-id/missing-field and independently empty/truncated image ' +
+        'inspect/history payloads fail closed; history uses the pinned JSON format argv'
+    )
   }
 }
 
@@ -3402,7 +3854,8 @@ process.stdout.write('R17: scanner candidate closure\n')
     'X-P-A-S-S-W-O-R-D-Y',
     'PRE-T-O-K-EN-SUF',
     'MY-S-E-C-R-ET-VALUE',
-    'PRE-C-R-E-D-E-N-T-I-A-L-SUF'
+    'PRE-C-R-E-D-E-N-T-I-A-L-SUF',
+    'XPASS-WORD'
   ]
   const rows = keys.map((key) => ({
     label: key,
@@ -3452,11 +3905,11 @@ process.stdout.write('R17: scanner candidate closure\n')
   )
   const gate = evidenceGateProblems({
     rows,
-    expectedRows: 27,
+    expectedRows: 28,
     scanIdentityOf: scanIdentityOfRow,
-    expectedScanDistinct: 27,
+    expectedScanDistinct: 28,
     oracleIdentityOf: oracleIdentityOfRow,
-    expectedOracleDistinct: 27,
+    expectedOracleDistinct: 28,
     requiresOracle: true,
     oracleFailures,
     mismatches
@@ -3470,7 +3923,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   } else {
     pass(
       name,
-      '27/27 oracle-proven live keys fail closed, including underscore/punctuation-delimited ' +
+      '28/28 oracle-proven live keys fail closed, including the restored XPASS-WORD suffix case and underscore/punctuation-delimited ' +
         'prefix/suffix combinations, ' +
         'unknown weak-stem compounds and 4+ piece split stems; matching empty placeholders and 17 explicitly ' +
         'registered benign compounds / near-miss punctuation keys stay clean'
@@ -3571,7 +4024,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 51
+const expectedCount = 53
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
