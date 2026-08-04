@@ -1139,6 +1139,52 @@ const commentBodiesOf = (line) => {
 }
 
 /**
+ * `=` 之后那个引号，是不是**外层取值的闭引号**（因而这一格是真正的空占位）？
+ *
+ * **compact 与 legacy 两条路径共用这一份判据**，不再各写一半。
+ *
+ * 上一轮两条路径都只验证了「键前面是引号」且「`=` 后面是同种引号」，**没有证明
+ * 前面那个引号是本赋值的开引号**。而键 run 是往前扫到 空白/`=`/`"`/`'` 为止的，
+ * 它停下的那个引号完全可能是**上一段取值的闭引号**——此时 `=` 后面的引号是一段
+ * **真实非空取值的开引号**，却被判成空占位，整行零 problem。审计与总控独立实测
+ * 350 格里净新增 280 格漏检，`# psql "dbname=meal"PGPASSWORD="<值>"` 就是最小反例。
+ *
+ * 判据两条，缺一不可：
+ *
+ * 1. **它必须是这段文本里同种引号的第一个**。这条刻意比「奇偶」更严：奇偶只证明
+ *    引号成对，证明不了配对关系没有被**外层包装引号**移位。实测
+ *    `NOTES="psql "dbname=meal"PASSWORD=" <值>""` 里，`PASSWORD` 前面那个引号按
+ *    奇偶算是开引号，可整行仍然藏着一段真实凭据，12/12 因此静默放行。空占位捷径
+ *    本来就只是为了消一类误报，**证明不了就不许走捷径**：文本里还有别的同种引号
+ *    时一律回退到 `readAssignmentValue` 并 fail closed。
+ *    键 run 的边界集包含两种引号，因此 run 内不含引号；开引号之后遇到的下一个
+ *    同种引号必然就是 `equals + 1` 这一个，它才是配对的闭引号。
+ * 2. **闭合引号之后只允许输入结束 / ASCII 水平空白 / `#`**——与既有取值文法
+ *    （`readAssignmentValue`）同一条规则。其余内容按边界不明确 fail closed，
+ *    绝不因为「看起来像空占位」就放行。
+ *
+ * 代价（已登记）：同一段文本里出现**第二个**同种引号包裹的空占位
+ * （`NOTES="PASSWORD=" OTHER="SECRET="`）会被判成非空。方向是 fail closed，
+ * 且真实 tracked 模板与两份 README 均不含该写法。
+ */
+const closesEnclosingQuotedValue = (text, keyStart, equals) => {
+  const quote = keyStart > 0 ? text[keyStart - 1] : ''
+  if (quote !== '"' && quote !== "'") {
+    return false
+  }
+  if (text[equals + 1] !== quote) {
+    return false
+  }
+  for (let index = 0; index < keyStart - 1; index += 1) {
+    if (text[index] === quote) {
+      return false
+    }
+  }
+  const after = text[equals + 2]
+  return after === undefined || after === ' ' || after === '\t' || after === '#'
+}
+
+/**
  * 注释体里的**敏感赋值**。有界判据，不是「让散文吃可见字符」。
  *
  * 被注释掉的凭据同样会随 commit 进 Git，本文件的契约一直是「注释里的赋值也要
@@ -1176,21 +1222,54 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
     // 为什么只给 crossingOnly：**非** crossing 的敏感键带 gap 本来就由 legacy 路径
     // 完整覆盖（`# PASSWORD =v` 一直命中），这里再开一次只会多吃散文——实测
     // `# - \`POSTGRES_PASSWORD\` = 数据库密码` 会因为 run 吞掉反引号而被判成赋值，
-    // 那正是本文件明确要求保持干净的注册写法。crossing 视图没有这个代价：
-    // 反引号包裹的 `POSTGRES_PASSWORD` 里 PASSWORD 本身就是完整词元，不构成跨越。
+    // 那正是本文件明确要求保持干净的注册写法。
+    //
+    // **上一轮在这里写错了理由**：当时说「crossing 视图没有这个代价，反引号里的
+    // `POSTGRES_PASSWORD` 里 PASSWORD 本身就是完整词元，不构成跨越」。那只是碰巧。
+    // `API_KEY` / `DATABASE_URL` / `PRIVATE_KEY` / `WECHAT_APP_ID` 的紧凑形自身即
+    // 注册 token 且跨过下划线，**全部构成跨越**，于是 `` - `API_KEY` = 说明 `` 这类
+    // 本仓库在用的散文写法 4/4 变成误报（`WECHAT_APP_ID` 就是本项目的键名）。
+    //
+    // 真正的判据是**间隔左边那一格必须还是键字符**：dotenv 的 `KEY GAP = VALUE` 里
+    // 键以 identifier 字符收尾，而 `` ` ``、`)`、`]`、`"` 这些包装标点收尾的 run 是
+    // 散文里的**引用**，不是键。这条同时保住了 crossing 闭合（`PA-SSWORD =v` 的
+    // run 以 `D` 收尾）与全部注册散文写法。
     //
     // 上界复用 `readAssignmentGap` 的同一个 `maximumAssignmentGap`，只认 SPACE/TAB
     // 也与前向文法的 supported 间隔同源——**唯一 assignment 文法**的不变量保持。
+    // 越界**不是免检额度**：与 `readAssignmentGap` 的 `exhausted` 对齐，放弃扫描
+    // 一律 fail closed（上一轮这里越界后得到空 key 就静默 continue，实测 gap=65 与
+    // gap=200 全部放行，与本文件反复声明的判据直接矛盾）。
     let runEnd = equals
     let gapWidth = 0
-    while (
-      crossingOnly &&
-      runEnd > 0 &&
-      (text[runEnd - 1] === ' ' || text[runEnd - 1] === '\t') &&
-      gapWidth < maximumAssignmentGap
-    ) {
+    let gapExhausted = false
+    while (crossingOnly && runEnd > 0 && (text[runEnd - 1] === ' ' || text[runEnd - 1] === '\t')) {
+      if (gapWidth === maximumAssignmentGap) {
+        gapExhausted = true
+        break
+      }
       runEnd -= 1
       gapWidth += 1
+    }
+    if (gapExhausted) {
+      // 越界**不是免检额度**，但它也不该把**空占位**变成命中：`=` 与取值都还看得
+      // 见，看不清的只是键。因此照常读取值，只在「取值非空**且**整段文本跨过敏感
+      // 边界」时 fail closed——与 `readAssignmentGap` 的越界语义同向，同时保住
+      // 「空值允许」这条贯穿全文件的规则。
+      const overBound = readAssignmentValue(text, equals + 1)
+      if (
+        !assignmentValueIsEmpty(overBound) &&
+        (crossingOnly
+          ? keyCrossesSensitivePunctuationBoundary(text)
+          : containsSensitiveKeyToken(text))
+      ) {
+        hits += 1
+      }
+      continue
+    }
+    if (gapWidth > 0 && !/[A-Za-z0-9_]/.test(text[runEnd - 1] ?? '')) {
+      // 间隔左边是包装标点而不是键字符 → 这是散文引用，不是赋值。
+      continue
     }
     let start = runEnd
     // `=` 与引号同样是嵌套赋值的左边界。若只在空白处停，
@@ -1228,17 +1307,15 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
     if (!keyIsSensitive) {
       continue
     }
-    const enclosingQuote =
-      start > 0 && (text[start - 1] === '"' || text[start - 1] === "'")
-        ? text[start - 1]
-        : null
     // `NOTES="XPA-SSWORD="` 的第二个 `=` 后面紧跟的是**外层** closing quote，
     // 不是一段新 quoted value 的 opening quote。把这一格认成真正的空占位；
     // 非空 nested value 仍由同一个 readAssignmentValue 读取并 fail closed。
-    const value =
-      enclosingQuote !== null && text[equals + 1] === enclosingQuote
-        ? { value: '', ambiguous: false }
-        : readAssignmentValue(text, equals + 1)
+    // 「前面那个引号确实是本赋值的开引号」由共用判据证明，见
+    // `closesEnclosingQuotedValue`——只看「前面是引号」会把上一段取值的闭引号
+    // 当成开引号，从而把一段真实非空取值判成空占位。
+    const value = closesEnclosingQuotedValue(text, start, equals)
+      ? { value: '', ambiguous: false }
+      : readAssignmentValue(text, equals + 1)
     if (!assignmentValueIsEmpty(value)) {
       hits += 1
     }
@@ -1739,19 +1816,22 @@ const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
     const gap = readAssignmentGap(source, keyEnd, { strict })
     if (gap.reachedEquals && isSensitiveKeyName(match[1])) {
       const unsupportedGap = !gap.supported
-      // 外层 closing quote 与 compact 路径同源：`OUTER="PASS_WORD="` 的第二个 `=`
-      // 后面跟的是**外层**引号，不是新一段 quoted value 的 opening quote。此前
-      // 这条规则只写在 compact 路径上（`OUTER="XPA-SSWORD="` 因此干净），普通
-      // 敏感键仍从这里穿过去，被 readAssignmentValue 当成未闭合引号读到行尾，
-      // 于是空占位被判成 ambiguous 非空——同一形态两种结论。
-      const enclosingQuote =
-        compactStart > 0 && (source[compactStart - 1] === '"' || source[compactStart - 1] === "'")
-          ? source[compactStart - 1]
-          : null
+      // 外层 closing quote 与 compact 路径**共用同一条判据**：
+      // `OUTER="PASS_WORD="` 的第二个 `=` 后面跟的是**外层**引号，不是新一段
+      // quoted value 的 opening quote。此前这条规则只写在 compact 路径上
+      // （`OUTER="XPA-SSWORD="` 因此干净），普通敏感键仍从这里穿过去，被
+      // readAssignmentValue 当成未闭合引号读到行尾，于是空占位被判成 ambiguous
+      // 非空——同一形态两种结论。
+      //
+      // 上一轮把这条规则搬过来的时候，**连同 compact 那个未验证的假设一起搬了**：
+      // 只要键前面是引号就认。于是 `# psql "dbname=meal"PGPASSWORD="<值>"` 里
+      // 上一段取值的闭引号被当成开引号，一整行真实凭据零 problem。现在改由
+      // `closesEnclosingQuotedValue` 证明它确实是本赋值的开引号。
+      //
       // 越界那一支没有真正看到 `=`，取值从越界点之后读；它已经被标成
       // unsupported，因此无论取值读成什么都会 fail closed。
       const parsed =
-        enclosingQuote !== null && !gap.exhausted && source[gap.index + 1] === enclosingQuote
+        !gap.exhausted && closesEnclosingQuotedValue(source, compactStart, gap.index)
           ? { value: '', ambiguous: false }
           : readAssignmentValue(source, gap.exhausted ? gap.index : gap.index + 1)
       // unsupported 的键/`=` 间隔按 ambiguous 处理：Node 那一行整条不生效，但

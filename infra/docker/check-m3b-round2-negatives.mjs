@@ -5162,6 +5162,14 @@ process.stdout.write('R17: scanner candidate closure\n')
     { line: `NOTES='PASSWORD=${sentinel}'`, nodeKey: 'NOTES' },
     { line: `OUTER="PASS_WORD=${sentinel}"`, nodeKey: 'OUTER' },
     { line: `NOTES="XPA-SSWORD=${sentinel}"`, nodeKey: 'NOTES' },
+    // **取值紧贴闭合引号**：`=` 后面确实是同种引号，但它之后立刻就是取值首字符，
+    // 因此那不是外层的闭引号。只有「闭合引号之后只允许结束 / 空白 / `#`」这条
+    // 判据能挡住它——删掉它，下面这五行 5/5 静默放行。
+    { line: `NOTES="PASSWORD="${sentinel}"`, nodeKey: 'NOTES' },
+    { line: `NOTES='PASSWORD='${sentinel}'`, nodeKey: 'NOTES' },
+    { line: `NOTES="XPA-SSWORD="${sentinel}"`, nodeKey: 'NOTES' },
+    { line: `NOTES=ok # "PASSWORD="${sentinel}"`, nodeKey: 'NOTES' },
+    { line: `# OUTER="PASSWORD="${sentinel}"`, nodeKey: 'OUTER' },
     // 计划里**已登记的取舍**：散文提到空 quoted 赋值仍然命中，不得被这条修复
     // 顺手消掉。
     { line: '# set PASSWORD="" before starting', nodeKey: 'PASSWORD' }
@@ -5200,7 +5208,229 @@ process.stdout.write('R17: scanner candidate closure\n')
     pass(
       name,
       '6 quoted empty placeholders stay clean on both the compact and the legacy path, while ' +
-        '4 non-empty nested values and the registered prose trade-off still fail closed'
+        '4 non-empty nested values, 5 values glued to the closing quote and the registered ' +
+        'prose trade-off still fail closed'
+    )
+  }
+}
+
+{
+  // 上一轮的空占位规则只验证「键前面是引号」，**没有证明那是本赋值的开引号**。
+  // 键 run 往前扫到 空白/`=`/`"`/`'` 为止，停下的引号完全可能是**上一段取值的
+  // 闭引号**；此时 `=` 后面那个引号是一段真实非空取值的**开**引号，却被判成空
+  // 占位。总控实测净新增 280 格漏检。这条 case 钉住的就是那一族。
+  const name = 'a leading quote that closes a previous value is not this assignment opening quote'
+  const sentinel = 'R21_LEADING_QUOTE_SENTINEL_DO_NOT_ECHO'
+  const keys = ['PGPASSWORD', 'API_KEY', 'XPA-SSWORD']
+  const quotes = ['"', "'"]
+  // 五种「前导闭引号」的真实形态：shell、命令串联、JSON、dotenv 前段、带空白。
+  const leads = [
+    (quote) => `psql ${quote}dbname=meal${quote}`,
+    (quote) => `echo ${quote}done${quote};`,
+    (quote) => `{${quote}env${quote}:${quote}local${quote}}`,
+    (quote) => `A=${quote}1${quote};`,
+    (quote) => `NOTES=${quote}a${quote} `
+  ]
+  // **两条判据各自都要有判别力**，因此取值前缀单列成一个维度：
+  //
+  //   - 前缀为空 → 闭合引号之后是取值首字符，**tail 判据**拒绝；
+  //   - 前缀是空白或 `#` → 闭合引号之后正好落在 tail 判据的允许集合里，只有
+  //     **奇偶判据**能证明前面那个引号是闭引号。实测：删掉奇偶判据后，
+  //     `# a="x"PASSWORD=" <值>"` 这一族 7/7 全部静默放行。
+  const valuePrefixes = ['', ' ', '\t', '#']
+  const strictRows = []
+  const proseRows = []
+  for (const quote of quotes) {
+    for (const lead of leads) {
+      for (const [index, prefix] of valuePrefixes.entries()) {
+        // 前缀为空那一格跑满三个键；带前缀的三格用固定键，避免矩阵爆炸。
+        for (const key of index === 0 ? keys : ['PASSWORD']) {
+          const assignment = `${lead(quote)}${key}=${quote}${prefix}${sentinel}${quote}`
+          strictRows.push(
+            { line: `NOTES=${assignment}`, nodeKey: 'NOTES', expectedDefined: true },
+            { line: `NOTES="${assignment}"`, nodeKey: 'NOTES', expectedDefined: true },
+            { line: `# ${assignment}`, nodeKey: key, expectedDefined: false },
+            { line: `NOTES=ok # ${assignment}`, nodeKey: 'NOTES', expectedDefined: true }
+          )
+          // README 不被 `--env-file` 消费，这一行的前提是**扫描器的 prose 契约**
+          // 而不是 Node 消费结果，因此不给它套 oracle。
+          proseRows.push({ line: `prose ${assignment}` })
+        }
+      }
+    }
+  }
+  const oracleFailures = []
+  for (const row of strictRows) {
+    const oracle = envFileConsumption(row.line, row.nodeKey)
+    if (
+      !oracle.ok ||
+      oracle.defined !== row.expectedDefined ||
+      (row.expectedDefined && oracle.empty)
+    ) {
+      oracleFailures.push(row.line)
+    }
+  }
+  const problems = templateProblemsForViews({
+    strictLines: strictRows.map((row) => row.line),
+    proseLines: proseRows.map((row) => row.line)
+  })
+  const strictHits = new Set()
+  const proseHits = new Set()
+  for (const problem of problems) {
+    const match =
+      /(local-test\.env\.example|README\.md):(\d+): tracked template assigns a non-empty value to a sensitive key/.exec(
+        problem
+      )
+    if (match === null) {
+      continue
+    }
+    if (match[1] === 'README.md') {
+      proseHits.add(Number(match[2]))
+    } else {
+      strictHits.add(Number(match[2]))
+    }
+  }
+  const missed = [
+    ...strictRows.filter((_, index) => !strictHits.has(index + 2)).map((row) => row.line),
+    ...proseRows.filter((_, index) => !proseHits.has(index + 1)).map((row) => row.line)
+  ]
+  // 配对的**真正**空占位仍必须干净：同样的前导形态，nested 取值为空。
+  const emptyProblems = templateProblemsForViews({
+    strictLines: keys.flatMap((key) =>
+      quotes.flatMap((quote) => [
+        `NOTES=${quote}${key}=${quote}`,
+        `# ${quote}${key}=${quote}`,
+        `NOTES=${quote}${key}=${quote} # note`
+      ])
+    ),
+    proseLines: []
+  })
+  const cells = strictRows.length + proseRows.length
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (cells !== 300) {
+    fail(name, 'the leading-quote matrix drifted from 300 cells')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} credential(s) behind a previous closing quote went uncaught`)
+  } else if (emptyProblems.length > 0) {
+    fail(name, `${String(emptyProblems.length)} genuine empty placeholder(s) were flagged`)
+  } else if (JSON.stringify(problems).includes(sentinel)) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '300/300 credentials hidden behind a previous value closing quote fail closed across ' +
+        'nested/quoted/whole-comment/inline-comment/prose, both quote kinds and four value ' +
+        'prefixes (empty exercises the closing-quote tail rule; SPACE/TAB/# exercise the quote ' +
+        'parity rule), while 18 genuine empty placeholders behind a real opening quote stay clean'
+    )
+  }
+}
+
+{
+  // 上一轮新开的 crossing gap 循环走到上界后得到空 key 就静默 continue——
+  // 「放弃扫描等于放行」，与本文件反复声明的判据直接矛盾，也与同一上界下
+  // `readAssignmentGap` 的 `exhausted → fail closed` 不对称。
+  const name = 'a crossing gap wider than the assignment gap bound fails closed'
+  const sentinel = 'R21_GAP_BOUND_SENTINEL_DO_NOT_ECHO'
+  const key = 'XPA-SSWORD'
+  const widths = [1, 63, 64, 65, 200, 4096]
+  const lines = widths.map((width) => `NOTES=${key}${' '.repeat(width)}=${sentinel}`)
+  const tabLines = widths.map((width) => `NOTES=${key}${'\t'.repeat(width)}=${sentinel}`)
+  // 同宽度的空占位仍必须干净：越界 fail closed 针对的是**取值非空**那一支。
+  const emptyLines = widths.map((width) => `NOTES=${key}${' '.repeat(width)}=`)
+  const oracleFailures = []
+  for (const line of [...lines, ...tabLines]) {
+    const oracle = envFileConsumption(line, 'NOTES')
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(line)
+    }
+  }
+  const missed = [...lines, ...tabLines].filter(
+    (line) =>
+      !templateProblemsFor(line).some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  const emptyFlagged = emptyLines.filter((line) => templateProblemsFor(line).length > 0)
+  const leaked = [...lines, ...tabLines].some((line) =>
+    JSON.stringify(templateProblemsFor(line)).includes(sentinel)
+  )
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} over-bound crossing gap(s) were silently allowed`)
+  } else if (emptyFlagged.length > 0) {
+    fail(name, `${String(emptyFlagged.length)} over-bound empty placeholder(s) were flagged`)
+  } else if (leaked) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '12 crossing gaps at 1/63/64/65/200/4096 code points fail closed in both SPACE and TAB ' +
+        'forms — the bound is not an exemption — while 6 matching empty placeholders stay clean'
+    )
+  }
+}
+
+{
+  // 反向吸收间隔时，run 会把散文里的包装标点一起吞进 key。上一轮的注释断言
+  // 「crossing 视图没有这个代价」，理由是反引号里的 `POSTGRES_PASSWORD` 不构成
+  // 跨越——那只是碰巧。`API_KEY` / `DATABASE_URL` / `PRIVATE_KEY` / `WECHAT_APP_ID`
+  // 的紧凑形自身即注册 token 且跨过下划线，**全部**构成跨越，于是本仓库在用的
+  // 文档写法 4/4 变成误报（`WECHAT_APP_ID` 就是本项目的键名）。
+  const name = 'backtick-wrapped key names in prose stay clean once a gap is absorbed'
+  const documented = [
+    'API_KEY',
+    'DATABASE_URL',
+    'PRIVATE_KEY',
+    'WECHAT_APP_ID',
+    'WECHAT_APP_SECRET',
+    'POSTGRES_PASSWORD',
+    'SECRET_KEY',
+    'MEAL_AGENT_RUNTIME_PASSWORD'
+  ]
+  const wrappers = [
+    (key) => `- \`${key}\` = 说明文字`,
+    (key) => `- \`${key}\` = required`,
+    (key) => `| \`${key}\` | = | 说明 |`,
+    (key) => `> \`${key}\` = 说明`,
+    (key) => `- **${key}** = 说明文字`,
+    (key) => `- (${key}) = 说明文字`
+  ]
+  const proseLines = documented.flatMap((key) => wrappers.map((wrap) => wrap(key)))
+  const commentLines = proseLines.map((line) => `# ${line}`)
+  const proseProblems = templateProblemsForViews({ strictLines: [], proseLines })
+  const commentProblems = templateProblemsForViews({ strictLines: [], proseLines: commentLines })
+  // 正向对照：**没有**包装标点时，间隔吸收必须照常闭合 crossing 凭据。
+  const sentinel = 'R21_WRAPPER_SENTINEL_DO_NOT_ECHO'
+  const closures = [' ', '\t'].flatMap((gap) => [
+    `NOTES=XPA-SSWORD${gap}=${sentinel}`,
+    `prose PA-SSWORDX${gap}=${sentinel}`
+  ])
+  const closureMissed = closures.filter(
+    (line) =>
+      !templateProblemsFor(line, line.startsWith('prose') ? 'README.md' : undefined).some(
+        (problem) => /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  if (proseLines.length !== 48) {
+    fail(name, 'the documented-key wrapper matrix drifted from 48 cells')
+  } else if (proseProblems.length > 0) {
+    fail(name, `${String(proseProblems.length)} documented key name(s) in prose were flagged`)
+  } else if (commentProblems.length > 0) {
+    fail(name, `${String(commentProblems.length)} documented key name(s) in comments were flagged`)
+  } else if (closureMissed.length > 0) {
+    fail(name, `${String(closureMissed.length)} unwrapped crossing closure(s) regressed`)
+  } else {
+    pass(
+      name,
+      '48 backtick/bold/parenthesis-wrapped documented key names stay clean in both the prose and ' +
+        'the comment view (96 cells), while 4 unwrapped crossing gaps still fail closed'
     )
   }
 }
@@ -5440,7 +5670,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 60
+const expectedCount = 63
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

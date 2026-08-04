@@ -2924,7 +2924,13 @@ CLEAN，总控独立复现后确认前者的两项发现成立，且**都不是 
    Round 19 的 `enclosingQuote` 空占位规则只写在 compact 路径上，普通敏感键仍从
    legacy 分支穿过去，闭合引号被当成新的 opening quote，未闭合 → ambiguous →
    判非空。同一形态两种结论。**修复**：把同一条规则搬到 legacy 分支，用已经算好的
-   `compactStart` 取外层引号。方向是 fail-closed 收敛，不放宽任何命中。
+   `compactStart` 取外层引号。
+
+   **更正（Round 21 写回）**：当时这里写的是「方向是 fail-closed 收敛，**不放宽
+   任何命中**」。该断言**不成立**，且已被总控与两路审计各自独立证伪：搬过去的
+   规则连同 compact 那个**未验证的假设**一起搬了（只验证「键前面是引号」，没有
+   证明那是本赋值的**开**引号），实测净新增 **280 格漏检**。详见下面的 Round 21
+   小节。登记事实以 Round 21 为准。
 
 **本轮新增 2 条注册 case，targeted suite 从 58 精确增加到 60**：
 
@@ -2957,10 +2963,60 @@ mutation **15/15**；signal-window 连续三轮各 **5/5 确定性 + 5/5 真实�
 fresh full-stack smoke PASS；Secret identity probe PASS；`pnpm stage08:check` 在
 Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
 
-**Round 20 当前状态**：**M3B implementation complete, pending total-control
-review**。全绿仍不等于 Accepted：本轮修改的正是两路审计都实际探到的 scanner
-判据面，`c8d7236` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮
-新 SHA 重新给出结论，再回到项目总控复核第一阶段。
+**Round 20 结论**：两路独立审计与项目总控三方同指，`f9997b0` 被判 **BLOCK**。
+上面第 2 条的修复引入了一个 fail-open 回退，见下面的 Round 21。
+
+##### M3B Round 21：`f9997b0` 三方 BLOCK 后的引号边界定点整改
+
+本轮只处理总控裁定中确认且阻断的生产根因，去重后为 **1 个生产根因 + 2 个裁定项**，
+全部落在同一个文件的同一族判据上；不扩展到 M4/M5，不重构无关代码。
+
+1. **前导引号被当成本赋值的开引号（确认级 P1，阻断，新回退）**。最小反例
+   `# psql "dbname=meal"PGPASSWORD="<值>"`。键 run 往前扫到 空白/`=`/`"`/`'` 为止，
+   停下的那个引号完全可能是**上一段取值的闭引号**；此时 `=` 后面的引号是一段
+   **真实非空取值的开引号**，却被 Round 20 的空占位捷径判成空占位，整行零 problem。
+   总控实测 280 格净新增漏检，本轮独立复现为 **350 格里 350 → 70**（净新增 280）。
+   **修复**：抽出**两条路径共用的** `closesEnclosingQuotedValue`，用两条各自具备
+   判别力的判据证明它确实是本赋值的开引号——① 它必须是这段文本里同种引号的
+   **第一个**（刻意比奇偶更严：奇偶证明不了配对关系没有被**外层包装引号**移位，
+   实测 `NOTES="psql "dbname=meal"PASSWORD=" <值>""` 按奇偶算是开引号，12/12 仍漏）；
+   ② **闭合引号之后只允许输入结束 / ASCII 水平空白 / `#`**，与 `readAssignmentValue`
+   同一条规则。compact 与 legacy **共用这一份判据**，不再各写一半。
+2. **crossing gap 反向吸收把包装标点吞进键（裁定项，误报，选择收窄）**。
+   `` - `API_KEY` = 说明 `` 这类**本仓库在用的**文档写法 4/4 变成误报
+   （`WECHAT_APP_ID` 就是本项目的键名）。Round 20 的注释断言「crossing 视图没有
+   这个代价」**不成立**——那只是碰巧：`APIKEY`/`DATABASEURL`/`PRIVATEKEY`/`APPID`
+   的紧凑形自身即注册 token 且跨过下划线，全部构成跨越。**修复**：吸收间隔时要求
+   **间隔左边那一格仍是键字符**（`[A-Za-z0-9_]`）——dotenv 的键以 identifier 字符
+   收尾，而 `` ` ``、`)`、`]`、`"`、`*` 收尾的 run 是散文里的**引用**。选择收窄而
+   不是登记取舍，理由是该写法是本仓库两份 README 的既定风格。
+3. **gap 越界静默放行（裁定项，选择 fail closed）**。Round 20 的新循环走到
+   `maximumAssignmentGap` 上界即得空 key 就 continue，实测 gap=65 / 200 全部放行，
+   与本文件「放弃扫描绝不等于放行」及同一上界下 `readAssignmentGap` 的
+   `exhausted → fail closed` 直接矛盾。**修复**：越界时照常读取值，在「取值非空
+   **且**整段文本跨过敏感边界」时 fail closed。**不**无条件转红——`=` 与取值都还
+   看得见，看不清的只是键，无条件转红会把空占位一起判成命中（该回退由本轮新增
+   case 当场拦下，随后收窄）。
+
+**本轮新增 3 条注册 case，targeted suite 从 60 精确增加到 63**，每条都经**变异
+判别力验证**（删掉对应生产校验后，必须以**指定理由**转红，且不是未捕获异常）：
+
+| 变异 | 删除的生产校验 | 转红的注册 case 与理由 | exit |
+| --- | --- | --- | ---: |
+| M1 | 「同种引号的第一个」判据 | leading-quote case：`120 credential(s) behind a previous closing quote went uncaught` | 1 |
+| M2 | 「闭合引号之后只允许结束/空白/`#`」判据 | enclosing-quote case：`5 non-empty quoted assignment(s) went uncaught` | 1 |
+| M3 | gap 越界 fail closed | gap-bound case：`6 over-bound crossing gap(s) were silently allowed` | 1 |
+| M4 | 间隔左侧必须是键字符 | wrapper case：`16 documented key name(s) in prose were flagged` | 1 |
+
+**本轮新登记的取舍**：同一段文本里出现**第二个**同种引号包裹的空占位
+（`NOTES="PASSWORD=" OTHER="SECRET="`）会被判成非空。这是「第一个引号」判据换来的
+代价，方向为 fail closed；真实 tracked 模板与两份 README 均不含该写法。Round 20
+登记的 `compoundOperatorTail` 残留本轮**未移动**，仍由既有 case 钉住。
+
+**Round 21 当前状态**：**M3B implementation complete, pending total-control
+review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，
+`f9997b0` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮新 SHA
+重新给出结论，再回到项目总控复核第一阶段。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A
 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**
@@ -3093,7 +3149,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（60 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（63 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
