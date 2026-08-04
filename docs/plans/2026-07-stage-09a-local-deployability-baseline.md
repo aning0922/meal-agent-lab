@@ -2803,7 +2803,7 @@ Docker 的确定性进程组回归 + 5/5 真实信号窗口**。
 与行号，禁止回显输入派生的键名、URL 或 Secret 取值；若路径本身含敏感文本仍会出现，
 本轮不把它伪写成已消除。
 
-**阻断整改后的当前计数**：M3B targeted negative suite **53/53 cases**；signal-window
+**Round 17 阻断整改候选当时的计数**：M3B targeted negative suite **53/53 cases**；signal-window
 suite = **4/4 不依赖 Docker 的确定性进程组回归 + 5/5 真实信号窗口**。其他 M3B
 门禁口径不变：local-test 75/75、拓扑变异 15/15。
 
@@ -2815,6 +2815,54 @@ M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_r
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
 GitHub Actions。本轮保持 fake adapter，不调用任何真实微信服务；不购买服务器、
 不开放公网；ADR-0005 保持 `Proposed`，PR #1 保持 Draft；M4、M5 未开始。
+
+##### M3B Round 18：`9995212` 双审计 BLOCK 后的证据边界收口
+
+两路独立审计都把 `9995212` 判为 **BLOCK**。全绿门禁没有替代这次复验；去重后的
+确认级问题按生产边界而不是按审计报告条数收口：
+
+1. **scanner 组合闭包与多路径一致性**：普通字母 prefix/suffix 与标点或下划线
+   split-stem 的交叉组合由 Node v24.18.0 live oracle 证明后 fail closed。六个已登记
+   benign compound 覆盖每个内部切点 × 五类分隔符的 **225 格**矩阵，并在 active、
+   整行注释、行内注释、prose 四种视图保持干净；通用 scanner 只读 dotenv 实际
+   消费文本，注释只交给专用路径。另有 30 格 nested-value 反向矩阵证明 benign 键
+   不会遮住其 value 内的凭据。既定 `1PASSWORDOLD2` 无分隔边界不扩张。
+2. **canonical Git view**：除拒绝 ambient plumbing 变量与 repository-local
+   `refs/replace/` 外，每次 `ls-files` / index blob 读取都显式使用
+   `--no-replace-objects`，关闭 preflight 与读取之间新增 replace ref 的竞态。共享
+   边界覆盖 tracked template、全仓 containment 与 Compose topology，并在任何
+   Docker 调用前生效；race fixture 会在 preflight 后真实插入 replacement ref，删除
+   任一 per-read guard 都会转红。
+3. **Docker evidence 不是“能 parse 就算扫过”**：container listing/inspect 与 image
+   inspect/history 逐层钉住 canonical ID、singleton envelope、非空 `Path`、数组元素
+   shape、Mount 字段、RootFS layer digest 和 history 行数下界；坏证据不物化 artifact。
+   42 个唯一向量同时断言固定 problem/label、完整 argv、四路非零 status 与
+   stdout/stderr sentinel 零回显；生产 helper 抛异常不能算通过。
+4. **最终信号重投同样 fail closed**：最终 `process.kill(process.pid, signal)` 抛错时
+   固定输出 `final signal rethrow failed` 并 exit 1，不让调用方 Error/stack 进入
+   stdout 或 stderr。handler 表精确钉住 clean、residue、throw、invalid-return、
+   subtree primitive 与 final-signal primitive 六种状态；注册计数仍为 4+5，不虚增。
+5. **证据门禁自身**：外部审计证明 Round 17 collector 回归可以在删掉必要深层校验
+   或拼接原始输出后继续 green。Round 18 改为 branch-specific vector + mutation 判别，
+   并把 singleton 非 record、history 完整行边界与 fixed-output stdout/stderr 全部送进
+   真实 production helper。
+
+受控范围例外：`check-compose-topology.mjs` 属已 Accepted 的 M2B 门禁，但 canonical
+Git view 是三条生产扫描路径共享的同一安全边界，因此本轮只在它进入任何 Docker
+调用前增加同一 guard，并由既有 15 项 topology mutation 与 targeted PATH marker
+共同证明。该项必须单列披露，不能写成冻结面零差异；其余冻结路径保持不变。
+
+审计 A 的文件标签回显仍是已登记边界：固定类别允许带 tracked 文件标签与行号，若
+路径自身含敏感文本则会显示；禁止的是输入派生的键名、URL、Secret 取值与 Docker
+原始证据。Round 18 不把这一 P2 边界伪写成已消除。
+
+**Round 18 当前门禁计数**：M3B targeted negative suite **54/54 cases**；signal-window
+suite = **4/4 确定性回归 + 5/5 真实窗口**；local-test **75/75**；topology mutation
+**15/15**。本轮状态仍为 **implementation complete, pending total-control review**；
+只有同样两路独立审计对新 SHA 给出非阻断结论后，才可讨论 Accepted。
+
+**M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A
+仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**
 
 ### M4：生命周期、备份和恢复
 
@@ -2944,7 +2992,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（53 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（54 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 4 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

@@ -37,7 +37,8 @@ import { networkInterfaces } from 'node:os'
 import { resolve } from 'node:path'
 
 import {
-  ambientGitRepositoryViewOverrides,
+  assertCanonicalGitRepositoryView,
+  canonicalGitArguments,
   repositoryRoot,
   secretFiles
 } from './local-test-secrets-contract.mjs'
@@ -254,123 +255,134 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
   const addArtifact = (label, content) => {
     artifacts.push({ label, content: content ?? '' })
   }
+  const isRecord = (value) =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+  const isStringArray = (value) =>
+    Array.isArray(value) && value.every((entry) => typeof entry === 'string')
+  const isNullableStringArray = (value) => value === null || isStringArray(value)
+  const isContainerId = (value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
+  const isImageId = (value) =>
+    typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value)
+  const isMount = (value) =>
+    isRecord(value) &&
+    typeof value.Type === 'string' &&
+    value.Type !== '' &&
+    typeof value.Source === 'string' &&
+    typeof value.Destination === 'string' &&
+    value.Destination !== '' &&
+    typeof value.Mode === 'string' &&
+    typeof value.RW === 'boolean' &&
+    typeof value.Propagation === 'string'
+
   const listing = await run([
     'docker',
     'ps',
     '-aq',
+    '--no-trunc',
     '--filter',
     `label=com.docker.compose.project=${project}`
   ])
   if (listing.status !== 0) {
-    // **立即返回**：失败命令的 stdout 是空的，继续往下走会把「列举失败」降级成
-    // 「这个 project 一个容器都没有」，扫描面于是静默塌成零，而调用方只看
-    // artifacts 长度时完全察觉不到。
-    onProblem('containment: listing project containers failed; artifacts cannot be collected')
+    onProblem('containment: project container listing failed')
     return { artifacts, containerIds: [] }
   }
-  const containerIds = listing.stdout.split('\n').filter(Boolean)
+  const listingText = String(listing.stdout ?? '')
+  const listingIsCanonical =
+    listingText === '' ||
+    (/^(?:[a-f0-9]{64}\n)*[a-f0-9]{64}\n?$/.test(listingText) &&
+      !listingText.includes('\r'))
+  const containerIds = listingIsCanonical
+    ? listingText.split('\n').filter(Boolean)
+    : []
+  if (!listingIsCanonical || new Set(containerIds).size !== containerIds.length) {
+    onProblem('containment: project container listing returned invalid evidence')
+    return { artifacts, containerIds: [] }
+  }
+
   const imageIds = new Set()
   for (const id of containerIds) {
     const inspect = await run(['docker', 'inspect', id])
     if (inspect.status !== 0) {
-      onProblem(`containment: docker inspect ${id} failed`)
+      onProblem('containment: container inspect failed')
       continue
     }
     let parsed
     try {
       const payload = JSON.parse(inspect.stdout)
-      if (
-        !Array.isArray(payload) ||
-        payload.length !== 1 ||
-        payload[0] === null ||
-        typeof payload[0] !== 'object' ||
-        Array.isArray(payload[0])
-      ) {
-        throw new Error('unexpected container inspect shape')
+      if (!Array.isArray(payload) || payload.length !== 1 || !isRecord(payload[0])) {
+        throw new Error('invalid container inspect envelope')
       }
       parsed = payload[0]
     } catch {
-      onProblem(`containment: docker inspect ${id} did not return one container object`)
-      continue
-    }
-    const requestedId = String(id).trim()
-    if (
-      typeof parsed.Id !== 'string' ||
-      !/^[a-f0-9]{64}$/.test(parsed.Id) ||
-      !/^[a-f0-9]{12,64}$/.test(requestedId) ||
-      !parsed.Id.startsWith(requestedId)
-    ) {
-      onProblem(`containment: docker inspect ${id} did not identify the requested container`)
+      onProblem('containment: container inspect returned invalid evidence')
       continue
     }
     if (
+      parsed.Id !== id ||
+      !isContainerId(parsed.Id) ||
       typeof parsed.Created !== 'string' ||
       parsed.Created === '' ||
       typeof parsed.Name !== 'string' ||
       parsed.Name === '' ||
-      parsed.Config === null ||
-      typeof parsed.Config !== 'object' ||
-      Array.isArray(parsed.Config) ||
-      !Array.isArray(parsed.Config.Env) ||
+      !isRecord(parsed.Config) ||
+      !isStringArray(parsed.Config.Env) ||
       !Object.hasOwn(parsed.Config, 'Cmd') ||
-      (parsed.Config.Cmd !== null && !Array.isArray(parsed.Config.Cmd)) ||
+      !isNullableStringArray(parsed.Config.Cmd) ||
       !Object.hasOwn(parsed.Config, 'Entrypoint') ||
-      (parsed.Config.Entrypoint !== null && !Array.isArray(parsed.Config.Entrypoint)) ||
+      !isNullableStringArray(parsed.Config.Entrypoint) ||
       !Array.isArray(parsed.Mounts) ||
-      parsed.State === null ||
-      typeof parsed.State !== 'object' ||
-      Array.isArray(parsed.State) ||
-      parsed.HostConfig === null ||
-      typeof parsed.HostConfig !== 'object' ||
-      Array.isArray(parsed.HostConfig) ||
-      parsed.NetworkSettings === null ||
-      typeof parsed.NetworkSettings !== 'object' ||
-      Array.isArray(parsed.NetworkSettings) ||
-      !Array.isArray(parsed.Args) ||
+      !parsed.Mounts.every(isMount) ||
+      !isRecord(parsed.State) ||
+      !isRecord(parsed.HostConfig) ||
+      !isRecord(parsed.NetworkSettings) ||
+      !isStringArray(parsed.Args) ||
       typeof parsed.Path !== 'string' ||
-      typeof parsed.Image !== 'string' ||
-      parsed.Image === ''
+      parsed.Path === '' ||
+      !isImageId(parsed.Image)
     ) {
-      onProblem(`containment: docker inspect ${id} omitted required evidence fields`)
+      onProblem('containment: container inspect returned invalid evidence')
       continue
     }
-    const name = String(parsed.Name ?? id).replace(/^\//, '')
-    addArtifact(`container inspect ${name}`, inspect.stdout)
-    addArtifact(`container Config.Env ${name}`, JSON.stringify(parsed.Config?.Env ?? []))
+    const safeContainerLabel = parsed.Id.slice(0, 12)
+    addArtifact(`container inspect ${safeContainerLabel}`, inspect.stdout)
     addArtifact(
-      `container Config.Cmd/Args ${name}`,
+      `container Config.Env ${safeContainerLabel}`,
+      JSON.stringify(parsed.Config.Env)
+    )
+    addArtifact(
+      `container Config.Cmd/Args ${safeContainerLabel}`,
       JSON.stringify({
-        cmd: parsed.Config?.Cmd ?? null,
-        entrypoint: parsed.Config?.Entrypoint ?? null,
-        args: parsed.Args ?? null,
-        path: parsed.Path ?? null
+        cmd: parsed.Config.Cmd,
+        entrypoint: parsed.Config.Entrypoint,
+        args: parsed.Args,
+        path: parsed.Path
       })
     )
-    addArtifact(`container Mounts ${name}`, JSON.stringify(parsed.Mounts ?? []))
-    if (typeof parsed.Image === 'string') {
-      imageIds.add(parsed.Image)
-    }
+    addArtifact(`container Mounts ${safeContainerLabel}`, JSON.stringify(parsed.Mounts))
+    imageIds.add(parsed.Image)
     const logs = await run(['docker', 'logs', id], { timeoutMs: 120_000 })
     if (logs.status !== 0) {
-      onProblem(`containment: docker logs ${name} failed; its output cannot be scanned`)
+      onProblem('containment: container logs failed')
     }
-    addArtifact(`container logs ${name}`, `${logs.stdout}\n${logs.stderr}`)
+    addArtifact(`container logs ${safeContainerLabel}`, `${logs.stdout}\n${logs.stderr}`)
   }
+
+  const imageLayerCounts = new Map()
   for (const imageId of imageIds) {
+    const safeImageLabel = imageId.slice(0, 19)
     const inspect = await run(['docker', 'image', 'inspect', imageId])
     if (inspect.status !== 0) {
-      onProblem(`containment: docker image inspect ${imageId} failed`)
+      onProblem('containment: image inspect failed')
     } else {
       try {
         const payload = JSON.parse(inspect.stdout)
+        if (!Array.isArray(payload) || payload.length !== 1 || !isRecord(payload[0])) {
+          throw new Error('invalid image inspect envelope')
+        }
         const image = payload[0]
         if (
-          !Array.isArray(payload) ||
-          payload.length !== 1 ||
-          image === null ||
-          typeof image !== 'object' ||
-          Array.isArray(image) ||
           image.Id !== imageId ||
+          !isImageId(image.Id) ||
           typeof image.Created !== 'string' ||
           image.Created === '' ||
           typeof image.Architecture !== 'string' ||
@@ -378,23 +390,23 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
           typeof image.Os !== 'string' ||
           image.Os === '' ||
           !Object.hasOwn(image, 'RepoTags') ||
-          (image.RepoTags !== null && !Array.isArray(image.RepoTags)) ||
-          image.Config === null ||
-          typeof image.Config !== 'object' ||
-          Array.isArray(image.Config) ||
-          image.RootFS === null ||
-          typeof image.RootFS !== 'object' ||
-          Array.isArray(image.RootFS) ||
-          !Array.isArray(image.RootFS.Layers) ||
-          image.RootFS.Layers.length === 0
+          (image.RepoTags !== null && !isStringArray(image.RepoTags)) ||
+          !isRecord(image.Config) ||
+          !isRecord(image.RootFS) ||
+          image.RootFS.Type !== 'layers' ||
+          !isStringArray(image.RootFS.Layers) ||
+          image.RootFS.Layers.length === 0 ||
+          !image.RootFS.Layers.every(isImageId)
         ) {
-          throw new Error('unexpected image inspect shape')
+          throw new Error('invalid image inspect fields')
         }
-        addArtifact(`image inspect ${imageId.slice(0, 19)}`, inspect.stdout)
+        imageLayerCounts.set(imageId, image.RootFS.Layers.length)
+        addArtifact(`image inspect ${safeImageLabel}`, inspect.stdout)
       } catch {
-        onProblem(`containment: docker image inspect ${imageId} returned invalid evidence`)
+        onProblem('containment: image inspect returned invalid evidence')
       }
     }
+
     const history = await run([
       'docker',
       'image',
@@ -405,20 +417,29 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
       imageId
     ])
     if (history.status !== 0) {
-      onProblem(`containment: docker image history ${imageId} failed`)
+      onProblem('containment: image history failed')
     } else {
       try {
-        const lines = String(history.stdout).trim().split(/\r?\n/).filter(Boolean)
+        const historyText = String(history.stdout ?? '')
+        if (historyText === '' || historyText.includes('\r')) {
+          throw new Error('invalid image history framing')
+        }
+        const body = historyText.endsWith('\n') ? historyText.slice(0, -1) : historyText
+        const lines = body.split('\n')
+        if (lines.length === 0 || lines.some((line) => line === '')) {
+          throw new Error('invalid image history framing')
+        }
         const rows = lines.map((line) => JSON.parse(line))
+        const layerCount = imageLayerCounts.get(imageId)
         if (
-          rows.length === 0 ||
+          layerCount === undefined ||
+          rows.length < layerCount ||
           rows[0]?.ID !== imageId ||
           rows.some(
             (row) =>
-              row === null ||
-              typeof row !== 'object' ||
-              Array.isArray(row) ||
+              !isRecord(row) ||
               typeof row.ID !== 'string' ||
+              row.ID === '' ||
               typeof row.CreatedAt !== 'string' ||
               row.CreatedAt === '' ||
               typeof row.CreatedBy !== 'string' ||
@@ -427,11 +448,11 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
               typeof row.Comment !== 'string'
           )
         ) {
-          throw new Error('unexpected image history shape')
+          throw new Error('invalid image history evidence')
         }
-        addArtifact(`image history ${imageId.slice(0, 19)}`, history.stdout)
+        addArtifact(`image history ${safeImageLabel}`, history.stdout)
       } catch {
-        onProblem(`containment: docker image history ${imageId} returned invalid evidence`)
+        onProblem('containment: image history returned invalid evidence')
       }
     }
   }
@@ -451,17 +472,21 @@ export const collectDockerArtifactsForProject = async ({ project, run, onProblem
  */
 export const scanTrackedRepositoryForNeedles = (repository, needles) => {
   const hits = []
-  const overrides = ambientGitRepositoryViewOverrides()
-  if (overrides.length > 0) {
+  try {
+    assertCanonicalGitRepositoryView(repository)
+  } catch (error) {
     hits.push({
       label: 'git repository view',
       id: 0,
       category: 'scan-unavailable',
-      problem: `ambient overrides are not permitted: ${overrides.join(', ')}`
+      problem:
+        error instanceof Error
+          ? error.message
+          : 'the canonical Git repository view could not be verified'
     })
     return { hits, scannedFiles: 0 }
   }
-  const listing = spawnSync('git', ['ls-files', '-z'], {
+  const listing = spawnSync('git', canonicalGitArguments(['ls-files', '-z']), {
     cwd: repository,
     encoding: 'buffer',
     maxBuffer: 64 * 1024 * 1024
@@ -515,7 +540,7 @@ export const scanTrackedRepositoryForNeedles = (repository, needles) => {
       }
     }
     // Git index blob 侧。
-    const blob = spawnSync('git', ['show', `:${file}`], {
+    const blob = spawnSync('git', canonicalGitArguments(['show', `:${file}`]), {
       cwd: repository,
       encoding: 'buffer',
       maxBuffer: 64 * 1024 * 1024

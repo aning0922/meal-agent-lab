@@ -20,7 +20,10 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { assertCanonicalGitRepositoryView } from './local-test-secrets-contract.mjs'
+import {
+  assertCanonicalGitRepositoryView,
+  canonicalGitArguments
+} from './local-test-secrets-contract.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
@@ -349,7 +352,7 @@ const abort = (message) => {
 // 必须在第一次 Docker/Git 调用之前拒绝，而不是让后面的 `git ls-files` 在一张
 // alternate index 上得出「Secret 没被跟踪」的假结论。
 try {
-  assertCanonicalGitRepositoryView()
+  assertCanonicalGitRepositoryView(repositoryRoot)
 } catch (error) {
   abort(
     `compose topology check requires the canonical Git repository view: ${
@@ -415,7 +418,12 @@ const runCompose = (args, environmentOverrides = {}) => {
 
 // git 的非零退出**不能**被当作「未跟踪」静默通过：无法判定即失败。
 const gitTracks = (path) => {
-  const result = spawnSync('git', ['ls-files', '--error-unmatch', '--', path], {
+  const result = spawnSync('git', canonicalGitArguments([
+    'ls-files',
+    '--error-unmatch',
+    '--',
+    path
+  ]), {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024

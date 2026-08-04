@@ -792,8 +792,32 @@ const handlerCases = [
     expectedStatus: 1,
     expectedSignal: null,
     expectedReason: /subtree termination failed/
+  },
+  {
+    label: 'final-signal-primitive',
+    cleanup: 'async () => []',
+    beforeSignal:
+      "process.kill = (pid, signal) => { if (pid === process.pid && signal === 'SIGTERM') " +
+      "{ throw new Error('CALLER-SENTINEL') }; return nativeKill(pid, signal) }",
+    expectedStatus: 1,
+    expectedSignal: null,
+    expectedReason: /final signal rethrow failed/
   }
 ]
+const expectedHandlerCaseLabels = [
+  'clean',
+  'residue',
+  'throw',
+  'invalid-return',
+  'termination-primitive',
+  'final-signal-primitive'
+]
+if (
+  JSON.stringify(handlerCases.map((handlerCase) => handlerCase.label)) !==
+  JSON.stringify(expectedHandlerCaseLabels)
+) {
+  handlerProblems.push('signal-handler case declarations drifted')
+}
 for (const handlerCase of handlerCases) {
   const handlerFixture = resolve(
     tmpdir(),
@@ -806,11 +830,12 @@ for (const handlerCase of handlerCases) {
       [
         `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
         'const nativeTimer = globalThis.setTimeout',
+        'const nativeKill = process.kill.bind(process)',
         `m.installSignalHandlers(${handlerCase.cleanup}, { label: 'fixture cleanup' })`,
         "void m.runCommand(['/bin/sh','-c','trap \"\" TERM; sleep 45'], { timeoutMs: 60000 })",
         'nativeTimer(() => {',
         `  ${handlerCase.beforeSignal}`,
-        "  process.kill(process.pid, 'SIGTERM')",
+        "  nativeKill(process.pid, 'SIGTERM')",
         '}, 150)',
         ''
       ].join('\n'),
@@ -821,7 +846,9 @@ for (const handlerCase of handlerCases) {
       timeout: 10_000,
       killSignal: 'SIGKILL'
     })
+    const stdout = String(run.stdout ?? '')
     const stderr = String(run.stderr ?? '')
+    const output = `${stdout}\n${stderr}`
     handlerPgids = [...stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) =>
       Number(match[1])
     )
@@ -835,8 +862,10 @@ for (const handlerCase of handlerCases) {
     } else if (!handlerCase.expectedReason.test(stderr)) {
       handlerProblems.push(`${handlerCase.label}: cleanup outcome used the wrong reason`)
     }
-    if (stderr.includes('CALLER-SENTINEL')) {
-      handlerProblems.push(`${handlerCase.label}: caller-controlled cleanup text leaked to stderr`)
+    if (output.includes('CALLER-SENTINEL')) {
+      handlerProblems.push(
+        `${handlerCase.label}: caller-controlled cleanup text leaked to process output`
+      )
     }
     if (handlerPgids.length === 0) {
       handlerProblems.push(`${handlerCase.label}: fixture announced no pgid and is vacuous`)
@@ -868,8 +897,8 @@ if (handlerProblems.length > 0) {
   pass(
     'signal-handler subtree and scoped-cleanup failures are fail closed',
     'clean cleanup preserves SIGTERM, while residue, invalid return, cleanup throw and ' +
-      'termination-primitive failure use fixed exit 1 without caller text; every announced ' +
-      'pgid reaches ESRCH'
+      'both subtree and final-signal primitive failures use fixed exit 1 without caller text; ' +
+      'every announced pgid reaches ESRCH'
   )
 }
 

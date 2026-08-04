@@ -387,7 +387,14 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
         process.exit(1)
       }
       // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。
-      process.kill(process.pid, signal)
+      try {
+        process.kill(process.pid, signal)
+      } catch {
+        // 最终 self-signal 也是一条会失败的 termination primitive。不得让它的
+        // Error/stack（可能含调用方文字）逃到 Node 默认异常输出。
+        process.stderr.write('final signal rethrow failed\n')
+        process.exit(1)
+      }
     })()
   }
   process.on('SIGINT', handler)

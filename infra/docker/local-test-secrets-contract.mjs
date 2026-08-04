@@ -42,6 +42,8 @@ const gitRepositoryViewVariables = new Set([
   'GIT_INDEX_FILE',
   'GIT_OBJECT_DIRECTORY',
   'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_REPLACE_REF_BASE',
+  'GIT_NO_REPLACE_OBJECTS',
   'GIT_NAMESPACE',
   'GIT_CEILING_DIRECTORIES',
   'GIT_DISCOVERY_ACROSS_FILESYSTEM',
@@ -65,12 +67,49 @@ export const ambientGitRepositoryViewOverrides = (environment = process.env) =>
     )
     .sort()
 
-export const assertCanonicalGitRepositoryView = (environment = process.env) => {
+const assertNoAmbientGitRepositoryViewOverrides = (environment = process.env) => {
   const overrides = ambientGitRepositoryViewOverrides(environment)
   if (overrides.length > 0) {
     throw new Error(
       `ambient Git repository view overrides are not permitted: ${overrides.join(', ')}`
     )
+  }
+}
+
+/**
+ * 所有 production Git 读取都显式禁用 replace-object 解析。repo-level preflight
+ * 与每次读取必须同时存在：前者拒绝一张非 canonical 仓库视图，后者关闭
+ * preflight 与 blob 读取之间新增 replace ref 的窄竞态。
+ */
+export const canonicalGitArguments = (arguments_) => [
+  '--no-replace-objects',
+  ...arguments_
+]
+
+export const assertCanonicalGitRepositoryView = (
+  repository = repositoryRoot,
+  environment = process.env
+) => {
+  assertNoAmbientGitRepositoryViewOverrides(environment)
+  const replacements = spawnSync(
+    'git',
+    canonicalGitArguments([
+      'for-each-ref',
+      '--count=1',
+      '--format=x',
+      'refs/replace/'
+    ]),
+    {
+      cwd: repository,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024
+    }
+  )
+  if (replacements.error !== undefined || replacements.status !== 0) {
+    throw new Error('the canonical Git replacement-ref view could not be verified')
+  }
+  if (replacements.stdout.trim() !== '') {
+    throw new Error('repository-local Git replacement refs are not permitted')
   }
 }
 
@@ -538,10 +577,10 @@ const checkPgpassBody = (filename, body, superuserBody, problems) => {
 
 /** git 无法判定时抛错（缺前置工具/意外退出码不等于「未跟踪」）。 */
 const gitTracksPath = (repository, path) => {
-  assertCanonicalGitRepositoryView()
+  assertCanonicalGitRepositoryView(repository)
   const result = spawnSync(
     'git',
-    ['ls-files', '--error-unmatch', '--', path],
+    canonicalGitArguments(['ls-files', '--error-unmatch', '--', path]),
     { cwd: repository, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }
   )
   if (result.error !== undefined) {
@@ -561,8 +600,13 @@ const gitTracksPath = (repository, path) => {
 }
 
 const enclosingGitRepository = (directory) => {
-  assertCanonicalGitRepositoryView()
-  const result = spawnSync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], {
+  assertNoAmbientGitRepositoryViewOverrides()
+  const result = spawnSync('git', canonicalGitArguments([
+    '-C',
+    directory,
+    'rev-parse',
+    '--show-toplevel'
+  ]), {
     encoding: 'utf8',
     maxBuffer: 1024 * 1024
   })
@@ -572,7 +616,9 @@ const enclosingGitRepository = (directory) => {
     )
   }
   if (result.status === 0) {
-    return resolve(result.stdout.trim())
+    const repository = resolve(result.stdout.trim())
+    assertCanonicalGitRepositoryView(repository)
+    return repository
   }
   // **只有「确实不在 git 仓库里」才允许跳过**跟踪判定。其余非零退出
   // （dubious ownership、bare 仓库、子进程被信号杀掉导致 status === null）
@@ -845,6 +891,8 @@ const benignWeakPunctuationCompounds = new Set([
   'SIGNATURED',
   'TOKENYA'
 ])
+const isBenignWeakPunctuationCompound = (value) =>
+  benignWeakPunctuationCompounds.has(String(value).toUpperCase().replace(/[^A-Z0-9]/g, ''))
 const stripBoundaryDigits = (value) => value.replace(/^\d+/, '').replace(/\d+$/, '')
 const isExactCompactSensitiveToken = (value) =>
   value !== '' && compactSensitiveTokens.has(stripBoundaryDigits(value))
@@ -871,12 +919,43 @@ const tokenSequenceContainsSensitive = (tokens, { allowWeakSingleton }) => {
 }
 
 /**
+ * 一个 sensitive token 只有在其 occurrence **真正跨过**标点边界时才命中。
+ * 这覆盖 `XPA-SSWORD` / `PA-SSWORDX`，同时不会把无分隔的
+ * `1PASSWORDOLD2` 扩成新的策略，也不会用宽泛 includes 误伤普通 compound。
+ */
+const punctuationBoundaryCrossesSensitiveToken = (normalizedPieces) => {
+  const compact = normalizedPieces.join('')
+  const boundaries = []
+  let offset = 0
+  for (const piece of normalizedPieces.slice(0, -1)) {
+    offset += piece.length
+    boundaries.push(offset)
+  }
+  for (const token of compactSensitiveTokens) {
+    let start = compact.indexOf(token)
+    while (start !== -1) {
+      const end = start + token.length
+      if (boundaries.some((boundary) => boundary > start && boundary < end)) {
+        return true
+      }
+      start = compact.indexOf(token, start + 1)
+    }
+  }
+  return false
+}
+
+/**
  * Node-active 键的有界 stem matcher。下划线是词边界；词元内的 ASCII 标点可折叠，
  * 折叠后再剥首尾数字。因此 `1TOK-EN2` 与 `MY_TOK-EN_VALUE` 都找到 TOKEN。
  * weak stem 一旦成为完整标点词元就默认 fail closed；只有上面登记的完整 benign
  * compound（如 `PASS-AGE`）保持干净，未知后缀不再形成绕过词表。
  */
 const containsSensitiveKeyToken = (key) => {
+  // 必须在任何 component/window 判据**之前**作完整键裁决；否则 `PASS_AGE`
+  // 会先以 `PASS` 这个独立 component 命中，永远走不到后面的整键短路。
+  if (isBenignWeakPunctuationCompound(key)) {
+    return false
+  }
   const components = String(key).toUpperCase().split(/_+/).filter(Boolean)
   if (tokenSequenceContainsSensitive(components, { allowWeakSingleton: true })) {
     return true
@@ -893,6 +972,9 @@ const containsSensitiveKeyToken = (key) => {
       if (benignWeakPunctuationCompounds.has(wholeCompound)) {
         continue
       }
+      if (punctuationBoundaryCrossesSensitiveToken(normalizedPieces)) {
+        return true
+      }
       // 保留 Round 16 之前已经覆盖的 suffix/token 语义。`XPASS-WORD` 的第一个
       // piece 是 `XPASS`，旧判据会因 endsWith(PASS) fail closed；Round 17 一度
       // 只判 compact exact token，把这个 Node-active 键回退成了漏检。
@@ -906,6 +988,18 @@ const containsSensitiveKeyToken = (key) => {
         return true
       }
     }
+  }
+  // 下划线也是分隔符，但它在上面的 legacy component 语义里先被切掉。
+  // 因此再用整键视图判断一次“敏感 token 是否跨过任意分隔边界”，闭合
+  // `XPA_SSWORD` / `PA_SSWORDX`，同时保留完整 benign compound 的短路。
+  const wholeKeyPieces = String(key).toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)
+  const normalizedWholeKeyPieces = wholeKeyPieces.map((piece) => stripBoundaryDigits(piece))
+  const wholeKeyCompound = normalizedWholeKeyPieces.join('')
+  if (
+    !benignWeakPunctuationCompounds.has(wholeKeyCompound) &&
+    punctuationBoundaryCrossesSensitiveToken(normalizedWholeKeyPieces)
+  ) {
+    return true
   }
   return false
 }
@@ -1379,6 +1473,13 @@ const assignmentValueIsEmpty = ({ value, ambiguous }) => {
  */
 const isSensitiveKeyName = (rawKey) => {
   const key = rawKey.toUpperCase()
+  // strict 的 Node-active 键路径与下面这条自由文本路径必须对**同一个完整键**给出
+  // 同一结论。此前 benign compound 只在 `containsSensitiveKeyToken` 里短路，
+  // `PASSA_GE` / `KEYB_OARD` 随后又会被这条并行路径按 `PASSA` / `KEYB` 报成
+  // sensitive。例外只认完整 compact compound；前后再粘任何字符都不会继承它。
+  if (isBenignWeakPunctuationCompound(key)) {
+    return false
+  }
   const keyTokens = key.split(/[^A-Z0-9]+/).filter(Boolean)
   return (
     sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix)) ||
@@ -1409,7 +1510,15 @@ const isSensitiveKeyName = (rawKey) => {
  * 返回命中条数。**不返回键名也不返回取值**——两者都是输入派生的内容。
  */
 const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
-  const source = String(text)
+  const fullSource = String(text)
+  const active = nodeActiveAssignment(fullSource)
+  // 把 value 变成一个新的扫描视图，而不是只把 RegExp.lastIndex 推到 value 起点。
+  // 后一种写法会丢掉前面的 `=` 边界：value 以 `PASSWORD=` 开头时，正则既看不到
+  // 字符串起点也看不到前置非字母数字，于是嵌套凭据被静默跳过。
+  const source =
+    active !== null && isBenignWeakPunctuationCompound(active.key)
+      ? fullSource.slice(active.valueFrom)
+      : fullSource
   // `export` 前缀与 `exportPrefixPattern` 同源：只认 SPACE。自由文本扫描本来就是
   // 非锚定的，这里保留它只为让 `export KEY=` 的键从 `export` 之后开始匹配。
   const keyPattern = new RegExp(
@@ -1417,6 +1526,9 @@ const sensitiveAssignmentsIn = (text, { strict = false } = {}) => {
     'g'
   )
   let hits = 0
+  // 如果这整段本身就是一个已登记的 benign Node-active assignment，只跳过它的
+  // **键区**，从 value 起点继续非锚定扫描。这样 `PASS_AGE=AUDITVALUE` 不会被
+  // 拆成 `PASS` 再误报，而 `PASS_AGE=PASSWORD=secret` 里的嵌套凭据仍然命中。
   let cursor = 0
   for (;;) {
     keyPattern.lastIndex = cursor
@@ -1565,11 +1677,11 @@ const supportedTemplateFile =
   /(^|\/)([^/]*\.)?env(\.(example|sample|template))?$|(^|\/)(README\.md|\.gitignore|\.gitkeep)$/
 
 export const scanTrackedTemplates = (repository = repositoryRoot) => {
-  assertCanonicalGitRepositoryView()
+  assertCanonicalGitRepositoryView(repository)
   const problems = []
   const listing = spawnSync(
     'git',
-    ['ls-files', '-z', '--', 'infra/environments'],
+    canonicalGitArguments(['ls-files', '-z', '--', 'infra/environments']),
     { cwd: repository, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }
   )
   if (listing.error !== undefined) {
@@ -1597,8 +1709,6 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
     // 敏感键判据静默失效（审计实测：同一份内容 LF 版报 5 条、CRLF 版只报 1 条）。
     const lines = content.split('\n').map((line) => line.replace(/\r$/, ''))
     for (const [index, line] of lines.entries()) {
-      // 一行只切一次片段，DSN 判据与敏感赋值判据共用同一份切分结果。
-      const { segments: lineSegments } = dotenvLogicalSegments(line)
       // 第二层先判：扫不完的行必须 fail closed，**优先于**原始文本层的结论
       // ——「有一段没扫到」比「扫到的那段是什么」更要紧。
       const encodedVerdict = encodedCredentialVerdict(line)
@@ -1623,13 +1733,12 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         // 只报**类别 + 文件 + 行号**：命中的连接串本身就是凭据，绝不回显。
         problems.push(`${label}:${String(index + 1)}: tracked template ${dsnCategory}`)
       }
-      // 敏感赋值判据跑在**每一个片段**上，而不只是整行。
-      //
-      // 此前只判定整行：`NOTES="ok" # PASSWORD=SYNTHETIC` 与
-      // `NOTES=ok # PASSWORD=SYNTHETIC` 的赋值键都被读成 `NOTES`（不敏感），
-      // 行内注释里的 `PASSWORD=SYNTHETIC` 于是完全没被看到。现在 tokenizer
-      // 会为这两种形态各生成一个 **comment 片段**，片段与整行走**同一份**
-      // `sensitiveAssignmentIn`。
+      // 通用敏感赋值判据只跑在 **dotenv 实际消费文本**上；整行/行内注释只交给
+      // 后面的 `sensitiveCommentAssignments`。此前原始整行、value/comment segments
+      // 与专用 comment scanner 三路重叠：专用路径会把 `COM-PASSION` 正确判成
+      // benign，通用路径却又从子片段 `PASSION` 误报，225 格 benign matrix 在两种
+      // comment 视图各红 3 格。职责分开后，真实 value 内的嵌套 assignment 仍在
+      // consumed text 中，注释凭据则由专用路径完整覆盖。
       // 敏感赋值只报**一条固定类别**：类别 + 文件标签 + 行号，**不含任何
       // 输入派生的键名或取值**。
       //
@@ -1638,17 +1747,9 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       // 内容，任何阈值都只是把泄漏面缩小而不是关掉。一行报一条就够了：定位靠
       // 文件与行号，键名对操作者不是必要信息。
       //
-      // 整行与**每一个片段**——主取值、行内注释、非赋值整行——走**同一份**
-      // 文法（`sensitiveAssignmentsIn`），且都是非锚定扫描：片段是自由文本，
-      // 赋值不一定出现在开头。
-      //
-      // **prose 扫描覆盖整行与每个片段**；strict 扫描**只覆盖会被 dotenv 消费的
-      // 那段文本**（`dotenvConsumedText`）。片段本身不参与 strict：unquoted 取值
-      // 片段仍然包含行内注释子串，拿它跑 strict 等于把注释又扫了一遍。
-      let sensitiveHits = sensitiveAssignmentsIn(line)
-      for (const segment of lineSegments) {
-        sensitiveHits += sensitiveAssignmentsIn(segment.text)
-      }
+      const consumedText = dotenvConsumedText(line)
+      let sensitiveHits =
+        consumedText === null ? 0 : sensitiveAssignmentsIn(consumedText)
       if (strict) {
         // strict 通路 = **Node 真实文法**：解析第一个 `=` 之前的完整 Node-active
         // 键（`nodeActiveAssignment`），键里含敏感词 run 且取值非空就命中。
@@ -1668,8 +1769,11 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
         }
       }
       // **注释体**：无论文件角色，被注释掉的凭据都要扫（有界判据，见
-      // `sensitiveCommentAssignments`）。
+      // `sensitiveCommentAssignments`）。注释体内还可能有嵌套 assignment（例如
+      // `NOTES="a PASSWORD=secret"`），因此同一**已剥离的 body**再走通用 scanner；
+      // 不能退回扫描原始整行，否则 exact benign compound 会从子片段重新误报。
       for (const body of commentBodiesOf(line)) {
+        sensitiveHits += sensitiveAssignmentsIn(body)
         sensitiveHits += sensitiveCommentAssignments(body)
       }
       if (sensitiveHits > 0) {
@@ -1703,7 +1807,7 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
     if (worktreeContent !== null) {
       scanTemplateContent(file, worktreeContent, templateFileRole(file))
     }
-    const indexBlob = spawnSync('git', ['show', `:${file}`], {
+    const indexBlob = spawnSync('git', canonicalGitArguments(['show', `:${file}`]), {
       cwd: repository,
       encoding: 'utf8',
       maxBuffer: 8 * 1024 * 1024

@@ -2908,11 +2908,12 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
 }
 
 {
-  const name = 'ambient Git repository views and zero tracked files fail closed'
+  const name = 'ambient and repository-local Git replacement views fail closed'
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-git-view-'))
   const problems = []
   const sentinel = 'M3B-GIT-VIEW-SENTINEL'
   const previousIndex = process.env.GIT_INDEX_FILE
+  const previousReplaceBase = process.env.GIT_REPLACE_REF_BASE
   try {
     const repo = resolve(parent, 'repo')
     const templateDirectory = resolve(repo, 'infra/environments/local-test')
@@ -2969,6 +2970,166 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       JSON.stringify(canonicalNeedleScan).includes(sentinel)
     ) {
       throw new Error('the canonical-index Secret precondition was not detected safely')
+    }
+
+    const templatePath = 'infra/environments/local-test/local-test.env.example'
+    const secretOidResult = git(['-C', repo, 'rev-parse', `:${templatePath}`])
+    const benignOidResult = git(['-C', repo, 'hash-object', '-w', '--stdin'], {
+      input: 'SAFE_VALUE=\n'
+    })
+    if (
+      secretOidResult.error !== undefined ||
+      secretOidResult.status !== 0 ||
+      benignOidResult.error !== undefined ||
+      benignOidResult.status !== 0
+    ) {
+      throw new Error('could not create the replacement-ref precondition')
+    }
+    const secretOid = secretOidResult.stdout.trim()
+    const benignOid = benignOidResult.stdout.trim()
+    const replaced = git(['-C', repo, 'replace', secretOid, benignOid])
+    const defaultBlob = git(['-C', repo, 'show', `:${templatePath}`])
+    const rawBlob = git(['--no-replace-objects', '-C', repo, 'show', `:${templatePath}`])
+    if (
+      replaced.error !== undefined ||
+      replaced.status !== 0 ||
+      defaultBlob.status !== 0 ||
+      rawBlob.status !== 0 ||
+      defaultBlob.stdout.includes(sentinel) ||
+      !rawBlob.stdout.includes(sentinel)
+    ) {
+      throw new Error('the replacement ref did not alter the default Git object view')
+    }
+    try {
+      scanTrackedTemplates(repo)
+      problems.push('the tracked-template scanner accepted a repository-local replacement ref')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/repository-local Git replacement refs are not permitted/.test(message)) {
+        problems.push('the tracked-template replacement-ref refusal used the wrong reason')
+      }
+      if ([sentinel, secretOid, benignOid].some((value) => message.includes(value))) {
+        problems.push('the tracked-template replacement-ref refusal echoed untrusted evidence')
+      }
+    }
+    const replacementScan = scanTrackedRepositoryForNeedles(repo, [
+      { id: 1, category: 'probe', value: sentinel }
+    ])
+    if (
+      replacementScan.scannedFiles !== 0 ||
+      replacementScan.hits.length !== 1 ||
+      replacementScan.hits[0]?.category !== 'scan-unavailable' ||
+      JSON.stringify(replacementScan).includes(sentinel) ||
+      JSON.stringify(replacementScan).includes(secretOid) ||
+      JSON.stringify(replacementScan).includes(benignOid)
+    ) {
+      problems.push('the repository containment scan accepted or echoed a replacement ref')
+    }
+    const removedReplacement = git(['-C', repo, 'replace', '-d', secretOid])
+    if (removedReplacement.error !== undefined || removedReplacement.status !== 0) {
+      throw new Error('could not remove the replacement-ref precondition')
+    }
+
+    // Race witness：preflight 返回「当前没有 replace ref」之后、index blob 读取
+    // 之前才插入 replacement。production 的每一次 `git show` 都必须独立带
+    // --no-replace-objects；只靠 preflight 会在这个窗口假绿。
+    const realGitResult = spawnSync('/bin/sh', ['-c', 'command -v git'], {
+      encoding: 'utf8'
+    })
+    if (realGitResult.error !== undefined || realGitResult.status !== 0) {
+      throw new Error('could not resolve the real git binary for the race witness')
+    }
+    const raceDirectory = resolve(parent, 'race-bin')
+    const raceMarker = resolve(parent, 'replacement-race-inserted')
+    mkdirSync(raceDirectory)
+    writeFileSync(
+      resolve(raceDirectory, 'git'),
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "--no-replace-objects" ] && [ "$2" = "for-each-ref" ]; then',
+        '  "$M3B_RACE_REAL_GIT" "$@"',
+        '  status=$?',
+        '  if [ "$status" -eq 0 ] && [ ! -e "$M3B_RACE_MARKER" ]; then',
+        '    "$M3B_RACE_REAL_GIT" update-ref "refs/replace/$M3B_RACE_SECRET_OID" "$M3B_RACE_BENIGN_OID"',
+        '    : > "$M3B_RACE_MARKER"',
+        '  fi',
+        '  exit "$status"',
+        'fi',
+        'exec "$M3B_RACE_REAL_GIT" "$@"',
+        ''
+      ].join('\n'),
+      'utf8'
+    )
+    chmodSync(resolve(raceDirectory, 'git'), 0o755)
+    const raceEnvironmentNames = [
+      'M3B_RACE_REAL_GIT',
+      'M3B_RACE_MARKER',
+      'M3B_RACE_SECRET_OID',
+      'M3B_RACE_BENIGN_OID'
+    ]
+    const previousRaceEnvironment = new Map(
+      raceEnvironmentNames.map((name) => [name, process.env[name]])
+    )
+    const previousPath = process.env.PATH
+    try {
+      process.env.M3B_RACE_REAL_GIT = realGitResult.stdout.trim()
+      process.env.M3B_RACE_MARKER = raceMarker
+      process.env.M3B_RACE_SECRET_OID = secretOid
+      process.env.M3B_RACE_BENIGN_OID = benignOid
+      process.env.PATH = `${raceDirectory}:${previousPath ?? ''}`
+
+      const racedTemplateProblems = scanTrackedTemplates(repo)
+      if (
+        !existsSync(raceMarker) ||
+        !racedTemplateProblems.some((problem) =>
+          /assigns a non-empty value to a sensitive key/.test(problem)
+        ) ||
+        JSON.stringify(racedTemplateProblems).includes(sentinel)
+      ) {
+        problems.push('the tracked-template per-read guard did not survive the replacement race')
+      }
+      const raceRefRemoved = spawnSync(
+        realGitResult.stdout.trim(),
+        ['-C', repo, 'replace', '-d', secretOid],
+        { encoding: 'utf8' }
+      )
+      if (raceRefRemoved.error !== undefined || raceRefRemoved.status !== 0) {
+        throw new Error('could not reset the template replacement-race fixture')
+      }
+      rmSync(raceMarker, { force: true })
+
+      const racedNeedleScan = scanTrackedRepositoryForNeedles(repo, [
+        { id: 1, category: 'probe', value: sentinel }
+      ])
+      if (
+        !existsSync(raceMarker) ||
+        racedNeedleScan.scannedFiles !== 1 ||
+        !racedNeedleScan.hits.some((hit) => /git index/.test(String(hit.label))) ||
+        JSON.stringify(racedNeedleScan).includes(sentinel)
+      ) {
+        problems.push('the whole-repository per-read guard did not survive the replacement race')
+      }
+      const finalRaceRefRemoved = spawnSync(
+        realGitResult.stdout.trim(),
+        ['-C', repo, 'replace', '-d', secretOid],
+        { encoding: 'utf8' }
+      )
+      if (finalRaceRefRemoved.error !== undefined || finalRaceRefRemoved.status !== 0) {
+        throw new Error('could not reset the repository replacement-race fixture')
+      }
+    } finally {
+      process.env.PATH = previousPath
+      for (const [name, value] of previousRaceEnvironment) {
+        if (value === undefined) {
+          delete process.env[name]
+        } else {
+          process.env[name] = value
+        }
+      }
+      rmSync(raceMarker, { force: true })
+      spawnSync(realGitResult.stdout.trim(), ['-C', repo, 'replace', '-d', secretOid], {
+        encoding: 'utf8'
+      })
     }
 
     process.env.GIT_INDEX_FILE = alternateIndex
@@ -3029,6 +3190,60 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     }
     delete process.env.GIT_INDEX_FILE
 
+    const customRef = `refs/audit-replace/${secretOid}`
+    const customRefResult = git(['-C', repo, 'update-ref', customRef, benignOid])
+    if (customRefResult.error !== undefined || customRefResult.status !== 0) {
+      throw new Error('could not create the custom replacement namespace precondition')
+    }
+    process.env.GIT_REPLACE_REF_BASE = 'refs/audit-replace'
+    try {
+      scanTrackedTemplates(repo)
+      problems.push('the tracked-template scanner accepted GIT_REPLACE_REF_BASE')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('GIT_REPLACE_REF_BASE') || message.includes('refs/audit-replace')) {
+        problems.push('the custom replacement namespace refusal used the wrong or unsafe reason')
+      }
+    }
+    const customViewScan = scanTrackedRepositoryForNeedles(repo, [
+      { id: 1, category: 'probe', value: sentinel }
+    ])
+    if (
+      customViewScan.scannedFiles !== 0 ||
+      customViewScan.hits.length !== 1 ||
+      customViewScan.hits[0]?.category !== 'scan-unavailable' ||
+      JSON.stringify(customViewScan).includes('refs/audit-replace')
+    ) {
+      problems.push('the repository containment scan accepted or echoed GIT_REPLACE_REF_BASE')
+    }
+    const customTopologyMarker = resolve(parent, 'custom-docker-was-called')
+    const customTopology = spawnSync(
+      process.execPath,
+      [resolve(composeDirectory, 'check-compose-topology.mjs')],
+      {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          M3B_DOCKER_MARKER: customTopologyMarker,
+          PATH: `${shimDirectory}:${process.env.PATH ?? ''}`
+        }
+      }
+    )
+    if (
+      customTopology.error !== undefined ||
+      customTopology.status !== 1 ||
+      !/canonical Git repository view.*GIT_REPLACE_REF_BASE/.test(
+        String(customTopology.stderr)
+      ) ||
+      String(customTopology.stderr).includes('refs/audit-replace') ||
+      existsSync(customTopologyMarker)
+    ) {
+      problems.push('the topology gate accepted a custom replacement namespace or reached Docker')
+    }
+    delete process.env.GIT_REPLACE_REF_BASE
+
     const emptyRepo = resolve(parent, 'empty')
     const initialized = git(['init', '--quiet', emptyRepo])
     if (initialized.error !== undefined || initialized.status !== 0) {
@@ -3053,6 +3268,11 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     } else {
       process.env.GIT_INDEX_FILE = previousIndex
     }
+    if (previousReplaceBase === undefined) {
+      delete process.env.GIT_REPLACE_REF_BASE
+    } else {
+      process.env.GIT_REPLACE_REF_BASE = previousReplaceBase
+    }
     rmSync(parent, { recursive: true, force: true })
   }
   if (problems.length > 0) {
@@ -3060,8 +3280,9 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
   } else {
     pass(
       name,
-      'GIT_INDEX_FILE is refused by every production scanner/gate before Docker without ' +
-        'echoing its value, and an empty canonical index is scan-unavailable'
+      'GIT_INDEX_FILE, GIT_REPLACE_REF_BASE and repository-local refs/replace are refused by ' +
+        'the shared production boundary before Docker without echoing their values; an empty ' +
+        'canonical index is scan-unavailable'
     )
   }
 }
@@ -3092,7 +3313,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     Os: 'linux',
     RepoTags: ['meal-agent-api:m3b-fixture'],
     Config: {},
-    RootFS: { Layers: [`sha256:${'d'.repeat(64)}`] }
+    RootFS: { Type: 'layers', Layers: [`sha256:${'d'.repeat(64)}`] }
   })
   const validHistoryRow = () => ({
       ID: imageId,
@@ -3118,7 +3339,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
   })
   if (
     emptyInspectProblems.length !== 1 ||
-    !/did not return one container object/.test(emptyInspectProblems[0]) ||
+    emptyInspectProblems[0] !== 'containment: container inspect returned invalid evidence' ||
     emptyInspect.artifacts.length !== 0
   ) {
     problems.push('container inspect=[] was accepted or materialised as evidence')
@@ -3143,8 +3364,8 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     }
   })
   if (
-    !mismatchedContainerProblems.some((problem) =>
-      /did not identify the requested container/.test(problem)
+    !mismatchedContainerProblems.includes(
+      'containment: container inspect returned invalid evidence'
     ) ||
     mismatchedContainer.artifacts.length !== 0
   ) {
@@ -3201,7 +3422,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
     })
     if (
       fieldProblems.length !== 1 ||
-      !/omitted required evidence fields/.test(fieldProblems[0]) ||
+      fieldProblems[0] !== 'containment: container inspect returned invalid evidence' ||
       collected.artifacts.length !== 0
     ) {
       problems.push(`container inspect missing ${field} was accepted as evidence`)
@@ -3245,7 +3466,7 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       inspect: JSON.stringify([image]),
       history: validHistory(),
       inspectInvalid: true,
-      historyInvalid: false
+      historyInvalid: true
     })
   }
   const historyMutations = [
@@ -3352,6 +3573,431 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
       name,
       'container inspect=[]/wrong-id/missing-field and independently empty/truncated image ' +
         'inspect/history payloads fail closed; history uses the pinned JSON format argv'
+    )
+  }
+}
+
+{
+  const name = 'Docker artifact evidence vectors exercise every required branch exactly'
+  const problems = []
+  const sentinel = 'AUDIT-COLLECTOR-SENTINEL-DO-NOT-ECHO'
+  const containerId = 'a'.repeat(64)
+  const imageId = `sha256:${'b'.repeat(64)}`
+  const layerId = (character) => `sha256:${character.repeat(64)}`
+  const containerLabel = containerId.slice(0, 12)
+  const imageLabel = imageId.slice(0, 19)
+  const containerArtifactLabels = [
+    `container inspect ${containerLabel}`,
+    `container Config.Env ${containerLabel}`,
+    `container Config.Cmd/Args ${containerLabel}`,
+    `container Mounts ${containerLabel}`,
+    `container logs ${containerLabel}`
+  ]
+  const completeArtifactLabels = [
+    ...containerArtifactLabels,
+    `image inspect ${imageLabel}`,
+    `image history ${imageLabel}`
+  ]
+  const validMount = () => ({
+    Type: 'bind',
+    Source: '/run/host/source',
+    Destination: '/run/secrets/runtime',
+    Mode: 'ro',
+    RW: false,
+    Propagation: 'rprivate'
+  })
+  const validContainer = () => ({
+    Id: containerId,
+    Created: '2026-08-04T00:00:00.000000000Z',
+    Name: '/fixture',
+    Config: { Env: [], Cmd: [], Entrypoint: [] },
+    State: {},
+    HostConfig: {},
+    NetworkSettings: {},
+    Mounts: [validMount()],
+    Args: [],
+    Path: '/fixture',
+    Image: imageId
+  })
+  const validImage = (layers = [layerId('d')]) => ({
+    Id: imageId,
+    Created: '2026-08-04T00:00:00.000000000Z',
+    Architecture: 'arm64',
+    Os: 'linux',
+    RepoTags: ['meal-agent-api:m3b-fixture'],
+    Config: {},
+    RootFS: { Type: 'layers', Layers: layers }
+  })
+  const historyRow = (id = imageId) => ({
+    ID: id,
+    CreatedAt: '2026-08-04T00:00:00Z',
+    CreatedBy: '/bin/sh -c fixture',
+    Size: '0B',
+    Comment: ''
+  })
+  const historyText = (count = 1) =>
+    Array.from({ length: count }, (_, index) =>
+      JSON.stringify(historyRow(index === 0 ? imageId : '<missing>'))
+    ).join('\n') + '\n'
+  const mutateContainer = (mutate) => {
+    const value = validContainer()
+    mutate(value)
+    return JSON.stringify([value])
+  }
+  const mutateImage = (mutate) => {
+    const value = validImage()
+    mutate(value)
+    return JSON.stringify([value])
+  }
+  const fixed = {
+    container: 'containment: container inspect returned invalid evidence',
+    image: 'containment: image inspect returned invalid evidence',
+    history: 'containment: image history returned invalid evidence',
+    listing: 'containment: project container listing returned invalid evidence',
+    listingFailure: 'containment: project container listing failed',
+    containerFailure: 'containment: container inspect failed',
+    imageFailure: 'containment: image inspect failed',
+    historyFailure: 'containment: image history failed',
+    logs: 'containment: container logs failed'
+  }
+  const vectors = [
+    {
+      label: 'valid one-layer evidence',
+      expectedProblems: [],
+      expectedLabels: completeArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'valid two-layer evidence',
+      imageStdout: JSON.stringify([validImage([layerId('d'), layerId('e')])]),
+      historyStdout: historyText(2),
+      expectedProblems: [],
+      expectedLabels: completeArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'noncanonical listing token',
+      listingStdout: `${sentinel}\n`,
+      expectedProblems: [fixed.listing],
+      expectedLabels: [],
+      expectedCommands: ['ps']
+    },
+    {
+      label: 'listing command failure with untrusted output',
+      listingStatus: 7,
+      listingStdout: `${containerId}\n`,
+      listingStderr: sentinel,
+      expectedProblems: [fixed.listingFailure],
+      expectedLabels: [],
+      expectedCommands: ['ps']
+    },
+    {
+      label: 'duplicate listing token',
+      listingStdout: `${containerId}\n${containerId}\n`,
+      expectedProblems: [fixed.listing],
+      expectedLabels: [],
+      expectedCommands: ['ps']
+    },
+    {
+      label: 'container pseudo-array envelope',
+      containerStdout: JSON.stringify({ 0: validContainer(), length: 1 }),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'container singleton with a non-record element',
+      containerStdout: JSON.stringify([null]),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'container inspect command failure with a valid-looking payload',
+      containerStatus: 7,
+      containerStdout: JSON.stringify([validContainer()]),
+      containerStderr: sentinel,
+      expectedProblems: [fixed.containerFailure],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'container double-object envelope',
+      containerStdout: JSON.stringify([validContainer(), validContainer()]),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'missing Config never throws',
+      containerStdout: mutateContainer((value) => delete value.Config),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'empty Path',
+      containerStdout: mutateContainer((value) => (value.Path = '')),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'noncanonical Image never reaches image argv',
+      containerStdout: mutateContainer((value) => (value.Image = sentinel)),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    ...[
+      ['Config.Env element', (value) => (value.Config.Env = [42])],
+      ['Config.Cmd element', (value) => (value.Config.Cmd = [42])],
+      ['Config.Entrypoint element', (value) => (value.Config.Entrypoint = [42])],
+      ['Args element', (value) => (value.Args = [42])],
+      ['Mounts element', (value) => (value.Mounts = [42])],
+      ['Mount Type', (value) => (value.Mounts[0].Type = 42)],
+      ['empty Mount Type', (value) => (value.Mounts[0].Type = '')],
+      ['Mount Source', (value) => (value.Mounts[0].Source = 42)],
+      ['Mount Destination', (value) => (value.Mounts[0].Destination = '')],
+      ['Mount Destination type', (value) => (value.Mounts[0].Destination = 42)],
+      ['Mount Mode', (value) => (value.Mounts[0].Mode = 42)],
+      ['Mount RW', (value) => (value.Mounts[0].RW = 'false')],
+      ['Mount Propagation', (value) => (value.Mounts[0].Propagation = 42)]
+    ].map(([label, mutate]) => ({
+      label,
+      containerStdout: mutateContainer(mutate),
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    })),
+    {
+      label: 'image pseudo-array envelope',
+      imageStdout: JSON.stringify({ 0: validImage(), length: 1 }),
+      expectedProblems: [fixed.image, fixed.history],
+      expectedLabels: containerArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'image singleton with a non-record element',
+      imageStdout: JSON.stringify([null]),
+      expectedProblems: [fixed.image, fixed.history],
+      expectedLabels: containerArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'image inspect command failure with a valid-looking payload',
+      imageStatus: 7,
+      imageStdout: JSON.stringify([validImage()]),
+      imageStderr: sentinel,
+      expectedProblems: [fixed.imageFailure, fixed.history],
+      expectedLabels: containerArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'image double-object envelope',
+      imageStdout: JSON.stringify([validImage(), validImage()]),
+      expectedProblems: [fixed.image, fixed.history],
+      expectedLabels: containerArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    ...[
+      ['RepoTags element', (value) => (value.RepoTags = [42])],
+      ['RootFS Type', (value) => (value.RootFS.Type = 'not-layers')],
+      ['RootFS.Layers element', (value) => (value.RootFS.Layers = [42])],
+      ['RootFS.Layers digest', (value) => (value.RootFS.Layers = ['not-a-digest'])]
+    ].map(([label, mutate]) => ({
+      label,
+      imageStdout: mutateImage(mutate),
+      expectedProblems: [fixed.image, fixed.history],
+      expectedLabels: containerArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    })),
+    {
+      label: 'history row count below RootFS layer count',
+      imageStdout: JSON.stringify([validImage([layerId('d'), layerId('e')])]),
+      historyStdout: historyText(1),
+      expectedProblems: [fixed.history],
+      expectedLabels: [...containerArtifactLabels, `image inspect ${imageLabel}`],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'empty ID in a non-leading history row',
+      imageStdout: JSON.stringify([validImage([layerId('d'), layerId('e')])]),
+      historyStdout: `${JSON.stringify(historyRow())}\n${JSON.stringify(historyRow(''))}\n`,
+      expectedProblems: [fixed.history],
+      expectedLabels: [...containerArtifactLabels, `image inspect ${imageLabel}`],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'CRLF image history framing',
+      historyStdout: `${JSON.stringify(historyRow())}\r\n`,
+      expectedProblems: [fixed.history],
+      expectedLabels: [...containerArtifactLabels, `image inspect ${imageLabel}`],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'image history command failure with a valid-looking payload',
+      historyStatus: 7,
+      historyStdout: historyText(),
+      historyStderr: sentinel,
+      expectedProblems: [fixed.historyFailure],
+      expectedLabels: [...containerArtifactLabels, `image inspect ${imageLabel}`],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'raw container stdout is never echoed',
+      containerStdout: sentinel,
+      expectedProblems: [fixed.container],
+      expectedLabels: [],
+      expectedCommands: ['ps', 'inspect']
+    },
+    {
+      label: 'raw image stdout is never echoed',
+      imageStdout: sentinel,
+      expectedProblems: [fixed.image, fixed.history],
+      expectedLabels: containerArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'raw history stdout is never echoed',
+      historyStdout: sentinel,
+      expectedProblems: [fixed.history],
+      expectedLabels: [...containerArtifactLabels, `image inspect ${imageLabel}`],
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'untrusted container Name never reaches a label',
+      containerStdout: mutateContainer((value) => (value.Name = `/${sentinel}`)),
+      expectedProblems: [],
+      expectedLabels: completeArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    },
+    {
+      label: 'logs failure uses a fixed reason',
+      logsStatus: 7,
+      logsStdout: sentinel,
+      logsStderr: sentinel,
+      expectedProblems: [fixed.logs],
+      expectedLabels: completeArtifactLabels,
+      expectedCommands: ['ps', 'inspect', 'logs', 'image-inspect', 'history']
+    }
+  ]
+  const expectedVectorCount = 42
+  if (
+    vectors.length !== expectedVectorCount ||
+    new Set(vectors.map((vector) => vector.label)).size !== expectedVectorCount
+  ) {
+    problems.push('collector vector declarations drifted or are not unique')
+  }
+  const classifyCommand = (args) => {
+    if (args[1] === 'ps') return 'ps'
+    if (args[1] === 'inspect') return 'inspect'
+    if (args[1] === 'logs') return 'logs'
+    if (args[1] === 'image' && args[2] === 'inspect') return 'image-inspect'
+    if (args[1] === 'image' && args[2] === 'history') return 'history'
+    return 'unexpected'
+  }
+  const expectedArgv = {
+    ps: [
+      'docker',
+      'ps',
+      '-aq',
+      '--no-trunc',
+      '--filter',
+      'label=com.docker.compose.project=m3b-artifact-vector'
+    ],
+    inspect: ['docker', 'inspect', containerId],
+    logs: ['docker', 'logs', containerId],
+    'image-inspect': ['docker', 'image', 'inspect', imageId],
+    history: [
+      'docker',
+      'image',
+      'history',
+      '--no-trunc',
+      '--format',
+      '{{json .}}',
+      imageId
+    ]
+  }
+  for (const vector of vectors) {
+    const vectorProblems = []
+    const commands = []
+    let collected = null
+    try {
+      collected = await collectDockerArtifactsForProject({
+        project: 'm3b-artifact-vector',
+        onProblem: (problem) => vectorProblems.push(problem),
+        run: async (args) => {
+          commands.push(args)
+          if (args[1] === 'ps') {
+            return {
+              status: vector.listingStatus ?? 0,
+              stdout: vector.listingStdout ?? `${containerId}\n`,
+              stderr: vector.listingStderr ?? ''
+            }
+          }
+          if (args[1] === 'inspect') {
+            return {
+              status: vector.containerStatus ?? 0,
+              stdout: vector.containerStdout ?? JSON.stringify([validContainer()]),
+              stderr: vector.containerStderr ?? ''
+            }
+          }
+          if (args[1] === 'logs') {
+            return {
+              status: vector.logsStatus ?? 0,
+              stdout: vector.logsStdout ?? '',
+              stderr: vector.logsStderr ?? ''
+            }
+          }
+          if (args[1] === 'image' && args[2] === 'inspect') {
+            return {
+              status: vector.imageStatus ?? 0,
+              stdout: vector.imageStdout ?? JSON.stringify([validImage()]),
+              stderr: vector.imageStderr ?? ''
+            }
+          }
+          if (args[1] === 'image' && args[2] === 'history') {
+            return {
+              status: vector.historyStatus ?? 0,
+              stdout: vector.historyStdout ?? historyText(),
+              stderr: vector.historyStderr ?? ''
+            }
+          }
+          throw new Error('unexpected collector fixture command')
+        }
+      })
+    } catch {
+      problems.push(`${vector.label}: production collector threw instead of rejecting evidence`)
+      continue
+    }
+    const labels = collected.artifacts.map((artifact) => artifact.label)
+    const commandKinds = commands.map(classifyCommand)
+    const exactExpectedCommands = vector.expectedCommands.map((kind) => expectedArgv[kind])
+    if (JSON.stringify(vectorProblems) !== JSON.stringify(vector.expectedProblems)) {
+      problems.push(`${vector.label}: fixed problem set drifted`)
+    } else if (JSON.stringify(labels) !== JSON.stringify(vector.expectedLabels)) {
+      problems.push(`${vector.label}: artifact label set drifted`)
+    } else if (JSON.stringify(commands) !== JSON.stringify(exactExpectedCommands)) {
+      problems.push(`${vector.label}: exact command argv drifted`)
+    } else if (
+      vectorProblems.join('\n').includes(sentinel) ||
+      labels.join('\n').includes(sentinel)
+    ) {
+      problems.push(`${vector.label}: untrusted evidence leaked into a problem or label`)
+    }
+    if (commandKinds.includes('unexpected')) {
+      problems.push(`${vector.label}: an unexpected command shape was executed`)
+    }
+  }
+  if (problems.length > 0) {
+    fail(name, problems[0])
+  } else {
+    pass(
+      name,
+      `${String(expectedVectorCount)}/${String(expectedVectorCount)} unique vectors pin ` +
+        'container/image/history envelopes, deep element shapes, identity, completeness, ' +
+        'fixed output and exact argv without accepting thrown exceptions'
     )
   }
 }
@@ -3855,7 +4501,35 @@ process.stdout.write('R17: scanner candidate closure\n')
     'PRE-T-O-K-EN-SUF',
     'MY-S-E-C-R-ET-VALUE',
     'PRE-C-R-E-D-E-N-T-I-A-L-SUF',
-    'XPASS-WORD'
+    'XPASS-WORD',
+    'XPA-SSWORD',
+    'PA-SSWORDX',
+    'XTO-KEN',
+    'TO-KENX',
+    'XSE-CRET',
+    'SE-CRETX',
+    'XCRE-DENTIAL',
+    'CRE-DENTIALX',
+    'XAPP-ID',
+    'APP-IDX',
+    'XPRIVATE-KEY',
+    'PRIVATE-KEYX',
+    'XAPI-KEY',
+    'API-KEYX',
+    'XPA_SSWORD',
+    'PA_SSWORDX',
+    'XTO_KEN',
+    'TO_KENX',
+    'XSE_CRET',
+    'SE_CRETX',
+    'XCRE_DENTIAL',
+    'CRE_DENTIALX',
+    'XAPP_ID',
+    'APP_IDX',
+    'XPRIVATE_KEY',
+    'PRIVATE_KEYX',
+    'XAPI_KEY',
+    'API_KEYX'
   ]
   const rows = keys.map((key) => ({
     label: key,
@@ -3881,35 +4555,70 @@ process.stdout.write('R17: scanner candidate closure\n')
   const emptyFlagged = keys.filter(
     (key) => templateProblemsFor(`${key}=`, 'local-test.env.example').length > 0
   )
-  const benign = [
-    'ROT-ATION=AUDITVALUE',
-    'ME-AL=AUDITVALUE',
-    'PLA-N=AUDITVALUE',
-    'SE-CRETARY=AUDITVALUE',
-    'PASS-AGE=AUDITVALUE',
-    'KEY-BOARD=AUDITVALUE',
-    'TO-KENYA=AUDITVALUE',
-    'SIGN-ATURED=AUDITVALUE',
-    'X-R-O-T-A-T-I-O-N-Y=AUDITVALUE',
-    'PRE-M-E-A-L-SUF=AUDITVALUE',
-    'MY-P-L-A-N-VALUE=AUDITVALUE',
-    'C-O-M-P-A-S-S-I-O-N=AUDITVALUE',
-    'S-E-C-R-E-T-A-R-Y=AUDITVALUE',
-    'P-A-S-S-A-G-E=AUDITVALUE',
-    'K-E-Y-B-O-A-R-D=AUDITVALUE',
-    'S-I-G-N-A-T-U-R-E-D=AUDITVALUE',
-    'T-O-K-E-N-Y-A=AUDITVALUE'
+  // benign 不能只挑“碰巧不会触发另一条 scanner 路径”的切点。六个登记的完整
+  // compound 要覆盖**每个**内部切点与五类分隔符，确保 Node-active strict 路径和
+  // 并行的自由文本 assignment 路径始终给出同一结论。
+  const benignCompounds = [
+    'COMPASSION',
+    'SECRETARY',
+    'PASSAGE',
+    'KEYBOARD',
+    'SIGNATURED',
+    'TOKENYA'
   ]
+  const benignSeparators = ['-', '_', '.', '/', '\u2020']
+  const benign = benignCompounds.flatMap((compound) =>
+    [...compound.slice(1)].flatMap((_, offset) => {
+      const splitAt = offset + 1
+      return benignSeparators.map(
+        (separator) =>
+          `${compound.slice(0, splitAt)}${separator}${compound.slice(splitAt)}=AUDITVALUE`
+      )
+    })
+  )
+  const nested = benignCompounds.flatMap((compound) => {
+    const splitAt = Math.floor(compound.length / 2)
+    return benignSeparators.map(
+      (separator) =>
+        `${compound.slice(0, splitAt)}${separator}${compound.slice(splitAt)}=` +
+        'PASSWORD=NESTED-AUDITVALUE'
+    )
+  })
+  const documentedNoSeparatorBoundary = '1PASSWORDOLD2=AUDITVALUE'
   const benignFlagged = benign.filter(
     (line) => templateProblemsFor(line, 'local-test.env.example').length > 0
   )
+  const additionalBenignInputs = [
+    ['whole comment', benign.map((line) => `# ${line}`), 'local-test.env.example'],
+    [
+      'inline comment',
+      benign.map((line) => `NOTES=ok # ${line}`),
+      'local-test.env.example'
+    ],
+    ['prose', benign, 'README.md']
+  ]
+  const additionalBenignViews = additionalBenignInputs.map(([label, lines, filename]) => [
+    label,
+    templateProblemsFor(lines.join('\n'), filename)
+  ])
+  const dirtyAdditionalBenignViews = additionalBenignViews.filter(
+    ([, problems]) => problems.length > 0
+  )
+  const noSeparatorBoundaryFlagged =
+    templateProblemsFor(documentedNoSeparatorBoundary, 'local-test.env.example').length > 0
+  const nestedMissed = nested.filter(
+    (line) =>
+      !templateProblemsFor(line, 'local-test.env.example').some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
   const gate = evidenceGateProblems({
     rows,
-    expectedRows: 28,
+    expectedRows: 56,
     scanIdentityOf: scanIdentityOfRow,
-    expectedScanDistinct: 28,
+    expectedScanDistinct: 56,
     oracleIdentityOf: oracleIdentityOfRow,
-    expectedOracleDistinct: 28,
+    expectedOracleDistinct: 56,
     requiresOracle: true,
     oracleFailures,
     mismatches
@@ -3918,15 +4627,37 @@ process.stdout.write('R17: scanner candidate closure\n')
     fail(name, `${String(gate.problems.length)} gate problem(s); first: ${gate.problems[0]}`)
   } else if (emptyFlagged.length > 0) {
     fail(name, `${String(emptyFlagged.length)} empty placeholder(s) were wrongly flagged`)
+  } else if (benign.length !== 225 || new Set(benign).size !== 225) {
+    fail(name, 'the 225-cell benign compound matrix drifted or contains duplicates')
   } else if (benignFlagged.length > 0) {
     fail(name, `${String(benignFlagged.length)} benign punctuation-bearing key(s) were flagged`)
+  } else if (
+    additionalBenignInputs.length !== 3 ||
+    new Set(additionalBenignInputs.map(([label]) => label)).size !== 3 ||
+    additionalBenignInputs.some(
+      ([, lines]) => lines.length !== 225 || new Set(lines).size !== 225
+    )
+  ) {
+    fail(name, 'the three additional 225-cell benign scanner views drifted or are not unique')
+  } else if (dirtyAdditionalBenignViews.length > 0) {
+    fail(
+      name,
+      `${String(dirtyAdditionalBenignViews.length)} additional benign scanner view(s) were flagged`
+    )
+  } else if (nested.length !== 30 || new Set(nested).size !== 30) {
+    fail(name, 'the 30-cell nested-value matrix drifted or contains duplicates')
+  } else if (nestedMissed.length > 0) {
+    fail(name, `${String(nestedMissed.length)} nested credential value(s) were missed`)
+  } else if (noSeparatorBoundaryFlagged) {
+    fail(name, 'the documented no-separator boundary unexpectedly changed policy')
   } else {
     pass(
       name,
-      '28/28 oracle-proven live keys fail closed, including the restored XPASS-WORD suffix case and underscore/punctuation-delimited ' +
-        'prefix/suffix combinations, ' +
-        'unknown weak-stem compounds and 4+ piece split stems; matching empty placeholders and 17 explicitly ' +
-        'registered benign compounds / near-miss punctuation keys stay clean'
+      '56/56 oracle-proven live keys fail closed, including ordinary letter prefixes/suffixes ' +
+        'whose sensitive token crosses punctuation or underscore; matching empty placeholders, ' +
+        'the 225-cell benign compound matrix stays clean in active/comment/inline/prose views, ' +
+        'the documented no-separator boundary stays clean, and all 30 nested credential values ' +
+        'remain visible'
     )
   }
 }
@@ -4024,7 +4755,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 53
+const expectedCount = 54
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',
