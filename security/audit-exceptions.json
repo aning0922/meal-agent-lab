@@ -83,14 +83,6 @@
       "version": "4.15.2",
       "pathCount": 3,
       "pathSetSha256": "68fa2d99b7e40baa4a190dd76db8ade97c993130e7e83b1f829473a18d84e42d"
-    },
-    {
-      "id": "GHSA-mh99-v99m-4gvg",
-      "module": "brace-expansion",
-      "severity": "high",
-      "version": "1.1.16",
-      "pathCount": 4,
-      "pathSetSha256": "e358a9eea5b8b12ba72fcf6c3addd73b2080916e73791fc83328cc5ad74512c3"
     }
   ],
   "forbiddenArtifactSignatures": [
