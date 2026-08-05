@@ -1180,8 +1180,14 @@ const closesEnclosingQuotedValue = (text, keyStart, equals) => {
       return false
     }
   }
-  const after = text[equals + 2]
-  return after === undefined || after === ' ' || after === '\t' || after === '#'
+  // 「闭合引号之后只允许**输入结束 / 水平空白后结束 / `#` 注释**」——这里引用的
+  // 与 `readAssignmentValue` 是同一条已登记文法。此前这一行只看**下一格**字符，
+  // 于是 `NOTES="PASSWORD=" <值>""` 的下一格是空格就通过，整行走空占位捷径被
+  // 放行：预审实测 40 格，`c8d7236` 命中而 `f9997b0` / 首版 `70476a6` 均放行，
+  // 属 Round 20 回退**未完全闭合**的残留。判据必须写成文法原文——「空白**后
+  // 结束**」，不是「下一格是空白」。
+  const rest = text.slice(equals + 2)
+  return /^[ \t]*$/.test(rest) || /^[ \t]*#/.test(rest)
 }
 
 /**

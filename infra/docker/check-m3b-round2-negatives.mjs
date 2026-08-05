@@ -5330,6 +5330,70 @@ process.stdout.write('R17: scanner candidate closure\n')
 }
 
 {
+  // 空占位捷径的 tail 判据此前只看**下一格**字符，而它引用的已登记文法写的是
+  // 「闭合引号之后只允许输入结束 / **水平空白后结束** / `#` 注释」。于是
+  // `NOTES="PASSWORD=" <值>""` 的下一格是空格就通过，整行被放行——预审实测
+  // 40 格，`c8d7236` 命中而 Round 20/21 首版均放行，属 Round 20 回退未完全
+  // 闭合的残留。这条 case 钉住「空白**后结束**」与 `#` 注释两侧的分界。
+  const name = 'a closing quote followed by whitespace and more content is not an empty placeholder'
+  const sentinel = 'R21_QUOTE_TAIL_SENTINEL_DO_NOT_ECHO'
+  const keys = ['PASSWORD', 'API_KEY', 'SECRET', 'TOKEN', 'PGPASSWORD', 'DATABASE_URL', 'PRIVATE_KEY', 'WECHAT_APP_SECRET']
+  const gaps = ['', ' ', '\t', '  ', ' '.repeat(64)]
+  const positives = keys.flatMap((key) => gaps.map((gap) => `NOTES="${key}${gap}=" ${sentinel}""`))
+  // 真正的空占位：闭合引号之后是结束、纯空白到结束、或 `#` 注释。
+  const cleanRows = keys.flatMap((key) => [
+    `NOTES="${key}="`,
+    `NOTES="${key}=" `,
+    `NOTES="${key}="\t`,
+    `NOTES="${key}=" # note`,
+    `NOTES='${key}=' # note`
+  ])
+  // **已登记边界**：闭合引号之后紧跟 `#` 就是注释起点，按文法放行；这一族
+  // 与上面的空白族只差一个字符，必须各自钉死，任何一侧变动都要重新裁定。
+  const registeredHashRows = keys.map((key) => `NOTES="${key}="#${sentinel}""`)
+  const oracleFailures = []
+  for (const line of [...positives, ...registeredHashRows]) {
+    const oracle = envFileConsumption(line, 'NOTES')
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(line)
+    }
+  }
+  const missed = positives.filter(
+    (line) =>
+      !templateProblemsFor(line).some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  const flaggedClean = cleanRows.filter((line) => templateProblemsFor(line).length > 0)
+  const hashMoved = registeredHashRows.filter((line) => templateProblemsFor(line).length > 0)
+  const leaked = positives.some((line) =>
+    JSON.stringify(templateProblemsFor(line)).includes(sentinel)
+  )
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (positives.length !== 40) {
+    fail(name, 'the closing-quote tail matrix drifted from 40 cells')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} value(s) after a closing quote were read as empty placeholders`)
+  } else if (flaggedClean.length > 0) {
+    fail(name, `${String(flaggedClean.length)} genuine empty placeholder(s) were flagged`)
+  } else if (hashMoved.length > 0) {
+    fail(name, 'the registered closing-quote-then-comment boundary moved; re-adjudicate before changing it')
+  } else if (leaked) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '40 values sitting after a closing quote fail closed across 8 keys and 5 gap widths, while ' +
+        '40 genuine empty placeholders (end / whitespace-to-end / comment) and the 8 registered ' +
+        'closing-quote-then-comment cells stay clean'
+    )
+  }
+}
+
+{
   // 上一轮新开的 crossing gap 循环走到上界后得到空 key 就静默 continue——
   // 「放弃扫描等于放行」，与本文件反复声明的判据直接矛盾，也与同一上界下
   // `readAssignmentGap` 的 `exhausted → fail closed` 不对称。
@@ -5670,7 +5734,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 63
+const expectedCount = 64
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

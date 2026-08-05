@@ -2998,7 +2998,7 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
    看得见，看不清的只是键，无条件转红会把空占位一起判成命中（该回退由本轮新增
    case 当场拦下，随后收窄）。
 
-**本轮新增 3 条注册 case，targeted suite 从 60 精确增加到 63**，每条都经**变异
+**本轮新增 4 条注册 case，targeted suite 从 60 精确增加到 64**，每条都经**变异
 判别力验证**（删掉对应生产校验后，必须以**指定理由**转红，且不是未捕获异常）：
 
 | 变异 | 删除的生产校验 | 转红的注册 case 与理由 | exit |
@@ -3007,11 +3007,28 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
 | M2 | 「闭合引号之后只允许结束/空白/`#`」判据 | enclosing-quote case：`5 non-empty quoted assignment(s) went uncaught` | 1 |
 | M3 | gap 越界 fail closed | gap-bound case：`6 over-bound crossing gap(s) were silently allowed` | 1 |
 | M4 | 间隔左侧必须是键字符 | wrapper case：`16 documented key name(s) in prose were flagged` | 1 |
+| M5 | 闭合引号「空白后结束」判据 | quote-tail case：`40 value(s) after a closing quote were read as empty placeholders` | 1 |
 
 **本轮新登记的取舍**：同一段文本里出现**第二个**同种引号包裹的空占位
 （`NOTES="PASSWORD=" OTHER="SECRET="`）会被判成非空。这是「第一个引号」判据换来的
-代价，方向为 fail closed；真实 tracked 模板与两份 README 均不含该写法。Round 20
+代价，方向为 fail closed；真实 tracked 模板与两份 README 均不含该写法。
+**规模如实登记**：在一份 30,240 格的差分语料（14 键 × 6 gap 宽度 × 7 前导形态 ×
+8 取值形状 × 6 视图）里，被判成非空的空占位从 `f9997b0` 的 1,122 格增加到
+**1,745 格**（+623），集中在 quoted 视图且前导已含同种引号的形态。该语料是为了
+压边界刻意构造的，不代表真实模板分布——真实 tracked 模板与两份 README 实测
+0 problem——但登记不得只写「有这个代价」而不写量级。Round 20
 登记的 `compoundOperatorTail` 残留本轮**未移动**，仍由既有 case 钉住。
+
+**同轮自审补正（PA-1）**：上面第 1 条的首版实现**没有匹配它所引用的那条文法**。
+已登记文法是「闭合引号之后只允许输入结束 / **水平空白后结束** / `#` 注释」，而
+首版 tail 判据只检查了**下一格**字符，于是 `NOTES="PASSWORD=" <值>""` 的下一格是
+空格就通过，整行走空占位捷径被放行。差分语料实测 **40 格**：`c8d7236` 命中，
+`f9997b0` 与首版 `70476a6` 均放行——属 Round 20 回退**未完全闭合**的残留，不是
+新回退。判据已改写成文法原文（`/^[ \t]*$/` 或 `/^[ \t]*#/`），40 格全部转红。
+**与之只差一个字符的 `#` 族**（`NOTES="PASSWORD="#<值>""`，闭合引号之后紧跟 `#`
+即注释起点）按文法**放行是正确的**，作为已登记边界与空白族一起钉进同一条 case。
+这也更正一处措辞：Round 21 首版报告里的「350/350 恢复」只在当轮自建矩阵内成立，
+不等于 Round 20 回退已完全闭合。
 
 **Round 21 当前状态**：**M3B implementation complete, pending total-control
 review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，
@@ -3149,7 +3166,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（63 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（64 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
