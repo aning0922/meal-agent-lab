@@ -1191,7 +1191,24 @@ const closesEnclosingQuotedValue = (text, keyStart, equals) => {
   // 闭合的是 **payload 不在行首**的那一族（`# psql "PASSWORD=" <值>""` 等），
   // 它们在两个 SHA 上确实整行零 problem。登记以后者为准。
   const rest = text.slice(equals + 2)
-  return /^[ \t]*$/.test(rest) || /^[ \t]*#/.test(rest)
+  if (/^[ \t]*$/.test(rest)) {
+    return true
+  }
+  if (!/^[ \t]*#/.test(rest)) {
+    return false
+  }
+  // **`#` 起注释只在 dotenv 行顶层成立。** 如果这个键是被**另一种**引号包在外层
+  // 字符串里的，闭合引号之后的 `#` 只是字面量，后面跟着的是**取值的一部分**，
+  // 不是注释。此前这里把顶层文法直接搬进了嵌套语境，于是
+  // `NOTES="x'PASSWORD='#<值>"` 整行零 problem——总控实测 864 格，`c8d7236` 与
+  // 更早的 `08da379` 均命中，`d1201bc` 起全部放行且一直未补回。
+  const outerQuote = quote === '"' ? "'" : '"'
+  for (let index = 0; index < keyStart - 1; index += 1) {
+    if (text[index] === outerQuote) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
@@ -1207,7 +1224,9 @@ const closesEnclosingQuotedValue = (text, keyStart, equals) => {
  * 成立。键与 `=` 之间加一个空白之后，同族在四个 SHA 上一致漏检，直到本轮
  * 拿掉 `crossingOnly` 门才闭合。仍未闭合的只剩一格形态：**run 以包装标点收尾**
  * 的 `# PASSWORD(old) = <值>` —— 它与注册散文写法 `- (API_KEY) = 说明` 在
- * 「间隔左边是不是键字符」这条判据下**完全同形，不可区分**。这是已登记取舍，
+ * 「间隔左边是不是键字符」这条判据下同形。**注意范围**：这只对 `.` `*` `` ` `` `)` `]`
+ * 这类包装标点成立；星平面字母、`\p{M}`、`\p{Pc}` 与 NBSP 间隔是**可区分**的，属于
+ * 另一条尚未闭合的线（键尾按 UTF-16 code unit 读，星平面拿到孤立代理项），不在此登记内。这是已登记取舍，
  * 不是疏漏；放宽它会直接把注册写法重新变成误报。
  *
  * 判据：注释体里每个 `=` 往前取一段**不含 ASCII 空白**的 run（有界），
@@ -1269,15 +1288,27 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
     }
     if (gapExhausted) {
       // 越界**不是免检额度**，但它也不该把**空占位**变成命中：`=` 与取值都还看得
-      // 见，看不清的只是键。因此照常读取值，只在「取值非空**且**整段文本跨过敏感
-      // 边界」时 fail closed——与 `readAssignmentGap` 的越界语义同向，同时保住
+      // 见，看不清的只是键。因此照常读取值，只在取值非空且**间隔左侧那段有界文本**
+      // 含敏感键时 fail closed——与 `readAssignmentGap` 的越界语义同向，同时保住
       // 「空值允许」这条贯穿全文件的规则。
+      //
+      // **判据只看间隔左侧的有界窗口，不看整段文本。** 此前用整段文本判敏感，
+      // 于是 `# NOTE<65 空格>= see the PASSWORD docs` 这类"赋值本身 benign、行内
+      // 别处提到敏感词"的写法被误报（本轮实测 3 处）。看不清的是键，那就只在键
+      // 可能所在的那一侧找，别把取值和散文也算进来。
       const overBound = readAssignmentValue(text, equals + 1)
+      // 先跳过**剩余的整段间隔**再取窗口——否则间隔比窗口还宽时（实测 4096），
+      // 窗口整个落在空白里，键根本不在里面，越界反而变成静默放行。
+      let windowEnd = runEnd
+      while (windowEnd > 0 && (text[windowEnd - 1] === ' ' || text[windowEnd - 1] === '\t')) {
+        windowEnd -= 1
+      }
+      const leftWindow = text.slice(Math.max(0, windowEnd - maximumCommentKeyLength), windowEnd)
       if (
         !assignmentValueIsEmpty(overBound) &&
         (crossingOnly
-          ? keyCrossesSensitivePunctuationBoundary(text)
-          : containsSensitiveKeyToken(text))
+          ? keyCrossesSensitivePunctuationBoundary(leftWindow)
+          : containsSensitiveKeyToken(leftWindow))
       ) {
         hits += 1
       }
@@ -1305,7 +1336,12 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
       text[start - 1] !== '\t' &&
       text[start - 1] !== '=' &&
       text[start - 1] !== '"' &&
-      text[start - 1] !== "'"
+      text[start - 1] !== "'" &&
+      // `#` 也是嵌套赋值的左边界。不设这条时，`NOTES=v#PASS-AGE=<值>` 的 run 会
+      // 从外层取值里粘走一个 `v#`，得到 `v#PASS-AGE`——完整 benign compound
+      // `PASS-AGE` 的短路因此失效，整行被误报。设了之后 run 恰好是 `PASS-AGE`。
+      // `NOTES=#PASSWORD-FILE=<值>` 这类紧贴 `=` 的注释凭据不受影响（实测仍命中）。
+      text[start - 1] !== '#'
     ) {
       start -= 1
     }
@@ -1725,7 +1761,24 @@ const isSensitiveKeyName = (rawKey) => {
     sensitiveKeySuffixes.some((suffix) => key.endsWith(suffix)) ||
     keyTokens.some((token) =>
       sensitiveKeySuffixes.some(
-        (suffix) => token === suffix || token === `${suffix}S` || token.startsWith(suffix)
+        (suffix) =>
+          token === suffix ||
+          token === `${suffix}S` ||
+          token.startsWith(suffix) ||
+          // **词元层也要认 `endsWith`，与整键层同源**——但只对**强**后缀。
+          //
+          // 此前整键走 `endsWith`、词元只走 `startsWith`，于是 `PGPASSWORD=` 命中
+          // （整键 endsWith PASSWORD），加一个下划线后缀 `PGPASSWORD_OLD=` 就整族
+          // 放行（词元 `PGPASSWORD` 不 startsWith PASSWORD）。同一个键的连字符
+          // 兄弟 `PGPASSWORD-OLD=` 却照常命中——三种同义形态两种结论，这是内部
+          // 不一致，不是设计边界。总控实测：strict 活行 56 条活凭据漏 30 条。
+          //
+          // **weak stem（PASS/PWD/KEY/URL/URI/DSN）排除在外**，这是本文件既定
+          // 判据的自然延伸而不是新口径：它们大量出现在普通英文词尾。实测若不排除，
+          // `SURPASS` `BYPASS` `COMPASS` `ENCOMPASS` `TRESPASS` `MONKEY` `DONKEY`
+          // `HOCKEY` `JOCKEY` `WHISKEY` 等 13 词中 10 词误报——那是一个**开放类**，
+          // 只能靠不断扩白名单去堵，而本文件明确写过这条路走不通。
+          (!weakPunctuationTokens.has(suffix) && token.endsWith(suffix))
       )
     )
   )

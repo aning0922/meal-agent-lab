@@ -5330,6 +5330,146 @@ process.stdout.write('R17: scanner candidate closure\n')
 }
 
 {
+  // 「闭合引号之后 `#` 起注释」只在 dotenv **行顶层**成立。若键被**另一种**引号
+  // 包在外层字符串里，那个 `#` 只是字面量，后面跟的是取值的一部分。此前把顶层
+  // 文法直接搬进嵌套语境，于是 `NOTES="x'PASSWORD='#<值>"` 整行零 problem——
+  // `08da379` / `c8d7236` 均命中，`d1201bc` 起全部放行且跨三轮未补回。
+  const name = 'a comment marker inside an outer quoted value is a literal, not a comment start'
+  const sentinel = 'R23_NESTED_HASH_SENTINEL_DO_NOT_ECHO'
+  const keys = ['PASSWORD', 'PGPASSWORD', 'API_KEY', 'POSTGRES_PASSWORD', 'APP_SECRET', 'TOKEN']
+  const outers = ['NOTES', 'CONFIG']
+  const tails = [`#${sentinel}`, `# ${sentinel}`, `#x${sentinel}`]
+  const positives = []
+  for (const key of keys) {
+    for (const outer of outers) {
+      for (const [q1, q2] of [['"', "'"], ["'", '"']]) {
+        for (const tail of tails) {
+          positives.push(`${outer}=${q1}x${q2}${key}=${q2}${tail}${q1}`)
+        }
+      }
+    }
+  }
+  // 顶层语境的 `#` 仍然是注释起点——空占位捷径在那里必须继续成立。
+  const topLevelClean = keys.flatMap((key) => [
+    `NOTES="${key}=" # note`,
+    `NOTES='${key}=' # note`,
+    `NOTES="${key}="`,
+    `NOTES="${key}=" `
+  ])
+  const oracleFailures = []
+  for (const line of positives.slice(0, 12)) {
+    const oracle = envFileConsumption(line, line.slice(0, line.indexOf('=')))
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(line)
+    }
+  }
+  const problems = templateProblemsForViews({ strictLines: positives, proseLines: [] })
+  const hits = new Set()
+  for (const problem of problems) {
+    const match = /local-test\.env\.example:(\d+): tracked template assigns a non-empty value to a sensitive key/.exec(problem)
+    if (match !== null) {
+      hits.add(Number(match[1]))
+    }
+  }
+  const missed = positives.filter((_, index) => !hits.has(index + 2))
+  const flaggedClean = templateProblemsForViews({ strictLines: topLevelClean, proseLines: [] })
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (positives.length !== 72) {
+    fail(name, 'the nested comment-marker matrix drifted from 72 cells')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} credential(s) behind a nested comment marker were released`)
+  } else if (flaggedClean.length > 0) {
+    fail(name, `${String(flaggedClean.length)} top-level empty placeholder(s) were flagged`)
+  } else if (JSON.stringify(problems).includes(sentinel)) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '72 credentials hidden behind a comment marker inside an outer quoted value fail closed ' +
+        'across 6 keys, 2 outer keys, both quote nestings and 3 tail shapes, while 24 genuine ' +
+        'top-level empty placeholders (including the `#` comment form) stay clean'
+    )
+  }
+}
+
+{
+  // `isSensitiveKeyName` 对**整键**做 `endsWith`、对**词元**只做 `startsWith`。
+  // 于是 `PGPASSWORD=` 命中而 `PGPASSWORD_OLD=` 整族放行，连字符兄弟
+  // `PGPASSWORD-OLD=` 却照常命中——同一个键三种同义形态两种结论。这是内部不一致，
+  // 不是设计边界；strict 活行是本扫描器的**主面**，不是角落。
+  const name = 'a sensitive suffix glued into a compound stem survives an underscore suffix'
+  const sentinel = 'R23_GLUED_STEM_SENTINEL_DO_NOT_ECHO'
+  const stems = ['PGPASSWORD', 'MYPASSWORD', 'DBPASSWORD', 'XSECRET', 'APITOKEN']
+  const suffixes = ['_OLD', '_2', '_BACKUP', '_NEW']
+  const positives = stems.flatMap((stem) => suffixes.map((s) => `${stem}${s}=${sentinel}`))
+  // 同义兄弟必须继续命中——它们是本 case 的正向对照。
+  const siblings = stems.flatMap((stem) => [`${stem}=${sentinel}`, `${stem}-OLD=${sentinel}`])
+  // **已登记残留**：weak stem（PASS/PWD/KEY/URL/URI/DSN）粘进词干再加后缀仍不命中。
+  // 判据只对**强**后缀补词元 `endsWith`；对 weak stem 补会让一整类普通英文词误报
+  // （实测 SURPASS/BYPASS/COMPASS/ENCOMPASS/TRESPASS/MONKEY/DONKEY/HOCKEY/
+  // JOCKEY/WHISKEY 13 词中 10 词转红），而那是个开放类，只能靠不断扩白名单去堵。
+  const registeredResidual = ['MYAPIKEY_OLD', 'SOMEKEY_OLD', 'MYPWD_OLD', 'MYDSN_2'].map(
+    (key) => `${key}=${sentinel}`
+  )
+  // 普通英文词必须保持干净——这是选择「只补强后缀」换来的收益，要钉住。
+  const englishWords = [
+    'SURPASS_LIMIT', 'BYPASS_MODE', 'COMPASS_HEADING', 'ENCOMPASS_ALL', 'TRESPASS_NOTE',
+    'MONKEY_BARS', 'DONKEY_CART', 'HOCKEY_TEAM', 'JOCKEY_NAME', 'WHISKEY_BRAND'
+  ].map((key) => `${key}=ordinary`)
+  const oracleFailures = []
+  for (const line of positives) {
+    const oracle = envFileConsumption(line, line.slice(0, line.indexOf('=')))
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(line)
+    }
+  }
+  const flagged = (lines) => {
+    const problems = templateProblemsForViews({ strictLines: lines, proseLines: [] })
+    const hits = new Set()
+    for (const problem of problems) {
+      const match = /local-test\.env\.example:(\d+): tracked template assigns a non-empty value to a sensitive key/.exec(problem)
+      if (match !== null) {
+        hits.add(Number(match[1]))
+      }
+    }
+    return lines.map((_, index) => hits.has(index + 2))
+  }
+  const missed = positives.filter((_, index) => !flagged(positives)[index])
+  const siblingsMissed = siblings.filter((_, index) => !flagged(siblings)[index])
+  const residualMoved = registeredResidual.filter((_, index) => flagged(registeredResidual)[index])
+  const englishFlagged = englishWords.filter((_, index) => flagged(englishWords)[index])
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (positives.length !== 20) {
+    fail(name, 'the glued-stem matrix drifted from 20 cells')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} glued-stem credential(s) with an underscore suffix went uncaught`)
+  } else if (siblingsMissed.length > 0) {
+    fail(name, `${String(siblingsMissed.length)} synonymous sibling form(s) stopped failing closed`)
+  } else if (residualMoved.length > 0) {
+    fail(
+      name,
+      'the registered weak-stem residual moved; closing it costs an open class of ordinary ' +
+        'English words and must be re-adjudicated first'
+    )
+  } else if (englishFlagged.length > 0) {
+    fail(name, `${String(englishFlagged.length)} ordinary English word(s) became false positives`)
+  } else {
+    pass(
+      name,
+      '20 glued-stem credentials with underscore suffixes fail closed and their 10 synonymous ' +
+        'sibling forms still do; the registered weak-stem residual stays pinned and 10 ordinary ' +
+        'English words ending in PASS/KEY stay clean'
+    )
+  }
+}
+
+{
   // 总控实测指出：`closesEnclosingQuotedValue` 的三个守卫**存活变异**——删掉它们
   // 套件仍全绿，但各自都有真实的 fail-open。同时，本轮登记里写「整行被放行」的
   // 那一族（`NOTES=` 开头）其实一直会报 `unscannable`，**真正承重**的是 payload
@@ -5975,7 +6115,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 67
+const expectedCount = 69
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

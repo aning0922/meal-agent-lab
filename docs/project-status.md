@@ -740,7 +740,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 伪造的 ledger 就能冒充已登记状态。
 
 - 阶段 09A 状态：**In Progress**。M1「API 容器构建基线」已由项目总控 Accepted；M2A「数据库身份、bootstrap、migration 与 readiness 权限边界」的 **R8A 只读 projector** 已由项目总控 Accepted（验收落点 `ca65275`）；**R8B 已由项目总控 Accepted**（projector 已接入 verify/converge、静态 grantee 名单已删除、旧 `currentDefaultCte` 的整套 default privilege 缺陷已统一替换、两个 adapter 已重新生成并复验、类型与 Large Object 策略已落实）；**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**；**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**；**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4（生命周期与备份恢复）、M5（门禁/CI/文档）未开始。M2B 的 Accepted 只覆盖 Compose 拓扑本身；**M3A 的 Accepted 只覆盖代码侧消费能力**。ADR-0005 保持 `Proposed`，阶段 09A 未标记完成。PR #1 保持 Draft。
-- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（pending total-control review）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，67 cases）、`check-m3b-signal-windows.mjs`（5 个不依赖 Docker 的确定性进程组回归 + 5 个真实信号窗口）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
+- 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（pending total-control review）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，69 cases）、`check-m3b-signal-windows.mjs`（5 个不依赖 Docker 的确定性进程组回归 + 5 个真实信号窗口）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
   不得被冻结成跨 cluster 快照。①冻结 `0000` 的对象与安全属性投影：`services/api/src/database/stage06-manifest.ts`，**408 条规范化行**，覆盖 database/schema 归属、relation、**每一列**、index、constraint、routine、policy、**managed schema 内的用户 type**（当前 10 条**全部是每张表的数组类型**，**不含行类型**：投影排除 `typrelid` 指向真实 relation 的行类型，而 `0000` 没有建 shell/base/enum/domain；`pg_catalog` 等系统 schema 不在范围内）、trigger、**外键内部 constraint trigger 的启用状态**、rule，以及 operator/opclass/opfamily/collation/conversion/统计/文本搜索/extension 等明确 namespace 类别。owner handoff 的阶段由**整组 owner** 判定：整组未交接或整组属于 migrator 才合法，任何混合态直接拒绝。投影在事务内固定 `search_path` 与 `quote_all_identifiers`，并在块结束时**显式还原**（`set_config(..., true)` 只在事务结束时恢复，不会在 DO 结束时恢复）。**对象 catalog 基线绑定 PostgreSQL 18.4**，patch 升级必须重新 capture 与 rebaseline。②**ledger 感知的授权 manifest**：`services/api/src/database/authorization-manifest.ts`，按 `(ledger, phase)` 登记 4 个状态、**408 条规范化行**（manifest 版本 2；`grant` 138、`effective` 138、`default-effective` 78、`routine` 40、`default` 14），只登记**固定允许项**：固定授权、`pg_default_acl` 的**物理行**、叠加后的**有效**默认权限、`has_*_privilege` 有效权限，以及受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`（结构化 JSON）/正文摘要；未登记的 `(ledger, phase)` fail closed。canonical digest 覆盖全部顶层字段（version、principals、managedSchemas、deniedRoutines、states）。③**canonical projector**：`services/api/src/database/authorization-projection-sql.ts`。它被拆成「可复用的结构化 projector CTE renderer」与「对外三列只读 SELECT」两层；R8B 起前者同时供给 verify 与 converge，后者仍是不被任何 bootstrap 阶段加载的只读观察出口。可移植策略在 `authorization-policy-sql.ts`。**四个** generated adapter 由只读 `manifest:check` 逐字节校验，真实 PostgreSQL 18.4 上还做 catalog↔manifest 逐行 parity，两个入口对同一批漂移给出逐字相同的拒绝理由。
@@ -849,7 +849,9 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   根因是两道**理由已失效**的冗余限制（间隔吸收锁在 `crossingOnly`；非 crossing 的
   compact 判据只作用于注释体）。修复即拿掉这两道限制并把字符类改为复用
   `isWordCharacter`；实测 1890 格 benign × 6 视图、1890 格 benign × gap 维度、
-  全部注册散文/URL/path 对照与真实 tracked 模板一格未动。targeted suite 从 64
+  全部注册散文/URL/path 对照与真实 tracked 模板保持干净（**更正**：原文写「一格未动」
+  是过强断言，已被证伪——该轮实际引入 3 处新误报，根因是 `gapExhausted` 按整段文本
+  判敏感，Round 23 已修）。targeted suite 从 64
   精确增加到 **67**，六个变异逐条验证判别力（含总控指出的三个**存活变异**，
   其判别力只存在于精确边界：取值恰好一个字符 / 闭合引号后是 NBSP / `#` 在取值中间）。
   **新登记两族已披露边界**：run 以包装标点收尾（与 `- (API_KEY) = 说明` 不可区分）、
@@ -859,9 +861,26 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   唯一的阻断项恰好落在任务书盲区——后续审计区间应以**上一个被 Accepted 的 SHA**
   为起点。本轮**零跨冻结例外**。M3B 仍须由同样两路独立只读审计对新 SHA 重新给出
   结论，未标记 Accepted。
+- **Round 23 定点整改候选**：`76025a3` 两路审计**分裂**（一路 CLEAN、一路 BLOCK），
+  项目总控双向独立复现后判 **BLOCK**（2 项确认级 P1）。**P1-1**：「闭合引号之后 `#`
+  起注释」只在 dotenv 行顶层成立，键被另一种引号包在外层字符串里时那个 `#` 只是
+  字面量；`NOTES="x'PASSWORD='#<值>"` 整行零 problem，864 格，`d1201bc` 起放行、
+  `70476a6` 只补回不带 `#` 的一半，跨三轮未闭合。**P1-2**（历史缺口，早于区间起点）：
+  `isSensitiveKeyName` 对整键做 `endsWith`、对词元只做 `startsWith`，于是
+  `PGPASSWORD=` 命中而 `PGPASSWORD_OLD=` 整族放行，连字符兄弟却照常命中——strict
+  活行是主面，56 条活凭据漏 30 条。修复：词元层补 `endsWith`，**只对强后缀**；排除
+  weak stem 是因为实测无条件补会让 13 个普通英文词中 10 个转红（`SURPASS`/`BYPASS`/
+  `COMPASS`/`MONKEY`/`HOCKEY` 等），那是开放类，只能靠扩白名单堵，而本文件明确写过
+  这条路走不通。同轮修掉 Round 22 自身引入的 3 处误报（`gapExhausted` 按整段文本判
+  敏感）。targeted suite 从 67 精确增加到 **69**，四个变异逐条验证判别力。**新登记
+  残留**：weak stem 粘进词干再加后缀（`MYAPIKEY_OLD=` 等）仍不命中，已在 case 两侧
+  钉死。**审计方法论**：差分锚点结构性看不见「一直就是错的」那一类（P1-2 早于区间
+  起点 24 个提交），后续须补一条不依赖区间的绝对面普查（`--env-file` oracle × 键构造
+  × 分隔符 × 后缀笛卡尔积）。本轮**零跨冻结例外**。M3B 仍须由同样两路独立只读审计对
+  新 SHA 重新给出结论，未标记 Accepted。
 - **75 cases：1 个正向 baseline + 74 个反例/边界检查**，baseline 必须通过、
   其余 74 条全部以指定理由捕获、0 漏网（`check-local-test-negatives.mjs`）；
-  另有 **M3B targeted negative suite 的 67 cases**（`check-m3b-round2-negatives.mjs`）、
+  另有 **M3B targeted negative suite 的 69 cases**（`check-m3b-round2-negatives.mjs`）、
   **15 项**拓扑变异反例、**5 个**确定性进程组回归与 **5 个**
   真实信号窗口（`check-m3b-signal-windows.mjs`）。失败消息不含任何 Secret 取值：
   wrong-reason 分支只输出期望判据与条目计数，不回显 raw problems/residue。

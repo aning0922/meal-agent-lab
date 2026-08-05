@@ -3053,12 +3053,20 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
    接管）；② 非 crossing 的 compact 判据只作用于注释体（当初为防 benign compound
    从子片段重新误报，该短路后来已移进判据内部）。**修复**：拿掉①；②接到 strict
    角色的 consumed text 上。实测：1890 格 benign × 6 视图、1890 格 benign × gap
-   维度、全部注册散文/URL/path 对照、空占位与真实 tracked 模板**一格未动**。
+   维度、全部注册散文/URL/path 对照、空占位与真实 tracked 模板保持干净。
+   **更正（Round 23 写回）**：当时写的「一格未动」是**过强断言**，已被实测证伪——
+   该轮实际引入 3 处新误报（`NOTES=v#PASS-AGE=<值>`、`# COM-PASSION`+65 空格、
+   `# NOTE`+65 空格+`= see the PASSWORD docs`），根因是拿掉 `crossingOnly` 门后
+   `gapExhausted` 分支里那句「按**整段文本**判敏感」变成可达。三处已在 Round 23 修复。
 
 **本轮登记为已披露边界的两族**（不伪写成已解决，各自钉了两侧）：
 
 - **run 以包装标点收尾**（`# PASSWORD(old) = <值>`）：与注册散文写法
-  `- (API_KEY) = 说明` 在「间隔左边是不是键字符」这条判据下**完全同形，不可区分**。
+  `- (API_KEY) = 说明` 在「间隔左边是不是键字符」这条判据下同形。
+  **范围更正（Round 23）**：原文写「完全同形，不可区分」**过宽**。对 `.` `*` `` ` `` `)` `]`
+  这类包装标点成立；但**星平面字母**、`\p{M}` 组合附标、`\p{Pc}` 连接标点与 NBSP 间隔
+  **不是包装标点、可区分**，它们属于另一条尚未闭合的线（键尾字符类只按 UTF-16 code
+  unit 读，星平面拿到的是孤立代理项），不在本登记覆盖范围内。
 - **prose 角色的活行**不跑非 crossing 的 compact 判据：该判据是 role-agnostic 的，
   而 prose 角色要求「可见字符表示这不是赋值」。实测在 prose 上接通它会让三个既有
   注册面同时误报（unsupported gap 2 格、visible gap 3 格、Unicode 键 12 格）。
@@ -3086,7 +3094,54 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 文档数字与实测不符（ADR 60→63/三条、语料 30,240、M1 变异值 120、运算符尾「8 格」、
 十步链「全部真实退出码」、误报量级的测量点）已逐条改正。
 
-**Round 22 当前状态**：**M3B implementation complete, pending total-control
+**Round 22 结论**：两路审计给出分裂结论（一路 CLEAN、一路 BLOCK），项目总控双向
+独立复现后判 **BLOCK**（2 项确认级 P1）。见下面的 Round 23。
+
+##### M3B Round 23：`76025a3` 分裂结论 + 总控 BLOCK 后的嵌套文法与词元判据整改
+
+1. **嵌套引号内的 `#` 被当成注释起点（确认级 P1，阻断，区间内新增且跨三轮未补）**。
+   「闭合引号之后 `#` 起注释」只在 dotenv **行顶层**成立。键被**另一种**引号包在
+   外层字符串里时，那个 `#` 只是字面量。最小反例 `NOTES="x'PASSWORD='#<值>"`：
+   `08da379` / `c8d7236` 均命中，`d1201bc` 起全部放行——864 格，`70476a6` 只补回了
+   不带 `#` 的那一半。**修复**：`#` 分支要求 `keyStart` 之前不出现另一种引号。
+2. **词元层缺 `endsWith`（确认级 P1，历史缺口，早于区间起点）**。
+   `isSensitiveKeyName` 对**整键**做 `endsWith`、对**词元**只做 `startsWith`，于是
+   `PGPASSWORD=` 命中而 `PGPASSWORD_OLD=` 整族放行，连字符兄弟 `PGPASSWORD-OLD=`
+   却照常命中——同一个键三种同义形态两种结论。strict 活行是本扫描器的**主面**，
+   总控实测 56 条活凭据漏 30 条。**修复**：词元层补 `endsWith`，**但只对强后缀**。
+
+   **为什么排除 weak stem（PASS/PWD/KEY/URL/URI/DSN）**：实测若不排除，
+   `SURPASS` `BYPASS` `COMPASS` `ENCOMPASS` `TRESPASS` `MONKEY` `DONKEY` `HOCKEY`
+   `JOCKEY` `WHISKEY` 等 13 个普通英文词中 **10 个转红**。那是一个**开放类**，只能
+   靠不断扩白名单去堵，而本文件明确写过这条路走不通（「只需换一个新后缀就能绕过」）。
+   排除 weak stem 后：凭据侧闭合 20/24，普通英文词新增误报 **0/13**。
+3. **Round 22 自身引入的 3 处误报（P2）**：拿掉 `crossingOnly` 门后，`gapExhausted`
+   分支里「按**整段文本**判敏感」变成可达。**修复**：改为只看**间隔左侧的有界窗口**，
+   且先跳过整段间隔再取窗口（否则间隔比窗口宽时窗口全落在空白里，越界反而静默放行）。
+   另把 `#` 加入 compact run 的左边界集，`NOTES=v#PASS-AGE=<值>` 的 run 不再从外层
+   取值粘走 `v#`，完整 benign compound 的短路恢复生效。
+
+**本轮新增 2 条注册 case，targeted suite 从 67 精确增加到 69**，四个变异逐条验证
+判别力（均以指定理由转红、非未捕获异常）：
+
+| 变异 | 删除/还原的生产校验 | 转红理由 | exit |
+| --- | --- | --- | ---: |
+| Q1 | `#` 分支的嵌套引号守卫 | `72 credential(s) behind a nested comment marker were released` | 1 |
+| Q2 | 词元层 `endsWith` | `20 glued-stem credential(s) with an underscore suffix went uncaught` | 1 |
+| Q3 | weak stem 排除（改为无条件 `endsWith`） | 同一 case 的残留守卫：`the registered weak-stem residual moved…` | 1 |
+| Q4 | 越界窗口的「先跳过间隔」 | `2 over-bound crossing gap(s) were silently allowed` | 1 |
+
+**本轮登记的残留**：weak stem 粘进词干再加后缀（`MYAPIKEY_OLD=`、`MYPWD_OLD=`、
+`MYDSN_2=`）仍不命中。这是「只补强后缀」换来的代价，已在 case 里两侧钉死——凭据侧
+钉住残留不得移动，误报侧钉住 10 个普通英文词必须保持干净。
+
+**审计方法论（采纳总控意见）**：差分锚点**结构性看不见**「一直就是错的」那一类——
+第 2 条早于区间起点 24 个提交，任何「上一个 Accepted SHA → 本次候选」的差分都发现
+不了它。后续应补一条**不依赖区间的绝对面普查**：以 `node --env-file` 为唯一 oracle，
+对 strict 活行做键构造 × 分隔符 × 后缀的笛卡尔积穷举，凡 oracle 判活键非空而扫描器
+沉默的一律列出。
+
+**Round 23 当前状态**：**M3B implementation complete, pending total-control
 review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，
 `f9997b0` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮新 SHA
 重新给出结论，再回到项目总控复核第一阶段。
@@ -3222,7 +3277,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（67 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（69 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
