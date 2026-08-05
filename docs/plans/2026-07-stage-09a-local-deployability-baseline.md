@@ -2988,7 +2988,7 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
    这个代价」**不成立**——那只是碰巧：`APIKEY`/`DATABASEURL`/`PRIVATEKEY`/`APPID`
    的紧凑形自身即注册 token 且跨过下划线，全部构成跨越。**修复**：吸收间隔时要求
    **间隔左边那一格仍是键字符**（`[A-Za-z0-9_]`）——dotenv 的键以 identifier 字符
-   收尾，而 `` ` ``、`)`、`]`、`"`、`*` 收尾的 run 是散文里的**引用**。选择收窄而
+   收尾，而 `` ` ``、`)`、`]`、`"`、`*` 收尾的 run 是散文里的**引用**。**这条收窄有凭据侧代价**，不是无代价的选择：`` # `API_KEY` =<值> ``、`# (API_KEY) =<值>`、`# [API_KEY] =<值>` 这类被包装标点收尾的**凭据**同样被放行（`c8d7236` 与本轮一致 CLEAN，属历史缺口被有意保留）。与注册散文写法在本判据下完全同形、不可区分，因此登记而非闭合。原文写「选择收窄而
    不是登记取舍，理由是该写法是本仓库两份 README 的既定风格。
 3. **gap 越界静默放行（裁定项，选择 fail closed）**。Round 20 的新循环走到
    `maximumAssignmentGap` 上界即得空 key 就 continue，实测 gap=65 / 200 全部放行，
@@ -3003,7 +3003,7 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
 
 | 变异 | 删除的生产校验 | 转红的注册 case 与理由 | exit |
 | --- | --- | --- | ---: |
-| M1 | 「同种引号的第一个」判据 | leading-quote case：`120 credential(s) behind a previous closing quote went uncaught` | 1 |
+| M1 | 「同种引号的第一个」判据 | leading-quote case：`40 credential(s) behind a previous closing quote went uncaught` | 1 |
 | M2 | 「闭合引号之后只允许结束/空白/`#`」判据 | enclosing-quote case：`5 non-empty quoted assignment(s) went uncaught` | 1 |
 | M3 | gap 越界 fail closed | gap-bound case：`6 over-bound crossing gap(s) were silently allowed` | 1 |
 | M4 | 间隔左侧必须是键字符 | wrapper case：`16 documented key name(s) in prose were flagged` | 1 |
@@ -3012,9 +3012,9 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
 **本轮新登记的取舍**：同一段文本里出现**第二个**同种引号包裹的空占位
 （`NOTES="PASSWORD=" OTHER="SECRET="`）会被判成非空。这是「第一个引号」判据换来的
 代价，方向为 fail closed；真实 tracked 模板与两份 README 均不含该写法。
-**规模如实登记**：在一份 30,240 格的差分语料（14 键 × 6 gap 宽度 × 7 前导形态 ×
+**规模如实登记**：在一份 28,224 格的差分语料（14 键 × 6 gap 宽度 × 7 前导形态 ×
 8 取值形状 × 6 视图）里，被判成非空的空占位从 `f9997b0` 的 1,122 格增加到
-**1,745 格**（+623），集中在 quoted 视图且前导已含同种引号的形态。该语料是为了
+**1,745 格**（+623），集中在 quoted 视图且前导已含同种引号的形态。该数字测于 `70476a6`，交付后未重测。该语料是为了
 压边界刻意构造的，不代表真实模板分布——真实 tracked 模板与两份 README 实测
 0 problem——但登记不得只写「有这个代价」而不写量级。Round 20
 登记的 `compoundOperatorTail` 残留本轮**未移动**，仍由既有 case 钉住。
@@ -3030,7 +3030,63 @@ Node 24.18.0 下 exit 0；`docs:links:check` 60 files / 216 links。
 这也更正一处措辞：Round 21 首版报告里的「350/350 恢复」只在当轮自建矩阵内成立，
 不等于 Round 20 回退已完全闭合。
 
-**Round 21 当前状态**：**M3B implementation complete, pending total-control
+**Round 21 结论**：两路独立审计与项目总控三方复核后判 **BLOCK**（2 项确认级 P1）。
+其中 F1 落在 `70476a6`，而两份任务书都把审计区间锚定在 `70476a6..77d5997`——
+**唯一的阻断项恰好长在任务书自己的盲区里**。见下面的 Round 22。
+
+##### M3B Round 22：`77d5997` 三方 BLOCK 后的字符类与冗余限制整改
+
+去重后为 **2 个生产根因 + 4 个 P2 收口项**，全部落在同一个文件。
+
+1. **非 ASCII 键尾被当成包装标点放行（确认级 P1，阻断，区间内新回退）**。
+   `70476a6` 的 wrapper 守卫把字符类写成 ASCII-only `[A-Za-z0-9_]`，而本文件对
+   identifier 的定义是 `isWordCharacter`（`\p{L}\p{N}_`）。于是 Node v24.18.0
+   **真实会建立的活键**（`PASSWORD密码` / `PASSWORDé` / `PASSWORD٣` / `PASSWORDд`）
+   一旦键与 `=` 之间有间隔就整族放行。最小反例 `# PA-SSWORD密码 =<值>`：`f9997b0`
+   命中，`70476a6` 与 `77d5997` 放行；键尾换成 ASCII 字母又恢复命中。**修复**：
+   字符类改为复用 `isWordCharacter`，与本文件 identifier 定义同源。
+2. **两处「理由已失效」的冗余限制造成整族漏检（确认级 P1，历史缺口）**。
+   标点/续字符敏感键**不构成跨越**时（`POSTGRES_PASSWORD-OLD`、`PASSWORD.FILE`），
+   在注释体+间隔、活取值内嵌套两个面上四个 SHA 一致漏检。根因是两道当初有理由、
+   现在理由已经不成立的限制：① 间隔吸收被锁在 `crossingOnly` 下（当初为拦
+   `` # - `POSTGRES_PASSWORD` = 数据库密码 ``，该职责后来由「间隔左边必须是键字符」
+   接管）；② 非 crossing 的 compact 判据只作用于注释体（当初为防 benign compound
+   从子片段重新误报，该短路后来已移进判据内部）。**修复**：拿掉①；②接到 strict
+   角色的 consumed text 上。实测：1890 格 benign × 6 视图、1890 格 benign × gap
+   维度、全部注册散文/URL/path 对照、空占位与真实 tracked 模板**一格未动**。
+
+**本轮登记为已披露边界的两族**（不伪写成已解决，各自钉了两侧）：
+
+- **run 以包装标点收尾**（`# PASSWORD(old) = <值>`）：与注册散文写法
+  `- (API_KEY) = 说明` 在「间隔左边是不是键字符」这条判据下**完全同形，不可区分**。
+- **prose 角色的活行**不跑非 crossing 的 compact 判据：该判据是 role-agnostic 的，
+  而 prose 角色要求「可见字符表示这不是赋值」。实测在 prose 上接通它会让三个既有
+  注册面同时误报（unsupported gap 2 格、visible gap 3 格、Unicode 键 12 格）。
+  strict `.env` 家族不受此限。
+
+**本轮新增 3 条注册 case，targeted suite 从 64 精确增加到 67**，六个变异逐条验证
+判别力（删除对应生产校验后以**指定理由**转红、非未捕获异常）：
+
+| 变异 | 删除/还原的生产校验 | 转红理由 | exit |
+| --- | --- | --- | ---: |
+| N1 | `isWordCharacter` 还原成 ASCII 字符类 | `30 non-ASCII key tail credential(s) were released as prose` | 1 |
+| N2 | 间隔吸收重新锁回 `crossingOnly` | `8 non-crossing punctuation credential(s) went uncaught` | 1 |
+| N3 | 撤掉 strict consumed text 上的 compact 判据 | 同上 | 1 |
+| N4 | 开引号判据（`=` 后必须是同种引号） | `2 guard counterexample(s) were released` | 1 |
+| N5 | ASCII 水平空白放宽成 `\s` | 同上 | 1 |
+| N6 | `#` 必须紧跟空白 | 同上 | 1 |
+
+N4/N5/N6 三条是总控指出的**存活变异**（此前删掉套件仍全绿）。它们各自的判别力只
+存在于精确边界上：N4 需要**取值恰好一个字符**，N5 需要闭合引号之后是 **NBSP**，
+N6 需要 `#` 出现在取值中间。
+
+**本轮同时更正的登记事实**：Round 21 的「整行被放行」指错了族（`NOTES=` 开头那族
+一直会报 `unscannable`，真正承重的是 payload 不在行首的一族，已补注册 case）；
+wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取舍」是错的；另有六处
+文档数字与实测不符（ADR 60→63/三条、语料 30,240、M1 变异值 120、运算符尾「8 格」、
+十步链「全部真实退出码」、误报量级的测量点）已逐条改正。
+
+**Round 22 当前状态**：**M3B implementation complete, pending total-control
 review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，
 `f9997b0` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮新 SHA
 重新给出结论，再回到项目总控复核第一阶段。
@@ -3166,7 +3222,7 @@ M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于
 实际实现列出：
 
 ```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（64 cases）
+node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（67 cases）
 node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
 node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
 node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁

@@ -331,7 +331,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
-前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 64 cases、15 项拓扑变异反例、5 个不依赖 Docker 的确定性进程组回归与 5 个真实信号窗口的零残留取证；总控审计阻断整改已把 tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、split-stem 的 nested/prose/comment 视图、空壳/截断/对象身份不符的 Docker inspect/image/history 与 resolved Compose config 证据、scoped cleanup residue/非法返回/异常及受控进程组的 mutation-closed 有界收敛统一改为 fail closed；真实 Compose Secret 在容器内实测
+前交叉一致性预检已落地并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 67 cases、15 项拓扑变异反例、5 个不依赖 Docker 的确定性进程组回归与 5 个真实信号窗口的零残留取证；总控审计阻断整改已把 tracked template / 全仓 containment / Compose topology 三条生产路径的 ambient Git repository-view override 与空 canonical index、split-stem 的 nested/prose/comment 视图、空壳/截断/对象身份不符的 Docker inspect/image/history 与 resolved Compose config 证据、scoped cleanup residue/非法返回/异常及受控进程组的 mutation-closed 有界收敛统一改为 fail closed；真实 Compose Secret 在容器内实测
 owner==消费进程 EUID、mode 0600、普通文件、nlink=1、非 symlink、可读（UID 999
 与 10001 两侧，宿主 stat 不作数）；从空 volume 起的完整链
 `cluster → logins → createdb → 0000 → handoff → acl → migrate → grants → api`
@@ -358,7 +358,7 @@ config 与进程组 mutation-closed 收敛；该候选 `c8d7236` 随后由项目
 路径的空占位规则没有证明「键前面那个引号是本赋值的**开**引号」，于是上一段取值的
 闭引号被当成开引号，`# psql "dbname=meal"PGPASSWORD="<值>"` 整行零 problem，净新增
 280 格 fail-open 漏检。Round 21 候选抽出两条路径**共用的**开引号判据闭合它，另收窄
-crossing gap 的包装标点吸收、把 gap 越界改为 fail closed，targeted 60 → 63 且三条
+crossing gap 的包装标点吸收、把 gap 越界改为 fail closed，targeted 60 → 64 且四条
 新 case 均经变异判别力验证；它仍须同样两路复验，
 不能据此把 M3B 或本 ADR 标为 Accepted。既定 `1PASSWORDOLD2` 无分隔 scanner 边界及无 pidfd 平台的极端
 OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。

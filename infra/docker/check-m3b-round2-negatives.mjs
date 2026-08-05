@@ -5330,6 +5330,247 @@ process.stdout.write('R17: scanner candidate closure\n')
 }
 
 {
+  // 总控实测指出：`closesEnclosingQuotedValue` 的三个守卫**存活变异**——删掉它们
+  // 套件仍全绿，但各自都有真实的 fail-open。同时，本轮登记里写「整行被放行」的
+  // 那一族（`NOTES=` 开头）其实一直会报 `unscannable`，**真正承重**的是 payload
+  // 不在行首的那一族，而它没有注册 case。这条 case 同时钉住这四件事。
+  const name = 'each guard in the enclosing-quote judgement has its own counterexample'
+  const sentinel = 'R22_GUARD_BOUNDARY_SENTINEL_DO_NOT_ECHO'
+  // (1) 真正承重的一族：payload 不在行首，此前整行零 problem。
+  const loadBearing = [
+    `# psql "PASSWORD=" ${sentinel}""`,
+    `# psql 'PASSWORD=' ${sentinel}''`,
+    `NOTES=ok # echo "API_KEY=" ${sentinel}""`,
+    `# {"env":"x"}DATABASE_URL=" ${sentinel}""`,
+    `# a="1";PRIVATE_KEY=" ${sentinel}""`
+  ]
+  // (2) `text[equals + 1] !== quote` 守卫：**取值恰好一个字符**。此时
+  // `text[equals + 2]` 已越过串尾，tail 判据的「空白后结束」自然成立，只有
+  // 「`=` 后面那一格必须是同种引号」这条能拦住它。取值再长一个字符，tail 判据
+  // 就顶上了——所以判别力只存在于这个精确边界上。
+  const openQuoteGuard = [`# psql "PASSWORD=Z`, `# psql 'API_KEY=Q`]
+  // (3) ASCII 水平空白守卫：闭合引号之后是 **NBSP**。NBSP 不是 ASCII 水平空白，
+  // 因此「空白后结束」不成立，取值边界不明确 → 按既定规则 fail closed。判据若放宽
+  // 成 `\s`，这一格会被判成空占位而静默放行。这是**边界不明确必须 fail closed**
+  // 的钉子，不是一条凭据。
+  const asciiSpaceGuard = ['NOTES="PASSWORD="\u00a0', 'NOTES="API_KEY="\u00a0']
+  // (4) `#` 必须紧跟在空白之后：`#` 出现在取值中间不构成注释起点。
+  const hashPositionGuard = [
+    `# psql "PASSWORD=" ${sentinel}#x""`,
+    `# psql "API_KEY=" ${sentinel}#x""`
+  ]
+  const all = [...loadBearing, ...openQuoteGuard, ...asciiSpaceGuard, ...hashPositionGuard]
+  const missed = all.filter(
+    (line) =>
+      !templateProblemsFor(line).some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  // 配套：真正的空占位仍必须干净（证明上面不是靠"全都报"通过的）。
+  const cleanRows = [
+    'NOTES="PASSWORD="',
+    'NOTES="PASSWORD=" ',
+    'NOTES="PASSWORD=" # note',
+    "OUTER='PASS_WORD='"
+  ]
+  const flaggedClean = cleanRows.filter((line) => templateProblemsFor(line).length > 0)
+  const leaked = all.some((line) =>
+    JSON.stringify(templateProblemsFor(line)).includes(sentinel)
+  )
+  if (all.length !== 11) {
+    fail(name, 'the guard boundary matrix drifted from 11 cells')
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} guard counterexample(s) were released`)
+  } else if (flaggedClean.length > 0) {
+    fail(name, `${String(flaggedClean.length)} genuine empty placeholder(s) were flagged`)
+  } else if (leaked) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '11 counterexamples pin all three enclosing-quote guards independently — 5 load-bearing ' +
+        'payloads that are not at the line start, 2 that need the opening-quote check, 2 that ' +
+        'need ASCII-only horizontal space and 2 that need the comment marker to follow whitespace ' +
+        '— while 4 genuine empty placeholders stay clean'
+    )
+  }
+}
+
+{
+  // `70476a6` 的 wrapper 守卫把字符类写成 ASCII-only `[A-Za-z0-9_]`，而本文件对
+  // identifier 的定义是 `\p{L}\p{N}_`。于是 Node v24.18.0 **真实会建立的活键**
+  // （`PASSWORD密码` / `PASSWORDé` / `PASSWORD٣` / `PASSWORDд`）一旦键与 `=` 之间
+  // 有间隔，就被当成"包装标点收尾"整族放行——判据自述"键以 identifier 字符收尾"，
+  // 用的却是与本文件 identifier 定义不一致的字符类。这条 case 钉住凭据侧：删掉
+  // 守卫时此前**只在误报侧转红，凭据侧零覆盖**。
+  const name = 'a non-ASCII key tail before the gap is still a key, not wrapping punctuation'
+  const sentinel = 'R22_NON_ASCII_TAIL_SENTINEL_DO_NOT_ECHO'
+  const tails = ['密码', 'é', '٣', 'д', 'Ω', 'ñ']
+  const gaps = [' ', '\t']
+  const strictLines = tails.flatMap((tail) =>
+    gaps.flatMap((gap) => [
+      `# PA-SSWORD${tail}${gap}=${sentinel}`,
+      `NOTES=PA-SSWORD${tail}${gap}=${sentinel}`
+    ])
+  )
+  const proseLines = tails.map((tail) => `PA-SSWORD${tail} = ${sentinel}`)
+  // 正向对照：ASCII 尾必须一直命中（证明转红不是因为整条守卫失效）。
+  const asciiControls = gaps.map((gap) => `# PA-SSWORDX${gap}=${sentinel}`)
+  // 反向对照：真正的包装标点收尾必须保持干净。
+  const wrapperControls = ['API_KEY', 'DATABASE_URL', 'WECHAT_APP_ID', 'POSTGRES_PASSWORD'].flatMap(
+    (key) => [`- \`${key}\` = 说明`, `- **${key}** = 说明`, `- (${key}) = 说明`]
+  )
+  const oracleFailures = []
+  for (const tail of tails) {
+    // Node 对 `PA-SSWORD<tail>` 这种键的消费结果是本 case 的前提。
+    const oracle = envFileConsumption(`PA-SSWORD${tail} =${sentinel}`, `PA-SSWORD${tail}`)
+    if (!oracle.ok || !oracle.defined || oracle.empty) {
+      oracleFailures.push(tail)
+    }
+  }
+  const problems = templateProblemsForViews({ strictLines, proseLines })
+  const strictHits = new Set()
+  const proseHits = new Set()
+  for (const problem of problems) {
+    const match =
+      /(local-test\.env\.example|README\.md):(\d+): tracked template assigns a non-empty value to a sensitive key/.exec(
+        problem
+      )
+    if (match === null) {
+      continue
+    }
+    if (match[1] === 'README.md') {
+      proseHits.add(Number(match[2]))
+    } else {
+      strictHits.add(Number(match[2]))
+    }
+  }
+  const missed = [
+    ...strictLines.filter((_, index) => !strictHits.has(index + 2)),
+    ...proseLines.filter((_, index) => !proseHits.has(index + 1))
+  ]
+  const asciiMissed = asciiControls.filter(
+    (line) =>
+      !templateProblemsFor(line).some((problem) =>
+        /assigns a non-empty value to a sensitive key/.test(problem)
+      )
+  )
+  const wrapperFlagged = templateProblemsForViews({ strictLines: [], proseLines: wrapperControls })
+  if (process.version !== oracleNodeVersion) {
+    fail(name, `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
+  } else if (strictLines.length + proseLines.length !== 30) {
+    fail(name, 'the non-ASCII key tail matrix drifted from 30 cells')
+  } else if (oracleFailures.length > 0) {
+    fail(name, `${String(oracleFailures.length)} Node oracle precondition(s) failed`)
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} non-ASCII key tail credential(s) were released as prose`)
+  } else if (asciiMissed.length > 0) {
+    fail(name, `${String(asciiMissed.length)} ASCII key tail control(s) stopped failing closed`)
+  } else if (wrapperFlagged.length > 0) {
+    fail(name, `${String(wrapperFlagged.length)} genuine wrapping-punctuation prose line(s) were flagged`)
+  } else if (JSON.stringify(problems).includes(sentinel)) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '30 credentials whose key ends in a non-ASCII letter or digit fail closed across comment/' +
+        'nested/prose views and both gap kinds, while 2 ASCII tail controls still fail closed and ' +
+        '12 genuinely wrapped prose lines stay clean'
+    )
+  }
+}
+
+{
+  // 标点/续字符敏感键**不构成跨越**时（`POSTGRES_PASSWORD-OLD`、`PASSWORD.FILE`），
+  // 此前只有注释体那一条通路会用 `containsSensitiveKeyToken` 判它，且间隔吸收还被
+  // 锁在 `crossingOnly` 下。于是三个面在四个 SHA 上一致漏检：注释体+间隔、活取值
+  // 内嵌套、prose 活行+间隔。本轮拿掉两处**理由已失效**的限制后全部闭合。
+  const name = 'a punctuation-bearing sensitive key that does not cross is still a sensitive key'
+  const sentinel = 'R22_NON_CROSSING_SENTINEL_DO_NOT_ECHO'
+  const keys = ['POSTGRES_PASSWORD-OLD', 'PASSWORD.FILE', 'PASSWORD/v2', 'WECHAT_APP_SECRET-2']
+  const gaps = [' ', '\t']
+  const strictLines = keys.flatMap((key) => [
+    // (a) 注释体 + 间隔
+    ...gaps.map((gap) => `# ${key}${gap}=${sentinel}`),
+    // (b) 活取值内嵌套（无间隔）
+    `NOTES="${key}=${sentinel}"`,
+    `NOTES=${key}=${sentinel}`
+  ])
+  const proseLines = []
+  const problems = templateProblemsForViews({ strictLines, proseLines })
+  const strictHits = new Set()
+  const proseHits = new Set()
+  for (const problem of problems) {
+    const match =
+      /(local-test\.env\.example|README\.md):(\d+): tracked template assigns a non-empty value to a sensitive key/.exec(
+        problem
+      )
+    if (match === null) {
+      continue
+    }
+    if (match[1] === 'README.md') {
+      proseHits.add(Number(match[2]))
+    } else {
+      strictHits.add(Number(match[2]))
+    }
+  }
+  const missed = [
+    ...strictLines.filter((_, index) => !strictHits.has(index + 2)),
+    ...proseLines.filter((_, index) => !proseHits.has(index + 1))
+  ]
+  // 配套空占位必须保持干净。
+  const emptyProblems = templateProblemsForViews({
+    strictLines: keys.flatMap((key) => [...gaps.map((gap) => `# ${key}${gap}=`), `NOTES="${key}="`]),
+    proseLines: keys.map((key) => `${key} =`)
+  })
+  // **已登记未闭合的两族**，各自钉成当前行为；任何一侧变动都必须重新裁定。
+  //
+  // residual-1：run 以包装标点收尾时，与注册散文写法 `- (API_KEY) = 说明` 在
+  // 「间隔左边是不是键字符」这条判据下完全同形，不可区分。
+  //
+  // residual-2：**prose 角色**的活行不跑非 crossing 的 compact 判据。该判据是
+  // role-agnostic 的，而 prose 角色要求「可见字符表示这不是赋值」；实测在 prose
+  // 上接通它会让三个既有注册面同时误报（unsupported gap 2 格、visible gap 3 格、
+  // Unicode 键 12 格）。strict `.env` 家族不受此限，(a)(b) 两面已闭合。
+  const registeredResidual = [
+    ...gaps.map((gap) => `# PASSWORD(old)${gap}=${sentinel}`),
+    ...keys.flatMap((key) => gaps.map((gap) => `${key}${gap}=${sentinel}`))
+  ]
+  const residualMoved = registeredResidual.filter(
+    (line, index) =>
+      templateProblemsFor(line, index < gaps.length ? undefined : 'README.md').length > 0
+  )
+  const residualControl = ['- (API_KEY) = 说明', '- (POSTGRES_PASSWORD) = 说明']
+  const controlFlagged = templateProblemsForViews({ strictLines: [], proseLines: residualControl })
+  if (strictLines.length !== 16) {
+    fail(name, 'the non-crossing punctuation matrix drifted from 16 cells')
+  } else if (missed.length > 0) {
+    fail(name, `${String(missed.length)} non-crossing punctuation credential(s) went uncaught`)
+  } else if (emptyProblems.length > 0) {
+    fail(name, `${String(emptyProblems.length)} matching empty placeholder(s) were flagged`)
+  } else if (residualMoved.length > 0) {
+    fail(
+      name,
+      'the registered wrapping-punctuation residual moved; it is indistinguishable from the ' +
+        'registered prose form and must be re-adjudicated before changing it'
+    )
+  } else if (controlFlagged.length > 0) {
+    fail(name, `${String(controlFlagged.length)} registered parenthesised prose line(s) were flagged`)
+  } else if (JSON.stringify(problems).includes(sentinel)) {
+    fail(name, 'a fixed failure message echoed the sentinel')
+  } else {
+    pass(
+      name,
+      '16 non-crossing punctuation-bearing credentials fail closed in the strict dotenv role ' +
+        '(comment-with-gap and nested-in-a-live-value); 12 matching empty placeholders stay clean; ' +
+        'both registered residuals stay pinned — the wrapping-punctuation form indistinguishable ' +
+        'from `- (API_KEY) = 说明`, and the prose role which cannot run the role-agnostic compact ' +
+        'judgement without breaking three registered prose surfaces'
+    )
+  }
+}
+
+{
   // 空占位捷径的 tail 判据此前只看**下一格**字符，而它引用的已登记文法写的是
   // 「闭合引号之后只允许输入结束 / **水平空白后结束** / `#` 注释」。于是
   // `NOTES="PASSWORD=" <值>""` 的下一格是空格就通过，整行被放行——预审实测
@@ -5734,7 +5975,7 @@ process.stdout.write('R17: scanner candidate closure\n')
   }
 }
 
-const expectedCount = 64
+const expectedCount = 67
 if (caught + failures.length !== expectedCount) {
   fail(
     'suite completeness',

@@ -1182,10 +1182,14 @@ const closesEnclosingQuotedValue = (text, keyStart, equals) => {
   }
   // 「闭合引号之后只允许**输入结束 / 水平空白后结束 / `#` 注释**」——这里引用的
   // 与 `readAssignmentValue` 是同一条已登记文法。此前这一行只看**下一格**字符，
-  // 于是 `NOTES="PASSWORD=" <值>""` 的下一格是空格就通过，整行走空占位捷径被
-  // 放行：预审实测 40 格，`c8d7236` 命中而 `f9997b0` / 首版 `70476a6` 均放行，
-  // 属 Round 20 回退**未完全闭合**的残留。判据必须写成文法原文——「空白**后
-  // 结束**」，不是「下一格是空白」。
+  // 于是 `NOTES="PASSWORD=" <值>""` 的下一格是空格就通过。判据必须写成文法
+  // 原文——「空白**后结束**」，不是「下一格是空白」。
+  //
+  // **更正（总控复现）**：此处原先写「整行走空占位捷径被放行 …… 均放行」，
+  // 这是**错的**。`NOTES=` 开头那一族在 `f9997b0` / 首版 `70476a6` 上会报出
+  // `unscannable connection string candidate`，从未被整行放行；本判据真正
+  // 闭合的是 **payload 不在行首**的那一族（`# psql "PASSWORD=" <值>""` 等），
+  // 它们在两个 SHA 上确实整行零 problem。登记以后者为准。
   const rest = text.slice(equals + 2)
   return /^[ \t]*$/.test(rest) || /^[ \t]*#/.test(rest)
 }
@@ -1198,6 +1202,13 @@ const closesEnclosingQuotedValue = (text, keyStart, equals) => {
  * `# PASSWORD.FILE=`、`# PASSWORD/v2=`、`# PASSWORD(old)=` 这些**含 ASCII 标点
  * 续字符**的形态 4/4 全漏（实测；`# PASSWORD_OLD=` 与 `# PASSWORD=` 是能命中的
  * 正向对照）。
+ *
+ * **闭合面的准确表述（总控实测更正）**：上面这句只对**键与 `=` 紧贴**的形态
+ * 成立。键与 `=` 之间加一个空白之后，同族在四个 SHA 上一致漏检，直到本轮
+ * 拿掉 `crossingOnly` 门才闭合。仍未闭合的只剩一格形态：**run 以包装标点收尾**
+ * 的 `# PASSWORD(old) = <值>` —— 它与注册散文写法 `- (API_KEY) = 说明` 在
+ * 「间隔左边是不是键字符」这条判据下**完全同形，不可区分**。这是已登记取舍，
+ * 不是疏漏；放宽它会直接把注册写法重新变成误报。
  *
  * 判据：注释体里每个 `=` 往前取一段**不含 ASCII 空白**的 run（有界），
  * run 非空、不以复合运算符结尾、且含敏感词 run，则按 dotenv 取值文法读取
@@ -1225,18 +1236,17 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
     // legacy 路径上，两个维度各自完备而**交叉处零覆盖**（审计实测 14 键 ×
     // {SPACE,TAB} × 5 个非 active 视图共 140 格全漏）。
     //
-    // 为什么只给 crossingOnly：**非** crossing 的敏感键带 gap 本来就由 legacy 路径
-    // 完整覆盖（`# PASSWORD =v` 一直命中），这里再开一次只会多吃散文——实测
-    // `# - \`POSTGRES_PASSWORD\` = 数据库密码` 会因为 run 吞掉反引号而被判成赋值，
-    // 那正是本文件明确要求保持干净的注册写法。
+    // **间隔吸收对两种判据一视同仁**（此前只给 `crossingOnly`）。
     //
-    // **上一轮在这里写错了理由**：当时说「crossing 视图没有这个代价，反引号里的
-    // `POSTGRES_PASSWORD` 里 PASSWORD 本身就是完整词元，不构成跨越」。那只是碰巧。
-    // `API_KEY` / `DATABASE_URL` / `PRIVATE_KEY` / `WECHAT_APP_ID` 的紧凑形自身即
-    // 注册 token 且跨过下划线，**全部构成跨越**，于是 `` - `API_KEY` = 说明 `` 这类
-    // 本仓库在用的散文写法 4/4 变成误报（`WECHAT_APP_ID` 就是本项目的键名）。
+    // 当初加那道门的唯一理由是：不加就会把注册写法
+    // `# - \`POSTGRES_PASSWORD\` = 数据库密码` 判成赋值。**那个理由已经失效**——
+    // 拦住它的职责后来由下面「间隔左边必须是键字符」那条判据接管了，门本身成了
+    // 冗余限制，代价却是**非 crossing 的标点/续字符敏感键带 gap 时整族漏检**
+    // （`# POSTGRES_PASSWORD-OLD = <值>`、`# PASSWORD.FILE = <值>` 等）。
+    // 实测拿掉这道门：1890 格 benign compound × 6 视图、1260 格 benign × gap
+    // 维度、全部注册散文/URL/path 对照与真实 tracked 模板**一格未动**。
     //
-    // 真正的判据是**间隔左边那一格必须还是键字符**：dotenv 的 `KEY GAP = VALUE` 里
+    // 判据是**间隔左边那一格必须还是键字符**：dotenv 的 `KEY GAP = VALUE` 里
     // 键以 identifier 字符收尾，而 `` ` ``、`)`、`]`、`"` 这些包装标点收尾的 run 是
     // 散文里的**引用**，不是键。这条同时保住了 crossing 闭合（`PA-SSWORD =v` 的
     // run 以 `D` 收尾）与全部注册散文写法。
@@ -1249,7 +1259,7 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
     let runEnd = equals
     let gapWidth = 0
     let gapExhausted = false
-    while (crossingOnly && runEnd > 0 && (text[runEnd - 1] === ' ' || text[runEnd - 1] === '\t')) {
+    while (runEnd > 0 && (text[runEnd - 1] === ' ' || text[runEnd - 1] === '\t')) {
       if (gapWidth === maximumAssignmentGap) {
         gapExhausted = true
         break
@@ -1273,8 +1283,16 @@ const sensitiveCompactAssignments = (body, { crossingOnly = false } = {}) => {
       }
       continue
     }
-    if (gapWidth > 0 && !/[A-Za-z0-9_]/.test(text[runEnd - 1] ?? '')) {
+    if (gapWidth > 0 && !isWordCharacter(text[runEnd - 1])) {
       // 间隔左边是包装标点而不是键字符 → 这是散文引用，不是赋值。
+      //
+      // **字符类必须与本文件对 identifier 的定义同源**（`isWordCharacter`，
+      // `\p{L}\p{N}_`）。此前这里写成 ASCII-only 的 `[A-Za-z0-9_]`，于是
+      // `# PA-SSWORD密码 =<值>`、`PASSWORDé`、`PASSWORD٣`、`PASSWORDд` 这些
+      // **Node v24.18.0 实际会建立的活键**被当成"包装标点收尾"而放行——判据
+      // 自述"键以 identifier 字符收尾"，用的却是和本文件 identifier 定义不一致
+      // 的字符类。总控实测：加一个空格就从命中变成放行，键尾换成 ASCII 字母
+      // 又恢复命中。这是 `70476a6` 引入、`77d5997` 继承的 fail-open 回退。
       continue
     }
     let start = runEnd
@@ -2012,8 +2030,22 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       // 文件与行号，键名对操作者不是必要信息。
       //
       const consumedText = dotenvConsumedText(line)
+      // **非 crossing 的 compact 判据同样作用于 consumed text**（此前只作用于
+      // 注释体）。原来的分工理由是「退回扫描原始整行会让 exact benign compound
+      // 从子片段重新误报」——**那个理由已经失效**：benign 完整键短路后来被移进
+      // `containsSensitiveKeyToken` / `keyCrossesSensitivePunctuationBoundary`
+      // 内部，由判据自己承担，不再依赖调用视图。
+      //
+      // 代价是当时没被发现的整族漏检：标点/续字符敏感键只要**不构成跨越**，在
+      // 活取值内嵌套（`NOTES="POSTGRES_PASSWORD-FILE=<值>"`）与 prose 活行
+      // （`POSTGRES_PASSWORD-OLD = <值>`）两个面上四个 SHA 一致漏检。
+      // 实测接上之后：1890 格 benign compound × 6 视图、1890 格 benign × gap
+      // 维度、全部注册散文/URL/path 对照、空占位与真实 tracked 模板**一格未动**。
       let sensitiveHits =
-        consumedText === null ? 0 : sensitiveAssignmentsIn(consumedText)
+        consumedText === null
+          ? 0
+          : sensitiveAssignmentsIn(consumedText) +
+            (strict ? sensitiveCompactAssignments(consumedText) : 0)
       if (strict) {
         // strict 通路 = **Node 真实文法**：解析第一个 `=` 之前的完整 Node-active
         // 键（`nodeActiveAssignment`），键里含敏感词 run 且取值非空就命中。
@@ -2034,8 +2066,10 @@ export const scanTrackedTemplates = (repository = repositoryRoot) => {
       }
       // **注释体**：无论文件角色，被注释掉的凭据都要扫（有界判据，见
       // `sensitiveCompactAssignments`）。注释体内还可能有嵌套 assignment（例如
-      // `NOTES="a PASSWORD=secret"`），因此同一**已剥离的 body**再走通用 scanner；
-      // 不能退回扫描原始整行，否则 exact benign compound 会从子片段重新误报。
+      // `NOTES="a PASSWORD=secret"`），因此同一**已剥离的 body**再走通用 scanner。
+      // （历史注记：这里曾写「不能退回扫描原始整行，否则 exact benign compound
+      // 会从子片段重新误报」。benign 短路已移进判据内部，该约束不再成立，
+      // consumed text 上现在同样跑非 crossing 的 compact 判据，见上。）
       for (const body of commentBodiesOf(line)) {
         sensitiveHits += sensitiveAssignmentsIn(body)
         // 注释 containment 比 prose 更严格：`PASSWORD/v2=` 这类 token 位于
