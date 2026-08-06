@@ -3148,7 +3148,13 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 `node --env-file` 为唯一 oracle，凡是会真的建立活键且取值非空的写法，扫描器看得见
 吗」——枚举空间由四个互不可见的独立镜头分别设计后取并集。
 
-**结果：19 格定向复现里 17 格沉默，每格 oracle 均确认「活键 + 非空取值」。**
+**结果：19 格定向复现里 16 格沉默、3 格命中，每格 oracle 均确认「活键 + 非空取值」。**
+
+> **计数更正（Round 25 写回）**：本段初稿写的是「17 格沉默」，**与探针实测不符**——
+> 逐格复核为 16 沉默 + 3 命中（命中的三格是两条正向对照，加上反引号**取值**形态
+> `PASSWORD=<反引号>值<反引号>` 意外命中——裸值读法把反引号本身当成一个非空字符，
+> 属侥幸而非判据保证）。**下表是按族归并后的子集，共 15 格（13 沉默 + 2 命中）**，
+> 不等于探针全集；两者的差额即归并时省略的同族重复形态。
 
 | 族 | 例 | 扫描器 |
 | --- | --- | ---: |
@@ -3199,12 +3205,15 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 **为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
 Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
-artifacts × 321 tracked 文件，两轮 fresh smoke 均 0 hit）——这三条独立于本文件的
-判据面，均未受影响。真实 tracked 模板当前实测 **0 problem**。
+artifacts × 322 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
+的树，候选树为 322）——这三条与本文件的**键名判据零共享**（`local-test-containment.mjs`
+对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` /
+`sensitiveCompactAssignments` 的引用数实测为 0，needle 按真实 Secret 取值构造），
+均未受影响。真实 tracked 模板当前实测 **0 problem**。
 
-**本轮未独立复现、因而不计入已确认的镜头宣称**：U+2028/U+2029/行内 CR 使整行注释
-体消失；三种引号的跨行取值；symlink 下 worktree 与 index blob 看到不同字节；非法
-UTF-8 的解码分歧。这些留作后续里程碑的输入，**不得当作已确认事实引用**。
+**已转为已确认边界（Round 25 写回）**：整行注释体在遇到**行中**的 CR (U+000D) / U+2028 / U+2029 时整体消失——即 JavaScript 的三个行终止符，且**只在整行注释臂**；VT/FF/NEL/NBSP/SPACE 均照常命中，active 视图不受影响。**边界已收窄并复核**：整份模板使用 CRLF 行尾时（blob 内确有 CR 字节）注释行与活行**全部照常命中**，因此这不是「Windows 编辑过的模板全盲」，只是行中嵌入终止符这一种构造。由两条互不可见的独立路径确认。
+
+**仍未独立复现、不计入已确认的镜头宣称**：三种引号的跨行取值；symlink 下 worktree 与 index blob 看到不同字节；非法 UTF-8 的解码分歧。这些留作后续里程碑的输入，**不得当作已确认事实引用**。
 
 **Round 24 当前状态**：**M3B implementation complete, pending total-control
 review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，

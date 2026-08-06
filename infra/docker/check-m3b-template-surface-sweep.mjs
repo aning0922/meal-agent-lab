@@ -172,7 +172,10 @@ const families = [
     why:
       'toUpperCase() 会把 \u{FB01} 展开成两个**真 ASCII 字母** FI，' +
       'replace(/[^A-Z0-9]/g,"") 删不掉它们，PASSWORD 被从中间劈开。' +
-      '全 Unicode 闭集共 17 个这类码点。'
+      '**闭集 17 个的判据是「非 ASCII 的字母/数字，且注入后劈开 token」**——全 Unicode 枚举得 ' +
+      '79 个劈开 token 的码点，其中 62 个是 ASCII [A-Za-z0-9] 自身，余下恰为 17 个。' +
+      '注意「大小写扩张」只是其中一条路径：\u{0131}(i) 与 \u{017F}(long s) **并不展开**，' +
+      '它们靠自身即非 ASCII 字母而入集，故族名描述的是主要成因而非充要判据。'
   },
   {
     id: 'open/digit-leading-glued-stem',
@@ -204,9 +207,13 @@ const families = [
     key: () => 'PGPASSWORD_OLD+',
     expect: 'open',
     why:
-      '键尾 + 让活键变成 PGPASSWORD_OLD+，OLD+ 这个 component 含标点、pieces 只剩 OLD，' +
-      '而 PGPASSWORD 是纯字母数字 component 拿不到强判据。Round 20 登记 ' +
-      'compoundOperatorTail 残留时写的「active strict 视图不受影响」**不成立**。'
+      '真正的机理**不是** component/pieces 分析——谓词层实测 containsSensitiveKeyToken 对 ' +
+      'PGPASSWORD_OLD+ 与对照组 PGPASSWORD_OLD **同为 false**（不可能是差异所在），而 ' +
+      'isSensitiveKeyName 对两者**同为 true**。差异在于 readAssignmentGap 走 prose 分支返回 ' +
+      'reachedEquals:false，于是那个为真的 isSensitiveKeyName 判定**从未被计入**；次级杠杆是 ' +
+      'sensitiveCompactAssignments 对 compoundOperatorTail 直接 continue。`+` 不特殊：' +
+      'PGPASSWORD_OLD- 同样六视图沉默。Round 20 登记 compoundOperatorTail 残留时写的' +
+      '「active strict 视图不受影响」**不成立**（该结论属实，错的是上一版此处的机理归因）。'
   }
 ]
 

@@ -129,7 +129,7 @@ secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不
 | `node infra/docker/generate-local-test-secrets.mjs` | 生成八份 Secret（四个原始 CSPRNG 口令派生；默认拒绝覆盖；口令不进 stdout/argv/环境变量/Git） |
 | `node infra/docker/preflight-local-test-secrets.mjs` | 部署前交叉一致性预检（任何数据库容器启动之前必须通过） |
 
-M3B 的**完整门禁清单**（七条，全部要跑，缺一条就不构成本里程碑的证据）：
+M3B 的**完整门禁清单**（八条，全部要跑，缺一条就不构成本里程碑的证据）：
 
 | 命令 | 作用 |
 | --- | --- |

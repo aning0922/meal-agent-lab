@@ -116,7 +116,15 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M2A 整体 | 总控 **Accepted**，验收落点 `5e480803` |
 | M2B Compose 拓扑 | 总控 **Accepted**，验收落点 `d0f2219` |
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
-| M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已取得完整 bootstrap/full-stack 本地证据，尚未 Accepted**（未完成：M4/M5 与 09A 总验收）。**M3B 的 tracked 模板扫描器是尽力而为的第二层网**：Round 24 的绝对面普查（`node --env-file` 为唯一 oracle）实测主面存在**已登记的未闭合族**——大小写扩张码点、数字开头粘连词干、结合处数字、benign 白名单反向注入、运算符尾键、嵌套 `hashIsComment`、反引号引号族、URL 前缀嵌套、prose 角色活行；另有两份 tracked dotenv 模板在扫描 pathspec 之外。全部已由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因。**M3B 的验收范围不得表述为「环境模板已覆盖」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）独立且未受影响，真实 tracked 模板实测 0 problem。 |
+| M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已取得完整 bootstrap/full-stack 本地证据，尚未 Accepted**（未完成：M4/M5 与 09A 总验收）。**M3B 的 tracked 模板扫描器是尽力而为的第二层网**：Round 24 的绝对面普查（`node --env-file` 为唯一 oracle）实测主面存在**已登记的未闭合族**，分两级登记——
+
+**（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点、数字开头粘连词干、结合处数字、benign 白名单反向注入、运算符尾键；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
+
+**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`、反引号引号族、URL 前缀嵌套、prose 角色活行。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」；且 `expect` 只实现 `caught`/`open` 两个全或无状态，而 prose 角色活行的真实状态是逐视图混合，用任一种登记都会立刻转红。**这 4 族目前没有任何门禁看守。**
+
+**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 22/73 行、`infra/environments/README.md` 有 3/22 行含反引号。
+
+**M3B 的验收范围不得表述为「环境模板已覆盖」，也不得表述为「已登记族全部由门禁钉死」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）**与键名判据零共享**（`local-test-containment.mjs` 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` / `sensitiveCompactAssignments` 的引用数为 0，needle 按真实 Secret 取值构造），未受影响；真实 tracked 模板实测 0 problem。 |
 | M4 / M5 | **未开始** |
 
 **M3A 实际交付的**（详见[阶段 09A 计划的 M3A 实施记录](plans/2026-07-stage-09a-local-deployability-baseline.md)）
@@ -863,7 +871,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   结论，未标记 Accepted。
 - **Round 24 绝对面普查与范围收窄**：前五轮都是**差分向**定点整改，每轮全绿、每轮
   被下一轮判 BLOCK。本轮改用**绝对向**方法（`node --env-file` 为唯一 oracle，枚举
-  空间由四个互不可见的独立镜头设计后取并集），**19 格定向复现里 17 格沉默**，每格
+  空间由四个互不可见的独立镜头设计后取并集），**19 格定向复现里 16 格沉默、3 格命中**（初稿误写为 17 沉默，已更正），每格
   oracle 均确认「活键 + 非空取值」。根因已量化：四条部分重叠的判定路径，覆盖面是
   它们特性的**并集**而非一份被规定的文法——prose 角色下三条独立判据只有一条在跑，
   `readAssignmentGap` 的 strict 分支是死代码，Round 23 的嵌套守卫只加在
