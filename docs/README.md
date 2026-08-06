@@ -16,9 +16,14 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 > （`\p{L}\p{N}_`）不一致，Node 真实会建立的非 ASCII 尾活键整族放行；另有两道
 > 理由已失效的冗余限制造成非跨越标点键漏检。`76025a3` 两路审计分裂（一路 CLEAN、一路 BLOCK），总控双向复现后仍判
 > **BLOCK**：嵌套引号内的 `#` 被当成注释起点（864 格，跨三轮未闭合），以及词元层
-> 缺 `endsWith` 导致 `PGPASSWORD_OLD=` 这类主面活凭据整族漏检。当前是 M3B Round 23
-> 整改候选：implementation complete, pending total-control review；必须重跑同样两路
-> 独立只读审计后才可讨论 Accepted，不能用现有全绿门禁替代独立复验。
+> 缺 `endsWith` 导致 `PGPASSWORD_OLD=` 这类主面活凭据整族漏检。Round 24 改用**绝对面普查**
+> （`node --env-file` 为唯一 oracle），19 格定向复现里 **17 格沉默**——根因是四条部分
+> 重叠的判定路径，覆盖面是它们特性的并集而非一份被规定的文法。处置是**登记而不是
+> 假装闭合**：新增常驻普查门禁把当前表面逐族钉死，并**收窄 M3B 的验收表述**——
+> tracked 模板扫描器是尽力而为的第二层网，主面存在已登记的未闭合族；扫描器重构
+> 单列里程碑放在 09A 收口之后。当前是 M3B Round 24 整改候选：implementation
+> complete, pending total-control review；必须重跑同样两路独立只读审计后才可讨论
+> Accepted，不能用现有全绿门禁替代独立复验。
 
 ## 当前状态与计划
 

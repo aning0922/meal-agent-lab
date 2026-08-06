@@ -3141,7 +3141,72 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 对 strict 活行做键构造 × 分隔符 × 后缀的笛卡尔积穷举，凡 oracle 判活键非空而扫描器
 沉默的一律列出。
 
-**Round 23 当前状态**：**M3B implementation complete, pending total-control
+##### M3B Round 24：绝对面普查，以及 tracked 模板扫描器的范围收窄
+
+前五轮（19–23）都是**差分向**的定点整改：每轮修掉审计指出的缺陷，每轮全绿，每轮
+又被下一轮判 BLOCK。本轮改用**绝对向**方法——不问「这一轮改了什么」，只问「以
+`node --env-file` 为唯一 oracle，凡是会真的建立活键且取值非空的写法，扫描器看得见
+吗」——枚举空间由四个互不可见的独立镜头分别设计后取并集。
+
+**结果：19 格定向复现里 17 格沉默，每格 oracle 均确认「活键 + 非空取值」。**
+
+| 族 | 例 | 扫描器 |
+| --- | --- | ---: |
+| 大小写扩张码点（闭集 17 个：`ss` `i` `ﬁ` 等连字与特殊小写） | `POSTGRES_PA<U+FB01>SSWORD=<值>` | 沉默 |
+| 数字开头 + 粘连词干 | `0PGPASSWORD=<值>` | 沉默 |
+| 结合处数字 | `PGPASSWORD2=<值>` / `PGPASSWORD2_OLD=<值>` | 沉默 |
+| benign 白名单**反向注入** | `SIGNATURE_D=<值>` / `TOKEN_YA=<值>` / `SECRET_ARY=<值>` | 沉默 |
+| 运算符尾键 | `PGPASSWORD_OLD+=<值>` | 沉默 |
+| 嵌套 `hashIsComment` | `NOTES="POSTGRES_PASSWORD= #<值>"` | 沉默 |
+| **反引号（Node 的第三种引号）** | 反引号包住 `x'PGPASSWORD='#<值>` | 沉默 |
+| URL 前缀嵌套 | `NOTES=https://d.invalid/PGPASSWORD-OLD=<值>` | 沉默 |
+| **prose 角色活行** | README 里 `0PASSWD=<值>` / `PGPASSWORD-OLD=<值>` | 沉默 |
+| 正向对照 | `POSTGRES_PASSWORD=<值>` | **命中** |
+| prose **注释**对照 | `# 0PASSWD=<值>` | **命中** |
+
+最后两行放在一起就是结论：**在 README 里把凭据注释掉，比留成活行更容易被发现。**
+这不可能是有意的取舍，只能是路径拓扑的副作用。
+
+**根因（现已量化）**：扫描器有四条部分重叠的判定路径（compact 跨标点 / compact
+非跨标点 / legacy ASCII 非锚定 / active-strict），覆盖面是它们各自特性的**并集**，
+而不是一份被规定下来的文法。镜头 4 把调用拓扑钉死：**prose 角色下三条独立判据只有
+一条在跑**；镜头 2 发现 `readAssignmentGap` 的 strict 分支是**死代码**（两个调用点
+都没传 `{strict:true}`）；镜头 3 发现 Round 23 的嵌套守卫只加在
+`closesEnclosingQuotedValue` 上，同一条顶层规则在 `readAssignmentValue` 里原封不动，
+而多数嵌套形态走的是后者。
+
+**另有一条不是启发式问题的**：`scanTrackedTemplates` 的 pathspec 写死
+`infra/environments`，仓库里另有两份 tracked dotenv 模板（根 `.env.example`、
+`services/api/.env.example`）**一遍都不扫**。今天它们是干净的（前者 3 条敏感键全为
+空占位；后者唯一非空的是微信公开 endpoint URL，不是凭据），但**没有任何强制力**。
+
+##### 本轮的处置：登记而不是假装闭合
+
+继续一轮一轮修不是可行路径——五轮未收敛，而一次普查翻出的族比前五轮总和还多。
+本轮因此改为：
+
+1. **新增常驻门禁** [`check-m3b-template-surface-sweep.mjs`](../../infra/docker/check-m3b-template-surface-sweep.mjs)。
+   它**不声称扫描器干净**，而是把当前表面钉死：8 族 × 6 视图 = 48 格，3 族登记为
+   命中、5 族**登记为开着且逐族附原因**；另有一条 pathspec 检查，把两份扫描面外的
+   tracked 模板登记为已披露边界。任何一族状态变化都转红——**未登记的族变沉默**
+   （新 fail-open）与**已登记的族被捕获**（覆盖变好但登记失真）**同样转红**。
+   三个方向均经变异验证：`exit=1`、指定理由、非未捕获异常。
+2. **收窄 M3B 的 Accepted 范围**：tracked 模板扫描器是**尽力而为的第二层网**，
+   主面存在**已登记的未闭合族**，清单见上表与门禁文件。M3B 的验收不得表述为
+   「环境模板已覆盖」。
+3. **扫描器重构单列里程碑**，放在阶段 09A 收口之后：用一份统一文法替掉四条重叠
+   路径。这是唯一能真正收敛的做法，但它比 M3B 剩余范围该承担的大得多。
+
+**为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
+Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
+artifacts × 321 tracked 文件，两轮 fresh smoke 均 0 hit）——这三条独立于本文件的
+判据面，均未受影响。真实 tracked 模板当前实测 **0 problem**。
+
+**本轮未独立复现、因而不计入已确认的镜头宣称**：U+2028/U+2029/行内 CR 使整行注释
+体消失；三种引号的跨行取值；symlink 下 worktree 与 index blob 看到不同字节；非法
+UTF-8 的解码分歧。这些留作后续里程碑的输入，**不得当作已确认事实引用**。
+
+**Round 24 当前状态**：**M3B implementation complete, pending total-control
 review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，
 `f9997b0` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮新 SHA
 重新给出结论，再回到项目总控复核第一阶段。

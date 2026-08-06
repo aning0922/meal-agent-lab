@@ -363,6 +363,8 @@ crossing gap 的包装标点吸收、把 gap 越界改为 fail closed，targeted
 不能据此把 M3B 或本 ADR 标为 Accepted。既定 `1PASSWORDOLD2` 无分隔 scanner 边界及无 pidfd 平台的极端
 OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 
+**M3B 的 tracked 模板扫描器是尽力而为的第二层网**：Round 24 的绝对面普查（`node --env-file` 为唯一 oracle）实测主面存在**已登记的未闭合族**——大小写扩张码点、数字开头粘连词干、结合处数字、benign 白名单反向注入、运算符尾键、嵌套 `hashIsComment`、反引号引号族、URL 前缀嵌套、prose 角色活行；另有两份 tracked dotenv 模板在扫描 pathspec 之外。全部已由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因。**M3B 的验收范围不得表述为「环境模板已覆盖」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）独立且未受影响，真实 tracked 模板实测 0 problem。
+
 ### 5. 运行、迁移和恢复均需有界
 
 - migration advisory lock、数据库连接和容器启动必须有超时；
