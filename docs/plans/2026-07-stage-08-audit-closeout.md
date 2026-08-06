@@ -260,7 +260,7 @@ runtime、生成 schema、OpenAPI 与关键 HTTP 请求共同验证，不把扩�
 
 ### 依赖 audit 决策
 
-经 npm 官方 HTTPS bulk endpoint 取得、由 `pnpm audit --prod --json` 生成路径的有效报告为 1 critical、1 high、8 moderate。精确路径都属于 Taro 传递链。机器可读例外位于 [`security/audit-exceptions.json`](../../security/audit-exceptions.json)，截至 2026-08-08T23:59:59+08:00，只允许 `local-weapp`：
+经 npm 官方 HTTPS bulk endpoint 取得、由 `pnpm audit --prod --json` 生成路径的有效报告为 1 critical、1 high、8 moderate。精确路径都属于 Taro 传递链。机器可读例外位于 [`security/audit-exceptions.json`](../../security/audit-exceptions.json)，截至 2026-11-08T23:59:59+08:00（2026-08-06 第二次授予），只允许 `local-weapp`：
 
 - loopback transport normalizer 不跟随 redirect，3xx 失败；原始响应流与 gzip 解压流分别受 16 MiB 上限保护，只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON；损坏压缩、非 JSON、非 200、超限、registry/network 错误和缺 metadata 均失败；
 - 精确匹配 advisory ID、module、severity、version、path count 和 path-set hash；
@@ -378,7 +378,7 @@ git status --short
 
 ## 14. 仍需总控处理
 
-1. 在 2026-08-08 前关闭或重新评审 Taro advisory 例外；
+1. 在 **2026-11-08** 前关闭或重新评审 Taro advisory 例外（2026-08-06 已完成一次评审并显式续期）；
 2. 阶段 09 开发前配置受控 remote/upstream 与真实 CI；
 3. 为阶段 09 指定 cooking-technique 及宗教/伦理/食品安全规则词表的数据治理责任人；
 4. 外部环境出现前保持真实微信、域名、真机、云和发布为 Deferred。

@@ -100,7 +100,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | Compose 拓扑静态门禁 | PASS（10 服务 / 8 secret / 2 网络） |
 | Compose 拓扑变异反向测试 | 15/15 以指定理由捕获，0 漏网 |
 
-标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，不自动跟随 redirect，任何 3xx 都失败；原始响应流和 gzip 解压流分别实施 16 MiB 上限。normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-08-08 的 local/weapp-only 例外，并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。2026-08-04 的实时门禁先后发现 PostCSS、`fast-uri` 与 `brace-expansion` 新公告；`f3e3099` 已把它们升级到修复版本，并删除随之失效的旧 `brace-expansion` 例外，未新增审计例外。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
+标准 `pnpm audit` 报告的合法漏洞退出语义仍为退出码 `1`、1 critical、8 moderate。机器门禁使用 loopback transport normalizer 转发 npm 官方 HTTPS bulk endpoint，不自动跟随 redirect，任何 3xx 都失败；原始响应流和 gzip 解压流分别实施 16 MiB 上限。normalizer 只兼容直接 JSON 或通过 gzip magic/CRC 校验的 JSON，仍由 `pnpm audit` 生成实际依赖路径；损坏压缩、非 JSON、非 200、registry/network 错误和缺 metadata 均失败。门禁只接受 [`security/audit-exceptions.json`](../security/audit-exceptions.json) 中精确、截至 2026-11-08 的 local/weapp-only 例外（2026-08-06 第二次授予，逐条对账后显式续期，依据与条件见 ADR-0004），并扫描构建产物；任何新增、变化、过期或已消失但未清理的 advisory 均失败。2026-08-04 的实时门禁先后发现 PostCSS、`fast-uri` 与 `brace-expansion` 新公告；`f3e3099` 已把它们升级到修复版本，并删除随之失效的旧 `brace-expansion` 例外，未新增审计例外。证据见 [weapp advisory scan](evidence/stage-08-audit/weapp-advisory-scan.json)。例外期间 H5、外部测试、体验版和发布被阻断，不能把 gate Pass 表述为漏洞修复。
 
 ## 阶段 09A 计划与下一门禁
 
