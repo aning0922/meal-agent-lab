@@ -3148,27 +3148,50 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 `node --env-file` 为唯一 oracle，凡是会真的建立活键且取值非空的写法，扫描器看得见
 吗」——枚举空间由四个互不可见的独立镜头分别设计后取并集。
 
-**结果：19 格定向复现里 16 格沉默、3 格命中，每格 oracle 均确认「活键 + 非空取值」。**
+**结果：下表逐格登记扫描器在 tracked 模板上的真实行为。**每一格都由
+[`check-m3b-registry-integrity.mjs`](../../infra/docker/check-m3b-registry-integrity.mjs)
+用真实 `scanTrackedTemplates` 按该行声明的角色复跑并断言，判定列与实测不符即转红；
+表下的合计数同样由该门禁**数出来**再与本文比对，不是手写的。
 
-> **计数更正（Round 25 写回）**：本段初稿写的是「17 格沉默」，**与探针实测不符**——
-> 逐格复核为 16 沉默 + 3 命中（命中的三格是两条正向对照，加上反引号**取值**形态
-> `PASSWORD=<反引号>值<反引号>` 意外命中——裸值读法把反引号本身当成一个非空字符，
-> 属侥幸而非判据保证）。**下表是按族归并后的子集，共 15 格（13 沉默 + 2 命中）**，
-> 不等于探针全集；两者的差额即归并时省略的同族重复形态。
+> **头条撤回（Round 26 写回）**：本段此前发布过一个「19 格定向复现里 16 格沉默、
+> 3 格命中」的结果句（更早一版写作「17 格沉默」）。该头条**已撤回**，不是改数字：
+> 它所概括的 19 格探针语料**从未进入仓库**——没有 fixture、没有清单、没有门禁，
+> 任何人都无法复核它。两轮里它被修正过两次，两次修正后仍然不可验证。现在只保留
+> **在仓库里、且被门禁逐格断言**的下表。同一轮里由 `<反引号>` 那一行暴露出来的
+> 教训是普遍的：**手算的数不许发表——任何进入文档的计数，要么由脚本对已提交的
+> 数据导出，要么删掉。**
 
-| 族 | 例 | 扫描器 |
-| --- | --- | ---: |
-| 大小写扩张码点（闭集 17 个：`ss` `i` `ﬁ` 等连字与特殊小写） | `POSTGRES_PA<U+FB01>SSWORD=<值>` | 沉默 |
-| 数字开头 + 粘连词干 | `0PGPASSWORD=<值>` | 沉默 |
-| 结合处数字 | `PGPASSWORD2=<值>` / `PGPASSWORD2_OLD=<值>` | 沉默 |
-| benign 白名单**反向注入** | `SIGNATURE_D=<值>` / `TOKEN_YA=<值>` / `SECRET_ARY=<值>` | 沉默 |
-| 运算符尾键 | `PGPASSWORD_OLD+=<值>` | 沉默 |
-| 嵌套 `hashIsComment` | `NOTES="POSTGRES_PASSWORD= #<值>"` | 沉默 |
-| **反引号（Node 的第三种引号）** | 反引号包住 `x'PGPASSWORD='#<值>` | 沉默 |
-| URL 前缀嵌套 | `NOTES=https://d.invalid/PGPASSWORD-OLD=<值>` | 沉默 |
-| **prose 角色活行** | README 里 `0PASSWD=<值>` / `PGPASSWORD-OLD=<值>` | 沉默 |
-| 正向对照 | `POSTGRES_PASSWORD=<值>` | **命中** |
-| prose **注释**对照 | `# 0PASSWD=<值>` | **命中** |
+表内记法：`<值>` 表示合成占位取值，`<U+XXXX>` 表示该码点本身，`<反引号>` 表示一个
+反引号字符（写成字面反引号会破坏代码跨度）。「角色」列是该例被投喂的文件角色——
+`strict` = dotenv 模板，`prose` = README；同一行文本在两种角色下结论可以不同，
+这正是本表必须显式带角色列的原因。
+
+<!-- m3b:surface-table -->
+
+| 族 | 角色 | 例 | 扫描器 |
+| --- | --- | --- | ---: |
+| 大小写扩张码点（`open/case-expanding-codepoint`，闭集 17 个：`ss` `i` `ﬁ` 等连字与特殊小写） | strict | `POSTGRES_PA<U+FB01>SSWORD=<值>` | 沉默 |
+| 数字开头 + 粘连词干（`open/digit-leading-glued-stem`） | strict | `0PGPASSWORD=<值>` | 沉默 |
+| 结合处数字（`open/glued-stem-joint-digit`） | strict | `PGPASSWORD2=<值>` / `PGPASSWORD2_OLD=<值>` | 沉默 |
+| benign 白名单**反向注入**（`open/benign-allowlist-injection`） | strict | `SIGNATURE_D=<值>` / `TOKEN_YA=<值>` / `SECRET_ARY=<值>` | 沉默 |
+| 运算符尾键（`open/operator-tail-key`） | strict | `PGPASSWORD_OLD+=<值>` | 沉默 |
+| 嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`） | strict | `NOTES="POSTGRES_PASSWORD= #<值>"` | 沉默 |
+| **反引号（Node 的第三种引号）**（`unguarded/backtick-quote`） | strict | `NOTES=<反引号>x'PGPASSWORD='#<值><反引号>` | 沉默 |
+| URL 前缀嵌套（`unguarded/url-prefix-nesting`） | strict | `NOTES=https://d.invalid/PGPASSWORD-OLD=<值>` | 沉默 |
+| **prose 角色活行**（`unguarded/prose-role-live-line`） | prose | `0PASSWD=<值>` / `PGPASSWORD-OLD=<值>` | 沉默 |
+| 正向对照（`control/plain-stem`） | strict | `POSTGRES_PASSWORD=<值>` | 命中 |
+| prose **注释**对照 | prose | `# 0PASSWD=<值>` | 命中 |
+
+上表 11 行共 15 个例：13 沉默 + 2 命中。
+
+> **`<反引号>` 那一行是本轮的定点更正（Round 26）**：它此前是全表**唯一**没有按
+> 表格自身记法写成完整一行的格子——写作散文「反引号包住 `x'PGPASSWORD='#<值>`」，
+> 判定列标「沉默」。按该表自己的惯例逐字读回去实测，那个字面形在 strict 角色下
+> **命中**（`node --env-file` 确认它建立非空活键 `` `x'PGPASSWORD ``），`NOTES="…"`
+> 引号形更是 strict 与 prose **双双命中**；真正沉默的是 `NOTES=` 裸嵌套形。现已按
+> 实测改写成沉默的那一形。**该族仍然是零看守的**：反引号**取值**形
+> （`PGPASSWORD=<反引号>值<反引号>`）与上述两形都命中，属裸值读法把反引号本身
+> 当成非空字符的侥幸，不是判据保证。
 
 最后两行放在一起就是结论：**在 README 里把凭据注释掉，比留成活行更容易被发现。**
 这不可能是有意的取舍，只能是路径拓扑的副作用。
@@ -3205,19 +3228,65 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 **为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
 Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
-artifacts × 322 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
-的树，候选树为 322）——这三条与本文件的**键名判据零共享**（`local-test-containment.mjs`
+artifacts × 324 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
+的树，Round 25 候选树为 322，Round 26 加入登记表模块与登记完整性门禁后为 324——
+这个数字现在由 `check-m3b-registry-integrity.mjs` 对 `git ls-files` 数出来再与本句
+比对，不再手写）——这三条与本文件的**键名判据零共享**（`local-test-containment.mjs`
 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` /
 `sensitiveCompactAssignments` 的引用数实测为 0，needle 按真实 Secret 取值构造），
 均未受影响。真实 tracked 模板当前实测 **0 problem**。
+
+**动态证据的落点（Round 26 写回）**：上面那句「两轮 fresh smoke 均 0 hit」在 Round 26
+**不是继承来的**——本轮在候选树上真跑了两轮 fresh full-stack smoke，均 `exit 0`，
+两轮的 containment 扫描各自打印「18 needles / 86 artifacts / **324** tracked files
+（git index blob 与工作树各扫一遍）— no hits」，与本节发表的 324 是同一个数。
+同轮还跑了 `probe-compose-secret-identity.mjs`（exit 0，八份 secret 的容器内
+uid/mode 逐条为 999/10001 + 0600）。此前几轮把这句话当既有事实写着而**不标注它跑在
+哪棵树上**，本段即为补记；后续任何一轮若选择继承而不重跑，必须在此显式写明
+「未重跑」及继承的落点 SHA。
 
 **已转为已确认边界（Round 25 写回）**：整行注释体在遇到**行中**的 CR (U+000D) / U+2028 / U+2029 时整体消失——即 JavaScript 的三个行终止符，且**只在整行注释臂**；VT/FF/NEL/NBSP/SPACE 均照常命中，active 视图不受影响。**边界已收窄并复核**：整份模板使用 CRLF 行尾时（blob 内确有 CR 字节）注释行与活行**全部照常命中**，因此这不是「Windows 编辑过的模板全盲」，只是行中嵌入终止符这一种构造。由两条互不可见的独立路径确认。
 
 **仍未独立复现、不计入已确认的镜头宣称**：三种引号的跨行取值；symlink 下 worktree 与 index blob 看到不同字节；非法 UTF-8 的解码分歧。这些留作后续里程碑的输入，**不得当作已确认事实引用**。
 
-**Round 24 当前状态**：**M3B implementation complete, pending total-control
-review**。全绿仍不等于 Accepted：本轮修改的正是三方都实际探到的同一判据面，
-`f9997b0` 的既有审计结论**不可继承**，必须让同样两路独立只读审计对本轮新 SHA
+##### M3B Round 26：把「已发表的话」钉到「已提交的数据」上
+
+Round 25 是**唯一目的为文档更正**的一轮，却仍被判 BLOCK，而且往它被派去修的两份
+文档里**新注入了两处缺陷**。总控的诊断是：「让完整性声明从断言变成推导」是必要的，
+但**推导必须跑在已提交的数据上**——凡是概括「不在仓库里的枚举」的数字，错误率一点
+没降，只是换了形状。
+
+本轮因此不再逐个改数字，而是新增一条常驻门禁
+[`check-m3b-registry-integrity.mjs`](../../infra/docker/check-m3b-registry-integrity.mjs)
+执行一条规则：**任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，
+要么删掉。手算的数不许发表。** 七节逐节 fail closed，覆盖此前七次出错的全部形状。
+
+配套把族/视图登记表抽成
+[`m3b-surface-registry.mjs`](../../infra/docker/m3b-surface-registry.mjs)，让文档去
+**比对**它而不是各自手抄一份；登记表在普查前先过一遍自校验。此前这张表**零自校验**：
+`expect` 拼错成 `opne` → `exit 0` 且把「命中族数」凭空 +1（那个数是**减**出来的）、
+删一族 → `exit 0`、删一个视图 → `exit 0` 且打印「40 格（8 族 × 6 视图）」、`why` 置空
+→ `exit 0` 仍称「逐族附了原因」——四种变异实测全绿。`mixed` 第三态由注释里的幽灵
+标识符转为**真正实现并被合成用例覆盖**；`openViews`/`outerLive`/`noKey` 三个从未被
+代码读过的名字按实际字段名更正或删除。
+
+pathspec 覆盖检查同轮修两处：`git ls-files` 加 `-z`（此前 `docs/配置.env` 因 C-quoting
+的尾部 `"` 挡在 `$` 锚点前而**整份逃过检查**，ASCII 同名文件则正常转红），覆盖枚举
+正则**放宽**为过近似（此前 `apps/client/app.env.local` 带 `POSTGRES_PASSWORD` 提交后
+门禁 `exit 0`，同字节改名 `.env.example` 即 `exit 1`）。
+
+三处被撤回或改正的已发表内容：撤回不可复核的「19 格 = 16 沉默 + 3 命中」头条；
+按实测改写表格里唯一没按表格记法写成完整一行的那一格（反引号族）；把两处反引号
+分母 73/22 改为真实行数 72/21。另修好 Round 25 写坏的 `docs/project-status.md`
+里程碑表（M3B 单元格未闭合 + 空行终止表格，导致 `| M4 / M5 |` 降级为字面文本）。
+
+**判别力**：F1 四种变异、F2 两条反例、登记表六条校验逐条删除、文档侧十条改动
+（族 id 拼错/漏列、表格判定列改反、合计句改错、未知记法、分母改回 73、tracked 数
+改回 322、门禁条数改回 8、清单漏列）——全部实测以**指定理由**转红，无一为未捕获异常。
+`-z` 撤回后同一反例回到 GREEN，确认该修复是载荷性的。
+
+**Round 26 当前状态**：**M3B implementation complete, pending total-control
+review**。全绿仍不等于 Accepted：必须让同样两路独立只读审计对本轮新 SHA
 重新给出结论，再回到项目总控复核第一阶段。
 
 **M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A

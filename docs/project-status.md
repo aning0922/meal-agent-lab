@@ -116,16 +116,22 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M2A 整体 | 总控 **Accepted**，验收落点 `5e480803` |
 | M2B Compose 拓扑 | 总控 **Accepted**，验收落点 `d0f2219` |
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
-| M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已取得完整 bootstrap/full-stack 本地证据，尚未 Accepted**（未完成：M4/M5 与 09A 总验收）。**M3B 的 tracked 模板扫描器是尽力而为的第二层网**：Round 24 的绝对面普查（`node --env-file` 为唯一 oracle）实测主面存在**已登记的未闭合族**，分两级登记——
-
-**（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点、数字开头粘连词干、结合处数字、benign 白名单反向注入、运算符尾键；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
-
-**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`、反引号引号族、URL 前缀嵌套、prose 角色活行。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」；且 `expect` 只实现 `caught`/`open` 两个全或无状态，而 prose 角色活行的真实状态是逐视图混合，用任一种登记都会立刻转红。**这 4 族目前没有任何门禁看守。**
-
-**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 22/73 行、`infra/environments/README.md` 有 3/22 行含反引号。
-
-**M3B 的验收范围不得表述为「环境模板已覆盖」，也不得表述为「已登记族全部由门禁钉死」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）**与键名判据零共享**（`local-test-containment.mjs` 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` / `sensitiveCompactAssignments` 的引用数为 0，needle 按真实 Secret 取值构造），未受影响；真实 tracked 模板实测 0 problem。 |
+| M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已取得完整 bootstrap/full-stack 本地证据，尚未 Accepted**（未完成：M4/M5 与 09A 总验收）。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 / M5 | **未开始** |
+
+#### M3B 扫描器范围与已登记的未闭合族
+
+**M3B 的 tracked 模板扫描器是尽力而为的第二层网**：Round 24 的绝对面普查（`node --env-file` 为唯一 oracle）实测主面存在**已登记的未闭合族**，分两级登记——
+
+**（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点（`open/case-expanding-codepoint`）、数字开头粘连词干（`open/digit-leading-glued-stem`）、结合处数字（`open/glued-stem-joint-digit`）、benign 白名单反向注入（`open/benign-allowlist-injection`）、运算符尾键（`open/operator-tail-key`）；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
+
+**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`）、反引号引号族（`unguarded/backtick-quote`）、URL 前缀嵌套（`unguarded/url-prefix-nesting`）、prose 角色活行（`unguarded/prose-role-live-line`）。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」。**这 4 族目前没有任何门禁看守。**（Round 26 已把 `expect` 的第三态 `mixed` 实现出来，登记表不再表达不了逐视图混合；但那 4 族仍然落不了格，因为缺的是**渲染面**而不是状态——要钉住它们必须先扩视图模板，属独立里程碑。）
+
+上面两份族名列表不再是手抄的：括号里的 id 由 [`check-m3b-registry-integrity.mjs`](../infra/docker/check-m3b-registry-integrity.mjs) 与 [`m3b-surface-registry.mjs`](../infra/docker/m3b-surface-registry.mjs) 的 `families` / `unguardedFamilies` **机械比对**，多一个、少一个、拼错一个都转红。
+
+**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 22/72 行、`infra/environments/README.md` 有 3/21 行含反引号（分母为文件真实行数，同样由登记完整性门禁数出来比对；此前写 73/22 是误用了 `content.split('\n').length` 的口径——尾随换行会多出一个空元素）。
+
+**M3B 的验收范围不得表述为「环境模板已覆盖」，也不得表述为「已登记族全部由门禁钉死」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）**与键名判据零共享**（`local-test-containment.mjs` 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` / `sensitiveCompactAssignments` 的引用数为 0，needle 按真实 Secret 取值构造），未受影响；真实 tracked 模板实测 0 problem。
 
 **M3A 实际交付的**（详见[阶段 09A 计划的 M3A 实施记录](plans/2026-07-stage-09a-local-deployability-baseline.md)）
 
@@ -869,10 +875,28 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   唯一的阻断项恰好落在任务书盲区——后续审计区间应以**上一个被 Accepted 的 SHA**
   为起点。本轮**零跨冻结例外**。M3B 仍须由同样两路独立只读审计对新 SHA 重新给出
   结论，未标记 Accepted。
+- **Round 26：把已发表的话钉到已提交的数据上**。Round 25 是唯一目的为文档更正的一轮，
+  仍被判 BLOCK，且往它被派去修的两份文档里**新注入了两处缺陷**（写坏的里程碑表、
+  错的反引号分母）。总控诊断：「让完整性声明从断言变成推导」是必要的，但**推导必须
+  跑在已提交的数据上**——概括「不在仓库里的枚举」的数字错误率一点没降，只换了形状。
+  本轮因此新增常驻门禁 `check-m3b-registry-integrity.mjs`（七节，逐节 fail closed），
+  执行一条规则：**任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，
+  要么删掉**；并把族/视图登记表抽成 `m3b-surface-registry.mjs` 供文档比对而非各自手抄。
+  同轮修掉 sweep 登记表**零自校验**（`expect` 拼错/删族/删视图/`why` 置空四种变异
+  此前实测全绿，拼错还会让「命中族数」凭空 +1，因为那个数是减出来的）、把 `mixed`
+  第三态从注释里的幽灵标识符转为真正实现并被合成用例覆盖、pathspec 检查加 `-z`
+  并放宽覆盖枚举正则（此前 `docs/配置.env` 与 `apps/client/app.env.local` 两类带凭据
+  的 tracked 模板都能整份逃过检查）。撤回不可复核的「19 格」头条，按实测改正表格里
+  的反引号那一格与两处反引号分母，修好写坏的里程碑表。**动态证据本轮真跑**：两轮
+  fresh full-stack smoke 均 exit 0、containment 各自 18 needles × 86 artifacts ×
+  **324** tracked files 零命中，与发表数字同源。M3B 仍须由同样两路独立只读审计对新
+  SHA 重新给出结论，未标记 Accepted。
 - **Round 24 绝对面普查与范围收窄**：前五轮都是**差分向**定点整改，每轮全绿、每轮
   被下一轮判 BLOCK。本轮改用**绝对向**方法（`node --env-file` 为唯一 oracle，枚举
-  空间由四个互不可见的独立镜头设计后取并集），**19 格定向复现里 16 格沉默、3 格命中**（初稿误写为 17 沉默，已更正），每格
-  oracle 均确认「活键 + 非空取值」。根因已量化：四条部分重叠的判定路径，覆盖面是
+  空间由四个互不可见的独立镜头设计后取并集）。**Round 26 撤回了此处原有的「19 格
+  定向复现里 16 格沉默、3 格命中」头条**（更早一版写作 17 沉默）：它概括的探针语料
+  从未进入仓库，不可复核，两次修正后仍不可验证；现在只保留计划文档里那张**被门禁
+  逐格断言**的表。根因已量化：四条部分重叠的判定路径，覆盖面是
   它们特性的**并集**而非一份被规定的文法——prose 角色下三条独立判据只有一条在跑，
   `readAssignmentGap` 的 strict 分支是死代码，Round 23 的嵌套守卫只加在
   `closesEnclosingQuotedValue` 上而多数嵌套形态走 `readAssignmentValue`。另有两份

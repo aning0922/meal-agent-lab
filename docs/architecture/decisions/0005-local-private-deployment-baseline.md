@@ -365,11 +365,13 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 
 **M3B 的 tracked 模板扫描器是尽力而为的第二层网**：Round 24 的绝对面普查（`node --env-file` 为唯一 oracle）实测主面存在**已登记的未闭合族**，分两级登记——
 
-**（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点、数字开头粘连词干、结合处数字、benign 白名单反向注入、运算符尾键；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
+**（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点（`open/case-expanding-codepoint`）、数字开头粘连词干（`open/digit-leading-glued-stem`）、结合处数字（`open/glued-stem-joint-digit`）、benign 白名单反向注入（`open/benign-allowlist-injection`）、运算符尾键（`open/operator-tail-key`）；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
 
-**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`、反引号引号族、URL 前缀嵌套、prose 角色活行。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」；且 `expect` 只实现 `caught`/`open` 两个全或无状态，而 prose 角色活行的真实状态是逐视图混合，用任一种登记都会立刻转红。**这 4 族目前没有任何门禁看守。**
+**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`）、反引号引号族（`unguarded/backtick-quote`）、URL 前缀嵌套（`unguarded/url-prefix-nesting`）、prose 角色活行（`unguarded/prose-role-live-line`）。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」。**这 4 族目前没有任何门禁看守。**Round 26 已把 `expect` 的第三态 `mixed` 实现出来（登记表不再表达不了逐视图混合），但那 4 族仍然落不了格：缺的是**渲染面**而不是状态，要钉住它们必须先扩视图模板，属独立里程碑。
 
-**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 22/73 行、`infra/environments/README.md` 有 3/22 行含反引号。
+上面两份族名列表由 [`check-m3b-registry-integrity.mjs`](../../../infra/docker/check-m3b-registry-integrity.mjs) 与 [`m3b-surface-registry.mjs`](../../../infra/docker/m3b-surface-registry.mjs) 的 `families` / `unguardedFamilies` **机械比对**——多一个、少一个、拼错一个都转红。此前它是手抄的，于是「9 族全部已由门禁钉死」这句假话活过了一整轮审计。
+
+**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 22/72 行、`infra/environments/README.md` 有 3/21 行含反引号（分母是文件真实行数，由同一门禁数出来比对；此前写作 73/22 是误用了 `content.split('\n').length` 的口径——尾随换行会多出一个空元素）。
 
 **M3B 的验收范围不得表述为「环境模板已覆盖」，也不得表述为「已登记族全部由门禁钉死」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）**与键名判据零共享**（`local-test-containment.mjs` 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` / `sensitiveCompactAssignments` 的引用数为 0，needle 按真实 Secret 取值构造），未受影响；真实 tracked 模板实测 0 problem。
 

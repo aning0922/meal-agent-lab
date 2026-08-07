@@ -21,8 +21,15 @@
  * 后者同样转红是刻意的：这份文件的价值在于「表面是已知的」，而不是「表面是干净
  * 的」。悄悄变好和悄悄变坏一样会让登记失真。
  *
- * 输出纪律：只报**族标签 + 计数**。族标签是本文件里的静态字面量，不含任何输入
- * 派生内容；合成取值一律 `AUDITVALUE`，绝不使用真实 Secret。
+ * **登记表本身在 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs)**，并在普查
+ * 之前先过一遍自校验。此前这张表零自校验：`expect` 拼错成 `opne` → exit 0 且打印
+ * 「4 族命中」（那个数是**减**出来的，任何认不出的状态都被算进命中侧）；删掉一族
+ * → exit 0；删掉一个视图 → exit 0 且打印「40 格（8 族 × 6 视图）」（`× 6 视图` 是
+ * 硬编码字面量，8 × 6 = 48 ≠ 40）；`why` 置空 → exit 0 仍称「逐族附了原因」。
+ * 现在这四种变异全部以指定理由转红，且对外打印的每个数字都由登记表导出。
+ *
+ * 输出纪律：只报**族标签 + 计数**。族标签是登记表模块里的静态字面量，不含任何
+ * 输入派生内容；合成取值一律 `AUDITVALUE`，绝不使用真实 Secret。
  */
 
 import { spawnSync } from 'node:child_process'
@@ -31,6 +38,14 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 
 import { scanTrackedTemplates, repositoryRoot } from './local-test-secrets-contract.mjs'
+import {
+  driftFor,
+  registry,
+  registrySummary,
+  validateRegistry
+} from './m3b-surface-registry.mjs'
+
+const { families, views } = registry
 
 const oracleNodeVersion = 'v24.18.0'
 /** 合成占位。本门禁**永不**使用真实 Secret 取值。 */
@@ -137,92 +152,21 @@ const scanBatch = (strictLines, proseLines) => {
 }
 
 // ---------------------------------------------------------------------------
-// 语料生成器：每族一个键构造，跨 6 个视图展开
-// ---------------------------------------------------------------------------
-/** 顶层活赋值（strict）。其余视图的 oracle 前提由 `outerLive` / `noKey` 描述。 */
-const views = [
-  { id: 'active', role: 'strict', render: (a) => a, premise: 'self' },
-  { id: 'nested', role: 'strict', render: (a) => `NOTES=${a}`, premise: 'outer' },
-  { id: 'quoted', role: 'strict', render: (a) => `NOTES="${a}"`, premise: 'outer' },
-  { id: 'comment', role: 'strict', render: (a) => `# ${a}`, premise: 'none' },
-  { id: 'inline', role: 'strict', render: (a) => `NOTES=ok # ${a}`, premise: 'outer' },
-  { id: 'prose', role: 'prose', render: (a) => `${a}`, premise: 'self' }
-]
-
-/**
- * **族**：一个键构造 + 它在 6 个视图下的预期。
- *
- * `expect` 是**当前实测事实**，不是愿望：`caught` = 六视图全部命中；
- * `open` = 六视图全部沉默；`mixed` = 逐视图列出（`openViews`）。
- *
- * 每条 `open` / `mixed` 都必须带 `why` —— 登记一个开口而不写清楚它为什么开着，
- * 等于把缺陷洗成边界。
- */
-const families = [
-  // ---- 正向对照：这些必须命中，否则整份普查失去意义 ----
-  { id: 'control/plain-stem', key: () => 'POSTGRES_PASSWORD', expect: 'caught' },
-  { id: 'control/underscore-token', key: () => 'APP_SECRET', expect: 'caught' },
-  { id: 'control/crossing-punctuation', key: () => 'PA-SSWORD', expect: 'caught' },
-
-  // ---- 已登记开着的族（Round 24 普查首次系统枚举）----
-  {
-    id: 'open/case-expanding-codepoint',
-    key: () => 'POSTGRES_PA\u{FB01}SSWORD',
-    expect: 'open',
-    why:
-      'toUpperCase() 会把 \u{FB01} 展开成两个**真 ASCII 字母** FI，' +
-      'replace(/[^A-Z0-9]/g,"") 删不掉它们，PASSWORD 被从中间劈开。' +
-      '**闭集 17 个的判据是「非 ASCII 的字母/数字，且注入后劈开 token」**——全 Unicode 枚举得 ' +
-      '79 个劈开 token 的码点，其中 62 个是 ASCII [A-Za-z0-9] 自身，余下恰为 17 个。' +
-      '注意「大小写扩张」只是其中一条路径：\u{0131}(i) 与 \u{017F}(long s) **并不展开**，' +
-      '它们靠自身即非 ASCII 字母而入集，故族名描述的是主要成因而非充要判据。'
-  },
-  {
-    id: 'open/digit-leading-glued-stem',
-    key: () => '0PGPASSWORD',
-    expect: 'open',
-    why:
-      'legacy 路径的前置断言 (?:^|[^A-Za-z0-9_]) 在数字开头键内**任何位置都无法起步**，' +
-      '于是 isSensitiveKeyName（唯一带 endsWith 的强判据）对整族结构性不可达。'
-  },
-  {
-    id: 'open/glued-stem-joint-digit',
-    key: () => 'PGPASSWORD2',
-    expect: 'open',
-    why:
-      'stripBoundaryDigits 只剥首尾数字且剥完必须**恰好等于**注册 token；' +
-      'PGPASSWORD2 既不 startsWith 也不 endsWith 任何后缀。'
-  },
-  {
-    id: 'open/benign-allowlist-injection',
-    key: () => 'SIGNATURE_D',
-    expect: 'open',
-    why:
-      'isBenignWeakPunctuationCompound 在任何子片段判据**之前**无条件短路，判据是' +
-      '「整键去掉非 [A-Z0-9] 后精确等于 6 个注册词之一」。强词干 + 一个短尾巴即可' +
-      '让 compact 形落进白名单。历次审计只从 benign 一侧压误报，从未从凭据一侧压。'
-  },
-  {
-    id: 'open/operator-tail-key',
-    key: () => 'PGPASSWORD_OLD+',
-    expect: 'open',
-    why:
-      '真正的机理**不是** component/pieces 分析——谓词层实测 containsSensitiveKeyToken 对 ' +
-      'PGPASSWORD_OLD+ 与对照组 PGPASSWORD_OLD **同为 false**（不可能是差异所在），而 ' +
-      'isSensitiveKeyName 对两者**同为 true**。差异在于 readAssignmentGap 走 prose 分支返回 ' +
-      'reachedEquals:false，于是那个为真的 isSensitiveKeyName 判定**从未被计入**；次级杠杆是 ' +
-      'sensitiveCompactAssignments 对 compoundOperatorTail 直接 continue。`+` 不特殊：' +
-      'PGPASSWORD_OLD- 同样六视图沉默。Round 20 登记 compoundOperatorTail 残留时写的' +
-      '「active strict 视图不受影响」**不成立**（该结论属实，错的是上一版此处的机理归因）。'
-  }
-]
-
-// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 process.stdout.write('M3B tracked-template surface sweep\n')
 
-if (process.version !== oracleNodeVersion) {
+// 登记表自校验**先于**普查。一张自己就不自洽的登记表钉不住任何东西：此前
+// `expect` 拼错、族被删、视图被删、`why` 置空**四种变异全部 exit 0**，其中拼错
+// 还会让打印出来的「命中族数」凭空 +1（那个数是减出来的）。
+const registryProblems = validateRegistry(registry)
+for (const problem of registryProblems) {
+  fail('surface sweep registry', problem)
+}
+
+if (registryProblems.length > 0) {
+  // 登记表不可信时不再执行普查：拿一张坏表跑出来的绿是假绿。
+} else if (process.version !== oracleNodeVersion) {
   fail('oracle version', `the oracle is pinned to ${oracleNodeVersion}; this run is ${process.version}`)
 } else {
   // 每族 × 每视图 = 一格
@@ -253,19 +197,15 @@ if (process.version !== oracleNodeVersion) {
     cell.caught = scanned.prose[index]
   })
 
-  // 逐族比对实测与登记
+  // 逐族比对实测与登记（三态判定在登记表模块里，由合成用例单独覆盖）
   const drifted = []
   for (const family of families) {
-    const own = cells.filter((cell) => cell.family === family)
-    const caught = own.filter((cell) => cell.caught).length
-    if (family.expect === 'caught' && caught !== own.length) {
-      drifted.push(`${family.id}: 登记为全部命中，实测 ${String(caught)}/${String(own.length)}`)
-    }
-    if (family.expect === 'open' && caught !== 0) {
-      drifted.push(
-        `${family.id}: 登记为全部沉默，实测有 ${String(caught)} 格被捕获——覆盖面变好了，` +
-          '但登记必须同步更新后才准通过'
-      )
+    const caughtViewIds = new Set(
+      cells.filter((cell) => cell.family === family && cell.caught).map((cell) => cell.view.id)
+    )
+    const drift = driftFor(family, caughtViewIds, views)
+    if (drift !== null) {
+      drifted.push(drift)
     }
   }
 
@@ -279,13 +219,25 @@ if (process.version !== oracleNodeVersion) {
       fail('surface sweep', drift)
     }
   } else {
-    const openFamilies = families.filter((f) => f.expect === 'open')
-    pass(
-      'tracked template surface sweep',
-      `${String(cells.length)} 格（${String(families.length)} 族 × 6 视图）与登记一致：` +
-        `${String(families.length - openFamilies.length)} 族命中，` +
-        `${String(openFamilies.length)} 族**已登记为开着**且逐族附了原因`
-    )
+    // 每个数字都从登记表**导出**。此前 `× 6 视图` 是硬编码字面量、命中族数是
+    // 「族总数 - open 数」减出来的——删掉一个视图会打印「40 格（8 族 × 6 视图）」，
+    // 8 × 6 = 48 ≠ 40，而门禁照样 exit 0。
+    const summary = registrySummary(registry)
+    if (summary.cells !== cells.length) {
+      fail(
+        'surface sweep',
+        `登记表导出 ${String(summary.cells)} 格，实际展开 ${String(cells.length)} 格`
+      )
+    } else {
+      pass(
+        'tracked template surface sweep',
+        `${String(summary.cells)} 格（${String(summary.families)} 族 × ` +
+          `${String(summary.views)} 视图）与登记一致：${String(summary.caught)} 族命中，` +
+          `${String(summary.open)} 族**已登记为开着**、${String(summary.mixed)} 族逐视图混合，` +
+          `非 caught 族均带非空原因（由登记表自校验强制）；另有 ${String(summary.unguarded)} ` +
+          '族门禁结构上表达不了、零看守，见 m3b-surface-registry.mjs 的 unguardedFamilies'
+      )
+    }
   }
 }
 
@@ -298,14 +250,27 @@ if (process.version !== oracleNodeVersion) {
   // 的 tracked dotenv 模板**一遍都不扫**——这不是启发式边界，是"根本没看"。
   // 已登记的例外必须逐条列出；出现新的未登记文件即转红。
   const registeredOutside = ['.env.example', 'services/api/.env.example']
-  const listing = git(['ls-files'], { cwd: repositoryRoot })
+  // `-z` + NUL 切分，与 `local-test-secrets-contract.mjs:2019` 对齐。不加 `-z` 时
+  // git 会对非 ASCII 路径做 C-quoting：`docs/配置.env` 打印成
+  // `"docs/\351\205\215\347\275\256.env"`，尾部那个 `"` 挡在 `$` 锚点前面，于是
+  // 一份带凭据的模板**整份逃过覆盖检查**（实测 GREEN；ASCII 同名文件 RED）。
+  // 含换行的文件名同样走 C-quoting，且 `core.quotepath=false` **关不掉**——
+  // 所以配置不是缓解手段，唯一修法就是 `-z`。
+  const listing = git(['ls-files', '-z'], { cwd: repositoryRoot })
   if (listing.error !== undefined || listing.status !== 0) {
     fail(name, 'git ls-files 失败')
   } else {
     const dotenvShaped = listing.stdout
-      .split('\n')
+      .split('\u0000')
       .filter(Boolean)
-      .filter((file) => /(^|\/)([^/]*\.)?env(\.(example|sample|template))?$/.test(file))
+      // 覆盖检查应当**过近似**（宁可多列，不可漏列），与解析器必须欠近似相反：
+      // 漏列一份带凭据的 tracked 模板，这条检查就白做了。此前的窄正则要求
+      // `env` 结尾或后接 example/sample/template，于是 `.env.local`、`.env.prod`、
+      // `.env.dist`、`.env.bak` 全部不在枚举内——实测 `apps/client/app.env.local`
+      // 带 POSTGRES_PASSWORD 提交后门禁 exit 0，同字节改名 `.env.example` 即 exit 1。
+      // 注意**不要**直接复用 `supportedTemplateFile`：实测那会把文档散文也拉进来，
+      // 产出约 6 条误报。
+      .filter((file) => /(^|\/|\.)env(\.[^/]*)?$/i.test(file))
     const outside = dotenvShaped.filter((file) => !file.startsWith('infra/environments/'))
     const unregistered = outside.filter((file) => !registeredOutside.includes(file))
     const missing = registeredOutside.filter((file) => !outside.includes(file))
