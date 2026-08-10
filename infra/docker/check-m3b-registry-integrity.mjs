@@ -101,6 +101,27 @@ const DOCKER_README = 'infra/docker/README.md'
  */
 const FAMILY_ID_PATTERN = /`((?:open|unguarded|control)\/[A-Za-z0-9_-]+)`/g
 
+/**
+ * 取**唯一**匹配；匹配数 ≠ 1 一律返回 `null`，由调用方转红。
+ *
+ * 为什么锚点必须断言唯一性：此前每个锚点都取「第一个匹配」。实测在
+ * `docs/project-status.md` **顶部**放一条内容**正确**的 `**（甲）…` 诱饵行、再把下方
+ * 那条权威行改坏 → **exit 0**；不放诱饵、只改坏权威行的对照组正确转红。取首个匹配
+ * 的锚点等于给改写者留了一条免检通道：把正确的话说一遍，错的话写在后面。
+ *
+ * 传进来的正则必须带 `g`（`matchAll` 的要求），否则这里会抛，属编程错误而非输入错误。
+ */
+const uniqueMatch = (content, pattern) => {
+  const all = [...content.matchAll(pattern)]
+  return all.length === 1 ? all[0] : null
+}
+
+/** 同上，按行首前缀取唯一一行。返回行内容或 `null`。 */
+const uniqueLineStartingWith = (content, prefix) => {
+  const found = content.split('\n').filter((line) => line.startsWith(prefix))
+  return found.length === 1 ? found[0] : null
+}
+
 const sameSet = (left, right) => {
   const a = new Set(left)
   const b = new Set(right)
@@ -207,8 +228,8 @@ const sameSet = (left, right) => {
 {
   const name = 'the family lists published in the docs match the registry ids'
   const idsOnLinePrefixedBy = (content, prefix) => {
-    const line = content.split('\n').find((candidate) => candidate.startsWith(prefix))
-    return line === undefined ? null : [...line.matchAll(FAMILY_ID_PATTERN)].map((match) => match[1])
+    const line = uniqueLineStartingWith(content, prefix)
+    return line === null ? null : [...line.matchAll(FAMILY_ID_PATTERN)].map((match) => match[1])
   }
   const expectedOpen = registry.families.filter((f) => f.expect === 'open').map((f) => f.id)
   const expectedUnguarded = unguardedFamilies.map((f) => f.id)
@@ -219,7 +240,8 @@ const sameSet = (left, right) => {
     for (const [label, expected] of [['（甲）', expectedOpen], ['（乙）', expectedUnguarded]]) {
       const actual = published[label]
       if (actual === null) {
-        problems.push(`${label} 列表在某份文档里找不到`)
+        // 找不到、或**不止一条**（诱饵行）——两种都不合格，都不回显文档内容。
+        problems.push(`${label} 锚点在某份文档里不是恰好 1 行`)
       } else if (!sameSet(actual, expected)) {
         // 不回显文档侧内容：只报数量与登记表侧（静态字面量）缺了哪些。
         const absent = expected.filter((id) => !actual.includes(id))
@@ -255,11 +277,12 @@ const sameSet = (left, right) => {
   const name = 'the published sweep shape matches the registry'
   const content = readDocument(DOCKER_README)
   const summary = registrySummary(registry)
-  const shape = /(\d+) 族 × (\d+) 视图 = (\d+) 格/.exec(content)
-  const split = /(\d+) 族登记为命中、(\d+) 族\*\*登记为开着且逐族附原因\*\*/.exec(content)
-  const unguardedClaim = /另有 (\d+) 族门禁结构上表达不了/.exec(content)
+  // 三个锚点都要求**恰好一处**匹配，否则一条正确的诱饵句就能让下面那条假的免检。
+  const shape = uniqueMatch(content, /(\d+) 族 × (\d+) 视图 = (\d+) 格/g)
+  const split = uniqueMatch(content, /(\d+) 族登记为命中、(\d+) 族\*\*登记为开着且逐族附原因\*\*/g)
+  const unguardedClaim = uniqueMatch(content, /另有 (\d+) 族门禁结构上表达不了/g)
   if (shape === null || split === null || unguardedClaim === null) {
-    fail(name, 'README 里找不到完整的「N 族 × M 视图 = K 格 / 命中 / 开着 / 零看守」形状声明')
+    fail(name, 'README 里「N 族 × M 视图 = K 格 / 命中 / 开着 / 零看守」形状声明不是恰好各一处')
   } else if (
     Number(shape[1]) !== summary.families ||
     Number(shape[2]) !== summary.views ||
@@ -402,9 +425,14 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
   const name = 'every cell in the plan surface table matches the real scanner'
   const content = readDocument(PLAN)
   const lines = content.split('\n')
-  const anchor = lines.findIndex((line) => line.includes('<!-- m3b:surface-table -->'))
+  // 锚点也要求唯一：两个 `m3b:surface-table` 注释会让门禁只认第一张表，第二张表
+  // 里写什么都无所谓。
+  const anchors = lines
+    .map((line, index) => (line.includes('<!-- m3b:surface-table -->') ? index : -1))
+    .filter((index) => index >= 0)
+  const anchor = anchors.length === 1 ? anchors[0] : -1
   if (anchor === -1) {
-    fail(name, '计划文档里找不到 m3b:surface-table 锚点')
+    fail(name, `计划文档里 m3b:surface-table 锚点不是恰好 1 处（实测 ${String(anchors.length)} 处）`)
   } else {
     const rows = []
     let malformed = 0
@@ -492,7 +520,7 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
         const silent = rows.filter((row) => row.verdict === '沉默').length
         const hit = rows.length - silent
         // 合计数由上面**数出来**，再与文档里发表的那句话比对。
-        const tally = /上表 (\d+) 行共 (\d+) 个例：(\d+) 沉默 \+ (\d+) 命中/.exec(content)
+        const tally = uniqueMatch(content, /上表 (\d+) 行共 (\d+) 个例：(\d+) 沉默 \+ (\d+) 命中/g)
         // 与上面的逐格扫描**同一个分类器**。此前这里各写了一遍谓词，于是一条 5 列
         // 行在一处被静默丢弃、在另一处也不计入，两边「自洽地」都看不见它。
         const declaredRows = lines
@@ -659,9 +687,9 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     fail(name, 'git ls-files 失败')
   } else {
     const tracked = listing.stdout.split('\u0000').filter(Boolean).length
-    const claim = /artifacts × (\d+) tracked 文件/.exec(readDocument(PLAN))
+    const claim = uniqueMatch(readDocument(PLAN), /artifacts × (\d+) tracked 文件/g)
     if (claim === null) {
-      fail(name, '计划文档里找不到 tracked 文件数声明')
+      fail(name, '计划文档里 tracked 文件数声明不是恰好 1 处')
     } else if (Number(claim[1]) !== tracked) {
       fail(name, `计划文档发表的 tracked 文件数与实测 ${String(tracked)} 不符`)
     } else {
@@ -676,7 +704,7 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
 {
   const name = 'the published M3B gate list matches the real gate scripts'
   const content = readDocument(DOCKER_README)
-  const declared = /M3B 的\*\*完整门禁清单\*\*（共 (\d+) 条/.exec(content)
+  const declared = uniqueMatch(content, /M3B 的\*\*完整门禁清单\*\*（共 (\d+) 条/g)
   // **只**取 M3B 那张表：本文件前面还有一张「生成/预检」表，整份文件正则会把它
   // 的两行也算进来（实测 2 + 9 = 11 ≠ 9）。从声明句起、到该表结束为止。
   const afterDeclaration = declared === null ? '' : content.slice(declared.index)
