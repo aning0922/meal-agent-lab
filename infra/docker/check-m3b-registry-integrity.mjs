@@ -10,7 +10,11 @@
  *   > **任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，要么删掉。
  *   > 手算的数不许发表。**
  *
- * 分节，逐节 fail closed：
+ * 分节。每节独立判定、独立报告，**通过的节即时打印**，因此一节崩溃不会吞掉前面已
+ * 通过的节的诊断。注意这不等于「逐节隔离」：本文件是顺序执行的顶层脚本，某节抛出
+ * **未捕获**异常仍会中止整轮，后面的节不会跑。已知的两处崩溃面（文档记法解码的
+ * 越界码点、文档派生路径的读取）已各自 fail closed，见 `decodeSpan` 与
+ * `readReferencedDocument`。各节：
  *   §1 登记表自校验 + 合成登记表用例（把三态判定本身也测了，`mixed` 不是死代码）
  *   §2 文档里的族名列表 ↔ 登记表 id 集合
  *   §3 已发表的普查形状（族数/视图数/格数/命中/开着/零看守）↔ 登记表
@@ -45,11 +49,41 @@ import {
 const value = 'AUDITVALUE'
 
 const failures = []
-const passes = []
-const pass = (name, reason) => passes.push(`  caught: ${name} (${reason})`)
+// **逐节即时输出**，不攒到最后统一打印。此前 passes 攒在数组里、在文件末尾才打印，
+// 于是任何一节抛异常都会把**已经通过的节的诊断一起吞掉**——实测 §4 一个越界码点
+// 让整轮 stdout 为空，读者看不出崩溃前 §1–§3 已经过了。
+const pass = (name, reason) => process.stdout.write(`  caught: ${name} (${reason})\n`)
 const fail = (name, detail) => failures.push(`${name}: ${detail}`)
 
 const readDocument = (relative) => readFileSync(resolve(repositoryRoot, relative), 'utf8')
+
+/**
+ * 读一份**由文档内容指定路径**的文件。与 `readDocument` 严格区分：那个的路径是本
+ * 文件里的常量，这个的路径来自可被改写的输入。
+ *
+ * 实测未加约束时：路径指向不存在的文件 → **未捕获 ENOENT**；路径写成
+ * `infra/environments/../../../../../../private/tmp/…/README.md` → 门禁**读到仓库外**
+ * 的文件并据此下结论。两者都不可接受。
+ *
+ * 约束：必须落在 `infra/environments/` 下、不得含 `..`，且 resolve 之后仍在该目录内
+ * （前两条挡记法，第三条挡 symlink 以外的一切绕法）。读不到一律返回 `null` 由调用方
+ * 记为「不符」，**绝不回显路径本身**。
+ */
+const ENVIRONMENTS_ROOT = resolve(repositoryRoot, 'infra/environments')
+const readReferencedDocument = (relative) => {
+  if (!relative.startsWith('infra/environments/') || relative.split('/').includes('..')) {
+    return null
+  }
+  const absolute = resolve(repositoryRoot, relative)
+  if (!absolute.startsWith(`${ENVIRONMENTS_ROOT}/`)) {
+    return null
+  }
+  try {
+    return readFileSync(absolute, 'utf8')
+  } catch {
+    return null
+  }
+}
 
 const PLAN = 'docs/plans/2026-07-stage-09a-local-deployability-baseline.md'
 const STATUS = 'docs/project-status.md'
@@ -586,7 +620,11 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     fail(name, '两份文档里找不到任何「N/M 行含反引号」的声明')
   } else {
     const wrong = claims.filter((claim) => {
-      const body = readDocument(claim.target)
+      const body = readReferencedDocument(claim.target)
+      if (body === null) {
+        // 越界、含 `..`、或读不到：记为不符。不回显路径——它是文档派生字符串。
+        return true
+      }
       // 真实行数 = 去掉尾随换行后的行数（`awk END{NR}` / `grep -c ''` 的口径）。
       // 此前发表的分母用的是 `content.split('\n').length`，尾随 LF 会多出一个
       // 空元素，于是 72/21 被写成 73/22。
@@ -712,9 +750,7 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
 }
 
 // ===========================================================================
-for (const line of passes) {
-  process.stdout.write(`${line}\n`)
-}
+// 通过的节已在各自执行时打印过了，这里只收尾。
 if (failures.length > 0) {
   process.stderr.write('M3B registry integrity FAIL\n')
   for (const message of failures) {
