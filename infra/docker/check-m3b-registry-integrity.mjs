@@ -344,6 +344,26 @@ const decodeSpan = (span) => {
 /** 第 1 列（族列）的解析结果，由 §4 的行扫描填充，由 §4b 判定。 */
 const familyColumn = { ids: [], closedSetClaims: [], malformed: 0 }
 
+/**
+ * 表格行的**唯一分类器**。§4 的逐格断言与合计句里的 `declaredRows` 都走这一个函数
+ * ——两处各写一遍谓词，就会出现「一处认为这是数据行、另一处不认」的缝。
+ *
+ * `'skip'`  表头与分隔行，按定义不是数据；
+ * `'data'`  正好 4 列的数据行；
+ * `'bad'`   列数不是 4。**必须转红，不得 `continue`**：GFM 下多出来的单元格会被
+ *           **丢弃**，一条 5 列行照样渲染成完整的 4 列——读者看到的是一行判定列
+ *           正常的普通行，而门禁根本没读过它。实测一条判定列写假的 5 列行在配套
+ *           改掉合计句之后 exit 0。少于 4 列同理。
+ */
+const classifyTableRow = (columns) => {
+  if (columns.length !== 4) {
+    return 'bad'
+  }
+  return /^-+$/.test(columns[0]) || columns[0] === '族' ? 'skip' : 'data'
+}
+
+const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => column.trim())
+
 {
   const name = 'every cell in the plan surface table matches the real scanner'
   const content = readDocument(PLAN)
@@ -362,8 +382,13 @@ const familyColumn = { ids: [], closedSetClaims: [], malformed: 0 }
         }
         continue
       }
-      const columns = line.split('|').slice(1, -1).map((column) => column.trim())
-      if (columns.length !== 4 || /^-+$/.test(columns[0]) || columns[0] === '族') {
+      const columns = tableColumnsOf(line)
+      const kind = classifyTableRow(columns)
+      if (kind === 'bad') {
+        malformed += 1
+        continue
+      }
+      if (kind === 'skip') {
         continue
       }
       // ---- 第 1 列（族列）：先收集，判定在 §4b。 ----
@@ -434,15 +459,12 @@ const familyColumn = { ids: [], closedSetClaims: [], malformed: 0 }
         const hit = rows.length - silent
         // 合计数由上面**数出来**，再与文档里发表的那句话比对。
         const tally = /上表 (\d+) 行共 (\d+) 个例：(\d+) 沉默 \+ (\d+) 命中/.exec(content)
-        const tableRows = lines
+        // 与上面的逐格扫描**同一个分类器**。此前这里各写了一遍谓词，于是一条 5 列
+        // 行在一处被静默丢弃、在另一处也不计入，两边「自洽地」都看不见它。
+        const declaredRows = lines
           .slice(anchor + 1)
           .filter((line) => line.startsWith('|'))
-          .slice(2, 2 + 999)
-          .filter((line, index, all) => all.indexOf(line) >= 0)
-        const declaredRows = tableRows.filter((line) => {
-          const columns = line.split('|').slice(1, -1).map((column) => column.trim())
-          return columns.length === 4 && !/^-+$/.test(columns[0]) && columns[0] !== '族'
-        }).length
+          .filter((line) => classifyTableRow(tableColumnsOf(line)) === 'data').length
         if (tally === null) {
           fail(name, '计划文档里找不到「上表 N 行共 M 个例：X 沉默 + Y 命中」的合计句')
         } else if (
