@@ -655,6 +655,13 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
       break
     }
   }
+  // 整份 README 里被记录下来的脚本：M3B 门禁表 + 它前面那张「生成/预检」运维表。
+  // `listed` 仍然只取门禁表（「共 N 条」比对的是它），两者用途不同，不要混用。
+  const documented = new Set(
+    [...content.matchAll(/^\| `node (infra\/docker\/[a-z0-9.-]+\.mjs)` \|/gm)].map(
+      (match) => match[1]
+    )
+  )
   const listing = spawnSync('git', ['ls-files', '-z', '--', 'infra/docker'], {
     cwd: repositoryRoot,
     encoding: 'utf8',
@@ -664,11 +671,30 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     fail(name, 'git ls-files 失败')
   } else {
     const tracked = listing.stdout.split('\u0000').filter(Boolean)
-    const checks = tracked.filter((file) => /^infra\/docker\/check-[a-z0-9.-]+\.mjs$/.test(file))
-    const missing = checks.filter((file) => !listed.includes(file))
-    const phantom = listed.filter((file) => !tracked.includes(file))
+    // **可执行入口** = 顶层 `infra/docker/*.mjs` 且带 shebang。子目录（`fixtures/`、
+    // `postgres/`）不是入口，库模块没有 shebang。这是一个**机械导出**的集合，不是
+    // 手写清单——本轮的规则同样约束门禁自己。实测该集合 = 门禁表 9 条 + 运维表 2 条。
+    const executable = tracked.filter(
+      (file) =>
+        /^infra\/docker\/[a-z0-9.-]+\.mjs$/.test(file) &&
+        readFileSync(resolve(repositoryRoot, file), 'utf8').startsWith('#!')
+    )
+    // 此前这里只要求 `check-*.mjs` 全部在清单里，而头部自述的是「本清单 ↔ 真实门禁
+    // 脚本集合」——**保证面窄于自述面**。两个不叫 check- 的脚本因此可以静默消失：
+    // 实测删掉 `run-local-test-smoke.mjs` 那一行并把 9 改成 8 → exit 0，删掉
+    // `probe-compose-secret-identity.mjs` 同样 exit 0。唯一的全链动态 smoke 与唯一的
+    // Secret 身份探针就这样离开保证面，而门禁全绿。
+    //
+    // 现在比对的是**整份 README 记录下来的脚本**（门禁表 + 前面那张运维表）↔ 可执行
+    // 入口集合。放宽到两张表是必须的：那 2 份运维命令本来就登记在运维表里，只看门禁
+    // 表会把它们判成「未记录」。
+    const missing = executable.filter((file) => !documented.has(file))
+    const phantom = [...documented].filter((file) => !tracked.includes(file))
     if (missing.length > 0) {
-      fail(name, `${String(missing.length)} 份 check-*.mjs 门禁未出现在 README 清单里（${missing.join(', ')}）`)
+      fail(
+        name,
+        `${String(missing.length)} 份可执行脚本未出现在 README 的任何清单里（${missing.join(', ')}）`
+      )
     } else if (phantom.length > 0) {
       fail(name, `README 清单里有 ${String(phantom.length)} 条指向不存在的脚本`)
     } else if (declared === null) {
@@ -678,7 +704,8 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     } else {
       pass(
         name,
-        `${String(listed.length)} 条清单与表内行数、${String(checks.length)} 份 check-*.mjs 全部相符`
+        `${String(listed.length)} 条门禁清单与表内行数相符；` +
+          `${String(executable.length)} 份可执行脚本全部被 README 记录，无悬空条目`
       )
     }
   }
