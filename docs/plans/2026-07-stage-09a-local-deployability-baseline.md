@@ -3170,7 +3170,7 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 | 族 | 角色 | 例 | 扫描器 |
 | --- | --- | --- | ---: |
-| 大小写扩张码点（`open/case-expanding-codepoint`，闭集 17 个：`ss` `i` `ﬁ` 等连字与特殊小写） | strict | `POSTGRES_PA<U+FB01>SSWORD=<值>` | 沉默 |
+| 大小写扩张码点（`open/case-expanding-codepoint`，闭集 17 个：`<U+00DF>` `<U+0131>` `<U+FB01>` 等连字与特殊小写） | strict | `POSTGRES_PA<U+FB01>SSWORD=<值>` | 沉默 |
 | 数字开头 + 粘连词干（`open/digit-leading-glued-stem`） | strict | `0PGPASSWORD=<值>` | 沉默 |
 | 结合处数字（`open/glued-stem-joint-digit`） | strict | `PGPASSWORD2=<值>` / `PGPASSWORD2_OLD=<值>` | 沉默 |
 | benign 白名单**反向注入**（`open/benign-allowlist-injection`） | strict | `SIGNATURE_D=<值>` / `TOKEN_YA=<值>` / `SECRET_ARY=<值>` | 沉默 |
