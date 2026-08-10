@@ -43,6 +43,42 @@ export const views = Object.freeze([
 export const expectStates = Object.freeze(['caught', 'open', 'mixed'])
 
 /**
+ * `open/case-expanding-codepoint` 那一族的**闭集**，由全 Unicode 枚举**导出**。
+ *
+ * 判据（与该族 `why` 描述的机理同一条，但这里是可执行的那份）：把码点注入
+ * `PA…SSWORD` 的中缝，若 `toUpperCase()` 后 `replace(/[^A-Z0-9]/g,'')` 不再等于
+ * `PASSWORD`，该码点就劈开了 token；再滤掉 ASCII `[A-Za-z0-9]` 自身——它们劈开
+ * token 只是因为本来就是字母数字，不是本族要说的现象。
+ *
+ * 为什么必须是函数而不是写死的数组：本轮的规则是「任何进入文档的计数、比例或族名
+ * 列表，要么由脚本对已提交的数据导出，要么删掉」。计划文档表格第 1 列发表了这个
+ * 集合的**大小**和若干**成员**，两者都必须能被门禁重新算出来比对——手写一份数组
+ * 只是把同一个手算数字挪个地方，Round 26 的两条 P1 都是这么来的。
+ *
+ * 纯函数、无 I/O。**不在模块加载时求值**：全码点扫描约 235 ms，而两份门禁都 import
+ * 本模块，普查门禁并不需要这个集合。由调用方按需取。
+ */
+export const caseFoldingSplitCodePoints = () => {
+  const compact = (text) => text.toUpperCase().replace(/[^A-Z0-9]/g, '')
+  const members = []
+  for (let codePoint = 0; codePoint <= 0x10ffff; codePoint += 1) {
+    // 代理区不是标量值，String.fromCodePoint 对它们没有有意义的结果。
+    if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+      continue
+    }
+    const character = String.fromCodePoint(codePoint)
+    if (compact(`PA${character}SSWORD`) === 'PASSWORD') {
+      continue
+    }
+    if (/[A-Za-z0-9]/.test(character)) {
+      continue
+    }
+    members.push(codePoint)
+  }
+  return Object.freeze(members)
+}
+
+/**
  * **族**：一个键构造 + 它在全部视图下的预期。
  *
  * `expect` 是**当前实测事实**，不是愿望：
@@ -72,8 +108,9 @@ export const families = Object.freeze([
     why:
       'toUpperCase() 会把 \u{FB01} 展开成两个**真 ASCII 字母** FI，' +
       'replace(/[^A-Z0-9]/g,"") 删不掉它们，PASSWORD 被从中间劈开。' +
-      '**闭集 17 个的判据是「非 ASCII 的字母/数字，且注入后劈开 token」**——全 Unicode 枚举得 ' +
-      '79 个劈开 token 的码点，其中 62 个是 ASCII [A-Za-z0-9] 自身，余下恰为 17 个。' +
+      '本族的闭集判据是「非 ASCII 的字母/数字，且注入后劈开 token」，' +
+      '由 `caseFoldingSplitCodePoints()` 全 Unicode 枚举导出——**成员与大小都不在这里手写**，' +
+      '计划文档发表的那两样由 `check-m3b-registry-integrity.mjs` 调用该函数比对。' +
       '注意「大小写扩张」只是其中一条路径：\u{0131}(i) 与 \u{017F}(long s) **并不展开**，' +
       '它们靠自身即非 ASCII 字母而入集，故族名描述的是主要成因而非充要判据。'
   },

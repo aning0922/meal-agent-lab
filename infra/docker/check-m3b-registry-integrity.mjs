@@ -39,6 +39,7 @@ import { resolve } from 'node:path'
 
 import { scanTrackedTemplates, repositoryRoot } from './local-test-secrets-contract.mjs'
 import {
+  caseFoldingSplitCodePoints,
   driftFor,
   registry,
   registrySummary,
@@ -316,6 +317,30 @@ const oracleLine = (line) => {
   }
 }
 
+/**
+ * 记法解码：`<U+XXXX>` / `<反引号>` / `<值>`。**第 1 列的成员与第 3 列的例共用这一套**
+ * ——两列若各写各的记法，第 1 列就又成了一个无人看守的面（Round 26 的 P1 之一正是
+ * 长在第 1 列上）。
+ *
+ * 两种情况必须 fail closed：越界码点让 `String.fromCodePoint` 抛 `RangeError`；
+ * 未知记法解码后仍留着尖括号。返回 `null` 表示不可解码，**绝不回显被扫描原文**。
+ */
+const decodeSpan = (span) => {
+  let decoded
+  try {
+    decoded = span
+      .replace(/<U\+([0-9A-Fa-f]{4,6})>/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
+      .replace(/<反引号>/g, '`')
+      .replace(/<值>/g, value)
+  } catch {
+    return null
+  }
+  return /<[^>]*>/.test(decoded) ? null : decoded
+}
+
+/** 第 1 列（族列）的解析结果，由 §4 的行扫描填充，由 §4b 判定。 */
+const familyColumn = { ids: [], closedSetClaims: [], malformed: 0 }
+
 {
   const name = 'every cell in the plan surface table matches the real scanner'
   const content = readDocument(PLAN)
@@ -338,6 +363,25 @@ const oracleLine = (line) => {
       if (columns.length !== 4 || /^-+$/.test(columns[0]) || columns[0] === '族') {
         continue
       }
+      // ---- 第 1 列（族列）：先收集，判定在 §4b。 ----
+      // 放在角色/判定列检查**之前**，好让一个写坏的第 3 列不至于把第 1 列的问题遮住。
+      const family = columns[0]
+      for (const match of family.matchAll(/`((?:open|unguarded|control)\/[a-z0-9-]+)`/g)) {
+        familyColumn.ids.push(match[1])
+      }
+      if (family.includes('闭集')) {
+        const claim = /闭集 (\d+) 个：(.*?)等/.exec(family)
+        if (claim === null) {
+          // 声明了闭集却写不成可解析的形状：fail closed，不得当作「没有声明」跳过。
+          familyColumn.malformed += 1
+        } else {
+          familyColumn.closedSetClaims.push({
+            declared: Number(claim[1]),
+            spans: [...claim[2].matchAll(/`([^`]+)`/g)].map((match) => match[1])
+          })
+        }
+      }
+
       const [, role, examples, verdict] = columns
       const spans = [...examples.matchAll(/`([^`]+)`/g)].map((match) => match[1])
       if (!['strict', 'prose'].includes(role) || !['沉默', '命中'].includes(verdict) || spans.length === 0) {
@@ -345,12 +389,9 @@ const oracleLine = (line) => {
         continue
       }
       for (const span of spans) {
-        const decoded = span
-          .replace(/<U\+([0-9A-Fa-f]{4,6})>/g, (_, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
-          .replace(/<反引号>/g, '`')
-          .replace(/<值>/g, value)
-        // 未知记法必须 fail closed：否则一个写错的占位会被当成字面文本静默通过。
-        if (/<[^>]*>/.test(decoded)) {
+        // 未知记法与越界码点必须 fail closed：否则一个写错的占位会被当成字面文本静默通过。
+        const decoded = decodeSpan(span)
+        if (decoded === null) {
           malformed += 1
           continue
         }
@@ -421,6 +462,83 @@ const oracleLine = (line) => {
         }
       }
     }
+  }
+}
+
+// ===========================================================================
+// §4b 计划文档表格**第 1 列**：族 id ↔ 登记表，闭集大小与成员 ↔ 脚本导出的枚举
+// ===========================================================================
+{
+  // 为什么单列一节：此前 §4 只解码第 3 列、只断言第 4 列，**第 1 列零判据**。实测
+  // 三种注入全部 exit 0——第 1 列写登记表里不存在的族 id、把「闭集 17 个」写成
+  // 「闭集 99 个」、把成员写成 `Q` `7` `@`。Round 26 两条 P1 的第一条就长在这里：
+  // 那一格把 ASCII `ss`（两个码点）与 `i` 发表为 17 码点闭集的成员。
+  const name = 'the family column of the plan surface table matches the registry and the derived closed set'
+  const closedSet = new Set(caseFoldingSplitCodePoints())
+  const registryIds = new Set([
+    ...registry.families.map((family) => family.id),
+    ...unguardedFamilies.map((family) => family.id)
+  ])
+  // 本表枚举的是**已登记开着的面**（open + 零看守）。control 族是正向对照，表里点名
+  // 一个即可——要求第 1 列与 families ∪ unguardedFamilies **同外延**会把一张正确的
+  // 表判红（表内 10 个 id，登记表并集 12 个，另两个 control 是刻意不点名的）。
+  const enumeratedIds = [
+    ...registry.families.filter((family) => family.expect !== 'caught').map((family) => family.id),
+    ...unguardedFamilies.map((family) => family.id)
+  ]
+  const named = new Set(familyColumn.ids)
+  const problems = []
+
+  if (familyColumn.malformed > 0) {
+    problems.push(`第 1 列有 ${String(familyColumn.malformed)} 处闭集声明无法解析`)
+  }
+  // A1 幽灵族：第 1 列点名的每个族 id 必须在登记表里。文档侧 id 不回显，只报数量。
+  const ghosts = [...named].filter((id) => !registryIds.has(id))
+  if (ghosts.length > 0) {
+    problems.push(`第 1 列有 ${String(ghosts.length)} 个族 id 不在登记表里`)
+  }
+  // A2 漏列：登记表里每个 open / 零看守族都必须在第 1 列出现过。缺的是登记表侧的
+  // 静态字面量，可以回显。
+  const absent = enumeratedIds.filter((id) => !named.has(id))
+  if (absent.length > 0) {
+    problems.push(
+      `第 1 列漏列 ${String(absent.length)}/${String(enumeratedIds.length)} 个已登记族（${absent.join(', ')}）`
+    )
+  }
+  for (const claim of familyColumn.closedSetClaims) {
+    // B 闭集大小：发表的 N 必须等于门禁**枚举出来**的大小，不许手写。
+    if (claim.declared !== closedSet.size) {
+      problems.push(`第 1 列发表的闭集大小与枚举出的 ${String(closedSet.size)} 不符`)
+    }
+    // C 成员：每个成员解码后必须是**单个码点**且 ∈ 枚举出的闭集。
+    // 解码走 §4 第 3 列同一套记法，未知记法与越界码点一律算不合格。
+    const outside = claim.spans.filter((span) => {
+      const decoded = decodeSpan(span)
+      if (decoded === null) {
+        return true
+      }
+      const points = [...decoded]
+      return points.length !== 1 || !closedSet.has(points[0].codePointAt(0))
+    })
+    if (outside.length > 0) {
+      problems.push(
+        `第 1 列举出的 ${String(outside.length)}/${String(claim.spans.length)} 个闭集成员` +
+          '解码后不是枚举出的闭集里的单个码点'
+      )
+    }
+  }
+
+  if (problems.length > 0) {
+    for (const problem of problems) {
+      fail(name, problem)
+    }
+  } else {
+    pass(
+      name,
+      `第 1 列 ${String(named.size)} 个族 id 全部在登记表内、${String(enumeratedIds.length)} 个` +
+        `已登记族全部被点名，${String(familyColumn.closedSetClaims.length)} 条闭集声明与枚举出的 ` +
+        `${String(closedSet.size)} 个成员逐个相符`
+    )
   }
 }
 
