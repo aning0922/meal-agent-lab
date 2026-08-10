@@ -63,6 +63,17 @@ const STATUS = 'docs/project-status.md'
 const ADR = 'docs/architecture/decisions/0005-local-private-deployment-baseline.md'
 const DOCKER_README = 'infra/docker/README.md'
 
+/**
+ * 族 id 的**形状**，§2 与 §4b 共用。
+ *
+ * 字符类刻意比登记表里实际用到的宽（登记表全是小写加连字符）：**窄字符类会让一个
+ * 大小写写错的 id 根本不被采集**，于是「幽灵族」判据看不见它。实测
+ * `open/GHOST-FAMILY` 在 `[a-z0-9-]` 下不匹配——它只有在**替换**掉一个真 id 时才被
+ * 「漏列」判据间接抓到，若是**新增**一个则全绿。宽采集、再与登记表逐 id 比对，
+ * 才是 fail closed 的方向。
+ */
+const FAMILY_ID_PATTERN = /`((?:open|unguarded|control)\/[A-Za-z0-9_-]+)`/g
+
 const sameSet = (left, right) => {
   const a = new Set(left)
   const b = new Set(right)
@@ -168,10 +179,9 @@ const sameSet = (left, right) => {
 // ===========================================================================
 {
   const name = 'the family lists published in the docs match the registry ids'
-  const idPattern = /`((?:open|unguarded|control)\/[a-z0-9-]+)`/g
   const idsOnLinePrefixedBy = (content, prefix) => {
     const line = content.split('\n').find((candidate) => candidate.startsWith(prefix))
-    return line === undefined ? null : [...line.matchAll(idPattern)].map((match) => match[1])
+    return line === undefined ? null : [...line.matchAll(FAMILY_ID_PATTERN)].map((match) => match[1])
   }
   const expectedOpen = registry.families.filter((f) => f.expect === 'open').map((f) => f.id)
   const expectedUnguarded = unguardedFamilies.map((f) => f.id)
@@ -366,7 +376,7 @@ const familyColumn = { ids: [], closedSetClaims: [], malformed: 0 }
       // ---- 第 1 列（族列）：先收集，判定在 §4b。 ----
       // 放在角色/判定列检查**之前**，好让一个写坏的第 3 列不至于把第 1 列的问题遮住。
       const family = columns[0]
-      for (const match of family.matchAll(/`((?:open|unguarded|control)\/[a-z0-9-]+)`/g)) {
+      for (const match of family.matchAll(FAMILY_ID_PATTERN)) {
         familyColumn.ids.push(match[1])
       }
       if (family.includes('闭集')) {
