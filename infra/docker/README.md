@@ -180,7 +180,37 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 
 这两张表是**登记**（`check-m3b-registry-integrity.mjs` §7 会把 README 记录的
 脚本集合与仓库里真实的可执行脚本集合机械比对），不是 M3B 门禁清单的一部分；
-把 M4 演练并入 `pnpm stage09a:check` 属于 M5。
+两条演练已并入 M5 的 `pnpm stage09a:check`（见下节）。
+
+### M5：阶段聚合门禁与 API runtime image 扫描
+
+**阶段级聚合命令**（入口在 `scripts/run-stage09a-check.mjs`，不在本目录）：
+
+```bash
+pnpm stage09a:check                    # stage08 → 静态检查 → 镜像扫描 → 9 条 M3B 门禁 → 两条 M4 演练
+pnpm stage09a:check -- --keep-failure  # 失败时保留支持该开关的门禁现场（显式 opt-in）
+```
+
+它**只做串联**，不实现新检查：按计划文档 M5 的链路顺序执行 `pnpm stage08:check`、
+Compose 静态门禁与变异反例、下面两条 M5 镜像门禁、其余 M3B 门禁（相互之间保持
+上方门禁表的既有顺序）、smoke 与 Secret 身份探针、两条 M4 演练。fail fast，逐步
+状态在结尾汇总表如实列出；Docker CLI / Compose v2 / daemon / git / pnpm 任一缺失
+时在执行任何检查之前明确失败为「缺少前置工具」，不降级成静态检查后宣称通过。
+每个动态门禁/演练自带 scoped cleanup 与零残留复查，`--keep-failure` 逐层透传。
+
+**M5 新增的两条镜像门禁**（指向验收门禁 #13 的 BLOCK 级风险——客户端依赖泄漏
+进 runtime image；不属于冻结的 M3B 门禁清单）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：本轮唯一 tag 构建 → `docker create`/`export` 全文件系统取证（不启动容器）→ 宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 精确相等；镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族），判定面是包清单 ∪ 全镜像 `node_modules/<name>` 路径段，与闭包比对互相独立。支持 `--keep-failure` |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline（真实 Dockerfile 静态零 problem + 真实构建扫描零 problem），再对 Dockerfile 施加定向变异（植入 denylist 包、构建阶段残留、EXPOSE、secret 形态 ENV、root 用户、浮动基础镜像），每项都必须**以指定理由**被拒——只失败不够。变异文本经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；浮动基础镜像只做静态判定不构建（构建它就是去拉未固定的标签） |
+
+共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
+期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
+deps 状态记录，仓库因此在 `pnpm-workspace.yaml` 显式声明
+`verifyDepsBeforeRun: false`（本地与 CI 都只用显式的
+`pnpm install --frozen-lockfile`，门禁仓库不允许隐式 install）。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
@@ -262,18 +292,22 @@ bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/
 Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前置工具 / 无法判定」
 失败退出，不降级成纯文本检查后宣称通过。
 
-把它并入 `pnpm stage09a:check` 属于 M5；M3 会再补运行期 Secret 与暴露级别断言。
+它已并入 M5 的 `pnpm stage09a:check`；运行期 Secret 与暴露级别断言已由 M3 落地。
 
 ## 当前状态与边界
 
 M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
-已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**。
+已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）；M5 未开始；
+（见上方 M4 一节）。**M5（聚合门禁、镜像扫描、CI workflow、依赖例外复核与文档
+收口）已交付实施**（implementation complete, pending total-control review），
+`pnpm stage09a:check` 已取得本地全绿证据（见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
-仍为 `Proposed`，阶段 09A 仍为 In Progress。
+已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
+GitHub Actions workflow 复用同一命令但**尚无真实远端 run**，真实 run 成功之前
+只登记「已配置」。
 
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
@@ -284,8 +318,8 @@ Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
 75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 69 cases、
 15 项拓扑变异反例、5 个确定性进程组回归与 5 个真实信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
-M3B **已于 2026-08-11 Accepted，验收落点 `cf43452`**；未完成的是
-M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
+M3B **已于 2026-08-11 Accepted，验收落点 `cf43452`**；M4 与 M5 均已在同日交付
+（M4 已 Accepted，M5 候选待审）。阶段 09A 总验收未完成，阶段仍为 In Progress。
 
 `08da379` 的两路独立复验再次给出 **BLOCK**；Round 19 候选 `c8d7236` 又由项目总控
 第一阶段只读裁定为 **BLOCK**（crossing stem 与 `=` 之间有 ASCII 空白时 5 个非
@@ -345,6 +379,7 @@ build 出的 immutable image ID；cleanup 只删本轮 tag。因此并行 worktr
 M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 [runbook](../../docs/operations/stage-09a-local-test-lifecycle.md)：停止/重启
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
-owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，均已取得本地实测证据
-（implementation complete, pending total-control review）。`pnpm stage09a:check`
-聚合门禁与远端 CI 属于 M5——M5 未取得证据之前，阶段 09A **不得记为 Pass**。
+owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
+**Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
+取得本地全绿证据；远端 CI workflow 复用同一命令但尚无真实 run，真实 run 成功
+之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

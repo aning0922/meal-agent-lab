@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-04 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；**M5「门禁、CI 与文档」已交付实施（implementation complete, pending total-control review），`pnpm stage09a:check` 本地全绿（主工作树 + 干净 checkout），ADR-0005 已凭真实容器证据转 `Accepted`；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成**）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -1308,19 +1308,19 @@ Accepted，验收落点 `a839df1`。）
 「仍为整改中」是**当时**的状态记录，保留不改。
 
 **下一项是 M3B**：环境模板、八份 Secret 的生成与交叉一致性、完整 Compose bootstrap
-链、`/readyz=200` 与网络隔离实证。M4、M5 未开始。ADR-0005 保持 `Proposed`，
-PR #1 保持 Draft。
+链、`/readyz=200` 与网络隔离实证。（这是 M3A 验收时点的记录；M3B、M4 此后已
+相继 Accepted，M5 见其实施记录。）
 
 M3A **不覆盖**，属于 **M3B**：`infra/environments/` 的完整 local-test 模板
 （第 1 条）、八份 Secret 的生成/派生/交叉一致性预检、database name 与三个
 URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
 （`0000 → handoff → acl → migrate → grants`）与 `/readyz=200` 实证、
 `config`/`inspect`/`history`/`logs` 的容器级 sentinel 扫描，以及宿主全部非
-loopback 地址的动态隔离证明（第 5 条）。**M4、M5 未开始。**
+loopback 地址的动态隔离证明（第 5 条）。**M4、M5 当时未开始。**
 
-### M3B 实施记录（已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收）
+### M3B 实施记录（已于 2026-08-11 Accepted，验收落点 `cf43452`）
 
-**状态：M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收。**落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)、
+**状态：M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`。**落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)、
 [`generate-local-test-secrets.mjs`](../../infra/docker/generate-local-test-secrets.mjs)、
 [`preflight-local-test-secrets.mjs`](../../infra/docker/preflight-local-test-secrets.mjs)、
 [`probe-compose-secret-identity.mjs`](../../infra/docker/probe-compose-secret-identity.mjs)、
@@ -2805,14 +2805,13 @@ Docker 的确定性进程组回归 + 5/5 真实信号窗口**。
 suite = **4/4 不依赖 Docker 的确定性进程组回归 + 5/5 真实信号窗口**。其他 M3B
 门禁口径不变：local-test 75/75、拓扑变异 15/15。
 
-**M3B 状态：已于 2026-08-11 Accepted，验收落点 `cf43452`；
-未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
-`Proposed`；PR #1 保持 Draft。M4、M5 未开始。**
+**M3B 状态：已于 2026-08-11 Accepted，验收落点 `cf43452`。阶段 09A 仍为
+In Progress；PR #1 保持 Draft。（M4/M5 与 ADR-0005 的后续进展见各自实施记录。）**
 
 M3B **不覆盖**（属于 M4、M5）：停止/重启持久化、`pg_dump`/`pg_restore` 备份恢复、
 备份 SHA、N-1 恢复演练、API SIGTERM 生命周期、`pnpm stage09a:check` 聚合门禁与
 GitHub Actions。本轮保持 fake adapter，不调用任何真实微信服务；不购买服务器、
-不开放公网；ADR-0005 保持 `Proposed`，PR #1 保持 Draft；M4、M5 未开始。
+不开放公网；PR #1 保持 Draft；M4/M5 的后续进展见各自实施记录。
 
 ##### M3B Round 18：`9995212` 双审计 BLOCK 后的证据边界收口
 
@@ -3226,10 +3225,10 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 **为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
 Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
-artifacts × 334 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
+artifacts × 338 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
 的树，Round 25 候选树为 322，Round 26 加入登记表模块与登记完整性门禁后为 324，
 M4 加入生命周期/备份恢复入口与演练、runbook、备份目录说明与关机强制退出回归后为
-334——
+334，M5 加入聚合门禁入口、镜像扫描库与两条镜像门禁后为 338——
 这个数字现在由 `check-m3b-registry-integrity.mjs` 对 `git ls-files` 数出来再与本句
 比对，不再手写）——这三条与本文件的**键名判据零共享**（`local-test-containment.mjs`
 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` /
@@ -3296,7 +3295,8 @@ review**。全绿仍不等于 Accepted：必须让同样两路独立只读审计
 重新给出结论，再回到项目总控复核第一阶段。
 
 **M3B 状态：已于 2026-08-11 Accepted，验收落点 `cf43452`；阶段 09A
-仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**
+仍为 In Progress；PR #1 保持 Draft。（M4/M5 与 ADR-0005 的后续进展见各自
+实施记录。）**
 
 ### M4：生命周期、备份和恢复
 
@@ -3328,7 +3328,7 @@ review**。全绿仍不等于 Accepted：必须让同样两路独立只读审计
 6. 本阶段只记录本地演练耗时，不声明生产 RPO/RTO。
 7. SIGTERM 测试必须证明进程在限定时间内真正退出；当前只设置 `process.exitCode` 的超时分支不能作为强制退出证据。
 
-### M4 实施记录（implementation complete, pending total-control review）
+### M4 实施记录（已于 2026-08-11 Accepted，验收落点 `f671c51`）
 
 实施分支 `claude/stage-09a-m4-lifecycle`，基线 main `3b22674`。落点：
 
@@ -3370,7 +3370,7 @@ owner / `SECURITY DEFINER` / GRANT / RLS / policy / 角色属性 / membership �
 被恢复链真实执行，`0000`-only 的 containment 被全新安装链真实执行——删除任一
 都会让对应演练 fail closed；这不是一条独立的状态清单机械比对（后者进 backlog）。
 
-M4 的验证命令（并入 `pnpm stage09a:check` 属于 M5）：
+M4 的验证命令（已并入 M5 的 `pnpm stage09a:check`）：
 
 ```bash
 node infra/docker/run-local-test-lifecycle.mjs
@@ -3378,9 +3378,8 @@ node infra/docker/run-local-test-restore-drill.mjs
 pnpm --filter @meal-agent/api test:unit
 ```
 
-M4 **不覆盖**（仍属 M5）：`stage09a:check` 聚合门禁、GitHub Actions、根/API/
-infra/operations README 与 ADR-0005 的总收口。阶段 09A 仍为 In Progress，
-ADR-0005 仍为 `Proposed`。
+M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR-0005 总收口
+已由 M5 交付（见 M5 实施记录）。
 
 ### M5：门禁、CI 与文档
 
@@ -3400,6 +3399,73 @@ ADR-0005 仍为 `Proposed`。
 4. API runtime image 必须证明不包含 Taro、Swiper、webpack-dev-server 等客户端依赖，并执行适用于服务端镜像的独立依赖/组件扫描。
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
+
+### M5 实施记录（implementation complete, pending total-control review）
+
+实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
+
+- **聚合门禁**
+  [`scripts/run-stage09a-check.mjs`](../../scripts/run-stage09a-check.mjs)
+  （根命令 `pnpm stage09a:check`）：只做串联、不实现新检查——按本节第 1 项的
+  链路顺序执行 `pnpm stage08:check`、Compose 静态门禁与变异反例、M5 两条镜像
+  门禁、其余 M3B 门禁（相互之间保持 README 门禁表的既有顺序）、smoke、Secret
+  身份探针、两条 M4 演练。fail fast，逐步状态在结尾汇总表如实列出；Docker CLI /
+  Compose v2 / daemon / git / pnpm 任一缺失时在执行任何检查之前明确失败为
+  「缺少前置工具」（门禁 #11）；`--keep-failure` 逐层透传给支持它的入口，显式
+  opt-in 才保留失败现场（门禁自身的 scoped cleanup 与零残留复查不变）；每步有
+  兜底超时（先 SIGTERM 留给子门禁清理、宽限后 SIGKILL），本脚本只打印固定文案、
+  argv 与耗时，不回显环境（第 2 项）。
+- **API runtime image 扫描**（第 4 项；指向门禁 #13 的 BLOCK 级风险，符合
+  「新增检查必须指向 BLOCK 级风险」的门禁冻结口径）：共享核心
+  [`infra/docker/api-image-scan.mjs`](../../infra/docker/api-image-scan.mjs) +
+  门禁 [`check-api-runtime-image.mjs`](../../infra/docker/check-api-runtime-image.mjs) +
+  变异反例套件
+  [`check-api-runtime-image-mutations.mjs`](../../infra/docker/check-api-runtime-image-mutations.mjs)。
+  设计与登记见 [`infra/docker/README.md`](../../infra/docker/README.md) 的 M5
+  一节：期望闭包由与 Dockerfile runtime-closure **完全相同**的
+  `pnpm deploy --prod --legacy` 在宿主派生（lockfile 逐字节只读断言），证据取自
+  真实构建产物的 `docker export` 全文件系统（不启动容器、不执行镜像内代码），
+  同一个 walker 走两棵树精确比对 store key / 顶层链接 / name@version；显名
+  denylist（Taro、Swiper、webpack-dev-server 等族）判定面是包清单 ∪ 全镜像
+  `node_modules/<name>` 路径段，与闭包比对互相独立；镜像 Config、`/app` 结构、
+  migrations 逐字节、包管理器清除面逐项固定。判别力不靠声称：变异套件先跑正向
+  baseline，再对 Dockerfile 施加定向变异（stdin 构建，不改写 tracked 文件），
+  每项都必须**以指定理由**被拒（吸收 M3B 移交清单「判别力抽查放进 M5 收口」）。
+- **GitHub Actions**（第 3 项）：[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)
+  改为单一 job 直接执行 `pnpm stage09a:check`（原生 PostgreSQL 18 步骤保留给
+  stage08 部分；Docker Engine + Compose v2 用 runner 自带），不维护第二套部署
+  逻辑。**仓库尚未推送远端，该 workflow 没有任何真实 run**：按第 3 项纪律只
+  登记「workflow 已配置」，不记录 CI Pass；真实 run 成功后必须补登 URL/ID
+  （门禁 #10）。
+- **依赖例外复核**（第 5 项）：复核记录在
+  [ADR-0004](../architecture/decisions/0004-stage-08-pre-release-audit-closeout.md)
+  「M5 例外复核」一节——登记自 2026-08-06 续期后零改动、到期日维持 2026-11-08
+  **不续期**；复核当天 registry 新披露的 `nanoid` GHSA-2v37-7h3g-55p8 按
+  `f3e3099` 先例以 patch 级 override 清除（lockfile 仅此一处变化），**不扩展
+  例外**；补上「已过期例外 fail closed」回归测试，并修复两条既有测试依赖真实
+  挂钟、旧夹具到期日过后必然误红的时间炸弹（显式传 `now`，判定语义不变）。
+- **工具链边界事实**：实测 `pnpm deploy` 会改写 pnpm 的工作区 deps 状态记录，
+  使下一条 `pnpm run`/`pnpm exec` 的自动校验试图执行 `pnpm install --production`
+  （会清掉 dev 依赖树，非 TTY 下中止）。仓库因此在
+  [`pnpm-workspace.yaml`](../../pnpm-workspace.yaml) 显式声明
+  `verifyDepsBeforeRun: false`：门禁仓库不允许任何隐式 install，本地与 CI 都只
+  用显式的 `pnpm install --frozen-lockfile`。
+- **文档收口**（第 6 项）：根 README、`infra/docker/README.md`、operations
+  runbook、项目状态、本计划与 ADR-0005。ADR-0005 凭下述真实容器证据由
+  `Proposed` 转 `Accepted`；其中一处既有失真一并修正（例外到期日仍写着已作废的
+  2026-08-08）。
+
+**证据（2026-08-11）**：`pnpm stage09a:check` 本地完整执行全绿——一次在主工作树
+（候选树），一次从候选提交的**干净 checkout**（`git clone` 到仓库外目录 +
+`pnpm install --frozen-lockfile`，满足 ADR-0005 验证条件 1 与门禁 #1 的证据
+方向）。链内包含：stage08 全量、真实镜像构建与扫描、镜像门禁变异反例、九条
+M3B 门禁（含空 volume 完整链 smoke 与 Secret 身份探针）、生命周期演练（持久化
+重启）与备份/恢复演练（篡改反例 + 单事务恢复 + 授权面逐字一致）。逐步耗时以
+聚合门禁的汇总表输出为准，不在此复写。
+
+**M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
+09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的
+裁决，不在本记录声称范围内。
 
 ## 验收门禁
 
@@ -3465,40 +3531,19 @@ pnpm --filter @meal-agent/api manifest:check      # 只读门禁，一次校验�
 pnpm --filter @meal-agent/api manifest:generate   # 开发期重新生成四个 adapter
 ```
 
-M2B 与 M3A 另有两条命令，尚未并入任何聚合脚本（并入 `stage09a:check` 属于 M5）：
+全部独立门禁/演练命令（M2B/M3B 的门禁面、两条运维命令、M4 的两条演练与 M5 的
+两条镜像门禁）**已并入 M5 的 `pnpm stage09a:check`**，且不再在本文件重复抄录
+清单——此前这里维护过一份手抄命令列表，与 README 的门禁表各自漂移（一度写成
+「五条命令 / 47 项反例」，后来的「七条」也少于真实集合）。唯一事实源是
+[`infra/docker/README.md`](../../infra/docker/README.md) 的各张命令表：它们由
+`check-m3b-registry-integrity.mjs` §7 与仓库里真实的可执行脚本集合机械比对，
+多一份、少一份、指向不存在的脚本都会转红。各命令仍可独立执行（诊断与开发期
+用法见该 README）；`check-compose-topology-mutations.mjs` 会**临时改写** tracked
+的 `compose.local-test.yaml` 再运行门禁——它在文件不干净时拒绝运行，每次变异后
+立即写回原始字节，并在结束时逐字节复核还原结果。
 
-```bash
-node infra/docker/check-compose-topology.mjs             # 解析后 Compose 配置的静态门禁
-node infra/docker/check-compose-topology-mutations.mjs   # 上一条门禁自身的变异反向测试
-```
-
-变异反向测试会**临时改写** tracked 的 `compose.local-test.yaml` 再运行门禁；它在
-文件不干净时拒绝运行，每次变异后立即写回原始字节，并在结束时逐字节复核还原结果。
-
-M3B 的**独立门禁命令是七条**（同样尚未并入聚合脚本，属于 M5）。这一段此前写的
-是「五条命令 / 47 项反例」，那是 M3B 早期的数字，早已被后续几轮整改推翻；现按
-实际实现列出：
-
-```bash
-node infra/docker/check-m3b-round2-negatives.mjs       # M3B targeted negative suite（69 cases）
-node infra/docker/check-local-test-negatives.mjs       # 75 cases = 1 正向 baseline + 74 反例/边界
-node infra/docker/check-m3b-signal-windows.mjs         # 5 个确定性进程组回归 + 5 个真实信号窗口
-node infra/docker/check-compose-topology.mjs           # 解析后配置的静态拓扑门禁
-node infra/docker/check-compose-topology-mutations.mjs # 15 项拓扑变异反例
-node infra/docker/run-local-test-smoke.mjs             # 空 volume 完整链 + containment + 隔离
-node infra/docker/probe-compose-secret-identity.mjs    # Compose Secret 的容器内 UID/mode 证据
-```
-
-另有两条**运维**命令，不属于门禁：
-
-```bash
-node infra/docker/generate-local-test-secrets.mjs      # 八份 Secret 的单一来源生成
-node infra/docker/preflight-local-test-secrets.mjs     # 部署前交叉一致性预检
-```
-
-`pnpm stage09a:check` **尚未创建**（属于 M5）。在它存在之前，本阶段的本地证据由
-`pnpm stage08:check` 与上面各条命令给出，不得把 `stage08:check` 通过表述为阶段
-09A 通过，也不得把 M2B 的静态断言与 postgres 单服务启动表述为全栈通过；M3B 的
-smoke 通过也只覆盖 M3B 自身的范围，不含 M4 的备份恢复与 M5 的聚合门禁。
+`pnpm stage09a:check` 的本地全绿构成**阶段级本地证据**；它不等于 09A 总验收
+（后者还要走「## 验收门禁」全表与远端 CI 条件），也不改变「M3B smoke 只覆盖
+M3B 自身范围」这类单命令证据边界的表述。
 
 Compose 运行未完成或备份恢复未验证时，只能记录对应里程碑 `未开始`/`未验证`，不能把阶段状态改为已完成。容器引擎已就绪，`Blocked — 缺少本地容器引擎` 不再适用。

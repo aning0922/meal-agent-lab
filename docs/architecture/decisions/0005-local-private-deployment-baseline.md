@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
-- 状态：Proposed
-- 日期：2026-07-26（实施注记最后更新 2026-08-11，M3A 已 Accepted（验收落点 `a839df1`）；M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收）
+- 状态：Accepted
+- 日期：2026-07-26（**2026-08-11 由 `Proposed` 转 `Accepted`**：M4「生命周期、备份和恢复」已 Accepted（验收落点 `f671c51`），M5 交付 `pnpm stage09a:check` 聚合门禁并取得本地完整证据——主工作树与干净 checkout 各一次全绿，满足下方「验证与接受条件」全部七项；09A 总验收与远端 CI 真实 run 仍未完成，见文末注记）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -167,8 +167,10 @@ grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验
 **M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
 §4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
 [§4 的实施注记](#4-secret日志与镜像边界)）。**M3B（环境模板、八份 Secret、
-完整 bootstrap 链、`/readyz=200` 与网络隔离实证）已于 2026-08-11 Accepted，验收落点 `cf43452`**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
-（M4、M5 未开始），备份恢复与阶段总门禁尚无证据，本 ADR 因此保持 `Proposed`。
+完整 bootstrap 链、`/readyz=200` 与网络隔离实证）已于 2026-08-11 Accepted，验收落点 `cf43452`**（见 §4 的 M3B 注记）。**M4（生命周期、备份和恢复）
+已于 2026-08-11 Accepted（验收落点 `f671c51`），M5 交付了 `pnpm stage09a:check`
+聚合门禁与 API runtime image 扫描并取得本地完整证据**，本 ADR 据此转
+`Accepted`；09A 总验收与远端 CI 真实 run 仍未完成。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
 PostgreSQL 语义展开为隐式内建默认，因此它不是「物理 ACL 行」）、
@@ -338,8 +340,10 @@ readiness 只以 runtime login 连接；`docker compose config`、全部容器 i
 （Config.Env/Cmd/Args/Mounts）、image inspect 与 `history --no-trunc`、全部容器
 logs、tracked files 与 smoke 自身输出的 sentinel 扫描零命中；`::1` 与宿主全部非
 loopback 地址逐一连接失败，postgres 无 PublishedPort，api 只有一个
-`127.0.0.1` binding。**仍未取得**：停止/重启持久化、备份恢复（M4）与
-`pnpm stage09a:check` 聚合门禁、远端 CI run（M5）。
+`127.0.0.1` binding。停止/重启持久化与备份恢复已由 M4 取得（Accepted，验收落点
+`f671c51`）；`pnpm stage09a:check` 聚合门禁与 API runtime image 扫描已由 M5
+交付并取得本地全绿证据（见计划文档 M5 实施记录）。**仍未取得**：远端 CI 真实
+run（仓库未推送远端，workflow 仅登记「已配置」）。
 
 这里的深层 shape、identity 与完整性只描述 Docker inspect/image/history；resolved
 Compose config helper 只验证成功状态、stdout 为字符串且非空，结构与拓扑另由专门
@@ -416,7 +420,7 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 - 既有 `0000` 导致空库 bootstrap 仍有一个显式高权限步骤；
 - 单机 Compose 不提供生产高可用、正式 Secret 服务、WAF 或生产监控；
 - fake 登录环境只能用于合成数据和内部验证；
-- 当前依赖审计例外截至 2026-08-08 且阻断 external-test，阶段 09B 不能借本 ADR 绕过该限制。
+- 当前依赖审计例外截至 2026-11-08（2026-08-06 显式续期、2026-08-11 M5 复核不续期，见 ADR-0004）且阻断 external-test，阶段 09B 不能借本 ADR 绕过该限制。此处原写「截至 2026-08-08」，是续期后未同步的失真，2026-08-11 修正。
 
 ## 验证与接受条件
 
@@ -429,6 +433,16 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 5. 停止重启、SIGTERM、migration 超时、备份 checksum 与全新 volume 恢复通过；
 6. `pnpm stage08:check` 保持通过；
 7. 文档没有把本地证据写成云、真实微信、外部测试或生产 Pass。
+
+**接受注记（2026-08-11）**：七项全部满足——条件 1 由 M5 的 `pnpm stage09a:check`
+从候选提交的干净 checkout（仓库外 `git clone` + `pnpm install --frozen-lockfile`）
+完整通过取得；条件 2—4 由链内的 smoke（runtime 最小权限与 readiness 连接身份、
+`::1` 与非 loopback 逐一失败、containment 扫描）与 M5 镜像扫描（image 依赖/组件
+与 Config 逐项固定）取得；条件 5 由 M4 两演练取得（Accepted，验收落点
+`f671c51`）；条件 6 是同一聚合链的第一步；条件 7 由 M5 文档收口维持——远端 CI
+只登记「workflow 已配置」，无真实 run，不记 CI Pass。本 ADR 的 `Accepted` 指
+**本地与私有测试部署基线成立**；它不等于 09A 总验收（计划文档「## 验收门禁」
+全表），更不等于任何云、公网或发布判定。
 
 以下条件触发复审：
 

@@ -65,6 +65,18 @@ test('invalid or infinite expiry fails closed', () => {
   )
 })
 
+test('an already-expired exception fails closed', () => {
+  // 到期强制是「不得静默续期」的工具链侧另一半：过期后任何 target 的审计都
+  // 必须硬失败，而不是继续沿用旧例外。到期日当天仍然有效，次日拒绝。
+  assert.throws(
+    () => validateAuditPolicy(policy(), Date.parse('2026-08-09T00:00:01+08:00')),
+    /exception expired at/
+  )
+  assert.doesNotThrow(() =>
+    validateAuditPolicy(policy(), Date.parse('2026-08-08T23:59:58+08:00'))
+  )
+})
+
 test('exit 2 fails even when JSON contains matching advisories', () => {
   assert.throws(
     () => interpretAuditCommand(command({ status: 2 })),
@@ -159,20 +171,30 @@ test('missing vulnerability metadata fails closed', () => {
   )
 })
 
+// 下面两条必须传显式 `now`：夹具的默认到期日是过去式的 2026-08-08，靠真实挂钟
+// 会在到期次日让这两条先撞上「exception expired」而不是各自要断言的理由——
+// 2026-08-11 实测整个 suite 就是这样红掉的（时间炸弹，而非判定失真）。
 test('a new advisory fails closed', () => {
   const { actual } = interpretAuditCommand(command())
   assert.throws(
-    () => assertAcceptedAdvisories(validateAuditPolicy(policy()), actual),
+    () =>
+      assertAcceptedAdvisories(
+        validateAuditPolicy(policy(), Date.parse('2026-07-25')),
+        actual
+      ),
     /new advisory/
   )
 })
 
 test('a disappeared advisory fails closed', () => {
   const { actual } = interpretAuditCommand(command())
-  const accepted = validateAuditPolicy({
-    ...policy(),
-    advisories: actual
-  })
+  const accepted = validateAuditPolicy(
+    {
+      ...policy(),
+      advisories: actual
+    },
+    Date.parse('2026-07-25')
+  )
   assert.throws(
     () => assertAcceptedAdvisories(accepted, []),
     /disappeared/
