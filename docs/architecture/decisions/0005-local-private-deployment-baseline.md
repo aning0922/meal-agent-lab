@@ -367,7 +367,7 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 
 **（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点（`open/case-expanding-codepoint`）、数字开头粘连词干（`open/digit-leading-glued-stem`）、结合处数字（`open/glued-stem-joint-digit`）、benign 白名单反向注入（`open/benign-allowlist-injection`）、运算符尾键（`open/operator-tail-key`）；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
 
-**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`）、反引号引号族（`unguarded/backtick-quote`）、URL 前缀嵌套（`unguarded/url-prefix-nesting`）、prose 角色活行（`unguarded/prose-role-live-line`）。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」。**这 4 族目前没有任何门禁看守。**Round 26 已把 `expect` 的第三态 `mixed` 实现出来（登记表不再表达不了逐视图混合），但那 4 族仍然落不了格：缺的是**渲染面**而不是状态，要钉住它们必须先扩视图模板，属独立里程碑。
+**（乙）已进族/视图登记表但门禁无对应格的 4 族**：嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`）、反引号引号族（`unguarded/backtick-quote`）、URL 前缀嵌套（`unguarded/url-prefix-nesting`）、prose 角色活行（`unguarded/prose-role-live-line`）。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」。**这 4 族目前没有任何门禁看守。**Round 26 已把 `expect` 的第三态 `mixed` 实现出来（登记表不再表达不了逐视图混合），但那 4 族仍然落不了格：缺的是**渲染面**而不是状态，要钉住它们必须先扩视图模板，属独立里程碑。
 
 上面两份族名列表由 [`check-m3b-registry-integrity.mjs`](../../../infra/docker/check-m3b-registry-integrity.mjs) 与 [`m3b-surface-registry.mjs`](../../../infra/docker/m3b-surface-registry.mjs) 的 `families` / `unguardedFamilies` **机械比对**——多一个、少一个、拼错一个都转红。此前它是手抄的，于是「9 族全部已由门禁钉死」这句假话活过了一整轮审计。
 

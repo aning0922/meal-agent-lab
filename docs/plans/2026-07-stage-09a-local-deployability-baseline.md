@@ -3259,7 +3259,7 @@ Round 25 是**唯一目的为文档更正**的一轮，却仍被判 BLOCK，而�
 本轮因此不再逐个改数字，而是新增一条常驻门禁
 [`check-m3b-registry-integrity.mjs`](../../infra/docker/check-m3b-registry-integrity.mjs)
 执行一条规则：**任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，
-要么删掉。手算的数不许发表。** 七节逐节 fail closed，覆盖此前七次出错的全部形状。
+要么删掉。手算的数不许发表。** 逐节 fail closed。
 
 配套把族/视图登记表抽成
 [`m3b-surface-registry.mjs`](../../infra/docker/m3b-surface-registry.mjs)，让文档去

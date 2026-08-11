@@ -117,8 +117,10 @@ export const families = Object.freeze([
       '本族的闭集判据是「非 ASCII 的字母/数字，且注入后劈开 token」，' +
       '由 `caseFoldingSplitCodePoints()` 全 Unicode 枚举导出——**成员与大小都不在这里手写**，' +
       '计划文档发表的那两样由 `check-m3b-registry-integrity.mjs` 调用该函数比对。' +
-      '注意「大小写扩张」只是其中一条路径：\u{0131}(i) 与 \u{017F}(long s) **并不展开**，' +
-      '它们靠自身即非 ASCII 字母而入集，故族名描述的是主要成因而非充要判据。'
+      '注意「大小写扩张」只是同一机理的一种形态：\u{0131}(i) 与 \u{017F}(long s) **并不展开**，' +
+      '而是被 toUpperCase() 单码点映射成 ASCII 的 I/S。成员入集的唯一机理是 toUpperCase() 的输出' +
+      '含有存活 [^A-Z0-9] 删除并劈开 token 的 ASCII 字母——仅是非 ASCII 字母并不入集' +
+      '（é、α 大写后仍非 ASCII，被整个删除、不劈 token），故族名描述的是主要成因而非充要判据。'
   },
   {
     id: 'open/digit-leading-glued-stem',

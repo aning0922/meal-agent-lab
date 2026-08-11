@@ -125,7 +125,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 
 **（甲）由 `check-m3b-template-surface-sweep.mjs` 逐族钉死并附原因的 5 族**：大小写扩张码点（`open/case-expanding-codepoint`）、数字开头粘连词干（`open/digit-leading-glued-stem`）、结合处数字（`open/glued-stem-joint-digit`）、benign 白名单反向注入（`open/benign-allowlist-injection`）、运算符尾键（`open/operator-tail-key`）；另有两份扫描 pathspec 之外的 tracked dotenv 模板由该门禁的 pathspec 检查钉住。
 
-**（乙）仅登记在阶段 09A 计划文档表格中、门禁无对应格的 4 族**：嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`）、反引号引号族（`unguarded/backtick-quote`）、URL 前缀嵌套（`unguarded/url-prefix-nesting`）、prose 角色活行（`unguarded/prose-role-live-line`）。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」。**这 4 族目前没有任何门禁看守。**（Round 26 已把 `expect` 的第三态 `mixed` 实现出来，登记表不再表达不了逐视图混合；但那 4 族仍然落不了格，因为缺的是**渲染面**而不是状态——要钉住它们必须先扩视图模板，属独立里程碑。）
+**（乙）已进族/视图登记表但门禁无对应格的 4 族**：嵌套 `hashIsComment`（`unguarded/nested-hash-is-comment`）、反引号引号族（`unguarded/backtick-quote`）、URL 前缀嵌套（`unguarded/url-prefix-nesting`）、prose 角色活行（`unguarded/prose-role-live-line`）。门禁的六个视图模板**结构上表达不了**它们——0/6 含反引号、0/6 含 `://`、0/6 含「`=` 后空白再接 `#`」。**这 4 族目前没有任何门禁看守。**（Round 26 已把 `expect` 的第三态 `mixed` 实现出来，登记表不再表达不了逐视图混合；但那 4 族仍然落不了格，因为缺的是**渲染面**而不是状态——要钉住它们必须先扩视图模板，属独立里程碑。）
 
 上面两份族名列表不再是手抄的：括号里的 id 由 [`check-m3b-registry-integrity.mjs`](../infra/docker/check-m3b-registry-integrity.mjs) 与 [`m3b-surface-registry.mjs`](../infra/docker/m3b-surface-registry.mjs) 的 `families` / `unguardedFamilies` **机械比对**，多一个、少一个、拼错一个都转红。
 
@@ -879,7 +879,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   仍被判 BLOCK，且往它被派去修的两份文档里**新注入了两处缺陷**（写坏的里程碑表、
   错的反引号分母）。总控诊断：「让完整性声明从断言变成推导」是必要的，但**推导必须
   跑在已提交的数据上**——概括「不在仓库里的枚举」的数字错误率一点没降，只换了形状。
-  本轮因此新增常驻门禁 `check-m3b-registry-integrity.mjs`（七节，逐节 fail closed），
+  本轮因此新增常驻门禁 `check-m3b-registry-integrity.mjs`（逐节 fail closed），
   执行一条规则：**任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，
   要么删掉**；并把族/视图登记表抽成 `m3b-surface-registry.mjs` 供文档比对而非各自手抄。
   同轮修掉 sweep 登记表**零自校验**（`expect` 拼错/删族/删视图/`why` 置空四种变异
