@@ -1,3 +1,5 @@
+import { writeSync } from "node:fs";
+
 import type { EventLogSink, ShutdownSignal } from "./log-events.js";
 
 /**
@@ -14,8 +16,18 @@ export interface ClosableApp {
   close: () => Promise<unknown>;
 }
 
-/** 优雅关闭的兜底时限。到点只改退出码，不强杀。 */
-const forceCloseMs = 10_000;
+/**
+ * 优雅关闭的兜底时限。到点**真正退出进程**（阶段 09A / M4）：此前只设
+ * `process.exitCode` 的版本不构成强制退出——`close()` 永不 settle 时，退出码
+ * 根本轮不到生效，进程要么被容器运行时 SIGKILL，要么（定时器被 `unref` 时）
+ * 以 0 静默退出。
+ */
+const defaultForceCloseMs = 10_000;
+
+/** 只为 subprocess 回归开的窄口：生产入口（`index.ts`）不传，用默认时限。 */
+export interface ShutdownOptions {
+  readonly forceCloseMs?: number;
+}
 
 /**
  * **应用**关闭失败时唯一的对外痕迹。
@@ -33,7 +45,10 @@ const reportCloseFailure = (): void => {
 };
 
 /** 装上 SIGINT / SIGTERM 的优雅关机处理器。第一个信号赢，后续信号被忽略。 */
-export const installShutdownHandlers = (app: ClosableApp): void => {
+export const installShutdownHandlers = (
+  app: ClosableApp,
+  { forceCloseMs = defaultForceCloseMs }: ShutdownOptions = {},
+): void => {
   let closing = false;
   // 参数类型收窄成 facade 的 `ShutdownSignal`：这个进程只为这两个信号安装 handler，
   // 而日志字段也只接受这两个。用 `NodeJS.Signals` 就等于把「任意信号名」这条自由
@@ -43,13 +58,36 @@ export const installShutdownHandlers = (app: ClosableApp): void => {
       return;
     }
     closing = true;
-    app.eventLog.emit("shutdown.started", { signal });
+    try {
+      app.eventLog.emit("shutdown.started", { signal });
+    } catch {
+      // sink 坏掉不能改变关机路径：不设防时这一抛会让 `void shutdown(…)` 变成
+      // unhandled rejection——close 不执行、强制退出定时器没建立、原始错误对象
+      // 还被 Node 默认输出打上 stderr，正是本文件其余分支极力避免的三件事。
+    }
 
     const forceClose = setTimeout(() => {
-      app.eventLog.emit("shutdown.timed-out", {});
-      process.exitCode = 1;
+      // 三步各自兜底：日志与 stderr 都可能正是坏掉的那一环，任何一步失败都
+      // 不得挡住最后的强制退出。emit 是尽力而为；writeSync(2) 是同步的固定
+      // 中性文本，不含任何来自错误对象或调用方的内容。
+      try {
+        app.eventLog.emit("shutdown.timed-out", {});
+      } catch {
+        // 日志目的地坏掉不改变结局。
+      }
+      try {
+        writeSync(2, "shutdown: forced exit after timeout\n");
+      } catch {
+        // stderr 坏掉同样不改变结局。
+      }
+      process.exit(1);
     }, forceCloseMs);
-    forceClose.unref();
+    // 刻意**不** `unref()`：关机正是「事件循环里没有别的 handle」的那一刻
+    // （监听 socket 已关、连接池已 end、信号监听器不 ref 循环）。unref 过的
+    // 定时器在那一刻不会触发，`close()` 永不 settle 时进程会以 0 静默退出——
+    // 这条已在 M3A 的 stalled-flush 回归里实测过。ref 的代价只是：close 挂死
+    // 时进程会活到时限为止，然后被这里强制退出，这正是想要的语义；close 正常
+    // settle 时 finally 里的 clearTimeout 会立即放掉这个 handle。
 
     try {
       await app.close();

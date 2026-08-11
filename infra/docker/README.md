@@ -159,6 +159,29 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 八份 Secret 的文件清单、角色与固定部署 identity 只有一个事实源：
 [`local-test-secrets-contract.mjs`](local-test-secrets-contract.mjs)。
 
+### M4：生命周期、备份与恢复
+
+操作顺序、全新安装与恢复的差异（`pg_dump` 不含 cluster roles）以及各入口的
+硬边界见 [runbook](../../docs/operations/stage-09a-local-test-lifecycle.md)。
+两条**运维**命令（针对长驻的默认部署）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/backup-local-test.mjs` | `pg_dump --format=custom` 备份（backup 角色 BYPASSRLS，FORCE RLS 不截断；写入被 Git 忽略的 [`backups/`](backups/README.md)，目录不被忽略即拒绝；生成 `*.sha256` sidecar；前后打印环境与数据库标识，不打印口令或连接串） |
+| `node infra/docker/restore-local-test.mjs` | 恢复到**全新** `meal_agent` 库（`--dump <path>`；恢复前先校验 sidecar，不匹配即拒绝且不调用 `pg_restore`；`createdb --owner=meal_agent_migrator` 后单事务 `pg_restore`；前置 `cluster`/`logins` 与后续 `acl → migrate → grants` 见 runbook） |
+
+两条**演练**命令（每轮唯一 project/image tag/合成 Secret，零残留复查，逐阶段
+打印本地耗时；均支持 `--keep-failure`）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/run-local-test-lifecycle.mjs` | 生命周期演练：构建 → 空 volume 初始化 → migration → 启动 → `/healthz`/`/readyz` → 合成数据授权读取 → `stop`/`start` 与 `down`/再起两种重启后数据仍在（SIGTERM 优雅退出的容器侧退出码一并断言）→ 销毁归零 |
+| `node infra/docker/run-local-test-restore-drill.mjs` | 备份/恢复演练：栈 A 全链 + 两个合成家庭 sentinel + 授权面快照 → 备份 + sidecar → 栈 B 重建角色（不在 dump 里）→ 篡改反例在 `pg_restore` 之前被拒 → 单事务恢复 → `acl → migrate → grants → api` → ledger/readiness/授权读取/runtime 反向探针/owner-GRANT-RLS 快照逐字一致 |
+
+这两张表是**登记**（`check-m3b-registry-integrity.mjs` §7 会把 README 记录的
+脚本集合与仓库里真实的可执行脚本集合机械比对），不是 M3B 门禁清单的一部分；
+把 M4 演练并入 `pnpm stage09a:check` 属于 M5。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验
@@ -318,5 +341,9 @@ M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手
 build 出的 immutable image ID；cleanup 只删本轮 tag。因此并行 worktree/project
 不会互相覆盖镜像。
 
-备份与恢复命令、停止/重启持久化属于 M4；`pnpm stage09a:check` 聚合门禁与远端
-CI 属于 M5——两者仍未取得证据，阶段 09A **不得记为 Pass**。
+M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
+[runbook](../../docs/operations/stage-09a-local-test-lifecycle.md)：停止/重启
+持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
+owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，均已取得本地实测证据
+（implementation complete, pending total-control review）。`pnpm stage09a:check`
+聚合门禁与远端 CI 属于 M5——M5 未取得证据之前，阶段 09A **不得记为 Pass**。

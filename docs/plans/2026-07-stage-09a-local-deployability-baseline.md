@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-04 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；**M4「生命周期、备份和恢复」implementation complete, pending total-control review（实施分支 `claude/stage-09a-m4-lifecycle`，基线 main `3b22674`，见 M4 实施记录）**；M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3226,8 +3226,10 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 **为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
 Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
-artifacts × 324 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
-的树，Round 25 候选树为 322，Round 26 加入登记表模块与登记完整性门禁后为 324——
+artifacts × 334 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
+的树，Round 25 候选树为 322，Round 26 加入登记表模块与登记完整性门禁后为 324，
+M4 加入生命周期/备份恢复入口与演练、runbook、备份目录说明与关机强制退出回归后为
+334——
 这个数字现在由 `check-m3b-registry-integrity.mjs` 对 `git ls-files` 数出来再与本句
 比对，不再手写）——这三条与本文件的**键名判据零共享**（`local-test-containment.mjs`
 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` /
@@ -3325,6 +3327,57 @@ review**。全绿仍不等于 Accepted：必须让同样两路独立只读审计
    → final → 验证。
 6. 本阶段只记录本地演练耗时，不声明生产 RPO/RTO。
 7. SIGTERM 测试必须证明进程在限定时间内真正退出；当前只设置 `process.exitCode` 的超时分支不能作为强制退出证据。
+
+### M4 实施记录（implementation complete, pending total-control review）
+
+实施分支 `claude/stage-09a-m4-lifecycle`，基线 main `3b22674`。落点：
+
+- [`services/api/src/shutdown.ts`](../../services/api/src/shutdown.ts)：关机超时
+  分支从「只设 `process.exitCode`」改为**真正 `process.exit(1)`**，超时定时器不再
+  `unref()`（unref 过的定时器在关机那一刻的空事件循环里不会触发）。subprocess
+  回归 [`tests/unit/shutdown-forced-exit.test.ts`](../../services/api/tests/unit/shutdown-forced-exit.test.ts)
+  + [`tests/fixtures/stalled-close-shutdown.ts`](../../services/api/tests/fixtures/stalled-close-shutdown.ts)
+  构造 `close()` 永不 settle 且吊着事件循环的最坏形态，断言进程在时限内以 1
+  退出、耗时不小于时限且有上界、stderr 恰好一行固定中性文本——「只设
+  exitCode」与「unref 定时器」两种历史形态在该夹具下都到不了这条组合（DoD 7）。
+- `infra/docker/`：[`m4-lifecycle.mjs`](../../infra/docker/m4-lifecycle.mjs)
+  （共享库：M4 project 约束、双栈运行上下文、sentinel、授权面快照、探针、
+  scoped cleanup 编排）、[`backup-local-test.mjs`](../../infra/docker/backup-local-test.mjs)
+  与 [`restore-local-test.mjs`](../../infra/docker/restore-local-test.mjs)（运维
+  入口）、[`run-local-test-lifecycle.mjs`](../../infra/docker/run-local-test-lifecycle.mjs)
+  与 [`run-local-test-restore-drill.mjs`](../../infra/docker/run-local-test-restore-drill.mjs)
+  （演练）、gitignored 的 [`backups/`](../../infra/docker/backups/README.md)
+  目录。README 登记见 [`infra/docker/README.md`](../../infra/docker/README.md)
+  的 M4 一节（registry-integrity §7 机械比对覆盖新增脚本）。
+- runbook [`docs/operations/stage-09a-local-test-lifecycle.md`](../operations/stage-09a-local-test-lifecycle.md)：
+  生命周期逐条命令、`pg_dump` 不含 cluster roles、全新安装与恢复的 bootstrap
+  顺序差异表、SHA-256 校验与单事务边界、匿名卷陷阱、受支持恢复窗口的 N-1
+  约束与 `0005` 出现后的扩展路径；只记录本地演练耗时（由演练脚本逐阶段打印），
+  不声明 RPO/RTO（DoD 2、5、6）。
+
+证据对应（细节以演练脚本的断言为准，不在此复写）：DoD 1 由 lifecycle 演练取证
+（`stop`/`start` 与 `down`/再起两种重启后 sentinel 逐字节一致、SIGTERM 优雅路径
+容器退出码 0、销毁后零残留复查）；DoD 2—5 由 restore 演练取证（备份角色
+BYPASSRLS 完整导出、app 角色 dump 响亮失败反例、篡改备份在 `pg_restore` 之前以
+固定理由被拒、`createdb --owner=meal_agent_migrator` + 单事务恢复、恢复后
+ledger/checksum 与磁盘一致、`/readyz` 200、授权读取、runtime 反向探针、
+owner / `SECURITY DEFINER` / GRANT / RLS / policy / 角色属性 / membership 快照与
+备份前逐字一致、同一 ledger 的 round-trip）。授权 manifest 的
+`(ledger, phase)` 状态由演练**操作性钉住**：满 ledger 的 containment 与 final
+被恢复链真实执行，`0000`-only 的 containment 被全新安装链真实执行——删除任一
+都会让对应演练 fail closed；这不是一条独立的状态清单机械比对（后者进 backlog）。
+
+M4 的验证命令（并入 `pnpm stage09a:check` 属于 M5）：
+
+```bash
+node infra/docker/run-local-test-lifecycle.mjs
+node infra/docker/run-local-test-restore-drill.mjs
+pnpm --filter @meal-agent/api test:unit
+```
+
+M4 **不覆盖**（仍属 M5）：`stage09a:check` 聚合门禁、GitHub Actions、根/API/
+infra/operations README 与 ADR-0005 的总收口。阶段 09A 仍为 In Progress，
+ADR-0005 仍为 `Proposed`。
 
 ### M5：门禁、CI 与文档
 
