@@ -270,8 +270,8 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**。
-M4 已 implementation complete（见上方 M4 一节，pending total-control review）；
-M5 未开始；
+**M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
+（见上方 M4 一节）；M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 仍为 `Proposed`，阶段 09A 仍为 In Progress。
 
