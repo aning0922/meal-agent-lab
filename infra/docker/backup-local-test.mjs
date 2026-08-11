@@ -31,7 +31,7 @@ import {
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
-import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 
 export const defaultBackupsDirectory = resolve(composeDirectory, 'backups')
 const targetDatabase = 'meal_agent'
@@ -193,16 +193,37 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   // 若继续跑完，宿主上会多出一份无人知晓的导出（容器内还有 pgpass 副本）。
   installSignalHandlers(async () => removeLingeringOneOffs(run), { label: 'backup cleanup' })
 
+  // 信号在飞时主流程不得自己 process.exit（m3b-subprocess 的让位契约，与演练
+  // executeDrill 同形）：普通退出码会抢在 handler 的 lingering sweep 与重投
+  // 信号之前收场，被「取消」的 pg_dump 就在 daemon 侧继续跑完。无信号时 exit
+  // 前补一次同样的清扫，兑现 composeRunOneOff「留待 sweep」的警告——失败路径
+  // 也不把一次性容器留在 daemon 侧；残留只打印，不改变退出码。
+  const exitAfterSweepUnlessSignalled = async (code) => {
+    if (terminationSignal() !== null) {
+      return
+    }
+    for (const item of await removeLingeringOneOffs(run)) {
+      process.stderr.write(`${scrubber.scrubUntrusted(item)}\n`)
+    }
+    if (terminationSignal() === null) {
+      process.exit(code)
+    }
+  }
+
   try {
     await performBackup(
       { compose, run, log },
       { project: defaultProjectName, outputDirectory }
     )
-    process.exit(0)
+    await exitAfterSweepUnlessSignalled(0)
   } catch (error) {
-    process.stderr.write(
-      `${scrubber.scrubUntrusted(error instanceof Error ? error.message : String(error))}\n`
-    )
-    process.exit(1)
+    if (terminationSignal() !== null) {
+      log(`interrupted by ${terminationSignal()}; the signal handler owns the cleanup`)
+    } else {
+      process.stderr.write(
+        `${scrubber.scrubUntrusted(error instanceof Error ? error.message : String(error))}\n`
+      )
+      await exitAfterSweepUnlessSignalled(1)
+    }
   }
 }

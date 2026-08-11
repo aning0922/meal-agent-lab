@@ -3338,8 +3338,11 @@ review**。全绿仍不等于 Accepted：必须让同样两路独立只读审计
   回归 [`tests/unit/shutdown-forced-exit.test.ts`](../../services/api/tests/unit/shutdown-forced-exit.test.ts)
   + [`tests/fixtures/stalled-close-shutdown.ts`](../../services/api/tests/fixtures/stalled-close-shutdown.ts)
   构造 `close()` 永不 settle 且吊着事件循环的最坏形态，断言进程在时限内以 1
-  退出、耗时不小于时限且有上界、stderr 恰好一行固定中性文本——「只设
-  exitCode」与「unref 定时器」两种历史形态在该夹具下都到不了这条组合（DoD 7）。
+  退出、耗时不小于时限且有上界、stderr 恰好一行固定中性文本——该夹具钉住的
+  是「只设 exitCode」维度；它抓不住「unref 定时器」维度（审计变异实验：被
+  interval 吊着的事件循环里 unref 过的定时器照样触发，unref + `process.exit(1)`
+  在该夹具下全绿），unref 维度由「不持有任何 handle」的空循环第二夹具钉住
+  （backlog K1）（DoD 7）。
 - `infra/docker/`：[`m4-lifecycle.mjs`](../../infra/docker/m4-lifecycle.mjs)
   （共享库：M4 project 约束、双栈运行上下文、sentinel、授权面快照、探针、
   scoped cleanup 编排）、[`backup-local-test.mjs`](../../infra/docker/backup-local-test.mjs)

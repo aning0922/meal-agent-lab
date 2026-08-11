@@ -167,7 +167,7 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 
 | 命令 | 作用 |
 | --- | --- |
-| `node infra/docker/backup-local-test.mjs` | `pg_dump --format=custom` 备份（backup 角色 BYPASSRLS，FORCE RLS 不截断；写入被 Git 忽略的 [`backups/`](backups/README.md)，目录不被忽略即拒绝；生成 `*.sha256` sidecar；前后打印环境与数据库标识，不打印口令或连接串） |
+| `node infra/docker/backup-local-test.mjs` | `pg_dump --format=custom` 备份（backup 角色 BYPASSRLS，FORCE RLS 不截断；写入被 Git 忽略的 [`backups/`](backups/README.md)，将要写入的 dump 与 sidecar **文件路径**在仓库内且未被 Git 忽略即拒绝；生成 `*.sha256` sidecar；前后打印环境与数据库标识，不打印口令或连接串） |
 | `node infra/docker/restore-local-test.mjs` | 恢复到**全新** `meal_agent` 库（`--dump <path>`；恢复前先校验 sidecar，不匹配即拒绝且不调用 `pg_restore`；`createdb --owner=meal_agent_migrator` 后单事务 `pg_restore`；前置 `cluster`/`logins` 与后续 `acl → migrate → grants` 见 runbook） |
 
 两条**演练**命令（每轮唯一 project/image tag/合成 Secret，零残留复查，逐阶段
@@ -270,7 +270,8 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**。
-M4、M5 未开始；
+M4 已 implementation complete（见上方 M4 一节，pending total-control review）；
+M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 仍为 `Proposed`，阶段 09A 仍为 In Progress。
 

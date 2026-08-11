@@ -17,12 +17,13 @@ import { installShutdownHandlers } from "../../src/shutdown.js";
  *     退出**，只会等到外部 SIGKILL；
  *   - `eventLog.emit` 是同步 no-op，不产生输出。
  *
- * 因此本进程能在时限内退出的**唯一**路径是超时分支真正调用 `process.exit`：
- * 定时器被 `unref` 时它根本不会触发（本夹具里 interval 吊着循环，unref 形态
- * 退化为「永不退出」），只设 exitCode 时循环照样被 interval 吊着。只有
- * 「ref 的定时器 + 到点 `process.exit(1)`」才能让本进程在时限内以 1 退出，
- * 并留下那一行固定的中性 stderr。运行的是 `src/shutdown.ts` 里的**生产函数
- * 本身**，不是抄件。
+ * 本夹具钉住的是 **exitCode-only 维度**：只设 exitCode 时循环被 interval 吊着
+ * 永不退出，能在时限内以 1 退出的路径只剩超时分支真正调用 `process.exit`。
+ * 它**抓不住 unref 维度**——被 interval 吊着的事件循环不会排空，`unref` 过的
+ * 定时器照样到点触发（审计变异实验：unref + `process.exit(1)` 在本夹具下全绿）。
+ * unref 维度要由「`close()` 永不 settle 且不持有任何 handle」的空循环第二夹具
+ * 钉住（backlog K1）：那里 unref 定时器不吊循环，进程会在时限之前静默退 0。
+ * 运行的是 `src/shutdown.ts` 里的**生产函数本身**，不是抄件。
  */
 
 const events: string[] = [];

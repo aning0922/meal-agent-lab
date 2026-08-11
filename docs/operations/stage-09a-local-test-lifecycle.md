@@ -77,9 +77,10 @@ docker compose --file infra/docker/compose.local-test.yaml down
 之后重新 `up -d postgres`、`up migrate`（幂等 no-op）、`up -d api` 即可恢复
 服务，数据仍在。
 
-注意：PostgreSQL 镜像声明了 `VOLUME /var/lib/postgresql`，因此每个 bootstrap
-一次性容器都会带一个**匿名**卷；裸 `down` 删容器时会把这些匿名卷孤儿化（named
-数据卷不受影响）。要 down 而不留孤儿，先删容器再收网络：
+注意：PostgreSQL 镜像声明了 `VOLUME /var/lib/postgresql`，因此**用该镜像的**
+一次性容器（psql 类 bootstrap 阶段；API 镜像的 `bootstrap-schema` 与 `migrate`
+不在内）每个都会带一个**匿名**卷；裸 `down` 删容器时会把这些匿名卷孤儿化
+（named 数据卷不受影响）。要 down 而不留孤儿，先删容器再收网络：
 
 ```bash
 docker compose --file infra/docker/compose.local-test.yaml stop --timeout 30
@@ -162,8 +163,11 @@ node infra/docker/restore-local-test.mjs --dump infra/docker/backups/<name>.dump
 
 恢复入口的硬边界：
 
-- **恢复前先校验 SHA-256 sidecar**：sidecar 缺失、文件名不配对或摘要不匹配时
-  以固定理由拒绝，此时 `pg_restore` 根本不会被调用；
+- **恢复前先校验 SHA-256 sidecar**：dump 路径解析不到普通文件、sidecar 缺失、
+  sidecar 格式不可解析、sidecar 记载的文件名不配对、摘要不匹配、文件不带
+  `pg_dump` 自定义格式魔数——任一情形都以各自的固定理由拒绝（理由清单见
+  `infra/docker/restore-local-test.mjs` 导出的常量），此时 `pg_restore` 根本
+  不会被调用；
 - 目标数据库必须不存在（恢复只进全新库，绝不覆盖既有数据）；
 - `createdb --owner=meal_agent_migrator` 后执行
   `pg_restore --single-transaction --exit-on-error`：恢复内容要么全部提交，
@@ -174,10 +178,13 @@ node infra/docker/restore-local-test.mjs --dump infra/docker/backups/<name>.dump
   只发 `ALTER SCHEMA public OWNER TO meal_agent_migrator` 与 ACL——删掉它会让
   恢复在 ALTER OWNER 上直接失败。
 
-然后补齐恢复路径其余阶段并验证：
+然后补齐恢复路径其余阶段并验证。`bootstrap-acl` 必须带 `--no-deps`：它的
+`depends_on` 直通 `handoff → schema → createdb`，裸 `up` 会把上表声明**跳过**
+的步骤拉起来（实测响亮失败——`createdb` 撞上已存在的库；演练跑一次性服务
+一律用 `--no-deps` 形态）：
 
 ```bash
-docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-acl
+docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up --no-deps bootstrap-acl
 docker compose --file infra/docker/compose.local-test.yaml up migrate
 docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-grants
 docker compose --file infra/docker/compose.local-test.yaml up -d api
@@ -220,8 +227,12 @@ db:migrate`（补齐到当前 ledger）`→ final → 验证`。
 - 备份/恢复入口操作的是**长驻**部署，不做自动清理；恢复失败时单事务已整体
   回滚（留下的空 `meal_agent` 库见 §3），重跑前先用 `psql` 确认 `meal_agent`
   是否存在，存在即按销毁流程处理后重来。
-- 备份失败时入口会删除写到一半的 `*.partial`；只有进程被强杀（SIGKILL）时
-  备份目录里才可能残留 `*.partial`——它是**含真实数据的半份导出**，发现即
-  直接删除。入口的 SIGINT/SIGTERM 处置会强制移除 daemon 侧仍在跑的一次性
-  容器（连同匿名卷），因此被取消的备份/恢复不会在后台悄悄跑完。
+- 备份失败时入口会删除写到一半的 `*.partial`；但进程被强杀（SIGKILL）或
+  client 侧超时中断备份时，这条清理不会执行，备份目录里可能残留
+  `*.partial`——它是**含真实数据的半份导出**，发现即直接删除。
+- 入口的 SIGINT/SIGTERM 处置会先终止 client 子进程，再强制移除 daemon 侧仍在
+  跑的一次性容器（连同匿名卷）；信号在飞时主流程不自行 exit，处置完成后按原
+  信号语义退出（`128+signo`）。因此被取消的备份/恢复不会在后台悄悄跑完——
+  唯一的例外是移除本身失败，此时残留会以 residue 警告打印出来，按打印的容器
+  名手工 `docker rm -f -v`。正常失败路径 exit 前也会补一次同样的清扫。
 - Docker 不可用时所有入口都以「缺少前置工具」失败，不降级成静态检查。
