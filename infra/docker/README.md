@@ -245,8 +245,8 @@ Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前�
 
 M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
-Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为
-已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**。
+Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
+已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**。
 M4、M5 未开始；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 仍为 `Proposed`，阶段 09A 仍为 In Progress。
@@ -260,7 +260,7 @@ M4、M5 未开始；
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
 75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 69 cases、
 15 项拓扑变异反例、5 个确定性进程组回归与 5 个真实信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
-M3B **已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted**；未完成的是
+M3B **已于 2026-08-11 Accepted，验收落点 `cf43452`**；未完成的是
 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress，ADR-0005 仍为 `Proposed`。
 
 `08da379` 的两路独立复验再次给出 **BLOCK**；Round 19 候选 `c8d7236` 又由项目总控

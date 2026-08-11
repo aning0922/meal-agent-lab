@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-04 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；M4、M5 未开始）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -25,7 +25,7 @@
 - production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
-- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现（`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh`）、显式部署维度与响应安全边界；M3B 已交付 `infra/environments/local-test/` 模板、八份 Secret 的生成与交叉一致性预检、容器 smoke、containment 与网络隔离实证（仍待总控验收）。仍然缺席的是 M4 的生命周期/备份恢复与相应 runbook，以及 M5 的 `stage09a:check`、CI 与阶段文档总收口。
+- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现（`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh`）、显式部署维度与响应安全边界；M3B 已交付 `infra/environments/local-test/` 模板、八份 Secret 的生成与交叉一致性预检、容器 smoke、containment 与网络隔离实证（已于 2026-08-11 Accepted）。仍然缺席的是 M4 的生命周期/备份恢复与相应 runbook，以及 M5 的 `stage09a:check`、CI 与阶段文档总收口。
 - 当前总控机器可用 Node.js 24.18.0（与 M1 镜像和 `.node-version` 一致）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有备份恢复证据前仍不得把本阶段记为完成。
 - **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），五个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
@@ -207,8 +207,7 @@ PostgreSQL healthy
 value，因此 `api`、`migrate`、`bootstrap-schema`、`bootstrap-logins` 当时必然
 fail closed。**M3A 之后 `_FILE` 契约已被真正消费**（见下面的 M3A 实施记录），
 但 `0000 → handoff → acl → migrate → grants` 的完整链路（**当时**未取得运行
-证据，现由 M3B 交付，状态为 implementation complete, pending total-control
-review）、备份恢复与阶段总门禁属于 M3B 与 M4。备份/恢复服务属于 M4，本轮不在
+证据，现由 M3B 交付，已于 2026-08-11 Accepted）、备份恢复与阶段总门禁属于 M3B 与 M4。备份/恢复服务属于 M4，本轮不在
 Compose 中声明。
 
 ### M3：配置和 fake 登录边界
@@ -1319,10 +1318,9 @@ URL/pgpass 的部署级一致性、完整 Compose bootstrap 链
 `config`/`inspect`/`history`/`logs` 的容器级 sentinel 扫描，以及宿主全部非
 loopback 地址的动态隔离证明（第 5 条）。**M4、M5 未开始。**
 
-### M3B 实施记录（已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收）
+### M3B 实施记录（已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收）
 
-**状态：M3B 已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收。**未自行标记
-Accepted。落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)、
+**状态：M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收。**落点：[`infra/docker/local-test-secrets-contract.mjs`](../../infra/docker/local-test-secrets-contract.mjs)、
 [`generate-local-test-secrets.mjs`](../../infra/docker/generate-local-test-secrets.mjs)、
 [`preflight-local-test-secrets.mjs`](../../infra/docker/preflight-local-test-secrets.mjs)、
 [`probe-compose-secret-identity.mjs`](../../infra/docker/probe-compose-secret-identity.mjs)、
@@ -2807,7 +2805,7 @@ Docker 的确定性进程组回归 + 5/5 真实信号窗口**。
 suite = **4/4 不依赖 Docker 的确定性进程组回归 + 5/5 真实信号窗口**。其他 M3B
 门禁口径不变：local-test 75/75、拓扑变异 15/15。
 
-**M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；
+**M3B 状态：已于 2026-08-11 Accepted，验收落点 `cf43452`；
 未完成的是 M4/M5 与 09A 总验收。阶段 09A 仍为 In Progress；ADR-0005 仍为
 `Proposed`；PR #1 保持 Draft。M4、M5 未开始。**
 
@@ -3291,11 +3289,11 @@ pathspec 覆盖检查同轮修两处：`git ls-files` 加 `-z`（此前 `docs/�
 > 仓库、不可复核」为由撤回 19 格头条的同一段**。按本轮规则，不可导出的计数删掉，
 > 不补一个新的手算数。
 
-**Round 26 当前状态**：**M3B implementation complete, pending total-control
+**Round 26 收束时的状态（历史记录）**：**M3B implementation complete, pending total-control
 review**。全绿仍不等于 Accepted：必须让同样两路独立只读审计对本轮新 SHA
 重新给出结论，再回到项目总控复核第一阶段。
 
-**M3B 状态：已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；阶段 09A
+**M3B 状态：已于 2026-08-11 Accepted，验收落点 `cf43452`；阶段 09A
 仍为 In Progress；ADR-0005 仍为 `Proposed`；PR #1 保持 Draft；M4、M5 未开始。**
 
 ### M4：生命周期、备份和恢复

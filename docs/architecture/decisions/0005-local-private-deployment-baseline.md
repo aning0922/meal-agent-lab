@@ -1,7 +1,7 @@
 # ADR-0005：本地与私有测试部署基线
 
 - 状态：Proposed
-- 日期：2026-07-26（实施注记最后更新 2026-08-04，M3A 已 Accepted（验收落点 `a839df1`）；M3B 已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收）
+- 日期：2026-07-26（实施注记最后更新 2026-08-11，M3A 已 Accepted（验收落点 `a839df1`）；M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收）
 - 负责人：产品负责人、基础设施、安全
 - 实施计划：[阶段 09A：本地可部署性与私有测试基线](../../plans/2026-07-stage-09a-local-deployability-baseline.md)
 
@@ -167,8 +167,7 @@ grantor 恒为 `meal_agent_migrator`。M2A 整体已由总控 **Accepted**（验
 **M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**：§3 的部署暴露级别、fake 边界与官方 endpoint 收紧，以及
 §4 的 `_FILE` 互斥注入、日志脱敏与响应头都已落地并有反向测试（见
 [§4 的实施注记](#4-secret日志与镜像边界)）。**M3B（环境模板、八份 Secret、
-完整 bootstrap 链、`/readyz=200` 与网络隔离实证）为 implementation complete,
-pending total-control review**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
+完整 bootstrap 链、`/readyz=200` 与网络隔离实证）已于 2026-08-11 Accepted，验收落点 `cf43452`**（见 §4 的 M3B 注记）。阶段 09A 仍在进行
 （M4、M5 未开始），备份恢复与阶段总门禁尚无证据，本 ADR 因此保持 `Proposed`。
 
 投影的五类事实各自独立定义，不得混用：**规范化的直接授权语义**（`NULL` ACL 按
@@ -326,8 +325,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何
 `Access-Control-Allow-Origin`。
 
-**M3B 实施注记**（**已取得完整 bootstrap/full-stack 本地证据，但尚未 Accepted；未完成的是 M4/M5 与 09A 总验收**，未
-自行标记 Accepted；完整证据见
+**M3B 实施注记**（**已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；完整证据见
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
