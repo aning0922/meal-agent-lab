@@ -197,6 +197,9 @@ Compose 静态门禁与变异反例、下面两条 M5 镜像门禁、其余 M3B 
 状态在结尾汇总表如实列出；Docker CLI / Compose v2 / daemon / git / pnpm 任一缺失
 时在执行任何检查之前明确失败为「缺少前置工具」，不降级成静态检查后宣称通过。
 每个动态门禁/演练自带 scoped cleanup 与零残留复查，`--keep-failure` 逐层透传。
+前置探针与每个步骤都以独立进程组登记；SIGINT/SIGTERM 或兜底超时会先阻止新步骤，
+再对整组执行 TERM → grace → KILL 并有界确认 ESRCH。直接子进程退出但后代仍存活
+同样判失败；该边界有不依赖 Docker 的真实 CLI 回归，不依赖一次瞬时 PID 查询。
 
 **M5 新增的两条镜像门禁**（指向验收门禁 #13 的 BLOCK 级风险——客户端依赖泄漏
 进 runtime image；不属于冻结的 M3B 门禁清单）：
@@ -204,13 +207,15 @@ Compose 静态门禁与变异反例、下面两条 M5 镜像门禁、其余 M3B 
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：本轮唯一 tag 构建 → `docker create`/`export` 全文件系统取证（不启动容器）→ 宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 精确相等；镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族），判定面是包清单 ∪ 全镜像 `node_modules/<name>` 路径段，与闭包比对互相独立。支持 `--keep-failure` |
-| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline（真实 Dockerfile 静态零 problem + 真实构建扫描零 problem），再对 Dockerfile 施加定向变异（植入 denylist 包、构建阶段残留、EXPOSE、secret 形态 ENV、root 用户、浮动基础镜像），每项都必须**以指定理由**被拒——只失败不够。变异文本经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；浮动基础镜像只做静态判定不构建（构建它就是去拉未固定的标签） |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **5 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、EXPOSE、secret 形态 ENV、root 用户；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；两项 static-only 不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
 期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
 deps 状态记录，仓库因此在 `pnpm-workspace.yaml` 显式声明
 `verifyDepsBeforeRun: false`（本地与 CI 都只用显式的
 `pnpm install --frozen-lockfile`，门禁仓库不允许隐式 install）。
+Docker image/container identity 只接受 canonical immutable 形态；命令失败与 Config
+不一致只输出固定类别，不回显 runner stderr 或镜像内实际值。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
@@ -302,8 +307,8 @@ Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
 （见上方 M4 一节）。**M5（聚合门禁、镜像扫描、CI workflow、依赖例外复核与文档
-收口）已交付实施**（implementation complete, pending total-control review），
-`pnpm stage09a:check` 已取得本地全绿证据（见计划文档 M5 实施记录）；
+收口）的总控首轮定点整改已完成**（本地 `stage09a:check` 14/14，等待独立只读
+审计，仍未 Accepted；见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
 GitHub Actions workflow 复用同一命令但**尚无真实远端 run**，真实 run 成功之前

@@ -327,7 +327,7 @@ failure-safe**：close 是一个阶段收集器，每个适用阶段
 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，仓库内不存在任何
 `Access-Control-Allow-Origin`。
 
-**M3B 实施注记**（**已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；完整证据见
+**M3B 实施注记**（**已于 2026-08-11 Accepted，验收落点 `cf43452`；M3B 验收时点尚未完成 M4/M5 与 09A 总验收**；完整证据见
 [阶段 09A 计划的 M3B 实施记录](../../plans/2026-07-stage-09a-local-deployability-baseline.md)）：
 八份 Secret 的单一来源生成（四个原始 CSPRNG 口令派生八个固定文件，generator 与
 preflight 共用 `infra/docker/local-test-secrets-contract.mjs` 一份事实源）与部署
@@ -443,6 +443,14 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 只登记「workflow 已配置」，无真实 run，不记 CI Pass。本 ADR 的 `Accepted` 指
 **本地与私有测试部署基线成立**；它不等于 09A 总验收（计划文档「## 验收门禁」
 全表），更不等于任何云、公网或发布判定。
+
+**M5 总控复核注记（2026-08-12）**：ADR 的部署决策与 M1—M4 已验收证据不变，
+但 M5 自身尚未 Accepted。总控确定性反例另关闭了聚合入口在前置探针信号后仍启动
+门禁、只终止直接子 PID 的缺陷；所有探针/步骤现由受控进程组有界收敛。runtime
+image 门禁同时要求 `.dockerignore` 的密钥排除位于全部 negation 之后、image/container
+identity 使用 canonical immutable 形态，失败诊断不回显 runner stderr 或 Config 实际
+值。整改候选已于 2026-08-12 在当前工作树通过 `stage09a:check` 14/14，但独立只读
+审计、远端 CI 真实 run 与 09A 总验收仍未完成；不得把该注记解释成 M5 或 09A Pass。
 
 以下条件触发复审：
 

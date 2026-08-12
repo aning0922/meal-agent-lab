@@ -186,8 +186,9 @@ M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted
 `0000` 与 `0001—0004`，`/healthz` 与 `/readyz` 均 200，readiness 只以
 runtime login 连接（证据与工具见
 [`infra/docker/README.md`](../../infra/docker/README.md)）。**M4（生命周期、
-备份和恢复）已于 2026-08-11 Accepted，验收落点 `f671c51`**；**M5 已交付
-`pnpm stage09a:check` 聚合门禁与 API runtime image 依赖扫描（候选待总控审计），
+备份和恢复）已于 2026-08-11 Accepted，验收落点 `f671c51`**；**M5 总控首轮
+定点整改已于 2026-08-12 通过本地 `pnpm stage09a:check` 14/14，当前等待独立只读
+审计，仍未 Accepted；聚合链包含 API runtime image 依赖扫描与变异反例，
 本镜像的依赖闭包与组件面由该扫描按真实构建产物钉住**。阶段 09A 仍为
 In Progress（09A 总验收未完成，远端 CI 无真实 run），ADR-0005 已凭真实容器
 证据转 `Accepted`，PR #1 保持 Draft。

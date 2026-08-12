@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-04 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`；未完成的是 M4/M5 与 09A 总验收**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；**M5「门禁、CI 与文档」已交付实施（implementation complete, pending total-control review），`pnpm stage09a:check` 本地全绿（主工作树 + 干净 checkout），ADR-0005 已凭真实容器证据转 `Accepted`；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成**）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`
+- 日期：2026-07-26（2026-08-12 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；**M5「门禁、CI 与文档」的总控首轮定点整改已于 2026-08-12 通过本地 `stage09a:check` 14/14，当前等待独立只读审计，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -25,8 +25,8 @@
 - production 配置已经拒绝 fake WeChat adapter；真实 adapter 仍需要 AppID/AppSecret。
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
-- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现（`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh`）、显式部署维度与响应安全边界；M3B 已交付 `infra/environments/local-test/` 模板、八份 Secret 的生成与交叉一致性预检、容器 smoke、containment 与网络隔离实证（已于 2026-08-11 Accepted）。仍然缺席的是 M4 的生命周期/备份恢复与相应 runbook，以及 M5 的 `stage09a:check`、CI 与阶段文档总收口。
-- 当前总控机器可用 Node.js 24.18.0（与 M1 镜像和 `.node-version` 一致）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项，但没有备份恢复证据前仍不得把本阶段记为完成。
+- （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现、显式部署维度与响应安全边界；M3B 已交付并验收环境模板、八份 Secret、容器 smoke、containment 与网络隔离；M4 已交付并验收生命周期与备份恢复；M5 已交付 `stage09a:check`、runtime image 扫描、CI workflow 与文档候选，当前仍在总控整改/复验，尚未 Accepted。
+- 当前总控机器可用 Node.js 24.18.0（与 M1 镜像和 `.node-version` 一致）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项；当前剩余的是 M5 总控复验、远端 CI 真实 run 与 09A 总验收。
 - **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），五个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
 - 现有 local/weapp-only 依赖审计例外将在 **2026-11-08** 到期（2026-08-06 第二次授予）并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
@@ -3225,10 +3225,11 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 **为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
 Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
-artifacts × 338 tracked 文件，两轮 fresh smoke 均 0 hit；321 是加入本普查门禁**之前**
+artifacts × 340 tracked 文件，fresh smoke 为 0 hit；321 是加入本普查门禁**之前**
 的树，Round 25 候选树为 322，Round 26 加入登记表模块与登记完整性门禁后为 324，
 M4 加入生命周期/备份恢复入口与演练、runbook、备份目录说明与关机强制退出回归后为
-334，M5 加入聚合门禁入口、镜像扫描库与两条镜像门禁后为 338——
+334，M5 加入聚合门禁入口、镜像扫描库与两条镜像门禁后为 338，总控整改再加入两份
+不依赖 Docker 的门禁边界回归后为 340——
 这个数字现在由 `check-m3b-registry-integrity.mjs` 对 `git ls-files` 数出来再与本句
 比对，不再手写）——这三条与本文件的**键名判据零共享**（`local-test-containment.mjs`
 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` /
@@ -3462,6 +3463,32 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 M3B 门禁（含空 volume 完整链 smoke 与 Secret 身份探针）、生命周期演练（持久化
 重启）与备份/恢复演练（篡改反例 + 单事务恢复 + 授权面逐字一致）。逐步耗时以
 聚合门禁的汇总表输出为准，不在此复写。
+
+#### M5 总控首轮定点整改（2026-08-12，本地复验已通过，待独立审计）
+
+总控没有沿用「完整链曾经全绿」替代门禁自身复核。候选 `1dc55f2` 的生产入口先由
+仓库外确定性夹具复现两条阻断缺陷：在 Docker 前置探针期间收到 `SIGTERM` 后仍会
+启动 `stage08:check`；步骤执行期间只对直接子 PID 发信号，TERM-ignore 后代在聚合
+入口退出时仍存活，同时未清理的 120 秒 KILL timer 会拖住退出。现在前置探针与步骤
+都以 detached process group 登记到同一套 `(pgid, generation)` 生命周期，信号窗口
+立即关闭后续派生，按 TERM → grace → KILL → bounded ESRCH 收敛；正常退出若仍留下
+后代也 fail closed。`scripts/tests/stage09a-check.test.mjs` 用不依赖 Docker 的真实 CLI
+夹具钉住「前置窗口不得启动任何步骤」「后代必须先到 ESRCH 再退出」，并固定 14 条
+聚合链顺序与 CI 只能调用同一入口。
+
+runtime image 边界同时确认：仅要求密钥排除规则“存在”不足以证明上下文安全，文件
+末尾的宽泛 negation 可按 Docker last-match-wins 重新纳入 `.env`/私钥；成功但空或
+非规范的 image/container identity 也不能作为证据；命令 stderr 与 Config 实际值
+不得在失败输出中回显。整改后所有密钥排除必须位于最后一条 negation 之后，两个
+identity 只接受 canonical immutable 形态，Config/命令失败使用固定诊断；无 Docker
+单测覆盖上述边界，镜像变异套件增加 late-negation 反例并硬钉为 **5 个 built +
+2 个 static-only**。CI 另显式收窄为 `contents: read`，并用 concurrency cancellation
+复用上述信号清理路径。整改后的当前工作树已完整执行 `pnpm stage09a:check`，14/14
+步骤全部通过：stage08 全量、拓扑与 15 项变异、runtime image 与 7 类变异、M3B
+九条门禁、空 volume smoke、八份 Secret 身份探针、M4 生命周期与备份恢复演练均为
+PASS；相关 Docker、进程组、临时 Secret、override 与 per-run image tag 已复核无本轮
+残留。该结果只证明本地整改候选，M5 仍须经过独立只读审计与总控裁定，尚未
+Accepted；干净 checkout 将在形成候选提交后复验。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的
