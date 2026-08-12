@@ -218,7 +218,7 @@ try {
   if (error instanceof FatalGateError) {
     fatalMessage = error.message
   } else {
-    fatalMessage = `unexpected failure: ${error instanceof Error ? error.message : 'unknown error'}`
+    fatalMessage = 'unexpected failure while collecting runtime image evidence'
   }
 }
 

@@ -29,6 +29,8 @@ import { resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 
+import { createProcessGroupLifecycle } from '../infra/docker/m3b-subprocess.mjs'
+
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const usage = 'pnpm stage09a:check [-- --keep-failure]'
 
@@ -133,7 +135,22 @@ const steps = [
 
 const results = []
 let interruptedBy = null
-let activeChild = null
+const processGroups = createProcessGroupLifecycle()
+let signalCleanupPromise = null
+
+const convergeAfterSignal = () => {
+  if (signalCleanupPromise === null) {
+    signalCleanupPromise = (async () => {
+      try {
+        const survivors = await processGroups.terminateAll()
+        return { ok: survivors.length === 0, survivorCount: survivors.length }
+      } catch {
+        return { ok: false, survivorCount: processGroups.unconfirmed().length }
+      }
+    })()
+  }
+  return signalCleanupPromise
+}
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
@@ -141,88 +158,161 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
       return
     }
     interruptedBy = signal
-    process.stderr.write(`\nstage09a:check: received ${signal}; forwarding to the active step and waiting for its cleanup\n`)
-    if (activeChild !== null) {
-      activeChild.kill('SIGTERM')
-      // 兜底：子门禁的清理自身有界，这里只防它彻底卡死。该定时器不 unref——
-      // 关机路径上 unref 过的定时器可能永远不触发（logger 边界的既有教训）。
-      setTimeout(() => {
-        if (activeChild !== null) {
-          activeChild.kill('SIGKILL')
-        }
-      }, 120_000)
-    }
+    process.stderr.write(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)
+    void convergeAfterSignal()
   })
 }
 
-const probe = (argv, label) =>
+const runControlled = ({ argv, timeoutMs, stdio }) =>
   new Promise((resolvePromise) => {
     let settled = false
-    const child = spawn(argv[0], argv.slice(1), { cwd: repositoryRoot, stdio: ['ignore', 'pipe', 'pipe'] })
-    const chunks = []
-    child.stdout.on('data', (chunk) => chunks.push(chunk))
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        child.kill('SIGKILL')
-        resolvePromise({ ok: false, label, detail: 'probe timed out' })
-      }
-    }, 60_000)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      if (!settled) {
-        settled = true
-        resolvePromise({ ok: false, label, detail: error.message })
-      }
-    })
-    child.once('close', (code) => {
-      clearTimeout(timer)
-      if (!settled) {
-        settled = true
-        resolvePromise({
-          ok: code === 0,
-          label,
-          detail: code === 0 ? Buffer.concat(chunks).toString('utf8').trim().split('\n')[0] : `exit ${String(code)}`
-        })
-      }
-    })
-  })
-
-const runStep = (step) =>
-  new Promise((resolvePromise) => {
-    const argv = step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv
-    const startedAt = performance.now()
-    const child = spawn(argv[0], argv.slice(1), { cwd: repositoryRoot, stdio: 'inherit' })
-    activeChild = child
     let timedOut = false
+    let handle = null
+    const stdoutChunks = []
+    const child = spawn(argv[0], argv.slice(1), {
+      cwd: repositoryRoot,
+      detached: true,
+      stdio
+    })
+
+    if (Number.isSafeInteger(child.pid) && child.pid > 0) {
+      handle = processGroups.register(child.pid)
+    }
+    if (child.stdout !== null) {
+      child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
+    }
+
+    const settle = (result) => {
+      if (!settled) {
+        settled = true
+        resolvePromise(result)
+      }
+    }
+    const release = () => {
+      if (handle !== null) {
+        processGroups.markLeaderClosed(handle)
+        processGroups.retireIfGone(handle)
+      }
+    }
     const timer = setTimeout(() => {
+      if (settled || timedOut) {
+        return
+      }
       timedOut = true
-      process.stderr.write(`stage09a:check: step ${step.id} exceeded its backstop timeout; sending SIGTERM\n`)
-      child.kill('SIGTERM')
-      setTimeout(() => child.kill('SIGKILL'), 120_000)
-    }, step.timeoutMs)
+      void (async () => {
+        let survivors = []
+        let terminationFailed = false
+        try {
+          survivors = handle === null ? [] : await processGroups.terminate([handle])
+        } catch {
+          terminationFailed = true
+          survivors = handle === null ? [] : [handle]
+        }
+        settle({
+          ok: false,
+          code: null,
+          signal: null,
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          detail:
+            terminationFailed || survivors.length > 0
+              ? `timed out; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
+              : 'timed out'
+        })
+      })()
+    }, timeoutMs)
+
     child.once('error', (error) => {
       clearTimeout(timer)
-      activeChild = null
-      resolvePromise({ ok: false, detail: `failed to start (${error.message})`, exitCode: 1, seconds: 0 })
-    })
-    child.once('close', (code, signal) => {
-      clearTimeout(timer)
-      activeChild = null
-      const seconds = Math.round((performance.now() - startedAt) / 1000)
-      if (timedOut) {
-        resolvePromise({ ok: false, detail: `backstop timeout, then ${signal ?? `exit ${String(code)}`}`, exitCode: 1, seconds })
+      release()
+      if (settled || timedOut) {
         return
       }
       if (interruptedBy !== null) {
-        resolvePromise({ ok: false, detail: `interrupted by ${interruptedBy}`, exitCode: 1, seconds })
+        void convergeAfterSignal().then((cleanup) => {
+          settle({
+            ok: false,
+            code: null,
+            signal: null,
+            stdout: '',
+            detail: cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed'
+          })
+        })
         return
       }
-      if (signal !== null) {
-        resolvePromise({ ok: false, detail: `killed by ${signal}`, exitCode: 1, seconds })
+      settle({
+        ok: false,
+        code: null,
+        signal: null,
+        stdout: '',
+        detail: `failed to start (${error.message})`
+      })
+    })
+    child.once('close', (code, signal) => {
+      clearTimeout(timer)
+      release()
+      if (settled || timedOut) {
         return
       }
-      resolvePromise({ ok: code === 0, detail: code === 0 ? 'PASS' : `exit ${String(code)}`, exitCode: code ?? 1, seconds })
+      const finish = (detail) =>
+        settle({
+          ok: detail === null && signal === null && code === 0,
+          code,
+          signal,
+          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+          detail:
+            detail ??
+            (signal !== null ? `killed by ${signal}` : code === 0 ? 'PASS' : `exit ${String(code)}`)
+        })
+      if (interruptedBy !== null) {
+        void convergeAfterSignal().then((cleanup) => {
+          finish(cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed')
+        })
+        return
+      }
+      const unexpectedGroups = processGroups.unconfirmed()
+      if (unexpectedGroups.length > 0) {
+        void (async () => {
+          try {
+            await processGroups.terminateAll()
+          } catch {
+            // 结论仍是固定的 fail-closed 文案；不得把原语异常或命令文本带入输出。
+          }
+          finish(`left ${String(unexpectedGroups.length)} descendant process group(s) after exit`)
+        })()
+        return
+      }
+      finish(null)
+    })
+  })
+
+const probe = async (argv, label) => {
+  if (interruptedBy !== null) {
+    return { ok: false, label, detail: `interrupted by ${interruptedBy}` }
+  }
+  const result = await runControlled({ argv, timeoutMs: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
+  return {
+    ok: result.ok,
+    label,
+    detail: result.ok ? result.stdout.trim().split('\n')[0] : result.detail
+  }
+}
+
+const runStep = (step) =>
+  new Promise((resolvePromise) => {
+    if (interruptedBy !== null) {
+      resolvePromise({ ok: false, detail: `interrupted by ${interruptedBy}`, exitCode: 1, seconds: 0 })
+      return
+    }
+    const argv = step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv
+    const startedAt = performance.now()
+    void runControlled({ argv, timeoutMs: step.timeoutMs, stdio: 'inherit' }).then((result) => {
+      const seconds = Math.round((performance.now() - startedAt) / 1000)
+      resolvePromise({
+        ok: result.ok,
+        detail: result.detail,
+        exitCode: result.ok ? 0 : result.code === null || result.code === 0 ? 1 : result.code,
+        seconds
+      })
     })
   })
 
@@ -239,52 +329,77 @@ const printSummary = () => {
   }
 }
 
-// ---- 前置工具 ----
-const probes = [
-  await probe(['docker', 'version', '--format', '{{.Server.Version}}'], 'Docker daemon'),
-  await probe(['docker', 'compose', 'version', '--short'], 'Docker Compose v2'),
-  await probe(['git', '--version'], 'git'),
-  await probe(['pnpm', '--version'], 'pnpm')
-]
-const missingTools = probes.filter((entry) => !entry.ok)
-if (missingTools.length > 0) {
-  process.stderr.write('stage09a:check FAIL — missing prerequisite tools; no checks were run:\n')
-  for (const entry of missingTools) {
-    process.stderr.write(`  - ${entry.label}: ${entry.detail}\n`)
+const main = async () => {
+  // ---- 前置工具 ----
+  const probes = []
+  for (const [argv, label] of [
+    [['docker', 'version', '--format', '{{.Server.Version}}'], 'Docker daemon'],
+    [['docker', 'compose', 'version', '--short'], 'Docker Compose v2'],
+    [['git', '--version'], 'git'],
+    [['pnpm', '--version'], 'pnpm']
+  ]) {
+    probes.push(await probe(argv, label))
+    if (interruptedBy !== null) {
+      break
+    }
   }
-  process.stderr.write('Docker Engine with Compose v2 must be running before this gate can produce evidence.\n')
-  process.exit(1)
-}
-process.stdout.write(
-  `stage09a:check: prerequisites present (Docker daemon ${probes[0].detail}, Compose ${probes[1].detail})\n`
-)
-
-// ---- 顺序执行，fail fast ----
-let failedStep = null
-for (const [index, step] of steps.entries()) {
-  process.stdout.write(
-    `\nstage09a:check step ${String(index + 1)}/${String(steps.length)}: ${step.id} — ${step.title}\n` +
-      `stage09a:check   $ ${(step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv).join(' ')}\n`
-  )
-  const result = await runStep(step)
-  results.push(result)
-  if (!result.ok) {
-    failedStep = { step, result }
-    break
-  }
-  process.stdout.write(`stage09a:check step ${String(index + 1)}/${String(steps.length)} PASS (${String(result.seconds)}s)\n`)
   if (interruptedBy !== null) {
-    failedStep = { step, result: { ...result, ok: false, detail: `interrupted by ${interruptedBy}` } }
-    results[results.length - 1] = failedStep.result
-    break
+    const cleanup = await convergeAfterSignal()
+    process.stderr.write(
+      cleanup.ok
+        ? `stage09a:check FAIL — interrupted by ${interruptedBy} during prerequisite checks; no checks were run\n`
+        : 'stage09a:check FAIL — signal cleanup did not confirm every descendant process group gone\n'
+    )
+    return 1
   }
+
+  const missingTools = probes.filter((entry) => !entry.ok)
+  if (missingTools.length > 0) {
+    process.stderr.write('stage09a:check FAIL — missing prerequisite tools; no checks were run:\n')
+    for (const entry of missingTools) {
+      process.stderr.write(`  - ${entry.label}: ${entry.detail}\n`)
+    }
+    process.stderr.write('Docker Engine with Compose v2 must be running before this gate can produce evidence.\n')
+    return 1
+  }
+  process.stdout.write(
+    `stage09a:check: prerequisites present (Docker daemon ${probes[0].detail}, Compose ${probes[1].detail})\n`
+  )
+
+  // ---- 顺序执行，fail fast ----
+  let failedStep = null
+  for (const [index, step] of steps.entries()) {
+    if (interruptedBy !== null) {
+      failedStep = {
+        step,
+        result: { ok: false, detail: `interrupted by ${interruptedBy}`, exitCode: 1, seconds: 0 }
+      }
+      break
+    }
+    process.stdout.write(
+      `\nstage09a:check step ${String(index + 1)}/${String(steps.length)}: ${step.id} — ${step.title}\n` +
+        `stage09a:check   $ ${(step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv).join(' ')}\n`
+    )
+    const result = await runStep(step)
+    results.push(result)
+    if (!result.ok) {
+      failedStep = { step, result }
+      break
+    }
+    process.stdout.write(
+      `stage09a:check step ${String(index + 1)}/${String(steps.length)} PASS (${String(result.seconds)}s)\n`
+    )
+  }
+
+  printSummary()
+  if (failedStep !== null) {
+    process.stderr.write(
+      `stage09a:check FAIL at step ${failedStep.step.id} (${failedStep.result.detail}); later steps were not run\n`
+    )
+    return failedStep.result.exitCode === 0 ? 1 : failedStep.result.exitCode
+  }
+  process.stdout.write(`stage09a:check PASS (${String(steps.length)}/${String(steps.length)} steps)\n`)
+  return 0
 }
 
-printSummary()
-if (failedStep !== null) {
-  process.stderr.write(
-    `stage09a:check FAIL at step ${failedStep.step.id} (${failedStep.result.detail}); later steps were not run\n`
-  )
-  process.exit(failedStep.result.exitCode === 0 ? 1 : failedStep.result.exitCode)
-}
-process.stdout.write(`stage09a:check PASS (${String(steps.length)}/${String(steps.length)} steps)\n`)
+process.exitCode = await main()

@@ -8,6 +8,13 @@
 # （验收门禁 #10）。
 name: ci
 
+permissions:
+  contents: read
+
+concurrency:
+  group: stage09a-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main]

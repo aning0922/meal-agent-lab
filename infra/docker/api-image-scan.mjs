@@ -97,20 +97,21 @@ export const selfLinkName = '@meal-agent/api'
 // --------------------------------------------------------------------------
 // 有界命令封装：非零退出一律 fatal（证据缺失不可降级），输出原样返回。
 // --------------------------------------------------------------------------
-export const createStrictRunner = (fatal) => async (args, { timeoutMs, cwd = repositoryRoot, label, stdin = null } = {}) => {
-  let outcome
-  try {
-    outcome = await runCommand(args, { timeoutMs, cwd, stdin })
-  } catch (error) {
-    fatal(`${label ?? args[0]}: ${error instanceof Error ? error.message : 'command failed to run'}`)
+export const createStrictRunner =
+  (fatal, commandRunner = runCommand) =>
+  async (args, { timeoutMs, cwd = repositoryRoot, label, stdin = null } = {}) => {
+    let outcome
+    try {
+      outcome = await commandRunner(args, { timeoutMs, cwd, stdin })
+    } catch {
+      fatal(`${label ?? args[0]}: command failed to run`)
+    }
+    if (outcome.status !== 0) {
+      const detail = outcome.signal !== null ? `killed by ${outcome.signal}` : `exit ${String(outcome.status)}`
+      fatal(`${label ?? args[0]} failed (${detail})`)
+    }
+    return outcome
   }
-  if (outcome.status !== 0) {
-    const detail = outcome.signal !== null ? `killed by ${outcome.signal}` : `exit ${String(outcome.status)}`
-    const stderrTail = outcome.stderr.split('\n').filter(Boolean).slice(-8).join('\n    ')
-    fatal(`${label ?? args.join(' ')} failed (${detail})${stderrTail === '' ? '' : `\n    ${stderrTail}`}`)
-  }
-  return outcome
-}
 
 // --------------------------------------------------------------------------
 // Dockerfile 与 .dockerignore 的静态断言（只覆盖 BLOCK 向：客户端内容进入
@@ -127,7 +128,7 @@ export const checkDockerfileText = (text, problem) => {
     if (fromMatch !== null) {
       const [, reference, alias] = fromMatch
       if (reference !== pinnedBaseImage && !stageAliases.has(reference)) {
-        problem(`Dockerfile: FROM must use the pinned digest or a prior stage alias, got ${reference}`)
+        problem('Dockerfile: FROM must use the pinned digest or a prior stage alias')
       }
       if (alias !== undefined) {
         stageAliases.add(alias)
@@ -135,10 +136,10 @@ export const checkDockerfileText = (text, problem) => {
       continue
     }
     if (/^(ARG|EXPOSE)\b/i.test(line)) {
-      problem(`Dockerfile: ${line.split(/\s/)[0]} instructions are not allowed in this image`)
+      problem('Dockerfile: ARG/EXPOSE instructions are not allowed in this image')
     }
     if (/^COPY\b/i.test(line) && /apps\/|packages\/ui/.test(line)) {
-      problem(`Dockerfile: COPY must not reference client workspaces (${line})`)
+      problem('Dockerfile: COPY must not reference client workspaces')
     }
     if (line === 'USER 10001:10001') {
       sawUser = true
@@ -171,12 +172,86 @@ export const checkDockerignoreText = (text, problem) => {
   }
   for (const rule of rules) {
     if (rule.startsWith('!') && /apps\/|packages\/ui|secrets|\.env|\.pem|\.key/.test(rule)) {
-      problem(`.dockerignore: negation rule must not re-admit client or secret material (${rule})`)
+      problem('.dockerignore: negation rule must not re-admit client or secret material')
     }
   }
-  for (const required of ['**/.env', '**/.env.*', '**/*.pem', '**/*.key']) {
-    if (!rules.includes(required)) {
+  const lastNegationIndex = rules.findLastIndex((rule) => rule.startsWith('!'))
+  for (const required of [
+    '.env',
+    '**/.env',
+    '**/.env.*',
+    '**/*.pem',
+    '**/*.key',
+    '**/*.crt',
+    '**/*.cer',
+    '**/*.p12',
+    '**/*.pfx',
+    '**/*.jks',
+    '**/*.keystore',
+    '**/id_rsa*',
+    '**/id_ecdsa*',
+    '**/id_ed25519*',
+    '**/*.gpg',
+    '**/*.asc',
+    '**/project.private.config.json'
+  ]) {
+    const index = rules.lastIndexOf(required)
+    if (index === -1) {
       problem(`.dockerignore: unconditional secret exclusion \`${required}\` is missing`)
+    } else if (index < lastNegationIndex) {
+      problem(`.dockerignore: unconditional secret exclusion \`${required}\` must appear after every negation rule`)
+    }
+  }
+}
+
+export const parseDockerImageId = (stdout, fatal) => {
+  const value = stdout.trim()
+  if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+    fatal('docker image inspect returned a noncanonical image ID')
+  }
+  return value
+}
+
+export const parseDockerContainerId = (stdout, fatal) => {
+  const value = stdout.trim()
+  if (!/^[0-9a-f]{64}$/.test(value)) {
+    fatal('docker create returned a noncanonical container ID')
+  }
+  return value
+}
+
+export const checkImageConfig = (imageConfig, problem, fatal) => {
+  if (imageConfig === null || Array.isArray(imageConfig) || typeof imageConfig !== 'object') {
+    fatal('docker image inspect returned a non-object Config payload')
+  }
+  if (imageConfig.User !== expectedImageConfig.user) {
+    problem(`image config: User must be ${expectedImageConfig.user}`)
+  }
+  if (imageConfig.WorkingDir !== expectedImageConfig.workingDir) {
+    problem(`image config: WorkingDir must be ${expectedImageConfig.workingDir}`)
+  }
+  if (
+    !(
+      imageConfig.Entrypoint === null ||
+      imageConfig.Entrypoint === undefined ||
+      (Array.isArray(imageConfig.Entrypoint) && imageConfig.Entrypoint.length === 0)
+    )
+  ) {
+    problem('image config: Entrypoint must be empty')
+  }
+  if (JSON.stringify(imageConfig.Cmd) !== JSON.stringify(expectedImageConfig.cmd)) {
+    problem(`image config: Cmd must be ${JSON.stringify(expectedImageConfig.cmd)}`)
+  }
+  if (JSON.stringify(imageConfig.Env) !== JSON.stringify(expectedImageConfig.env)) {
+    problem('image config: Env must be exactly the four pinned variables')
+  }
+  for (const [field, value] of [
+    ['ExposedPorts', imageConfig.ExposedPorts],
+    ['Volumes', imageConfig.Volumes],
+    ['Healthcheck', imageConfig.Healthcheck]
+  ]) {
+    if (value !== null && value !== undefined) {
+      problem(`image config: ${field} must be absent`)
     }
   }
 }
@@ -206,7 +281,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     try {
       parsed = JSON.parse(readFileSync(manifestPath, 'utf8'))
     } catch {
-      problem(`${label}: unreadable package.json under ${basename(packageDirectory)}`)
+      problem(`${label}: unreadable package.json in the dependency tree`)
       return null
     }
     if (
@@ -215,7 +290,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
       typeof parsed.version !== 'string' ||
       parsed.version === ''
     ) {
-      problem(`${label}: package.json under ${basename(packageDirectory)} lacks a usable name/version`)
+      problem(`${label}: dependency package.json lacks a usable name/version`)
       return null
     }
     return { name: parsed.name, version: parsed.version }
@@ -226,24 +301,24 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     try {
       target = readlinkSync(linkPath)
     } catch {
-      problem(`${label}: ${linkName} is not a readable symlink`)
+      problem(`${label}: dependency entry is not a readable symlink`)
       return
     }
     const resolved = resolve(dirname(linkPath), target)
     if (linkName === selfLinkName) {
       sawSelfLink = true
       if (existsSync(resolved) && isInside(resolved, nodeModulesDirectory)) {
-        problem(`${label}: the ${selfLinkName} self-link must not resolve inside node_modules (${target})`)
+        problem(`${label}: the ${selfLinkName} self-link must not resolve inside node_modules`)
       }
       return
     }
     if (!isInside(resolved, pnpmDirectory)) {
-      problem(`${label}: ${linkName} escapes the .pnpm store (${target})`)
+      problem(`${label}: dependency link escapes the .pnpm store`)
       return
     }
     const identity = readPackageIdentity(resolved)
     if (identity !== null && identity.name !== linkName) {
-      problem(`${label}: link ${linkName} resolves to package named ${identity.name}`)
+      problem(`${label}: dependency link resolves to a package with the wrong identity`)
     }
     links.set(linkName, target)
   }
@@ -256,13 +331,13 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
       const entryPath = join(areaDirectory, entry.name)
       if (entry.name.startsWith('@')) {
         if (entry.isSymbolicLink() || !entry.isDirectory()) {
-          problem(`${label}: scope entry ${areaLabel}${entry.name} must be a plain directory`)
+          problem(`${label}: scoped dependency container must be a plain directory`)
           continue
         }
         for (const scoped of readdirSync(entryPath, { withFileTypes: true })) {
           const scopedName = `${entry.name}/${scoped.name}`
           if (!scoped.isSymbolicLink()) {
-            problem(`${label}: ${areaLabel}${scopedName} must be a symlink into .pnpm`)
+            problem(`${label}: scoped dependency must be a symlink into .pnpm`)
             continue
           }
           recordLink(join(entryPath, scoped.name), scopedName)
@@ -270,7 +345,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
         continue
       }
       if (!entry.isSymbolicLink()) {
-        problem(`${label}: ${areaLabel}${entry.name} must be a symlink into .pnpm`)
+        problem(`${label}: dependency must be a symlink into .pnpm`)
         continue
       }
       recordLink(entryPath, entry.name)
@@ -284,13 +359,13 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     const entryPath = join(nodeModulesDirectory, entry.name)
     if (entry.name.startsWith('@')) {
       if (entry.isSymbolicLink() || !entry.isDirectory()) {
-        problem(`${label}: scope entry ${entry.name} must be a plain directory`)
+        problem(`${label}: root scoped dependency container must be a plain directory`)
         continue
       }
       for (const scoped of readdirSync(entryPath, { withFileTypes: true })) {
         const scopedName = `${entry.name}/${scoped.name}`
         if (!scoped.isSymbolicLink()) {
-          problem(`${label}: ${scopedName} must be a symlink into .pnpm`)
+          problem(`${label}: root scoped dependency must be a symlink into .pnpm`)
           continue
         }
         recordLink(join(entryPath, scoped.name), scopedName)
@@ -298,7 +373,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
       continue
     }
     if (!entry.isSymbolicLink()) {
-      problem(`${label}: unexpected root entry ${entry.name} (neither known metadata nor a package symlink)`)
+      problem(`${label}: unexpected root entry (neither known metadata nor a package symlink)`)
       continue
     }
     recordLink(entryPath, entry.name)
@@ -318,12 +393,12 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
       continue
     }
     if (entry.isSymbolicLink() || !entry.isDirectory()) {
-      problem(`${label}: unexpected .pnpm entry ${entry.name}`)
+      problem(`${label}: unexpected .pnpm entry`)
       continue
     }
     const mountRoot = join(entryPath, 'node_modules')
     if (!existsSync(mountRoot)) {
-      problem(`${label}: store key ${entry.name} has no node_modules mount`)
+      problem(`${label}: store key has no node_modules mount`)
       continue
     }
     const physicalHere = []
@@ -332,12 +407,12 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
       if (stat.isSymbolicLink()) {
         const resolved = resolve(dirname(leafPath), readlinkSync(leafPath))
         if (!isInside(resolved, pnpmDirectory)) {
-          problem(`${label}: ${entry.name} dependency link ${leafName} escapes the .pnpm store`)
+          problem(`${label}: store dependency link escapes the .pnpm store`)
         }
         return
       }
       if (!stat.isDirectory()) {
-        problem(`${label}: unexpected file ${leafName} under store key ${entry.name}`)
+        problem(`${label}: unexpected file under a store key`)
         return
       }
       const identity = readPackageIdentity(leafPath)
@@ -345,7 +420,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
         return
       }
       if (identity.name !== leafName) {
-        problem(`${label}: physical package at ${entry.name}/${leafName} declares name ${identity.name}`)
+        problem(`${label}: physical package declares the wrong identity`)
       }
       physicalHere.push({ storeKey: entry.name, name: identity.name, version: identity.version })
     }
@@ -360,7 +435,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
           continue
         }
         if (!mounted.isDirectory()) {
-          problem(`${label}: unexpected entry ${mounted.name} under store key ${entry.name}`)
+          problem(`${label}: unexpected entry under a store key`)
           continue
         }
         for (const scoped of readdirSync(mountedPath, { withFileTypes: true })) {
@@ -372,7 +447,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     }
     if (physicalHere.length !== 1) {
       problem(
-        `${label}: store key ${entry.name} holds ${String(physicalHere.length)} physical packages (expected exactly 1)`
+        `${label}: store key holds ${String(physicalHere.length)} physical packages (expected exactly 1)`
       )
     }
     packages.push(...physicalHere)
@@ -386,12 +461,6 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
 
 const packageSetOf = (inventory) =>
   new Set(inventory.packages.map((entry) => `${entry.storeKey} :: ${entry.name}@${entry.version}`))
-
-const listSample = (values, limit = 12) => {
-  const sorted = [...values].sort()
-  const sample = sorted.slice(0, limit).join(', ')
-  return sorted.length > limit ? `${sample}, … +${String(sorted.length - limit)} more` : sample
-}
 
 // --------------------------------------------------------------------------
 // 期望闭包：与 Dockerfile runtime-closure 阶段完全相同的一条命令，且必须只读
@@ -431,12 +500,15 @@ export const scanImage = async ({
   const imageTarPath = join(temporaryRoot, 'image.tar')
   const extractedRoot = join(temporaryRoot, 'image-root')
 
-  const imageId = (
-    await runStrict(['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag], {
-      timeoutMs: 60_000,
-      label: 'docker image inspect (id)'
-    })
-  ).stdout.trim()
+  const imageId = parseDockerImageId(
+    (
+      await runStrict(['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag], {
+        timeoutMs: 60_000,
+        label: 'docker image inspect (id)'
+      })
+    ).stdout,
+    fatal
+  )
   log(`image id ${imageId}`)
 
   // ---- 镜像 Config 断言 ----
@@ -452,40 +524,11 @@ export const scanImage = async ({
   } catch {
     fatal('docker image inspect returned unparsable Config JSON')
   }
-  if (imageConfig.User !== expectedImageConfig.user) {
-    problem(`image config: User must be ${expectedImageConfig.user}, got ${String(imageConfig.User)}`)
-  }
-  if (imageConfig.WorkingDir !== expectedImageConfig.workingDir) {
-    problem(`image config: WorkingDir must be ${expectedImageConfig.workingDir}, got ${String(imageConfig.WorkingDir)}`)
-  }
-  if (
-    !(
-      imageConfig.Entrypoint === null ||
-      imageConfig.Entrypoint === undefined ||
-      (Array.isArray(imageConfig.Entrypoint) && imageConfig.Entrypoint.length === 0)
-    )
-  ) {
-    problem(`image config: Entrypoint must be empty, got ${JSON.stringify(imageConfig.Entrypoint)}`)
-  }
-  if (JSON.stringify(imageConfig.Cmd) !== JSON.stringify(expectedImageConfig.cmd)) {
-    problem(`image config: Cmd must be ${JSON.stringify(expectedImageConfig.cmd)}, got ${JSON.stringify(imageConfig.Cmd)}`)
-  }
-  if (JSON.stringify(imageConfig.Env) !== JSON.stringify(expectedImageConfig.env)) {
-    problem(`image config: Env must be exactly the four pinned variables, got ${JSON.stringify(imageConfig.Env)}`)
-  }
-  for (const [field, value] of [
-    ['ExposedPorts', imageConfig.ExposedPorts],
-    ['Volumes', imageConfig.Volumes],
-    ['Healthcheck', imageConfig.Healthcheck]
-  ]) {
-    if (value !== null && value !== undefined) {
-      problem(`image config: ${field} must be absent, got ${JSON.stringify(value)}`)
-    }
-  }
+  checkImageConfig(imageConfig, problem, fatal)
 
   // ---- 全文件系统取证：不启动容器 ----
   const created = await runStrict(['docker', 'create', imageTag], { timeoutMs: 60_000, label: 'docker create' })
-  const containerId = created.stdout.trim()
+  const containerId = parseDockerContainerId(created.stdout, fatal)
   track.container(containerId)
   await runStrict(['docker', 'export', containerId, '-o', imageTarPath], {
     timeoutMs: 300_000,
@@ -536,7 +579,7 @@ export const scanImage = async ({
       strayPackageJson.push(entry)
     }
     if (/workspace/.test(entry) || entry.startsWith('opt/meal-agent-api-runtime')) {
-      problem(`image filesystem: build-stage residue must not ship (${entry})`)
+      problem('image filesystem: build-stage residue must not ship')
     }
     if (/^usr\/local\/lib\/node_modules\/./.test(entry)) {
       usrLocalLibNodeModulesChildren += 1
@@ -546,10 +589,10 @@ export const scanImage = async ({
       usrLocalBin.add(binMatch[1])
     }
     if (basename(entry).startsWith('.env')) {
-      problem(`image filesystem: dotenv material must not ship (${entry})`)
+      problem('image filesystem: dotenv material must not ship')
     }
     if (entry.startsWith('app/') && (entry.endsWith('pnpm-lock.yaml') || basename(entry) === '.npmrc')) {
-      problem(`image filesystem: package-manager metadata must not ship under /app (${entry})`)
+      problem('image filesystem: package-manager metadata must not ship under /app')
     }
     // denylist 的取证面：整个文件系统里任何 node_modules/<name> 路径段。
     const segmentMatch = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+?)\/?$/.exec(entry)
@@ -563,7 +606,7 @@ export const scanImage = async ({
   }
   const expectedAppTopLevel = ['dist', 'migrations', 'node_modules', 'package.json']
   if (JSON.stringify([...appTopLevel].sort()) !== JSON.stringify(expectedAppTopLevel)) {
-    problem(`image filesystem: /app must hold exactly ${expectedAppTopLevel.join(', ')}; got ${listSample(appTopLevel)}`)
+    problem(`image filesystem: /app must hold exactly ${expectedAppTopLevel.join(', ')}`)
   }
   if (!sawDistIndex) {
     problem('image filesystem: app/dist/index.js (the CMD target) is missing')
@@ -571,18 +614,18 @@ export const scanImage = async ({
   if (!sawDistMigrate) {
     problem('image filesystem: app/dist/database/migrate.js (the migrate one-off target) is missing')
   }
-  for (const entry of strayTypescript.slice(0, 8)) {
-    problem(`image filesystem: TypeScript source must not ship in dist (${entry})`)
+  if (strayTypescript.length > 0) {
+    problem('image filesystem: TypeScript source must not ship in dist')
   }
-  for (const entry of strayPackageJson.slice(0, 8)) {
-    problem(`image filesystem: unexpected package.json outside /app (${entry})`)
+  if (strayPackageJson.length > 0) {
+    problem('image filesystem: unexpected package.json outside /app')
   }
   if (usrLocalLibNodeModulesChildren !== 0) {
     problem('image filesystem: /usr/local/lib/node_modules must stay empty after the package-manager cleanup')
   }
   const expectedUsrLocalBin = ['docker-entrypoint.sh', 'node', 'nodejs']
   if (JSON.stringify([...usrLocalBin].sort()) !== JSON.stringify(expectedUsrLocalBin)) {
-    problem(`image filesystem: /usr/local/bin must hold exactly ${expectedUsrLocalBin.join(', ')}; got ${listSample(usrLocalBin)}`)
+    problem(`image filesystem: /usr/local/bin must hold exactly ${expectedUsrLocalBin.join(', ')}`)
   }
 
   // ---- 提取 /app 负载：migrations 逐字节、package.json 逐字段、node_modules 逐包 ----
@@ -598,14 +641,14 @@ export const scanImage = async ({
   const imageMigrations = [...migrationEntries].sort()
   if (JSON.stringify(imageMigrations) !== JSON.stringify(repositoryMigrations)) {
     problem(
-      `migrations: image set (${listSample(imageMigrations)}) must equal repository set (${listSample(repositoryMigrations)})`
+      'migrations: image set must equal repository set'
     )
   } else {
     for (const name of repositoryMigrations) {
       const repositoryBytes = readFileSync(join(migrationsDirectory, name))
       const imageBytes = readFileSync(join(extractedRoot, 'app/migrations', name))
       if (!repositoryBytes.equals(imageBytes)) {
-        problem(`migrations: ${name} differs byte-for-byte between image and repository`)
+        problem('migrations: a file differs byte-for-byte between image and repository')
       }
     }
   }
@@ -622,7 +665,7 @@ export const scanImage = async ({
   const expectedManifest = parseManifest(join(expected.deployDirectory, 'package.json'), 'expected-closure')
   if (imageManifest !== null && expectedManifest !== null) {
     if (imageManifest.name !== '@meal-agent/api') {
-      problem(`image /app: package.json name must be @meal-agent/api, got ${String(imageManifest.name)}`)
+      problem('image /app: package.json name must be @meal-agent/api')
     }
     for (const field of ['name', 'version', 'dependencies']) {
       if (JSON.stringify(imageManifest[field]) !== JSON.stringify(expectedManifest[field])) {
@@ -639,21 +682,21 @@ export const scanImage = async ({
   const missingFromImage = [...expectedSet].filter((entry) => !imageSet.has(entry))
   const unexpectedInImage = [...imageSet].filter((entry) => !expectedSet.has(entry))
   if (missingFromImage.length > 0) {
-    problem(`closure: packages missing from the image: ${listSample(missingFromImage)}`)
+    problem(`closure: ${String(missingFromImage.length)} package(s) are missing from the image`)
   }
   if (unexpectedInImage.length > 0) {
-    problem(`closure: packages in the image but not in the deploy-derived closure: ${listSample(unexpectedInImage)}`)
+    problem(`closure: ${String(unexpectedInImage.length)} unexpected package(s) are present in the image`)
   }
   const expectedLinkNames = [...expected.inventory.links.keys()].sort()
   const imageLinkNames = [...imageInventory.links.keys()].sort()
   if (JSON.stringify(expectedLinkNames) !== JSON.stringify(imageLinkNames)) {
     problem(
-      `closure: top-level dependency links differ (expected ${listSample(expectedLinkNames)}; image ${listSample(imageLinkNames)})`
+      'closure: top-level dependency links differ'
     )
   } else {
     for (const name of expectedLinkNames) {
       if (expected.inventory.links.get(name) !== imageInventory.links.get(name)) {
-        problem(`closure: top-level link ${name} points at a different store entry in the image`)
+        problem('closure: a top-level link points at a different store entry in the image')
       }
     }
   }
@@ -670,8 +713,8 @@ export const scanImage = async ({
   const forbiddenHits = [...imageNames].filter(
     (name) => forbiddenExactNames.has(name) || forbiddenNamePrefixes.some((prefix) => name.startsWith(prefix))
   )
-  for (const name of forbiddenHits.sort()) {
-    problem(`denylist: client/build dependency must not ship in the runtime image: ${name}`)
+  if (forbiddenHits.length > 0) {
+    problem('denylist: client/build dependency must not ship in the runtime image')
   }
   for (const family of namedFamilies) {
     const hits = [...imageNames].filter((name) => family.matches(name))

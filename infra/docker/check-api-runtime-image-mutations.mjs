@@ -76,8 +76,8 @@ const mutations = [
       ),
     expectStatic: [],
     expectScan: [
-      'denylist: client/build dependency must not ship in the runtime image: swiper',
-      'unexpected root entry swiper'
+      'denylist: client/build dependency must not ship in the runtime image',
+      'unexpected root entry'
     ]
   },
   {
@@ -132,6 +132,9 @@ const mutations = [
     expectScan: []
   }
 ]
+
+const expectedBuiltMutationCount = 5
+const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
   temporaryRoot: null,
@@ -223,6 +226,18 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
 let suiteExpected = null
 
 const main = async () => {
+  const builtMutationCount = mutations.filter((mutation) => mutation.build).length
+  const staticOnlyMutationCount = mutations.length - builtMutationCount + 1
+  if (
+    builtMutationCount !== expectedBuiltMutationCount ||
+    staticOnlyMutationCount !== expectedStaticOnlyMutationCount
+  ) {
+    fatal(
+      `mutation registry count drifted (expected ${String(expectedBuiltMutationCount)} built + ` +
+        `${String(expectedStaticOnlyMutationCount)} static-only)`
+    )
+  }
+
   for (const [args, label] of [
     [['docker', 'version', '--format', '{{.Server.Version}}'], 'docker daemon'],
     [['pnpm', '--version'], 'pnpm'],
@@ -275,6 +290,17 @@ const main = async () => {
     log('baseline: clean')
   }
 
+  // `.dockerignore` 是镜像构建面的另一半。存在密钥排除行还不够：若后面再追加
+  // 一个宽泛 negation，Docker 的 last-match-wins 会把密钥重新纳入上下文。
+  const reopenedDockerignore = `${dockerignoreText}\n!services/api/**\n`
+  const dockerignoreMutationProblems = []
+  checkDockerignoreText(reopenedDockerignore, (message) => dockerignoreMutationProblems.push(message))
+  if (!dockerignoreMutationProblems.some((message) => message.includes('must appear after every negation rule'))) {
+    failures.push('mutation late-dockerignore-negation: static check missed the specified ordering reason')
+  } else {
+    log('mutation late-dockerignore-negation: caught statically with the specified reason')
+  }
+
   // ---- 变异：每项都必须以指定理由被拒 ----
   for (const mutation of mutations) {
     const mutated = mutation.mutate(dockerfileText)
@@ -318,7 +344,7 @@ try {
   if (error instanceof FatalSuiteError) {
     fatalMessage = error.message
   } else {
-    fatalMessage = `unexpected failure: ${error instanceof Error ? error.message : 'unknown error'}`
+    fatalMessage = 'unexpected failure while collecting mutation evidence'
   }
 }
 
@@ -339,7 +365,7 @@ if (fatalMessage !== null || failures.length > 0) {
 }
 
 const builtMutations = mutations.filter((mutation) => mutation.build).length
-const staticOnlyMutations = mutations.length - builtMutations
+const staticOnlyMutations = mutations.length - builtMutations + 1
 process.stdout.write(
   `API runtime image mutation suite PASS (1 baseline + ${String(builtMutations)} built ` +
     `+ ${String(staticOnlyMutations)} static-only mutations, all caught with the specified reasons)\n`
