@@ -11,9 +11,9 @@
 
 阶段 09A 的本地/私有测试生命周期、停止/重启、备份/恢复与清理命令见
 [`stage-09a-local-test-lifecycle.md`](stage-09a-local-test-lifecycle.md)。M4 已于
-2026-08-11 Accepted（`f671c51`）；M5 候选 `929e50b` 经两路独立审计 BLOCK 后已在
-`4ada983` 定点整改，并通过主工作树聚合门禁 14/14；当前等待新候选独立复审，
-09A 尚未总验收。
+2026-08-11 Accepted（`f671c51`）；M5 候选 `38f172d` 经两路独立复审仍为 BLOCK，
+第二轮定点整改已落在 `1689f1b`，并通过主工作树聚合门禁 14/14；当前等待该新候选
+的独立 A/B 复审，09A 尚未总验收。
 
 当前不预设云厂商，不购买服务器、不开放公网。local、test、staging、production 的
 强制隔离基线已经在[阶段 05 后端架构](../architecture/backend-architecture-and-contracts.md#8-环境边界)

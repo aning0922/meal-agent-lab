@@ -453,6 +453,17 @@ production audit 失败只输出固定类别。Actions 也已固定到 commit SH
 通过 `stage09a:check` 14/14，但新候选独立复审、远端 CI 真实 run 与 09A 总验收仍未
 完成；不得把该注记解释成 M5 或 09A Pass。
 
+**M5 第二轮独立复审注记（2026-08-12）**：后续候选 `38f172d` 的两路独立复审
+仍为 BLOCK。实现落点 `1689f1b` 继续收口：聚合器通过专用所有权通道掌握子门禁
+派生的 detached process group，先等待 scoped cleanup，再以原生 primitive 做有界
+TERM/KILL/ESRCH 兜底；runtime image 的 dependency payload 比对覆盖普通文件内容、
+`.bin` mode/归一化内容与被跳过路径的 filesystem type，history 增加 framing、固定字段
+和 RootFS layer 行数下界；production audit 的 CLI 最终输出固定化并拒绝重复 advisory
+identity；CI workflow 的权限、immutable action、单次 frozen install/aggregate invocation
+由 mutation 回归钉住。主工作树已重新通过 `stage09a:check` 14/14，runtime image
+变异计数为 1 baseline + 9 built + 2 static-only。该结果仍只是整改候选证据；新一轮
+A/B 复审、远端 CI 真实 run 与 09A 总验收均未完成，M5 不得标记 Accepted。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；

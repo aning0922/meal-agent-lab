@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-12 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；**M5「门禁、CI 与文档」候选 `929e50b` 经两路独立审计均为 BLOCK，对应 P1 已在 `4ada983` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待新候选独立复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；**M5「门禁、CI 与文档」候选 `38f172d` 经两路独立复审仍为 BLOCK，对应 P1 已在第二轮落点 `1689f1b` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待该新候选的独立 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（两路独立审计 BLOCK 后已整改，等待新候选复审，未 Accepted）
+### M5 实施记录（第二轮独立复审 BLOCK 后已整改，等待新候选 A/B 复审，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3513,6 +3513,46 @@ runtime image mutation 为 **1 baseline + 8 built + 2 static-only**，其余 M3B
 空 volume smoke、八份 Secret 身份探针、M4 生命周期与恢复演练均为 PASS，scoped
 资源由各门禁确认归零。该结果仍只是整改候选的本地证据：形成文档提交后的干净
 checkout 复验与两路独立复审尚未完成，M5 不得标记 Accepted；远端 CI 仍无真实 run。
+
+#### M5 第二轮独立复审 BLOCK 后定点整改（2026-08-12，主工作树复验已通过）
+
+后续候选 `38f172d` 的审计 A/B 再次给出 **BLOCK**。总控按生产根因去重后收口五个
+边界，而不是把两份报告逐条机械相加：
+
+1. **聚合器必须拥有子门禁派生的嵌套进程组**。仅登记 `pnpm` 这层组长，无法证明
+   子门禁在 scoped cleanup 中派生的 detached Docker/Node 组已经消失。现在聚合器
+   给每个步骤一条机器可读的 ownership pipe；共享 M3B subprocess 层在登记真实 PGID
+   时同步公告，且不把该 fd/environment 继续交给被执行的 Docker 命令。收到
+   SIGINT/SIGTERM/SIGHUP 或步骤超时时，先给子门禁 2.5 秒完成 scoped cleanup，再由
+   聚合器以模块加载时保存的 native `kill` 对所有已登记组做稳定两轮
+   TERM → grace → KILL → bounded ESRCH 收敛。无 Docker 的真实 CLI 回归证明：内层
+   TERM-ignore 组在信号前存活，聚合器直到 cleanup marker 出现且 PGID 消失后才退出。
+2. **runtime dependency payload 不再给 `.bin` 或跳过路径留下不透明面**。普通 package
+   文件按路径、长度和 SHA-256 比较；`.bin` 文本 shim 还比较 mode，并只归一化 pnpm
+   生成脚本里的绝对 deploy root。因宿主 deploy 与镜像路径不同，目录 mode 不作为
+   等价判据；被刻意跳过内容的 `.modules.yaml`、`.package-map.json`、pnpm lock metadata
+   与 contracts README 仍必须保持 regular file。新增真实构建变异把 README 换成目录
+   加隐藏文件，必须以指定 type 理由转红。
+3. **image history 证据增加有界完整性下界**。输出必须为 LF 结尾的 JSON-lines，
+   每行固定六字段，ID/时间/命令/相对时间/大小/comment 逐项验证，首行 identity 必须
+   等于 immutable image ID；行数至少为 RootFS layer 数加一。该判据只声称拒绝空壳、
+   截断和字段漂移，不声称形式化重建 Docker history 的全部语义。
+4. **production audit 与 CI policy 自身 fail closed**。audit policy/runner/registry 的
+   非可信文本不再进入 CLI stderr，实际或策略 advisory identity 重复即拒绝；CI
+   测试按精确 action SHA allowlist、顶层最小权限、并发取消、恰好一次 frozen install
+   与恰好一次 `stage09a:check` 调用判断，并以 movable action、job 写权限、block scalar
+   双调用等 mutation 证明判别力。
+5. **证据与状态保持分离**。实现落点 `1689f1b` 的无 Docker 脚本测试 33/33 通过；
+   runtime image 正向门禁通过（78 个 runtime packages、75 个顶层 links、5 份迁移），
+   变异套件为 **1 baseline + 9 built + 2 static-only**，全部按指定理由转红；随后主
+   工作树完整 `pnpm stage09a:check` 14/14 通过（stage08、拓扑 15 变异、M3B 九门禁、
+   空 volume smoke、八份 Secret identity、M4 lifecycle/restore），相关容器、网络、
+   卷、per-run image tag、临时 Secret/override 与进程组复核为零。
+
+上述全绿仍不等于 Accepted：文档提交后的固定候选必须重新交给两个独立只读会话；
+审计 A 负责静态/纯 Node 的安全边界与 mutation 判别力，审计 B 负责真实 Docker、
+完整 14 步链、信号/清理和零残留。两路均 CLEAN 后才回到项目总控裁定；远端 CI
+真实 run 仍未发生。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的
