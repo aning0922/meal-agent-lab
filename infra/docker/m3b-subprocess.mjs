@@ -15,6 +15,31 @@
 //
 // 本模块自身不打印任何 Secret：它只透传调用方给的参数与输出。
 import { spawn } from 'node:child_process'
+import { writeSync } from 'node:fs'
+
+const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
+const aggregateOwnershipFd = (() => {
+  const raw = process.env[aggregateOwnershipFdName]
+  if (raw === undefined) {
+    return null
+  }
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value >= 3 ? value : null
+})()
+
+const announceProcessGroupOwnership = (pgid) => {
+  process.stderr.write(`m3b-descendant-pgid ${String(pgid)}\n`)
+  if (aggregateOwnershipFd === null) {
+    return
+  }
+  try {
+    writeSync(aggregateOwnershipFd, `${String(pgid)}\n`)
+  } catch {
+    // 独立运行 CLI 时该继承 fd 可能已由中间命令关闭；stderr 公告仍保留，
+    // 本 CLI 自己的 registry 继续拥有并清理该组。聚合器只在它显式提供 pipe
+    // 时依赖这条机器可读的所有权通道。
+  }
+}
 
 /**
  * 尚未确认消失的受控进程组：pgid → { leaderClosed }。
@@ -274,9 +299,11 @@ const runCommandUnchecked = (
   { env = process.env, cwd, timeoutMs = 120_000, stdin = null } = {}
 ) =>
   new Promise((resolvePromise, rejectPromise) => {
+    const childEnvironment = { ...env }
+    delete childEnvironment[aggregateOwnershipFdName]
     const child = spawn(args[0], args.slice(1), {
       cwd,
-      env,
+      env: childEnvironment,
       detached: true,
       stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe']
     })
@@ -295,7 +322,7 @@ const runCommandUnchecked = (
       // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
       // 返回空）。把真实 pgid 逐个公布出去，外部套件才可能真的核查后代是否
       // 全部消失，而不是做一次结构性空真的查询。
-      process.stderr.write(`m3b-descendant-pgid ${String(child.pid)}\n`)
+      announceProcessGroupOwnership(child.pid)
     }
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))

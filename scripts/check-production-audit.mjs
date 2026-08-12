@@ -25,9 +25,7 @@ const assertExactKeys = (value, keys, label) => {
   const actual = Object.keys(value).sort()
   const expected = [...keys].sort()
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(
-      `${label} keys are invalid: expected ${expected.join(',')}, got ${actual.join(',')}`
-    )
+    throw new Error(`${label} has invalid keys`)
   }
 }
 
@@ -87,7 +85,7 @@ export const validateAuditPolicy = (input, now = Date.now()) => {
     throw new Error('policy expiresAt must be a finite parseable timestamp')
   }
   if (now > expiry) {
-    throw new Error(`exception expired at ${input.expiresAt}`)
+    throw new Error('audit exception has expired')
   }
   if (
     typeof input.acceptedAt !== 'string' ||
@@ -140,7 +138,7 @@ export const validateAuditPolicy = (input, now = Date.now()) => {
       !/^[0-9a-f]{64}$/.test(advisory.pathSetSha256) ||
       seen.has(advisory.id)
     ) {
-      throw new Error(`policy advisory ${advisory.id ?? '(missing)'} is invalid`)
+      throw new Error('policy advisory is invalid')
     }
     seen.add(advisory.id)
   }
@@ -235,6 +233,9 @@ export const interpretAuditCommand = (command) => {
       pathSetSha256: sha256(JSON.stringify(paths))
     }
   })
+  if (new Set(actual.map((advisory) => advisory.id)).size !== actual.length) {
+    throw new Error('pnpm audit returned duplicate advisory identities')
+  }
   if (
     (command.status === 0 && actual.length !== 0) ||
     (command.status === 1 && actual.length === 0)
@@ -270,6 +271,12 @@ export const interpretAuditCommand = (command) => {
 }
 
 export const assertAcceptedAdvisories = (policy, actual) => {
+  if (
+    new Set(policy.advisories.map((advisory) => advisory.id)).size !== policy.advisories.length ||
+    new Set(actual.map((advisory) => advisory.id)).size !== actual.length
+  ) {
+    throw new Error('audit advisory identities must be unique')
+  }
   const expectedById = new Map(
     policy.advisories.map((advisory) => [advisory.id, advisory])
   )
@@ -550,9 +557,7 @@ const main = async () => {
     )
     const target = targetArgument?.slice('--target='.length) ?? ''
     if (target !== policy.allowedTarget) {
-      throw new Error(
-        `target "${target || '(missing)'}" is blocked; exception only permits ${policy.allowedTarget}`
-      )
+      throw new Error('requested target is not permitted by the audit exception')
     }
     relay = await startAuditRegistryRelay()
     const command = await runAuditCommand(relay.registry)
@@ -578,10 +583,8 @@ const main = async () => {
       if (buffer.includes(0)) continue
       const text = buffer.toString('utf8')
       for (const signature of policy.forbiddenArtifactSignatures) {
-        if (text.includes(signature)) {
-          throw new Error(
-            `vulnerable dependency signature "${signature}" found in ${fileName}`
-          )
+      if (text.includes(signature)) {
+          throw new Error('forbidden vulnerable dependency signature found in built artifact')
         }
       }
     }
@@ -603,7 +606,18 @@ const main = async () => {
     }
     process.stdout.write(`audit exception gate PASS ${JSON.stringify(result)}\n`)
   } catch (error) {
-    fail(error instanceof Error ? error.message : String(error))
+    // CLI 是最终输出边界。库函数只生成固定错误，但这里仍不信任任何意外异常、
+    // transport 原语或未来调用点的 message；绝不把其文本直接写到 stderr。
+    const knownMessages = new Set([
+      'requested target is not permitted by the audit exception',
+      'forbidden vulnerable dependency signature found in built artifact',
+      'weapp artifact contains no files'
+    ])
+    fail(
+      error instanceof Error && knownMessages.has(error.message)
+        ? error.message
+        : 'production audit evidence could not be verified'
+    )
   } finally {
     await relay?.close()
   }

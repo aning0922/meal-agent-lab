@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
@@ -61,6 +61,7 @@ test('immutable image, container and history evidence is identity-bound and comp
   const historyRow = {
     ID: imageId,
     CreatedAt: '2026-08-12T00:00:00Z',
+    CreatedSince: '1 second ago',
     CreatedBy: 'RUN node build.js',
     Size: '1B',
     Comment: ''
@@ -68,6 +69,21 @@ test('immutable image, container and history evidence is identity-bound and comp
   assert.equal(parseImageHistory(`${JSON.stringify(historyRow)}\n`, imageId, 1, throwingFatal, () => {}).length, 1)
   assert.throws(
     () => parseImageHistory(`${JSON.stringify(historyRow)}\n`, imageId, 2, throwingFatal, () => {}),
+    /incomplete or mismatched/
+  )
+  assert.throws(
+    () => parseImageHistory(JSON.stringify(historyRow), imageId, 1, throwingFatal, () => {}),
+    /invalid framing/
+  )
+  assert.throws(
+    () =>
+      parseImageHistory(
+        `${JSON.stringify({ ...historyRow, Size: '' })}\n`,
+        imageId,
+        1,
+        throwingFatal,
+        () => {}
+      ),
     /incomplete or mismatched/
   )
   const problems = []
@@ -91,9 +107,29 @@ test('dependency payload evidence includes .bin and package file bytes', () => {
     writeFileSync(resolve(directory, '.bin/webpack'), '#!/bin/sh\n')
     const withBin = dependencyPayloadOf(directory, 'fixture', () => {})
     assert.notEqual(withBin.sha256, baseline.sha256)
+    writeFileSync(resolve(directory, '.bin/webpack'), '#!/bin/sh\nexit 7\n')
+    const withChangedBinBytes = dependencyPayloadOf(directory, 'fixture', () => {})
+    assert.notEqual(withChangedBinBytes.sha256, withBin.sha256)
+    chmodSync(resolve(directory, '.bin/webpack'), 0o755)
+    const withChangedBinMode = dependencyPayloadOf(directory, 'fixture', () => {})
+    assert.notEqual(withChangedBinMode.sha256, withChangedBinBytes.sha256)
     writeFileSync(resolve(directory, 'fixture/payload.js'), 'mutation')
     const withPayload = dependencyPayloadOf(directory, 'fixture', () => {})
-    assert.notEqual(withPayload.sha256, withBin.sha256)
+    assert.notEqual(withPayload.sha256, withChangedBinMode.sha256)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('an excluded package README cannot become an opaque directory subtree', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-image-skipped-path-'))
+  try {
+    const readme = resolve(directory, '.pnpm/key/node_modules/@meal-agent/contracts/README.md')
+    mkdirSync(readme, { recursive: true })
+    writeFileSync(resolve(readme, 'hidden-client.js'), 'mutation')
+    const problems = []
+    dependencyPayloadOf(directory, 'fixture', (message) => problems.push(message))
+    assert.deepEqual(problems, ['fixture: skipped dependency metadata must remain a regular file'])
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

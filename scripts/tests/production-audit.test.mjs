@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 import test from 'node:test'
 import { Readable } from 'node:stream'
 import { gzipSync } from 'node:zlib'
@@ -70,7 +72,7 @@ test('an already-expired exception fails closed', () => {
   // 必须硬失败，而不是继续沿用旧例外。到期日当天仍然有效，次日拒绝。
   assert.throws(
     () => validateAuditPolicy(policy(), Date.parse('2026-08-09T00:00:01+08:00')),
-    /exception expired at/
+    /audit exception has expired/
   )
   assert.doesNotThrow(() =>
     validateAuditPolicy(policy(), Date.parse('2026-08-08T23:59:58+08:00'))
@@ -119,6 +121,51 @@ test('audit command failures never echo runner or registry controlled text', () 
       (error) => error instanceof Error && !error.message.includes(sentinel)
     )
   }
+})
+
+test('unexpected metadata keys and advisory identities never enter diagnostics', () => {
+  const sentinel = 'AUDIT-UNTRUSTED-SENTINEL'
+  const extraKey = command({
+    stdout: JSON.stringify({
+      advisories: { 1: rawAdvisory },
+      metadata: {
+        vulnerabilities: {
+          info: 0,
+          low: 0,
+          moderate: 0,
+          high: 1,
+          critical: 0,
+          [sentinel]: 1
+        }
+      }
+    })
+  })
+  assert.throws(
+    () => interpretAuditCommand(extraKey),
+    (error) => error instanceof Error && !error.message.includes(sentinel)
+  )
+
+  const duplicate = command({
+    stdout: JSON.stringify({
+      advisories: { 1: rawAdvisory, 2: { ...rawAdvisory } },
+      metadata: {
+        vulnerabilities: { info: 0, low: 0, moderate: 0, high: 2, critical: 0 }
+      }
+    })
+  })
+  assert.throws(() => interpretAuditCommand(duplicate), /duplicate advisory identities/)
+})
+
+test('the audit CLI boundary never echoes an untrusted target argument', () => {
+  const sentinel = 'AUDIT-UNTRUSTED-SENTINEL'
+  const outcome = spawnSync(
+    process.execPath,
+    [resolve(import.meta.dirname, '../check-production-audit.mjs'), `--target=${sentinel}`],
+    { encoding: 'utf8' }
+  )
+  assert.equal(outcome.status, 1)
+  assert.match(outcome.stderr, /requested target is not permitted/)
+  assert.doesNotMatch(outcome.stderr, new RegExp(sentinel))
 })
 
 test('audit registry transport accepts plain JSON and valid gzip JSON', async () => {

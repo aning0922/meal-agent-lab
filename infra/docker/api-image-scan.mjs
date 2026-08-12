@@ -307,10 +307,10 @@ export const parseContainerInspect = (stdout, expectedContainerId, expectedImage
 
 export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, problem) => {
   const text = String(stdout ?? '')
-  if (text === '' || text.includes('\r')) {
+  if (text === '' || text.includes('\r') || !text.endsWith('\n')) {
     fatal('docker image history returned invalid framing')
   }
-  const body = text.endsWith('\n') ? text.slice(0, -1) : text
+  const body = text.slice(0, -1)
   const lines = body.split('\n')
   let rows
   try {
@@ -325,12 +325,17 @@ export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, p
     rows.some(
       (row) =>
         !isRecord(row) ||
-        typeof row.ID !== 'string' ||
-        row.ID === '' ||
+        JSON.stringify(Object.keys(row).sort()) !==
+          JSON.stringify(['Comment', 'CreatedAt', 'CreatedBy', 'CreatedSince', 'ID', 'Size']) ||
+        !(row.ID === '<missing>' || isImageId(row.ID)) ||
         typeof row.CreatedAt !== 'string' ||
-        row.CreatedAt === '' ||
+        !/^\d{4}-\d{2}-\d{2}(?:T| )/.test(row.CreatedAt) ||
         typeof row.CreatedBy !== 'string' ||
+        row.CreatedBy === '' ||
+        typeof row.CreatedSince !== 'string' ||
+        row.CreatedSince === '' ||
         typeof row.Size !== 'string' ||
+        !/^\d+(?:\.\d+)?(?:B|kB|MB|GB|TB)$/.test(row.Size) ||
         typeof row.Comment !== 'string'
     )
   ) {
@@ -367,18 +372,22 @@ export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
       const path = join(directory, entry.name)
       const name = relative(nodeModulesDirectory, path)
-      if (
+      const stat = lstatSync(path)
+      const isSkippedMetadata =
         name === '.modules.yaml' ||
         name === '.package-map.json' ||
         name === '.pnpm/lock.yaml' ||
         name.endsWith('/node_modules/@meal-agent/contracts/README.md')
-      ) {
+      if (isSkippedMetadata) {
         // pnpm writes the absolute deploy directory into this host-local metadata file.
         // Docker's filtered build context also omits the workspace README. These entries are
-        // not executable runtime payload; package/link identity is validated separately.
+        // not executable runtime payload, but their **filesystem type is still evidence**:
+        // skipping before lstat would let an attacker replace one file with an opaque tree.
+        if (!stat.isFile()) {
+          problem(`${label}: skipped dependency metadata must remain a regular file`)
+        }
         continue
       }
-      const stat = lstatSync(path)
       const isExecutableShim = name.split('/').includes('.bin')
       const isSelfLink =
         stat.isSymbolicLink() &&
@@ -392,10 +401,30 @@ export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
         payload.push(`directory\0${name}`)
         visit(path)
       } else if (stat.isFile()) {
+        const kind = isExecutableShim ? 'bin-file' : 'file'
+        const mode = isExecutableShim ? `${String(stat.mode & 0o777)}\0` : ''
+        const bytes = readFileSync(path)
+        let comparableBytes = bytes
+        if (isExecutableShim) {
+          const text = bytes.toString('utf8')
+          if (!Buffer.from(text, 'utf8').equals(bytes)) {
+            problem(`${label}: executable dependency shim must be valid UTF-8 text`)
+          } else {
+            // pnpm cmd shims embed the absolute deploy root. The host oracle is created in
+            // a random temp directory while the image build uses /opt/...; normalize only
+            // that root prefix and compare every remaining byte, mode and resulting size.
+            comparableBytes = Buffer.from(
+              text.replace(
+                /(?:\/[A-Za-z0-9._+@=-]+)+\/node_modules\//g,
+                '<DEPLOY>/node_modules/'
+              ),
+              'utf8'
+            )
+          }
+        }
         payload.push(
-          isExecutableShim
-            ? `bin-file\0${name}`
-            : `file\0${name}\0${String(stat.size)}\0${createHash('sha256').update(readFileSync(path)).digest('hex')}`
+          `${kind}\0${name}\0${mode}${String(comparableBytes.length)}\0` +
+            createHash('sha256').update(comparableBytes).digest('hex')
         )
       } else {
         problem(`${label}: unsupported filesystem entry in dependency payload`)
@@ -597,7 +626,12 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
   }
   packages.sort((left, right) => (left.storeKey < right.storeKey ? -1 : left.storeKey > right.storeKey ? 1 : 0))
   const payload = dependencyPayloadOf(nodeModulesDirectory, label, problem)
-  return { links, packages, payloadCount: payload.count, payloadSha256: payload.sha256 }
+  return {
+    links,
+    packages,
+    payloadCount: payload.count,
+    payloadSha256: payload.sha256
+  }
 }
 
 const packageSetOf = (inventory) =>
@@ -674,7 +708,9 @@ export const scanImage = async ({
       }
     )
   ).stdout
-  parseImageHistory(historyRaw, imageId, imageInspect.RootFS.Layers.length, fatal, problem)
+  // Dockerfile 至少会产生一个 metadata-only history row，故完整 history 必须
+  // 严格多于非空 RootFS layer 数；这也使删除一整条合法尾行不能伪装成完整证据。
+  parseImageHistory(historyRaw, imageId, imageInspect.RootFS.Layers.length + 1, fatal, problem)
 
   // ---- 全文件系统取证：不启动容器 ----
   const created = await runStrict(['docker', 'create', imageId], {

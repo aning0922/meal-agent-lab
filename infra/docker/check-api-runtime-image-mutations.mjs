@@ -123,6 +123,19 @@ const mutations = [
     expectScan: ['closure: dependency payload differs byte-for-byte from the deploy-derived closure']
   },
   {
+    id: 'replace-skipped-readme-with-directory',
+    describe: 'turn the skipped contracts README path into an opaque directory tree',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        'RUN set -eu; \\\n set -- /app/node_modules/.pnpm/@meal-agent+contracts@*/node_modules/@meal-agent/contracts; \\\n [ "$#" -eq 1 ] && [ -d "$1" ]; \\\n target="$1/README.md"; \\\n rm -f "$target"; \\\n mkdir -p "$target"; \\\n printf mutation > "$target/hidden-client.js"\n\nUSER 10001:10001'
+      ),
+    expectStatic: [],
+    expectScan: ['skipped dependency metadata must remain a regular file']
+  },
+  {
     id: 'secret-shaped-image-history',
     describe: 'leave a secret-shaped value only in immutable image history',
     build: true,
@@ -175,7 +188,7 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 8
+const expectedBuiltMutationCount = 9
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
