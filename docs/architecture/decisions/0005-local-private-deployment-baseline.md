@@ -445,12 +445,13 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 全表），更不等于任何云、公网或发布判定。
 
 **M5 总控复核注记（2026-08-12）**：ADR 的部署决策与 M1—M4 已验收证据不变，
-但 M5 自身尚未 Accepted。总控确定性反例另关闭了聚合入口在前置探针信号后仍启动
-门禁、只终止直接子 PID 的缺陷；所有探针/步骤现由受控进程组有界收敛。runtime
-image 门禁同时要求 `.dockerignore` 的密钥排除位于全部 negation 之后、image/container
-identity 使用 canonical immutable 形态，失败诊断不回显 runner stderr 或 Config 实际
-值。整改候选已于 2026-08-12 在当前工作树通过 `stage09a:check` 14/14，但独立只读
-审计、远端 CI 真实 run 与 09A 总验收仍未完成；不得把该注记解释成 M5 或 09A Pass。
+但 M5 自身尚未 Accepted。候选 `929e50b` 经两路独立审计均为 BLOCK；对应 P1 已在
+`4ada983` 定点整改：聚合入口接管 SIGINT/SIGTERM/SIGHUP，并在 termination primitive
+异常时有界失败；runtime image 的 Config/history/create/export 全部绑定 immutable ID，
+container identity 精确复核，dependency payload 覆盖 `.bin` 与 package 文件字节；
+production audit 失败只输出固定类别。Actions 也已固定到 commit SHA。主工作树已重新
+通过 `stage09a:check` 14/14，但新候选独立复审、远端 CI 真实 run 与 09A 总验收仍未
+完成；不得把该注记解释成 M5 或 09A Pass。
 
 以下条件触发复审：
 
