@@ -94,6 +94,48 @@ const mutations = [
     expectScan: ['image filesystem: build-stage residue must not ship']
   },
   {
+    id: 'inject-denylisted-bin-shim',
+    describe: 'plant a webpack executable under the otherwise opaque .bin directory',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        "RUN mkdir -p /app/node_modules/.bin && printf '#!/bin/sh\\n' > /app/node_modules/.bin/webpack\n\nUSER 10001:10001"
+      ),
+    expectStatic: [],
+    expectScan: [
+      'closure: dependency payload differs byte-for-byte from the deploy-derived closure',
+      'denylist: client/build dependency must not ship in the runtime image'
+    ]
+  },
+  {
+    id: 'inject-package-payload',
+    describe: 'change package payload without changing package identities or links',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        "RUN target=\"$(find /app/node_modules/.pnpm -type d -path '*/node_modules/*' | head -n 1)\" && printf mutation > \"$target/M5_PAYLOAD_MUTATION\"\n\nUSER 10001:10001"
+      ),
+    expectStatic: [],
+    expectScan: ['closure: dependency payload differs byte-for-byte from the deploy-derived closure']
+  },
+  {
+    id: 'secret-shaped-image-history',
+    describe: 'leave a secret-shaped value only in immutable image history',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        "RUN printf 'WECHAT_APP_SECRET=M5_HISTORY_SENTINEL' > /tmp/m5-history && rm /tmp/m5-history\n\nUSER 10001:10001"
+      ),
+    expectStatic: [],
+    expectScan: ['image history: secret-shaped build instruction must not ship']
+  },
+  {
     id: 'expose-port',
     describe: 'declare a host-facing EXPOSE port',
     build: true,
@@ -133,7 +175,7 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 5
+const expectedBuiltMutationCount = 8
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {

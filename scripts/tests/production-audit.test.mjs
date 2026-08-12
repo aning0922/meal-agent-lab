@@ -80,7 +80,7 @@ test('an already-expired exception fails closed', () => {
 test('exit 2 fails even when JSON contains matching advisories', () => {
   assert.throws(
     () => interpretAuditCommand(command({ status: 2 })),
-    /is not a vulnerability result/
+    /non-vulnerability exit status/
   )
 })
 
@@ -90,7 +90,7 @@ test('a signalled audit subprocess fails closed', () => {
       interpretAuditCommand(
         command({ status: null, signal: 'SIGTERM' })
       ),
-    /terminated by signal/
+    /terminated by a signal/
   )
 })
 
@@ -105,6 +105,20 @@ test('registry/network error payload fails closed', () => {
       ),
     /registry\/network failure/
   )
+})
+
+test('audit command failures never echo runner or registry controlled text', () => {
+  const sentinel = 'AUDIT-UNTRUSTED-SENTINEL'
+  for (const fixture of [
+    command({ status: 0, stdout: 'not-json', stderr: sentinel }),
+    command({ status: 1, stdout: JSON.stringify({ error: { summary: sentinel } }), stderr: '' }),
+    command({ status: null, signal: null, stdout: '', stderr: '', error: new Error(sentinel) })
+  ]) {
+    assert.throws(
+      () => interpretAuditCommand(fixture),
+      (error) => error instanceof Error && !error.message.includes(sentinel)
+    )
+  }
 })
 
 test('audit registry transport accepts plain JSON and valid gzip JSON', async () => {
@@ -182,7 +196,7 @@ test('a new advisory fails closed', () => {
         validateAuditPolicy(policy(), Date.parse('2026-07-25')),
         actual
       ),
-    /new advisory/
+    /unaccepted advisory/
   )
 })
 

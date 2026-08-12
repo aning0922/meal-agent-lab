@@ -71,6 +71,7 @@ set -eu
 if [ "\${1:-}" = version ]; then
   if [ "\${STAGE09A_FIXTURE_MODE:-}" = preflight ]; then
     : > "\${STAGE09A_FIXTURE_DIR}/probe-ready"
+    printf '%s\\n' "$$" > "\${STAGE09A_FIXTURE_DIR}/probe-pid"
     sleep 30
   fi
   printf '%s\\n' 29.6.2
@@ -100,8 +101,13 @@ if [ "\${STAGE09A_FIXTURE_MODE:-}" = preflight ]; then
   : > "\${STAGE09A_FIXTURE_DIR}/step-started"
   exit 9
 fi
-if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant ]; then
-  "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/grandchild.mjs" &
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant ] || [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
+  if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
+    exec </dev/null >/dev/null 2>&1
+    "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/grandchild.mjs" </dev/null >/dev/null 2>&1 &
+  else
+    "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/grandchild.mjs" &
+  fi
   child_pid=$!
   printf '%s\\n' "$child_pid" > "\${STAGE09A_FIXTURE_DIR}/grandchild-pid"
   wait "$child_pid"
@@ -112,10 +118,10 @@ exit 98
   return { directory, bin }
 }
 
-const spawnGate = ({ directory, bin }, mode) => {
+const spawnGate = ({ directory, bin }, mode, gateEntrypoint = entrypoint) => {
   const stdout = []
   const stderr = []
-  const child = spawn(process.execPath, [entrypoint], {
+  const child = spawn(process.execPath, [gateEntrypoint], {
     cwd: repositoryRoot,
     detached: true,
     env: {
@@ -131,6 +137,55 @@ const spawnGate = ({ directory, bin }, mode) => {
   child.stderr.on('data', (chunk) => stderr.push(chunk))
   return { child, stdout, stderr }
 }
+
+test('termination lifecycle failure settles with a fixed nonzero result instead of hanging', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let grandchildPid = null
+  try {
+    const scriptsDirectory = resolve(fixture.directory, 'scripts')
+    const infraDirectory = resolve(fixture.directory, 'infra/docker')
+    mkdirSync(scriptsDirectory, { recursive: true })
+    mkdirSync(infraDirectory, { recursive: true })
+    const copiedEntrypoint = resolve(scriptsDirectory, 'run-stage09a-check.mjs')
+    writeFileSync(copiedEntrypoint, readFileSync(entrypoint))
+    writeFileSync(
+      resolve(infraDirectory, 'm3b-subprocess.mjs'),
+      `export const createProcessGroupLifecycle = () => {
+  const active = new Set()
+  return {
+    register: (pgid) => { const handle = { pgid, generation: 1 }; active.add(handle); return handle },
+    markLeaderClosed: () => undefined,
+    retireIfGone: (handle) => active.delete(handle),
+    unconfirmed: () => [...active],
+    terminate: async () => { throw new Error('TERMINATION-PRIMITIVE-SENTINEL') },
+    terminateAll: async () => { throw new Error('TERMINATION-PRIMITIVE-SENTINEL') }
+  }
+}\n`
+    )
+    gate = spawnGate(fixture, 'descendant-silent', copiedEntrypoint)
+    const pidFile = resolve(fixture.directory, 'grandchild-pid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'descendant pid')
+    grandchildPid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(grandchildPid), true)
+    gate.child.kill('SIGTERM')
+    const outcome = await waitForClose(gate.child, 4_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.match(output, /signal cleanup failed/)
+    assert.doesNotMatch(output, /TERMINATION-PRIMITIVE-SENTINEL/)
+  } finally {
+    if (grandchildPid !== null && processIsAlive(grandchildPid)) {
+      process.kill(grandchildPid, 'SIGKILL')
+      await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'fixture cleanup ESRCH')
+    }
+    if (gate !== null && processIsAlive(gate.child.pid)) {
+      process.kill(-gate.child.pid, 'SIGKILL')
+    }
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
 
 const waitForClose = (child, timeoutMs) =>
   new Promise((resolvePromise, rejectPromise) => {
@@ -154,6 +209,9 @@ test('the CI workflow delegates to the same fail-closed aggregate entrypoint', (
   assert.match(source, /^permissions:\n  contents: read$/m)
   assert.match(source, /^concurrency:\n  group: stage09a-/m)
   assert.equal((source.match(/run: pnpm stage09a:check/g) ?? []).length, 1)
+  assert.match(source, /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/)
+  assert.match(source, /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/)
+  assert.doesNotMatch(source, /uses:\s+actions\/[^@]+@v\d+/)
   assert.doesNotMatch(source, /continue-on-error|pull_request_target/)
 })
 
@@ -211,3 +269,58 @@ test('a signal waits for the active step process group to reach ESRCH', { timeou
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })
+
+for (const signal of ['SIGINT', 'SIGHUP']) {
+  test(`${signal} during prerequisite probes prevents every gate step and cleans its group`, { timeout: 12_000 }, async () => {
+    const fixture = createFixture()
+    let gate = null
+    try {
+      gate = spawnGate(fixture, 'preflight')
+      await waitFor(() => existsSync(resolve(fixture.directory, 'probe-ready')), 2_000, 'probe readiness')
+      const probePid = Number(readFileSync(resolve(fixture.directory, 'probe-pid'), 'utf8').trim())
+      assert.equal(processIsAlive(probePid), true)
+      gate.child.kill(signal)
+      const outcome = await waitForClose(gate.child, 6_000)
+      const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+      assert.equal(outcome.code, 1)
+      assert.equal(outcome.signal, null)
+      assert.equal(existsSync(resolve(fixture.directory, 'step-started')), false)
+      assert.match(output, new RegExp(`interrupted by ${signal} during prerequisite checks`))
+      await waitFor(() => !processIsAlive(probePid), 1_000, 'prerequisite group ESRCH')
+    } finally {
+      if (gate !== null && processIsAlive(gate.child.pid)) {
+        process.kill(-gate.child.pid, 'SIGKILL')
+      }
+      rmSync(fixture.directory, { recursive: true, force: true })
+    }
+  })
+
+  test(`${signal} waits for an active TERM-ignoring descendant to reach ESRCH`, { timeout: 12_000 }, async () => {
+    const fixture = createFixture()
+    let gate = null
+    let grandchildPid = null
+    try {
+      gate = spawnGate(fixture, 'descendant')
+      const pidFile = resolve(fixture.directory, 'grandchild-pid')
+      await waitFor(() => existsSync(pidFile), 3_000, 'descendant pid')
+      grandchildPid = Number(readFileSync(pidFile, 'utf8').trim())
+      assert.equal(processIsAlive(grandchildPid), true)
+      gate.child.kill(signal)
+      const outcome = await waitForClose(gate.child, 7_000)
+      await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'descendant ESRCH')
+      const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+      assert.equal(outcome.code, 1)
+      assert.equal(outcome.signal, null)
+      assert.match(output, new RegExp(`received ${signal}`))
+      assert.match(output, new RegExp(`interrupted by ${signal}`))
+    } finally {
+      if (grandchildPid !== null && processIsAlive(grandchildPid)) {
+        process.kill(grandchildPid, 'SIGKILL')
+      }
+      if (gate !== null && processIsAlive(gate.child.pid)) {
+        process.kill(-gate.child.pid, 'SIGKILL')
+      }
+      rmSync(fixture.directory, { recursive: true, force: true })
+    }
+  })
+}

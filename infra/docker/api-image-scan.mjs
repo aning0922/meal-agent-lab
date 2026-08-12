@@ -15,6 +15,7 @@ import {
   readdirSync,
   readlinkSync
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -256,6 +257,97 @@ export const checkImageConfig = (imageConfig, problem, fatal) => {
   }
 }
 
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const isImageId = (value) => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value)
+
+export const parseImageInspect = (stdout, expectedId, fatal) => {
+  let payload
+  try {
+    payload = JSON.parse(stdout)
+  } catch {
+    fatal('docker image inspect returned unparsable JSON')
+  }
+  if (
+    !Array.isArray(payload) ||
+    payload.length !== 1 ||
+    !isRecord(payload[0]) ||
+    payload[0].Id !== expectedId ||
+    !isRecord(payload[0].Config) ||
+    !isRecord(payload[0].RootFS) ||
+    payload[0].RootFS.Type !== 'layers' ||
+    !Array.isArray(payload[0].RootFS.Layers) ||
+    payload[0].RootFS.Layers.length === 0 ||
+    !payload[0].RootFS.Layers.every(isImageId)
+  ) {
+    fatal('docker image inspect returned invalid immutable-image evidence')
+  }
+  return payload[0]
+}
+
+export const parseContainerInspect = (stdout, expectedContainerId, expectedImageId, fatal) => {
+  let payload
+  try {
+    payload = JSON.parse(stdout)
+  } catch {
+    fatal('docker container inspect returned unparsable JSON')
+  }
+  if (
+    !Array.isArray(payload) ||
+    payload.length !== 1 ||
+    !isRecord(payload[0]) ||
+    payload[0].Id !== expectedContainerId ||
+    payload[0].Image !== expectedImageId ||
+    typeof payload[0].Path !== 'string' ||
+    payload[0].Path === ''
+  ) {
+    fatal('docker container inspect did not bind the scratch container to the immutable image')
+  }
+  return payload[0]
+}
+
+export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, problem) => {
+  const text = String(stdout ?? '')
+  if (text === '' || text.includes('\r')) {
+    fatal('docker image history returned invalid framing')
+  }
+  const body = text.endsWith('\n') ? text.slice(0, -1) : text
+  const lines = body.split('\n')
+  let rows
+  try {
+    rows = lines.map((line) => JSON.parse(line))
+  } catch {
+    fatal('docker image history returned unparsable JSON lines')
+  }
+  if (
+    lines.some((line) => line === '') ||
+    rows.length < minimumRows ||
+    rows[0]?.ID !== expectedImageId ||
+    rows.some(
+      (row) =>
+        !isRecord(row) ||
+        typeof row.ID !== 'string' ||
+        row.ID === '' ||
+        typeof row.CreatedAt !== 'string' ||
+        row.CreatedAt === '' ||
+        typeof row.CreatedBy !== 'string' ||
+        typeof row.Size !== 'string' ||
+        typeof row.Comment !== 'string'
+    )
+  ) {
+    fatal('docker image history returned incomplete or mismatched evidence')
+  }
+  if (
+    rows.some((row) =>
+      /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i.test(
+        row.CreatedBy
+      )
+    )
+  ) {
+    problem('image history: secret-shaped build instruction must not ship')
+  }
+  return rows
+}
+
 // --------------------------------------------------------------------------
 // 同一个 walker 走两棵 `pnpm deploy --prod --legacy` 布局的 node_modules。
 // physical package = `.pnpm/<key>/node_modules/<name>` 下的真实目录；顶层与
@@ -267,6 +359,54 @@ const knownRootExtras = new Set(['.bin', '.modules.yaml', '.package-map.json', '
 const isInside = (candidate, ancestor) => {
   const relation = relative(ancestor, candidate)
   return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation)
+}
+
+export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
+  const payload = []
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(directory, entry.name)
+      const name = relative(nodeModulesDirectory, path)
+      if (
+        name === '.modules.yaml' ||
+        name === '.package-map.json' ||
+        name === '.pnpm/lock.yaml' ||
+        name.endsWith('/node_modules/@meal-agent/contracts/README.md')
+      ) {
+        // pnpm writes the absolute deploy directory into this host-local metadata file.
+        // Docker's filtered build context also omits the workspace README. These entries are
+        // not executable runtime payload; package/link identity is validated separately.
+        continue
+      }
+      const stat = lstatSync(path)
+      const isExecutableShim = name.split('/').includes('.bin')
+      const isSelfLink =
+        stat.isSymbolicLink() &&
+        (name === selfLinkName || name.endsWith(`/node_modules/${selfLinkName}`))
+      if (isSelfLink) {
+        continue
+      }
+      if (stat.isSymbolicLink()) {
+        payload.push(`link\0${name}\0${readlinkSync(path)}`)
+      } else if (stat.isDirectory()) {
+        payload.push(`directory\0${name}`)
+        visit(path)
+      } else if (stat.isFile()) {
+        payload.push(
+          isExecutableShim
+            ? `bin-file\0${name}`
+            : `file\0${name}\0${String(stat.size)}\0${createHash('sha256').update(readFileSync(path)).digest('hex')}`
+        )
+      } else {
+        problem(`${label}: unsupported filesystem entry in dependency payload`)
+      }
+    }
+  }
+  visit(nodeModulesDirectory)
+  return {
+    count: payload.length,
+    sha256: createHash('sha256').update(payload.join('\n')).digest('hex')
+  }
 }
 
 export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
@@ -381,7 +521,7 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
 
   if (!existsSync(pnpmDirectory)) {
     problem(`${label}: .pnpm store directory is missing`)
-    return { links, packages }
+    return { links, packages, payloadCount: 0, payloadSha256: null }
   }
   for (const entry of readdirSync(pnpmDirectory, { withFileTypes: true })) {
     if (entry.name === 'lock.yaml') {
@@ -456,7 +596,8 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     problem(`${label}: the ${selfLinkName} self-link produced by pnpm deploy is missing`)
   }
   packages.sort((left, right) => (left.storeKey < right.storeKey ? -1 : left.storeKey > right.storeKey ? 1 : 0))
-  return { links, packages }
+  const payload = dependencyPayloadOf(nodeModulesDirectory, label, problem)
+  return { links, packages, payloadCount: payload.count, payloadSha256: payload.sha256 }
 }
 
 const packageSetOf = (inventory) =>
@@ -511,25 +652,48 @@ export const scanImage = async ({
   )
   log(`image id ${imageId}`)
 
-  // ---- 镜像 Config 断言 ----
-  const configRaw = (
-    await runStrict(['docker', 'image', 'inspect', '--format', '{{json .Config}}', imageTag], {
-      timeoutMs: 60_000,
-      label: 'docker image inspect (config)'
-    })
+  // 从这一刻起只使用 immutable ID；tag 只是第一次解析入口，不能继续参与证据收集。
+  const imageInspect = parseImageInspect(
+    (
+      await runStrict(['docker', 'image', 'inspect', imageId], {
+        timeoutMs: 60_000,
+        label: 'docker image inspect (immutable evidence)'
+      })
+    ).stdout,
+    imageId,
+    fatal
+  )
+  checkImageConfig(imageInspect.Config, problem, fatal)
+
+  const historyRaw = (
+    await runStrict(
+      ['docker', 'image', 'history', '--no-trunc', '--format', '{{json .}}', imageId],
+      {
+        timeoutMs: 60_000,
+        label: 'docker image history (immutable evidence)'
+      }
+    )
   ).stdout
-  let imageConfig
-  try {
-    imageConfig = JSON.parse(configRaw)
-  } catch {
-    fatal('docker image inspect returned unparsable Config JSON')
-  }
-  checkImageConfig(imageConfig, problem, fatal)
+  parseImageHistory(historyRaw, imageId, imageInspect.RootFS.Layers.length, fatal, problem)
 
   // ---- 全文件系统取证：不启动容器 ----
-  const created = await runStrict(['docker', 'create', imageTag], { timeoutMs: 60_000, label: 'docker create' })
+  const created = await runStrict(['docker', 'create', imageId], {
+    timeoutMs: 60_000,
+    label: 'docker create (immutable image)'
+  })
   const containerId = parseDockerContainerId(created.stdout, fatal)
   track.container(containerId)
+  parseContainerInspect(
+    (
+      await runStrict(['docker', 'container', 'inspect', containerId], {
+        timeoutMs: 60_000,
+        label: 'docker container inspect (identity binding)'
+      })
+    ).stdout,
+    containerId,
+    imageId,
+    fatal
+  )
   await runStrict(['docker', 'export', containerId, '-o', imageTarPath], {
     timeoutMs: 300_000,
     label: 'docker export'
@@ -602,6 +766,10 @@ export const scanImage = async ({
     const interiorMatch = /(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/.][^/]*)\//.exec(entry)
     if (interiorMatch !== null) {
       listingNodeModuleNames.add(interiorMatch[1])
+    }
+    const executableShimMatch = /(?:^|\/)node_modules\/\.bin\/([^/]+)\/?$/.exec(entry)
+    if (executableShimMatch !== null) {
+      listingNodeModuleNames.add(executableShimMatch[1])
     }
   }
   const expectedAppTopLevel = ['dist', 'migrations', 'node_modules', 'package.json']
@@ -686,6 +854,12 @@ export const scanImage = async ({
   }
   if (unexpectedInImage.length > 0) {
     problem(`closure: ${String(unexpectedInImage.length)} unexpected package(s) are present in the image`)
+  }
+  if (
+    imageInventory.payloadCount !== expected.inventory.payloadCount ||
+    imageInventory.payloadSha256 !== expected.inventory.payloadSha256
+  ) {
+    problem('closure: dependency payload differs byte-for-byte from the deploy-derived closure')
   }
   const expectedLinkNames = [...expected.inventory.links.keys()].sort()
   const imageLinkNames = [...imageInventory.links.keys()].sort()

@@ -152,27 +152,22 @@ const sha256 = (value) =>
 
 export const interpretAuditCommand = (command) => {
   if (command.error !== undefined) {
-    throw new Error(`could not run pnpm audit: ${command.error.message}`)
+    throw new Error('could not run pnpm audit')
   }
   if (
     command.signal !== null &&
     command.signal !== undefined
   ) {
-    throw new Error(`pnpm audit terminated by signal ${command.signal}`)
+    throw new Error('pnpm audit terminated by a signal')
   }
   if (command.status !== 0 && command.status !== 1) {
-    throw new Error(
-      `pnpm audit exit ${String(command.status)} is not a vulnerability result`
-    )
+    throw new Error('pnpm audit returned a non-vulnerability exit status')
   }
   let audit
   try {
     audit = JSON.parse(command.stdout)
   } catch {
-    throw new Error(
-      `pnpm audit returned no parseable JSON (exit=${command.status}): ` +
-        `${command.stderr?.trim() || '(no stderr)'}`
-    )
+    throw new Error('pnpm audit returned no parseable JSON')
   }
   if (
     audit === null ||
@@ -180,9 +175,7 @@ export const interpretAuditCommand = (command) => {
     Array.isArray(audit) ||
     audit.error !== undefined
   ) {
-    throw new Error(
-      `pnpm audit registry/network failure: ${JSON.stringify(audit?.error ?? audit)}`
-    )
+    throw new Error('pnpm audit registry/network failure')
   }
   if (
     audit.advisories === null ||
@@ -259,9 +252,7 @@ export const interpretAuditCommand = (command) => {
   }
   for (const advisory of actual) {
     if (!(advisory.severity in counted)) {
-      throw new Error(
-        `pnpm audit advisory severity ${advisory.severity} is invalid`
-      )
+      throw new Error('pnpm audit advisory severity is invalid')
     }
     counted[advisory.severity] += 1
   }
@@ -288,21 +279,15 @@ export const assertAcceptedAdvisories = (policy, actual) => {
   for (const advisory of actual) {
     const expected = expectedById.get(advisory.id)
     if (expected === undefined) {
-      throw new Error(`new advisory ${advisory.id} (${advisory.module})`)
+      throw new Error('pnpm audit returned an unaccepted advisory')
     }
     if (JSON.stringify(advisory) !== JSON.stringify(expected)) {
-      throw new Error(
-        `advisory ${advisory.id} changed\n` +
-          `expected ${JSON.stringify(expected)}\n` +
-          `actual   ${JSON.stringify(advisory)}`
-      )
+      throw new Error('pnpm audit advisory evidence changed')
     }
   }
   for (const expected of policy.advisories) {
     if (!actualById.has(expected.id)) {
-      throw new Error(
-        `accepted advisory ${expected.id} disappeared; remove the stale exception`
-      )
+      throw new Error('an accepted advisory disappeared; remove the stale exception')
     }
   }
 }

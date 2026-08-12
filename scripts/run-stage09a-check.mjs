@@ -137,6 +137,7 @@ const results = []
 let interruptedBy = null
 const processGroups = createProcessGroupLifecycle()
 let signalCleanupPromise = null
+const interruptionWaiters = new Set()
 
 const convergeAfterSignal = () => {
   if (signalCleanupPromise === null) {
@@ -152,14 +153,20 @@ const convergeAfterSignal = () => {
   return signalCleanupPromise
 }
 
-for (const signal of ['SIGINT', 'SIGTERM']) {
+const settleInterruptedRuns = (cleanup) => {
+  for (const waiter of [...interruptionWaiters]) {
+    waiter(cleanup)
+  }
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(signal, () => {
     if (interruptedBy !== null) {
       return
     }
     interruptedBy = signal
     process.stderr.write(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)
-    void convergeAfterSignal()
+    void convergeAfterSignal().then(settleInterruptedRuns)
   })
 }
 
@@ -185,8 +192,24 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     const settle = (result) => {
       if (!settled) {
         settled = true
+        interruptionWaiters.delete(interruptionWaiter)
         resolvePromise(result)
       }
+    }
+    const interruptionWaiter = (cleanup) => {
+      clearTimeout(timer)
+      if (!cleanup.ok) {
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        child.unref()
+      }
+      settle({
+        ok: false,
+        code: null,
+        signal: null,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        detail: cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed'
+      })
     }
     const release = () => {
       if (handle !== null) {
@@ -220,6 +243,10 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         })
       })()
     }, timeoutMs)
+    interruptionWaiters.add(interruptionWaiter)
+    if (interruptedBy !== null) {
+      void convergeAfterSignal().then(interruptionWaiter)
+    }
 
     child.once('error', (error) => {
       clearTimeout(timer)
@@ -244,7 +271,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         code: null,
         signal: null,
         stdout: '',
-        detail: `failed to start (${error.message})`
+        detail: 'failed to start'
       })
     })
     child.once('close', (code, signal) => {
