@@ -13,10 +13,11 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  readlinkSync
+  readlinkSync,
+  realpathSync
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runCommand } from './m3b-subprocess.mjs'
@@ -330,10 +331,13 @@ export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, p
         !(row.ID === '<missing>' || isImageId(row.ID)) ||
         typeof row.CreatedAt !== 'string' ||
         !/^\d{4}-\d{2}-\d{2}(?:T| )/.test(row.CreatedAt) ||
+        !Number.isFinite(Date.parse(row.CreatedAt)) ||
         typeof row.CreatedBy !== 'string' ||
-        row.CreatedBy === '' ||
+        row.CreatedBy.trim() === '' ||
         typeof row.CreatedSince !== 'string' ||
-        row.CreatedSince === '' ||
+        !/^(?:Less than a second|About a minute|\d+ (?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)) ago$/.test(
+          row.CreatedSince
+        ) ||
         typeof row.Size !== 'string' ||
         !/^\d+(?:\.\d+)?(?:B|kB|MB|GB|TB)$/.test(row.Size) ||
         typeof row.Comment !== 'string'
@@ -353,6 +357,96 @@ export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, p
   return rows
 }
 
+export const parseSavedImageManifest = (stdout, expectedLayerCount, fatal) => {
+  let payload
+  try {
+    payload = JSON.parse(stdout)
+  } catch {
+    fatal('docker image save returned an unreadable manifest')
+  }
+  const entry = payload?.[0]
+  if (
+    !Array.isArray(payload) ||
+    payload.length !== 1 ||
+    !isRecord(entry) ||
+    !/^blobs\/sha256\/[0-9a-f]{64}$/.test(entry.Config ?? '') ||
+    entry.RepoTags !== null ||
+    !Array.isArray(entry.Layers) ||
+    entry.Layers.length !== expectedLayerCount ||
+    new Set(entry.Layers).size !== entry.Layers.length ||
+    !entry.Layers.every((layer) => /^blobs\/sha256\/[0-9a-f]{64}$/.test(layer))
+  ) {
+    fatal('docker image save returned incomplete immutable-image metadata')
+  }
+  return entry.Config
+}
+
+export const parseSavedImageConfig = (
+  stdout,
+  configPath,
+  expectedLayers,
+  historyRows,
+  fatal,
+  problem
+) => {
+  const expectedDigest = configPath.slice('blobs/sha256/'.length)
+  if (createHash('sha256').update(stdout).digest('hex') !== expectedDigest) {
+    fatal('docker image save returned a config blob with the wrong digest')
+  }
+  let config
+  try {
+    config = JSON.parse(stdout)
+  } catch {
+    fatal('docker image save returned an unreadable config blob')
+  }
+  const history = config?.history
+  if (
+    !isRecord(config) ||
+    !isRecord(config.rootfs) ||
+    config.rootfs.type !== 'layers' ||
+    JSON.stringify(config.rootfs.diff_ids) !== JSON.stringify(expectedLayers) ||
+    !Array.isArray(history) ||
+    history.length !== historyRows.length
+  ) {
+    fatal('docker image save returned incomplete immutable-image config evidence')
+  }
+  const chronologicalRows = [...historyRows].reverse()
+  let nonemptyLayers = 0
+  for (let index = 0; index < history.length; index += 1) {
+    const entry = history[index]
+    const cli = chronologicalRows[index]
+    if (
+      !isRecord(entry) ||
+      !Object.keys(entry).every((key) =>
+        ['comment', 'created', 'created_by', 'empty_layer'].includes(key)
+      ) ||
+      typeof entry.created !== 'string' ||
+      !Number.isFinite(Date.parse(entry.created)) ||
+      typeof entry.created_by !== 'string' ||
+      entry.created_by.trim() === '' ||
+      (entry.comment !== undefined && typeof entry.comment !== 'string') ||
+      (entry.empty_layer !== undefined && entry.empty_layer !== true) ||
+      cli.CreatedBy !== entry.created_by ||
+      cli.Comment !== (entry.comment ?? '')
+    ) {
+      fatal('docker image history does not match the content-addressed config history')
+    }
+    if (entry.empty_layer !== true) {
+      nonemptyLayers += 1
+    }
+    if (
+      /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i.test(
+        entry.created_by
+      )
+    ) {
+      problem('image history: secret-shaped build instruction must not ship')
+    }
+  }
+  if (nonemptyLayers !== expectedLayers.length) {
+    fatal('docker image config history does not account for every filesystem layer')
+  }
+}
+
 // --------------------------------------------------------------------------
 // 同一个 walker 走两棵 `pnpm deploy --prod --legacy` 布局的 node_modules。
 // physical package = `.pnpm/<key>/node_modules/<name>` 下的真实目录；顶层与
@@ -366,7 +460,19 @@ const isInside = (candidate, ancestor) => {
   return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation)
 }
 
-export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
+export const dependencyPayloadOf = (
+  nodeModulesDirectory,
+  label,
+  problem,
+  {
+    shimDeployRoot = dirname(nodeModulesDirectory),
+    shimWorkspaceRoot = null,
+    expectedSelfLinkText = relative(
+      join(nodeModulesDirectory, '@meal-agent'),
+      dirname(nodeModulesDirectory)
+    )
+  } = {}
+) => {
   const payload = []
   const visit = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
@@ -393,6 +499,11 @@ export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
         stat.isSymbolicLink() &&
         (name === selfLinkName || name.endsWith(`/node_modules/${selfLinkName}`))
       if (isSelfLink) {
+        const target = readlinkSync(path)
+        if (target !== expectedSelfLinkText) {
+          problem(`${label}: the ${selfLinkName} self-link must match the deploy-derived target`)
+        }
+        payload.push(`link\0${name}\0<DEPLOY>`)
         continue
       }
       if (stat.isSymbolicLink()) {
@@ -402,7 +513,7 @@ export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
         visit(path)
       } else if (stat.isFile()) {
         const kind = isExecutableShim ? 'bin-file' : 'file'
-        const mode = isExecutableShim ? `${String(stat.mode & 0o777)}\0` : ''
+        const mode = isExecutableShim ? `${String(stat.mode & 0o7777)}\0` : ''
         const bytes = readFileSync(path)
         let comparableBytes = bytes
         if (isExecutableShim) {
@@ -413,13 +524,24 @@ export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
             // pnpm cmd shims embed the absolute deploy root. The host oracle is created in
             // a random temp directory while the image build uses /opt/...; normalize only
             // that root prefix and compare every remaining byte, mode and resulting size.
-            comparableBytes = Buffer.from(
-              text.replace(
-                /(?:\/[A-Za-z0-9._+@=-]+)+\/node_modules\//g,
-                '<DEPLOY>/node_modules/'
-              ),
-              'utf8'
-            )
+            const deployRoots = [shimDeployRoot]
+            if (existsSync(shimDeployRoot)) {
+              deployRoots.push(realpathSync(shimDeployRoot))
+            }
+            const distinctDeployRoots = [...new Set(deployRoots)]
+              .sort((left, right) => right.length - left.length)
+            let comparableText = text
+            for (const root of distinctDeployRoots) {
+              comparableText = comparableText
+                .split(`${root}/node_modules/`)
+                .join('<DEPLOY>/node_modules/')
+            }
+            if (shimWorkspaceRoot !== null) {
+              comparableText = comparableText
+                .split(`${shimWorkspaceRoot}/`)
+                .join('<WORKSPACE>/')
+            }
+            comparableBytes = Buffer.from(comparableText, 'utf8')
           }
         }
         payload.push(
@@ -433,12 +555,25 @@ export const dependencyPayloadOf = (nodeModulesDirectory, label, problem) => {
   }
   visit(nodeModulesDirectory)
   return {
+    entries: payload,
     count: payload.length,
     sha256: createHash('sha256').update(payload.join('\n')).digest('hex')
   }
 }
 
-export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
+export const inventoryNodeModules = (
+  nodeModulesDirectory,
+  label,
+  problem,
+  {
+    shimDeployRoot = dirname(nodeModulesDirectory),
+    shimWorkspaceRoot = null,
+    expectedSelfLinkText = relative(
+      join(nodeModulesDirectory, '@meal-agent'),
+      dirname(nodeModulesDirectory)
+    )
+  } = {}
+) => {
   const links = new Map()
   const packages = []
   let sawSelfLink = false
@@ -476,9 +611,10 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     const resolved = resolve(dirname(linkPath), target)
     if (linkName === selfLinkName) {
       sawSelfLink = true
-      if (existsSync(resolved) && isInside(resolved, nodeModulesDirectory)) {
-        problem(`${label}: the ${selfLinkName} self-link must not resolve inside node_modules`)
+      if (target !== expectedSelfLinkText) {
+        problem(`${label}: the ${selfLinkName} self-link must match the deploy-derived target`)
       }
+      links.set(linkName, '<DEPLOY>')
       return
     }
     if (!isInside(resolved, pnpmDirectory)) {
@@ -625,10 +761,15 @@ export const inventoryNodeModules = (nodeModulesDirectory, label, problem) => {
     problem(`${label}: the ${selfLinkName} self-link produced by pnpm deploy is missing`)
   }
   packages.sort((left, right) => (left.storeKey < right.storeKey ? -1 : left.storeKey > right.storeKey ? 1 : 0))
-  const payload = dependencyPayloadOf(nodeModulesDirectory, label, problem)
+  const payload = dependencyPayloadOf(nodeModulesDirectory, label, problem, {
+    shimDeployRoot,
+    shimWorkspaceRoot,
+    expectedSelfLinkText
+  })
   return {
     links,
     packages,
+    payloadEntries: payload.entries,
     payloadCount: payload.count,
     payloadSha256: payload.sha256
   }
@@ -654,7 +795,19 @@ export const deriveExpectedClosure = async ({ runStrict, fatal, problem, tempora
   }
   return {
     deployDirectory: expectedDeployDirectory,
-    inventory: inventoryNodeModules(join(expectedDeployDirectory, 'node_modules'), 'expected-closure', problem)
+    inventory: inventoryNodeModules(
+      join(expectedDeployDirectory, 'node_modules'),
+      'expected-closure',
+      problem,
+      {
+        shimDeployRoot: expectedDeployDirectory,
+        shimWorkspaceRoot: repositoryRoot,
+        expectedSelfLinkText: relative(
+          join(expectedDeployDirectory, 'node_modules/.pnpm/node_modules/@meal-agent'),
+          resolve(repositoryRoot, 'services/api')
+        )
+      }
+    )
   }
 }
 
@@ -670,9 +823,10 @@ export const scanImage = async ({
   fatal,
   problem,
   log,
-  track = { container: () => undefined }
+  track = { container: () => undefined, containerGone: () => undefined }
 }) => {
   const imageTarPath = join(temporaryRoot, 'image.tar')
+  const savedImageTarPath = join(temporaryRoot, 'saved-image.tar')
   const extractedRoot = join(temporaryRoot, 'image-root')
 
   const imageId = parseDockerImageId(
@@ -710,7 +864,40 @@ export const scanImage = async ({
   ).stdout
   // Dockerfile 至少会产生一个 metadata-only history row，故完整 history 必须
   // 严格多于非空 RootFS layer 数；这也使删除一整条合法尾行不能伪装成完整证据。
-  parseImageHistory(historyRaw, imageId, imageInspect.RootFS.Layers.length + 1, fatal, problem)
+  const historyRows = parseImageHistory(
+    historyRaw,
+    imageId,
+    imageInspect.RootFS.Layers.length + 1,
+    fatal,
+    problem
+  )
+  await runStrict(['docker', 'image', 'save', '-o', savedImageTarPath, imageId], {
+    timeoutMs: 300_000,
+    label: 'docker image save (content-addressed history evidence)'
+  })
+  const savedConfigPath = parseSavedImageManifest(
+    (
+      await runStrict(['tar', '-xOf', savedImageTarPath, 'manifest.json'], {
+        timeoutMs: 60_000,
+        label: 'saved image manifest evidence'
+      })
+    ).stdout,
+    imageInspect.RootFS.Layers.length,
+    fatal
+  )
+  parseSavedImageConfig(
+    (
+      await runStrict(['tar', '-xOf', savedImageTarPath, savedConfigPath], {
+        timeoutMs: 60_000,
+        label: 'saved image config evidence'
+      })
+    ).stdout,
+    savedConfigPath,
+    imageInspect.RootFS.Layers,
+    historyRows,
+    fatal,
+    problem
+  )
 
   // ---- 全文件系统取证：不启动容器 ----
   const created = await runStrict(['docker', 'create', imageId], {
@@ -738,7 +925,7 @@ export const scanImage = async ({
   if (containerRemoval.status !== 0) {
     problem('scratch container could not be removed after export')
   } else {
-    track.container(null)
+    track.containerGone(containerId)
   }
 
   const listing = (
@@ -878,7 +1065,19 @@ export const scanImage = async ({
     }
   }
 
-  const imageInventory = inventoryNodeModules(join(extractedRoot, 'app/node_modules'), 'image', problem)
+  const imageInventory = inventoryNodeModules(
+    join(extractedRoot, 'app/node_modules'),
+    'image',
+    problem,
+    {
+      shimDeployRoot: '/opt/meal-agent-api-runtime',
+      shimWorkspaceRoot: '/workspace',
+      expectedSelfLinkText: posix.relative(
+        '/opt/meal-agent-api-runtime/node_modules/.pnpm/node_modules/@meal-agent',
+        '/workspace/services/api'
+      )
+    }
+  )
 
   // ---- 闭包精确比对 ----
   const expectedSet = packageSetOf(expected.inventory)

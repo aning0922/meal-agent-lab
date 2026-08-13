@@ -60,7 +60,11 @@ import {
   writeImageOverride
 } from './m3b-docker.mjs'
 import { createSecretScrubber, wrongReason } from './m3b-safe-output.mjs'
-import { runCommand, terminateControlledSubtree } from './m3b-subprocess.mjs'
+import {
+  ownershipAwareSpawnStdio,
+  runCommand,
+  terminateControlledSubtree
+} from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -1686,7 +1690,7 @@ process.stdout.write('Group G: subprocess and signal negatives\n')
     const child = spawn(
       process.execPath,
       [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
+      { stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']) }
     )
     const outcome = await new Promise((resolveOutcome) => {
       let stdout = ''

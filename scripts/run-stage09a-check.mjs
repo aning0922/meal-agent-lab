@@ -139,6 +139,7 @@ const interruptionWaiters = new Set()
 const cooperativeShutdowns = new Set()
 const ownedProcessGroups = new Set()
 const nativeKill = process.kill.bind(process)
+const cooperativeShutdownBudgetMs = 310_000
 
 const processGroupIsAlive = (pgid) => {
   try {
@@ -220,15 +221,22 @@ const requestCooperativeShutdown = async () => {
       .then(() => shutdown(interruptedBy ?? 'SIGTERM'))
       .catch(() => undefined)
   )
-  await Promise.race([Promise.all(attempts), delay(2_500)])
+  // 子门禁的 scoped cleanup（尤其 Docker/restore）本身有最长 300 秒的有界
+  // residue 复查。聚合器必须等到 child 真正 close，才能把 cleanup 记为完成；
+  // 不能用一个比内层预算更短的墙钟抢先 KILL 后宣称已经清理。
+  const results = await Promise.race([
+    Promise.all(attempts),
+    delay(cooperativeShutdownBudgetMs, undefined, { ref: false }).then(() => [false])
+  ])
+  return results.every((result) => result === true)
 }
 
 const convergeAfterSignal = () => {
   if (signalCleanupPromise === null) {
     signalCleanupPromise = (async () => {
-      await requestCooperativeShutdown()
+      const cooperativeOk = await requestCooperativeShutdown()
       const cleanup = await terminateOwnedProcessGroups()
-      return { ok: cleanup.ok, survivorCount: cleanup.survivors.length }
+      return { ok: cooperativeOk && cleanup.ok, survivorCount: cleanup.survivors.length }
     })()
   }
   return signalCleanupPromise
@@ -257,6 +265,13 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     let timedOut = false
     let closed = false
     let ownershipBuffer = ''
+    let ownershipProtocolFailed = false
+    let scopedCleanupStarted = false
+    const activeScopedCleanups = new Set()
+    let resolveCleanupStarted
+    const cleanupStartedPromise = new Promise((resolveStart) => {
+      resolveCleanupStarted = resolveStart
+    })
     const stdoutChunks = []
     const childEnvironment = {
       ...process.env,
@@ -280,23 +295,86 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     }
     const ownershipStream = child.stdio[3]
+    const recordOwnershipFrame = (line) => {
+      const cleanupFrame = /^CLEANUP ([1-9][0-9]*) (START|DONE)$/.exec(line)
+      if (cleanupFrame !== null) {
+        const cleanupOwner = Number(cleanupFrame[1])
+        if (!Number.isSafeInteger(cleanupOwner) || cleanupOwner <= 0) {
+          ownershipProtocolFailed = true
+          return
+        }
+        if (cleanupFrame[2] === 'START') {
+          if (activeScopedCleanups.has(cleanupOwner)) {
+            ownershipProtocolFailed = true
+          }
+          activeScopedCleanups.add(cleanupOwner)
+          scopedCleanupStarted = true
+          resolveCleanupStarted()
+          return
+        }
+        if (!activeScopedCleanups.delete(cleanupOwner)) {
+          ownershipProtocolFailed = true
+        }
+        return
+      }
+      if (!/^[1-9][0-9]*$/.test(line)) {
+        ownershipProtocolFailed = true
+        return
+      }
+      const pgid = Number(line)
+      if (!Number.isSafeInteger(pgid) || pgid <= 0) {
+        ownershipProtocolFailed = true
+        return
+      }
+      ownedProcessGroups.add(pgid)
+    }
     ownershipStream?.on('data', (chunk) => {
       ownershipBuffer += chunk.toString('utf8')
+      if (ownershipBuffer.length > 4096) {
+        ownershipProtocolFailed = true
+      }
       const lines = ownershipBuffer.split('\n')
       ownershipBuffer = lines.pop() ?? ''
       for (const line of lines) {
-        if (/^[1-9][0-9]*$/.test(line)) {
-          const pgid = Number(line)
-          if (Number.isSafeInteger(pgid) && pgid > 0) {
-            ownedProcessGroups.add(pgid)
-          }
+        recordOwnershipFrame(line)
+      }
+    })
+    ownershipStream?.on('error', () => {
+      ownershipProtocolFailed = true
+    })
+    ownershipStream?.on('end', () => {
+      if (ownershipBuffer.length > 0) {
+        // 缺少终止 LF 时仍登记可证明的 PGID 以便收尾，但协议必须失败，
+        // 所以该 step 绝不能 PASS。
+        if (/^[1-9][0-9]*$/.test(ownershipBuffer)) {
+          recordOwnershipFrame(ownershipBuffer)
         }
+        ownershipProtocolFailed = true
+        ownershipBuffer = ''
       }
     })
 
     let resolveClosed
+    let resolveLeaderExited
     const closedPromise = new Promise((resolveClose) => {
       resolveClosed = resolveClose
+    })
+    const leaderExitedPromise = new Promise((resolveExit) => {
+      resolveLeaderExited = resolveExit
+    })
+    child.once('exit', () => {
+      resolveLeaderExited()
+      if (ownershipBuffer.length > 0) {
+        if (/^[1-9][0-9]*$/.test(ownershipBuffer)) {
+          recordOwnershipFrame(ownershipBuffer)
+        }
+        ownershipProtocolFailed = true
+        ownershipBuffer = ''
+        // fd 被未登记后代继承时，等待 EOF 会形成循环依赖。leader exit 已证明
+        // 本轮 producer 不会再给出完整帧；关闭读端并按刚登记的 PGID 收敛。
+        ownershipStream?.destroy()
+        void terminateOwnedProcessGroups()
+      }
     })
     const cooperativeShutdown = async (signal) => {
       if (!closed) {
@@ -306,7 +384,21 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
           // 最终收敛由聚合器自己的 owned-PGID fallback 保证。
         }
       }
-      await Promise.race([closedPromise, delay(2_500)])
+      const first = await Promise.race([
+        leaderExitedPromise.then(() => 'exit'),
+        cleanupStartedPromise.then(() => 'cleanup'),
+        delay(2_500, 'fallback', { ref: false })
+      ])
+      if (first === 'cleanup') {
+        await Promise.race([
+          leaderExitedPromise,
+          delay(cooperativeShutdownBudgetMs, undefined, { ref: false })
+        ])
+      }
+      if (scopedCleanupStarted && activeScopedCleanups.size > 0) {
+        ownershipProtocolFailed = true
+      }
+      return !ownershipProtocolFailed
     }
     cooperativeShutdowns.add(cooperativeShutdown)
 
@@ -365,6 +457,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
 
     child.once('error', (error) => {
       clearTimeout(timer)
+      resolveLeaderExited()
       release()
       if (settled || timedOut) {
         return
@@ -409,6 +502,13 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         void convergeAfterSignal().then((cleanup) => {
           finish(cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed')
         })
+        return
+      }
+      if (ownershipProtocolFailed) {
+        void (async () => {
+          await terminateOwnedProcessGroups()
+          finish('ownership channel failed')
+        })()
         return
       }
       purgeGoneProcessGroups()

@@ -18,6 +18,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import {
   createProcessGroupLifecycle,
+  ownershipAwareSpawnStdio,
   runCommand,
   terminateControlledSubtree,
   unconfirmedProcessGroups
@@ -155,7 +156,7 @@ const runAndSignal = async ({
 }) => {
   const child = spawn(process.execPath, [resolve(composeDirectory, script)], {
     cwd: repositoryRoot,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
     detached: true
   })
   let stdout = ''
@@ -583,7 +584,8 @@ try {
   const run = spawnSync(process.execPath, [timeoutFixture], {
     encoding: 'utf8',
     timeout: 15_000,
-    killSignal: 'SIGKILL'
+    killSignal: 'SIGKILL',
+    stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe'])
   })
   if (run.error !== undefined) {
     timeoutProblems.push('the real-signal timeout fixture exceeded its independent watchdog')
@@ -610,7 +612,8 @@ try {
   const stubborn = spawnSync(process.execPath, [timeoutFixture, 'stubborn'], {
     encoding: 'utf8',
     timeout: 8_000,
-    killSignal: 'SIGKILL'
+    killSignal: 'SIGKILL',
+    stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe'])
   })
   const stubbornElapsed = Date.now() - stubbornStarted
   const stubbornPgids = [
@@ -822,7 +825,8 @@ try {
   const run = spawnSync(process.execPath, [mutationFixture], {
     encoding: 'utf8',
     timeout: 12_000,
-    killSignal: 'SIGKILL'
+    killSignal: 'SIGKILL',
+    stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe'])
   })
   const stderr = String(run.stderr ?? '')
   mutationPgids = [...stderr.matchAll(/m3b-descendant-pgid (\d+)/g)].map((match) =>
@@ -1036,7 +1040,8 @@ for (const handlerCase of handlerCases) {
     const run = spawnSync(process.execPath, [handlerFixture], {
       encoding: 'utf8',
       timeout: 10_000,
-      killSignal: 'SIGKILL'
+      killSignal: 'SIGKILL',
+      stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe'])
     })
     const stdout = String(run.stdout ?? '')
     const stderr = String(run.stderr ?? '')

@@ -73,8 +73,8 @@ const imageTag = `meal-agent-api:m5-image-scan-${runId}`
 
 const cleanupState = {
   temporaryRoot: null,
-  containerId: null,
-  imageBuilt: false,
+  containerIds: new Set(),
+  ownedImageTag: false,
   done: false
 }
 
@@ -89,29 +89,30 @@ const cleanup = async ({ keepScene = false } = {}) => {
     if (cleanupState.temporaryRoot !== null) {
       process.stderr.write(`image-scan:   kept temporary directory ${cleanupState.temporaryRoot}\n`)
     }
-    if (cleanupState.containerId !== null) {
-      process.stderr.write(`image-scan:   kept container ${cleanupState.containerId}\n`)
+    for (const containerId of cleanupState.containerIds) {
+      process.stderr.write(`image-scan:   kept container ${containerId}\n`)
     }
-    if (cleanupState.imageBuilt) {
+    if (cleanupState.ownedImageTag) {
       process.stderr.write(`image-scan:   kept image tag ${imageTag}\n`)
     }
     return
   }
-  if (cleanupState.containerId !== null) {
+  for (const containerId of [...cleanupState.containerIds]) {
     try {
-      const removal = await runCommand(['docker', 'rm', '-f', cleanupState.containerId], { timeoutMs: 60_000 })
+      const removal = await runCommand(['docker', 'rm', '-f', containerId], { timeoutMs: 60_000 })
       if (
         removal.status !== 0 &&
-        !isAbsenceMessage(removal.stderr, { kind: 'container', name: cleanupState.containerId })
+        !isAbsenceMessage(removal.stderr, { kind: 'container', name: containerId })
       ) {
         cleanupProblems.push('scratch container removal failed')
+      } else {
+        cleanupState.containerIds.delete(containerId)
       }
     } catch {
       cleanupProblems.push('scratch container removal did not complete')
     }
-    cleanupState.containerId = null
   }
-  if (cleanupState.imageBuilt) {
+  if (cleanupState.ownedImageTag) {
     try {
       const removal = await runCommand(['docker', 'rmi', imageTag], { timeoutMs: 120_000 })
       if (removal.status !== 0 && !isAbsenceMessage(removal.stderr, { kind: 'image', name: imageTag })) {
@@ -125,7 +126,7 @@ const cleanup = async ({ keepScene = false } = {}) => {
     } catch {
       cleanupProblems.push('run image tag removal did not complete')
     }
-    cleanupState.imageBuilt = false
+    cleanupState.ownedImageTag = false
   }
   if (cleanupState.temporaryRoot !== null) {
     try {
@@ -188,11 +189,20 @@ const main = async () => {
   })
 
   log(`building ${imageTag}`)
+  const preexistingImage = await runCommand(['docker', 'image', 'inspect', imageTag], { timeoutMs: 60_000 })
+  if (
+    preexistingImage.status === 0 ||
+    !isAbsenceMessage(preexistingImage.stderr, { kind: 'image', name: imageTag })
+  ) {
+    fatal('per-run image tag was not proven absent before build')
+  }
+  // 从确认 absent 起本轮拥有这个唯一 tag：即使 docker build 已完成 tag 写入后
+  // credential helper/stdio 卡住并最终超时，finally 也必须尝试精确删除它。
+  cleanupState.ownedImageTag = true
   await runStrict(['docker', 'build', '--file', 'services/api/Dockerfile', '--tag', imageTag, '.'], {
     timeoutMs: 900_000,
     label: 'docker build'
   })
-  cleanupState.imageBuilt = true
 
   return scanImage({
     imageTag,
@@ -204,7 +214,10 @@ const main = async () => {
     log,
     track: {
       container: (id) => {
-        cleanupState.containerId = id
+        cleanupState.containerIds.add(id)
+      },
+      containerGone: (id) => {
+        cleanupState.containerIds.delete(id)
       }
     }
   })

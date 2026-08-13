@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
@@ -15,6 +16,7 @@ import test from 'node:test'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 const entrypoint = resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs')
+const subprocessModule = resolve(repositoryRoot, 'infra/docker/m3b-subprocess.mjs')
 const expectedStepIds = [
   'stage08-check',
   'compose-topology',
@@ -36,9 +38,15 @@ const expectedActions = new Set([
   'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
   'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020'
 ])
+const expectedWorkflowSha256 = 'ed84405c0db61f55c1255bd1183e353bdd9131e64f25a7e31f645ac8fd155f91'
 
 const ciWorkflowPolicyProblems = (source) => {
   const problems = []
+  const actualSha256 = createHash('sha256').update(source).digest('hex')
+  if (actualSha256 !== expectedWorkflowSha256) {
+    problems.push('CI workflow must match the reviewed byte-for-byte policy')
+    return problems
+  }
   const lines = source.split('\n')
   const executableSource = lines.filter((line) => !/^\s*#/.test(line)).join('\n')
   const uses = []
@@ -155,12 +163,14 @@ exit 97
     `import { spawn } from 'node:child_process'
 import { writeFileSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const directory = process.env.STAGE09A_FIXTURE_DIR
 const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
   detached: true,
-  stdio: 'ignore'
+  stdio: ['ignore', 'ignore', 'ignore', 'ignore']
 })
+child.unref()
 writeFileSync(resolve(directory, 'inner-pgid'), String(child.pid))
 writeSync(3, String(child.pid) + '\\n')
 
@@ -181,6 +191,39 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 setInterval(() => {}, 1_000)
 `
   )
+  writeFileSync(
+    resolve(directory, 'shared-handler.mjs'),
+    `import { writeFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
+import { installSignalHandlers, runCommand } from ${JSON.stringify(subprocessModule)}
+const directory = process.env.STAGE09A_FIXTURE_DIR
+writeFileSync(directory + '/shared-ready', 'yes')
+installSignalHandlers(async () => {
+  writeFileSync(directory + '/shared-cleanup-started', 'yes')
+  await delay(3_500)
+  writeFileSync(directory + '/shared-cleanup-complete', 'yes')
+  return []
+}, { label: 'fixture cleanup' })
+await runCommand(['/bin/sh', '-c', 'trap "" TERM INT HUP; sleep 30'], { timeoutMs: 60_000 })
+`
+  )
+  writeFileSync(
+    resolve(directory, 'partial-parent.mjs'),
+    `import { spawn } from 'node:child_process'
+import { writeFileSync, writeSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
+  detached: true,
+  stdio: ['ignore', 'ignore', 'ignore', 'ignore']
+})
+child.unref()
+writeFileSync(resolve(directory, 'grandchild-pid'), String(child.pid))
+writeSync(3, String(child.pid))
+await delay(500)
+`
+  )
   writeExecutable(
     resolve(bin, 'pnpm'),
     `#!/bin/sh
@@ -195,6 +238,12 @@ if [ "\${STAGE09A_FIXTURE_MODE:-}" = preflight ]; then
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = nested-cleanup ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/nested-parent.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = shared-cleanup ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/shared-handler.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-partial ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/partial-parent.mjs"
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant ] || [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
   if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
@@ -267,6 +316,56 @@ test('the aggregate waits for nested scoped cleanup and every announced process 
   }
 })
 
+test('the aggregate waits beyond the fallback window for shared cleanup acknowledgement', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'shared-cleanup')
+    await waitFor(
+      () => existsSync(resolve(fixture.directory, 'shared-ready')),
+      3_000,
+      'shared handler readiness'
+    )
+    gate.child.kill('SIGHUP')
+    const outcome = await waitForClose(gate.child, 9_000)
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.equal(existsSync(resolve(fixture.directory, 'shared-cleanup-started')), true)
+    assert.equal(existsSync(resolve(fixture.directory, 'shared-cleanup-complete')), true)
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) {
+      process.kill(-gate.child.pid, 'SIGKILL')
+    }
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('an EOF-partial ownership frame fails closed and the announced group reaches ESRCH', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let pgid = null
+  try {
+    gate = spawnGate(fixture, 'ownership-partial')
+    const pidFile = resolve(fixture.directory, 'grandchild-pid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'partial-frame group')
+    pgid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(pgid), true)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+    await waitFor(() => !processIsAlive(pgid), 1_000, 'partial-frame group ESRCH')
+  } finally {
+    if (pgid !== null && processIsAlive(pgid)) {
+      process.kill(-pgid, 'SIGKILL')
+    }
+    if (gate !== null && processIsAlive(gate.child.pid)) {
+      process.kill(-gate.child.pid, 'SIGKILL')
+    }
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 const waitForClose = (child, timeoutMs) =>
   new Promise((resolvePromise, rejectPromise) => {
     const timer = setTimeout(() => {
@@ -303,6 +402,23 @@ test('the CI workflow policy rejects every audited weakening shape', () => {
   ]
   for (const mutant of mutations) {
     assert.notDeepEqual(ciWorkflowPolicyProblems(mutant), [])
+  }
+
+  for (const mutant of [
+    source.replace(
+      '      - name: Install workspace dependencies',
+      '      - name: injected\n        "uses": actions/cache@v4\n\n      - name: Install workspace dependencies'
+    ),
+    source.replace(
+      '      - name: Stage 09A full gate (same single entry point as local)',
+      '      - name: Stage 09A full gate (same single entry point as local)\n        if: ${{ false }}'
+    ),
+    source.replace('    runs-on: ubuntu-latest', '    permissions: write-all\n    runs-on: ubuntu-latest'),
+    source.replace('        run: pnpm stage09a:check', '        run: |\n          pnpm stage09a:check')
+  ]) {
+    assert.deepEqual(ciWorkflowPolicyProblems(mutant), [
+      'CI workflow must match the reviewed byte-for-byte policy'
+    ])
   }
 })
 

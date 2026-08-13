@@ -1,5 +1,14 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
@@ -14,6 +23,8 @@ import {
   parseContainerInspect,
   parseImageHistory,
   parseImageInspect,
+  parseSavedImageConfig,
+  parseSavedImageManifest,
   parseDockerContainerId,
   parseDockerImageId
 } from '../../infra/docker/api-image-scan.mjs'
@@ -71,6 +82,23 @@ test('immutable image, container and history evidence is identity-bound and comp
     () => parseImageHistory(`${JSON.stringify(historyRow)}\n`, imageId, 2, throwingFatal, () => {}),
     /incomplete or mismatched/
   )
+  for (const mutation of [
+    { CreatedAt: '2026-99-99T00:00:00Z' },
+    { CreatedBy: '   ' },
+    { CreatedSince: 'nonsense' }
+  ]) {
+    assert.throws(
+      () =>
+        parseImageHistory(
+          `${JSON.stringify({ ...historyRow, ...mutation })}\n`,
+          imageId,
+          1,
+          throwingFatal,
+          () => {}
+        ),
+      /incomplete or mismatched/
+    )
+  }
   assert.throws(
     () => parseImageHistory(JSON.stringify(historyRow), imageId, 1, throwingFatal, () => {}),
     /invalid framing/
@@ -95,6 +123,58 @@ test('immutable image, container and history evidence is identity-bound and comp
     (message) => problems.push(message)
   )
   assert.deepEqual(problems, ['image history: secret-shaped build instruction must not ship'])
+
+  const contentHistory = [
+    {
+      created: '2026-08-11T00:00:00Z',
+      created_by: 'RUN install-runtime',
+      comment: ''
+    },
+    {
+      created: '2026-08-12T00:00:00Z',
+      created_by: 'CMD ["node"]',
+      empty_layer: true
+    }
+  ]
+  const savedConfig = JSON.stringify({
+    rootfs: { type: 'layers', diff_ids: [layerId] },
+    history: contentHistory
+  })
+  const configPath = `blobs/sha256/${createHash('sha256').update(savedConfig).digest('hex')}`
+  assert.equal(
+    parseSavedImageManifest(
+      JSON.stringify([{ Config: configPath, RepoTags: null, Layers: [`blobs/sha256/${'d'.repeat(64)}`] }]),
+      1,
+      throwingFatal
+    ),
+    configPath
+  )
+  const completeCliHistory = [
+    { ...historyRow, CreatedBy: 'CMD ["node"]' },
+    { ...historyRow, CreatedBy: 'RUN install-runtime' }
+  ]
+  assert.doesNotThrow(() =>
+    parseSavedImageConfig(
+      savedConfig,
+      configPath,
+      [layerId],
+      completeCliHistory,
+      throwingFatal,
+      () => {}
+    )
+  )
+  assert.throws(
+    () =>
+      parseSavedImageConfig(
+        savedConfig,
+        configPath,
+        [layerId],
+        completeCliHistory.slice(0, 1),
+        throwingFatal,
+        () => {}
+      ),
+    /incomplete immutable-image config evidence/
+  )
 })
 
 test('dependency payload evidence includes .bin and package file bytes', () => {
@@ -118,6 +198,55 @@ test('dependency payload evidence includes .bin and package file bytes', () => {
     assert.notEqual(withPayload.sha256, withChangedBinMode.sha256)
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('dependency payload normalizes only its declared deploy root and binds the self-link', () => {
+  const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-image-root-binding-'))
+  try {
+    const left = resolve(parent, 'left')
+    const right = resolve(parent, 'right')
+    for (const directory of [left, right]) {
+      mkdirSync(resolve(directory, 'node_modules/.bin'), { recursive: true })
+      mkdirSync(resolve(directory, 'node_modules/@meal-agent'), { recursive: true })
+      symlinkSync('../..', resolve(directory, 'node_modules/@meal-agent/api'))
+    }
+    writeFileSync(
+      resolve(left, 'node_modules/.bin/fixture'),
+      `#!/bin/sh\nexec /outside/alpha/node_modules/pkg/data\n`
+    )
+    writeFileSync(
+      resolve(right, 'node_modules/.bin/fixture'),
+      `#!/bin/sh\nexec /outside/bravo/node_modules/pkg/data\n`
+    )
+    const leftPayload = dependencyPayloadOf(
+      resolve(left, 'node_modules'),
+      'left',
+      () => {},
+      { shimDeployRoot: left }
+    )
+    const rightPayload = dependencyPayloadOf(
+      resolve(right, 'node_modules'),
+      'right',
+      () => {},
+      { shimDeployRoot: right }
+    )
+    assert.notEqual(leftPayload.sha256, rightPayload.sha256)
+
+    rmSync(resolve(right, 'node_modules/@meal-agent/api'))
+    symlinkSync('/tmp/attacker-api', resolve(right, 'node_modules/@meal-agent/api'))
+    const problems = []
+    dependencyPayloadOf(
+      resolve(right, 'node_modules'),
+      'right',
+      (message) => problems.push(message),
+      { shimDeployRoot: right }
+    )
+    assert.deepEqual(problems, [
+      'right: the @meal-agent/api self-link must match the deploy-derived target'
+    ])
+  } finally {
+    rmSync(parent, { recursive: true, force: true })
   }
 })
 

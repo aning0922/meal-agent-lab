@@ -30,16 +30,37 @@ const aggregateOwnershipFd = (() => {
 const announceProcessGroupOwnership = (pgid) => {
   process.stderr.write(`m3b-descendant-pgid ${String(pgid)}\n`)
   if (aggregateOwnershipFd === null) {
-    return
+    return true
   }
   try {
     writeSync(aggregateOwnershipFd, `${String(pgid)}\n`)
+    return true
   } catch {
-    // 独立运行 CLI 时该继承 fd 可能已由中间命令关闭；stderr 公告仍保留，
-    // 本 CLI 自己的 registry 继续拥有并清理该组。聚合器只在它显式提供 pipe
-    // 时依赖这条机器可读的所有权通道。
+    process.stderr.write('aggregate ownership announcement failed\n')
+    return false
   }
 }
+
+const announceCleanupState = (state) => {
+  if (aggregateOwnershipFd === null) {
+    return true
+  }
+  try {
+    writeSync(aggregateOwnershipFd, `CLEANUP ${String(process.pid)} ${state}\n`)
+    return true
+  } catch {
+    process.stderr.write('aggregate cleanup acknowledgement failed\n')
+    return false
+  }
+}
+
+/**
+ * raw-spawn 的控制层若仍处于 stage09a 聚合器下，必须把机器可读 ownership fd
+ * 原样传到子 CLI 的 fd 3。实际 Docker/命令 child 仍由本模块先登记 PGID，随后
+ * 删除环境变量且不继承 fd；它们不直接持有聚合器通道。
+ */
+export const ownershipAwareSpawnStdio = (stdio) =>
+  aggregateOwnershipFd === null ? stdio : [...stdio, aggregateOwnershipFd]
 
 /**
  * 尚未确认消失的受控进程组：pgid → { leaderClosed }。
@@ -315,6 +336,7 @@ const runCommandUnchecked = (
 
     // `spawn()` 成功返回后 pid 已经可用；在任何 timer / event 之前登记，
     // `timeoutMs: 0` 也不会落进「pid 存在但还没 generation」的窗口。
+    let ownershipAnnouncementFailed = false
     if (Number.isSafeInteger(child.pid) && child.pid > 0) {
       childHandle = processGroupLifecycle.register(child.pid)
       observedProcessGroups.add(child.pid)
@@ -322,7 +344,7 @@ const runCommandUnchecked = (
       // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
       // 返回空）。把真实 pgid 逐个公布出去，外部套件才可能真的核查后代是否
       // 全部消失，而不是做一次结构性空真的查询。
-      announceProcessGroupOwnership(child.pid)
+      ownershipAnnouncementFailed = !announceProcessGroupOwnership(child.pid)
     }
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
@@ -393,6 +415,28 @@ const runCommandUnchecked = (
         stderr: Buffer.concat(stderrChunks).toString('utf8')
       })
     })
+
+    if (ownershipAnnouncementFailed && childHandle !== null) {
+      void (async () => {
+        let survivors = [childHandle]
+        try {
+          survivors = await processGroupLifecycle.terminate([childHandle])
+        } catch {
+          // 只返回固定诊断，不回显底层异常或命令。
+        }
+        if (!settled) {
+          settled = true
+          clearTimeout(timer)
+          rejectPromise(
+            new Error(
+              survivors.length === 0
+                ? 'aggregate ownership announcement failed'
+                : 'aggregate ownership announcement failed; descendant process group was not confirmed gone'
+            )
+          )
+        }
+      })()
+    }
   })
 
 export const runCommand = (args, options = {}) =>
@@ -417,7 +461,7 @@ export const unconfirmedProcessGroups = () =>
   processGroupLifecycle.unconfirmed()
 
 /**
- * 安装 SIGINT/SIGTERM 处置。收到信号：
+ * 安装 SIGINT/SIGTERM/SIGHUP 处置。收到信号：
  *   1. 终止受控子树（等待宽限）；
  *   2. 执行调用方的 scoped cleanup（异步；只报告固定原因与 residue 数量，不回显
  *      调用方内容）；
@@ -433,6 +477,7 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
     }
     terminating = true
     pendingSignal = signal
+    const cleanupStartAnnounced = announceCleanupState('START')
     process.stderr.write(`\n${signal}: terminating child processes, then running ${label}\n`)
     void (async () => {
       let survivors = []
@@ -498,14 +543,19 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
         }
         terminationFailed = true
       }
-      process.removeListener('SIGINT', handler)
-      process.removeListener('SIGTERM', handler)
+      for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+        process.removeListener(handledSignal, handler)
+      }
       if (terminationFailed || cleanupFailed || survivors.length > 0) {
         // **fail closed**：受控子树或 scoped cleanup 任一失败，都不能用「干净的
         // 信号语义」收场。子树失败只报固定原因，不回显任何命令内容。
         if (terminationFailed || survivors.length > 0) {
           process.stderr.write('descendant process groups were not confirmed gone\n')
         }
+        process.exit(1)
+      }
+      if (!cleanupStartAnnounced || !announceCleanupState('DONE')) {
+        process.stderr.write('aggregate cleanup acknowledgement failed\n')
         process.exit(1)
       }
       // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。
@@ -519,10 +569,12 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       }
     })()
   }
-  process.on('SIGINT', handler)
-  process.on('SIGTERM', handler)
+  for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(handledSignal, handler)
+  }
   return () => {
-    process.removeListener('SIGINT', handler)
-    process.removeListener('SIGTERM', handler)
+    for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      process.removeListener(handledSignal, handler)
+    }
   }
 }

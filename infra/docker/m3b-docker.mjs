@@ -138,7 +138,7 @@ export const isAbsenceMessage = (stderr, { kind, name }) => {
   if (/[\r\n]/.test(trimmed)) {
     return false
   }
-  const noun = kind === 'image' ? 'image' : 'object'
+  const noun = kind === 'image' ? 'image' : kind === 'container' ? '(?:container|object)' : 'object'
   const escaped = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const pattern = new RegExp(
     `^(?:[Ee]rror(?: response from daemon)?:[ \\t]*)?[Nn]o such ${noun}:?[ \\t]*${escaped}$`

@@ -193,7 +193,7 @@ const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
   temporaryRoot: null,
-  containerId: null,
+  containerIds: new Set(),
   builtTags: new Set(),
   done: false
 }
@@ -203,19 +203,20 @@ const cleanup = async () => {
     return
   }
   cleanupState.done = true
-  if (cleanupState.containerId !== null) {
+  for (const containerId of [...cleanupState.containerIds]) {
     try {
-      const removal = await runCommand(['docker', 'rm', '-f', cleanupState.containerId], { timeoutMs: 60_000 })
+      const removal = await runCommand(['docker', 'rm', '-f', containerId], { timeoutMs: 60_000 })
       if (
         removal.status !== 0 &&
-        !isAbsenceMessage(removal.stderr, { kind: 'container', name: cleanupState.containerId })
+        !isAbsenceMessage(removal.stderr, { kind: 'container', name: containerId })
       ) {
         cleanupProblems.push('scratch container removal failed')
+      } else {
+        cleanupState.containerIds.delete(containerId)
       }
     } catch {
       cleanupProblems.push('scratch container removal did not complete')
     }
-    cleanupState.containerId = null
   }
   for (const tag of cleanupState.builtTags) {
     try {
@@ -254,12 +255,19 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
   const buildArgs = viaStdin
     ? ['docker', 'build', '--file', '-', '--tag', tag, '.']
     : ['docker', 'build', '--file', 'services/api/Dockerfile', '--tag', tag, '.']
+  const preexistingImage = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
+  if (
+    preexistingImage.status === 0 ||
+    !isAbsenceMessage(preexistingImage.stderr, { kind: 'image', name: tag })
+  ) {
+    fatal('per-case image tag was not proven absent before build')
+  }
+  cleanupState.builtTags.add(tag)
   await runStrict(buildArgs, {
     timeoutMs: 900_000,
     label: `docker build (${caseId})`,
     stdin: viaStdin ? dockerfileText : null
   })
-  cleanupState.builtTags.add(tag)
   const problems = []
   await scanImage({
     imageTag: tag,
@@ -271,7 +279,10 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
     log: () => undefined,
     track: {
       container: (id) => {
-        cleanupState.containerId = id
+        cleanupState.containerIds.add(id)
+      },
+      containerGone: (id) => {
+        cleanupState.containerIds.delete(id)
       }
     }
   })

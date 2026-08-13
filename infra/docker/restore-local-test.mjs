@@ -22,7 +22,16 @@
 //
 // 之后由 runbook 继续：`bootstrap-acl` → `migrate` → `bootstrap-grants` → 验证。
 // 执行前后打印目标环境与数据库标识；不打印口令或任何连接串。
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync
+} from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -60,6 +69,35 @@ export const checksumMismatchReason =
 export const dumpMagicReason =
   'restore refused: the file does not carry the pg_dump custom-format magic; pg_restore was not invoked'
 
+const readChecksumSidecar = (sidecarPath) => {
+  let fd = null
+  try {
+    fd = openSync(
+      sidecarPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    )
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size < 1 || stat.size > 1024) {
+      throw new Error(checksumSidecarUnparseableReason)
+    }
+    const bytes = readFileSync(fd)
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      throw new Error(checksumSidecarUnparseableReason)
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === checksumSidecarUnparseableReason) {
+      throw error
+    }
+    throw new Error(checksumSidecarUnparseableReason)
+  } finally {
+    if (fd !== null) {
+      closeSync(fd)
+    }
+  }
+}
+
 /**
  * 恢复前校验：全部在宿主侧完成，不触碰 Docker。
  *
@@ -83,7 +121,7 @@ export const verifyBackupChecksum = (dumpPath) => {
   if (!existsSync(sidecarPath)) {
     throw new Error(checksumSidecarMissingReason)
   }
-  const sidecar = readFileSync(sidecarPath, 'utf8').split('\n')[0] ?? ''
+  const sidecar = readChecksumSidecar(sidecarPath).split('\n')[0] ?? ''
   const parsed = /^([0-9a-f]{64})[ \t]+\*?(.+)$/.exec(sidecar.trim())
   if (parsed === null) {
     throw new Error(checksumSidecarUnparseableReason)

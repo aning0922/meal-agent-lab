@@ -61,6 +61,8 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { ownershipAwareSpawnStdio } from './m3b-subprocess.mjs'
+
 import {
   discardGeneratedPaths,
   generateAndPreflight,
@@ -391,7 +393,7 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
         '900'
       ],
       {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
         // detached：pid 即 pgid，下面才能按**进程组**发信号。
         detached: true
       }
@@ -475,7 +477,10 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
             '--directory',
             directory
           ],
-          { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...extraEnv } }
+          {
+            stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
+            env: { ...process.env, ...extraEnv }
+          }
         )
         let stdout = ''
         let stderr = ''
@@ -788,7 +793,7 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
           process.execPath,
           [resolve(composeDirectory, 'run-local-test-smoke.mjs')],
           {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
             env: {
               ...process.env,
               PATH: `${shimDirectory}:${process.env.PATH ?? ''}`

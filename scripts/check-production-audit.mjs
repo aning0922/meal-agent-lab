@@ -136,10 +136,11 @@ export const validateAuditPolicy = (input, now = Date.now()) => {
       !Number.isInteger(advisory.pathCount) ||
       advisory.pathCount < 1 ||
       !/^[0-9a-f]{64}$/.test(advisory.pathSetSha256) ||
-      seen.has(advisory.id)
+      seen.has(advisory.id.toLowerCase())
     ) {
       throw new Error('policy advisory is invalid')
     }
+    advisory.id = advisory.id.toLowerCase()
     seen.add(advisory.id)
   }
   return input
@@ -225,7 +226,7 @@ export const interpretAuditCommand = (command) => {
       ...new Set(advisory.findings.map((finding) => finding.version))
     ].sort()
     return {
-      id: advisory.github_advisory_id,
+      id: advisory.github_advisory_id.toLowerCase(),
       module: advisory.module_name,
       severity: advisory.severity,
       version: versions.join(','),
@@ -541,6 +542,14 @@ const collectFiles = (directory) =>
     return entry.isDirectory() ? collectFiles(path) : [path]
   })
 
+export const closeAuditRelaySafely = async (relay, fail) => {
+  try {
+    await relay?.close()
+  } catch {
+    fail('production audit relay could not be closed safely')
+  }
+}
+
 const main = async () => {
   const fail = (message) => {
     process.stderr.write(`audit gate failed: ${message}\n`)
@@ -619,7 +628,9 @@ const main = async () => {
         : 'production audit evidence could not be verified'
     )
   } finally {
-    await relay?.close()
+    // relay close 是 CLI 最后的外部 primitive；其异常同样不可信，不能让
+    // message/stack/绝对路径越过固定诊断边界。
+    await closeAuditRelaySafely(relay, fail)
   }
 }
 

@@ -8,6 +8,7 @@ import { gzipSync } from 'node:zlib'
 import {
   assertAcceptedAdvisories,
   assertAuditUpstreamStatus,
+  closeAuditRelaySafely,
   interpretAuditCommand,
   normalizeAuditRegistryBody,
   readLimitedAuditStream,
@@ -121,6 +122,45 @@ test('audit command failures never echo runner or registry controlled text', () 
       (error) => error instanceof Error && !error.message.includes(sentinel)
     )
   }
+})
+
+test('relay close failure stays behind the fixed CLI diagnostic boundary', async () => {
+  const sentinel = 'M5_CLOSE_SENTINEL /tmp/M5_CLOSE_SENTINEL'
+  const failures = []
+  await closeAuditRelaySafely(
+    { close: async () => { throw new Error(sentinel) } },
+    (message) => failures.push(message)
+  )
+  assert.deepEqual(failures, ['production audit relay could not be closed safely'])
+  assert.doesNotMatch(failures.join('\n'), /M5_CLOSE_SENTINEL/)
+})
+
+test('advisory identity uniqueness is case-insensitive', () => {
+  const duplicatePolicy = {
+    ...policy(),
+    advisories: [
+      {
+        id: 'GHSA-abcd-efgh-ijkl',
+        module: 'fixture',
+        severity: 'high',
+        version: '1.0.0',
+        pathCount: 1,
+        pathSetSha256: 'a'.repeat(64)
+      },
+      {
+        id: 'ghsa-ABCD-EFGH-IJKL',
+        module: 'fixture',
+        severity: 'high',
+        version: '1.0.0',
+        pathCount: 1,
+        pathSetSha256: 'a'.repeat(64)
+      }
+    ]
+  }
+  assert.throws(
+    () => validateAuditPolicy(duplicatePolicy, Date.parse('2026-07-25')),
+    /policy advisory is invalid/
+  )
 })
 
 test('unexpected metadata keys and advisory identities never enter diagnostics', () => {

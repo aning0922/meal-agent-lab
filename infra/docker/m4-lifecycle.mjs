@@ -32,6 +32,7 @@ import {
   imageIdOf,
   inodeIdentityOf,
   inspectStrict,
+  isAbsenceMessage,
   listByProject,
   overridePathFor,
   parseInspectedExitCode,
@@ -389,39 +390,121 @@ export const pickFreePort = async () => {
  * 次数）。这里改为 `--name` + 显式 `docker rm -f -v`：容器与它的匿名卷一起
  * 消失，而且 `rm -f` 对超时后仍在跑的容器同样有效。
  */
-const activeOneOffContainers = new Set()
+const activeOneOffContainers = new Map()
+const oneOffOwnershipLabel = 'com.meal-agent.m4.oneoff-owner'
 
-const oneOffIsGone = (removed) =>
-  removed.status === 0 || /no such container/i.test(String(removed.stderr ?? ''))
+export const oneOffIsGone = (removed, name) =>
+  removed.status === 0 ||
+  (removed.status === 1 && isAbsenceMessage(removed.stderr, { kind: 'container', name }))
+
+const inspectOneOff = async (run, entry, environment) => {
+  let inspected
+  try {
+    inspected = await run(['docker', 'container', 'inspect', entry.name], { env: environment })
+  } catch {
+    return { state: 'unreadable', id: null }
+  }
+  if (
+    inspected.status === 1 &&
+    isAbsenceMessage(inspected.stderr, { kind: 'container', name: entry.name })
+  ) {
+    return { state: 'absent', id: null }
+  }
+  if (inspected.status !== 0 || typeof inspected.stdout !== 'string' || inspected.stdout === '') {
+    return { state: 'unreadable', id: null }
+  }
+  let payload
+  try {
+    payload = JSON.parse(inspected.stdout)
+  } catch {
+    return { state: 'unreadable', id: null }
+  }
+  const container = Array.isArray(payload) && payload.length === 1 ? payload[0] : null
+  const id = container?.Id
+  const labels = container?.Config?.Labels
+  if (
+    typeof id !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(id) ||
+    labels === null ||
+    typeof labels !== 'object' ||
+    Array.isArray(labels)
+  ) {
+    return { state: 'unreadable', id: null }
+  }
+  return labels[oneOffOwnershipLabel] === entry.token
+    ? { state: 'owned', id }
+    : { state: 'foreign', id: null }
+}
+
+const removeOwnedOneOff = async (run, entry, environment) => {
+  const inspected = await inspectOneOff(run, entry, environment)
+  if (inspected.state === 'absent') {
+    activeOneOffContainers.delete(entry.name)
+    return true
+  }
+  if (inspected.state !== 'owned') {
+    // foreign / unreadable 均不能盲删；entry 保留给 residue 报告。
+    return false
+  }
+  let removed
+  try {
+    removed = await run(['docker', 'rm', '-f', '-v', inspected.id], { env: environment })
+  } catch {
+    return false
+  }
+  if (!oneOffIsGone(removed, inspected.id)) {
+    return false
+  }
+  const finalState = await inspectOneOff(run, entry, environment)
+  if (finalState.state !== 'absent') {
+    return false
+  }
+  activeOneOffContainers.delete(entry.name)
+  return true
+}
 
 export const composeRunOneOff = async (
   { compose, run, environment = process.env, warn = null },
   runArgs,
   { timeoutMs = 120_000 } = {}
 ) => {
-  const name = `m4-oneoff-${randomBytes(4).toString('hex')}`
-  // 登记先于创建：信号落在 compose run 期间时，removeLingeringOneOffs 才知道
-  // 该去杀谁——被「取消」的 pg_restore 若在 daemon 侧继续跑完并提交，就是一次
-  // 假取消（fail-open 审计指出的最坏形态）。
-  activeOneOffContainers.add(name)
-  try {
-    return await compose(['run', '--name', name, '--no-deps', ...runArgs], { timeoutMs })
-  } finally {
-    let removed
-    try {
-      removed = await run(['docker', 'rm', '-f', '-v', name], { env: environment })
-    } catch (error) {
-      removed = { status: null, stderr: error instanceof Error ? error.message : String(error) }
-    }
-    if (oneOffIsGone(removed)) {
-      activeOneOffContainers.delete(name)
-    } else if (warn !== null) {
-      warn(
-        `one-off container ${name} could not be confirmed removed; it stays ` +
-          'registered for the lingering-container sweep'
-      )
-    }
+  const name = `m4-oneoff-${randomBytes(12).toString('hex')}`
+  const entry = { name, token: randomBytes(16).toString('hex') }
+  const baseline = await inspectOneOff(run, entry, environment)
+  if (baseline.state !== 'absent') {
+    throw new Error('one-off container name was not proven absent before create')
   }
+  // 只有证明 name absent 后才登记；label 让信号清理能够区分本轮容器与并发抢占者。
+  activeOneOffContainers.set(name, entry)
+  let result
+  let composeError = null
+  try {
+    result = await compose(
+      [
+        'run',
+        '--name',
+        name,
+        '--label',
+        `${oneOffOwnershipLabel}=${entry.token}`,
+        '--no-deps',
+        ...runArgs
+      ],
+      { timeoutMs }
+    )
+  } catch (error) {
+    composeError = error
+  }
+  const removed = await removeOwnedOneOff(run, entry, environment)
+  if (!removed) {
+    if (warn !== null) {
+      warn('one-off container could not be confirmed owned and removed; it stays registered')
+    }
+    throw new Error('one-off container cleanup could not verify ownership and absence')
+  }
+  if (composeError !== null) {
+    throw composeError
+  }
+  return result
 }
 
 /**
@@ -431,17 +514,9 @@ export const composeRunOneOff = async (
  */
 export const removeLingeringOneOffs = async (run, { environment = process.env } = {}) => {
   const residue = []
-  for (const name of [...activeOneOffContainers]) {
-    let removed
-    try {
-      removed = await run(['docker', 'rm', '-f', '-v', name], { env: environment })
-    } catch (error) {
-      removed = { status: null, stderr: error instanceof Error ? error.message : String(error) }
-    }
-    if (oneOffIsGone(removed)) {
-      activeOneOffContainers.delete(name)
-    } else {
-      residue.push(`one-off container ${name} could not be confirmed removed`)
+  for (const entry of [...activeOneOffContainers.values()]) {
+    if (!(await removeOwnedOneOff(run, entry, environment))) {
+      residue.push(`one-off container ${entry.name} could not be confirmed owned and removed`)
     }
   }
   return residue
