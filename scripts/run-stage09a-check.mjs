@@ -264,6 +264,9 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     let settled = false
     let timedOut = false
     let closed = false
+    let leaderExited = false
+    let ownershipStreamEnded = false
+    let ownershipEndedBeforeLeaderExit = false
     let ownershipBuffer = ''
     let ownershipProtocolFailed = false
     let scopedCleanupStarted = false
@@ -295,6 +298,16 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     }
     const ownershipStream = child.stdio[3]
+    const registerRecognizablePgid = (text) => {
+      const prefix = /^([1-9][0-9]*)(?=$|[ \t])/.exec(text)
+      if (prefix === null) {
+        return
+      }
+      const pgid = Number(prefix[1])
+      if (Number.isSafeInteger(pgid) && pgid > 0) {
+        ownedProcessGroups.add(pgid)
+      }
+    }
     const recordOwnershipFrame = (line) => {
       const cleanupFrame = /^CLEANUP ([1-9][0-9]*) (START|DONE)$/.exec(line)
       if (cleanupFrame !== null) {
@@ -318,6 +331,9 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         return
       }
       if (!/^[1-9][0-9]*$/.test(line)) {
+        // 协议失败不等于放弃清理。若前缀已经足以证明一个 detached PGID，
+        // 先登记它，再把整帧判坏；否则 `123 EXTRA` 会固定 exit 1 却留下 123。
+        registerRecognizablePgid(line)
         ownershipProtocolFailed = true
         return
       }
@@ -331,7 +347,11 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     ownershipStream?.on('data', (chunk) => {
       ownershipBuffer += chunk.toString('utf8')
       if (ownershipBuffer.length > 4096) {
+        registerRecognizablePgid(ownershipBuffer)
         ownershipProtocolFailed = true
+        ownershipBuffer = ''
+        ownershipStream?.destroy()
+        return
       }
       const lines = ownershipBuffer.split('\n')
       ownershipBuffer = lines.pop() ?? ''
@@ -343,12 +363,23 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       ownershipProtocolFailed = true
     })
     ownershipStream?.on('end', () => {
+      ownershipStreamEnded = true
+      if (!leaderExited) {
+        // libuv 可能先分发 pipe EOF、下一拍才分发同一进程的 exit。给这个正常
+        // 排序一个极短宽限；若 producer 仍在运行，则它已主动丢掉 ownership fd，
+        // 之后派生的 detached 组将不可达，必须 fail closed。
+        setTimeout(() => {
+          if (!leaderExited) {
+            ownershipEndedBeforeLeaderExit = true
+            ownershipProtocolFailed = true
+            void terminateOwnedProcessGroups()
+          }
+        }, 25)
+      }
       if (ownershipBuffer.length > 0) {
         // 缺少终止 LF 时仍登记可证明的 PGID 以便收尾，但协议必须失败，
         // 所以该 step 绝不能 PASS。
-        if (/^[1-9][0-9]*$/.test(ownershipBuffer)) {
-          recordOwnershipFrame(ownershipBuffer)
-        }
+        registerRecognizablePgid(ownershipBuffer)
         ownershipProtocolFailed = true
         ownershipBuffer = ''
       }
@@ -363,11 +394,10 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       resolveLeaderExited = resolveExit
     })
     child.once('exit', () => {
+      leaderExited = true
       resolveLeaderExited()
       if (ownershipBuffer.length > 0) {
-        if (/^[1-9][0-9]*$/.test(ownershipBuffer)) {
-          recordOwnershipFrame(ownershipBuffer)
-        }
+        registerRecognizablePgid(ownershipBuffer)
         ownershipProtocolFailed = true
         ownershipBuffer = ''
         // fd 被未登记后代继承时，等待 EOF 会形成循环依赖。leader exit 已证明
@@ -503,6 +533,14 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
           finish(cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed')
         })
         return
+      }
+      if (
+        ownershipStream === null ||
+        (!ownershipStreamEnded && !ownershipProtocolFailed) ||
+        ownershipEndedBeforeLeaderExit ||
+        activeScopedCleanups.size > 0
+      ) {
+        ownershipProtocolFailed = true
       }
       if (ownershipProtocolFailed) {
         void (async () => {

@@ -134,8 +134,12 @@ export const parseInspectedExitCode = (raw) => {
  * 「找不到对象」。本函数只返回布尔值，不构造任何含外部内容的消息。
  */
 export const isAbsenceMessage = (stderr, { kind, name }) => {
-  const trimmed = String(stderr ?? '').trim()
-  if (/[\r\n]/.test(trimmed)) {
+  const raw = String(stderr ?? '')
+  // Docker CLI 可以在唯一一行诊断后带一个 LF；除此之外任何前导/额外换行、
+  // CR 或空白包装都不是 canonical absence evidence。不能先 trim()，否则证据
+  // 包装会在判定前被抹掉。
+  const line = raw.endsWith('\n') ? raw.slice(0, -1) : raw
+  if (/[\r\n]/.test(line)) {
     return false
   }
   const noun = kind === 'image' ? 'image' : kind === 'container' ? '(?:container|object)' : 'object'
@@ -143,7 +147,7 @@ export const isAbsenceMessage = (stderr, { kind, name }) => {
   const pattern = new RegExp(
     `^(?:[Ee]rror(?: response from daemon)?:[ \\t]*)?[Nn]o such ${noun}:?[ \\t]*${escaped}$`
   )
-  return pattern.test(trimmed)
+  return pattern.test(line)
 }
 
 /** 严格读取一段 JSON 形态的 inspect 字段（空 payload 由 inspectStrict 拒绝）。 */

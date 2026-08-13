@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
@@ -25,6 +26,7 @@ import {
   parseImageInspect,
   parseSavedImageConfig,
   parseSavedImageManifest,
+  verifySavedImageLayers,
   parseDockerContainerId,
   parseDockerImageId
 } from '../../infra/docker/api-image-scan.mjs'
@@ -43,7 +45,15 @@ test('immutable image, container and history evidence is identity-bound and comp
   const imageId = `sha256:${'a'.repeat(64)}`
   const layerId = `sha256:${'b'.repeat(64)}`
   const containerId = 'c'.repeat(64)
-  const image = [{ Id: imageId, Config: {}, RootFS: { Type: 'layers', Layers: [layerId] } }]
+  const image = [{
+    Id: imageId,
+    Config: {},
+    Architecture: 'arm64',
+    Os: 'linux',
+    Created: '2026-08-12T00:00:00Z',
+    Descriptor: { digest: imageId },
+    RootFS: { Type: 'layers', Layers: [layerId] }
+  }]
   assert.equal(parseImageInspect(JSON.stringify(image), imageId, throwingFatal).Id, imageId)
   assert.throws(
     () => parseImageInspect(JSON.stringify([{ ...image[0], Id: layerId }]), imageId, throwingFatal),
@@ -137,27 +147,31 @@ test('immutable image, container and history evidence is identity-bound and comp
     }
   ]
   const savedConfig = JSON.stringify({
+    architecture: 'arm64',
+    os: 'linux',
+    created: '2026-08-12T00:00:00Z',
+    config: {},
     rootfs: { type: 'layers', diff_ids: [layerId] },
     history: contentHistory
   })
   const configPath = `blobs/sha256/${createHash('sha256').update(savedConfig).digest('hex')}`
-  assert.equal(
+  assert.deepEqual(
     parseSavedImageManifest(
       JSON.stringify([{ Config: configPath, RepoTags: null, Layers: [`blobs/sha256/${'d'.repeat(64)}`] }]),
       1,
       throwingFatal
     ),
-    configPath
+    { Config: configPath, RepoTags: null, Layers: [`blobs/sha256/${'d'.repeat(64)}`] }
   )
   const completeCliHistory = [
-    { ...historyRow, CreatedBy: 'CMD ["node"]' },
-    { ...historyRow, CreatedBy: 'RUN install-runtime' }
+    { ...historyRow, CreatedAt: '2026-08-12T00:00:00Z', CreatedBy: 'CMD ["node"]', Size: '0B' },
+    { ...historyRow, CreatedAt: '2026-08-11T00:00:00Z', CreatedBy: 'RUN install-runtime' }
   ]
   assert.doesNotThrow(() =>
     parseSavedImageConfig(
       savedConfig,
       configPath,
-      [layerId],
+      image[0],
       completeCliHistory,
       throwingFatal,
       () => {}
@@ -168,13 +182,69 @@ test('immutable image, container and history evidence is identity-bound and comp
       parseSavedImageConfig(
         savedConfig,
         configPath,
-        [layerId],
+        image[0],
         completeCliHistory.slice(0, 1),
         throwingFatal,
         () => {}
       ),
     /incomplete immutable-image config evidence/
   )
+  assert.throws(
+    () =>
+      parseSavedImageManifest(
+        JSON.stringify([{ Config: configPath, RepoTags: null, Layers: [`blobs/sha256/${'d'.repeat(64)}`] }]),
+        2,
+        throwingFatal
+      ),
+    /incomplete immutable-image metadata/
+  )
+  assert.throws(
+    () =>
+      parseSavedImageConfig(
+        savedConfig,
+        configPath,
+        image[0],
+        [{ ...completeCliHistory[0], CreatedAt: '2026-08-13T00:00:00Z' }, completeCliHistory[1]],
+        throwingFatal,
+        () => {}
+      ),
+    /does not match/
+  )
+})
+
+test('saved layer blobs are bound by compressed digest and uncompressed diff ID', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-saved-layer-'))
+  try {
+    const layerBytes = Buffer.from('fixture layer tar bytes\n')
+    const digest = createHash('sha256').update(layerBytes).digest('hex')
+    const blobDirectory = resolve(directory, 'root/blobs/sha256')
+    mkdirSync(blobDirectory, { recursive: true })
+    writeFileSync(resolve(blobDirectory, digest), layerBytes)
+    const archive = resolve(directory, 'image.tar')
+    const packed = spawnSync('tar', ['-cf', archive, '-C', resolve(directory, 'root'), 'blobs'], {
+      encoding: 'utf8'
+    })
+    assert.equal(packed.status, 0, packed.stderr)
+    await assert.doesNotReject(
+      verifySavedImageLayers(
+        archive,
+        [`blobs/sha256/${digest}`],
+        [`sha256:${digest}`],
+        throwingFatal
+      )
+    )
+    await assert.rejects(
+      verifySavedImageLayers(
+        archive,
+        [`blobs/sha256/${digest}`],
+        [`sha256:${'f'.repeat(64)}`],
+        throwingFatal
+      ),
+      /wrong diff ID/
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('dependency payload evidence includes .bin and package file bytes', () => {
@@ -232,6 +302,26 @@ test('dependency payload normalizes only its declared deploy root and binds the 
       { shimDeployRoot: right }
     )
     assert.notEqual(leftPayload.sha256, rightPayload.sha256)
+
+    writeFileSync(
+      resolve(left, 'node_modules/.bin/fixture'),
+      `#!/bin/sh\nexport NODE_PATH="${left}/node_modules/pkg"\nprintf '%s\\n' '${left}/node_modules/semantic'\n`
+    )
+    writeFileSync(
+      resolve(right, 'node_modules/.bin/fixture'),
+      `#!/bin/sh\nexport NODE_PATH="${right}/node_modules/pkg"\nprintf '%s\\n' '<DEPLOY>/node_modules/semantic'\n`
+    )
+    const collisionLeft = dependencyPayloadOf(resolve(left, 'node_modules'), 'left', () => {}, {
+      shimDeployRoot: left
+    })
+    const collisionRight = dependencyPayloadOf(resolve(right, 'node_modules'), 'right', () => {}, {
+      shimDeployRoot: right
+    })
+    assert.notEqual(
+      collisionLeft.sha256,
+      collisionRight.sha256,
+      'semantic shim bytes must not be hidden by deploy-root normalization'
+    )
 
     rmSync(resolve(right, 'node_modules/@meal-agent/api'))
     symlinkSync('/tmp/attacker-api', resolve(right, 'node_modules/@meal-agent/api'))

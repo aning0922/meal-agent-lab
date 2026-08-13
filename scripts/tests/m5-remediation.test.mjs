@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
@@ -32,6 +33,13 @@ test('M4 absence evidence requires the exact single-line Docker result', () => {
     ),
     false
   )
+  for (const stderr of [
+    'Error response from daemon: No such container: fixture\r\n',
+    'Error response from daemon: No such container: fixture\nextra',
+    'prefix\nError response from daemon: No such container: fixture'
+  ]) {
+    assert.equal(oneOffIsGone({ status: 1, stderr }, 'fixture'), false)
+  }
 })
 
 test('M4 never removes a same-name container without its ownership label', async () => {
@@ -88,6 +96,33 @@ test('restore sidecars must be bounded regular files', () => {
       () => verifyBackupChecksum(dump),
       (error) => error instanceof Error && error.message === checksumSidecarUnparseableReason
     )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('restore sidecars reject BOM, multiline, CRLF and NUL framing', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m5-sidecar-framing-'))
+  try {
+    const dump = resolve(directory, 'fixture.dump')
+    const bytes = Buffer.from('PGDMPfixture')
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const line = `${digest}  fixture.dump`
+    writeFileSync(dump, bytes)
+    for (const invalid of [
+      Buffer.from(`\uFEFF${line}`),
+      Buffer.from(`${line}\nextra`),
+      Buffer.from(`${line}\r\n`),
+      Buffer.concat([Buffer.from(line), Buffer.from([0])])
+    ]) {
+      writeFileSync(`${dump}.sha256`, invalid)
+      assert.throws(
+        () => verifyBackupChecksum(dump),
+        (error) => error instanceof Error && error.message === checksumSidecarUnparseableReason
+      )
+    }
+    writeFileSync(`${dump}.sha256`, `${line}\n`)
+    assert.equal(verifyBackupChecksum(dump).sha256, digest)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

@@ -224,6 +224,39 @@ writeSync(3, String(child.pid))
 await delay(500)
 `
   )
+  writeFileSync(
+    resolve(directory, 'extra-token-parent.mjs'),
+    `import { spawn } from 'node:child_process'
+import { writeFileSync, writeSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
+  detached: true,
+  stdio: ['ignore', 'ignore', 'ignore', 'ignore']
+})
+child.unref()
+writeFileSync(resolve(directory, 'grandchild-pid'), String(child.pid))
+writeSync(3, String(child.pid) + ' EXTRA\\n')
+await delay(500)
+`
+  )
+  writeFileSync(
+    resolve(directory, 'empty-eof-parent.mjs'),
+    `import { closeSync, writeFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+closeSync(3)
+writeFileSync(directory + '/empty-eof-ready', 'yes')
+await delay(500)
+`
+  )
+  writeFileSync(
+    resolve(directory, 'cleanup-missing-done.mjs'),
+    `import { writeSync } from 'node:fs'
+writeSync(3, 'CLEANUP ' + String(process.pid) + ' START\\n')
+`
+  )
   writeExecutable(
     resolve(bin, 'pnpm'),
     `#!/bin/sh
@@ -244,6 +277,15 @@ if [ "\${STAGE09A_FIXTURE_MODE:-}" = shared-cleanup ]; then
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-partial ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/partial-parent.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-extra-token ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/extra-token-parent.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-empty-eof ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/empty-eof-parent.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = cleanup-missing-done ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/cleanup-missing-done.mjs"
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant ] || [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
   if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
@@ -362,6 +404,59 @@ test('an EOF-partial ownership frame fails closed and the announced group reache
     if (gate !== null && processIsAlive(gate.child.pid)) {
       process.kill(-gate.child.pid, 'SIGKILL')
     }
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('a recognizable PGID with an extra token fails closed and still reaches ESRCH', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let pgid = null
+  try {
+    gate = spawnGate(fixture, 'ownership-extra-token')
+    const pidFile = resolve(fixture.directory, 'grandchild-pid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'malformed-frame group')
+    pgid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(pgid), true)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+    await waitFor(() => !processIsAlive(pgid), 1_000, 'malformed-frame group ESRCH')
+  } finally {
+    if (pgid !== null && processIsAlive(pgid)) process.kill(-pgid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) process.kill(-gate.child.pid, 'SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('an empty ownership EOF while the producer remains alive fails closed', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'ownership-empty-eof')
+    await waitFor(() => existsSync(resolve(fixture.directory, 'empty-eof-ready')), 3_000, 'empty EOF')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) process.kill(-gate.child.pid, 'SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('cleanup START without DONE can never become a successful step', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'cleanup-missing-done')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) process.kill(-gate.child.pid, 'SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })

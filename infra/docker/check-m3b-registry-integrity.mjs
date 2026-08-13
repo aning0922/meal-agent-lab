@@ -674,10 +674,10 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
 }
 
 // ===========================================================================
-// §6 已发表的 tracked 文件数 ↔ git ls-files
+// §6 已发表的 tracked 文件口径 ↔ git ls-files
 // ===========================================================================
 {
-  const name = 'the published tracked-file count matches git ls-files'
+  const name = 'the published tracked-file evidence is derived from git ls-files'
   const listing = spawnSync('git', ['ls-files', '-z'], {
     cwd: repositoryRoot,
     encoding: 'utf8',
@@ -687,13 +687,14 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     fail(name, 'git ls-files 失败')
   } else {
     const tracked = listing.stdout.split('\u0000').filter(Boolean).length
-    const claim = uniqueMatch(readDocument(PLAN), /artifacts × (\d+) tracked 文件/g)
+    const claim = uniqueMatch(
+      readDocument(PLAN),
+      /artifacts × `git ls-files` 派生的 tracked 文件/g
+    )
     if (claim === null) {
-      fail(name, '计划文档里 tracked 文件数声明不是恰好 1 处')
-    } else if (Number(claim[1]) !== tracked) {
-      fail(name, `计划文档发表的 tracked 文件数与实测 ${String(tracked)} 不符`)
+      fail(name, '计划文档里的 tracked 文件证据没有唯一声明为 git ls-files 派生')
     } else {
-      pass(name, `发表的 tracked 文件数 ${String(tracked)} 与 git ls-files 相符`)
+      pass(name, `tracked 文件证据由 git ls-files 派生（本次 ${String(tracked)} 个）`)
     }
   }
 }

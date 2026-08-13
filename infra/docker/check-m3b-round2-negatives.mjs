@@ -61,7 +61,10 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { ownershipAwareSpawnStdio } from './m3b-subprocess.mjs'
+import {
+  ownershipAwareSpawnStdio,
+  registerRawSpawnedChild
+} from './m3b-subprocess.mjs'
 
 import {
   discardGeneratedPaths,
@@ -383,7 +386,7 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r2-'))
   const bundle = resolve(parent, 'bundle')
   try {
-    const child = spawn(
+    const child = registerRawSpawnedChild(spawn(
       process.execPath,
       [
         resolve(composeDirectory, 'fixtures/preflight-signal-window.mjs'),
@@ -397,7 +400,7 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
         // detached：pid 即 pgid，下面才能按**进程组**发信号。
         detached: true
       }
-    )
+    ))
     const outcome = await new Promise((resolveOutcome) => {
       let stdout = ''
       let stderr = ''
@@ -470,7 +473,7 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
       const directory = resolve(parent, `bundle-${randomBytes(4).toString('hex')}`)
       const startedAt = Date.now()
       const outcome = await new Promise((resolveOutcome) => {
-        const child = spawn(
+        const child = registerRawSpawnedChild(spawn(
           process.execPath,
           [
             resolve(composeDirectory, 'generate-local-test-secrets.mjs'),
@@ -481,7 +484,7 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
             stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
             env: { ...process.env, ...extraEnv }
           }
-        )
+        ))
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (chunk) => {
@@ -789,7 +792,7 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
         { mode: 0o700 }
       )
       const outcome = await new Promise((resolveOutcome) => {
-        const child = spawn(
+        const child = registerRawSpawnedChild(spawn(
           process.execPath,
           [resolve(composeDirectory, 'run-local-test-smoke.mjs')],
           {
@@ -799,7 +802,7 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
               PATH: `${shimDirectory}:${process.env.PATH ?? ''}`
             }
           }
-        )
+        ))
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (chunk) => {
@@ -833,9 +836,9 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
 }
 
 // ---------------------------------------------------------------------------
-// R4-2：「资源不存在」必须整串匹配
+// R4-2：「资源不存在」必须按 canonical 单行整串匹配
 // ---------------------------------------------------------------------------
-process.stdout.write('R4-2: absence is judged on the whole trimmed stderr\n')
+process.stdout.write('R4-2: absence is judged on the canonical whole stderr line\n')
 
 {
   // 三处判据（imageIdOf / containerPresence / 信号窗口）共用同一个
@@ -847,7 +850,7 @@ process.stdout.write('R4-2: absence is judged on the whole trimmed stderr\n')
   const shapes = [
     ['exact image message', `Error response from daemon: No such image: ${tag}`, 'image', tag, true],
     ['exact object message', `error: no such object: ${container}`, 'object', container, true],
-    ['surrounding whitespace', `  Error response from daemon: No such image: ${tag} \n`, 'image', tag, true],
+    ['surrounding whitespace', `  Error response from daemon: No such image: ${tag} \n`, 'image', tag, false],
     ['prefixed line', `warning: retrying\nError response from daemon: No such image: ${tag}`, 'image', tag, false],
     ['suffixed line', `Error response from daemon: No such image: ${tag}\nsee the daemon logs`, 'image', tag, false],
     ['inline prefix', `context deadline exceeded: Error response from daemon: No such image: ${tag}`, 'image', tag, false],
@@ -951,8 +954,8 @@ process.stdout.write('R4-3: encoded credential query keys are decoded before jud
 process.stdout.write('R5-1: an absence message that spans lines is refused\n')
 
 // 只去掉 `m` 标志是不够的：正则里的 `\s` 本身就跨行，于是两行 stderr 仍然整串
-// 匹配成功、被读成「资源不存在」。判据现在先看 `trim()` 之后还有没有 CR/LF，
-// 再用只含**水平**空白（`[ \t]*`）的正则。每种换行形态**各一条**反例，并且
+// 匹配成功、被读成「资源不存在」。判据不再 trim 输入，只允许 canonical 单行
+// 后恰好一个 LF，再用只含**水平**空白（`[ \t]*`）的正则。每种换行形态**各一条**反例，并且
 // 都同时走**纯函数**与**真实 imageIdOf + PATH shim** 两条路径。
 const absenceProbeTag = 'meal-agent-api:m3b-r5probe'
 

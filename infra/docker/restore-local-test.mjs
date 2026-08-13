@@ -82,7 +82,9 @@ const readChecksumSidecar = (sidecarPath) => {
     }
     const bytes = readFileSync(fd)
     try {
-      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      // ignoreBOM=true 表示**保留** BOM 为 U+FEFF，让下面的严格 framing 拒绝；
+      // 默认 decoder 会吞掉 BOM，从而把带 BOM 的非规范 sidecar 当成合法首行。
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
     } catch {
       throw new Error(checksumSidecarUnparseableReason)
     }
@@ -121,8 +123,12 @@ export const verifyBackupChecksum = (dumpPath) => {
   if (!existsSync(sidecarPath)) {
     throw new Error(checksumSidecarMissingReason)
   }
-  const sidecar = readChecksumSidecar(sidecarPath).split('\n')[0] ?? ''
-  const parsed = /^([0-9a-f]{64})[ \t]+\*?(.+)$/.exec(sidecar.trim())
+  const rawSidecar = readChecksumSidecar(sidecarPath)
+  const sidecar = rawSidecar.endsWith('\n') ? rawSidecar.slice(0, -1) : rawSidecar
+  if (/[\r\n\u0000]/.test(sidecar)) {
+    throw new Error(checksumSidecarUnparseableReason)
+  }
+  const parsed = /^([0-9a-f]{64})[ \t]+\*?(.+)$/.exec(sidecar)
   if (parsed === null) {
     throw new Error(checksumSidecarUnparseableReason)
   }

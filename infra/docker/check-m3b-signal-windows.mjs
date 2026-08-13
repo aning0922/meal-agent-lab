@@ -19,6 +19,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import {
   createProcessGroupLifecycle,
   ownershipAwareSpawnStdio,
+  registerRawSpawnedChild,
   runCommand,
   terminateControlledSubtree,
   unconfirmedProcessGroups
@@ -154,11 +155,13 @@ const runAndSignal = async ({
   waitForProcess = null,
   signalDelayMs = 1_500
 }) => {
-  const child = spawn(process.execPath, [resolve(composeDirectory, script)], {
-    cwd: repositoryRoot,
-    stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
-    detached: true
-  })
+  const child = registerRawSpawnedChild(
+    spawn(process.execPath, [resolve(composeDirectory, script)], {
+      cwd: repositoryRoot,
+      stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
+      detached: true
+    })
+  )
   let stdout = ''
   let stderr = ''
   let signalled = false

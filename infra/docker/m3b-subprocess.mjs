@@ -293,6 +293,32 @@ export const createProcessGroupLifecycle = ({
 
 const processGroupLifecycle = createProcessGroupLifecycle()
 
+/**
+ * raw `spawn()` 控制层本身若使用 `detached: true`，必须在返回事件循环前同步登记
+ * 自己的 PGID；仅把 fd 3 传给它是不够的——它首次调用 `runCommand()` 之前仍有一个
+ * 聚合器不可达窗口。调用方应在 `spawn()` 后立即用本函数包装返回值。
+ */
+export const registerRawSpawnedChild = (child) => {
+  if (!Number.isSafeInteger(child?.pid) || child.pid <= 0) {
+    throw new Error('raw detached child did not expose a process-group id')
+  }
+  const handle = processGroupLifecycle.register(child.pid)
+  observedProcessGroups.add(child.pid)
+  if (!announceProcessGroupOwnership(child.pid)) {
+    try {
+      process.kill(-child.pid, 'SIGKILL')
+    } catch {
+      // 固定失败由下面的 throw 给出；registry 仍保留该组供最终 sweep 复核。
+    }
+    throw new Error('aggregate ownership announcement failed')
+  }
+  child.once('close', () => {
+    processGroupLifecycle.markLeaderClosed(handle)
+    processGroupLifecycle.retireIfGone(handle)
+  })
+  return child
+}
+
 // scoped cleanup 完成后的最终收敛一旦稳定，立即同步关闭新派生入口；随后再做一轮
 // registry 复核。赋值与复核之间不会让事件循环运行，因此不存在「最后一次空快照
 // 之后、重投信号之前」又登记一个新组的窗口。
@@ -356,7 +382,7 @@ const runCommandUnchecked = (
     // 超时调用方自己拥有 settlement：即使 leader 永远不发 `close`，
     // TERM → KILL → 有界确认的预算到期后也会 reject，不把 hard bound 寄托给 close。
     const timer = setTimeout(() => {
-      if (settled || timedOut) {
+      if (settled || timedOut || ownershipAnnouncementFailed) {
         return
       }
       timedOut = true
@@ -392,6 +418,9 @@ const runCommandUnchecked = (
     }
     child.once('error', (error) => {
       releaseChild()
+      if (ownershipAnnouncementFailed) {
+        return
+      }
       if (!settled && !timedOut) {
         settled = true
         rejectPromise(new Error(`failed to run ${args.join(' ')}: ${error.message}`))
@@ -400,6 +429,11 @@ const runCommandUnchecked = (
 
     child.once('close', (code, signal) => {
       releaseChild()
+      // announcement failure 已经把 settlement 所有权交给下面的异步终止分支；
+      // 快速 `/usr/bin/true` 的 close 绝不能抢先 resolve status 0。
+      if (ownershipAnnouncementFailed) {
+        return
+      }
       if (settled) {
         return
       }
@@ -546,16 +580,21 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
         process.removeListener(handledSignal, handler)
       }
+      // DONE 只表示本轮清理生命周期已经走完（含最终子树收敛），不表示 scoped
+      // cleanup 的业务结果成功。负向门禁会故意制造 residue / throw，并在固定 exit 1
+      // 后由父测试验证；它们同样必须先确认生命周期结束，不能在聚合器看来留下一个
+      // 永远悬空的 START。相反，若进程在这里之前消失，缺 DONE 仍会由聚合器拒绝。
+      const cleanupDoneAnnounced = cleanupStartAnnounced && announceCleanupState('DONE')
+      if (!cleanupDoneAnnounced) {
+        process.stderr.write('aggregate cleanup acknowledgement failed\n')
+        process.exit(1)
+      }
       if (terminationFailed || cleanupFailed || survivors.length > 0) {
         // **fail closed**：受控子树或 scoped cleanup 任一失败，都不能用「干净的
         // 信号语义」收场。子树失败只报固定原因，不回显任何命令内容。
         if (terminationFailed || survivors.length > 0) {
           process.stderr.write('descendant process groups were not confirmed gone\n')
         }
-        process.exit(1)
-      }
-      if (!cleanupStartAnnounced || !announceCleanupState('DONE')) {
-        process.stderr.write('aggregate cleanup acknowledgement failed\n')
         process.exit(1)
       }
       // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。

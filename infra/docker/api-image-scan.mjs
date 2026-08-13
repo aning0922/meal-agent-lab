@@ -8,15 +8,21 @@
 // 全局状态，problem/fatal 收集器由调用方注入，Docker 资源（container/tag）的
 // 清理责任也在调用方。
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   readFileSync,
   readdirSync,
   readlinkSync,
-  realpathSync
+  realpathSync,
+  createReadStream
 } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { createGunzip, createZstdDecompress } from 'node:zlib'
 import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -274,6 +280,14 @@ export const parseImageInspect = (stdout, expectedId, fatal) => {
     !isRecord(payload[0]) ||
     payload[0].Id !== expectedId ||
     !isRecord(payload[0].Config) ||
+    typeof payload[0].Architecture !== 'string' ||
+    payload[0].Architecture === '' ||
+    typeof payload[0].Os !== 'string' ||
+    payload[0].Os === '' ||
+    typeof payload[0].Created !== 'string' ||
+    !Number.isFinite(Date.parse(payload[0].Created)) ||
+    !isRecord(payload[0].Descriptor) ||
+    payload[0].Descriptor.digest !== expectedId ||
     !isRecord(payload[0].RootFS) ||
     payload[0].RootFS.Type !== 'layers' ||
     !Array.isArray(payload[0].RootFS.Layers) ||
@@ -378,17 +392,18 @@ export const parseSavedImageManifest = (stdout, expectedLayerCount, fatal) => {
   ) {
     fatal('docker image save returned incomplete immutable-image metadata')
   }
-  return entry.Config
+  return entry
 }
 
 export const parseSavedImageConfig = (
   stdout,
   configPath,
-  expectedLayers,
+  expectedImageEvidence,
   historyRows,
   fatal,
   problem
 ) => {
+  const expectedLayers = expectedImageEvidence.RootFS.Layers
   const expectedDigest = configPath.slice('blobs/sha256/'.length)
   if (createHash('sha256').update(stdout).digest('hex') !== expectedDigest) {
     fatal('docker image save returned a config blob with the wrong digest')
@@ -402,6 +417,10 @@ export const parseSavedImageConfig = (
   const history = config?.history
   if (
     !isRecord(config) ||
+    config.architecture !== expectedImageEvidence.Architecture ||
+    config.os !== expectedImageEvidence.Os ||
+    Date.parse(config.created) !== Date.parse(expectedImageEvidence.Created) ||
+    JSON.stringify(config.config) !== JSON.stringify(expectedImageEvidence.Config) ||
     !isRecord(config.rootfs) ||
     config.rootfs.type !== 'layers' ||
     JSON.stringify(config.rootfs.diff_ids) !== JSON.stringify(expectedLayers) ||
@@ -427,7 +446,10 @@ export const parseSavedImageConfig = (
       (entry.comment !== undefined && typeof entry.comment !== 'string') ||
       (entry.empty_layer !== undefined && entry.empty_layer !== true) ||
       cli.CreatedBy !== entry.created_by ||
-      cli.Comment !== (entry.comment ?? '')
+      cli.Comment !== (entry.comment ?? '') ||
+      Math.floor(Date.parse(cli.CreatedAt) / 1_000) !==
+        Math.floor(Date.parse(entry.created) / 1_000) ||
+      (entry.empty_layer === true && cli.Size !== '0B')
     ) {
       fatal('docker image history does not match the content-addressed config history')
     }
@@ -444,6 +466,116 @@ export const parseSavedImageConfig = (
   }
   if (nonemptyLayers !== expectedLayers.length) {
     fatal('docker image config history does not account for every filesystem layer')
+  }
+}
+
+const tarBlockSize = 512
+
+const parseTarOctal = (bytes) => {
+  const text = bytes.toString('ascii').replace(/\0.*$/s, '').trim()
+  if (!/^[0-7]+$/.test(text)) return null
+  const value = Number.parseInt(text, 8)
+  return Number.isSafeInteger(value) ? value : null
+}
+
+export const indexSavedImageTar = (archivePath, fatal) => {
+  const fd = openSync(archivePath, 'r')
+  const members = new Map()
+  try {
+    const archiveSize = fstatSync(fd).size
+    let offset = 0
+    let zeroBlocks = 0
+    while (offset + tarBlockSize <= archiveSize) {
+      const header = Buffer.alloc(tarBlockSize)
+      if (readSync(fd, header, 0, header.length, offset) !== header.length) {
+        fatal('docker image save returned a truncated tar header')
+      }
+      if (header.every((byte) => byte === 0)) {
+        zeroBlocks += 1
+        offset += tarBlockSize
+        if (zeroBlocks === 2) break
+        continue
+      }
+      zeroBlocks = 0
+      const recordedChecksum = parseTarOctal(header.subarray(148, 156))
+      const checksumHeader = Buffer.from(header)
+      checksumHeader.fill(0x20, 148, 156)
+      const actualChecksum = checksumHeader.reduce((sum, byte) => sum + byte, 0)
+      const size = parseTarOctal(header.subarray(124, 136))
+      const name = header.subarray(0, 100).toString('utf8').replace(/\0.*$/s, '')
+      const prefix = header.subarray(345, 500).toString('utf8').replace(/\0.*$/s, '')
+      const path = prefix === '' ? name : `${prefix}/${name}`
+      const type = header[156]
+      if (
+        recordedChecksum === null ||
+        recordedChecksum !== actualChecksum ||
+        size === null ||
+        path === '' ||
+        path.includes('\0') ||
+        offset + tarBlockSize + size > archiveSize
+      ) {
+        fatal('docker image save returned malformed tar evidence')
+      }
+      if (type === 0 || type === 0x30) {
+        if (members.has(path)) fatal('docker image save returned duplicate tar evidence')
+        members.set(path, { offset: offset + tarBlockSize, size })
+      }
+      offset += tarBlockSize + Math.ceil(size / tarBlockSize) * tarBlockSize
+    }
+    if (zeroBlocks !== 2) fatal('docker image save returned an unterminated tar archive')
+    return members
+  } finally {
+    closeSync(fd)
+  }
+}
+
+const hashArchiveMember = async (archivePath, member, { decompress = false } = {}) => {
+  const hash = createHash('sha256')
+  if (member.size === 0) return hash.digest('hex')
+  let stream = createReadStream(archivePath, {
+    start: member.offset,
+    end: member.offset + member.size - 1
+  })
+  if (decompress) {
+    const fd = openSync(archivePath, 'r')
+    const magic = Buffer.alloc(4)
+    try {
+      readSync(fd, magic, 0, magic.length, member.offset)
+    } finally {
+      closeSync(fd)
+    }
+    if (magic[0] === 0x1f && magic[1] === 0x8b) {
+      stream = stream.pipe(createGunzip())
+    } else if (magic.equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
+      stream = stream.pipe(createZstdDecompress())
+    }
+  }
+  for await (const chunk of stream) hash.update(chunk)
+  return hash.digest('hex')
+}
+
+export const verifySavedImageLayers = async (
+  archivePath,
+  layerPaths,
+  expectedDiffIds,
+  fatal
+) => {
+  if (layerPaths.length !== expectedDiffIds.length) {
+    fatal('docker image save layer count does not match immutable image evidence')
+  }
+  const members = indexSavedImageTar(archivePath, fatal)
+  for (let index = 0; index < layerPaths.length; index += 1) {
+    const layerPath = layerPaths[index]
+    const member = members.get(layerPath)
+    if (member === undefined) fatal('docker image save omitted a declared layer blob')
+    const blobDigest = layerPath.slice('blobs/sha256/'.length)
+    if ((await hashArchiveMember(archivePath, member)) !== blobDigest) {
+      fatal('docker image save returned a layer blob with the wrong digest')
+    }
+    const diffDigest = expectedDiffIds[index].slice('sha256:'.length)
+    if ((await hashArchiveMember(archivePath, member, { decompress: true })) !== diffDigest) {
+      fatal('docker image save returned a layer blob with the wrong diff ID')
+    }
   }
 }
 
@@ -530,17 +662,27 @@ export const dependencyPayloadOf = (
             }
             const distinctDeployRoots = [...new Set(deployRoots)]
               .sort((left, right) => right.length - left.length)
-            let comparableText = text
-            for (const root of distinctDeployRoots) {
-              comparableText = comparableText
-                .split(`${root}/node_modules/`)
-                .join('<DEPLOY>/node_modules/')
-            }
-            if (shimWorkspaceRoot !== null) {
-              comparableText = comparableText
-                .split(`${shimWorkspaceRoot}/`)
-                .join('<WORKSPACE>/')
-            }
+            const comparableText = text
+              .split('\n')
+              .map((line) => {
+                const generated =
+                  line.trimStart().startsWith('export NODE_PATH="') ||
+                  line.trimStart().startsWith('# cmd-shim-target=')
+                if (!generated) return line
+                let normalized = line
+                for (const root of distinctDeployRoots) {
+                  normalized = normalized
+                    .split(`${root}/node_modules/`)
+                    .join('<DEPLOY>/node_modules/')
+                }
+                if (shimWorkspaceRoot !== null) {
+                  normalized = normalized
+                    .split(`${shimWorkspaceRoot}/`)
+                    .join('<WORKSPACE>/')
+                }
+                return normalized
+              })
+              .join('\n')
             comparableBytes = Buffer.from(comparableText, 'utf8')
           }
         }
@@ -875,7 +1017,7 @@ export const scanImage = async ({
     timeoutMs: 300_000,
     label: 'docker image save (content-addressed history evidence)'
   })
-  const savedConfigPath = parseSavedImageManifest(
+  const savedManifest = parseSavedImageManifest(
     (
       await runStrict(['tar', '-xOf', savedImageTarPath, 'manifest.json'], {
         timeoutMs: 60_000,
@@ -885,15 +1027,21 @@ export const scanImage = async ({
     imageInspect.RootFS.Layers.length,
     fatal
   )
+  await verifySavedImageLayers(
+    savedImageTarPath,
+    savedManifest.Layers,
+    imageInspect.RootFS.Layers,
+    fatal
+  )
   parseSavedImageConfig(
     (
-      await runStrict(['tar', '-xOf', savedImageTarPath, savedConfigPath], {
+      await runStrict(['tar', '-xOf', savedImageTarPath, savedManifest.Config], {
         timeoutMs: 60_000,
         label: 'saved image config evidence'
       })
     ).stdout,
-    savedConfigPath,
-    imageInspect.RootFS.Layers,
+    savedManifest.Config,
+    imageInspect,
     historyRows,
     fatal,
     problem

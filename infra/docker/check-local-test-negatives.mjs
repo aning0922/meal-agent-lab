@@ -62,6 +62,7 @@ import {
 import { createSecretScrubber, wrongReason } from './m3b-safe-output.mjs'
 import {
   ownershipAwareSpawnStdio,
+  registerRawSpawnedChild,
   runCommand,
   terminateControlledSubtree
 } from './m3b-subprocess.mjs'
@@ -1687,10 +1688,12 @@ process.stdout.write('Group G: subprocess and signal negatives\n')
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-gen-'))
   const bundle = resolve(directory, 'bundle')
   try {
-    const child = spawn(
-      process.execPath,
-      [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],
-      { stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']) }
+    const child = registerRawSpawnedChild(
+      spawn(
+        process.execPath,
+        [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],
+        { stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']), detached: true }
+      )
     )
     const outcome = await new Promise((resolveOutcome) => {
       let stdout = ''
