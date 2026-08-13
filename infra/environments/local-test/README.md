@@ -68,5 +68,6 @@ node infra/docker/probe-compose-secret-identity.mjs
 
 - fake 微信 adapter + 合成身份；不调用任何真实微信服务；
 - 只有宿主 IPv4 loopback 一个入口；不开公网、不加域名/TLS/反向代理；
-- 备份与恢复命令属于 M4，本环境当前不声明；
+- 备份与恢复由 Compose 中的专用 `backup` / `backup-transfer-loader` / `restore`
+  one-shot 执行，只使用各自最小 Secret 可见面；
 - staging 与 production 环境不存在，本目录的任何内容不得如此表述。

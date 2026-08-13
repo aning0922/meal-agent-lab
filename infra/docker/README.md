@@ -137,13 +137,13 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（10 服务、8 secret 文件、2 网络、project scope） |
-| `node infra/docker/check-compose-topology-mutations.mjs` | **15 项**拓扑变异反例，全部要求以指定理由被拒，并逐字节还原被变异的 tracked 文件 |
+| `node infra/docker/check-compose-topology-mutations.mjs` | **22 项**拓扑变异反例，全部要求以指定理由被拒；只变异仓库外临时副本，不改写 tracked Compose |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
 | `node infra/docker/check-m3b-template-surface-sweep.mjs` | **tracked 模板绝对面普查**：以 `node --env-file` 为唯一 oracle，不问「这一轮改了什么」，只问「凡是会真的建立活键且取值非空的写法，扫描器看得见吗」。8 族 × 6 视图 = 48 格 + 一条 pathspec 检查。**它不声称扫描器干净**，而是把当前表面钉死：3 族登记为命中、5 族**登记为开着且逐族附原因**，两份扫描面外的 tracked 模板登记为已披露边界；另有 4 族门禁结构上表达不了（缺渲染面，见 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs) 的 `unguardedFamilies`），**零看守**。未登记族变沉默（新 fail-open）与已登记族被捕获（覆盖变好但登记失真）**同样转红**。登记表在 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs)，普查前先过一遍自校验；上面这一整组数字由 [`check-m3b-registry-integrity.mjs`](check-m3b-registry-integrity.mjs) 从登记表导出后与本行比对——**删掉一整族或一个视图时普查门禁自己是发现不了的**（它把一切都从登记表导出，少掉一族之后剩下的 42 格同样自洽），只有这条仓库外的形状声明能发现覆盖面缩水 |
 | `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：69 cases**；在既有 promotion / cleanup / Git index / Docker 证据 / dotenv、URL 与 Node oracle 门禁上，覆盖 active/nested/quoted/prose/comment 多视图的 split-stem（**含 split-stem 与 `=` 之间带 ASCII 空白的 140 格交叉维度**，以及 quoted 空占位在 compact/legacy 两条路径上的一致结论；运算符尾 `>=`/`+=` 的残留单列登记为当前行为）、slash-crossing 与 path 对照、ambient 与 repository-local Git replacement view（含 preflight 后竞态）、Docker container/image/history 的 envelope、深层元素 shape、immutable identity、history 完整性、失败 logs 的非物化、resolved Compose config 的非空证据、固定输出与精确 argv。collector 子门禁为 **51 个**唯一向量，resolved-config 子门禁为 **5 个**唯一向量。文件名保留旧入口名，**套件名称不带轮次** |
 | `node infra/docker/check-m3b-registry-integrity.mjs` | **登记完整性**：把已发表的话钉到已提交的数据上。逐节 fail closed，检查包括：登记表自校验 + **18 条畸形登记表合成用例**（逐条断言**指定理由**，而非只断言「被拒了」——白名单与三态计数是同外延规则，只断言被拒时单删一条仍然全绿）与三态漂移判别力（`mixed` 由此覆盖，不是死代码）；ADR/project-status 里的族名列表 ↔ [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs) 的 `families`/`unguardedFamilies` **逐 id 比对**；计划文档表面表格**逐格**用真实 `scanTrackedTemplates` 按行内声明的角色复跑断言，合计数由门禁数出来再比对，非注释例均须经 `node --env-file` 确认建立非空活键；已发表的反引号行数 ↔ 真实文件行数；已发表的 tracked 文件数 ↔ `git ls-files`；本清单 ↔ 真实门禁脚本集合。**规则一句话：任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，要么删掉** |
 | `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**不依赖 Docker 的确定性进程组回归（leader close 与孤儿整组收敛、timeout 不依赖 close、同号 PGID generation 隔离、终止原语/scoped cleanup fail closed、第二次 sweep 期间新增组的 mutation-closed 有界收敛）+ **5 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe）的 failure-safe 取证；announced pgid 按有界轮询确认消失 |
-| `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：十步真实退出码、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
+| `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：`secret-materializer` 加原十步的 11 步链、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
 | `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
 
 正向 baseline 是 `check-local-test-negatives.mjs` 里**唯一**一条正向 case，它
@@ -298,10 +298,9 @@ bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/
 - 健康检查只依赖镜像已有能力，不得引用 curl/wget/包管理器。
 
 [`check-compose-topology-mutations.mjs`](check-compose-topology-mutations.mjs) 是
-上面那条门禁**自身的反向测试**：它临时改写 tracked 的 compose 文件再运行门禁，
-要求每一项变异都**以指定理由**失败（只失败不够——一条无关报错也能让脚本变绿）。
-它在文件不干净时拒绝运行，每次变异后立即写回原始字节，并在结束时逐字节复核。
-当前 **15 项全部以指定理由捕获、0 漏网**。
+上面那条门禁**自身的反向测试**：它把 Compose 复制到仓库外私有临时目录，只变异
+该副本，再要求每一项都**以指定理由**失败（只失败不够——一条无关报错也能让脚本
+变绿）。tracked Compose 从不进入写路径。当前 **22 项全部以指定理由捕获、0 漏网**。
 
 Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前置工具 / 无法判定」
 失败退出，不降级成纯文本检查后宣称通过。
@@ -315,9 +314,9 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）。最新固定候选 `c44c579` 经两路独立复审仍为 **BLOCK**；对应
-确认级缺口已在第四轮实现落点 `8ca4e8c` 定点整改，主工作树 `stage09a:check` 于
-2026-08-13 从头通过 14/14，当前等待文档候选后的独立 A/B 复审，仍未 Accepted
+（见上方 M4 一节）。第五轮实现候选 `9fcd503` 已闭合最新两路独立审计确认的生产
+根因；定点 runtime image、22/22 topology mutation、fresh smoke、Secret identity 与
+restore drill 已通过，当前等待最终干净 HEAD 的聚合门禁与独立 A/B 复审，仍未 Accepted
 （见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
@@ -328,11 +327,11 @@ GitHub Actions workflow 复用同一命令但**尚无真实远端 run**，真实
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
 消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。
 **M3B 已取得**：真实 Compose Secret 的容器内 UID/mode 证据、八份 Secret 的单一
-来源生成与部署前预检、从空 volume 起的十步链（8 个 one-shot 读真实 `docker inspect` 退出码，postgres 与 api 两个服务以健康检查通过计 healthy）、migrate/grants
+来源生成与部署前预检，以及验收时点从空 volume 起的十步链（8 个 one-shot 读真实 `docker inspect` 退出码，postgres 与 api 两个服务以健康检查通过计 healthy）。第五轮当前架构在链首增加 `secret-materializer`，形成 11 步；migrate/grants
 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
 身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
 75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 69 cases、
-15 项拓扑变异反例、5 个确定性进程组回归与 5 个真实信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+当前 22 项拓扑变异反例（M3B 验收时为 15 项）、5 个确定性进程组回归与 5 个真实信号窗口的零残留取证（证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
 M3B **已于 2026-08-11 Accepted，验收落点 `cf43452`**；M4 与 M5 均已在同日交付
 （M4 已 Accepted，M5 候选待审）。阶段 09A 总验收未完成，阶段仍为 In Progress。
 
@@ -396,6 +395,7 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得本地全绿证据（最新第四轮实现落点 `8ca4e8c` 的主工作树为 14/14）；远端 CI
+取得历史本地全绿证据；第五轮实现候选 `9fcd503` 的最终 14 步聚合门禁仍须在文档
+提交后的干净 HEAD 上重跑；远端 CI
 workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

@@ -34,12 +34,15 @@ node infra/docker/preflight-local-test-secrets.mjs
 全新安装链（`bootstrap` profile 必须显式调用；顺序即依赖）:
 
 ```bash
+docker compose --file infra/docker/compose.local-test.yaml --profile materialize up secret-materializer
 docker compose --file infra/docker/compose.local-test.yaml up -d postgres
 docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-acl
 docker compose --file infra/docker/compose.local-test.yaml up migrate
 docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-grants
 ```
 
+`secret-materializer` 是八份 host file-backed Secret 的唯一直接消费者；它先把每份
+内容写成消费 UID 999/10001 所有、mode 0600 的独立 named-volume 文件。之后
 `bootstrap-acl` 会经 `depends_on` 依次拉起 `cluster → logins → createdb →
 schema(0000) → handoff`；`migrate` 按 ledger 幂等应用 `0001`—最新。
 
@@ -128,6 +131,10 @@ node infra/docker/backup-local-test.mjs
   `pg_dump --format=custom`。备份角色带 `BYPASSRLS`，因此 FORCE RLS 表被完整
   导出；权限不足的角色去 dump 会**响亮失败**（服务器的 row-level security
   错误），不会拿到一份被静默截断的备份。
+- `backup` 是专用 one-shot，只挂载 backup Secret。dump 先写入 UID 999 所有的
+  `backup-transfer` volume，再由带 ownership label 的 stopped one-shot 经
+  `docker cp` 复制到宿主 partial 文件；不会复用 `bootstrap-logins`，也不会接触
+  admin/migration/runtime 口令。
 - 输出落在 [`infra/docker/backups/`](../../infra/docker/backups/README.md)
   （被 `.gitignore` 排除；`--output-dir` 可改，目录必须在仓库外或被 Git 忽略，
   否则拒绝执行）。
@@ -143,6 +150,7 @@ bootstrap 顺序不同——恢复路径必须先由 bootstrap 重建角色，�
 
 | 步骤 | 全新安装 | 从 dump 恢复 |
 | --- | --- | --- |
+| Secret 物化 | `secret-materializer` | `secret-materializer` |
 | cluster 角色 + membership | `bootstrap-cluster` | `bootstrap-cluster` |
 | 登录角色 SCRAM 口令 | `bootstrap-logins` | `bootstrap-logins` |
 | 建库 | `bootstrap-createdb`（owner 为 admin） | `createdb --owner=meal_agent_migrator`（由恢复入口执行） |
@@ -156,6 +164,7 @@ bootstrap 顺序不同——恢复路径必须先由 bootstrap 重建角色，�
 在**全新 cluster**（新的空 volume）上：
 
 ```bash
+docker compose --file infra/docker/compose.local-test.yaml --profile materialize up secret-materializer
 docker compose --file infra/docker/compose.local-test.yaml up -d postgres
 docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-cluster
 docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-logins
@@ -172,6 +181,10 @@ node infra/docker/restore-local-test.mjs --dump infra/docker/backups/<name>.dump
   `pg_dump` 自定义格式魔数——任一情形都以各自的固定理由拒绝（理由清单见
   `infra/docker/restore-local-test.mjs` 导出的常量），此时 `pg_restore` 根本
   不会被调用；
+- checksum 通过后，宿主只把 dump 字节经 stdin 送给无网络的
+  `backup-transfer-loader`；它以 UID 999 写入 `backup-transfer` volume，随后专用
+  `restore` service 只挂载该 volume 与 admin URL。宿主路径不会直接 bind 进
+  PostgreSQL 工具容器；
 - 目标数据库必须不存在（恢复只进全新库，绝不覆盖既有数据）；
 - `createdb --owner=meal_agent_migrator` 后执行
   `pg_restore --single-transaction --exit-on-error`：恢复内容要么全部提交，

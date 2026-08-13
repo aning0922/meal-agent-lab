@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-13 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」最新固定候选 `c44c579` 的 A/B 复审为 BLOCK，对应确认级缺口已在第四轮实现落点 `8ca4e8c` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待文档候选后的独立 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第五轮实现候选 `9fcd503` 已闭合最新 A/B BLOCK 的生产根因，定点动态门禁通过，当前等待最终干净 HEAD 的完整聚合门禁与全新 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（最新独立复审 BLOCK 后第四轮整改完成，等待文档候选后的 A/B 复审，未 Accepted）
+### M5 实施记录（最新独立复审 BLOCK 后第五轮整改完成，等待最终门禁与 A/B 复审，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3624,6 +3624,45 @@ checkout 复验与两路独立复审尚未完成，M5 不得标记 Accepted；�
 该落点与本次本地全绿仍只是**实施证据**。形成文档候选后必须重新启动两个全新的
 独立只读会话复审；两路均 CLEAN 后才回到项目总控裁定。M5 未 Accepted，09A 未
 Pass；GitHub Actions workflow 仍只有配置、没有真实远端 run。
+
+#### M5 第五轮定点整改：原生 Linux Secret、完整 ownership 与镜像 archive（2026-08-13）
+
+第四轮候选后的独立审计把问题归并为 13 个生产根因；第五轮实现候选 `9fcd503`
+只追加修订，没有 amend/rebase/push/merge，也没有自行标记 Accepted。整改落点：
+
+1. **聚合 ownership 覆盖 raw spawn 与完整生命周期。** 聚合器只直接派生一个
+   detached step controller；controller 在同一进程组内非 detached 地执行真实步骤，
+   先安装 TERM/INT/HUP 处理，再以 write-all 公告生产者身份与 DONE。聚合器解析 EOF
+   前全部完整 LF frame；哪怕尾部 malformed，只要已读到可识别 PGID 就先登记后
+   fail closed。所有 raw detached producer 都必须经共享 async 登记，公告失败时按
+   TERM→KILL→ESRCH 清理，不能把未拥有的后代交给调用方。
+2. **runtime image 证据绑定不可变 OCI archive。** inspect 的 architecture/OS/Created、
+   raw config bytes、history、manifest/config descriptor、compressed layer digest、解压后
+   diff ID 与 tar framing 同时校验；`.bin` 与 package payload 字节进入闭包比较，deploy
+   root 只做结构化归一化。真实正向仍为 78 packages、76 top-level links、5 migrations；
+   变异套件为 1 baseline + 9 built + 2 static-only。
+3. **原生 Linux Secret 所有权不再依赖 bind remap。** Compose 新增唯一 root
+   `secret-materializer`：它是八份 host file-backed source 的唯一消费者，以最小
+   capability 把内容物化为八个独立 named volume 中的 `value`，分别归消费 UID 999
+   或 10001 所有、mode 0600。其余服务只读挂载自己的 materialized volume。拓扑现在
+   是 14 个服务、8 个 Secret source、10 个 volume、2 个 network；变异门禁扩为
+   **22/22**，且只改写仓库外临时副本。
+4. **backup/restore 使用专用最小凭据与 UID 999 transfer volume。** `backup` 只持有
+   backup Secret；dump 先写 transfer volume，再由 scoped one-shot `docker cp` 到宿主
+   partial 文件。restore 在宿主校验 checksum 后，通过 stdin 交给无网络
+   `backup-transfer-loader` 写回同一 volume，再由专用 `restore` 执行；不会复用
+   `bootstrap-logins` 的 admin/migration/runtime 口令。one-shot 显式 `--no-TTY`，二进制
+   stdin 有回归测试。
+5. **定点动态证据。** 无 Docker 脚本测试 **48/48**；topology 与 22 项变异、runtime image 正向与变异、fresh empty
+   volume smoke、八份 Secret UID/mode/nlink 身份探针、同 ledger restore drill 已分别
+   通过。fresh 链现在是 `secret-materializer` 加原十步，共 11 步；Secret 可见面按
+   17 个确切 evidence container 校验。完整 `pnpm stage09a:check` 必须在文档提交后的
+   干净 HEAD 重新从头执行，不能用这些定点证据代替。
+
+本轮为闭合新审计 blocker，受控修改了已 Accepted 的 M2B/M3B/M4 基础设施实现；因此
+不得再声称“相对 Accepted 冻结面零改动”。历史 Accepted 仍描述各自验收时取得的
+证据，当前修订整体纳入 M5 新候选的 A/B 复审。M5 未 Accepted，09A 未 Pass，远端
+GitHub Actions 仍无真实 run。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的

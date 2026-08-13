@@ -8,14 +8,14 @@
 
 | secret 名 | 文件名 | 消费者 | 现状 |
 | --- | --- | --- | --- |
-| `postgres_superuser_password` | `postgres_superuser_password` | `postgres` | **已可用**：官方镜像自带 `POSTGRES_PASSWORD_FILE` |
-| `postgres_admin_pgpass` | `postgres_admin.pgpass` | 六个 `bootstrap-*` psql 任务 | **已可用**：libpq 自带 `PGPASSFILE` |
-| `meal_agent_migration_password` | `meal_agent_migration_password` | `bootstrap-logins` | **M3A 已实现**：`postgres/secret-source.sh` |
-| `meal_agent_runtime_password` | `meal_agent_runtime_password` | `bootstrap-logins` | **M3A 已实现**：同上 |
-| `meal_agent_backup_password` | `meal_agent_backup_password` | `bootstrap-logins` | **M3A 已实现**：同上 |
-| `meal_agent_admin_database_url` | `meal_agent_admin_database_url` | `bootstrap-schema` | **M3A 已实现**：`src/config-source.ts` |
-| `meal_agent_migration_database_url` | `meal_agent_migration_database_url` | `migrate` | **M3A 已实现**：同上 |
-| `meal_agent_runtime_database_url` | `meal_agent_runtime_database_url` | `api` | **M3A 已实现**：同上 |
+| `postgres_superuser_password` | `postgres_superuser_password` | `secret-materializer` → `postgres` | 官方镜像通过物化后的 `POSTGRES_PASSWORD_FILE` 消费 |
+| `postgres_admin_pgpass` | `postgres_admin.pgpass` | `secret-materializer` → 所需 `bootstrap-*` | libpq 通过物化后的 `PGPASSFILE` 消费 |
+| `meal_agent_migration_password` | `meal_agent_migration_password` | `secret-materializer` → `bootstrap-logins` | `postgres/secret-source.sh` |
+| `meal_agent_runtime_password` | `meal_agent_runtime_password` | `secret-materializer` → `bootstrap-logins` | 同上 |
+| `meal_agent_backup_password` | `meal_agent_backup_password` | `secret-materializer` → `bootstrap-logins` / `backup` | 登录创建与专用备份服务分别最小可见 |
+| `meal_agent_admin_database_url` | `meal_agent_admin_database_url` | `secret-materializer` → `bootstrap-schema` / `restore` | schema 与专用 restore service 分别消费 |
+| `meal_agent_migration_database_url` | `meal_agent_migration_database_url` | `secret-materializer` → `migrate` | `src/config-source.ts` |
+| `meal_agent_runtime_database_url` | `meal_agent_runtime_database_url` | `secret-materializer` → `api` | 同上 |
 
 ## 文件判据（M3A，fail closed）
 
@@ -64,16 +64,21 @@ secret file 必须只对创建者可读：
 chmod 600 infra/docker/secrets/*
 ```
 
-Compose 在非 swarm 模式下把 secret 直接 bind mount 进容器。容器内的呈现已由
-M3B 探针在**容器内**实测（`node infra/docker/probe-compose-secret-identity.mjs`，
-宿主 stat 不作数）：本机 Docker Desktop 把 bind 进来的 secret 呈现为**消费进程
-的 UID 所有**（`postgres` 侧 999、API 镜像侧 10001），mode 0600、普通文件、
-nlink=1、非 symlink、可读，因此 M3A 的 fail-closed 消费判据在真实 Compose
-Secret 上成立。`postgres_admin.pgpass` 还额外受 libpq 自身的 mode 检查约束。
+Compose 非 swarm 的 file-backed secret 本质是 bind mount，不能依赖 Desktop 的 UID
+呈现作为原生 Linux 契约。当前拓扑让唯一 `secret-materializer` 读取八份 raw source，
+再把每份内容写入独立 named volume 的 `value`：PostgreSQL/运维侧 owner UID 999，API
+侧 owner UID 10001，mode 0600、普通文件、nlink=1、非 symlink。其余服务只读挂载
+自己需要的 materialized volume，不再直接看到宿主 file source。容器内证据由
+`node infra/docker/probe-compose-secret-identity.mjs` 对八份文件逐一取得；宿主 stat
+不作数。`postgres_admin.pgpass` 还额外受 libpq 自身的 mode 检查约束。
 八份 secret 的**交叉一致性预检**（三个 URL、三个口令与 pgpass 必须描述同一个
 数据库与同一批角色）由 `preflight-local-test-secrets.mjs` 承担（M3B，
 M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`；M3B 验收时点尚未完成 M4/M5 与 09A 总验收）。
 
 ## 备份与恢复
 
-备份与恢复使用的独立 operator 凭据属于 M4，本目录与 Compose 当前都不声明。
+备份由专用 `backup` service 执行，只挂载 backup 口令；dump 先写入 UID 999 所有的
+`backup-transfer` volume，再由 scoped one-shot 通过 `docker cp` 交给宿主写入 partial
+文件并原子完成。恢复时先在宿主校验 SHA-256，再把字节经 stdin 送入无网络的
+`backup-transfer-loader`，最后由只挂 admin URL 的专用 `restore` service 执行。
+这条链不复用 `bootstrap-logins`，也不把 admin/migration/runtime 口令交给 backup。
