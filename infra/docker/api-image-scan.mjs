@@ -266,6 +266,8 @@ export const checkImageConfig = (imageConfig, problem, fatal) => {
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const isImageId = (value) => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value)
+const historySecretPattern = /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i
+const historyTextContainsSecret = (value) => historySecretPattern.test(value)
 
 export const parseImageInspect = (stdout, expectedId, fatal) => {
   let payload
@@ -281,10 +283,11 @@ export const parseImageInspect = (stdout, expectedId, fatal) => {
     payload[0].Id !== expectedId ||
     !isRecord(payload[0].Config) ||
     typeof payload[0].Architecture !== 'string' ||
-    payload[0].Architecture === '' ||
+    !/^[a-z0-9][a-z0-9_-]*$/.test(payload[0].Architecture) ||
     typeof payload[0].Os !== 'string' ||
-    payload[0].Os === '' ||
+    !/^[a-z0-9][a-z0-9_-]*$/.test(payload[0].Os) ||
     typeof payload[0].Created !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(payload[0].Created) ||
     !Number.isFinite(Date.parse(payload[0].Created)) ||
     !isRecord(payload[0].Descriptor) ||
     payload[0].Descriptor.digest !== expectedId ||
@@ -359,13 +362,7 @@ export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, p
   ) {
     fatal('docker image history returned incomplete or mismatched evidence')
   }
-  if (
-    rows.some((row) =>
-      /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i.test(
-        row.CreatedBy
-      )
-    )
-  ) {
+  if (rows.some((row) => historyTextContainsSecret(row.CreatedBy) || historyTextContainsSecret(row.Comment))) {
     problem('image history: secret-shaped build instruction must not ship')
   }
   return rows
@@ -396,7 +393,7 @@ export const parseSavedImageManifest = (stdout, expectedLayerCount, fatal) => {
 }
 
 export const parseSavedImageConfig = (
-  stdout,
+  bytes,
   configPath,
   expectedImageEvidence,
   historyRows,
@@ -405,12 +402,18 @@ export const parseSavedImageConfig = (
 ) => {
   const expectedLayers = expectedImageEvidence.RootFS.Layers
   const expectedDigest = configPath.slice('blobs/sha256/'.length)
-  if (createHash('sha256').update(stdout).digest('hex') !== expectedDigest) {
+  if (!Buffer.isBuffer(bytes) || createHash('sha256').update(bytes).digest('hex') !== expectedDigest) {
     fatal('docker image save returned a config blob with the wrong digest')
+  }
+  let text
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    fatal('docker image save returned a config blob with invalid UTF-8')
   }
   let config
   try {
-    config = JSON.parse(stdout)
+    config = JSON.parse(text)
   } catch {
     fatal('docker image save returned an unreadable config blob')
   }
@@ -456,11 +459,7 @@ export const parseSavedImageConfig = (
     if (entry.empty_layer !== true) {
       nonemptyLayers += 1
     }
-    if (
-      /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i.test(
-        entry.created_by
-      )
-    ) {
+    if (historyTextContainsSecret(entry.created_by) || historyTextContainsSecret(entry.comment ?? '')) {
       problem('image history: secret-shaped build instruction must not ship')
     }
   }
@@ -470,6 +469,13 @@ export const parseSavedImageConfig = (
 }
 
 const tarBlockSize = 512
+
+const tarField = (bytes) => {
+  const zero = bytes.indexOf(0)
+  if (zero === -1) return bytes.toString('utf8')
+  if (!bytes.subarray(zero).every((byte) => byte === 0)) return null
+  return bytes.subarray(0, zero).toString('utf8')
+}
 
 const parseTarOctal = (bytes) => {
   const text = bytes.toString('ascii').replace(/\0.*$/s, '').trim()
@@ -502,8 +508,9 @@ export const indexSavedImageTar = (archivePath, fatal) => {
       checksumHeader.fill(0x20, 148, 156)
       const actualChecksum = checksumHeader.reduce((sum, byte) => sum + byte, 0)
       const size = parseTarOctal(header.subarray(124, 136))
-      const name = header.subarray(0, 100).toString('utf8').replace(/\0.*$/s, '')
-      const prefix = header.subarray(345, 500).toString('utf8').replace(/\0.*$/s, '')
+      const name = tarField(header.subarray(0, 100))
+      const prefix = tarField(header.subarray(345, 500))
+      if (name === null || prefix === null) fatal('docker image save returned noncanonical tar text fields')
       const path = prefix === '' ? name : `${prefix}/${name}`
       const type = header[156]
       if (
@@ -516,17 +523,181 @@ export const indexSavedImageTar = (archivePath, fatal) => {
       ) {
         fatal('docker image save returned malformed tar evidence')
       }
+      if (members.has(path)) fatal('docker image save returned duplicate tar evidence')
       if (type === 0 || type === 0x30) {
-        if (members.has(path)) fatal('docker image save returned duplicate tar evidence')
         members.set(path, { offset: offset + tarBlockSize, size })
+      } else if (
+        type === 0x35 &&
+        size === 0 &&
+        ['blobs', 'blobs/', 'blobs/sha256', 'blobs/sha256/'].includes(path)
+      ) {
+        members.set(path, { directory: true, offset: offset + tarBlockSize, size })
+      } else {
+        fatal('docker image save returned an unsupported tar member')
       }
       offset += tarBlockSize + Math.ceil(size / tarBlockSize) * tarBlockSize
     }
     if (zeroBlocks !== 2) fatal('docker image save returned an unterminated tar archive')
+    if (offset !== archiveSize) fatal('docker image save returned data after the tar terminator')
     return members
   } finally {
     closeSync(fd)
   }
+}
+
+const readArchiveMember = (archivePath, member, fatal) => {
+  if (member === undefined || member.directory === true) {
+    fatal('docker image save omitted a declared regular-file member')
+  }
+  const bytes = Buffer.alloc(member.size)
+  const fd = openSync(archivePath, 'r')
+  try {
+    if (member.size > 0 && readSync(fd, bytes, 0, member.size, member.offset) !== member.size) {
+      fatal('docker image save returned a truncated member')
+    }
+  } finally {
+    closeSync(fd)
+  }
+  return bytes
+}
+
+export const validateSavedImageArchive = (
+  archivePath,
+  expectedImageEvidence,
+  historyRows,
+  fatal,
+  problem
+) => {
+  const members = indexSavedImageTar(archivePath, fatal)
+  const decodeJson = (path, label) => {
+    const bytes = readArchiveMember(archivePath, members.get(path), fatal)
+    let text
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      fatal(`${label} is not valid UTF-8`)
+    }
+    return { bytes, text }
+  }
+  const manifestBytes = decodeJson('manifest.json', 'docker image save manifest')
+  const manifest = parseSavedImageManifest(
+    manifestBytes.text,
+    expectedImageEvidence.RootFS.Layers.length,
+    fatal
+  )
+  const allowed = new Set([
+    'blobs/',
+    'blobs/sha256/',
+    'index.json',
+    'manifest.json',
+    'oci-layout',
+    manifest.Config,
+    ...manifest.Layers
+  ])
+  const layout = decodeJson('oci-layout', 'docker image save OCI layout')
+  let layoutPayload
+  try { layoutPayload = JSON.parse(layout.text) } catch {
+    fatal('docker image save returned an unreadable OCI layout')
+  }
+  if (
+    !isRecord(layoutPayload) ||
+    Object.keys(layoutPayload).length !== 1 ||
+    layoutPayload.imageLayoutVersion !== '1.0.0'
+  ) {
+    fatal('docker image save returned an unsupported OCI layout')
+  }
+  const index = decodeJson('index.json', 'docker image save OCI index')
+  let indexPayload
+  try { indexPayload = JSON.parse(index.text) } catch { fatal('docker image save returned an unreadable OCI index') }
+  if (
+    !isRecord(indexPayload) ||
+    indexPayload.schemaVersion !== 2 ||
+    indexPayload.mediaType !== 'application/vnd.oci.image.index.v1+json' ||
+    !Array.isArray(indexPayload.manifests) ||
+    indexPayload.manifests.length !== 1
+  ) {
+    fatal('docker image save returned incomplete OCI index evidence')
+  }
+  const rootDescriptor = indexPayload.manifests[0]
+  if (!isRecord(rootDescriptor) || rootDescriptor.digest !== expectedImageEvidence.Id) {
+    fatal('docker image save OCI index is not bound to the immutable image ID')
+  }
+  let selectedManifest = null
+  const visitDescriptor = (descriptor) => {
+    if (
+      !isRecord(descriptor) ||
+      !isImageId(descriptor.digest) ||
+      !Number.isSafeInteger(descriptor.size) ||
+      descriptor.size <= 0 ||
+      typeof descriptor.mediaType !== 'string'
+    ) {
+      fatal('docker image save returned an invalid OCI descriptor')
+    }
+    const path = `blobs/sha256/${descriptor.digest.slice('sha256:'.length)}`
+    const member = members.get(path)
+    const bytes = readArchiveMember(archivePath, member, fatal)
+    if (
+      bytes.length !== descriptor.size ||
+      createHash('sha256').update(bytes).digest('hex') !== descriptor.digest.slice(7)
+    ) {
+      fatal('docker image save returned an OCI blob with the wrong identity')
+    }
+    allowed.add(path)
+    if (descriptor.mediaType === 'application/vnd.oci.image.index.v1+json') {
+      let nested
+      try { nested = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch {
+        fatal('docker image save returned an unreadable nested OCI index')
+      }
+      if (!isRecord(nested) || nested.schemaVersion !== 2 || !Array.isArray(nested.manifests)) {
+        fatal('docker image save returned an invalid nested OCI index')
+      }
+      for (const child of nested.manifests) visitDescriptor(child)
+      return
+    }
+    if (descriptor.mediaType === 'application/vnd.oci.image.manifest.v1+json') {
+      let manifestPayload
+      try { manifestPayload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch {
+        fatal('docker image save returned an unreadable OCI manifest')
+      }
+      if (
+        !isRecord(manifestPayload) ||
+        manifestPayload.schemaVersion !== 2 ||
+        !isRecord(manifestPayload.config) ||
+        !Array.isArray(manifestPayload.layers)
+      ) {
+        fatal('docker image save returned an invalid OCI manifest')
+      }
+      const platform = descriptor.platform
+      if (
+        isRecord(platform) &&
+        platform.architecture === expectedImageEvidence.Architecture &&
+        platform.os === expectedImageEvidence.Os
+      ) {
+        if (selectedManifest !== null) fatal('docker image save returned multiple matching platform manifests')
+        selectedManifest = manifestPayload
+      }
+      visitDescriptor(manifestPayload.config)
+      for (const layer of manifestPayload.layers) visitDescriptor(layer)
+    }
+  }
+  visitDescriptor(rootDescriptor)
+  if (
+    selectedManifest === null ||
+    selectedManifest.config.digest !== `sha256:${manifest.Config.slice('blobs/sha256/'.length)}` ||
+    JSON.stringify(selectedManifest.layers.map((layer) => `blobs/sha256/${layer.digest.slice(7)}`)) !==
+      JSON.stringify(manifest.Layers)
+  ) {
+    fatal('docker image save platform manifest does not match the exported image metadata')
+  }
+  for (const path of members.keys()) {
+    if (!allowed.has(path)) fatal('docker image save returned an undeclared archive member')
+  }
+  for (const path of allowed) {
+    if (!members.has(path)) fatal('docker image save omitted a required archive member')
+  }
+  const config = decodeJson(manifest.Config, 'docker image save config')
+  parseSavedImageConfig(config.bytes, manifest.Config, expectedImageEvidence, historyRows, fatal, problem)
+  return { members, manifest }
 }
 
 const hashArchiveMember = async (archivePath, member, { decompress = false } = {}) => {
@@ -590,6 +761,26 @@ const knownRootExtras = new Set(['.bin', '.modules.yaml', '.package-map.json', '
 const isInside = (candidate, ancestor) => {
   const relation = relative(ancestor, candidate)
   return relation !== '' && !relation.startsWith('..') && !isAbsolute(relation)
+}
+
+const encodeGeneratedShimLine = (line, replacements) => {
+  let pieces = [['text', line]]
+  for (const [literal, token] of replacements) {
+    const next = []
+    for (const piece of pieces) {
+      if (piece[0] !== 'text') {
+        next.push(piece)
+        continue
+      }
+      const parts = piece[1].split(literal)
+      for (const [index, part] of parts.entries()) {
+        if (part !== '') next.push(['text', part])
+        if (index < parts.length - 1) next.push([token])
+      }
+    }
+    pieces = next
+  }
+  return pieces
 }
 
 export const dependencyPayloadOf = (
@@ -662,27 +853,21 @@ export const dependencyPayloadOf = (
             }
             const distinctDeployRoots = [...new Set(deployRoots)]
               .sort((left, right) => right.length - left.length)
-            const comparableText = text
+            const replacements = distinctDeployRoots
+              .map((root) => [`${root}/node_modules/`, 'deploy'])
+            if (shimWorkspaceRoot !== null) {
+              replacements.push([`${shimWorkspaceRoot}/`, 'workspace'])
+            }
+            const comparableText = JSON.stringify(text
               .split('\n')
               .map((line) => {
                 const generated =
                   line.trimStart().startsWith('export NODE_PATH="') ||
                   line.trimStart().startsWith('# cmd-shim-target=')
-                if (!generated) return line
-                let normalized = line
-                for (const root of distinctDeployRoots) {
-                  normalized = normalized
-                    .split(`${root}/node_modules/`)
-                    .join('<DEPLOY>/node_modules/')
-                }
-                if (shimWorkspaceRoot !== null) {
-                  normalized = normalized
-                    .split(`${shimWorkspaceRoot}/`)
-                    .join('<WORKSPACE>/')
-                }
-                return normalized
-              })
-              .join('\n')
+                return generated
+                  ? encodeGeneratedShimLine(line, replacements)
+                  : [['text', line]]
+              }))
             comparableBytes = Buffer.from(comparableText, 'utf8')
           }
         }
@@ -1017,36 +1202,20 @@ export const scanImage = async ({
     timeoutMs: 300_000,
     label: 'docker image save (content-addressed history evidence)'
   })
-  const savedManifest = parseSavedImageManifest(
-    (
-      await runStrict(['tar', '-xOf', savedImageTarPath, 'manifest.json'], {
-        timeoutMs: 60_000,
-        label: 'saved image manifest evidence'
-      })
-    ).stdout,
-    imageInspect.RootFS.Layers.length,
-    fatal
+  const archiveEvidence = validateSavedImageArchive(
+    savedImageTarPath,
+    imageInspect,
+    historyRows,
+    fatal,
+    problem
   )
+  const savedManifest = archiveEvidence.manifest
   await verifySavedImageLayers(
     savedImageTarPath,
     savedManifest.Layers,
     imageInspect.RootFS.Layers,
     fatal
   )
-  parseSavedImageConfig(
-    (
-      await runStrict(['tar', '-xOf', savedImageTarPath, savedManifest.Config], {
-        timeoutMs: 60_000,
-        label: 'saved image config evidence'
-      })
-    ).stdout,
-    savedManifest.Config,
-    imageInspect,
-    historyRows,
-    fatal,
-    problem
-  )
-
   // ---- 全文件系统取证：不启动容器 ----
   const created = await runStrict(['docker', 'create', imageId], {
     timeoutMs: 60_000,

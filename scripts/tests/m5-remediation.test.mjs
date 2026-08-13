@@ -86,6 +86,57 @@ test('M4 never removes a same-name container without its ownership label', async
   assert.equal(removed, false)
 })
 
+test('M4 one-off handoff preserves binary stdin and disables TTY framing', async () => {
+  const payload = Buffer.from([0x50, 0x47, 0x44, 0x4d, 0x50, 0x00, 0xff])
+  let state = 'absent'
+  let ownerToken = null
+  let observed = null
+  const run = async (argv) => {
+    if (argv[1] === 'container' && argv[2] === 'inspect') {
+      const name = argv[3]
+      if (state === 'absent') {
+        return {
+          status: 1,
+          stdout: '',
+          stderr: `Error response from daemon: No such container: ${name}\n`
+        }
+      }
+      return {
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            Id: 'b'.repeat(64),
+            Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': ownerToken } }
+          }
+        ]),
+        stderr: ''
+      }
+    }
+    if (argv[1] === 'rm') {
+      state = 'absent'
+      return { status: 0, stdout: '', stderr: '' }
+    }
+    throw new Error('unexpected fixture command')
+  }
+  const compose = async (argv, options) => {
+    const labelAt = argv.indexOf('--label')
+    ownerToken = argv[labelAt + 1].split('=')[1]
+    state = 'owned'
+    observed = { argv, options }
+    return { status: 0, stdout: '', stderr: '' }
+  }
+
+  const result = await composeRunOneOff(
+    { compose, run },
+    ['--entrypoint', 'bash', 'backup-transfer-loader', '-c', 'cat >/transfer/input.dump'],
+    { stdin: payload }
+  )
+  assert.equal(result.status, 0)
+  assert.ok(observed.argv.includes('--no-TTY'))
+  assert.equal(observed.options.stdin, payload)
+  assert.equal(state, 'absent')
+})
+
 test('restore sidecars must be bounded regular files', () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m5-sidecar-'))
   try {

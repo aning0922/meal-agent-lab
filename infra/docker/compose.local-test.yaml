@@ -79,6 +79,7 @@ x-bootstrap-psql: &bootstrap-psql
       source: ./postgres
       target: /opt/meal-agent/bootstrap
       read_only: true
+    - postgres-admin-pgpass-secret:/run/secrets/postgres_admin_pgpass:ro
   tmpfs:
     - /tmp:mode=1777,size=16m
   networks:
@@ -94,9 +95,79 @@ x-pg-cluster-env: &pg-cluster-env
   PGUSER: postgres
   PGDATABASE: postgres
   PGCONNECT_TIMEOUT: "10"
-  PGPASSFILE: /run/secrets/postgres_admin_pgpass
+  PGPASSFILE: /run/secrets/postgres_admin_pgpass/value
 
 services:
+  # ------------------------------------------------------------------------
+  # 0. 原生 Linux / Docker Desktop 共用的 Secret 权限交接
+  # ------------------------------------------------------------------------
+  # file-backed Compose secrets 是 bind mount；Compose 规范明确不实现 uid/gid/mode
+  # remap。这个一次性服务以最小的 DAC_READ_SEARCH+CHOWN 能力读取宿主 0600 源文件，
+  # 再把八份值分别写入八个 project-scoped volume，并设为消费者 UID 的 0600 文件。
+  # 下游服务只挂自己需要的单份 volume；没有服务获得完整 bundle。
+  secret-materializer:
+    <<: *hardening
+    image: docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+    user: "0:0"
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+    read_only: true
+    network_mode: none
+    entrypoint:
+      - bash
+      - -euc
+    command:
+      - |
+        umask 077
+        chmod 0700 /transfer
+        chown 999:999 /transfer
+        materialize() {
+          source="/run/source-secrets/$$1"
+          target="/materialized/$$1/value"
+          owner="$$2"
+          temporary="$${target}.new.$$"
+          install -m 0600 "$$source" "$$temporary"
+          chown "$$owner:$$owner" "$$temporary"
+          mv -f "$$temporary" "$$target"
+          test "$$(stat -c '%u:%g:%a:%F:%h' "$$target")" = "$$owner:$$owner:600:regular file:1"
+        }
+        materialize postgres_superuser_password 999
+        materialize postgres_admin_pgpass 999
+        materialize meal_agent_migration_password 999
+        materialize meal_agent_runtime_password 999
+        materialize meal_agent_backup_password 999
+        materialize meal_agent_admin_database_url 10001
+        materialize meal_agent_migration_database_url 10001
+        materialize meal_agent_runtime_database_url 10001
+    secrets:
+      - source: postgres_superuser_password
+        target: /run/source-secrets/postgres_superuser_password
+      - source: postgres_admin_pgpass
+        target: /run/source-secrets/postgres_admin_pgpass
+      - source: meal_agent_migration_password
+        target: /run/source-secrets/meal_agent_migration_password
+      - source: meal_agent_runtime_password
+        target: /run/source-secrets/meal_agent_runtime_password
+      - source: meal_agent_backup_password
+        target: /run/source-secrets/meal_agent_backup_password
+      - source: meal_agent_admin_database_url
+        target: /run/source-secrets/meal_agent_admin_database_url
+      - source: meal_agent_migration_database_url
+        target: /run/source-secrets/meal_agent_migration_database_url
+      - source: meal_agent_runtime_database_url
+        target: /run/source-secrets/meal_agent_runtime_database_url
+    volumes:
+      - postgres-superuser-secret:/materialized/postgres_superuser_password
+      - postgres-admin-pgpass-secret:/materialized/postgres_admin_pgpass
+      - migration-password-secret:/materialized/meal_agent_migration_password
+      - runtime-password-secret:/materialized/meal_agent_runtime_password
+      - backup-password-secret:/materialized/meal_agent_backup_password
+      - admin-url-secret:/materialized/meal_agent_admin_database_url
+      - migration-url-secret:/materialized/meal_agent_migration_database_url
+      - runtime-url-secret:/materialized/meal_agent_runtime_database_url
+      - backup-transfer:/transfer
+
   # ------------------------------------------------------------------------
   # 1. PostgreSQL 18.4
   # ------------------------------------------------------------------------
@@ -112,20 +183,25 @@ services:
     user: "999:999"
     environment:
       # 口令只经 secret file 传入，不作为 environment value 出现。
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_superuser_password/value
       # TCP 登录强制 SCRAM，与 M2A 数据库测试集群的口径一致。
       POSTGRES_HOST_AUTH_METHOD: scram-sha-256
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
-    secrets:
-      - postgres_superuser_password
-    # 刻意不声明 ports：数据库只在 internal network 内可达。
-    networks:
-      - internal
     volumes:
-      # named volume，不是宿主目录 bind mount。
       - type: volume
         source: postgres-data
         target: /var/lib/postgresql
+      - type: volume
+        source: postgres-superuser-secret
+        target: /run/secrets/postgres_superuser_password
+        read_only: true
+    depends_on:
+      secret-materializer:
+        condition: service_completed_successfully
+    # 刻意不声明 ports：数据库只在 internal network 内可达。
+    networks:
+      - internal
+    # postgres-data 与单份 materialized Secret 都是 project-scoped named volume。
     read_only: true
     tmpfs:
       - /tmp:mode=1777,size=64m
@@ -167,8 +243,12 @@ services:
       - --maintenance-db
       - postgres
     environment: *pg-cluster-env
-    secrets:
-      - postgres_admin_pgpass
+    volumes:
+      - type: bind
+        source: ./postgres
+        target: /opt/meal-agent/bootstrap
+        read_only: true
+      - postgres-admin-pgpass-secret:/run/secrets/postgres_admin_pgpass:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -184,14 +264,18 @@ services:
       - postgres
     environment:
       <<: *pg-cluster-env
-      MEAL_AGENT_MIGRATION_PASSWORD_FILE: /run/secrets/meal_agent_migration_password
-      MEAL_AGENT_RUNTIME_PASSWORD_FILE: /run/secrets/meal_agent_runtime_password
-      MEAL_AGENT_BACKUP_PASSWORD_FILE: /run/secrets/meal_agent_backup_password
-    secrets:
-      - postgres_admin_pgpass
-      - meal_agent_migration_password
-      - meal_agent_runtime_password
-      - meal_agent_backup_password
+      MEAL_AGENT_MIGRATION_PASSWORD_FILE: /run/secrets/meal_agent_migration_password/value
+      MEAL_AGENT_RUNTIME_PASSWORD_FILE: /run/secrets/meal_agent_runtime_password/value
+      MEAL_AGENT_BACKUP_PASSWORD_FILE: /run/secrets/meal_agent_backup_password/value
+    volumes:
+      - type: bind
+        source: ./postgres
+        target: /opt/meal-agent/bootstrap
+        read_only: true
+      - postgres-admin-pgpass-secret:/run/secrets/postgres_admin_pgpass:ro
+      - migration-password-secret:/run/secrets/meal_agent_migration_password:ro
+      - runtime-password-secret:/run/secrets/meal_agent_runtime_password:ro
+      - backup-password-secret:/run/secrets/meal_agent_backup_password:ro
     depends_on:
       bootstrap-cluster:
         condition: service_completed_successfully
@@ -208,8 +292,6 @@ services:
       - --
       - meal_agent
     environment: *pg-cluster-env
-    secrets:
-      - postgres_admin_pgpass
     depends_on:
       bootstrap-logins:
         condition: service_completed_successfully
@@ -224,9 +306,9 @@ services:
       - node
       - /app/dist/database/bootstrap-0000.js
     environment:
-      DATABASE_URL_FILE: /run/secrets/meal_agent_admin_database_url
-    secrets:
-      - meal_agent_admin_database_url
+      DATABASE_URL_FILE: /run/secrets/meal_agent_admin_database_url/value
+    volumes:
+      - admin-url-secret:/run/secrets/meal_agent_admin_database_url:ro
     profiles:
       - bootstrap
     depends_on:
@@ -257,8 +339,7 @@ services:
         source: ../../services/api/migrations/0000_stage_06.sql
         target: /services/api/migrations/0000_stage_06.sql
         read_only: true
-    secrets:
-      - postgres_admin_pgpass
+      - postgres-admin-pgpass-secret:/run/secrets/postgres_admin_pgpass:ro
     depends_on:
       bootstrap-schema:
         condition: service_completed_successfully
@@ -271,8 +352,6 @@ services:
       - --dbname
       - meal_agent
     environment: *pg-cluster-env
-    secrets:
-      - postgres_admin_pgpass
     depends_on:
       bootstrap-handoff:
         condition: service_completed_successfully
@@ -285,11 +364,61 @@ services:
       - --dbname
       - meal_agent
     environment: *pg-cluster-env
-    secrets:
-      - postgres_admin_pgpass
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  # 2.8 专用备份身份：只挂 backup login 的单份口令与 transfer volume。
+  # 不复用 bootstrap-logins，因其同时拥有 admin/migration/runtime 三类无关凭据。
+  backup:
+    <<: *hardening
+    image: docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+    user: "999:999"
+    read_only: true
+    entrypoint:
+      - bash
+    volumes:
+      - backup-password-secret:/run/secrets/meal_agent_backup_password:ro
+      - backup-transfer:/transfer
+    tmpfs:
+      - /tmp:mode=0700,uid=999,gid=999,size=16m
+    networks:
+      - internal
+    profiles:
+      - bootstrap
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # 无凭据的数据 ferry：restore 把已在宿主验过摘要的 dump 经 stdin 写进 transfer
+  # volume。它不接网络，也看不到任何 Secret。
+  backup-transfer-loader:
+    <<: *hardening
+    image: docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+    user: "999:999"
+    read_only: true
+    network_mode: none
+    entrypoint:
+      - bash
+    volumes:
+      - backup-transfer:/transfer
+    profiles:
+      - bootstrap
+
+  # 恢复中段专用：admin pgpass + 只读 transfer dump；不继承登录口令 bundle。
+  restore:
+    <<: [*hardening, *bootstrap-psql]
+    volumes:
+      - type: bind
+        source: ./postgres
+        target: /opt/meal-agent/bootstrap
+        read_only: true
+      - postgres-admin-pgpass-secret:/run/secrets/postgres_admin_pgpass:ro
+      - backup-transfer:/transfer:ro
+    environment: *pg-cluster-env
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # ------------------------------------------------------------------------
   # 3. migrate：可重复运行的一次性 migration 任务
@@ -303,9 +432,9 @@ services:
       - node
       - /app/dist/database/migrate.js
     environment:
-      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url
-    secrets:
-      - meal_agent_migration_database_url
+      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url/value
+    volumes:
+      - migration-url-secret:/run/secrets/meal_agent_migration_database_url:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -331,9 +460,9 @@ services:
       LOG_LEVEL: info
       WECHAT_ADAPTER: fake
       DATABASE_APP_ROLE: meal_agent_app
-      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url
-    secrets:
-      - meal_agent_runtime_database_url
+      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url/value
+    volumes:
+      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro
     ports:
       # host_ip 固定为 IPv4 loopback，不可由变量覆盖；只有这一个 listener，
       # 没有 IPv6、没有未限定的 3000:3000。
@@ -385,6 +514,15 @@ networks:
 # --------------------------------------------------------------------------
 volumes:
   postgres-data: {}
+  postgres-superuser-secret: {}
+  postgres-admin-pgpass-secret: {}
+  migration-password-secret: {}
+  runtime-password-secret: {}
+  backup-password-secret: {}
+  admin-url-secret: {}
+  migration-url-secret: {}
+  runtime-url-secret: {}
+  backup-transfer: {}
 
 # --------------------------------------------------------------------------
 # Secret file 契约

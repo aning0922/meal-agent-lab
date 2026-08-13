@@ -1688,7 +1688,7 @@ process.stdout.write('Group G: subprocess and signal negatives\n')
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-gen-'))
   const bundle = resolve(directory, 'bundle')
   try {
-    const child = registerRawSpawnedChild(
+    const child = await registerRawSpawnedChild(
       spawn(
         process.execPath,
         [resolve(composeDirectory, 'generate-local-test-secrets.mjs'), '--directory', bundle],

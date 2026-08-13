@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
@@ -309,7 +309,9 @@ const spawnGate = ({ directory, bin }, mode, gateEntrypoint = entrypoint) => {
   const stderr = []
   const child = spawn(process.execPath, [gateEntrypoint], {
     cwd: repositoryRoot,
-    detached: true,
+    // 测试 runner 自己属于正式 stage08 链；不能再派生一个聚合器不可见的
+    // detached 根。被测聚合器会为它自己的 step controller 建组并负责收敛。
+    detached: false,
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -352,7 +354,7 @@ test('the aggregate waits for nested scoped cleanup and every announced process 
       await waitFor(() => !processIsAlive(innerPgid), 1_000, 'fixture cleanup ESRCH')
     }
     if (gate !== null && processIsAlive(gate.child.pid)) {
-      process.kill(-gate.child.pid, 'SIGKILL')
+      gate.child.kill('SIGKILL')
     }
     rmSync(fixture.directory, { recursive: true, force: true })
   }
@@ -376,7 +378,7 @@ test('the aggregate waits beyond the fallback window for shared cleanup acknowle
     assert.equal(existsSync(resolve(fixture.directory, 'shared-cleanup-complete')), true)
   } finally {
     if (gate !== null && processIsAlive(gate.child.pid)) {
-      process.kill(-gate.child.pid, 'SIGKILL')
+      gate.child.kill('SIGKILL')
     }
     rmSync(fixture.directory, { recursive: true, force: true })
   }
@@ -402,7 +404,7 @@ test('an EOF-partial ownership frame fails closed and the announced group reache
       process.kill(-pgid, 'SIGKILL')
     }
     if (gate !== null && processIsAlive(gate.child.pid)) {
-      process.kill(-gate.child.pid, 'SIGKILL')
+      gate.child.kill('SIGKILL')
     }
     rmSync(fixture.directory, { recursive: true, force: true })
   }
@@ -425,12 +427,12 @@ test('a recognizable PGID with an extra token fails closed and still reaches ESR
     await waitFor(() => !processIsAlive(pgid), 1_000, 'malformed-frame group ESRCH')
   } finally {
     if (pgid !== null && processIsAlive(pgid)) process.kill(-pgid, 'SIGKILL')
-    if (gate !== null && processIsAlive(gate.child.pid)) process.kill(-gate.child.pid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })
 
-test('an empty ownership EOF while the producer remains alive fails closed', { timeout: 12_000 }, async () => {
+test('the controller retains ownership when the direct command closes its inherited fd', { timeout: 12_000 }, async () => {
   const fixture = createFixture()
   let gate = null
   try {
@@ -439,9 +441,10 @@ test('an empty ownership EOF while the producer remains alive fails closed', { t
     const outcome = await waitForClose(gate.child, 7_000)
     const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
     assert.equal(outcome.code, 1)
-    assert.match(output, /ownership channel failed/)
+    assert.match(output, /PASS stage08-check/)
+    assert.doesNotMatch(output, /FAIL stage08-check .*ownership channel failed/)
   } finally {
-    if (gate !== null && processIsAlive(gate.child.pid)) process.kill(-gate.child.pid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })
@@ -456,7 +459,7 @@ test('cleanup START without DONE can never become a successful step', { timeout:
     assert.equal(outcome.code, 1)
     assert.match(output, /ownership channel failed/)
   } finally {
-    if (gate !== null && processIsAlive(gate.child.pid)) process.kill(-gate.child.pid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })
@@ -476,6 +479,62 @@ test('the aggregate registry keeps the exact accepted gate order', () => {
   const source = readFileSync(entrypoint, 'utf8')
   const actualStepIds = [...source.matchAll(/^    id: '([^']+)',$/gm)].map((match) => match[1])
   assert.deepEqual(actualStepIds, expectedStepIds)
+})
+
+test('every host detached spawn in the formal chain has an explicit ownership boundary', () => {
+  const listing = spawnSync(
+    'git',
+    ['ls-files', '-z', '--', 'infra', 'scripts', 'services'],
+    { cwd: repositoryRoot, encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 }
+  )
+  assert.equal(listing.error, undefined)
+  assert.equal(listing.status, 0)
+  const files = Buffer.from(listing.stdout)
+    .toString('utf8')
+    .split('\0')
+    .filter((file) => /\.(?:mjs|js|ts)$/.test(file))
+  const sites = []
+  for (const file of files) {
+    const source = readFileSync(resolve(repositoryRoot, file), 'utf8')
+    for (const line of source.split('\n')) {
+      const trimmed = line.trim()
+      if (
+        !trimmed.startsWith('//') &&
+        !trimmed.startsWith('*') &&
+        /\bdetached\s*:\s*true\b/.test(line)
+      ) {
+        sites.push(file)
+      }
+    }
+  }
+  assert.deepEqual(
+    sites.sort(),
+    [
+      'infra/docker/check-local-test-negatives.mjs',
+      'infra/docker/check-m3b-round2-negatives.mjs',
+      'infra/docker/check-m3b-signal-windows.mjs',
+      'infra/docker/m3b-subprocess.mjs',
+      'infra/docker/postgres/no-ctty.mjs',
+      'scripts/run-stage09a-check.mjs',
+      'scripts/tests/stage09a-check.test.mjs',
+      'scripts/tests/stage09a-check.test.mjs',
+      'scripts/tests/stage09a-check.test.mjs'
+    ],
+    'a new detached spawn must be registered or explicitly proven container-internal'
+  )
+  for (const file of sites.filter((file) => /check-(?:local-test|m3b)/.test(file))) {
+    const source = readFileSync(resolve(repositoryRoot, file), 'utf8')
+    assert.match(source, /await registerRawSpawnedChild\(/)
+    assert.match(source, /ownershipAwareSpawnStdio\(/)
+  }
+  assert.match(
+    readFileSync(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'), 'utf8'),
+    /spawn\(process\.execPath, \[stepController, JSON\.stringify\(argv\)\]/
+  )
+  assert.match(
+    readFileSync(resolve(repositoryRoot, 'infra/docker/postgres/no-ctty.mjs'), 'utf8'),
+    /ownership exception: 这是 Docker 容器内部/
+  )
 })
 
 test('the CI workflow policy rejects every audited weakening shape', () => {
@@ -534,7 +593,7 @@ test('a signal during prerequisite probes prevents every gate step from starting
     assert.doesNotMatch(output, /stage09a:check step 1\/14/)
   } finally {
     if (gate !== null && processIsAlive(gate.child.pid)) {
-      process.kill(-gate.child.pid, 'SIGKILL')
+      gate.child.kill('SIGKILL')
     }
     rmSync(fixture.directory, { recursive: true, force: true })
   }
@@ -566,7 +625,7 @@ test('a signal waits for the active step process group to reach ESRCH', { timeou
       process.kill(grandchildPid, 'SIGKILL')
     }
     if (gate !== null && processIsAlive(gate.child.pid)) {
-      process.kill(-gate.child.pid, 'SIGKILL')
+      gate.child.kill('SIGKILL')
     }
     rmSync(fixture.directory, { recursive: true, force: true })
   }
@@ -591,7 +650,7 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
       await waitFor(() => !processIsAlive(probePid), 1_000, 'prerequisite group ESRCH')
     } finally {
       if (gate !== null && processIsAlive(gate.child.pid)) {
-        process.kill(-gate.child.pid, 'SIGKILL')
+        gate.child.kill('SIGKILL')
       }
       rmSync(fixture.directory, { recursive: true, force: true })
     }
@@ -620,7 +679,7 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
         process.kill(grandchildPid, 'SIGKILL')
       }
       if (gate !== null && processIsAlive(gate.child.pid)) {
-        process.kill(-gate.child.pid, 'SIGKILL')
+        gate.child.kill('SIGKILL')
       }
       rmSync(fixture.directory, { recursive: true, force: true })
     }

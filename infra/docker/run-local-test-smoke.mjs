@@ -70,8 +70,9 @@ export const smokeProjectPattern = /^meal-agent-m3b-(smoke|neg)-[a-z0-9][a-z0-9-
 /** 临时 Secret 目录只允许出现在系统 tmpdir 下的这一前缀里。 */
 const temporarySecretsPrefix = 'meal-agent-m3b-secrets-'
 
-/** 十个服务的启动顺序（严格按 M2A 的全新安装顺序）。 */
+/** 十一个服务的启动顺序（Secret 物化必须早于数据库）。 */
 const chainOrder = [
+  'secret-materializer',
   'postgres',
   'bootstrap-cluster',
   'bootstrap-logins',
@@ -91,27 +92,65 @@ const apiImageServices = ['bootstrap-schema', 'migrate', 'api']
  * 每个服务允许看到的 secret 挂载，逐项固定 source 文件名、容器内 target 与
  * 只读标志——不再只筛 `/run/secrets/` 前缀，任何多余挂载都会被发现。
  */
-const expectedSecretMounts = {
-  postgres: ['postgres_superuser_password'],
-  'bootstrap-cluster': ['postgres_admin.pgpass'],
-  'bootstrap-logins': [
-    'meal_agent_backup_password',
-    'meal_agent_migration_password',
-    'meal_agent_runtime_password',
-    'postgres_admin.pgpass'
-  ],
-  'bootstrap-createdb': ['postgres_admin.pgpass'],
-  'bootstrap-schema': ['meal_agent_admin_database_url'],
-  'bootstrap-handoff': ['postgres_admin.pgpass'],
-  'bootstrap-acl': ['postgres_admin.pgpass'],
-  'bootstrap-grants': ['postgres_admin.pgpass'],
-  migrate: ['meal_agent_migration_database_url'],
-  api: ['meal_agent_runtime_database_url']
+const secretVolumeSources = {
+  postgres_superuser_password: 'postgres-superuser-secret',
+  postgres_admin_pgpass: 'postgres-admin-pgpass-secret',
+  meal_agent_migration_password: 'migration-password-secret',
+  meal_agent_runtime_password: 'runtime-password-secret',
+  meal_agent_backup_password: 'backup-password-secret',
+  meal_agent_admin_database_url: 'admin-url-secret',
+  meal_agent_migration_database_url: 'migration-url-secret',
+  meal_agent_runtime_database_url: 'runtime-url-secret'
 }
-
-/** secret 文件名 → 容器内 target 名（唯一不同名的是 pgpass）。 */
-const secretTargetOf = (filename) =>
-  filename === 'postgres_admin.pgpass' ? 'postgres_admin_pgpass' : filename
+const secretFilenames = {
+  ...Object.fromEntries(Object.keys(secretVolumeSources).map((name) => [name, name])),
+  postgres_admin_pgpass: 'postgres_admin.pgpass'
+}
+const volumeSecret = (name, target = `/run/secrets/${name}`, readOnly = true) => ({
+  type: 'volume',
+  name: secretVolumeSources[name],
+  target,
+  readOnly
+})
+const rawSecret = (name) => ({
+  type: 'bind',
+  filename: secretFilenames[name],
+  target: `/run/source-secrets/${name}`,
+  readOnly: true
+})
+const expectedSecretMounts = {
+  'secret-materializer': [
+    ...Object.keys(secretVolumeSources).map(rawSecret),
+    ...Object.keys(secretVolumeSources).map((name) =>
+      volumeSecret(name, `/materialized/${name}`, false)
+    ),
+    { type: 'volume', name: 'backup-transfer', target: '/transfer', readOnly: false }
+  ],
+  postgres: [volumeSecret('postgres_superuser_password')],
+  'bootstrap-cluster': [volumeSecret('postgres_admin_pgpass')],
+  'bootstrap-logins': [
+    volumeSecret('postgres_admin_pgpass'),
+    volumeSecret('meal_agent_migration_password'),
+    volumeSecret('meal_agent_runtime_password'),
+    volumeSecret('meal_agent_backup_password')
+  ],
+  'bootstrap-createdb': [volumeSecret('postgres_admin_pgpass')],
+  'bootstrap-schema': [volumeSecret('meal_agent_admin_database_url')],
+  'bootstrap-handoff': [volumeSecret('postgres_admin_pgpass')],
+  'bootstrap-acl': [volumeSecret('postgres_admin_pgpass')],
+  'bootstrap-grants': [volumeSecret('postgres_admin_pgpass')],
+  migrate: [volumeSecret('meal_agent_migration_database_url')],
+  api: [volumeSecret('meal_agent_runtime_database_url')]
+}
+// 可见面快照取在五条 admin SQL 证据与一条 runtime 最小权限探针之后：
+// 这些 one-off 容器到 scoped cleanup 才统一移除。因此基数不是“至少有一个”，
+// 而是 11 个 chain container + 5 个 bootstrap-acl query + 1 个
+// bootstrap-logins runtime probe 的精确多重集。
+const expectedVisibilityServiceLabels = [
+  ...chainOrder,
+  ...Array.from({ length: 5 }, () => 'bootstrap-acl'),
+  'bootstrap-logins'
+].sort()
 
 /**
  * RLS 期望来自冻结迁移的事实（0000 六张 + 0001 invites + 0002 link_requests
@@ -678,7 +717,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         [
           'set -uo pipefail',
           'umask 077',
-          'printf "postgres:5432:meal_agent:meal_agent_runtime_login:%s\\n" "$(< /run/secrets/meal_agent_runtime_password)" > /tmp/runtime.pgpass',
+          'printf "postgres:5432:meal_agent:meal_agent_runtime_login:%s\\n" "$(< /run/secrets/meal_agent_runtime_password/value)" > /tmp/runtime.pgpass',
           'export PGPASSFILE=/tmp/runtime.pgpass',
           'RUNPSQL="psql --no-psqlrc --no-password -tA -h postgres -p 5432 -U meal_agent_runtime_login -d meal_agent"',
           'echo "whoami=$($RUNPSQL -c "SELECT current_user" 2>&1)"',
@@ -697,6 +736,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       )
     }
     const probeOut = runtimeProbe.stdout
+    const probeLines = probeOut.split('\n').map((line) => line.trim()).filter(Boolean)
     const probeExpectations = [
       ['whoami=meal_agent_runtime_login', 'runtime login connects as itself'],
       ['create-table-exit=1', 'runtime login cannot CREATE TABLE'],
@@ -704,14 +744,14 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       ['app-ledger-read-exit=0', 'SET ROLE meal_agent_app can read the migration ledger']
     ]
     for (const [needle, meaning] of probeExpectations) {
-      if (!probeOut.includes(needle)) {
+      if (!probeLines.includes(needle)) {
         fail(`runtime privilege probe: expected "${needle}" (${meaning})`)
       }
     }
     // 成功证据只在**命令 exit 0 且该组一条 problem 都没有**时才输出（P1-7）。
     if (
       runtimeProbe.status === 0 &&
-      probeExpectations.every(([needle]) => probeOut.includes(needle))
+      probeExpectations.every(([needle]) => probeLines.includes(needle))
     ) {
       log('runtime least privilege: no DDL, no migrator role, app-role ledger read works')
     }
@@ -756,6 +796,14 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     if (containerIds.length === 0) {
       failVisibility('secret visibility: no project containers were found to check')
     }
+    if (containerIds.length !== expectedVisibilityServiceLabels.length) {
+      failVisibility(
+        `secret visibility: expected exactly ` +
+          `${String(expectedVisibilityServiceLabels.length)} evidence containers, ` +
+          `got ${String(containerIds.length)}`
+      )
+    }
+    const observedServices = []
     for (const id of containerIds) {
       // 这一处**显式**接受空串：下面紧接着就有一条具名判定（「没有 compose
       // service label」），比抛一个通用读取错误更有信息量。
@@ -772,6 +820,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         failVisibility(`secret visibility: unknown compose service ${service} in this project`)
         continue
       }
+      observedServices.push(service)
       const mounts = await inspectJsonStrict(id, '{{json .Mounts}}')
       if (!Array.isArray(mounts)) {
         failVisibility(`secret visibility: ${service} Mounts is not an array`)
@@ -800,18 +849,21 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         observed.push({
           type: String(mount.Type ?? ''),
           target: destination,
-          // **全路径**比对，不是 basename：同名文件放在别的目录（例如上一轮
-          // 遗留的 bundle）必须被发现。
-          source,
+          // bind 比对全路径；named volume 比对 Docker inspect 里的
+          // 精确 project-scoped Name，不依赖 daemon 内部 `_data` 路径。
+          source: String(mount.Type ?? '') === 'volume' ? String(mount.Name ?? '') : source,
           readOnly: mount.RW === false
         })
       }
       const expected = expectedSecretMounts[service]
-        .map((filename) => ({
-          type: 'bind',
-          target: `/run/secrets/${secretTargetOf(filename)}`,
-          source: resolve(secretsDirectory, filename),
-          readOnly: true
+        .map((mount) => ({
+          type: mount.type,
+          target: mount.target,
+          source:
+            mount.type === 'volume'
+              ? `${project}_${mount.name}`
+              : resolve(secretsDirectory, mount.filename),
+          readOnly: mount.readOnly
         }))
         .sort((a, b) => a.target.localeCompare(b.target))
       observed.sort((a, b) => a.target.localeCompare(b.target))
@@ -839,6 +891,17 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
             `(${secretTmpfs.join(', ')})`
         )
       }
+    }
+    observedServices.sort()
+    if (
+      JSON.stringify(observedServices) !==
+      JSON.stringify(expectedVisibilityServiceLabels)
+    ) {
+      failVisibility(
+        `secret visibility: compose service labels drifted: got ` +
+          `[${observedServices.join(', ')}], expected ` +
+          `[${expectedVisibilityServiceLabels.join(', ')}]`
+      )
     }
     if (secretVisibilityProblems === 0) {
       log(

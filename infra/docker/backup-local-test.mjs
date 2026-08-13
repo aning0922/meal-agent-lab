@@ -17,7 +17,7 @@
 //
 // `pg_dump` **不包含 cluster roles**（角色属于 pg_dumpall 的范围）：恢复路径
 // 必须先由 bootstrap 的 `cluster` + `logins` 重建角色，见 runbook。
-import { chmodSync, mkdirSync, openSync, readSync, closeSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, openSync, readSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { isAbsolute, relative, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,9 +101,13 @@ export const performBackup = async (
     throw new Error('the backup file name must be a plain *.dump basename')
   }
   const dumpPath = resolve(directory, name)
+  const hostPartial = `${dumpPath}.partial`
   const partial = `${name}.partial`
   await assertBackupTargetsIgnored(run, [dumpPath, `${dumpPath}.sha256`])
   mkdirSync(directory, { recursive: true })
+  if (existsSync(dumpPath) || existsSync(hostPartial)) {
+    throw new Error('the backup output path already exists')
+  }
 
   log(`backup: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
 
@@ -113,26 +117,37 @@ export const performBackup = async (
   const script = [
     'set -euo pipefail',
     'umask 077',
-    `printf 'postgres:5432:${targetDatabase}:meal_agent_backup_login:%s\\n' "$(< /run/secrets/meal_agent_backup_password)" > /tmp/backup.pgpass`,
+    `printf 'postgres:5432:${targetDatabase}:meal_agent_backup_login:%s\\n' "$(< /run/secrets/meal_agent_backup_password/value)" > /tmp/backup.pgpass`,
     'export PGPASSFILE=/tmp/backup.pgpass',
     'pg_dump --no-password --format=custom --role=meal_agent_backup' +
       ' --lock-wait-timeout=120000 --host=postgres --port=5432' +
       ` --username=meal_agent_backup_login --dbname=${targetDatabase}` +
-      ` --file=/backup/${partial}`,
-    `mv /backup/${partial} /backup/${name}`,
+      ` --file=/transfer/${partial}`,
+    `mv /transfer/${partial} /transfer/${name}`,
     'rm -f /tmp/backup.pgpass'
   ].join('\n')
   const dump = await composeRunOneOff(
     { compose, run, warn: log },
-    ['--volume', `${directory}:/backup`, '--entrypoint', 'bash', 'bootstrap-logins', '-c', script],
-    { timeoutMs: 600_000 }
+    ['--entrypoint', 'bash', 'backup', '-c', script],
+    {
+      timeoutMs: 600_000,
+      beforeRemove: async ({ id }) => {
+        const copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
+          timeoutMs: 300_000
+        })
+        if (copied.status !== 0) {
+          throw new Error('backup handoff failed')
+        }
+        renameSync(hostPartial, dumpPath)
+      }
+    }
   )
   if (dump.status !== 0) {
     // 失败路径不把半份导出（真实数据）留在备份目录里。partial 删不掉时把
     // 这一事实并进错误——它是含数据的残留，不能静默。
     let partialNote = ''
     try {
-      rmSync(resolve(directory, partial), { force: true })
+      rmSync(hostPartial, { force: true })
     } catch {
       partialNote = `; additionally the partial file ${partial} could not be removed`
     }

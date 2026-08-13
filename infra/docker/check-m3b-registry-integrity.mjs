@@ -34,7 +34,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 
-import { scanTrackedTemplates, repositoryRoot } from './local-test-secrets-contract.mjs'
+import {
+  assertCanonicalGitRepositoryView,
+  canonicalGitArguments,
+  scanTrackedTemplates,
+  repositoryRoot
+} from './local-test-secrets-contract.mjs'
 import {
   caseFoldingSplitCodePoints,
   driftFor,
@@ -56,6 +61,7 @@ const pass = (name, reason) => process.stdout.write(`  caught: ${name} (${reason
 const fail = (name, detail) => failures.push(`${name}: ${detail}`)
 
 const readDocument = (relative) => readFileSync(resolve(repositoryRoot, relative), 'utf8')
+assertCanonicalGitRepositoryView(repositoryRoot)
 
 /**
  * 读一份**由文档内容指定路径**的文件。与 `readDocument` 严格区分：那个的路径是本
@@ -678,7 +684,7 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
 // ===========================================================================
 {
   const name = 'the published tracked-file evidence is derived from git ls-files'
-  const listing = spawnSync('git', ['ls-files', '-z'], {
+  const listing = spawnSync('git', canonicalGitArguments(['ls-files', '-z']), {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024
@@ -729,11 +735,15 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
       (match) => match[1]
     )
   )
-  const listing = spawnSync('git', ['ls-files', '-z', '--', 'infra/docker'], {
+  const listing = spawnSync(
+    'git',
+    canonicalGitArguments(['ls-files', '-z', '--', 'infra/docker']),
+    {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024
-  })
+    }
+  )
   if (listing.error !== undefined || listing.status !== 0) {
     fail(name, 'git ls-files 失败')
   } else {

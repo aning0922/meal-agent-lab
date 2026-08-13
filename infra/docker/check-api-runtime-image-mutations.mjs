@@ -208,7 +208,7 @@ const cleanup = async () => {
       const removal = await runCommand(['docker', 'rm', '-f', containerId], { timeoutMs: 60_000 })
       if (
         removal.status !== 0 &&
-        !isAbsenceMessage(removal.stderr, { kind: 'container', name: containerId })
+        !(removal.status === 1 && isAbsenceMessage(removal.stderr, { kind: 'container', name: containerId }))
       ) {
         cleanupProblems.push('scratch container removal failed')
       } else {
@@ -221,12 +221,18 @@ const cleanup = async () => {
   for (const tag of cleanupState.builtTags) {
     try {
       const removal = await runCommand(['docker', 'rmi', tag], { timeoutMs: 120_000 })
-      if (removal.status !== 0 && !isAbsenceMessage(removal.stderr, { kind: 'image', name: tag })) {
+      if (
+        removal.status !== 0 &&
+        !(removal.status === 1 && isAbsenceMessage(removal.stderr, { kind: 'image', name: tag }))
+      ) {
         cleanupProblems.push(`image tag removal failed (${tag})`)
         continue
       }
       const gone = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
-      if (gone.status === 0 || !isAbsenceMessage(gone.stderr, { kind: 'image', name: tag })) {
+      if (
+        gone.status === 0 ||
+        !(gone.status === 1 && isAbsenceMessage(gone.stderr, { kind: 'image', name: tag }))
+      ) {
         cleanupProblems.push(`image tag still present after removal (${tag})`)
       }
     } catch {
@@ -258,7 +264,7 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
   const preexistingImage = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
   if (
     preexistingImage.status === 0 ||
-    !isAbsenceMessage(preexistingImage.stderr, { kind: 'image', name: tag })
+    !(preexistingImage.status === 1 && isAbsenceMessage(preexistingImage.stderr, { kind: 'image', name: tag }))
   ) {
     fatal('per-case image tag was not proven absent before build')
   }

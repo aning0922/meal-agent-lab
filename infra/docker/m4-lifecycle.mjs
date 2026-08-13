@@ -60,8 +60,9 @@ export const m4ProjectPattern =
 /** 演练的临时 Secret 目录只允许出现在系统 tmpdir 下的这一前缀里。 */
 export const temporarySecretsPrefix = 'meal-agent-m4-secrets-'
 
-/** 十个服务的全新安装顺序（与 M2A/M3B 一致；恢复路径另有子集）。 */
+/** 十一个服务的全新安装顺序（先物化 Secret，再启动数据库）。 */
 export const chainOrder = [
+  'secret-materializer',
   'postgres',
   'bootstrap-cluster',
   'bootstrap-logins',
@@ -267,7 +268,7 @@ export const expectedLedgerFromDisk = () =>
 const pgpassPreamble = (loginRole, passwordSecret) => [
   'set -uo pipefail',
   'umask 077',
-  `printf 'postgres:5432:${targetDatabase}:${loginRole}:%s\\n' "$(< /run/secrets/${passwordSecret})" > /tmp/probe.pgpass`,
+  `printf 'postgres:5432:${targetDatabase}:${loginRole}:%s\\n' "$(< /run/secrets/${passwordSecret}/value)" > /tmp/probe.pgpass`,
   'export PGPASSFILE=/tmp/probe.pgpass',
   `RUNPSQL="psql --no-psqlrc --no-password -tA -h postgres -p 5432 -U ${loginRole} -d ${targetDatabase}"`
 ]
@@ -466,7 +467,7 @@ const removeOwnedOneOff = async (run, entry, environment) => {
 export const composeRunOneOff = async (
   { compose, run, environment = process.env, warn = null },
   runArgs,
-  { timeoutMs = 120_000 } = {}
+  { timeoutMs = 120_000, stdin = null, beforeRemove = null } = {}
 ) => {
   const name = `m4-oneoff-${randomBytes(12).toString('hex')}`
   const entry = { name, token: randomBytes(16).toString('hex') }
@@ -482,6 +483,7 @@ export const composeRunOneOff = async (
     result = await compose(
       [
         'run',
+        '--no-TTY',
         '--name',
         name,
         '--label',
@@ -489,10 +491,22 @@ export const composeRunOneOff = async (
         '--no-deps',
         ...runArgs
       ],
-      { timeoutMs }
+      { timeoutMs, stdin }
     )
   } catch (error) {
     composeError = error
+  }
+  if (composeError === null && result?.status === 0 && beforeRemove !== null) {
+    const inspected = await inspectOneOff(run, entry, environment)
+    if (inspected.state !== 'owned') {
+      composeError = new Error('one-off container was not provably owned before handoff')
+    } else {
+      try {
+        await beforeRemove({ id: inspected.id, name: entry.name })
+      } catch {
+        composeError = new Error('one-off container handoff failed')
+      }
+    }
   }
   const removed = await removeOwnedOneOff(run, entry, environment)
   if (!removed) {
@@ -574,8 +588,10 @@ export const createM4Run = ({ kind }) => {
     }
   }
 
-  const run = (args, { env, timeoutMs = 120_000, cwd = composeDirectory } = {}) =>
-    runCommand(args, { env: env ?? process.env, timeoutMs, cwd })
+  const run = (
+    args,
+    { env, timeoutMs = 120_000, cwd = composeDirectory, stdin = null } = {}
+  ) => runCommand(args, { env: env ?? process.env, timeoutMs, cwd, stdin })
 
   const shared = {
     imageTag: null,
@@ -1005,7 +1021,7 @@ export const createM4Run = ({ kind }) => {
   }
 }
 
-/** 全新安装十步链（严格 M2A 顺序；一次性步骤非零即抛）。 */
+/** 全新安装十一步链（Secret 物化 + 严格 M2A 顺序）。 */
 export const runFreshInstallChain = async (stack, log) => {
   for (const service of chainOrder) {
     if (service === 'postgres') {

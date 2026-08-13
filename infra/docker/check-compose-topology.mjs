@@ -11,7 +11,8 @@
 // Docker CLI 或 git 缺失、或它们非零退出时，本脚本一律以「缺少前置工具 / 无法
 // 判定」失败退出，不降级成纯文本检查后宣称通过（阶段 09A 验收门禁 #11）。
 //
-// 覆盖范围是 M2B 自己的边界：十个服务的 entrypoint/command 逐项固定、镜像固定、
+// 覆盖范围是 M2B 拓扑与 M3B/M4 受控扩展：十四个服务的 entrypoint/command
+// 逐项固定、镜像固定、
 // 端口发布、网络隔离、容器权限、挂载、一次性任务的显式调用与顺序、凭据的最小
 // 权限与 secret↔环境变量精确映射，以及数据库 identity 不可被环境变量改写。
 // 运行期动态门禁（非 loopback 访问、镜像/日志 Secret 扫描）属于 M3 与 M5。
@@ -127,7 +128,28 @@ const expectedSecretFiles = {
   meal_agent_runtime_database_url: 'meal_agent_runtime_database_url'
 }
 const expectedNetworkKeys = ['edge', 'internal']
-const expectedVolumeKeys = ['postgres-data']
+const secretVolumes = {
+  postgres_superuser_password: 'postgres-superuser-secret',
+  postgres_admin_pgpass: 'postgres-admin-pgpass-secret',
+  meal_agent_migration_password: 'migration-password-secret',
+  meal_agent_runtime_password: 'runtime-password-secret',
+  meal_agent_backup_password: 'backup-password-secret',
+  meal_agent_admin_database_url: 'admin-url-secret',
+  meal_agent_migration_database_url: 'migration-url-secret',
+  meal_agent_runtime_database_url: 'runtime-url-secret'
+}
+const expectedVolumeKeys = [
+  'admin-url-secret',
+  'backup-password-secret',
+  'backup-transfer',
+  'migration-password-secret',
+  'migration-url-secret',
+  'postgres-admin-pgpass-secret',
+  'postgres-data',
+  'postgres-superuser-secret',
+  'runtime-password-secret',
+  'runtime-url-secret'
+]
 // Compose 把相对的 secret 目录按 compose 文件所在目录解析。
 // `${VAR:-./secrets}` 对**未设置与空字符串一视同仁**，都回落到 ./secrets——
 // 空字符串绝不能被当成「目录就是 compose 目录本身」。
@@ -137,7 +159,20 @@ const secretsDirectoryFor = (override) =>
     override === undefined || override === '' ? './secrets' : override
   )
 
-const secretPath = (name) => `/run/secrets/${name}`
+const secretPath = (name) => `/run/secrets/${name}/value`
+const secretVolumeMount = (name, { target, readOnly = true } = {}) => ({
+  type: 'volume',
+  source: secretVolumes[name],
+  target: target ?? `/run/secrets/${name}`,
+  read_only: readOnly
+})
+const volumeMount = (source, target, readOnly = false) => ({
+  type: 'volume',
+  source,
+  target,
+  read_only: readOnly
+})
+const pgpassMount = secretVolumeMount('postgres_admin_pgpass')
 const pgClusterEnvironment = {
   PGHOST: 'postgres',
   PGPORT: '5432',
@@ -148,10 +183,59 @@ const pgClusterEnvironment = {
 }
 const psqlSecretEnvironment = { PGPASSFILE: secretPath('postgres_admin_pgpass') }
 
-// 每个服务的**逐项**预期。entrypoint/command 为 null 表示沿用镜像自身的定义。
-// `secretEnv` 把 secret 的挂载点与真正指向它的环境变量绑在一起：改名、改路径、
-// 或把凭据换给别的服务都会失败。
+const materializerCommand = `umask 077
+chmod 0700 /transfer
+chown 999:999 /transfer
+materialize() {
+  source="/run/source-secrets/$$1"
+  target="/materialized/$$1/value"
+  owner="$$2"
+  temporary="$\${target}.new.$$"
+  install -m 0600 "$$source" "$$temporary"
+  chown "$$owner:$$owner" "$$temporary"
+  mv -f "$$temporary" "$$target"
+  test "$$(stat -c '%u:%g:%a:%F:%h' "$$target")" = "$$owner:$$owner:600:regular file:1"
+}
+materialize postgres_superuser_password 999
+materialize postgres_admin_pgpass 999
+materialize meal_agent_migration_password 999
+materialize meal_agent_runtime_password 999
+materialize meal_agent_backup_password 999
+materialize meal_agent_admin_database_url 10001
+materialize meal_agent_migration_database_url 10001
+materialize meal_agent_runtime_database_url 10001
+`
+const materializerMounts = Object.entries(secretVolumes).map(([name, source]) =>
+  volumeMount(source, `/materialized/${name}`)
+)
+materializerMounts.push(volumeMount('backup-transfer', '/transfer'))
+const materializerSecrets = Object.keys(expectedSecretFiles).map((name) => ({
+  source: name,
+  target: `/run/source-secrets/${name}`
+}))
+
+// 每个服务的**逐项**预期。`secretEnv` 把实际消费文件与
+// 独立 materialized volume 绑在一起；只有 materializer 本身可见原始
+// file-backed Compose secrets。
 const expectations = {
+  'secret-materializer': {
+    image: pinnedPostgresImage,
+    user: '0:0',
+    profiles: [],
+    entrypoint: ['bash', '-euc'],
+    command: [materializerCommand],
+    networkMode: 'none',
+    networks: [],
+    capAdd: ['CHOWN', 'DAC_READ_SEARCH'],
+    allowRoot: true,
+    mounts: materializerMounts,
+    secrets: materializerSecrets,
+    tmpfs: [],
+    publishes: false,
+    secretEnv: {},
+    environment: {},
+    dependsOn: {}
+  },
   postgres: {
     image: pinnedPostgresImage,
     user: postgresUser,
@@ -159,7 +243,8 @@ const expectations = {
     entrypoint: null,
     command: null,
     networks: ['internal'],
-    mounts: [postgresDataMount],
+    mounts: [postgresDataMount, secretVolumeMount('postgres_superuser_password')],
+    secrets: [],
     tmpfs: postgresTmpfs,
     publishes: false,
     secretEnv: {
@@ -170,7 +255,7 @@ const expectations = {
       POSTGRES_HOST_AUTH_METHOD: 'scram-sha-256',
       POSTGRES_INITDB_ARGS: '--auth-host=scram-sha-256 --auth-local=scram-sha-256'
     },
-    dependsOn: {}
+    dependsOn: { 'secret-materializer': 'service_completed_successfully' }
   },
   'bootstrap-cluster': {
     image: pinnedPostgresImage,
@@ -179,7 +264,8 @@ const expectations = {
     entrypoint: bootstrapEntrypoint,
     command: ['cluster', '--maintenance-db', 'postgres'],
     networks: ['internal'],
-    mounts: [bootstrapMount],
+    mounts: [bootstrapMount, pgpassMount],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
@@ -193,7 +279,14 @@ const expectations = {
     entrypoint: bootstrapEntrypoint,
     command: ['logins', '--maintenance-db', 'postgres'],
     networks: ['internal'],
-    mounts: [bootstrapMount],
+    mounts: [
+      bootstrapMount,
+      pgpassMount,
+      secretVolumeMount('meal_agent_migration_password'),
+      secretVolumeMount('meal_agent_runtime_password'),
+      secretVolumeMount('meal_agent_backup_password')
+    ],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: {
@@ -218,7 +311,8 @@ const expectations = {
     // `--` 结束选项解析：数据库名之后的一切都不可能被当成连接选项。
     command: ['--no-password', '--', databaseName],
     networks: ['internal'],
-    mounts: [bootstrapMount],
+    mounts: [bootstrapMount, pgpassMount],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
@@ -232,7 +326,8 @@ const expectations = {
     entrypoint: null,
     command: ['node', '/app/dist/database/bootstrap-0000.js'],
     networks: ['internal'],
-    mounts: [],
+    mounts: [secretVolumeMount('meal_agent_admin_database_url')],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: {
@@ -251,7 +346,8 @@ const expectations = {
     command: ['handoff', '--dbname', databaseName],
     networks: ['internal'],
     // 服务级 volumes 整体覆盖 anchor，因此这里必须**同时**有两条。
-    mounts: [bootstrapMount, handoffStage06Mount],
+    mounts: [bootstrapMount, handoffStage06Mount, pgpassMount],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
@@ -265,7 +361,8 @@ const expectations = {
     entrypoint: bootstrapEntrypoint,
     command: ['acl', '--dbname', databaseName],
     networks: ['internal'],
-    mounts: [bootstrapMount],
+    mounts: [bootstrapMount, pgpassMount],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
@@ -279,7 +376,8 @@ const expectations = {
     entrypoint: bootstrapEntrypoint,
     command: ['grants', '--dbname', databaseName],
     networks: ['internal'],
-    mounts: [bootstrapMount],
+    mounts: [bootstrapMount, pgpassMount],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: psqlSecretEnvironment,
@@ -293,7 +391,8 @@ const expectations = {
     entrypoint: null,
     command: ['node', '/app/dist/database/migrate.js'],
     networks: ['internal'],
-    mounts: [],
+    mounts: [secretVolumeMount('meal_agent_migration_database_url')],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: false,
     secretEnv: {
@@ -312,7 +411,8 @@ const expectations = {
     // 沿用镜像的 CMD（node /app/dist/index.js），不在 Compose 里另起启动命令。
     command: null,
     networks: ['edge', 'internal'],
-    mounts: [],
+    mounts: [secretVolumeMount('meal_agent_runtime_database_url')],
+    secrets: [],
     tmpfs: defaultTmpfs,
     publishes: true,
     secretEnv: {
@@ -333,10 +433,63 @@ const expectations = {
       postgres: 'service_healthy',
       migrate: 'service_completed_successfully'
     }
+  },
+  backup: {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: ['bash'],
+    command: null,
+    networks: ['internal'],
+    mounts: [
+      secretVolumeMount('meal_agent_backup_password'),
+      volumeMount('backup-transfer', '/transfer')
+    ],
+    secrets: [],
+    tmpfs: ['/tmp:mode=0700,uid=999,gid=999,size=16m'],
+    publishes: false,
+    secretEnv: {},
+    environment: {},
+    dependsOn: { postgres: 'service_healthy' }
+  },
+  'backup-transfer-loader': {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: ['bash'],
+    command: null,
+    networkMode: 'none',
+    networks: [],
+    mounts: [volumeMount('backup-transfer', '/transfer')],
+    secrets: [],
+    tmpfs: [],
+    publishes: false,
+    secretEnv: {},
+    environment: {},
+    dependsOn: {}
+  },
+  restore: {
+    image: pinnedPostgresImage,
+    user: postgresUser,
+    profiles: [bootstrapProfile],
+    entrypoint: bootstrapEntrypoint,
+    command: null,
+    networks: ['internal'],
+    mounts: [
+      bootstrapMount,
+      pgpassMount,
+      volumeMount('backup-transfer', '/transfer', true)
+    ],
+    secrets: [],
+    tmpfs: defaultTmpfs,
+    publishes: false,
+    secretEnv: psqlSecretEnvironment,
+    environment: pgClusterEnvironment,
+    dependsOn: { postgres: 'service_healthy' }
   }
 }
 const serviceOrder = Object.keys(expectations).sort()
-const defaultServices = ['api', 'migrate', 'postgres']
+const defaultServices = ['api', 'migrate', 'postgres', 'secret-materializer']
 const apiImageServices = ['api', 'migrate', 'bootstrap-schema']
 
 const failures = []
@@ -566,7 +719,7 @@ if (!same(serviceNames, serviceOrder)) {
   )
 }
 
-// 默认 profile 只能是 postgres/migrate/api：bootstrap 绝不能在 `docker compose
+// 默认 profile 只能是 materializer/postgres/migrate/api：bootstrap 绝不能在 `docker compose
 // up` 或任何普通重启里被再次执行。
 const activeByDefault = runCompose(['config', '--services'])
   .split('\n')
@@ -626,6 +779,12 @@ for (const name of serviceOrder) {
         `got ${JSON.stringify(service.command ?? null)}`
     )
   }
+  if ((service.network_mode ?? null) !== (expected.networkMode ?? null)) {
+    fail(
+      `${name}: expected network_mode ${expected.networkMode ?? '(none)'}, ` +
+        `got ${service.network_mode ?? '(none)'}`
+    )
+  }
   if (!same(Object.keys(service.networks ?? {}).sort(), expected.networks)) {
     fail(
       `${name}: expected networks [${expected.networks.join(', ')}], ` +
@@ -639,6 +798,17 @@ for (const name of serviceOrder) {
     fail(
       `${name}: mount set drifted: got ${JSON.stringify(actualMounts)}, ` +
         `expected ${JSON.stringify(expectedMounts)}`
+    )
+  }
+
+  const actualSecrets = (service.secrets ?? []).map((entry) => ({
+    source: entry.source,
+    target: entry.target
+  }))
+  if (!same(actualSecrets, expected.secrets ?? [])) {
+    fail(
+      `${name}: raw Compose secret set drifted: got ${JSON.stringify(actualSecrets)}, ` +
+        `expected ${JSON.stringify(expected.secrets ?? [])}`
     )
   }
 
@@ -675,23 +845,8 @@ for (const name of serviceOrder) {
     )
   }
 
-  // secret 的挂载点必须与真正指向它的 *_FILE / PGPASSFILE 精确对应。
-  const mountedSecrets = Object.fromEntries(
-    (service.secrets ?? []).map((entry) => [entry.source, entry.target])
-  )
-  const referencedSecrets = Object.fromEntries(
-    Object.entries(expected.secretEnv).map(([key, target]) => [
-      target.replace('/run/secrets/', ''),
-      target
-    ])
-  )
-  if (!same(mountedSecrets, referencedSecrets)) {
-    fail(
-      `${name}: secret mount↔environment mapping drifted: mounted ` +
-        `${JSON.stringify(mountedSecrets)}, referenced ` +
-        `${JSON.stringify(referencedSecrets)}`
-    )
-  }
+  // 消费者不直挂原始 Compose secret；*_FILE / PGPASSFILE 必须指向
+  // 一个独立、只读的 materialized volume，且 volume 名与 secret 身份精确对应。
   for (const [key, target] of Object.entries(expected.secretEnv)) {
     if (actualEnvironment[key] !== target) {
       fail(
@@ -699,13 +854,30 @@ for (const name of serviceOrder) {
           `${actualEnvironment[key] ?? '(none)'}`
       )
     }
+    const nameFromPath = target
+      .replace('/run/secrets/', '')
+      .replace(/\/value$/, '')
+    const mount = actualMounts.find(
+      (candidate) => candidate.target === `/run/secrets/${nameFromPath}`
+    )
+    if (
+      mount === undefined ||
+      mount.type !== 'volume' ||
+      mount.source !== secretVolumes[nameFromPath] ||
+      mount.read_only !== true
+    ) {
+      fail(
+        `${name}: ${key} must be backed by the read-only materialized volume ` +
+          `${secretVolumes[nameFromPath] ?? '(unknown secret)'}`
+      )
+    }
   }
 }
 
 // API runtime 绝不能持有 admin / migration / backup 凭据（验收门禁 #4）。
-for (const entry of services.api?.secrets ?? []) {
-  if (/admin|migration|backup/.test(entry.source)) {
-    fail(`api: runtime must never receive the ${entry.source} credential`)
+for (const entry of services.api?.volumes ?? []) {
+  if (/admin|migration|backup/.test(String(entry.source ?? ''))) {
+    fail(`api: runtime must never receive the ${entry.source} credential volume`)
   }
 }
 
@@ -764,8 +936,11 @@ for (const name of serviceOrder) {
       fail(`${name}: ${key}: host is not allowed (got ${value})`)
     }
   }
-  if (service.network_mode !== undefined) {
-    fail(`${name}: network_mode must not be set (got ${service.network_mode})`)
+  if (
+    service.network_mode !== undefined &&
+    service.network_mode !== expectations[name].networkMode
+  ) {
+    fail(`${name}: unexpected network_mode ${service.network_mode}`)
   }
 
   const securityOpt = service.security_opt ?? []
@@ -781,9 +956,13 @@ for (const name of serviceOrder) {
   if (!(service.cap_drop ?? []).includes('ALL')) {
     fail(`${name}: cap_drop must include ALL`)
   }
-  const capAdd = service.cap_add ?? []
-  if (capAdd.length > 0) {
-    fail(`${name}: cap_add must stay empty, got [${capAdd.join(', ')}]`)
+  const capAdd = (service.cap_add ?? []).slice().sort()
+  const expectedCapAdd = (expectations[name].capAdd ?? []).slice().sort()
+  if (!same(capAdd, expectedCapAdd)) {
+    fail(
+      `${name}: cap_add drifted: got [${capAdd.join(', ')}], ` +
+        `expected [${expectedCapAdd.join(', ')}]`
+    )
   }
   if ((service.devices ?? []).length > 0) {
     fail(`${name}: device passthrough is not allowed`)
@@ -794,7 +973,10 @@ for (const name of serviceOrder) {
   if (service.read_only !== true) {
     fail(`${name}: read_only root filesystem must be enabled`)
   }
-  if (['0', 'root', '0:0'].includes(service.user ?? '')) {
+  if (
+    expectations[name].allowRoot !== true &&
+    ['0', 'root', '0:0'].includes(service.user ?? '')
+  ) {
     fail(`${name}: must not run as root`)
   }
 

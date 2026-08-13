@@ -27,31 +27,46 @@ const aggregateOwnershipFd = (() => {
   return Number.isSafeInteger(value) && value >= 3 ? value : null
 })()
 
-const announceProcessGroupOwnership = (pgid) => {
-  process.stderr.write(`m3b-descendant-pgid ${String(pgid)}\n`)
+const writeAggregateFrame = (frame) => {
   if (aggregateOwnershipFd === null) {
     return true
   }
+  const bytes = Buffer.from(frame, 'utf8')
   try {
-    writeSync(aggregateOwnershipFd, `${String(pgid)}\n`)
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(
+        aggregateOwnershipFd,
+        bytes,
+        offset,
+        bytes.length - offset
+      )
+      if (!Number.isSafeInteger(written) || written <= 0) {
+        return false
+      }
+      offset += written
+    }
     return true
   } catch {
-    process.stderr.write('aggregate ownership announcement failed\n')
     return false
   }
 }
 
-const announceCleanupState = (state) => {
-  if (aggregateOwnershipFd === null) {
-    return true
+const announceProcessGroupOwnership = (pgid) => {
+  process.stderr.write(`m3b-descendant-pgid ${String(pgid)}\n`)
+  if (!writeAggregateFrame(`${String(pgid)}\n`)) {
+    process.stderr.write('aggregate ownership announcement failed\n')
+    return false
   }
-  try {
-    writeSync(aggregateOwnershipFd, `CLEANUP ${String(process.pid)} ${state}\n`)
-    return true
-  } catch {
+  return true
+}
+
+const announceCleanupState = (state) => {
+  if (!writeAggregateFrame(`CLEANUP ${String(process.pid)} ${state}\n`)) {
     process.stderr.write('aggregate cleanup acknowledgement failed\n')
     return false
   }
+  return true
 }
 
 /**
@@ -298,24 +313,30 @@ const processGroupLifecycle = createProcessGroupLifecycle()
  * 自己的 PGID；仅把 fd 3 传给它是不够的——它首次调用 `runCommand()` 之前仍有一个
  * 聚合器不可达窗口。调用方应在 `spawn()` 后立即用本函数包装返回值。
  */
-export const registerRawSpawnedChild = (child) => {
+export const registerRawSpawnedChild = async (child) => {
   if (!Number.isSafeInteger(child?.pid) || child.pid <= 0) {
+    child?.once?.('error', () => undefined)
     throw new Error('raw detached child did not expose a process-group id')
   }
   const handle = processGroupLifecycle.register(child.pid)
   observedProcessGroups.add(child.pid)
-  if (!announceProcessGroupOwnership(child.pid)) {
-    try {
-      process.kill(-child.pid, 'SIGKILL')
-    } catch {
-      // 固定失败由下面的 throw 给出；registry 仍保留该组供最终 sweep 复核。
-    }
-    throw new Error('aggregate ownership announcement failed')
-  }
   child.once('close', () => {
     processGroupLifecycle.markLeaderClosed(handle)
     processGroupLifecycle.retireIfGone(handle)
   })
+  if (!announceProcessGroupOwnership(child.pid)) {
+    let survivors = [handle]
+    try {
+      survivors = await processGroupLifecycle.terminate([handle])
+    } catch {
+      // 固定失败由下面的 throw 给出；registry 保留未确认组供最终 sweep 复核。
+    }
+    throw new Error(
+      survivors.length === 0
+        ? 'aggregate ownership announcement failed'
+        : 'aggregate ownership announcement failed; descendant process group was not confirmed gone'
+    )
+  }
   return child
 }
 

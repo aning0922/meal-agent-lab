@@ -5,8 +5,10 @@
 //
 // M3A 的消费判据要求 secret file 在**消费进程**看来：owner == 进程 EUID、
 // mode 为 owner-only 的 0400/0600、普通文件、nlink=1、非 symlink、可读。
-// Compose 在非 swarm 模式下把 secret 直接 bind mount 进容器，因此这组判据能否
-// 成立取决于容器引擎的文件共享实现——必须**在容器内**取证，宿主 stat 不作数。
+// file-backed Compose secret 本身是 bind mount，无法在原生 Linux 上做
+// uid/gid/mode remap。生产拓扑先由 secret-materializer 把八份值分别写入
+// project-scoped volume，再以消费者 UID 的 0600 文件挂载。本探针必须从
+// **真实消费服务的 materialized volume**内取证，宿主 stat 不作数。
 //
 // 本探针用一套**临时合成** bundle（真实 generator 生成，用后即删）与唯一
 // project name，把八份 secret 逐一挂进它们真实的消费服务里，在容器内检查：
@@ -54,10 +56,10 @@ const probePlan = [
     secrets: [
       'postgres_admin_pgpass',
       'meal_agent_migration_password',
-      'meal_agent_runtime_password',
-      'meal_agent_backup_password'
+      'meal_agent_runtime_password'
     ]
   },
+  { service: 'backup', runtime: 'bash', secrets: ['meal_agent_backup_password'] },
   { service: 'bootstrap-schema', runtime: 'node', secrets: ['meal_agent_admin_database_url'] },
   { service: 'migrate', runtime: 'node', secrets: ['meal_agent_migration_database_url'] },
   { service: 'api', runtime: 'node', secrets: ['meal_agent_runtime_database_url'] }
@@ -250,13 +252,30 @@ const main = async () => {
     }
     process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
 
+    // 先跑真实 materializer；下面的 `run --no-deps` 只能看到已经物化
+    // 的单份 volume，绝不直接挂宿主 source secret。
+    const materialized = await compose(
+      [
+        'up',
+        '--no-deps',
+        '--abort-on-container-exit',
+        '--exit-code-from',
+        'secret-materializer',
+        'secret-materializer'
+      ],
+      { timeoutMs: 300_000 }
+    )
+    if (materialized.status !== 0) {
+      throw new Error('secret materialization failed before the identity probe')
+    }
+
     for (const plan of probePlan) {
       // 信号在飞时**不再新建容器**（成功分支同样要检查——此前只在失败分支里
       // 检查，信号落在两次 compose run 之间时仍会 spawn 出无人回收的容器）。
       if (terminationSignal() !== null) {
         break
       }
-      const targets = plan.secrets.map((name) => `/run/secrets/${name}`)
+      const targets = plan.secrets.map((name) => `/run/secrets/${name}/value`)
       const args =
         plan.runtime === 'bash'
           ? ['run', '--rm', '--no-deps', '--entrypoint', 'bash', plan.service, '-c', bashProbeScript(targets)]
@@ -280,7 +299,7 @@ const main = async () => {
         return [parsed.path, parsed.fields]
       }))
       for (const secretName of plan.secrets) {
-        const target = `/run/secrets/${secretName}`
+        const target = `/run/secrets/${secretName}/value`
         const fields = byPath.get(target)
         const expectedUid = String(consumerUidOf(secretName))
         if (fields === undefined) {

@@ -155,7 +155,7 @@ const runAndSignal = async ({
   waitForProcess = null,
   signalDelayMs = 1_500
 }) => {
-  const child = registerRawSpawnedChild(
+  const child = await registerRawSpawnedChild(
     spawn(process.execPath, [resolve(composeDirectory, script)], {
       cwd: repositoryRoot,
       stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),

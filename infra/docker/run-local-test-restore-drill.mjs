@@ -135,6 +135,8 @@ const restoreRoundTrip = async ({ stacks, log, fail, timed, run, backupsDirector
 
   // --- 栈 B：cluster/logins（角色不在 dump 里）------------------------------
   await timed('stack B cluster bootstrap (roles are not in the dump)', async () => {
+    await stackB.runOneShotExpectZero('secret-materializer', 300_000)
+    log('stack B secret-materializer: exit=0')
     await stackB.runService('postgres', 240_000)
     log('stack B postgres: healthy (fresh named volume)')
     await stackB.runOneShotExpectZero('bootstrap-cluster', 300_000)

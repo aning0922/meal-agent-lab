@@ -1130,6 +1130,15 @@ const liveSignalGroupOf = (slot: string): number | undefined =>
   signalRootPids.get(slot);
 
 const liveSignalGroups = new Set<number>();
+const liveSignalPids = new Set<number>();
+const processAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code !== "ESRCH";
+  }
+};
 after(() => {
   for (const pgid of liveSignalGroups) {
     try {
@@ -1139,6 +1148,14 @@ after(() => {
     }
   }
   liveSignalGroups.clear();
+  for (const pid of liveSignalPids) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // 根进程已经消失。
+    }
+  }
+  liveSignalPids.clear();
 });
 
 /** 整个外部信号用例的**硬上界**：绝不出现裸 `await`，挂死一律变成确定失败。 */
@@ -1231,7 +1248,10 @@ const runSignalScenario = async (
   const sampleDescendants = (root: number): void => {
     for (const row of descendantsOf(root)) {
       observedPids.add(row.pid);
-      observedGroups.add(row.pgid);
+      if (row.pgid !== rootPgid) {
+        observedGroups.add(row.pgid);
+        liveSignalGroups.add(row.pgid);
+      }
     }
   };
 
@@ -1242,8 +1262,9 @@ const runSignalScenario = async (
       ? [signalDriver]
       : [bootstrapScript, "logins", "--maintenance-db", "postgres"],
     {
-      // 独立进程组：收尾时可以整组清理，不依赖单个 PID。
-      detached: true,
+      // 正式 stage08 链下不能再创建聚合器不可见的 detached 根。bootstrap
+      // 自己建立的 worker 组仍由下面的真实进程表采样并逐组回收。
+      detached: false,
       env: {
         PATH: scenario.stall
           ? `${signalWrapperDirectory}:${basePath}`
@@ -1281,9 +1302,10 @@ const runSignalScenario = async (
     `${scenario.slot}: spawn must report a positive integer pid`,
   );
   const groupLeader = bootstrapPid as number;
-  liveSignalGroups.add(groupLeader);
+  liveSignalPids.add(groupLeader);
   signalRootPids.set(scenario.slot, groupLeader);
-  observedGroups.add(groupLeader);
+  const rootPgid = processTable().find((row) => row.pid === groupLeader)?.pgid;
+  assert.equal(typeof rootPgid, "number", `${scenario.slot}: root pgid must be observable`);
 
   let output = "";
   child.stdout.on("data", (chunk) => {
@@ -1408,6 +1430,9 @@ const runSignalScenario = async (
         // 进程组已经消失。
       }
     }
+    if (processAlive(groupLeader)) {
+      child.kill("SIGKILL");
+    }
     const worker = readPidFile(workerFile);
     if (worker !== undefined) {
       try {
@@ -1423,7 +1448,8 @@ const runSignalScenario = async (
         // 已经退出。
       }
     }
-    liveSignalGroups.delete(groupLeader);
+    liveSignalPids.delete(groupLeader);
+    for (const pgid of observedGroups) liveSignalGroups.delete(pgid);
     child.stdout.destroy();
     child.stderr.destroy();
   }
@@ -1529,7 +1555,7 @@ test("the fallback cleanup collects a worker process group with no pid file", as
     "bash",
     [bootstrapScript, "logins", "--maintenance-db", "postgres"],
     {
-      detached: true,
+      detached: false,
       env: {
         PATH: `${fifoWrapperDirectory}:${process.env["PATH"] ?? ""}`,
         HOME: process.env["HOME"] ?? "",
@@ -1552,9 +1578,11 @@ test("the fallback cleanup collects a worker process group with no pid file", as
     true,
     "spawn must report a positive integer pid",
   );
-  liveSignalGroups.add(groupLeader);
+  liveSignalPids.add(groupLeader);
 
-  const observedGroups = new Set<number>([groupLeader]);
+  const rootPgid = processTable().find((row) => row.pid === groupLeader)?.pgid;
+  assert.equal(typeof rootPgid, "number", "the bootstrap root pgid must be observable");
+  const observedGroups = new Set<number>();
   const observedPids = new Set<number>();
   try {
     // 等 worker 真的存在（它是 bootstrap 的后代，且自成进程组）。
@@ -1563,8 +1591,9 @@ test("the fallback cleanup collects a worker process group with no pid file", as
     while (Date.now() < deadline) {
       for (const row of descendantsOf(groupLeader)) {
         observedPids.add(row.pid);
-        observedGroups.add(row.pgid);
-        if (row.pgid !== groupLeader) {
+        if (row.pgid !== rootPgid) {
+          observedGroups.add(row.pgid);
+          liveSignalGroups.add(row.pgid);
           sawSeparateGroup = true;
         }
       }
@@ -1582,7 +1611,7 @@ test("the fallback cleanup collects a worker process group with no pid file", as
     // 谁都不会写的路径是重言式，没有信息量；真正要证明的是**兜底清理的依据只能
     // 来自采样**：观察到的进程组里必须有一个不是 bootstrap 自己的。
     assert.ok(
-      [...observedGroups].some((pgid) => pgid !== groupLeader),
+      observedGroups.size > 0,
       "the fallback must have a real worker pgid that no pid file could provide",
     );
   } finally {
@@ -1600,7 +1629,9 @@ test("the fallback cleanup collects a worker process group with no pid file", as
         // 已经退出。
       }
     }
-    liveSignalGroups.delete(groupLeader);
+    if (processAlive(groupLeader)) child.kill("SIGKILL");
+    liveSignalPids.delete(groupLeader);
+    for (const pgid of observedGroups) liveSignalGroups.delete(pgid);
     child.stdout.destroy();
     child.stderr.destroy();
   }

@@ -20,13 +20,18 @@
 // 每一项都必须**以指定理由**失败：只要求「失败了」不够——一条完全无关的报错
 // 也能让脚本变绿，那样证明不了断言本身存在。
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
+const mutationFile = resolve(
+  composeDirectory,
+  `.compose-topology-mutation-${randomBytes(8).toString('hex')}.yaml`
+)
 const checker = resolve(composeDirectory, 'check-compose-topology.mjs')
 
 const abort = (message) => {
@@ -34,26 +39,8 @@ const abort = (message) => {
   process.exit(1)
 }
 
-const dirty = spawnSync(
-  'git',
-  ['status', '--porcelain', '--', composeFile],
-  { cwd: repositoryRoot, encoding: 'utf8' }
-)
-if (dirty.error !== undefined || dirty.status !== 0) {
-  abort(
-    `mutation harness is missing a prerequisite tool: git status failed ` +
-      `(${dirty.error?.message ?? `exit ${String(dirty.status)}`})`
-  )
-}
-if (dirty.stdout.trim() !== '') {
-  abort(
-    `refusing to run: ${composeFile} has uncommitted changes.\n` +
-      `This harness rewrites that file in place and restores it afterwards; ` +
-      `it will not risk clobbering work in progress.`
-  )
-}
-
 const original = readFileSync(composeFile)
+writeFileSync(mutationFile, original, { flag: 'wx', mode: 0o600 })
 
 // 每一项：把 `from` 替换成 `to`，并要求门禁以 `expect` 为理由失败。
 // `from` 必须在源文件中**恰好出现一次**，否则变异本身就不确定。
@@ -120,27 +107,27 @@ const mutations = [
   },
   {
     name: 'the deployment identity is duplicated onto migrate',
-    from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url\n',
+    from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url/value\n',
     to:
-      '      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url\n' +
+      '      DATABASE_URL_FILE: /run/secrets/meal_agent_migration_database_url/value\n' +
       '      DEPLOYMENT_STAGE: production\n',
     expect: /migrate: must not declare DEPLOYMENT_STAGE/
   },
   {
     name: 'the runtime secret file is swapped for the admin one',
-    from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url\n',
-    to: '      DATABASE_URL_FILE: /run/secrets/meal_agent_admin_database_url\n',
-    expect: /api: runtime must never receive the meal_agent_admin_database_url credential|DATABASE_URL_FILE must point at/
+    from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url/value\n',
+    to: '      DATABASE_URL_FILE: /run/secrets/meal_agent_admin_database_url/value\n',
+    expect: /DATABASE_URL_FILE must point at|read-only materialized volume/
   },
   {
     name: 'the runtime connection string is inlined as an environment value',
-    from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url\n',
+    from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url/value\n',
     to: '      DATABASE_URL: postgresql://meal_agent_runtime_login:pw@postgres/meal_agent\n',
     expect: /DATABASE_URL must not appear in Compose; use a secret file/
   },
   {
     name: 'a bootstrap password is inlined as an environment value',
-    from: '      MEAL_AGENT_BACKUP_PASSWORD_FILE: /run/secrets/meal_agent_backup_password\n',
+    from: '      MEAL_AGENT_BACKUP_PASSWORD_FILE: /run/secrets/meal_agent_backup_password/value\n',
     to: '      MEAL_AGENT_BACKUP_PASSWORD: inlined-password\n',
     expect: /MEAL_AGENT_BACKUP_PASSWORD must not carry a value in Compose/
   },
@@ -149,6 +136,65 @@ const mutations = [
     from: '      - host_ip: 127.0.0.1\n',
     to: '      - host_ip: 0.0.0.0\n',
     expect: /host publish address must be exactly 127\.0\.0\.1/
+  },
+  {
+    name: 'the materializer loses DAC_READ_SEARCH',
+    from: '      - DAC_READ_SEARCH\n',
+    to: '',
+    expect: /secret-materializer: cap_add drifted/
+  },
+  {
+    name: 'the transfer volume loses its UID 999 initialization',
+    from: '        chmod 0700 /transfer\n        chown 999:999 /transfer\n',
+    to: '',
+    expect: /secret-materializer: expected command/
+  },
+  {
+    name: 'postgres bypasses successful materialization',
+    from:
+      '    depends_on:\n' +
+      '      secret-materializer:\n' +
+      '        condition: service_completed_successfully\n',
+    to: '',
+    expect: /postgres: depends_on drifted/
+  },
+  {
+    name: 'the materializer stops receiving one raw source secret',
+    from:
+      '      - source: meal_agent_runtime_database_url\n' +
+      '        target: /run/source-secrets/meal_agent_runtime_database_url\n',
+    to: '',
+    expect: /secret-materializer: raw Compose secret set drifted/
+  },
+  {
+    name: 'the API receives the admin credential volume',
+    from: '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n',
+    to: '      - admin-url-secret:/run/secrets/meal_agent_admin_database_url:ro\n',
+    expect: /api: mount set drifted|runtime must never receive/
+  },
+  {
+    name: 'backup receives the migration password volume',
+    from:
+      '    entrypoint:\n' +
+      '      - bash\n' +
+      '    volumes:\n' +
+      '      - backup-password-secret:/run/secrets/meal_agent_backup_password:ro\n' +
+      '      - backup-transfer:/transfer\n',
+    to:
+      '    entrypoint:\n' +
+      '      - bash\n' +
+      '    volumes:\n' +
+      '      - migration-password-secret:/run/secrets/meal_agent_migration_password:ro\n' +
+      '      - backup-transfer:/transfer\n',
+    expect: /backup: mount set drifted/
+  },
+  {
+    name: 'restore receives the backup login password',
+    from: '      - backup-transfer:/transfer:ro\n',
+    to:
+      '      - backup-transfer:/transfer:ro\n' +
+      '      - backup-password-secret:/run/secrets/meal_agent_backup_password:ro\n',
+    expect: /restore: mount set drifted/
   }
 ]
 
@@ -156,7 +202,7 @@ const failures = []
 let checked = 0
 
 const runChecker = () => {
-  const result = spawnSync(process.execPath, [checker], {
+  const result = spawnSync(process.execPath, [checker, '--compose-file', mutationFile], {
     cwd: repositoryRoot,
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024
@@ -189,7 +235,7 @@ try {
     }
 
     try {
-      writeFileSync(composeFile, source.replace(mutation.from, mutation.to))
+      writeFileSync(mutationFile, source.replace(mutation.from, mutation.to))
       const result = runChecker()
       checked += 1
       if (result.status === 0) {
@@ -209,24 +255,24 @@ try {
       }
       process.stdout.write(`  caught: ${mutation.name}\n`)
     } finally {
-      writeFileSync(composeFile, original)
+      writeFileSync(mutationFile, original)
     }
   }
 } finally {
-  writeFileSync(composeFile, original)
-}
-
-if (!readFileSync(composeFile).equals(original)) {
-  abort(
-    `FATAL: ${composeFile} was not restored to its original bytes. ` +
-      `Run: git restore -- ${composeFile}`
-  )
+  try {
+    unlinkSync(mutationFile)
+  } catch (error) {
+    abort(
+      `FATAL: could not remove the owned topology mutation copy ` +
+        `(${typeof error === 'object' && error !== null && 'code' in error ? error.code : 'unknown'})`
+    )
+  }
 }
 
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 15
+const expectedMutationCount = 22
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`
@@ -244,5 +290,5 @@ if (failures.length > 0) {
 process.stdout.write(
   `Compose topology mutation check PASS ` +
     `(${String(checked)}/${String(mutations.length)} mutations caught with the ` +
-    `named reason, 0 escapes, compose file restored byte-for-byte)\n`
+    `named reason, 0 escapes, tracked compose file was never modified)\n`
 )

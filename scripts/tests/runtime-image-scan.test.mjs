@@ -133,6 +133,15 @@ test('immutable image, container and history evidence is identity-bound and comp
     (message) => problems.push(message)
   )
   assert.deepEqual(problems, ['image history: secret-shaped build instruction must not ship'])
+  const commentProblems = []
+  parseImageHistory(
+    `${JSON.stringify({ ...historyRow, Comment: 'WECHAT_APP_SECRET=M5_COMMENT_SENTINEL' })}\n`,
+    imageId,
+    1,
+    throwingFatal,
+    (message) => commentProblems.push(message)
+  )
+  assert.deepEqual(commentProblems, ['image history: secret-shaped build instruction must not ship'])
 
   const contentHistory = [
     {
@@ -169,7 +178,7 @@ test('immutable image, container and history evidence is identity-bound and comp
   ]
   assert.doesNotThrow(() =>
     parseSavedImageConfig(
-      savedConfig,
+      Buffer.from(savedConfig),
       configPath,
       image[0],
       completeCliHistory,
@@ -180,7 +189,7 @@ test('immutable image, container and history evidence is identity-bound and comp
   assert.throws(
     () =>
       parseSavedImageConfig(
-        savedConfig,
+        Buffer.from(savedConfig),
         configPath,
         image[0],
         completeCliHistory.slice(0, 1),
@@ -201,7 +210,7 @@ test('immutable image, container and history evidence is identity-bound and comp
   assert.throws(
     () =>
       parseSavedImageConfig(
-        savedConfig,
+        Buffer.from(savedConfig),
         configPath,
         image[0],
         [{ ...completeCliHistory[0], CreatedAt: '2026-08-13T00:00:00Z' }, completeCliHistory[1]],
@@ -221,9 +230,11 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
     mkdirSync(blobDirectory, { recursive: true })
     writeFileSync(resolve(blobDirectory, digest), layerBytes)
     const archive = resolve(directory, 'image.tar')
-    const packed = spawnSync('tar', ['-cf', archive, '-C', resolve(directory, 'root'), 'blobs'], {
-      encoding: 'utf8'
-    })
+    const packed = spawnSync(
+      'tar',
+      ['--format=ustar', '-cf', archive, '-C', resolve(directory, 'root'), 'blobs'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
     assert.equal(packed.status, 0, packed.stderr)
     await assert.doesNotReject(
       verifySavedImageLayers(

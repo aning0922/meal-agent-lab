@@ -32,7 +32,7 @@ import {
   readFileSync,
   realpathSync
 } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { readDumpMagic, sha256OfFile } from './backup-local-test.mjs'
@@ -152,20 +152,34 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   const { sha256, physicalPath } = verifyBackupChecksum(resolve(dumpPath))
   // 容器挂载的是 realpath 解析后的物理目录/文件名：宿主校验与容器读取指向
   // 同一个文件。
-  const directory = dirname(physicalPath)
-  const name = basename(physicalPath)
   const oneOff = (runArgs, options) =>
     composeRunOneOff({ compose, run, warn: log }, runArgs, options)
 
   log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
   log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
 
+  // 宿主已校验的 bytes 经 stdin 送入无网络、无 Secret 的 loader，由 UID999 在
+  // project-scoped transfer volume 内物化为 0600；不依赖宿主目录 owner/mode。
+  const loaded = await oneOff(
+    [
+      '--entrypoint',
+      'bash',
+      'backup-transfer-loader',
+      '-euc',
+      'umask 077; cat > /transfer/input.dump.new; mv -f /transfer/input.dump.new /transfer/input.dump'
+    ],
+    { timeoutMs: 300_000, stdin: readFileSync(physicalPath) }
+  )
+  if (loaded.status !== 0) {
+    throw new Error('restore handoff into the controlled transfer volume failed')
+  }
+
   // 目标数据库必须不存在：恢复只进全新库。
   const present = await oneOff(
     [
       '--entrypoint',
       'psql',
-      'bootstrap-cluster',
+      'restore',
       '--no-psqlrc',
       '-tA',
       '-v',
@@ -191,7 +205,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
     [
       '--entrypoint',
       'createdb',
-      'bootstrap-cluster',
+      'restore',
       '--no-password',
       '--owner',
       migrationRole,
@@ -211,11 +225,9 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   // PGPASSFILE（bootstrap-acl 服务声明的 secret），不经 argv。
   const restored = await oneOff(
     [
-      '--volume',
-      `${directory}:/backup:ro`,
       '--entrypoint',
       'pg_restore',
-      'bootstrap-acl',
+      'restore',
       '--no-password',
       '--single-transaction',
       '--exit-on-error',
@@ -223,7 +235,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
       '--port=5432',
       '--username=postgres',
       `--dbname=${targetDatabase}`,
-      `/backup/${name}`
+      '/transfer/input.dump'
     ],
     { timeoutMs: 900_000 }
   )

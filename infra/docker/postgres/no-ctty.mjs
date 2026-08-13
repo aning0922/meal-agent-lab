@@ -10,6 +10,8 @@
 // 本包装器用 Node 自带能力做同一件事：POSIX 上 `spawn(..., { detached: true })`
 // 会在子进程中调用 setsid(2)，于是子进程进入新会话、没有控制终端，
 // `\password` 的 /dev/tty 打开失败并回落到 stdin。
+// stage09a ownership exception: 这是 Docker 容器内部的进程组；宿主聚合器拥有并
+// 收敛的是对应 docker CLI/容器资源，容器内 PGID 不属于宿主 PID namespace。
 //
 // 它只依赖 Node 标准库，不引入任何第三方依赖，也不实现任何口令算法：
 // SCRAM verifier 仍由 psql 在客户端生成。

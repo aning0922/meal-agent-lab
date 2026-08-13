@@ -31,6 +31,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
+const stepController = resolve(repositoryRoot, 'scripts/stage09a-step-controller.mjs')
 const usage = 'pnpm stage09a:check [-- --keep-failure]'
 
 const cliArguments = process.argv.slice(2)
@@ -266,7 +267,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     let closed = false
     let leaderExited = false
     let ownershipStreamEnded = false
-    let ownershipEndedBeforeLeaderExit = false
+    let producerDone = false
     let ownershipBuffer = ''
     let ownershipProtocolFailed = false
     let scopedCleanupStarted = false
@@ -284,7 +285,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       stdio === 'inherit'
         ? ['inherit', 'inherit', 'inherit', 'pipe']
         : [stdio[0], stdio[1], stdio[2], 'pipe']
-    const child = spawn(argv[0], argv.slice(1), {
+    const child = spawn(process.execPath, [stepController, JSON.stringify(argv)], {
       cwd: repositoryRoot,
       detached: true,
       env: childEnvironment,
@@ -299,7 +300,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     }
     const ownershipStream = child.stdio[3]
     const registerRecognizablePgid = (text) => {
-      const prefix = /^([1-9][0-9]*)(?=$|[ \t])/.exec(text)
+      const prefix = /^([1-9][0-9]*)/.exec(text)
       if (prefix === null) {
         return
       }
@@ -309,6 +310,16 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       }
     }
     const recordOwnershipFrame = (line) => {
+      const producerFrame = /^PRODUCER ([1-9][0-9]*) DONE$/.exec(line)
+      if (producerFrame !== null) {
+        const producerPid = Number(producerFrame[1])
+        if (producerDone || producerPid !== child.pid) {
+          ownershipProtocolFailed = true
+          return
+        }
+        producerDone = true
+        return
+      }
       const cleanupFrame = /^CLEANUP ([1-9][0-9]*) (START|DONE)$/.exec(line)
       if (cleanupFrame !== null) {
         const cleanupOwner = Number(cleanupFrame[1])
@@ -346,17 +357,23 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     }
     ownershipStream?.on('data', (chunk) => {
       ownershipBuffer += chunk.toString('utf8')
+      while (true) {
+        const newline = ownershipBuffer.indexOf('\n')
+        if (newline === -1) break
+        const line = ownershipBuffer.slice(0, newline)
+        ownershipBuffer = ownershipBuffer.slice(newline + 1)
+        if (line.length > 4096) {
+          registerRecognizablePgid(line)
+          ownershipProtocolFailed = true
+        } else {
+          recordOwnershipFrame(line)
+        }
+      }
       if (ownershipBuffer.length > 4096) {
         registerRecognizablePgid(ownershipBuffer)
         ownershipProtocolFailed = true
         ownershipBuffer = ''
         ownershipStream?.destroy()
-        return
-      }
-      const lines = ownershipBuffer.split('\n')
-      ownershipBuffer = lines.pop() ?? ''
-      for (const line of lines) {
-        recordOwnershipFrame(line)
       }
     })
     ownershipStream?.on('error', () => {
@@ -364,24 +381,16 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     })
     ownershipStream?.on('end', () => {
       ownershipStreamEnded = true
-      if (!leaderExited) {
-        // libuv 可能先分发 pipe EOF、下一拍才分发同一进程的 exit。给这个正常
-        // 排序一个极短宽限；若 producer 仍在运行，则它已主动丢掉 ownership fd，
-        // 之后派生的 detached 组将不可达，必须 fail closed。
-        setTimeout(() => {
-          if (!leaderExited) {
-            ownershipEndedBeforeLeaderExit = true
-            ownershipProtocolFailed = true
-            void terminateOwnedProcessGroups()
-          }
-        }, 25)
-      }
       if (ownershipBuffer.length > 0) {
         // 缺少终止 LF 时仍登记可证明的 PGID 以便收尾，但协议必须失败，
         // 所以该 step 绝不能 PASS。
         registerRecognizablePgid(ownershipBuffer)
         ownershipProtocolFailed = true
         ownershipBuffer = ''
+      }
+      if (!producerDone) {
+        ownershipProtocolFailed = true
+        void terminateOwnedProcessGroups()
       }
     })
 
@@ -409,7 +418,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     const cooperativeShutdown = async (signal) => {
       if (!closed) {
         try {
-          child.kill(signal)
+          nativeKill(-child.pid, signal)
         } catch {
           // 最终收敛由聚合器自己的 owned-PGID fallback 保证。
         }
@@ -537,7 +546,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       if (
         ownershipStream === null ||
         (!ownershipStreamEnded && !ownershipProtocolFailed) ||
-        ownershipEndedBeforeLeaderExit ||
+        !producerDone ||
         activeScopedCleanups.size > 0
       ) {
         ownershipProtocolFailed = true

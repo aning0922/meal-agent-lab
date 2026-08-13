@@ -386,7 +386,7 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
   const parent = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r2-'))
   const bundle = resolve(parent, 'bundle')
   try {
-    const child = registerRawSpawnedChild(spawn(
+    const child = await registerRawSpawnedChild(spawn(
       process.execPath,
       [
         resolve(composeDirectory, 'fixtures/preflight-signal-window.mjs'),
@@ -472,19 +472,19 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
     const runCli = async (extraEnv) => {
       const directory = resolve(parent, `bundle-${randomBytes(4).toString('hex')}`)
       const startedAt = Date.now()
+      const child = await registerRawSpawnedChild(spawn(
+        process.execPath,
+        [
+          resolve(composeDirectory, 'generate-local-test-secrets.mjs'),
+          '--directory',
+          directory
+        ],
+        {
+          stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
+          env: { ...process.env, ...extraEnv }
+        }
+      ))
       const outcome = await new Promise((resolveOutcome) => {
-        const child = registerRawSpawnedChild(spawn(
-          process.execPath,
-          [
-            resolve(composeDirectory, 'generate-local-test-secrets.mjs'),
-            '--directory',
-            directory
-          ],
-          {
-            stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
-            env: { ...process.env, ...extraEnv }
-          }
-        ))
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (chunk) => {
@@ -791,18 +791,18 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
           `exec ${realDocker.stdout.trim()} "$@"\n`,
         { mode: 0o700 }
       )
-      const outcome = await new Promise((resolveOutcome) => {
-        const child = registerRawSpawnedChild(spawn(
-          process.execPath,
-          [resolve(composeDirectory, 'run-local-test-smoke.mjs')],
-          {
-            stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
-            env: {
-              ...process.env,
-              PATH: `${shimDirectory}:${process.env.PATH ?? ''}`
-            }
+      const child = await registerRawSpawnedChild(spawn(
+        process.execPath,
+        [resolve(composeDirectory, 'run-local-test-smoke.mjs')],
+        {
+          stdio: ownershipAwareSpawnStdio(['ignore', 'pipe', 'pipe']),
+          env: {
+            ...process.env,
+            PATH: `${shimDirectory}:${process.env.PATH ?? ''}`
           }
-        ))
+        }
+      ))
+      const outcome = await new Promise((resolveOutcome) => {
         let stdout = ''
         let stderr = ''
         child.stdout.on('data', (chunk) => {
