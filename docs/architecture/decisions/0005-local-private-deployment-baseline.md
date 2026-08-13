@@ -373,7 +373,7 @@ OS PGID 复用 TOCTOU 仍按已知边界记录，不作形式化闭合声称。
 
 上面两份族名列表由 [`check-m3b-registry-integrity.mjs`](../../../infra/docker/check-m3b-registry-integrity.mjs) 与 [`m3b-surface-registry.mjs`](../../../infra/docker/m3b-surface-registry.mjs) 的 `families` / `unguardedFamilies` **机械比对**——多一个、少一个、拼错一个都转红。此前它是手抄的，于是「9 族全部已由门禁钉死」这句假话活过了一整轮审计。
 
-**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 22/72 行、`infra/environments/README.md` 有 3/21 行含反引号（分母是文件真实行数，由同一门禁数出来比对；此前写作 73/22 是误用了 `content.split('\n').length` 的口径——尾随换行会多出一个空元素）。
+**其中反引号面是本轮已披露的最大未守面**：实测一个「整行含反引号即豁免敏感判据」的回归，surface sweep、69 格 targeted、75 格 local-test **三张网全部为绿**；而真实模板里 `infra/environments/local-test/README.md` 有 23/73 行、`infra/environments/README.md` 有 3/22 行含反引号（分母是文件真实行数，由同一门禁数出来比对；计数由登记完整性门禁按当前已提交文件逐行复核）。
 
 **M3B 的验收范围不得表述为「环境模板已覆盖」，也不得表述为「已登记族全部由门禁钉死」。**第一层控制（八份 Secret 从不进仓库、`.gitignore`、全仓 containment 扫描）**与键名判据零共享**（`local-test-containment.mjs` 对 `isSensitiveKeyName` / `scanTrackedTemplates` / `sensitiveKeySuffixes` / `sensitiveCompactAssignments` 的引用数为 0，needle 按真实 Secret 取值构造），未受影响；真实 tracked 模板实测 0 problem。
 
