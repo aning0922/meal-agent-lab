@@ -3653,11 +3653,19 @@ Pass；GitHub Actions workflow 仍只有配置、没有真实远端 run。
    `backup-transfer-loader` 写回同一 volume，再由专用 `restore` 执行；不会复用
    `bootstrap-logins` 的 admin/migration/runtime 口令。one-shot 显式 `--no-TTY`，二进制
    stdin 有回归测试。
-5. **定点动态证据。** 无 Docker 脚本测试 **48/48**；topology 与 22 项变异、runtime image 正向与变异、fresh empty
+5. **定点动态证据。** 无 Docker 脚本测试 **49/49**；topology 与 22 项变异、runtime image 正向与变异、fresh empty
    volume smoke、八份 Secret UID/mode/nlink 身份探针、同 ledger restore drill 已分别
    通过。fresh 链现在是 `secret-materializer` 加原十步，共 11 步；Secret 可见面按
    17 个确切 evidence container 校验。完整 `pnpm stage09a:check` 必须在文档提交后的
    干净 HEAD 重新从头执行，不能用这些定点证据代替。
+6. **完整门禁自查暴露的生命周期接线缺陷。** 文档候选上的首次重跑在旧的
+   Secret mount 反例处转红，第二次在派生模板行数处转红；两处均已按真实新拓扑
+   修正。第三次重跑的前 12 步通过后，M4 lifecycle 在 stop 后使用
+   `docker compose start postgres`，Compose 沿 `depends_on` 重新启动已成功退出的
+   one-shot `secret-materializer`，因而响亮失败。修复后演练只对受控的既有
+   postgres/API 容器执行精确 `docker start`，不遍历 Compose 依赖；动态回归同时
+   断言 argv 精确、失败输出固定且不回显 Docker stderr。窄 lifecycle 演练已重新
+   通过并确认两次重启的 sentinel 逐字节一致；完整 14 步仍须从新提交重新跑起。
 
 本轮为闭合新审计 blocker，受控修改了已 Accepted 的 M2B/M3B/M4 基础设施实现；因此
 不得再声称“相对 Accepted 冻结面零改动”。历史 Accepted 仍描述各自验收时取得的

@@ -552,6 +552,19 @@ export const throwIfInterrupted = () => {
 }
 
 /**
+ * 启动一个已经存在的受控容器，不让 Compose 重新遍历 depends_on。
+ * 失败诊断只包含固定类别与退出状态，绝不带 Docker stderr。
+ */
+export const startExistingContainer = async (run, containerName) => {
+  const result = await run(['docker', 'start', containerName], { timeoutMs: 120_000 })
+  if (result.status !== 0) {
+    const outcome =
+      result.status === null ? `signal ${String(result.signal ?? 'unknown')}` : String(result.status)
+    throw new Error(`existing container start failed with exit ${outcome}`)
+  }
+}
+
+/**
  * 演练运行上下文：每轮唯一的 run id / image tag / override / 临时 Secret 目录、
  * 输出边界与计时器，以及一到两个 project 栈。**必须在第一个 `await` 之前**
  * 创建全部栈并装上 signal handler——mkdtemp 与栈登记都是同步的，信号只会落在
@@ -785,16 +798,17 @@ export const createM4Run = ({ kind }) => {
         throw new Error(`compose down (without volumes) failed with exit ${String(down.status)}`)
       }
     }
-    /** 已存在但被 stop 的常驻服务：`compose start` → 等 healthy。 */
+    /**
+     * 已存在但被 stop 的常驻服务：只启动这个受控的既有容器，再等 healthy。
+     *
+     * 这里不能使用 `docker compose start <service>`。Compose 会沿 depends_on
+     * 把已经成功退出的 one-shot `secret-materializer` 再启动一次；那既不是
+     * 「重启既有常驻容器」的语义，也会让一次性 Secret 物化重新发生。
+     */
     stack.startService = async (service, timeoutMs) => {
       throwIfInterrupted()
       const name = stack.containerName(service)
-      const started = await stack.compose(['start', service], { timeoutMs: 120_000 })
-      if (started.status !== 0) {
-        throw new Error(
-          `compose start ${service} failed: ${scrubber.scrubUntrusted(started.stderr.trim())}`
-        )
-      }
+      await startExistingContainer(run, name)
       await waitFor(
         `${service} restart health`,
         async () =>

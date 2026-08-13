@@ -8,7 +8,8 @@ import test from 'node:test'
 import {
   composeRunOneOff,
   oneOffIsGone,
-  removeLingeringOneOffs
+  removeLingeringOneOffs,
+  startExistingContainer
 } from '../../infra/docker/m4-lifecycle.mjs'
 import {
   checksumSidecarUnparseableReason,
@@ -135,6 +136,32 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
   assert.ok(observed.argv.includes('--no-TTY'))
   assert.equal(observed.options.stdin, payload)
   assert.equal(state, 'absent')
+})
+
+test('M4 restarts only the exact existing container without traversing Compose dependencies', async () => {
+  const calls = []
+  await startExistingContainer(async (argv, options) => {
+    calls.push({ argv, options })
+    return { status: 0, signal: null, stdout: 'fixture-postgres-1\n', stderr: '' }
+  }, 'fixture-postgres-1')
+  assert.deepEqual(calls, [
+    {
+      argv: ['docker', 'start', 'fixture-postgres-1'],
+      options: { timeoutMs: 120_000 }
+    }
+  ])
+
+  const sentinel = 'DOCKER-START-STDERR-SENTINEL'
+  await assert.rejects(
+    startExistingContainer(
+      async () => ({ status: 7, signal: null, stdout: '', stderr: sentinel }),
+      'fixture-postgres-1'
+    ),
+    (error) =>
+      error instanceof Error &&
+      error.message === 'existing container start failed with exit 7' &&
+      !error.message.includes(sentinel)
+  )
 })
 
 test('restore sidecars must be bounded regular files', () => {

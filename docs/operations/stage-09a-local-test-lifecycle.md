@@ -70,11 +70,14 @@ docker compose --file infra/docker/compose.local-test.yaml stop --timeout 30
 ```
 
 ```bash
-docker compose --file infra/docker/compose.local-test.yaml start postgres api
+docker start meal-agent-local-test-postgres-1 meal-agent-local-test-api-1
 ```
 
 `stop` 发 SIGTERM：API 的优雅关机在时限内完不成时会**真正强制退出**（退出码
-1，见 `services/api/src/shutdown.ts`；容器侧优雅路径应为退出码 0）。数据落在
+1，见 `services/api/src/shutdown.ts`；容器侧优雅路径应为退出码 0）。这里刻意对
+两个**已经存在的常驻容器**执行精确 `docker start`；不能使用
+`docker compose start postgres api`，因为 Compose 会沿 `depends_on` 重新启动已
+成功退出的 one-shot `secret-materializer`。数据落在
 named volume 上，`stop`/`start` 与 `down`（不带 `--volumes`）都不会动它：
 
 ```bash
