@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-12 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`（基线 main `3b22674`；审计 Round 1 唯一 BLOCK（运维入口信号让位）修复后经定点复核通过，见 M4 实施记录）**；**M5「门禁、CI 与文档」候选 `38f172d` 经两路独立复审仍为 BLOCK，对应 P1 已在第二轮落点 `1689f1b` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待该新候选的独立 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 日期：2026-07-26（2026-08-13 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」最新固定候选 `cce8a79` 的 A/B 复审为 BLOCK，对应 P1/P2 已在第三轮实现落点 `90f5a8a` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待该新候选的独立 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（第二轮独立复审 BLOCK 后已整改，等待新候选 A/B 复审，未 Accepted）
+### M5 实施记录（最新独立复审 BLOCK 后第三轮整改完成，等待新候选 A/B 复审，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3553,6 +3553,38 @@ checkout 复验与两路独立复审尚未完成，M5 不得标记 Accepted；�
 审计 A 负责静态/纯 Node 的安全边界与 mutation 判别力，审计 B 负责真实 Docker、
 完整 14 步链、信号/清理和零残留。两路均 CLEAN 后才回到项目总控裁定；远端 CI
 真实 run 仍未发生。
+
+#### M5 最新两路独立复审 BLOCK 后第三轮整改（2026-08-13）
+
+固定候选 `cce8a79` 的审计 A/B 均给出 **BLOCK**。实现落点 `90f5a8a` 按生产根因
+去重收口，未把旧候选的全绿证据当作反证：
+
+1. **聚合 ownership 协议闭合。** LF 完整帧之外的 partial/malformed/EOF 均失败；
+   可证明的 partial PGID 仍先登记再收敛。raw-spawn 控制层显式透传 fd 3，实际
+   Docker/命令 child 仍不继承。scoped cleanup 用 producer PID 区分并发 START/DONE，
+   所有活跃 owner 都 DONE 后才可结算；SIGINT/SIGTERM/SIGHUP 与 termination primitive
+   异常继续走固定输出和有界 TERM/KILL/ESRCH 收敛。
+2. **runtime image 证据改成不可碰撞的对象绑定。** tag 只解析一次，后续全部使用
+   immutable ID；dependency payload 比较普通文件、完整 mode、`.bin` 内容和 workspace
+   self-link target，且只归一化显式传入的 deploy root。history 不再只靠行数下界：
+   `docker image save` 的 manifest/config blob digest、完整 history、RootFS diff IDs 与
+   non-empty layer 数必须和 CLI history 一致；少一条完整合法 row 也会失败。入口在
+   build 前即声明本轮 tag 所有权，并登记全部 scratch container immutable ID，清理不再
+   被后一次 case 覆盖。
+3. **production audit、M4 ownership 与恢复 sidecar fail closed。** audit advisory ID
+   统一小写后判重，relay close 失败仍只给固定 CLI 文案；M4 one-shot 容器使用高熵
+   name + ownership label，只有 exact ID/label 证明属于本轮时才删除，严格单行 absence
+   证据才可注销；checksum sidecar 用 `O_NOFOLLOW|O_NONBLOCK` 有界读取，只接受
+   单链接普通文件与严格 UTF-8。
+4. **门禁判别力。** 无 Docker 脚本测试为 **41/41**；runtime image 正向为 78 个
+   packages、76 个 top-level links、5 份 migration，变异套件为 **1 baseline + 9 built
+   + 2 static-only**；M3B signal-window 在直接运行和聚合 fd3 环境下均为 5+5。完整
+   `pnpm stage09a:check` 于 2026-08-13 从头串行通过 14/14（stage08、15 项 topology
+   mutations、75/75 local、69/69 targeted、fresh smoke、8 Secret identity、lifecycle、
+   restore），结束后本轮 container/network/volume/tag/temp/PGID residue 均为 0。
+
+该落点仍只是**实施候选**：必须形成文档提交后由两个新的独立只读会话复审；M5
+未 Accepted，09A 未 Pass，远端 GitHub Actions 仍无真实 run。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的

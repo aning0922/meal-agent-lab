@@ -464,6 +464,16 @@ identity；CI workflow 的权限、immutable action、单次 frozen install/aggr
 变异计数为 1 baseline + 9 built + 2 static-only。该结果仍只是整改候选证据；新一轮
 A/B 复审、远端 CI 真实 run 与 09A 总验收均未完成，M5 不得标记 Accepted。
 
+**M5 最新独立复审与第三轮整改注记（2026-08-13）**：固定候选 `cce8a79` 的两路
+独立复审仍为 BLOCK。实现落点 `90f5a8a` 进一步收口：聚合 ownership frame 要求
+完整 LF，partial/malformed/缺 ACK 均失败，cleanup START/DONE 由 producer PID 区分；
+runtime image history 绑定 `docker image save` 的 content-addressed config blob、完整
+history 与 RootFS diff IDs，dependency payload 只归一化声明的 deploy root 并绑定
+self-link；production audit、M4 one-shot ownership 与 checksum sidecar 均改成固定输出、
+确切对象身份和有界文件证据。主工作树已从头通过 `stage09a:check` 14/14；该结果仍
+只是整改候选，本轮新 SHA 的 A/B 复审、远端 CI 真实 run 与 09A 总验收尚未完成，
+不得据此把 M5 或 09A 标记为 Accepted/Pass。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；

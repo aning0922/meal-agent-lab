@@ -168,7 +168,7 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/backup-local-test.mjs` | `pg_dump --format=custom` 备份（backup 角色 BYPASSRLS，FORCE RLS 不截断；写入被 Git 忽略的 [`backups/`](backups/README.md)，将要写入的 dump 与 sidecar **文件路径**在仓库内且未被 Git 忽略即拒绝；生成 `*.sha256` sidecar；前后打印环境与数据库标识，不打印口令或连接串） |
-| `node infra/docker/restore-local-test.mjs` | 恢复到**全新** `meal_agent` 库（`--dump <path>`；恢复前先校验 sidecar，不匹配即拒绝且不调用 `pg_restore`；`createdb --owner=meal_agent_migrator` 后单事务 `pg_restore`；前置 `cluster`/`logins` 与后续 `acl → migrate → grants` 见 runbook） |
+| `node infra/docker/restore-local-test.mjs` | 恢复到**全新** `meal_agent` 库（`--dump <path>`；checksum sidecar 以 `O_NOFOLLOW|O_NONBLOCK` 有界读取，只接受单链接普通文件与严格 UTF-8；不匹配即拒绝且不调用 `pg_restore`；`createdb --owner=meal_agent_migrator` 后单事务 `pg_restore`；前置 `cluster`/`logins` 与后续 `acl → migrate → grants` 见 runbook） |
 
 两条**演练**命令（每轮唯一 project/image tag/合成 Secret，零残留复查，逐阶段
 打印本地耗时；均支持 `--keep-failure`）：
@@ -177,6 +177,11 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 | --- | --- |
 | `node infra/docker/run-local-test-lifecycle.mjs` | 生命周期演练：构建 → 空 volume 初始化 → migration → 启动 → `/healthz`/`/readyz` → 合成数据授权读取 → `stop`/`start` 与 `down`/再起两种重启后数据仍在（SIGTERM 优雅退出的容器侧退出码一并断言）→ 销毁归零 |
 | `node infra/docker/run-local-test-restore-drill.mjs` | 备份/恢复演练：栈 A 全链 + 两个合成家庭 sentinel + 授权面快照 → 备份 + sidecar → 栈 B 重建角色（不在 dump 里）→ 篡改反例在 `pg_restore` 之前被拒 → 单事务恢复 → `acl → migrate → grants → api` → ledger/readiness/授权读取/runtime 反向探针/owner-GRANT-RLS 快照逐字一致 |
+
+`pg_dump`/`pg_restore` one-shot 容器使用每轮高熵名称和 ownership label；只有 inspect
+得到 canonical container ID 且 label token 精确属于本轮时才按 immutable ID 删除。
+同名 foreign 容器、inspect 失败或非规范「不存在」证据一律不盲删，并作为 residue
+失败。该所有权边界与 sidecar 的有界普通文件读取均有无 Docker 回归。
 
 这两张表是**登记**（`check-m3b-registry-integrity.mjs` §7 会把 README 记录的
 脚本集合与仓库里真实的可执行脚本集合机械比对），不是 M3B 门禁清单的一部分；
@@ -197,8 +202,10 @@ Compose 静态门禁与变异反例、下面两条 M5 镜像门禁、其余 M3B 
 状态在结尾汇总表如实列出；Docker CLI / Compose v2 / daemon / git / pnpm 任一缺失
 时在执行任何检查之前明确失败为「缺少前置工具」，不降级成静态检查后宣称通过。
 每个动态门禁/演练自带 scoped cleanup 与零残留复查，`--keep-failure` 逐层透传。
-前置探针与每个步骤都以独立进程组登记；子门禁再派生的 detached process group 通过
-聚合器专用的机器可读所有权通道登记。SIGINT/SIGTERM/SIGHUP 或兜底超时会先给子门禁
+前置探针与每个步骤都以独立进程组登记；子门禁及其确定性夹具再派生的 detached
+process group 通过聚合器专用的机器可读所有权通道登记。通道要求 LF 完整帧，cleanup
+ACK 以 producer PID 区分并发 owner；partial/malformed/缺失 ACK 均 fail closed。
+SIGINT/SIGTERM/SIGHUP 或兜底超时会先给子门禁
 有限时间完成 scoped cleanup，再对所有已登记组执行 TERM → grace → KILL 并有界确认
 ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不依赖 Docker 的真实 CLI
 回归，且明确断言聚合器退出前 scoped cleanup 已完成、嵌套进程组已消失。
@@ -208,7 +215,7 @@ ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不
 
 | 命令 | 作用 |
 | --- | --- |
-| `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：本轮唯一 tag 只用于第一次解析 immutable image ID，后续 Config、history、`docker create`/`export` 全部绑定该 ID，且 scratch container 的 `.Image` 必须与之精确一致；宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 与 dependency payload 精确相等；普通 package 文件比较路径、长度与 SHA-256，`.bin` 文本 shim 还比较 mode，并只归一化 pnpm 写入的绝对 deploy root；刻意跳过内容的 metadata/README 仍必须是 regular file，不能替换成不透明目录树。history 要求 LF framing、固定字段集合、canonical identity/字段形状，且行数至少为 RootFS layer 数加一；这是有界完整性下界，不声称重建 Docker history 的全部语义。镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族）。支持 `--keep-failure` |
+| `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：本轮唯一 tag 只用于第一次解析 immutable image ID，后续 Config/history/save/`docker create`/export 全部绑定该 ID，且 scratch container 的 `.Image` 必须与之精确一致；宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 与 dependency payload 精确相等；普通 package 文件比较路径、长度与 SHA-256，`.bin` 文本 shim 比较完整 mode 且只归一化明确传入的 deploy root，workspace self-link 的目标也进入摘要；刻意跳过内容的 metadata/README 仍必须是 regular file。history 同时验证 CLI JSON-lines 与 `docker image save` 的 content-addressed config blob：config digest、完整 history、RootFS diff IDs、non-empty layer 数与 tar manifest 精确一致，拒绝少整行但剩余行合法的截断。镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族）。支持 `--keep-failure` |
 | `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **9 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、history-only secret、EXPOSE、secret 形态 ENV、root 用户；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；两项 static-only 不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
@@ -308,9 +315,10 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）。M5 候选 `38f172d` 经两路独立复审仍为 **BLOCK**；对应 P1 已在
-第二轮实现落点 `1689f1b` 定点整改，主工作树 `stage09a:check` 重新通过 14/14，
-当前等待该新候选的独立 A/B 复审，仍未 Accepted（见计划文档 M5 实施记录）；
+（见上方 M4 一节）。最新固定候选 `cce8a79` 经两路独立复审仍为 **BLOCK**；对应
+P1/P2 已在第三轮实现落点 `90f5a8a` 定点整改，主工作树 `stage09a:check` 于
+2026-08-13 重新通过 14/14，当前等待该新候选的独立 A/B 复审，仍未 Accepted
+（见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
 GitHub Actions workflow 复用同一命令但**尚无真实远端 run**，真实 run 成功之前
