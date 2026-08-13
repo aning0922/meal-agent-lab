@@ -487,14 +487,15 @@ image 正向 78 packages / 76 links / 5 migrations、1 baseline + 9 built + 2 st
 交给两个全新独立只读会话复审；M5 未 Accepted、远端 CI 无真实 run、09A 未 Pass。
 
 **M5 第五轮整改注记（2026-08-13）**：后续独立审计继续判定 BLOCK。实现候选
-`9fcd503` 将聚合步骤收敛为 controller-owned process group，并把 runtime image 的
+第五轮候选链（实现落点 `9fcd503`，当前代码落点 `f023522`）将聚合步骤收敛为 controller-owned process group，并把 runtime image 的
 Config/history/layer 与不可变 OCI archive 绑定；同时修订 Secret 架构以满足原生
 Linux：八份 host file-backed Secret 只进入唯一 `secret-materializer`，再分别物化为
 消费 UID 999/10001 所有、mode 0600 的只读 named-volume 文件。backup 与 restore
 使用独立最小凭据，dump 经 UID 999 transfer volume 在宿主 checksum 边界两侧搬运，
 不再复用 `bootstrap-logins`。本轮受控改动了既有 M2B/M3B/M4 基础设施，全部修订均
 纳入 M5 候选复审；ADR 的 Accepted 表示既有本地私有部署决策已经有真实容器证据，
-不等于第五轮候选、M5 或 09A 已通过。远端 CI 仍无真实 run。
+不等于第五轮候选已 Accepted、M5 或 09A 已通过。`f023522` 上的本地完整聚合门禁
+已从头通过 14/14，当前仍待全新 A/B 独立只读复审；远端 CI 仍无真实 run。
 
 以下条件触发复审：
 
