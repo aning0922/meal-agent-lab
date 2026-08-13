@@ -474,6 +474,18 @@ self-link；production audit、M4 one-shot ownership 与 checksum sidecar 均改
 只是整改候选，本轮新 SHA 的 A/B 复审、远端 CI 真实 run 与 09A 总验收尚未完成，
 不得据此把 M5 或 09A 标记为 Accepted/Pass。
 
+**M5 第四轮整改注记（2026-08-13）**：后续固定候选 `c44c579` 的两路复审仍为
+BLOCK。实现落点 `8ca4e8c` 进一步把 ownership 通道定义成完整生命周期协议：空
+EOF、partial/malformed frame、raw detached controller 未同步公告、cleanup START 后
+缺 DONE 均 fail closed；DONE 只确认清理生命周期结束，不掩盖 residue/throw 的固定
+exit 1。runtime image save 证据同时绑定 immutable inspect 的 config/history/rootfs
+语义、tar layer blob digest 与解压后的 diff ID，dependency payload 只在 pnpm 生成
+shim 的声明行归一化 deploy root。Docker absence 与 checksum sidecar 也改为严格单行
+framing，tracked-file 计数改为 Git 现场派生。无 Docker 脚本测试 46/46、runtime
+image 正向 78 packages / 76 links / 5 migrations、1 baseline + 9 built + 2 static-only
+变异均通过；主工作树 `stage09a:check` 从头通过 14/14。该证据仍须形成文档候选并
+交给两个全新独立只读会话复审；M5 未 Accepted、远端 CI 无真实 run、09A 未 Pass。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；

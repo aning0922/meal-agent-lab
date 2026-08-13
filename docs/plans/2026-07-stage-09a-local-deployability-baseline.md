@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-13 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」最新固定候选 `cce8a79` 的 A/B 复审为 BLOCK，对应 P1/P2 已在第三轮实现落点 `90f5a8a` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待该新候选的独立 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」最新固定候选 `c44c579` 的 A/B 复审为 BLOCK，对应确认级缺口已在第四轮实现落点 `8ca4e8c` 定点整改并通过主工作树 `stage09a:check` 14/14，当前等待文档候选后的独立 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3225,7 +3225,7 @@ wrapper 收窄**有凭据侧代价**，原文「选择收窄而不是登记取�
 
 **为什么这不等于放弃 Secret containment**：模板扫描器是**第二层**。第一层是八份
 Secret 从不进仓库、`.gitignore`、以及全仓 containment 扫描（18 needles × 86
-artifacts × 340 tracked 文件，fresh smoke 为 0 hit；321 是加入本普查门禁**之前**
+artifacts × `git ls-files` 派生的 tracked 文件，fresh smoke 为 0 hit；321 是加入本普查门禁**之前**
 的树，Round 25 候选树为 322，Round 26 加入登记表模块与登记完整性门禁后为 324，
 M4 加入生命周期/备份恢复入口与演练、runbook、备份目录说明与关机强制退出回归后为
 334，M5 加入聚合门禁入口、镜像扫描库与两条镜像门禁后为 338，总控整改再加入两份
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（最新独立复审 BLOCK 后第三轮整改完成，等待新候选 A/B 复审，未 Accepted）
+### M5 实施记录（最新独立复审 BLOCK 后第四轮整改完成，等待文档候选后的 A/B 复审，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3585,6 +3585,45 @@ checkout 复验与两路独立复审尚未完成，M5 不得标记 Accepted；�
 
 该落点仍只是**实施候选**：必须形成文档提交后由两个新的独立只读会话复审；M5
 未 Accepted，09A 未 Pass，远端 GitHub Actions 仍无真实 run。
+
+#### M5 固定候选 `c44c579` 两路复审 BLOCK 后第四轮整改（2026-08-13）
+
+固定候选 `c44c579` 的审计 A/B 均给出 **BLOCK**。总控将两份报告按生产根因去重，
+没有把历史全绿门禁当作反证；第四轮实现落点 `8ca4e8c` 收口如下：
+
+1. **ownership 通道从“能读到若干 PGID”提升为完整生命周期协议。** 聚合器拒绝
+   空 EOF、partial/超长/malformed frame；一旦前缀足以识别 PGID，仍先登记再失败
+   收敛。所有 raw detached controller 在 `spawn()` 返回后、事件循环再次运行前同步
+   登记并公告；公告失败时快速 child 的 `close` 不能抢先结算成功。cleanup 的
+   `START/DONE` 表示生命周期开始/结束，与 scoped cleanup 的业务成功/失败解耦：
+   故意制造 residue/throw 的负向夹具仍固定 exit 1，但必须先发 DONE；正常进程若
+   START 后消失且无 DONE，聚合器继续 fail closed。
+2. **runtime image 的不可变证据绑定到 save archive 的实际内容。** immutable inspect
+   新增 architecture/OS/created/descriptor/config/rootfs 约束；保存后的 manifest、
+   config blob 与 CLI inspect/history 逐项比对，history 时间按 Docker 秒级展示语义
+   对齐，empty layer 必须为 `0B`。每个 layer blob 同时验证 tar 内压缩内容 digest 与
+   解压后的 RootFS diff ID；tar header checksum、重复 member、越界与终止块均
+   fail closed。本机 Docker Desktop 实测 image ID 是 OCI index digest、并不等于
+   config blob digest，因此实现没有写入错误的等号，而是以 immutable inspect 的完整语义投影与
+   layer content-addressed 证据绑定。dependency payload 只在 pnpm 生成的
+   `NODE_PATH`/`cmd-shim-target` 行归一化 deploy root，普通 package 内容里的同字节串
+   不再被全局替换而形成碰撞。
+3. **边界 framing 与机械计数收紧。** M4/M3B 的 Docker absence 只接受 canonical
+   单行诊断及可选的唯一尾 LF，CR/LF 包装不再经 `trim()` 伪装；restore checksum
+   sidecar 以 fatal UTF-8 且保留 BOM 的方式解码，只接受单行、无 CR/NUL、无 BOM 的
+   精确 framing。M3B registry 的 tracked-file 数改为由 `git ls-files` 现场派生，文档
+   不再硬编码旧数。
+4. **回归与动态证据。** 无 Docker 脚本测试为 **46/46**；runtime image 正向为
+   **78 packages / 76 top-level links / 5 migrations**，变异套件保持 **1 baseline +
+   9 built + 2 static-only**；targeted suite **69/69**，signal suite **5 个确定性回归 +
+   5 个真实窗口**。第一次完整聚合运行在第 10 步正确暴露了“嵌套失败夹具 START
+   无 DONE”的协议冲突，修正 DONE 语义后重新从头运行 `pnpm stage09a:check`，最终
+   **14/14** 全绿：fresh smoke、八份 Secret identity、lifecycle 与 restore 均取得
+   新证据，各门禁确认自己的 scoped container/network/volume/tag/temp/PGID 为零。
+
+该落点与本次本地全绿仍只是**实施证据**。形成文档候选后必须重新启动两个全新的
+独立只读会话复审；两路均 CLEAN 后才回到项目总控裁定。M5 未 Accepted，09A 未
+Pass；GitHub Actions workflow 仍只有配置、没有真实远端 run。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的

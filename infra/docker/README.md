@@ -315,9 +315,9 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）。最新固定候选 `cce8a79` 经两路独立复审仍为 **BLOCK**；对应
-P1/P2 已在第三轮实现落点 `90f5a8a` 定点整改，主工作树 `stage09a:check` 于
-2026-08-13 重新通过 14/14，当前等待该新候选的独立 A/B 复审，仍未 Accepted
+（见上方 M4 一节）。最新固定候选 `c44c579` 经两路独立复审仍为 **BLOCK**；对应
+确认级缺口已在第四轮实现落点 `8ca4e8c` 定点整改，主工作树 `stage09a:check` 于
+2026-08-13 从头通过 14/14，当前等待文档候选后的独立 A/B 复审，仍未 Accepted
 （见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
@@ -396,5 +396,6 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得本地全绿证据；远端 CI workflow 复用同一命令但尚无真实 run，真实 run 成功
+取得本地全绿证据（最新第四轮实现落点 `8ca4e8c` 的主工作树为 14/14）；远端 CI
+workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。
