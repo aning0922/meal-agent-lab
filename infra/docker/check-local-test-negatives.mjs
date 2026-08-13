@@ -1048,19 +1048,29 @@ process.stdout.write('Group B: compose mutation negatives\n')
     },
     {
       name: 'api additionally mounts the admin secret',
-      from: '    secrets:\n      - meal_agent_runtime_database_url\n    ports:\n',
+      from:
+        '    volumes:\n' +
+        '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n' +
+        '    ports:\n',
       to:
-        '    secrets:\n      - meal_agent_runtime_database_url\n' +
-        '      - meal_agent_admin_database_url\n    ports:\n',
-      expect: /api: runtime must never receive the meal_agent_admin_database_url credential/
+        '    volumes:\n' +
+        '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n' +
+        '      - admin-url-secret:/run/secrets/meal_agent_admin_database_url:ro\n' +
+        '    ports:\n',
+      expect: /api: runtime must never receive the admin-url-secret credential volume/
     },
     {
       name: 'api additionally mounts the migration secret',
-      from: '    secrets:\n      - meal_agent_runtime_database_url\n    ports:\n',
+      from:
+        '    volumes:\n' +
+        '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n' +
+        '    ports:\n',
       to:
-        '    secrets:\n      - meal_agent_runtime_database_url\n' +
-        '      - meal_agent_migration_database_url\n    ports:\n',
-      expect: /api: runtime must never receive the meal_agent_migration_database_url credential/
+        '    volumes:\n' +
+        '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n' +
+        '      - migration-url-secret:/run/secrets/meal_agent_migration_database_url:ro\n' +
+        '    ports:\n',
+      expect: /api: runtime must never receive the migration-url-secret credential volume/
     },
     {
       name: 'the api host publish address becomes 0.0.0.0',
