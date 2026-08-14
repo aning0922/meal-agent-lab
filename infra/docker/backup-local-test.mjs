@@ -19,7 +19,7 @@
 // 必须先由 bootstrap 的 `cluster` + `logins` 重建角色，见 runbook。
 import { chmodSync, existsSync, mkdirSync, openSync, readSync, closeSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { isAbsolute, relative, resolve, basename } from 'node:path'
+import { isAbsolute, relative, resolve, basename, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -81,7 +81,11 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
     }
     const physicalTarget = resolve(realpathSync(existingAncestor), ...missingTail)
     const relativePath = relative(physicalRepositoryRoot, physicalTarget)
-    if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
+    if (
+      relativePath === '..' ||
+      relativePath.startsWith(`..${sep}`) ||
+      isAbsolute(relativePath)
+    ) {
       continue
     }
     const check = await run(

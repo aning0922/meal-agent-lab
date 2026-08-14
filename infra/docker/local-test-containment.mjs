@@ -245,6 +245,14 @@ const probeApiHttp = (host, port, timeoutMs = 4_000) =>
 const requestActuallySent = (outcome) =>
   outcome === 'api-reachable' || outcome === 'not-api'
 
+export const requireNonLoopbackIsolationEvidence = (count, fail) => {
+  if (!Number.isSafeInteger(count) || count <= 0) {
+    fail(
+      'isolation: no non-loopback address produced usable refusal, timeout, HTTP, or calibrated proxy evidence'
+    )
+  }
+}
+
 /**
  * 采集一个 label project 的全部 Docker 产物：每个容器的完整 inspect、单列的
  * Config.Env / Config.Cmd/Args / Mounts、stdout/stderr logs，以及它们镜像的
@@ -886,6 +894,7 @@ export const runContainmentAndIsolation = async ({
   // zone 的连接是 EHOSTUNREACH 的空转，不构成证据。os.networkInterfaces() 把
   // zone 放在 scopeid 字段里，这里拼回 `<address>%<interface>`。
   const nonLoopback = []
+  let nonLoopbackIsolationEvidence = 0
   for (const [interfaceName, addresses] of Object.entries(networkInterfaces())) {
     for (const address of addresses ?? []) {
       if (address.internal) {
@@ -900,7 +909,7 @@ export const runContainmentAndIsolation = async ({
     }
   }
   if (nonLoopback.length === 0) {
-    log('isolation: the host has no non-loopback addresses; no dynamic evidence is obtainable for this item')
+    fail('isolation: the host has no non-loopback addresses; dynamic isolation evidence is unavailable')
   }
   for (const { interfaceName, address } of nonLoopback) {
     const outcome = await attemptConnect(address, hostPort)
@@ -915,6 +924,7 @@ export const runContainmentAndIsolation = async ({
       continue
     }
     if (outcome !== 'connected') {
+      nonLoopbackIsolationEvidence += 1
       log(`isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} (as required)`)
       continue
     }
@@ -947,6 +957,7 @@ export const runContainmentAndIsolation = async ({
         controlProbes.length === 2 &&
         controlProbes.every((probe) => probe.outcome === http.outcome)
       if (acceptsAll && controlsBehaveTheSame && selfProbe.outcome === 'api-reachable') {
+        nonLoopbackIsolationEvidence += 1
         log(
           `isolation: ${interfaceName} ${address} is a proven accept-all interface ` +
             `proxy (both listener-free control ports ${controlPorts.join(', ')} accept ` +
@@ -968,7 +979,9 @@ export const runContainmentAndIsolation = async ({
       `isolation: ${interfaceName} ${address}:${String(hostPort)} answered ` +
         `${http.outcome} (${http.detail}) — a real HTTP response was read and it is not our API`
     )
+    nonLoopbackIsolationEvidence += 1
   }
+  requireNonLoopbackIsolationEvidence(nonLoopbackIsolationEvidence, fail)
 
   // postgres：没有任何 PublishedPort / PortBinding。inspect 失败必须 fail
   // closed——「容器不存在」不能被读成「没有发布端口」。

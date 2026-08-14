@@ -64,6 +64,8 @@ import {
   ownershipAwareSpawnStdio,
   registerRawSpawnedChild,
   runCommand,
+  installSignalHandlers,
+  terminationSignal,
   terminateControlledSubtree
 } from './m3b-subprocess.mjs'
 
@@ -88,7 +90,55 @@ const fail = (name, detail) => {
 }
 
 // 异步 spawn（自成进程组、有超时）：与其余三个 M3B CLI 同一套子进程基础设施。
-const run = (args, options = {}) => runCommand(args, { timeoutMs: 300_000, ...options })
+const run = (args, options = {}) => {
+  if (terminationSignal() !== null) {
+    // signal handler 独占 settlement 与 scoped cleanup；主流程从此不再派生 daemon
+    // 操作，也不以普通 rejection 抢在原信号/固定失败语义之前收场。
+    return new Promise(() => {})
+  }
+  return runCommand(args, { timeoutMs: 300_000, ...options })
+}
+
+// 反例套件本身也会创建 daemon-side 容器。收到外部信号时不能指望顶层 finally
+// （真实信号语义会先结束进程）；按已登记的精确 project 逐个走同一 scoped cleanup。
+installSignalHandlers(async () => {
+  const residue = []
+  const cleanupListing = async (kind, project) => {
+    const args =
+      kind === 'container'
+        ? ['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`]
+        : kind === 'network'
+          ? ['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]
+          : ['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]
+    const result = await runCommand(args, { timeoutMs: 60_000 })
+    if (result.status !== 0) return null
+    return result.stdout.split('\n').map((entry) => entry.trim()).filter(Boolean)
+  }
+  for (const project of [...new Set(usedNegativeProjects)]) {
+    for (const kind of ['container', 'network', 'volume']) {
+      const ids = await cleanupListing(kind, project)
+      if (ids === null) {
+        residue.push(`${kind}-listing:${project}`)
+        continue
+      }
+      if (ids.length > 0) {
+        const removalArgs =
+          kind === 'container'
+            ? ['docker', 'rm', '-f', '-v', ...ids]
+            : kind === 'network'
+              ? ['docker', 'network', 'rm', ...ids]
+              : ['docker', 'volume', 'rm', '-f', ...ids]
+        const removal = await runCommand(removalArgs, { timeoutMs: 60_000 })
+        if (removal.status !== 0) residue.push(`${kind}-removal:${project}`)
+      }
+      const after = await cleanupListing(kind, project)
+      if (after === null || after.length > 0) {
+        residue.push(`${kind}-residue:${project}`)
+      }
+    }
+  }
+  return residue
+}, { label: 'local-test negative suite cleanup' })
 
 /**
  * 本套件自己的输出边界。反例断言的文本几乎全部来自不可信来源（problems、
@@ -1200,6 +1250,7 @@ if (pinnedImageMatch === null) {
         fail(testCase.name, `docker create failed: ${created.stderr.trim()}`)
         continue
       }
+      process.stdout.write(`negative project: ${negativeProject} container-created\n`)
       const { artifacts } = await collectDockerArtifactsForProject({
         project: negativeProject,
         run,

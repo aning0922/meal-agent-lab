@@ -169,7 +169,7 @@ const runAndSignal = async ({
   const scene = { project: null, imageTag: null, secretsDirectory: null }
 
   const observe = (text) => {
-    const project = /(?:smoke project|probe project): (\S+)/.exec(text)
+    const project = /(?:smoke project|probe project|negative project): (\S+)/.exec(text)
     if (project !== null) {
       scene.project = project[1]
     }
@@ -485,8 +485,21 @@ assertCleanScene(
   { expectSignal: 'SIGINT' }
 )
 
+// 窗口 4：反例套件已经在 daemon 中创建了 scoped 容器。外部信号必须先走
+// 本套件自己的 scoped cleanup；不能依赖随后不会再执行的顶层收尾循环。
+assertCleanScene(
+  'SIGTERM after the local-test negative suite creates a daemon container',
+  await runAndSignal({
+    script: 'check-local-test-negatives.mjs',
+    trigger: /container-created/,
+    signal: 'SIGTERM',
+    signalDelayMs: 0
+  }),
+  { expectSignal: 'SIGTERM' }
+)
+
 // ---------------------------------------------------------------------------
-// 确定性进程组回归（**不依赖 Docker**，与下面 5 个真实信号窗口分开计数）
+// 确定性进程组回归（**不依赖 Docker**，与下面 6 个真实信号窗口分开计数）
 // ---------------------------------------------------------------------------
 //
 // 组长 close **不等于**整组消失：`sh -c 'sleep 30 & exit 0'` 的 leader 立刻退出，
@@ -1102,8 +1115,8 @@ if (handlerProblems.length > 0) {
   )
 }
 
-const expectedCount = 5
-// `caught` 同时计入确定性反例与 5 个真实窗口，因此完整性判据按**两部分之和**。
+const expectedCount = 6
+// `caught` 同时计入确定性反例与 6 个真实窗口，因此完整性判据按**两部分之和**。
 const expectedTotal = expectedCount + expectedRegressionChecks
 if (caught + failures.length !== expectedTotal) {
   fail(

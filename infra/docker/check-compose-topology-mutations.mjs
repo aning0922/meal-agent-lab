@@ -10,12 +10,8 @@
 // 它们改成 staging / production / private-network / public、把部署身份塞给别的
 // 服务，以及往拓扑里写入真实微信凭据。
 //
-// 做法是**临时改写 tracked 的 compose 文件**再运行门禁——门禁断言的是
-// `docker compose config` 解析后的配置，因此没有别的办法让它看见一个被篡改的
-// 拓扑。安全边界：
-//   - 起手要求该文件在 Git 里是干净的，否则拒绝运行，绝不覆盖真实改动；
-//   - 每次变异后立刻在 `finally` 里写回原始字节；
-//   - 结束时再逐字节复核一次，没还原成功就以非零退出并明确报告。
+// 做法是把 tracked compose 的原始字节复制到本轮独占临时目录，只改临时副本，
+// 再通过受限 `--compose-file` seam 运行同一门禁。tracked 文件从不被改写。
 //
 // 每一项都必须**以指定理由**失败：只要求「失败了」不够——一条完全无关的报错
 // 也能让脚本变绿，那样证明不了断言本身存在。
@@ -28,13 +24,27 @@ import { fileURLToPath } from 'node:url'
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
+// 先读 tracked 源文件：读取失败时尚未创建任何临时资源。
+const original = readFileSync(composeFile)
 const mutationDirectory = mkdtempSync(join(tmpdir(), 'meal-agent-compose-topology-'))
-const mutationIdentity = (() => {
-  const stat = lstatSync(mutationDirectory, { bigint: true })
-  return { dev: stat.dev, ino: stat.ino }
-})()
+let mutationIdentity
 const mutationFile = resolve(mutationDirectory, 'compose.local-test.yaml')
 const checker = resolve(composeDirectory, 'check-compose-topology.mjs')
+
+try {
+  const stat = lstatSync(mutationDirectory, { bigint: true })
+  mutationIdentity = { dev: stat.dev, ino: stat.ino }
+  writeFileSync(mutationFile, original, { flag: 'wx', mode: 0o600 })
+} catch {
+  try {
+    rmSync(mutationDirectory, { recursive: true, force: true })
+  } catch {
+    process.stderr.write('FATAL: topology mutation setup and cleanup both failed\n')
+    process.exit(1)
+  }
+  process.stderr.write('FATAL: could not create the topology mutation fixture\n')
+  process.exit(1)
+}
 
 let mutationDirectoryRemoved = false
 const cleanupMutationDirectory = () => {
@@ -69,9 +79,6 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.kill(process.pid, signal)
   })
 }
-
-const original = readFileSync(composeFile)
-writeFileSync(mutationFile, original, { flag: 'wx', mode: 0o600 })
 
 // 每一项：把 `from` 替换成 `to`，并要求门禁以 `expect` 为理由失败。
 // `from` 必须在源文件中**恰好出现一次**，否则变异本身就不确定。

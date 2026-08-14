@@ -25,6 +25,7 @@
 // 每步有一个宽松的兜底超时（子门禁内部各有更紧的有界约束）：超时先 SIGTERM
 // 留给子门禁做自己的清理，宽限后 SIGKILL，一律判失败。
 import { spawn } from 'node:child_process'
+import { writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -138,6 +139,7 @@ let aggregatePrimitiveFailed = false
 const interruptionWaiters = new Set()
 const cooperativeShutdowns = new Set()
 const ownedProcessGroups = new Map()
+const quarantinedProcessGroups = new Map()
 const currentProcessGroupGenerations = new Map()
 const closedOwnedGroupLeaders = new Set()
 let aggregateGenerationCounter = 0
@@ -146,6 +148,21 @@ const nativeNow = Date.now.bind(Date)
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
 const cooperativeShutdownBudgetMs = 310_000
+
+const safeDiagnostic = (message) => {
+  const bytes = Buffer.from(message, 'utf8')
+  try {
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(2, bytes, offset, bytes.length - offset)
+      if (!Number.isSafeInteger(written) || written <= 0) return false
+      offset += written
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 const safeDelay = (milliseconds, { ref = true } = {}) =>
   new Promise((resolveDelay) => {
@@ -172,6 +189,7 @@ const registerOwnedProcessGroup = (handle) => {
     return false
   }
   const lineage = ownershipLineage(handle)
+  quarantinedProcessGroups.delete(lineage)
   const previousGeneration = currentProcessGroupGenerations.get(lineage)
   if (previousGeneration !== undefined && handle.generation <= previousGeneration) {
     return false
@@ -184,6 +202,48 @@ const registerOwnedProcessGroup = (handle) => {
   currentProcessGroupGenerations.set(lineage, handle.generation)
   ownedProcessGroups.set(ownershipKey(handle), Object.freeze({ ...handle }))
   return true
+}
+
+// generation 前被截断的帧不能取得正常所有权，但 producer + pgid 已足以证明
+// 这是受控子树刚公布的组。把它放入只用于终止的 quarantine，直到确认 ESRCH。
+const registerQuarantinedProcessGroup = ({ producer, pgid }) => {
+  if (
+    !Number.isSafeInteger(producer) || producer <= 0 ||
+    !Number.isSafeInteger(pgid) || pgid <= 0
+  ) {
+    return false
+  }
+  const lineage = ownershipLineage({ producer, pgid })
+  if (!currentProcessGroupGenerations.has(lineage)) {
+    quarantinedProcessGroups.set(lineage, Object.freeze({ producer, pgid }))
+  }
+  return true
+}
+
+const probeQuarantinedGroup = (handle) => {
+  try {
+    nativeKill(-handle.pgid, 0)
+    return { primitiveFailed: false }
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      quarantinedProcessGroups.delete(ownershipLineage(handle))
+      return { primitiveFailed: false }
+    }
+    return { primitiveFailed: true }
+  }
+}
+
+const signalQuarantinedGroup = (handle, signal) => {
+  try {
+    nativeKill(-handle.pgid, signal)
+    return { primitiveFailed: false }
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      quarantinedProcessGroups.delete(ownershipLineage(handle))
+      return { primitiveFailed: false }
+    }
+    return { primitiveFailed: true }
+  }
 }
 
 const handleIsCurrent = (handle) =>
@@ -227,6 +287,9 @@ const purgeGoneProcessGroups = () => {
       retireOwnedProcessGroup(handle)
     }
   }
+  for (const handle of quarantinedProcessGroups.values()) {
+    primitiveFailed = probeQuarantinedGroup(handle).primitiveFailed || primitiveFailed
+  }
   return primitiveFailed
 }
 
@@ -255,13 +318,16 @@ const waitForOwnedGroups = async (budgetMs) => {
   const attempts = Math.max(1, Math.ceil(budgetMs / 25))
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
-    if (ownedProcessGroups.size === 0) {
+    if (ownedProcessGroups.size === 0 && quarantinedProcessGroups.size === 0) {
       return { gone: true, primitiveFailed }
     }
     await safeDelay(25)
   }
   primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
-  return { gone: ownedProcessGroups.size === 0, primitiveFailed }
+  return {
+    gone: ownedProcessGroups.size === 0 && quarantinedProcessGroups.size === 0,
+    primitiveFailed
+  }
 }
 
 // 聚合器不依赖子门禁的 termination abstraction 来做最后兜底：异常或永不
@@ -274,7 +340,8 @@ const terminateOwnedProcessGroups = async () => {
     for (let sweep = 0; sweep < 8; sweep += 1) {
       primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
       const snapshot = [...ownedProcessGroups.values()]
-      if (snapshot.length === 0) {
+      const quarantineSnapshot = [...quarantinedProcessGroups.values()]
+      if (snapshot.length === 0 && quarantineSnapshot.length === 0) {
         stablePasses += 1
         if (stablePasses >= 2) {
           return { ok: !primitiveFailed, primitiveFailed, survivors: [] }
@@ -286,10 +353,16 @@ const terminateOwnedProcessGroups = async () => {
       for (const handle of snapshot) {
         primitiveFailed = signalOwnedGroup(handle, 'SIGTERM').primitiveFailed || primitiveFailed
       }
+      for (const handle of quarantineSnapshot) {
+        primitiveFailed = signalQuarantinedGroup(handle, 'SIGTERM').primitiveFailed || primitiveFailed
+      }
       const termWait = await waitForOwnedGroups(500)
       primitiveFailed = termWait.primitiveFailed || primitiveFailed
       for (const handle of [...ownedProcessGroups.values()]) {
         primitiveFailed = signalOwnedGroup(handle, 'SIGKILL').primitiveFailed || primitiveFailed
+      }
+      for (const handle of [...quarantinedProcessGroups.values()]) {
+        primitiveFailed = signalQuarantinedGroup(handle, 'SIGKILL').primitiveFailed || primitiveFailed
       }
       const killWait = await waitForOwnedGroups(3_000)
       primitiveFailed = killWait.primitiveFailed || primitiveFailed
@@ -299,9 +372,12 @@ const terminateOwnedProcessGroups = async () => {
   }
   primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
   return {
-    ok: !primitiveFailed && ownedProcessGroups.size === 0,
+    ok:
+      !primitiveFailed &&
+      ownedProcessGroups.size === 0 &&
+      quarantinedProcessGroups.size === 0,
     primitiveFailed,
-    survivors: [...ownedProcessGroups.values()]
+    survivors: [...ownedProcessGroups.values(), ...quarantinedProcessGroups.values()]
   }
 }
 
@@ -359,10 +435,15 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       return
     }
     interruptedBy = signal
-    process.stderr.write(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)
+    if (!safeDiagnostic(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)) {
+      aggregatePrimitiveFailed = true
+    }
     void convergeAfterSignal()
       .then(settleInterruptedRuns)
-      .catch(() => settleInterruptedRuns({ ok: false, survivorCount: ownedProcessGroups.size }))
+      .catch(() => settleInterruptedRuns({
+        ok: false,
+        survivorCount: ownedProcessGroups.size + quarantinedProcessGroups.size
+      }))
   })
 }
 
@@ -431,6 +512,13 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     const registerRecognizableGroup = (text) => {
       const prefix = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)/.exec(text)
       if (prefix === null) {
+        const partial = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*)(?=[^0-9]|$)/.exec(text)
+        if (partial !== null) {
+          registerQuarantinedProcessGroup({
+            producer: Number(partial[1]),
+            pgid: Number(partial[2])
+          })
+        }
         return
       }
       const handle = {
@@ -515,7 +603,8 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     ownershipStream?.on('error', () => {
       ownershipProtocolFailed = true
     })
-    ownershipStream?.on('end', () => {
+    const finishOwnershipStream = () => {
+      if (ownershipStreamEnded) return
       ownershipStreamEnded = true
       if (ownershipBuffer.length > 0) {
         // 缺少终止 LF 时仍登记可证明的 PGID 以便收尾，但协议必须失败，
@@ -528,7 +617,9 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         ownershipProtocolFailed = true
         void terminateOwnedProcessGroups()
       }
-    })
+    }
+    ownershipStream?.on('end', finishOwnershipStream)
+    ownershipStream?.on('close', finishOwnershipStream)
 
     let resolveClosed
     let resolveLeaderExited
@@ -647,7 +738,10 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     interruptionWaiters.add(interruptionWaiter)
     if (interruptedBy !== null) {
       void convergeAfterSignal().then(interruptionWaiter).catch(() =>
-        interruptionWaiter({ ok: false, survivorCount: ownedProcessGroups.size })
+        interruptionWaiter({
+          ok: false,
+          survivorCount: ownedProcessGroups.size + quarantinedProcessGroups.size
+        })
       )
     }
 
@@ -718,7 +812,10 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         return
       }
       purgeGoneProcessGroups()
-      const unexpectedGroups = [...ownedProcessGroups.values()]
+      const unexpectedGroups = [
+        ...ownedProcessGroups.values(),
+        ...quarantinedProcessGroups.values()
+      ]
       if (unexpectedGroups.length > 0) {
         void (async () => {
           await terminateOwnedProcessGroups()

@@ -124,6 +124,15 @@ const processIsAlive = (pid) => {
   }
 }
 
+const processGroupIsAlive = (pgid) => {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (error) {
+    return error?.code !== 'ESRCH'
+  }
+}
+
 const writeExecutable = (path, source) => {
   writeFileSync(path, source)
   chmodSync(path, 0o700)
@@ -139,8 +148,8 @@ const createFixture = () => {
 set -eu
 if [ "\${1:-}" = version ]; then
   if [ "\${STAGE09A_FIXTURE_MODE:-}" = preflight ]; then
-    : > "\${STAGE09A_FIXTURE_DIR}/probe-ready"
     printf '%s\\n' "$$" > "\${STAGE09A_FIXTURE_DIR}/probe-pid"
+    : > "\${STAGE09A_FIXTURE_DIR}/probe-ready"
     sleep 30
   fi
   printf '%s\\n' 29.6.2
@@ -220,7 +229,7 @@ const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
 })
 child.unref()
 writeFileSync(resolve(directory, 'grandchild-pid'), String(child.pid))
-writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid) + ' 1')
+writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid))
 await delay(500)
 `
   )
@@ -303,18 +312,18 @@ writeSync(3, 'CLEANUP ' + String(process.pid) + ' START\\n')
   )
   writeFileSync(
     resolve(directory, 'announcement-failure.mjs'),
-    `import { writeFileSync } from 'node:fs'
+    `import { existsSync, writeFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import { observedDescendantPgids, runCommand } from ${JSON.stringify(subprocessModule)}
 const directory = process.env.STAGE09A_FIXTURE_DIR
-const originalWrite = process.stderr.write.bind(process.stderr)
-process.stderr.write = () => { throw new Error('ANNOUNCEMENT-SENTINEL') }
+writeFileSync(directory + '/announcement-ready', 'yes')
+while (!existsSync(directory + '/announcement-go')) await delay(5)
 let outcome = 'resolved'
 try {
   await runCommand(['/bin/sh', '-c', 'trap "" TERM INT HUP; sleep 30'], { timeoutMs: 60_000 })
 } catch (error) {
   outcome = error instanceof Error ? error.message : 'non-error'
 }
-process.stderr.write = originalWrite
 writeFileSync(directory + '/announcement-outcome', outcome)
 writeFileSync(directory + '/announcement-pgids', observedDescendantPgids().join('\\n'))
 process.exit(outcome === 'aggregate ownership announcement failed' ? 7 : 8)
@@ -470,7 +479,7 @@ test('an EOF-partial ownership frame fails closed and the announced group reache
     const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
     assert.equal(outcome.code, 1)
     assert.match(output, /ownership channel failed/)
-    await waitFor(() => !processIsAlive(pgid), 1_000, 'partial-frame group ESRCH')
+    await waitFor(() => !processGroupIsAlive(pgid), 4_000, 'partial-frame group ESRCH')
   } finally {
     if (pgid !== null && processIsAlive(pgid)) {
       process.kill(-pgid, 'SIGKILL')
@@ -586,13 +595,24 @@ test('cleanup START without DONE can never become a successful step', { timeout:
   }
 })
 
-test('an ownership diagnostic exception is local-cleaned and cannot leak or skip the machine frame', { timeout: 12_000 }, async () => {
+test('an ownership diagnostic EPIPE is local-cleaned before the caller can settle', { timeout: 12_000 }, async () => {
   const fixture = createFixture()
-  let gate = null
+  let child = null
   try {
-    gate = spawnGate(fixture, 'announcement-failure')
-    const outcome = await waitForClose(gate.child, 7_000)
-    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    child = spawn(process.execPath, [resolve(fixture.directory, 'announcement-failure.mjs')], {
+      cwd: repositoryRoot,
+      detached: true,
+      env: { ...process.env, STAGE09A_FIXTURE_DIR: fixture.directory },
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    await waitFor(
+      () => existsSync(resolve(fixture.directory, 'announcement-ready')),
+      2_000,
+      'announcement readiness'
+    )
+    child.stderr.destroy()
+    writeFileSync(resolve(fixture.directory, 'announcement-go'), 'yes')
+    const outcome = await waitForClose(child, 7_000)
     const result = readFileSync(resolve(fixture.directory, 'announcement-outcome'), 'utf8')
     const pgids = readFileSync(resolve(fixture.directory, 'announcement-pgids'), 'utf8')
       .split('\n')
@@ -601,12 +621,11 @@ test('an ownership diagnostic exception is local-cleaned and cannot leak or skip
     assert.equal(result, 'aggregate ownership announcement failed')
     assert.equal(pgidssafe(pgids), true)
     assert.equal(outcome.code, 7)
-    assert.doesNotMatch(output, /ANNOUNCEMENT-SENTINEL/)
     for (const pgid of pgids) {
       await waitFor(() => !processIsAlive(pgid), 1_000, 'announcement-failure group ESRCH')
     }
   } finally {
-    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    if (child !== null && processIsAlive(child.pid)) process.kill(-child.pid, 'SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })
@@ -666,6 +685,7 @@ test('every host detached spawn in the formal chain has an explicit ownership bo
       'infra/docker/m3b-subprocess.mjs',
       'infra/docker/postgres/no-ctty.mjs',
       'scripts/run-stage09a-check.mjs',
+      'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',

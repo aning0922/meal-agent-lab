@@ -297,6 +297,31 @@ export const validateOciDescriptor = (descriptor, role, fatal) => {
   }
   return descriptor
 }
+
+export const validateSlsaProvenanceStatement = (statement, fatal) => {
+  if (
+    !isRecord(statement) ||
+    statement._type !== 'https://in-toto.io/Statement/v1' ||
+    statement.predicateType !== 'https://slsa.dev/provenance/v1' ||
+    !isRecord(statement.predicate) ||
+    !isRecord(statement.predicate.buildDefinition) ||
+    !isRecord(statement.predicate.runDetails) ||
+    !Array.isArray(statement.subject) ||
+    statement.subject.length === 0 ||
+    statement.subject.some(
+      (subject) =>
+        !isRecord(subject) ||
+        typeof subject.name !== 'string' ||
+        subject.name === '' ||
+        !isRecord(subject.digest) ||
+        typeof subject.digest.sha256 !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(subject.digest.sha256)
+    )
+  ) {
+    fatal('docker image save returned an invalid provenance attestation')
+  }
+  return statement
+}
 const historySecretPattern = /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i
 const historyTextContainsSecret = (value) => historySecretPattern.test(value)
 
@@ -354,6 +379,37 @@ export const parseContainerInspect = (stdout, expectedContainerId, expectedImage
   return payload[0]
 }
 
+export const parseOwnedScratchContainer = (
+  stdout,
+  { expectedName, expectedImageId, expectedContainerId = null },
+  fatal
+) => {
+  let payload
+  try {
+    payload = JSON.parse(stdout)
+  } catch {
+    fatal('scratch container identity evidence was unreadable')
+  }
+  const container = payload?.[0]
+  if (
+    !Array.isArray(payload) ||
+    payload.length !== 1 ||
+    !isRecord(container) ||
+    !/^[0-9a-f]{64}$/.test(container.Id ?? '') ||
+    (expectedContainerId !== null && container.Id !== expectedContainerId) ||
+    container.Image !== expectedImageId ||
+    container.Name !== `/${expectedName}` ||
+    typeof container.Path !== 'string' ||
+    container.Path === '' ||
+    !isRecord(container.Config) ||
+    !isRecord(container.Config.Labels) ||
+    container.Config.Labels['meal-agent.m5.owner'] !== expectedName
+  ) {
+    fatal('scratch container identity did not match this run')
+  }
+  return container
+}
+
 export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, problem) => {
   const text = String(stdout ?? '')
   if (text === '' || text.includes('\r') || !text.endsWith('\n')) {
@@ -383,9 +439,8 @@ export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, p
         typeof row.CreatedBy !== 'string' ||
         row.CreatedBy.trim() === '' ||
         typeof row.CreatedSince !== 'string' ||
-        !/^(?:Less than a second|About a minute|\d+ (?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)) ago$/.test(
-          row.CreatedSince
-        ) ||
+        row.CreatedSince.trim() === '' ||
+        /[\r\n]/.test(row.CreatedSince) ||
         typeof row.Size !== 'string' ||
         !/^\d+(?:\.\d+)?(?:B|kB|MB|GB|TB)$/.test(row.Size) ||
         typeof row.Comment !== 'string'
@@ -675,24 +730,7 @@ export const validateSavedImageArchive = (
       } catch {
         fatal('docker image save returned an unreadable provenance attestation')
       }
-      if (
-        !isRecord(statement) ||
-        statement._type !== 'https://in-toto.io/Statement/v1' ||
-        statement.predicateType !== 'https://slsa.dev/provenance/v1' ||
-        !Array.isArray(statement.subject) ||
-        statement.subject.length === 0 ||
-        statement.subject.some(
-          (subject) =>
-            !isRecord(subject) ||
-            typeof subject.name !== 'string' ||
-            subject.name === '' ||
-            !isRecord(subject.digest) ||
-            typeof subject.digest.sha256 !== 'string' ||
-            !/^[0-9a-f]{64}$/.test(subject.digest.sha256)
-        )
-      ) {
-        fatal('docker image save returned an invalid provenance attestation')
-      }
+      validateSlsaProvenanceStatement(statement, fatal)
       attestationSubjects.push(...statement.subject.map((subject) => `sha256:${subject.digest.sha256}`))
       return
     }
@@ -778,7 +816,7 @@ export const validateSavedImageArchive = (
   }
   const config = decodeJson(manifest.Config, 'docker image save config')
   parseSavedImageConfig(config.bytes, manifest.Config, expectedImageEvidence, historyRows, fatal, problem)
-  return { members, manifest }
+  return { members, manifest, layerDescriptors: selectedManifest.layers }
 }
 
 const hashArchiveMember = async (archivePath, member, { decompress = false } = {}) => {
@@ -857,24 +895,53 @@ const validateLayerTarFraming = (path, fatal) => {
   }
 }
 
-const hashAndValidateLayer = async (archivePath, member, outputPath, fatal) => {
+const readLayerMagic = (archivePath, member) => {
+  const fd = openSync(archivePath, 'r')
+  const magic = Buffer.alloc(4)
+  try {
+    readSync(fd, magic, 0, magic.length, member.offset)
+  } finally {
+    closeSync(fd)
+  }
+  return magic
+}
+
+const layerCodec = (magic) =>
+  magic[0] === 0x1f && magic[1] === 0x8b
+    ? 'gzip'
+    : magic.equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))
+      ? 'zstd'
+      : 'raw'
+
+const expectedLayerCodec = (mediaType) =>
+  mediaType.endsWith('+gzip') ||
+  mediaType === 'application/vnd.docker.image.rootfs.diff.tar.gzip'
+    ? 'gzip'
+    : mediaType.endsWith('+zstd')
+      ? 'zstd'
+      : 'raw'
+
+const hashAndValidateLayer = async (
+  archivePath,
+  member,
+  mediaType,
+  outputPath,
+  fatal
+) => {
   const hash = createHash('sha256')
+  const actualCodec = layerCodec(readLayerMagic(archivePath, member))
+  if (actualCodec !== expectedLayerCodec(mediaType)) {
+    fatal('docker image save layer media type did not match the blob codec')
+  }
   let stream = createReadStream(archivePath, {
     start: member.offset,
     end: member.offset + member.size - 1
   })
   const fd = openSync(outputPath, 'wx', 0o600)
   try {
-    const magicFd = openSync(archivePath, 'r')
-    const magic = Buffer.alloc(4)
-    try {
-      readSync(magicFd, magic, 0, magic.length, member.offset)
-    } finally {
-      closeSync(magicFd)
-    }
-    if (magic[0] === 0x1f && magic[1] === 0x8b) {
+    if (actualCodec === 'gzip') {
       stream = stream.pipe(createGunzip())
-    } else if (magic.equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
+    } else if (actualCodec === 'zstd') {
       stream = stream.pipe(createZstdDecompress())
     }
     for await (const chunk of stream) {
@@ -900,10 +967,14 @@ const hashAndValidateLayer = async (archivePath, member, outputPath, fatal) => {
 export const verifySavedImageLayers = async (
   archivePath,
   layerPaths,
+  layerDescriptors,
   expectedDiffIds,
   fatal
 ) => {
-  if (layerPaths.length !== expectedDiffIds.length) {
+  if (
+    layerPaths.length !== expectedDiffIds.length ||
+    layerDescriptors.length !== layerPaths.length
+  ) {
     fatal('docker image save layer count does not match immutable image evidence')
   }
   const members = indexSavedImageTar(archivePath, fatal)
@@ -912,6 +983,14 @@ export const verifySavedImageLayers = async (
   try {
     for (let index = 0; index < layerPaths.length; index += 1) {
       const layerPath = layerPaths[index]
+      const descriptor = layerDescriptors[index]
+      if (
+        !isRecord(descriptor) ||
+        typeof descriptor.digest !== 'string' ||
+        `blobs/sha256/${descriptor.digest.slice(7)}` !== layerPath
+      ) {
+        fatal('docker image save layer descriptor order did not match exported metadata')
+      }
       const member = members.get(layerPath)
       if (member === undefined) fatal('docker image save omitted a declared layer blob')
       const blobDigest = layerPath.slice('blobs/sha256/'.length)
@@ -922,6 +1001,7 @@ export const verifySavedImageLayers = async (
       const actualDiff = await hashAndValidateLayer(
         archivePath,
         member,
+        descriptor.mediaType,
         join(layerWork, `${String(index)}.tar`),
         fatal
       )
@@ -1023,7 +1103,7 @@ export const dependencyPayloadOf = (
         visit(path)
       } else if (stat.isFile()) {
         const kind = isExecutableShim ? 'bin-file' : 'file'
-        const mode = isExecutableShim ? `${String(stat.mode & 0o7777)}\0` : ''
+        const mode = `${String(stat.mode & 0o7777)}\0`
         const bytes = readFileSync(path)
         let comparableBytes = bytes
         if (isExecutableShim) {
@@ -1334,6 +1414,7 @@ export const deriveExpectedClosure = async ({ runStrict, fatal, problem, tempora
 // --------------------------------------------------------------------------
 export const scanImage = async ({
   imageTag,
+  expectedImageId,
   expected,
   temporaryRoot,
   runStrict,
@@ -1360,6 +1441,9 @@ export const scanImage = async ({
     ).stdout,
     fatal
   )
+  if (imageId !== expectedImageId) {
+    fatal('per-run image tag no longer identifies the image produced by this build')
+  }
   track.image(imageId)
   log(`image id ${imageId}`)
 
@@ -1409,6 +1493,7 @@ export const scanImage = async ({
   await verifySavedImageLayers(
     savedImageTarPath,
     savedManifest.Layers,
+    archiveEvidence.layerDescriptors,
     imageInspect.RootFS.Layers,
     fatal
   )
@@ -1435,7 +1520,11 @@ export const scanImage = async ({
   ) {
     fatal('per-run scratch container was not proven absent before create')
   }
-  track.container(scratchContainerName)
+  track.container({
+    state: 'intent',
+    name: scratchContainerName,
+    imageId
+  })
   const created = await runStrict(
     [
       'docker',
@@ -1452,18 +1541,27 @@ export const scanImage = async ({
     }
   )
   const containerId = parseDockerContainerId(created.stdout, fatal)
-  track.container(containerId)
-  parseContainerInspect(
-    (
+  const containerInspectText = (
       await runStrict(['docker', 'container', 'inspect', containerId], {
         timeoutMs: 60_000,
         label: 'docker container inspect (identity binding)'
       })
-    ).stdout,
-    containerId,
-    imageId,
+    ).stdout
+  parseOwnedScratchContainer(
+    containerInspectText,
+    {
+      expectedName: scratchContainerName,
+      expectedImageId: imageId,
+      expectedContainerId: containerId
+    },
     fatal
   )
+  track.container({
+    state: 'owned',
+    name: scratchContainerName,
+    id: containerId,
+    imageId
+  })
   await runStrict(['docker', 'export', containerId, '-o', imageTarPath], {
     timeoutMs: 300_000,
     label: 'docker export'
@@ -1472,8 +1570,23 @@ export const scanImage = async ({
   if (containerRemoval.status !== 0) {
     problem('scratch container could not be removed after export')
   } else {
-    track.containerGone(containerId)
-    track.containerGone(scratchContainerName)
+    let removalConfirmed = true
+    for (const identifier of [containerId, scratchContainerName]) {
+      const gone = await runCommand(['docker', 'container', 'inspect', identifier], {
+        timeoutMs: 60_000
+      })
+      if (!(
+        gone.status === 1 &&
+        isAbsenceMessage(gone.stderr, { kind: 'container', name: identifier })
+      )) {
+        problem('scratch container was not proven absent after removal')
+        removalConfirmed = false
+        break
+      }
+    }
+    if (removalConfirmed) {
+      track.containerGone(scratchContainerName)
+    }
   }
 
   const listing = (

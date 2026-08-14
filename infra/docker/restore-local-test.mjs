@@ -148,13 +148,15 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   // 同一个文件。
   const oneOff = (runArgs, options) =>
     composeRunOneOff({ compose, run, warn: log }, runArgs, options)
+  const safeOneOff = (runArgs, options, failureReason) =>
+    runRestoreOneOff(oneOff, runArgs, options, failureReason)
 
   log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
   log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
 
   // 宿主已校验的 bytes 经 stdin 送入无网络、无 Secret 的 loader，由 UID999 在
   // project-scoped transfer volume 内物化为 0600；不依赖宿主目录 owner/mode。
-  const loaded = await oneOff(
+  const loaded = await safeOneOff(
     [
       '--entrypoint',
       'bash',
@@ -162,14 +164,15 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
       '-euc',
       'umask 077; cat > /transfer/input.dump.new; mv -f /transfer/input.dump.new /transfer/input.dump'
     ],
-    { timeoutMs: 300_000, stdin: readFileSync(physicalPath) }
+    { timeoutMs: 300_000, stdin: readFileSync(physicalPath) },
+    'restore handoff into the controlled transfer volume failed'
   )
   if (loaded.status !== 0) {
     throw new Error('restore handoff into the controlled transfer volume failed')
   }
 
   // 目标数据库必须不存在：恢复只进全新库。
-  const present = await oneOff(
+  const present = await safeOneOff(
     [
       '--entrypoint',
       'psql',
@@ -181,7 +184,8 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
       '--command',
       `SELECT count(*) FROM pg_database WHERE datname = '${targetDatabase}'`
     ],
-    { timeoutMs: 120_000 }
+    { timeoutMs: 120_000 },
+    'could not verify that the restore target database is absent'
   )
   if (present.status !== 0) {
     throw new Error(`could not verify the target database is absent (psql exited ${String(present.status)})`)
@@ -195,7 +199,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
 
   // createdb --owner=meal_agent_migrator：恢复路径不执行 0000，也不执行 owner
   // handoff——dump 自带正确的 owner，数据库本身的 owner 在这里一次到位。
-  const created = await oneOff(
+  const created = await safeOneOff(
     [
       '--entrypoint',
       'createdb',
@@ -206,7 +210,8 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
       '--',
       targetDatabase
     ],
-    { timeoutMs: 120_000 }
+    { timeoutMs: 120_000 },
+    'restore failed while creating the target database'
   )
   if (created.status !== 0) {
     throw new Error(
@@ -217,7 +222,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
 
   // 单事务恢复：要么全部成功，要么整体回滚。凭据是 cluster admin 的
   // PGPASSFILE（bootstrap-acl 服务声明的 secret），不经 argv。
-  const restored = await oneOff(
+  const restored = await safeOneOff(
     [
       '--entrypoint',
       'pg_restore',
@@ -231,7 +236,8 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
       `--dbname=${targetDatabase}`,
       '/transfer/input.dump'
     ],
-    { timeoutMs: 900_000 }
+    { timeoutMs: 900_000 },
+    'restore failed while applying the verified backup'
   )
   if (restored.status !== 0) {
     throw new Error(
@@ -240,6 +246,14 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   }
   log(`restore complete: deployment=local-test project=${project} database=${targetDatabase} (single transaction)`)
   return { sha256 }
+}
+
+export const runRestoreOneOff = async (oneOff, runArgs, options, failureReason) => {
+  try {
+    return await oneOff(runArgs, options)
+  } catch {
+    throw new Error(failureReason)
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

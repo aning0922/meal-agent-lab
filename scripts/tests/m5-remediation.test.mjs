@@ -7,6 +7,7 @@ import test from 'node:test'
 
 import { assertBackupTargetsIgnored } from '../../infra/docker/backup-local-test.mjs'
 import { discardOverride, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
+import { requireNonLoopbackIsolationEvidence } from '../../infra/docker/local-test-containment.mjs'
 
 import {
   composeRunOneOff,
@@ -16,6 +17,7 @@ import {
 } from '../../infra/docker/m4-lifecycle.mjs'
 import {
   checksumSidecarUnparseableReason,
+  runRestoreOneOff,
   verifyBackupChecksum
 } from '../../infra/docker/restore-local-test.mjs'
 
@@ -230,6 +232,44 @@ test('backup target containment follows a symlink alias to its physical reposito
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('a repository path whose basename starts with two dots is still inside the repository', async () => {
+  const calls = []
+  await assert.rejects(
+    assertBackupTargetsIgnored(async (argv) => {
+      calls.push(argv)
+      return { status: 1, stdout: '', stderr: '' }
+    }, [resolve(repositoryRoot, '..fixture.dump')]),
+    /inside the repository but not git-ignored/
+  )
+  assert.equal(calls.length, 1)
+})
+
+test('restore one-off exceptions are replaced by the fixed stage reason', async () => {
+  const sentinel = 'RESTORE-ONEOFF-SENTINEL'
+  await assert.rejects(
+    runRestoreOneOff(
+      async () => { throw new Error(sentinel) },
+      ['restore'],
+      { timeoutMs: 1 },
+      'restore failed while applying the verified backup'
+    ),
+    (error) =>
+      error instanceof Error &&
+      error.message === 'restore failed while applying the verified backup' &&
+      !error.message.includes(sentinel)
+  )
+})
+
+test('zero usable non-loopback outcomes can never satisfy the isolation gate', () => {
+  const failures = []
+  requireNonLoopbackIsolationEvidence(0, (message) => failures.push(message))
+  assert.deepEqual(failures, [
+    'isolation: no non-loopback address produced usable refusal, timeout, HTTP, or calibrated proxy evidence'
+  ])
+  requireNonLoopbackIsolationEvidence(1, (message) => failures.push(message))
+  assert.equal(failures.length, 1)
 })
 
 test('temporary compose override cleanup is bound to the inode this run created', () => {

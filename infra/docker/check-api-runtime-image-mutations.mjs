@@ -28,6 +28,8 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
+  parseDockerImageId,
+  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import { isAbsenceMessage } from './m3b-docker.mjs'
@@ -123,6 +125,19 @@ const mutations = [
     expectScan: ['closure: dependency payload differs byte-for-byte from the deploy-derived closure']
   },
   {
+    id: 'change-package-file-mode',
+    describe: 'change an ordinary package file mode without changing its bytes',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        "RUN target=\"$(find /app/node_modules/.pnpm -type f -name '*.js' | head -n 1)\" && chmod 0755 \"$target\"\n\nUSER 10001:10001"
+      ),
+    expectStatic: [],
+    expectScan: ['closure: dependency payload differs byte-for-byte from the deploy-derived closure']
+  },
+  {
     id: 'replace-skipped-readme-with-directory',
     describe: 'turn the skipped contracts README path into an opaque directory tree',
     build: true,
@@ -188,44 +203,114 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 9
+const expectedBuiltMutationCount = 10
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
   temporaryRoot: null,
-  containerIds: new Set(),
-  builtTags: new Set(),
+  containerClaims: new Map(),
+  builtTags: new Map(),
   done: false
 }
 const cleanupProblems = []
+const cleanupOwnedDanglingImage = async (tag, ownedImageId) => {
+  if (ownedImageId === null) return
+  const owned = await runCommand(
+    ['docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', ownedImageId],
+    { timeoutMs: 60_000 }
+  )
+  if (owned.status === 0) {
+    let repoTags
+    try {
+      repoTags = JSON.parse(owned.stdout.trim())
+    } catch {
+      cleanupProblems.push(`owned image tag set was unreadable (${tag})`)
+      return
+    }
+    if (repoTags === null || (Array.isArray(repoTags) && repoTags.length === 0)) {
+      const removal = await runCommand(['docker', 'rmi', ownedImageId], { timeoutMs: 120_000 })
+      if (removal.status !== 0) cleanupProblems.push(`owned dangling image removal failed (${tag})`)
+    } else if (!Array.isArray(repoTags)) {
+      cleanupProblems.push(`owned image tag set had an invalid shape (${tag})`)
+    }
+  } else if (!(
+    owned.status === 1 &&
+    isAbsenceMessage(owned.stderr, { kind: 'image', name: ownedImageId })
+  )) {
+    cleanupProblems.push(`owned image identity could not be verified (${tag})`)
+  }
+}
 const cleanup = async () => {
   if (cleanupState.done) {
     return
   }
   cleanupState.done = true
-  for (const containerId of [...cleanupState.containerIds]) {
+  for (const claim of [...cleanupState.containerClaims.values()]) {
     try {
-      const removal = await runCommand(['docker', 'rm', '-f', containerId], { timeoutMs: 60_000 })
-      if (
-        removal.status !== 0 &&
-        !(removal.status === 1 && isAbsenceMessage(removal.stderr, { kind: 'container', name: containerId }))
-      ) {
-        cleanupProblems.push('scratch container removal failed')
+      const current = await runCommand(['docker', 'container', 'inspect', claim.name], {
+        timeoutMs: 60_000
+      })
+      if (current.status === 0) {
+        let owned
+        try {
+          owned = parseOwnedScratchContainer(current.stdout, {
+            expectedName: claim.name,
+            expectedImageId: claim.imageId,
+            expectedContainerId: claim.id ?? null
+          }, () => { throw new Error('identity drift') })
+        } catch {
+          cleanupProblems.push('scratch container ownership drifted; foreign container was preserved')
+          continue
+        }
+        const removal = await runCommand(['docker', 'rm', '-f', owned.Id], { timeoutMs: 60_000 })
+        if (removal.status !== 0) {
+          cleanupProblems.push('scratch container removal failed')
+          continue
+        }
+      } else if (!(
+        current.status === 1 &&
+        isAbsenceMessage(current.stderr, { kind: 'container', name: claim.name })
+      )) {
+        cleanupProblems.push('scratch container identity could not be verified')
+        continue
+      }
+      const gone = await runCommand(['docker', 'container', 'inspect', claim.name], {
+        timeoutMs: 60_000
+      })
+      if (!(
+        gone.status === 1 &&
+        isAbsenceMessage(gone.stderr, { kind: 'container', name: claim.name })
+      )) {
+        cleanupProblems.push('scratch container was not proven absent after removal')
       } else {
-        cleanupState.containerIds.delete(containerId)
+        cleanupState.containerClaims.delete(claim.name)
       }
     } catch {
       cleanupProblems.push('scratch container removal did not complete')
     }
   }
-  for (const tag of cleanupState.builtTags) {
+  for (const [tag, ownedImageId] of cleanupState.builtTags) {
     try {
-      const removal = await runCommand(['docker', 'rmi', tag], { timeoutMs: 120_000 })
-      if (
-        removal.status !== 0 &&
-        !(removal.status === 1 && isAbsenceMessage(removal.stderr, { kind: 'image', name: tag }))
-      ) {
-        cleanupProblems.push(`image tag removal failed (${tag})`)
+      const current = await runCommand(
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', tag],
+        { timeoutMs: 60_000 }
+      )
+      if (current.status === 0) {
+        if (ownedImageId === null || current.stdout.trim() !== ownedImageId) {
+          cleanupProblems.push(`image tag ownership drifted; foreign tag was preserved (${tag})`)
+          await cleanupOwnedDanglingImage(tag, ownedImageId)
+          continue
+        }
+        const removal = await runCommand(['docker', 'rmi', tag], { timeoutMs: 120_000 })
+        if (removal.status !== 0) {
+          cleanupProblems.push(`image tag removal failed (${tag})`)
+          continue
+        }
+      } else if (!(
+        current.status === 1 &&
+        isAbsenceMessage(current.stderr, { kind: 'image', name: tag })
+      )) {
+        cleanupProblems.push(`image tag identity could not be verified (${tag})`)
         continue
       }
       const gone = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
@@ -235,6 +320,7 @@ const cleanup = async () => {
       ) {
         cleanupProblems.push(`image tag still present after removal (${tag})`)
       }
+      await cleanupOwnedDanglingImage(tag, ownedImageId)
     } catch {
       cleanupProblems.push(`image tag removal did not complete (${tag})`)
     }
@@ -258,9 +344,10 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
   const tag = tagFor(caseId)
   const caseDirectory = join(cleanupState.temporaryRoot, `case-${caseId}`)
   mkdirSync(caseDirectory, { recursive: true })
+  const imageIdFile = join(caseDirectory, 'built-image.id')
   const buildArgs = viaStdin
-    ? ['docker', 'build', '--file', '-', '--tag', tag, '.']
-    : ['docker', 'build', '--file', 'services/api/Dockerfile', '--tag', tag, '.']
+    ? ['docker', 'build', '--iidfile', imageIdFile, '--file', '-', '--tag', tag, '.']
+    : ['docker', 'build', '--iidfile', imageIdFile, '--file', 'services/api/Dockerfile', '--tag', tag, '.']
   const preexistingImage = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
   if (
     preexistingImage.status === 0 ||
@@ -268,15 +355,18 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
   ) {
     fatal('per-case image tag was not proven absent before build')
   }
-  cleanupState.builtTags.add(tag)
+  cleanupState.builtTags.set(tag, null)
   await runStrict(buildArgs, {
     timeoutMs: 900_000,
     label: `docker build (${caseId})`,
     stdin: viaStdin ? dockerfileText : null
   })
+  const builtImageId = parseDockerImageId(readFileSync(imageIdFile, 'utf8'), fatal)
+  cleanupState.builtTags.set(tag, builtImageId)
   const problems = []
   await scanImage({
     imageTag: tag,
+    expectedImageId: builtImageId,
     expected: suiteExpected,
     temporaryRoot: caseDirectory,
     runStrict,
@@ -286,11 +376,11 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
     scratchContainerName: `meal-agent-m5-image-mut-${runId}-${caseId}`,
     track: {
       image: () => undefined,
-      container: (id) => {
-        cleanupState.containerIds.add(id)
+      container: (claim) => {
+        cleanupState.containerClaims.set(claim.name, claim)
       },
-      containerGone: (id) => {
-        cleanupState.containerIds.delete(id)
+      containerGone: (name) => {
+        cleanupState.containerClaims.delete(name)
       }
     }
   })

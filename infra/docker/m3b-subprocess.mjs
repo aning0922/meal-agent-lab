@@ -53,8 +53,16 @@ const writeAggregateFrame = (frame) => {
 }
 
 const writeDiagnostic = (message) => {
+  const bytes = Buffer.from(message, 'utf8')
   try {
-    process.stderr.write(message)
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(2, bytes, offset, bytes.length - offset)
+      if (!Number.isSafeInteger(written) || written <= 0) {
+        return false
+      }
+      offset += written
+    }
     return true
   } catch {
     return false

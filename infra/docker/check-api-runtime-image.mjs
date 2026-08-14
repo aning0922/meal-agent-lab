@@ -38,6 +38,8 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
+  parseDockerImageId,
+  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import { isAbsenceMessage } from './m3b-docker.mjs'
@@ -73,7 +75,7 @@ const imageTag = `meal-agent-api:m5-image-scan-${runId}`
 
 const cleanupState = {
   temporaryRoot: null,
-  containerIds: new Set(),
+  containerClaims: new Map(),
   ownedImageTag: false,
   ownedImageId: null,
   done: false
@@ -90,24 +92,53 @@ const cleanup = async ({ keepScene = false } = {}) => {
     if (cleanupState.temporaryRoot !== null) {
       process.stderr.write('image-scan:   kept owned temporary directory (path omitted)\n')
     }
-    for (const containerId of cleanupState.containerIds) {
-      process.stderr.write(`image-scan:   kept container ${containerId}\n`)
+    for (const claim of cleanupState.containerClaims.values()) {
+      process.stderr.write(`image-scan:   kept container ${claim.name}\n`)
     }
     if (cleanupState.ownedImageTag) {
       process.stderr.write(`image-scan:   kept image tag ${imageTag}\n`)
     }
     return
   }
-  for (const containerId of [...cleanupState.containerIds]) {
+  for (const claim of [...cleanupState.containerClaims.values()]) {
     try {
-      const removal = await runCommand(['docker', 'rm', '-f', containerId], { timeoutMs: 60_000 })
-      if (
-        removal.status !== 0 &&
-        !(removal.status === 1 && isAbsenceMessage(removal.stderr, { kind: 'container', name: containerId }))
-      ) {
-        cleanupProblems.push('scratch container removal failed')
+      const current = await runCommand(['docker', 'container', 'inspect', claim.name], {
+        timeoutMs: 60_000
+      })
+      if (current.status === 0) {
+        let owned = null
+        try {
+          owned = parseOwnedScratchContainer(current.stdout, {
+            expectedName: claim.name,
+            expectedImageId: claim.imageId,
+            expectedContainerId: claim.id ?? null
+          }, () => { throw new Error('identity drift') })
+        } catch {
+          cleanupProblems.push('scratch container ownership drifted; foreign container was preserved')
+          continue
+        }
+        const removal = await runCommand(['docker', 'rm', '-f', owned.Id], { timeoutMs: 60_000 })
+        if (removal.status !== 0) {
+          cleanupProblems.push('scratch container removal failed')
+          continue
+        }
+      } else if (!(
+        current.status === 1 &&
+        isAbsenceMessage(current.stderr, { kind: 'container', name: claim.name })
+      )) {
+        cleanupProblems.push('scratch container identity could not be verified')
+        continue
+      }
+      const gone = await runCommand(['docker', 'container', 'inspect', claim.name], {
+        timeoutMs: 60_000
+      })
+      if (!(
+        gone.status === 1 &&
+        isAbsenceMessage(gone.stderr, { kind: 'container', name: claim.name })
+      )) {
+        cleanupProblems.push('scratch container was not proven absent after removal')
       } else {
-        cleanupState.containerIds.delete(containerId)
+        cleanupState.containerClaims.delete(claim.name)
       }
     } catch {
       cleanupProblems.push('scratch container removal did not complete')
@@ -236,6 +267,7 @@ const main = async () => {
   })
 
   log(`building ${imageTag}`)
+  const imageIdFile = join(cleanupState.temporaryRoot, 'built-image.id')
   const preexistingImage = await runCommand(['docker', 'image', 'inspect', imageTag], { timeoutMs: 60_000 })
   if (
     preexistingImage.status === 0 ||
@@ -246,13 +278,16 @@ const main = async () => {
   // 从确认 absent 起本轮拥有这个唯一 tag：即使 docker build 已完成 tag 写入后
   // credential helper/stdio 卡住并最终超时，finally 也必须尝试精确删除它。
   cleanupState.ownedImageTag = true
-  await runStrict(['docker', 'build', '--file', 'services/api/Dockerfile', '--tag', imageTag, '.'], {
+  await runStrict(['docker', 'build', '--iidfile', imageIdFile, '--file', 'services/api/Dockerfile', '--tag', imageTag, '.'], {
     timeoutMs: 900_000,
     label: 'docker build'
   })
+  const builtImageId = parseDockerImageId(readFileSync(imageIdFile, 'utf8'), fatal)
+  cleanupState.ownedImageId = builtImageId
 
   return scanImage({
     imageTag,
+    expectedImageId: builtImageId,
     expected,
     temporaryRoot: cleanupState.temporaryRoot,
     runStrict,
@@ -264,11 +299,11 @@ const main = async () => {
       image: (id) => {
         cleanupState.ownedImageId = id
       },
-      container: (id) => {
-        cleanupState.containerIds.add(id)
+      container: (claim) => {
+        cleanupState.containerClaims.set(claim.name, claim)
       },
-      containerGone: (id) => {
-        cleanupState.containerIds.delete(id)
+      containerGone: (name) => {
+        cleanupState.containerClaims.delete(name)
       }
     }
   })

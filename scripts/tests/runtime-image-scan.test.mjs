@@ -22,11 +22,13 @@ import {
   dependencyPayloadOf,
   dockerignorePath,
   parseContainerInspect,
+  parseOwnedScratchContainer,
   parseImageHistory,
   parseImageInspect,
   parseSavedImageConfig,
   parseSavedImageManifest,
   validateOciDescriptor,
+  validateSlsaProvenanceStatement,
   verifySavedImageLayers,
   parseDockerContainerId,
   parseDockerImageId
@@ -96,7 +98,7 @@ test('immutable image, container and history evidence is identity-bound and comp
   for (const mutation of [
     { CreatedAt: '2026-99-99T00:00:00Z' },
     { CreatedBy: '   ' },
-    { CreatedSince: 'nonsense' }
+    { CreatedSince: '' }
   ]) {
     assert.throws(
       () =>
@@ -113,6 +115,16 @@ test('immutable image, container and history evidence is identity-bound and comp
   assert.throws(
     () => parseImageHistory(JSON.stringify(historyRow), imageId, 1, throwingFatal, () => {}),
     /invalid framing/
+  )
+  assert.equal(
+    parseImageHistory(
+      `${JSON.stringify({ ...historyRow, CreatedSince: 'About an hour ago' })}\n`,
+      imageId,
+      1,
+      throwingFatal,
+      () => {}
+    ).length,
+    1
   )
   assert.throws(
     () =>
@@ -251,6 +263,7 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
       verifySavedImageLayers(
         archive,
         [`blobs/sha256/${digest}`],
+        [{ digest: `sha256:${digest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar' }],
         [`sha256:${digest}`],
         throwingFatal
       )
@@ -259,10 +272,21 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
       verifySavedImageLayers(
         archive,
         [`blobs/sha256/${digest}`],
+        [{ digest: `sha256:${digest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar' }],
         [`sha256:${'f'.repeat(64)}`],
         throwingFatal
       ),
       /wrong diff ID/
+    )
+    await assert.rejects(
+      verifySavedImageLayers(
+        archive,
+        [`blobs/sha256/${digest}`],
+        [{ digest: `sha256:${digest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar+gzip' }],
+        [`sha256:${digest}`],
+        throwingFatal
+      ),
+      /media type did not match/
     )
 
     const truncatedBytes = layerBytes.subarray(0, layerBytes.length - 512)
@@ -279,6 +303,7 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
       verifySavedImageLayers(
         truncatedArchive,
         [`blobs/sha256/${truncatedDigest}`],
+        [{ digest: `sha256:${truncatedDigest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar' }],
         [`sha256:${truncatedDigest}`],
         throwingFatal
       ),
@@ -317,6 +342,26 @@ test('OCI descriptor media types are exact for each evidence role', () => {
   }
 })
 
+test('SLSA provenance requires the supported predicate envelope', () => {
+  const statement = {
+    _type: 'https://in-toto.io/Statement/v1',
+    predicateType: 'https://slsa.dev/provenance/v1',
+    subject: [{ name: 'fixture', digest: { sha256: 'a'.repeat(64) } }],
+    predicate: { buildDefinition: {}, runDetails: {} }
+  }
+  assert.equal(validateSlsaProvenanceStatement(statement, throwingFatal), statement)
+  for (const mutation of [
+    { ...statement, predicate: undefined },
+    { ...statement, predicate: { runDetails: {} } },
+    { ...statement, predicate: { buildDefinition: {} } }
+  ]) {
+    assert.throws(
+      () => validateSlsaProvenanceStatement(mutation, throwingFatal),
+      /invalid provenance attestation/
+    )
+  }
+})
+
 test('dependency payload evidence includes .bin and package file bytes', () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-image-payload-'))
   try {
@@ -336,6 +381,9 @@ test('dependency payload evidence includes .bin and package file bytes', () => {
     writeFileSync(resolve(directory, 'fixture/payload.js'), 'mutation')
     const withPayload = dependencyPayloadOf(directory, 'fixture', () => {})
     assert.notEqual(withPayload.sha256, withChangedBinMode.sha256)
+    chmodSync(resolve(directory, 'fixture/payload.js'), 0o755)
+    const withPayloadMode = dependencyPayloadOf(directory, 'fixture', () => {})
+    assert.notEqual(withPayloadMode.sha256, withPayload.sha256)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -458,6 +506,44 @@ test('Docker evidence identities must use canonical immutable forms', () => {
   }
 })
 
+test('scratch-container cleanup ownership is proven by exact identity, image, name and label', () => {
+  const imageId = `sha256:${'a'.repeat(64)}`
+  const containerId = 'b'.repeat(64)
+  const name = 'meal-agent-m5-image-scan-fixture'
+  const payload = [{
+    Id: containerId,
+    Image: imageId,
+    Name: `/${name}`,
+    Path: 'node',
+    Config: { Labels: { 'meal-agent.m5.owner': name } }
+  }]
+
+  assert.equal(
+    parseOwnedScratchContainer(JSON.stringify(payload), {
+      expectedName: name,
+      expectedImageId: imageId,
+      expectedContainerId: containerId
+    }, throwingFatal).Id,
+    containerId
+  )
+
+  for (const mutation of [
+    { ...payload[0], Id: 'c'.repeat(64) },
+    { ...payload[0], Image: `sha256:${'d'.repeat(64)}` },
+    { ...payload[0], Name: '/foreign' },
+    { ...payload[0], Config: { Labels: { 'meal-agent.m5.owner': 'foreign' } } }
+  ]) {
+    assert.throws(
+      () => parseOwnedScratchContainer(JSON.stringify([mutation]), {
+        expectedName: name,
+        expectedImageId: imageId,
+        expectedContainerId: containerId
+      }, throwingFatal),
+      /identity did not match/
+    )
+  }
+})
+
 test('the scan resolves a mutable tag once and binds all later evidence to the immutable ID', () => {
   const source = readFileSync(resolve(import.meta.dirname, '../../infra/docker/api-image-scan.mjs'), 'utf8')
   const scanBody = source.slice(source.indexOf('export const scanImage'))
@@ -465,7 +551,29 @@ test('the scan resolves a mutable tag once and binds all later evidence to the i
   assert.match(scanBody, /'docker',[\s\S]*?'create',[\s\S]*?'--name',[\s\S]*?imageId/)
   assert.match(scanBody, /\['docker', 'image', 'inspect', imageId\]/)
   assert.match(scanBody, /\['docker', 'container', 'inspect', containerId\]/)
-  assert.match(scanBody, /parseContainerInspect\([\s\S]*?containerId,[\s\S]*?imageId,/)
+  assert.match(scanBody, /parseOwnedScratchContainer\([\s\S]*?expectedContainerId: containerId/)
+  assert.match(scanBody, /\['docker', 'container', 'inspect', scratchContainerName\]/)
+  assert.match(scanBody, /if \(removalConfirmed\) \{[\s\S]*?track\.containerGone\(scratchContainerName\)/)
+})
+
+test('runtime image entrypoints bind builds and cleanup to immutable ownership evidence', () => {
+  const positive = readFileSync(
+    resolve(import.meta.dirname, '../../infra/docker/check-api-runtime-image.mjs'),
+    'utf8'
+  )
+  const mutations = readFileSync(
+    resolve(import.meta.dirname, '../../infra/docker/check-api-runtime-image-mutations.mjs'),
+    'utf8'
+  )
+
+  for (const source of [positive, mutations]) {
+    assert.match(source, /--iidfile/)
+    assert.match(source, /parseDockerImageId/)
+    assert.match(source, /expectedImageId:/)
+    assert.match(source, /parseOwnedScratchContainer/)
+    assert.match(source, /foreign (?:container|tag) was preserved/)
+  }
+  assert.match(mutations, /builtTags: new Map\(\)/)
 })
 
 test('strict command failures never echo runner-controlled stderr or exception text', async () => {
