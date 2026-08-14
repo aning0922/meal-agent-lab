@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-13 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第五轮候选链当前代码落点 `f023522` 已闭合最新 A/B BLOCK 的生产根因及生命周期接线缺陷，完整聚合门禁 14/14 已通过，当前等待全新 A/B 复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 日期：2026-07-26（2026-08-14 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 已闭合最新 A/B BLOCK 的 14 项，正在重跑完整 14 步，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（最新独立复审 BLOCK 后第五轮整改完成，完整门禁 14/14，等待 A/B 复审，未 Accepted）
+### M5 实施记录（最新独立复审 BLOCK 后第六轮整改完成，完整门禁重跑中，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3672,6 +3672,64 @@ Pass；GitHub Actions workflow 仍只有配置、没有真实远端 run。
 不得再声称“相对 Accepted 冻结面零改动”。历史 Accepted 仍描述各自验收时取得的
 证据，当前修订整体纳入 M5 新候选的 A/B 复审。M5 未 Accepted，09A 未 Pass，远端
 GitHub Actions 仍无真实 run。
+
+#### M5 第六轮整改：异常原子性、generation、OCI 内层证据与路径所有权（2026-08-14）
+
+第五轮候选后的两路独立审计继续判定 BLOCK。本轮以 `d3dc0de` 为基线，只追加
+实现落点 `44a750e` 与反例 seam 接线修订 `db4e83f`，未 amend/rebase/push/merge，
+也未自行标记 Accepted。确认的 14 项按边界收口如下：
+
+1. **ownership announcement 异常原子性。** `m3b-subprocess` 先向专用 FD 写入
+   `GROUP <producer> <pgid> <generation>` machine frame，再写人类诊断；任一写入
+   primitive 抛错都由本地 TERM/KILL/ESRCH 收敛，固定错误不含调用方文本。
+2. **聚合器异常与 FD3 生命周期。** 聚合器抓取模块加载时的 kill/timer primitive，
+   termination primitive 失败不会短路后续组清理；leader exit 后 FD3 未 EOF 有 500ms
+   drain 上界，后代持有 FD3 不能让聚合器无限等。异常、partial/extra frame、缺 ACK
+   均固定失败。
+3. **controller↔aggregator generation。** 所有权以 `(producer, pgid, generation)`
+   登记，generation 必须严格递增；同代 replay 在协议边界失败，旧代不能给同号新代
+   补发 KILL。测试同时证明对应真实 PGID 先存活、最终到达 ESRCH。
+4. **primitive 判别力。** 源码外副本把第一次负 PGID `SIGTERM` primitive 改为抛错；
+   聚合器仍有界退出 1、输出 `signal cleanup primitive failed`、不回显 sentinel，且后续
+   sweep 清掉该组。脚本测试现为 **56/56**。
+5. **runtime dependency payload。** `.bin`、普通 package 文件、mode、symlink target
+   与 image 侧所有 README 字节都进入路径/类型/长度/SHA-256 摘要；只跳过明确的
+   pnpm host-specific metadata。`.bin/webpack`、package 内容植入及 README→directory
+   均由真实构建变异钉住。
+6. **OCI descriptor 与 inner tar。** `docker image save` 的 root/index/manifest/config/
+   layer media type 按角色精确 allowlist；provenance 仅接受结构化 in-toto SLSA statement
+   并绑定 selected platform manifest。每层同时验证压缩 digest、解压 diff ID 与内层
+   tar header/checksum/size/type/双零块/尾部 framing。
+7. **runtime 失败路径。** `--keep-failure` 只写“owned temporary directory (path omitted)”，
+   不再把 ambient 物理路径带入输出。
+8. **scratch container 预登记。** create 前先证明本轮 canonical name 不存在并登记；
+   create 使用 immutable image ID + ownership label，之后复核 container `.Image`。即使
+   daemon 已创建容器但 CLI 丢失 ID，cleanup 仍能按预登记名称收敛。
+9. **image/tag 清理所有权。** cleanup 只在 tag 当前仍指向本轮 immutable ID 时删 tag；
+   tag 被重绑则报告 drift 并保留外部对象。本轮 image ID 只有无其他 RepoTags 时才删。
+10. **Compose 变异仓库外化。** topology seam 只接受系统临时目录中
+    `meal-agent-compose-topology-* / compose.local-test.yaml`，并用固定
+    `--project-directory infra/docker` 解析资产；22 项变异只改该副本，目录清理由
+    dev/ino 绑定，signal/异常路径同样执行。
+11. **Compose override inode。** `writeImageOverride` 用 `wx` 创建并登记 dev/ino；任何
+    replacement 都拒删并报告 ownership drift，不能误删外部文件。
+12. **backup 物理 containment。** 备份目标用 realpath + 最近存在祖先解析，symlink
+    alias 指回仓库也会拒绝；canonical Git view 在 `check-ignore` 前 fail closed，且
+    Git 读取使用 `--no-replace-objects`。
+13. **restore 固定输出。** createdb 与 pg_restore 的外部 stderr/exception 不再进入
+    CLI 错误，只保留固定阶段诊断；runbook 明确 restore 管理连接来自物化后的
+    `postgres_admin_pgpass`，不再写成 admin URL。
+14. **新 nanoid 公告。** 2026-08-13 更新的 `GHSA-2v37-7h3g-55p8` 影响
+    `<3.3.18`；workspace override 提升到 `nanoid@3.3.18` 并重锁。实际 audit 仍只有
+    9 条既有 local-weapp 例外（moderate 8、critical 1），没有新增/续期例外。
+
+定点证据：runtime image 正向 **78 packages / 76 links / 5 migrations**；变异
+**1 baseline + 9 built + 2 static-only**；topology **14 services / 8 secrets /
+2 networks** 与 **22/22** 变异；M3B signal **5/5 deterministic + 5/5 real**；
+local-test **75/75**。完整聚合门禁首次运行的第 1—5 步均 PASS，第 6 步如实暴露
+topology seam 接线回退（5 条反例 wrong reason）；`db4e83f` 把反例驱动对齐到同一
+仓库外 seam 后 75/75 恢复，当前在干净候选重跑完整 14 步。该结果完成后仍须两个
+全新独立只读会话复审；M5 未 Accepted、09A 未 Pass。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的
