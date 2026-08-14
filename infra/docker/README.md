@@ -321,8 +321,8 @@ Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网
 确认的 stdin/诊断写、信号清理、ownership framing、backup/restore、runtime evidence、
 network、topology 与 mutation gate 缺口；runtime image mutation 为 1 baseline +
 10 built + 2 static-only，topology mutation 22/22、signal 5 个确定性回归 + 6 个真实
-窗口、local-test 75/75、targeted 69/69 与 restore drill 均已通过。完整 14/14 尚待
-本轮从头重跑；M5 仍未 Accepted
+窗口、local-test 75/75、targeted 69/69 与 restore drill 均已通过。实现候选
+`3dfb4af` 已从头通过完整 14/14，当前等待两个全新独立只读 A/B 审计；M5 仍未 Accepted
 （见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
@@ -401,7 +401,7 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得历史本地全绿证据；第八轮实现提交 `b8346bb` / `a72499c` 的完整 14/14 尚待本轮从头
-重跑；远端 CI
+取得历史本地全绿证据；第八轮实现候选 `3dfb4af` 已从头通过完整 14/14，当前等待两个
+全新独立只读 A/B 审计；远端 CI
 workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

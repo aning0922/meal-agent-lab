@@ -530,7 +530,8 @@ image cleanup identity/in-flight promise、Group E 双项目 cleanup、非 loopb
 误分类、topology/mutation 固定诊断与真实 callsite 判别力，以及直连 ownership fd
 的随机 capability 认证。纯 Node 71/71、runtime
 image 1+10+2、topology 22/22、local-test 75/75、targeted 69/69、signal 5+6 与真实
-restore drill 已通过；完整 14/14 尚待本轮从头重跑。本注记不改变本 ADR 已凭 M1—M4
+restore drill 已通过；实现候选 `3dfb4af` 已从头通过完整 14/14，当前等待两个全新
+独立只读 A/B 审计。本注记不改变本 ADR 已凭 M1—M4
 真实容器证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI
 仍无真实 run。
 

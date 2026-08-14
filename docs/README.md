@@ -10,9 +10,9 @@ ownership frame 溢出、restore stdin 丢失、backup no-replace/sidecar 原子
 Dockerfile/SLSA 空壳证据、runtime image cleanup identity、Group E 双项目清理、网络
 结果误分类、mutation callsite、topology 固定诊断与 ownership fd capability 认证。脚本测试 71/71、runtime image
 正向、1 baseline + 10 built + 2 static-only 变异、topology 22/22、local-test 75/75、
-targeted 69/69、signal 5 个确定性 + 6 个真实窗口与 restore drill 已通过；完整
-`stage09a:check` 14/14 尚待本轮从头重跑。M5 未 Accepted、09A 未 Pass、远端 CI
-无真实 run；完整门禁通过后下一门禁仍是全新 A/B 独立只读复审。
+targeted 69/69、signal 5 个确定性 + 6 个真实窗口与 restore drill 已通过；实现候选
+`3dfb4af` 已从头通过完整 `stage09a:check` 14/14。M5 未 Accepted、09A 未 Pass、远端
+CI 无真实 run；下一门禁仍是全新 A/B 独立只读复审。
 
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是
