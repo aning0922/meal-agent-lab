@@ -330,6 +330,22 @@ writeSync(3, 'CLEANUP ' + String(process.pid) + ' START\\n')
 `
   )
   writeFileSync(
+    resolve(directory, 'cleanup-history-holder.mjs'),
+    `import { spawn } from 'node:child_process'
+import { writeFileSync, writeSync } from 'node:fs'
+import { resolve } from 'node:path'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+writeSync(3, 'CLEANUP ' + String(process.pid) + ' START\\n')
+writeSync(3, 'CLEANUP ' + String(process.pid) + ' DONE\\n')
+const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
+  detached: false,
+  stdio: ['ignore', 'ignore', 'ignore', 3]
+})
+child.unref()
+writeFileSync(directory + '/cleanup-history-holder-pid', String(child.pid))
+`
+  )
+  writeFileSync(
     resolve(directory, 'announcement-failure.mjs'),
     `import { existsSync, writeFileSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -386,6 +402,9 @@ if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-generation-replay ]; then
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = cleanup-missing-done ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/cleanup-missing-done.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = cleanup-history-holder ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/cleanup-history-holder.mjs"
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = announcement-failure ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/announcement-failure.mjs"
@@ -640,6 +659,30 @@ test('cleanup START without DONE can never become a successful step', { timeout:
     assert.equal(outcome.code, 1)
     assert.match(output, /ownership channel failed/)
   } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('a completed cleanup frame cannot hide a later fd3 holder', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let holderPid = null
+  try {
+    gate = spawnGate(fixture, 'cleanup-history-holder')
+    const pidFile = resolve(fixture.directory, 'cleanup-history-holder-pid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'post-cleanup fd3 holder')
+    holderPid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(holderPid), true)
+    gate.child.kill('SIGTERM')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.match(output, /ownership channel failed|interrupted by SIGTERM/)
+    await waitFor(() => !processIsAlive(holderPid), 1_500, 'post-cleanup holder ESRCH')
+  } finally {
+    if (holderPid !== null && processIsAlive(holderPid)) process.kill(holderPid, 'SIGKILL')
     if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }

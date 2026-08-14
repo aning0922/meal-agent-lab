@@ -160,8 +160,11 @@ const mutations = [
   {
     name: 'a real WeChat AppSecret is injected',
     from: '      WECHAT_ADAPTER: fake\n',
-    to: '      WECHAT_ADAPTER: fake\n      WECHAT_APP_SECRET: real-app-secret\n',
-    expect: /must not carry a value in Compose|WECHAT_APP_SECRET must not appear/
+    to:
+      '      WECHAT_ADAPTER: fake\n' +
+      '      WECHAT_APP_SECRET: TOPOLOGY-DIAGNOSTIC-SENTINEL\n',
+    expect: /must not carry a value in Compose|WECHAT_APP_SECRET must not appear/,
+    forbidEcho: 'TOPOLOGY-DIAGNOSTIC-SENTINEL'
   },
   {
     name: 'the deployment identity is duplicated onto migrate',
@@ -253,6 +256,16 @@ const mutations = [
       '      - backup-transfer:/transfer:ro\n' +
       '      - backup-password-secret:/run/secrets/meal_agent_backup_password:ro\n',
     expect: /restore: mount set drifted/
+  },
+  {
+    name: 'the API gains an unregistered post-start executable hook',
+    from: '    healthcheck:\n      # 只用镜像已有的 node（Node 24 自带 fetch），不临时安装 curl/wget。\n',
+    to:
+      '    post_start:\n' +
+      '      - command: ["sh", "-c", "printf hook"]\n' +
+      '    healthcheck:\n' +
+      '      # 只用镜像已有的 node（Node 24 自带 fetch），不临时安装 curl/wget。\n',
+    expect: /api: resolved service contains unsupported capability fields/
   }
 ]
 
@@ -274,10 +287,9 @@ const runChecker = () => {
 try {
   const baseline = runChecker()
   if (baseline.status !== 0) {
-    // 基线失败时**可以**回显：此刻 compose 文件还没有被变异，输出里没有本套件
-    // 注入的凭据形态取值，而操作者确实需要知道为什么基线过不了。
     abort(
-      'the unmutated topology must pass before any mutation is meaningful:\n' + baseline.output
+      'the unmutated topology must pass before any mutation is meaningful; ' +
+        `${String(baseline.output.trim().split('\n').length)} output line(s) not echoed`
     )
   }
 
@@ -311,6 +323,13 @@ try {
         )
         continue
       }
+      if (
+        mutation.forbidEcho !== undefined &&
+        result.output.includes(mutation.forbidEcho)
+      ) {
+        failures.push(`${mutation.name}: checker output echoed the injected sentinel`)
+        continue
+      }
       process.stdout.write(`  caught: ${mutation.name}\n`)
     } finally {
       writeFileSync(mutationFile, original)
@@ -330,7 +349,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 22
+const expectedMutationCount = 23
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

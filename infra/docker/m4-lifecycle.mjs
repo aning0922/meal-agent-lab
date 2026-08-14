@@ -51,6 +51,34 @@ export const migrationsDirectory = resolve(repositoryRoot, 'services/api/migrati
 export const defaultProjectName = 'meal-agent-local-test'
 
 /**
+ * 运维入口与 signal handler 共享的 scoped artifact 清理登记表。
+ * task 只能返回固定、无外部内容的 residue 标签；每次快照全部执行，单项异常不
+ * 阻断后续项。这样 Docker one-off 与宿主/transfer artifact 属于同一个信号结算。
+ */
+export const createScopedArtifactCleanup = () => {
+  const tasks = new Set()
+  return Object.freeze({
+    register(task) {
+      tasks.add(task)
+      return () => tasks.delete(task)
+    },
+    async run() {
+      const residue = []
+      for (const task of [...tasks]) {
+        try {
+          const result = await task()
+          if (Array.isArray(result)) residue.push(...result)
+          else residue.push('scoped artifact cleanup returned an invalid result')
+        } catch {
+          residue.push('scoped artifact cleanup failed')
+        }
+      }
+      return residue
+    }
+  })
+}
+
+/**
  * cleanup 只接受 M4 自己的两类演练 project，范围外一律拒绝。M3B 的
  * smoke/neg/probe 与默认部署都刻意**不在**范围内。
  */
@@ -576,6 +604,7 @@ export const createM4Run = ({ kind }) => {
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
   const secretsIdentity = inodeIdentityOf(secretsDirectory)
+  const artifactCleanup = createScopedArtifactCleanup()
 
   const transcript = []
   const failures = []
@@ -1030,6 +1059,8 @@ export const createM4Run = ({ kind }) => {
     buildImage,
     cleanupAll,
     verifyResidueAll,
+    registerArtifactCleanup: artifactCleanup.register,
+    cleanupArtifacts: artifactCleanup.run,
     waitFor,
     logExcerpt
   }
@@ -1065,7 +1096,8 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
 
   installSignalHandlers(
     async () => {
-      const residue = await context.cleanupAll()
+      const residue = await context.cleanupArtifacts()
+      residue.push(...(await context.cleanupAll()))
       residue.push(...(await context.verifyResidueAll()))
       return residue
     },
@@ -1105,7 +1137,8 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
     } else {
       let residue = []
       try {
-        residue = await context.cleanupAll()
+        residue = await context.cleanupArtifacts()
+        residue.push(...(await context.cleanupAll()))
       } catch (error) {
         residue = [`cleanup-error: ${error instanceof Error ? error.message : String(error)}`]
       }

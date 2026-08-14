@@ -47,6 +47,7 @@ import {
   composeDirectory,
   composeFile,
   composeRunOneOff,
+  createScopedArtifactCleanup,
   defaultProjectName,
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
@@ -96,7 +97,37 @@ const removeOwnedFile = (identity) => {
   return true
 }
 
-export const writeChecksumSidecarNoReplace = (path, content) => {
+const createPrivateBackupDirectory = (parent) => {
+  let path = null
+  let identity = null
+  try {
+    path = mkdtempSync(resolve(parent, '.meal-agent-backup-'))
+    const stat = lstatSync(path, { bigint: true })
+    if (!stat.isDirectory()) throw new Error('invalid private backup directory')
+    identity = Object.freeze({ path, dev: stat.dev, ino: stat.ino })
+    chmodSync(path, 0o700)
+    return { path, identity }
+  } catch {
+    if (path !== null && identity !== null) {
+      try {
+        const current = lstatSync(path, { bigint: true })
+        if (current.dev === identity.dev && current.ino === identity.ino) {
+          rmSync(path, { recursive: true, force: true })
+        }
+      } catch {
+        // 固定 setup 失败覆盖底层文本；路径残留由调用方/信号 scope 继续阻断。
+      }
+    }
+    throw new Error('the private backup directory could not be created safely')
+  }
+}
+
+export const writeChecksumSidecarNoReplace = (
+  path,
+  content,
+  ownedIdentities = null,
+  { write = writeFileSync, remove = removeOwnedFile } = {}
+) => {
   let descriptor = null
   let identity = null
   let failed = false
@@ -111,16 +142,23 @@ export const writeChecksumSidecarNoReplace = (path, content) => {
     )
     const stat = fstatSync(descriptor, { bigint: true })
     identity = Object.freeze({ path, dev: stat.dev, ino: stat.ino })
-    writeFileSync(descriptor, content)
+    ownedIdentities?.push(identity)
+    write(descriptor, content)
   } catch {
     failed = true
   } finally {
-    if (descriptor !== null) closeSync(descriptor)
+    if (descriptor !== null) {
+      try {
+        closeSync(descriptor)
+      } catch {
+        failed = true
+      }
+    }
   }
   if (failed) {
     if (identity !== null) {
       try {
-        removeOwnedFile(identity)
+        remove(identity)
       } catch {
         // 固定错误覆盖所有外部细节；残留由调用方的路径存在性复查继续阻断。
       }
@@ -128,6 +166,64 @@ export const writeChecksumSidecarNoReplace = (path, content) => {
     throw new Error('the backup checksum sidecar could not be created exclusively')
   }
   return identity
+}
+
+export const promoteBackupNoReplace = (
+  stagingPath,
+  publishedPath,
+  { afterSourceCheck = null } = {}
+) => {
+  const stagingIdentity = fileIdentity(stagingPath)
+  chmodSync(stagingPath, 0o600)
+  if (!identityMatches(stagingIdentity)) {
+    throw new Error('the backup handoff inode changed before promotion')
+  }
+  afterSourceCheck?.()
+  try {
+    linkSync(stagingPath, publishedPath)
+  } catch {
+    throw new Error('the backup output path appeared during no-replace promotion')
+  }
+  let publishedIdentity = null
+  try {
+    const linkedStat = lstatSync(publishedPath, { bigint: true })
+    publishedIdentity = Object.freeze({
+      path: publishedPath,
+      dev: linkedStat.dev,
+      ino: linkedStat.ino
+    })
+    if (
+      !linkedStat.isFile() ||
+      linkedStat.nlink !== 2n ||
+      linkedStat.dev !== stagingIdentity.dev ||
+      linkedStat.ino !== stagingIdentity.ino ||
+      !identityMatches(stagingIdentity)
+    ) {
+      throw new Error('the backup handoff inode changed during promotion')
+    }
+    unlinkSync(stagingPath)
+    const finalStat = lstatSync(publishedPath, { bigint: true })
+    if (
+      !finalStat.isFile() ||
+      finalStat.nlink !== 1n ||
+      finalStat.dev !== publishedIdentity.dev ||
+      finalStat.ino !== publishedIdentity.ino
+    ) {
+      throw new Error('the published backup inode changed after promotion')
+    }
+    return publishedIdentity
+  } catch (error) {
+    // link(2) 成功创建的 published 名属于本轮；只在它仍指向刚观察到的 inode 时
+    // 撤销这一条 link。staging 名若被并发替换则原样保留。
+    if (
+      publishedIdentity !== null &&
+      existsSync(publishedPath) &&
+      identityMatches(publishedIdentity)
+    ) {
+      removeOwnedFile(publishedIdentity)
+    }
+    throw error
+  }
 }
 
 /**
@@ -189,7 +285,7 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
  * 及 SHA-256。
  */
 export const performBackup = async (
-  { compose, run, log },
+  { compose, run, log, registerCleanup = null },
   { project, outputDirectory, fileName = null }
 ) => {
   const directory = resolve(outputDirectory)
@@ -210,11 +306,67 @@ export const performBackup = async (
   // partial 位于本轮独占的 0700 目录内；docker cp 完成后先验证普通文件身份，
   // 再以 link(2) 做 no-replace promotion。rename 会覆盖竞态中出现的外部文件，
   // 不能承担发布边界。
-  const partialDirectory = mkdtempSync(resolve(directory, '.meal-agent-backup-'))
-  chmodSync(partialDirectory, 0o700)
+  const privateDirectory = createPrivateBackupDirectory(directory)
+  const partialDirectory = privateDirectory.path
+  const partialDirectoryIdentity = privateDirectory.identity
   const hostPartial = resolve(partialDirectory, partial)
   let publishedIdentity = null
   let publishedSidecarIdentity = null
+  const sidecarOwnedIdentities = []
+  let completed = false
+  let cleanupPromise = null
+  const cleanupArtifacts = () => {
+    cleanupPromise ??= (async () => {
+      const residue = []
+      if (!completed) {
+        for (const identity of [
+          ...sidecarOwnedIdentities,
+          publishedSidecarIdentity,
+          publishedIdentity
+        ]) {
+          if (identity === null || !existsSync(identity.path)) continue
+          try {
+            if (!removeOwnedFile(identity)) residue.push('backup artifact ownership drifted')
+          } catch {
+            residue.push('backup artifact cleanup failed')
+          }
+        }
+      }
+      try {
+        const current = lstatSync(partialDirectory, { bigint: true })
+        if (
+          !current.isDirectory() ||
+          current.dev !== partialDirectoryIdentity.dev ||
+          current.ino !== partialDirectoryIdentity.ino
+        ) {
+          residue.push('backup partial directory ownership drifted')
+        } else {
+          rmSync(partialDirectory, { recursive: true, force: true })
+        }
+      } catch {
+        if (existsSync(partialDirectory)) residue.push('backup partial directory cleanup failed')
+      }
+      try {
+        const cleaned = await composeRunOneOff(
+          { compose, run, warn: log },
+          [
+            '--entrypoint',
+            'bash',
+            'backup-transfer-loader',
+            '-euc',
+            `rm -f /transfer/${partial} /transfer/${name}; test ! -e /transfer/${partial}; test ! -e /transfer/${name}`
+          ],
+          { timeoutMs: 120_000 }
+        )
+        if (cleaned.status !== 0) residue.push('backup transfer artifact cleanup failed')
+      } catch {
+        residue.push('backup transfer artifact cleanup failed')
+      }
+      return residue
+    })()
+    return cleanupPromise
+  }
+  const unregisterCleanup = registerCleanup?.(cleanupArtifacts) ?? (() => false)
 
   log(`backup: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
 
@@ -246,22 +398,12 @@ export const performBackup = async (
           if (copied.status !== 0) {
             throw new Error('backup handoff failed')
           }
-          const partialIdentity = fileIdentity(hostPartial)
-          chmodSync(hostPartial, 0o600)
-          try {
-            linkSync(hostPartial, dumpPath)
-          } catch {
-            throw new Error('the backup output path appeared during no-replace promotion')
-          }
-          publishedIdentity = Object.freeze({ ...partialIdentity, path: dumpPath })
+          publishedIdentity = promoteBackupNoReplace(hostPartial, dumpPath)
         }
       }
     )
     if (dump.status !== 0) {
-      const tail = String(dump.stderr ?? '').trim().split('\n').slice(-6).join(' / ')
-      throw new Error(
-        `pg_dump failed with exit ${String(dump.status)}: ${tail === '' ? '(no stderr)' : tail}`
-      )
+      throw new Error('pg_dump failed')
     }
 
     const magic = readDumpMagic(dumpPath)
@@ -271,18 +413,40 @@ export const performBackup = async (
     const sha256 = sha256OfFile(dumpPath)
     publishedSidecarIdentity = writeChecksumSidecarNoReplace(
       shaPath,
-      `${sha256}  ${name}\n`
+      `${sha256}  ${name}\n`,
+      sidecarOwnedIdentities
     )
+
+    // 成功返回前最后一次核对两个正式名字仍指向本轮登记的 inode。hash 计算与
+    // sidecar 发布之后的路径替换不得被误记为一次成功备份。
+    if (
+      publishedIdentity === null ||
+      !identityMatches(publishedIdentity) ||
+      sha256OfFile(dumpPath) !== sha256 ||
+      publishedSidecarIdentity === null ||
+      !identityMatches(publishedSidecarIdentity)
+    ) {
+      throw new Error('the published backup artifact ownership drifted before completion')
+    }
 
     log(`backup complete: deployment=local-test project=${project} database=${targetDatabase}`)
     log(`backup file: ${dumpPath}`)
     log(`backup sha256: ${sha256}`)
+    completed = true
     return { dumpPath, shaPath, sha256 }
   } catch (error) {
     // 只有仍与本轮已登记 inode 相同的正式文件才可回滚；外部替换必须保留并把
     // ownership drift 作为固定附加失败。partial 目录独立清理，不依赖 handoff
     // callback 是否正常返回。
     let ownershipDrifted = false
+    for (const identity of sidecarOwnedIdentities) {
+      if (!existsSync(identity.path)) continue
+      try {
+        ownershipDrifted = !removeOwnedFile(identity) || ownershipDrifted
+      } catch {
+        ownershipDrifted = true
+      }
+    }
     if (publishedSidecarIdentity !== null && existsSync(shaPath)) {
       try {
         ownershipDrifted = !removeOwnedFile(publishedSidecarIdentity) || ownershipDrifted
@@ -302,12 +466,9 @@ export const performBackup = async (
     }
     throw error
   } finally {
-    try {
-      rmSync(partialDirectory, { recursive: true, force: true })
-    } catch {
-      // 含真实数据的 partial 清理失败必须覆盖普通业务错误，不能静默。
-      throw new Error('backup failed to remove its private partial directory')
-    }
+    const residue = await cleanupArtifacts()
+    unregisterCleanup()
+    if (residue.length > 0) throw new Error('backup artifact cleanup failed')
   }
 }
 
@@ -343,9 +504,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       ],
       options
     )
+  const artifactCleanup = createScopedArtifactCleanup()
   // 信号 cleanup 必须收掉 daemon 侧仍在跑的一次性容器：被「取消」的 pg_dump
   // 若继续跑完，宿主上会多出一份无人知晓的导出（容器内还有 pgpass 副本）。
-  installSignalHandlers(async () => removeLingeringOneOffs(run), { label: 'backup cleanup' })
+  installSignalHandlers(async () => [
+    ...(await removeLingeringOneOffs(run)),
+    ...(await artifactCleanup.run())
+  ], { label: 'backup cleanup' })
 
   // 信号在飞时主流程不得自己 process.exit（m3b-subprocess 的让位契约，与演练
   // executeDrill 同形）：普通退出码会抢在 handler 的 lingering sweep 与重投
@@ -366,7 +531,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   try {
     await performBackup(
-      { compose, run, log },
+      { compose, run, log, registerCleanup: artifactCleanup.register },
       { project: defaultProjectName, outputDirectory }
     )
     await exitAfterSweepUnlessSignalled(0)

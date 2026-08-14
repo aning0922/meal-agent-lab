@@ -27,7 +27,7 @@
 // 清理纪律：成功失败都删除本轮 container / image tag / 临时目录；失败现场只有
 // 显式 `--keep-failure` 才保留（保留物逐项公告）。清理失败本身也是门禁失败。
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -75,6 +75,7 @@ const imageTag = `meal-agent-api:m5-image-scan-${runId}`
 
 const cleanupState = {
   temporaryRoot: null,
+  temporaryRootIdentity: null,
   containerClaims: new Map(),
   ownedImageTag: false,
   ownedImageId: null,
@@ -235,11 +236,23 @@ const cleanup = ({ keepScene = false } = {}) => {
   }
   if (cleanupState.temporaryRoot !== null) {
     try {
-      rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
+      const observed = lstatSync(cleanupState.temporaryRoot, { bigint: true })
+      if (
+        cleanupState.temporaryRootIdentity === null ||
+        observed.dev !== cleanupState.temporaryRootIdentity.dev ||
+        observed.ino !== cleanupState.temporaryRootIdentity.ino
+      ) {
+        cleanupProblems.push('temporary directory ownership drifted')
+      } else {
+        rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
+      }
     } catch {
-      cleanupProblems.push('temporary directory removal failed')
+      if (existsSync(cleanupState.temporaryRoot)) {
+        cleanupProblems.push('temporary directory removal failed')
+      }
     }
     cleanupState.temporaryRoot = null
+    cleanupState.temporaryRootIdentity = null
   }
   return [...cleanupProblems]
   })()
@@ -287,6 +300,10 @@ const main = async () => {
   }
 
   cleanupState.temporaryRoot = mkdtempSync(join(tmpdir(), 'meal-agent-m5-image-scan-'))
+  {
+    const stat = lstatSync(cleanupState.temporaryRoot, { bigint: true })
+    cleanupState.temporaryRootIdentity = { dev: stat.dev, ino: stat.ino }
+  }
 
   const expected = await deriveExpectedClosure({
     runStrict,

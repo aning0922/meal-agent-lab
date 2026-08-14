@@ -17,7 +17,7 @@
 // 变异 unpinned-base 只做静态判定，不构建：构建它意味着从网络拉取未固定的浮动
 // 标签，这正是该判据要阻止的事。
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -188,6 +188,16 @@ const mutations = [
     expectScan: ['image config: User must be 10001:10001']
   },
   {
+    id: 'missing-provenance',
+    describe: 'build an otherwise valid image with provenance explicitly disabled',
+    build: true,
+    buildOptions: ['--provenance=false'],
+    resolveImageFromTag: true,
+    mutate: (text) => `${text}\n# provenance-disabled mutation\n`,
+    expectStatic: [],
+    expectScan: ['provenance is missing or not bound to the selected platform manifest']
+  },
+  {
     id: 'unpinned-base',
     describe: 'float the base image instead of pinning the digest',
     build: false,
@@ -203,11 +213,12 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 10
+const expectedBuiltMutationCount = 11
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
   temporaryRoot: null,
+  temporaryRootIdentity: null,
   containerClaims: new Map(),
   builtTags: new Map(),
   imageIdFiles: new Map(),
@@ -343,11 +354,23 @@ const cleanup = () => {
   cleanupState.imageIdFiles.clear()
   if (cleanupState.temporaryRoot !== null) {
     try {
-      rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
+      const observed = lstatSync(cleanupState.temporaryRoot, { bigint: true })
+      if (
+        cleanupState.temporaryRootIdentity === null ||
+        observed.dev !== cleanupState.temporaryRootIdentity.dev ||
+        observed.ino !== cleanupState.temporaryRootIdentity.ino
+      ) {
+        cleanupProblems.push('temporary directory ownership drifted')
+      } else {
+        rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
+      }
     } catch {
-      cleanupProblems.push('temporary directory removal failed')
+      if (existsSync(cleanupState.temporaryRoot)) {
+        cleanupProblems.push('temporary directory removal failed')
+      }
     }
     cleanupState.temporaryRoot = null
+    cleanupState.temporaryRootIdentity = null
   }
   return [...cleanupProblems]
   })()
@@ -358,15 +381,21 @@ installSignalHandlers(() => cleanup(), { label: 'api runtime image mutation clea
 
 const failures = []
 
-const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
+const buildAndScan = async ({
+  caseId,
+  dockerfileText,
+  viaStdin,
+  buildOptions = [],
+  resolveImageFromTag = false
+}) => {
   const tag = tagFor(caseId)
   const caseDirectory = join(cleanupState.temporaryRoot, `case-${caseId}`)
   mkdirSync(caseDirectory, { recursive: true })
   const imageIdFile = join(caseDirectory, 'built-image.id')
   cleanupState.imageIdFiles.set(tag, imageIdFile)
   const buildArgs = viaStdin
-    ? ['docker', 'build', '--iidfile', imageIdFile, '--file', '-', '--tag', tag, '.']
-    : ['docker', 'build', '--iidfile', imageIdFile, '--file', 'services/api/Dockerfile', '--tag', tag, '.']
+    ? ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--file', '-', '--tag', tag, '.']
+    : ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--file', 'services/api/Dockerfile', '--tag', tag, '.']
   const preexistingImage = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
   if (
     preexistingImage.status === 0 ||
@@ -380,29 +409,46 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
     label: `docker build (${caseId})`,
     stdin: viaStdin ? dockerfileText : null
   })
-  const builtImageId = parseDockerImageId(readFileSync(imageIdFile, 'utf8'), fatal)
+  let builtImageId
+  if (resolveImageFromTag) {
+    const inspected = await runStrict(
+      ['docker', 'image', 'inspect', '--format', '{{.Id}}', tag],
+      { timeoutMs: 60_000, label: `docker image inspect (${caseId})` }
+    )
+    builtImageId = parseDockerImageId(inspected.stdout, fatal)
+  } else {
+    builtImageId = parseDockerImageId(readFileSync(imageIdFile, 'utf8'), fatal)
+  }
   cleanupState.builtTags.set(tag, builtImageId)
   const problems = []
-  await scanImage({
-    imageTag: tag,
-    expectedImageId: builtImageId,
-    expected: suiteExpected,
-    temporaryRoot: caseDirectory,
-    runStrict,
-    fatal,
-    problem: (message) => problems.push(message),
-    log: () => undefined,
-    scratchContainerName: `meal-agent-m5-image-mut-${runId}-${caseId}`,
-    track: {
-      image: () => undefined,
-      container: (claim) => {
-        cleanupState.containerClaims.set(claim.name, claim)
-      },
-      containerGone: (name) => {
-        cleanupState.containerClaims.delete(name)
+  try {
+    await scanImage({
+      imageTag: tag,
+      expectedImageId: builtImageId,
+      expected: suiteExpected,
+      temporaryRoot: caseDirectory,
+      runStrict,
+      fatal,
+      problem: (message) => problems.push(message),
+      log: () => undefined,
+      scratchContainerName: `meal-agent-m5-image-mut-${runId}-${caseId}`,
+      track: {
+        image: () => undefined,
+        container: (claim) => {
+          cleanupState.containerClaims.set(claim.name, claim)
+        },
+        containerGone: (name) => {
+          cleanupState.containerClaims.delete(name)
+        }
       }
+    })
+  } catch (error) {
+    if (error instanceof FatalSuiteError) {
+      problems.push(error.message)
+    } else {
+      throw error
     }
-  })
+  }
   return problems
 }
 
@@ -441,6 +487,10 @@ const main = async () => {
   const dockerfileText = readFileSync(dockerfilePath, 'utf8')
   const dockerignoreText = readFileSync(dockerignorePath, 'utf8')
   cleanupState.temporaryRoot = mkdtempSync(join(tmpdir(), 'meal-agent-m5-image-mut-'))
+  {
+    const stat = lstatSync(cleanupState.temporaryRoot, { bigint: true })
+    cleanupState.temporaryRootIdentity = { dev: stat.dev, ino: stat.ino }
+  }
 
   suiteExpected = await deriveExpectedClosure({
     runStrict,
@@ -505,7 +555,9 @@ const main = async () => {
     const scanProblems = await buildAndScan({
       caseId: mutation.id,
       dockerfileText: mutated,
-      viaStdin: true
+      viaStdin: true,
+      buildOptions: mutation.buildOptions ?? [],
+      resolveImageFromTag: mutation.resolveImageFromTag === true
     })
     let missed = false
     for (const expected of mutation.expectScan) {

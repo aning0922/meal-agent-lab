@@ -347,6 +347,20 @@ export const validateSlsaProvenanceStatement = (statement, fatal) => {
   }
   return statement
 }
+
+export const requireBoundProvenance = (
+  attestationSubjects,
+  selectedManifestDigest,
+  fatal
+) => {
+  if (
+    attestationSubjects.length === 0 ||
+    selectedManifestDigest === null ||
+    !attestationSubjects.includes(selectedManifestDigest)
+  ) {
+    fatal('docker image save provenance is missing or not bound to the selected platform manifest')
+  }
+}
 const historySecretPattern = /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i
 const historyTextContainsSecret = (value) => historySecretPattern.test(value)
 
@@ -801,9 +815,10 @@ export const validateSavedImageArchive = (
           fatal('docker image save returned an invalid provenance attestation manifest')
         }
       } else if (
-        isRecord(platform) &&
-        platform.architecture === expectedImageEvidence.Architecture &&
-        platform.os === expectedImageEvidence.Os
+        (isRecord(platform) &&
+          platform.architecture === expectedImageEvidence.Architecture &&
+          platform.os === expectedImageEvidence.Os) ||
+        (descriptor === rootDescriptor && platform === undefined)
       ) {
         if (selectedManifest !== null) fatal('docker image save returned multiple matching platform manifests')
         selectedManifest = manifestPayload
@@ -818,13 +833,11 @@ export const validateSavedImageArchive = (
     }
   }
   visitDescriptor(rootDescriptor, 'root')
-  if (
-    attestationSubjects.length > 0 &&
-    (selectedManifestDescriptor === null ||
-      !attestationSubjects.includes(selectedManifestDescriptor.digest))
-  ) {
-    fatal('docker image save provenance is not bound to the selected platform manifest')
-  }
+  requireBoundProvenance(
+    attestationSubjects,
+    selectedManifestDescriptor?.digest ?? null,
+    fatal
+  )
   if (
     selectedManifest === null ||
     selectedManifest.config.digest !== `sha256:${manifest.Config.slice('blobs/sha256/'.length)}` ||

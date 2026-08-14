@@ -27,19 +27,19 @@ import {
   constants,
   existsSync,
   fstatSync,
-  lstatSync,
   openSync,
   readFileSync,
   realpathSync
 } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { readDumpMagic, sha256OfFile } from './backup-local-test.mjs'
 import {
   composeDirectory,
   composeFile,
   composeRunOneOff,
+  createScopedArtifactCleanup,
   defaultProjectName,
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
@@ -110,8 +110,21 @@ export const verifyBackupChecksum = (dumpPath) => {
   } catch {
     throw new Error(dumpNotRegularFileReason)
   }
-  if (!lstatSync(physicalPath).isFile()) {
+  let dumpDescriptor = null
+  let dumpBytes
+  try {
+    dumpDescriptor = openSync(
+      physicalPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    )
+    const stat = fstatSync(dumpDescriptor)
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error(dumpNotRegularFileReason)
+    dumpBytes = readFileSync(dumpDescriptor)
+  } catch (error) {
+    if (error instanceof Error && error.message === dumpNotRegularFileReason) throw error
     throw new Error(dumpNotRegularFileReason)
+  } finally {
+    if (dumpDescriptor !== null) closeSync(dumpDescriptor)
   }
   const sidecarPath = `${dumpPath}.sha256`
   if (!existsSync(sidecarPath)) {
@@ -129,21 +142,27 @@ export const verifyBackupChecksum = (dumpPath) => {
   if (parsed[2] !== basename(dumpPath)) {
     throw new Error(checksumSidecarMismatchedNameReason)
   }
-  if (sha256OfFile(physicalPath) !== parsed[1]) {
+  const actualSha256 = createHash('sha256').update(dumpBytes).digest('hex')
+  if (actualSha256 !== parsed[1]) {
     throw new Error(checksumMismatchReason)
   }
-  if (readDumpMagic(physicalPath) !== 'PGDMP') {
+  if (dumpBytes.subarray(0, 5).toString('latin1') !== 'PGDMP') {
     throw new Error(dumpMagicReason)
   }
-  return { sha256: parsed[1], physicalPath }
+  // 后续 handoff 必须使用这里已经 hash/magic 校验过的同一个 Buffer；返回路径只作
+  // 诊断/兼容信息，绝不能再次从它读取恢复输入。
+  return { sha256: parsed[1], physicalPath, verifiedBytes: dumpBytes }
 }
 
 /**
  * 执行恢复中段（校验 → 空库断言 → createdb → 单事务 pg_restore）。
  * `compose(args, options)` 与 `run` 由调用方提供。
  */
-export const performRestore = async ({ compose, run, log }, { project, dumpPath }) => {
-  const { sha256, physicalPath } = verifyBackupChecksum(resolve(dumpPath))
+export const performRestore = async (
+  { compose, run, log, registerCleanup = null },
+  { project, dumpPath }
+) => {
+  const { sha256, verifiedBytes } = verifyBackupChecksum(resolve(dumpPath))
   // 容器挂载的是 realpath 解析后的物理目录/文件名：宿主校验与容器读取指向
   // 同一个文件。
   const oneOff = (runArgs, options) =>
@@ -151,8 +170,32 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   const safeOneOff = (runArgs, options, failureReason) =>
     runRestoreOneOff(oneOff, runArgs, options, failureReason)
 
-  log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
-  log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
+  let cleanupPromise = null
+  const cleanupTransfer = () => {
+    cleanupPromise ??= (async () => {
+      try {
+        const cleaned = await oneOff(
+          [
+            '--entrypoint',
+            'bash',
+            'backup-transfer-loader',
+            '-euc',
+            'rm -f /transfer/input.dump.new /transfer/input.dump; test ! -e /transfer/input.dump.new; test ! -e /transfer/input.dump'
+          ],
+          { timeoutMs: 120_000 }
+        )
+        return cleaned.status === 0 ? [] : ['restore transfer artifact cleanup failed']
+      } catch {
+        return ['restore transfer artifact cleanup failed']
+      }
+    })()
+    return cleanupPromise
+  }
+  const unregisterCleanup = registerCleanup?.(cleanupTransfer) ?? (() => false)
+
+  try {
+    log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
+    log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
 
   // 宿主已校验的 bytes 经 stdin 送入无网络、无 Secret 的 loader，由 UID999 在
   // project-scoped transfer volume 内物化为 0600；不依赖宿主目录 owner/mode。
@@ -164,7 +207,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
       '-euc',
       'umask 077; cat > /transfer/input.dump.new; mv -f /transfer/input.dump.new /transfer/input.dump'
     ],
-    { timeoutMs: 300_000, stdin: readFileSync(physicalPath) },
+    { timeoutMs: 300_000, stdin: verifiedBytes },
     'restore handoff into the controlled transfer volume failed'
   )
   if (loaded.status !== 0) {
@@ -245,7 +288,12 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
     )
   }
   log(`restore complete: deployment=local-test project=${project} database=${targetDatabase} (single transaction)`)
-  return { sha256 }
+    return { sha256 }
+  } finally {
+    const residue = await cleanupTransfer()
+    unregisterCleanup()
+    if (residue.length > 0) throw new Error('restore transfer artifact cleanup failed')
+  }
 }
 
 export const runRestoreOneOff = async (oneOff, runArgs, options, failureReason) => {
@@ -299,9 +347,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       ],
       options
     )
+  const artifactCleanup = createScopedArtifactCleanup()
   // 信号 cleanup 必须收掉 daemon 侧仍在跑的一次性容器：被「取消」的 pg_restore
   // 若继续把单事务跑完并提交，「已取消」的恢复就实际落库了。
-  installSignalHandlers(async () => removeLingeringOneOffs(run), { label: 'restore cleanup' })
+  installSignalHandlers(async () => [
+    ...(await removeLingeringOneOffs(run)),
+    ...(await artifactCleanup.run())
+  ], { label: 'restore cleanup' })
 
   // 信号在飞时主流程不得自己 process.exit（m3b-subprocess 的让位契约，与演练
   // executeDrill 同形）：普通退出码会抢在 handler 的 lingering sweep 与重投
@@ -321,7 +373,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   }
 
   try {
-    await performRestore({ compose, run, log }, { project: defaultProjectName, dumpPath })
+    await performRestore(
+      { compose, run, log, registerCleanup: artifactCleanup.register },
+      { project: defaultProjectName, dumpPath }
+    )
     log('next steps (runbook): bootstrap-acl -> migrate -> bootstrap-grants -> verification')
     await exitAfterSweepUnlessSignalled(0)
   } catch (error) {

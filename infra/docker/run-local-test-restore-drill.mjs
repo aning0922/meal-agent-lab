@@ -19,7 +19,7 @@
 // DDL、database owner 为 meal_agent_migrator 且全部 owner / SECURITY DEFINER /
 // GRANT / RLS / policy / 角色属性 / membership 与备份前逐字一致、sentinel 五张
 // 表逐行 JSON 一致（两个家庭都在——FORCE RLS 没有截断导出）。
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -54,7 +54,15 @@ const snapshotDiff = (before, after) => {
   }
 }
 
-const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
+const drillBody = async ({
+  stacks,
+  log,
+  fail,
+  timed,
+  buildImage,
+  run,
+  registerArtifactCleanup
+}) => {
   const [stackA, stackB] = stacks
 
   await stackA.assignHostPort()
@@ -96,16 +104,56 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
 
   // --- 备份（演练自己的临时目录；dump 内容是合成数据，不是凭据）-------------
   const backupsDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m4-backup-'))
+  const backupDirectoryStat = lstatSync(backupsDirectory, { bigint: true })
+  let backupDirectoryCleanupPromise = null
+  const cleanupBackupDirectory = () => {
+    backupDirectoryCleanupPromise ??= Promise.resolve().then(() => {
+      try {
+        const current = lstatSync(backupsDirectory, { bigint: true })
+        if (
+          !current.isDirectory() ||
+          current.dev !== backupDirectoryStat.dev ||
+          current.ino !== backupDirectoryStat.ino
+        ) {
+          return ['restore drill backup directory ownership drifted']
+        }
+        rmSync(backupsDirectory, { recursive: true, force: true })
+        return []
+      } catch {
+        return ['restore drill backup directory cleanup failed']
+      }
+    })
+    return backupDirectoryCleanupPromise
+  }
+  const unregisterBackupDirectory = registerArtifactCleanup(cleanupBackupDirectory)
   try {
-    await restoreRoundTrip({ stacks, log, fail, timed, run, backupsDirectory })
+    await restoreRoundTrip({
+      stacks,
+      log,
+      fail,
+      timed,
+      run,
+      backupsDirectory,
+      registerArtifactCleanup
+    })
   } finally {
     // 正常、失败、信号三条路径都不把演练备份留在盘上。
-    rmSync(backupsDirectory, { recursive: true, force: true })
+    const residue = await cleanupBackupDirectory()
+    unregisterBackupDirectory()
+    if (residue.length > 0) throw new Error('restore drill backup directory cleanup failed')
     log('drill backup directory removed')
   }
 }
 
-const restoreRoundTrip = async ({ stacks, log, fail, timed, run, backupsDirectory }) => {
+const restoreRoundTrip = async ({
+  stacks,
+  log,
+  fail,
+  timed,
+  run,
+  backupsDirectory,
+  registerArtifactCleanup
+}) => {
   const [stackA, stackB] = stacks
   const expectHttp = async (stack, label, path) => {
     const status = await stack.fetchStatus(path)
@@ -128,7 +176,12 @@ const restoreRoundTrip = async ({ stacks, log, fail, timed, run, backupsDirector
   let backup = null
   await timed('pg_dump custom-format backup + sha256 sidecar', async () => {
     backup = await performBackup(
-      { compose: stackA.compose, run, log },
+      {
+        compose: stackA.compose,
+        run,
+        log,
+        registerCleanup: registerArtifactCleanup
+      },
       { project: stackA.project, outputDirectory: backupsDirectory, fileName: 'restore-drill.dump' }
     )
   })
@@ -190,7 +243,12 @@ const restoreRoundTrip = async ({ stacks, log, fail, timed, run, backupsDirector
   // --- 真实恢复：校验 → createdb --owner → 单事务 pg_restore ----------------
   await timed('restore into stack B (single transaction)', async () => {
     await performRestore(
-      { compose: stackB.compose, run, log },
+      {
+        compose: stackB.compose,
+        run,
+        log,
+        registerCleanup: registerArtifactCleanup
+      },
       { project: stackB.project, dumpPath: backup.dumpPath }
     )
   })

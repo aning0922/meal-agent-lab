@@ -26,9 +26,11 @@ import {
   assertCanonicalGitRepositoryView,
   canonicalGitArguments
 } from './local-test-secrets-contract.mjs'
+import { createSecretScrubber } from './m3b-safe-output.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
+const diagnosticScrubber = createSecretScrubber()
 
 const safeDiagnostic = (message) => {
   try {
@@ -508,10 +510,10 @@ const apiImageServices = ['api', 'migrate', 'bootstrap-schema']
 
 const failures = []
 const fail = (message) => {
-  failures.push(message)
+  failures.push(diagnosticScrubber.scrubUntrusted(message))
 }
 const abort = (message) => {
-  safeDiagnostic(`${message}\n`)
+  safeDiagnostic(`${diagnosticScrubber.scrubUntrusted(message)}\n`)
   process.exit(1)
 }
 
@@ -766,6 +768,33 @@ const normalizeMount = (mount) => ({
   read_only: mount.read_only === true
 })
 
+// resolved Compose service 是可执行能力面，不只 entrypoint/command。未知字段可能
+// 承载 post_start/pre_stop 等 lifecycle hook；因此按当前受审解析结果做闭集，新增
+// 字段必须先补 expectation 与反向变异，不能被 Compose 默默接受。
+const allowedResolvedServiceKeys = new Set([
+  'build',
+  'cap_add',
+  'cap_drop',
+  'command',
+  'depends_on',
+  'entrypoint',
+  'environment',
+  'healthcheck',
+  'image',
+  'logging',
+  'network_mode',
+  'networks',
+  'ports',
+  'profiles',
+  'read_only',
+  'restart',
+  'secrets',
+  'security_opt',
+  'tmpfs',
+  'user',
+  'volumes'
+])
+
 for (const name of serviceOrder) {
   const service = services[name]
   if (service === undefined) {
@@ -773,6 +802,12 @@ for (const name of serviceOrder) {
     continue
   }
   const expected = expectations[name]
+  const unknownKeys = Object.keys(service).filter(
+    (key) => !allowedResolvedServiceKeys.has(key)
+  )
+  if (unknownKeys.length > 0) {
+    fail(`${name}: resolved service contains unsupported capability fields`)
+  }
 
   if (service.image !== expected.image) {
     fail(`${name}: expected image ${expected.image}, got ${service.image ?? '(none)'}`)

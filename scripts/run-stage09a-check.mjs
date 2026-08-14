@@ -506,12 +506,15 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     let producerDone = false
     let ownershipBuffer = ''
     let ownershipProtocolFailed = false
-    let scopedCleanupStarted = false
     const activeScopedCleanups = new Set()
     let resolveCleanupStarted
-    const cleanupStartedPromise = new Promise((resolveStart) => {
-      resolveCleanupStarted = resolveStart
-    })
+    let cleanupStartedPromise
+    const resetCleanupStartedPromise = () => {
+      cleanupStartedPromise = new Promise((resolveStart) => {
+        resolveCleanupStarted = resolveStart
+      })
+    }
+    resetCleanupStartedPromise()
     const stdoutChunks = []
     let ownershipCapability
     try {
@@ -612,12 +615,17 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
             ownershipProtocolFailed = true
           }
           activeScopedCleanups.add(cleanupOwner)
-          scopedCleanupStarted = true
           resolveCleanupStarted()
           return
         }
         if (!activeScopedCleanups.delete(cleanupOwner)) {
           ownershipProtocolFailed = true
+        }
+        if (activeScopedCleanups.size === 0) {
+          // CLEANUP START/DONE 是一次活跃区间，不是永久历史标志。后续 producer
+          // 仍可能登记新组或开始新一轮 cleanup；为下一轮建立尚未 resolve 的等待点，
+          // 不能让旧的 DONE 把 drain/cooperative wait 永久短路。
+          resetCleanupStartedPromise()
         }
         return
       }
@@ -696,7 +704,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       // leader exit 后给内核 pipe 一个很短的 drain 窗口。即使 buffer 为空，
       // 未登记后代仍可能继承 fd 3 并永远不产生 EOF；旧实现会因此等不到 close。
       ownershipDrainTimer = nativeSetTimeout(() => {
-        if (ownershipStreamEnded || scopedCleanupStarted) return
+        if (ownershipStreamEnded || activeScopedCleanups.size > 0) return
         if (ownershipBuffer.length > 0) {
           quarantineRecognizableLineage(ownershipBuffer, { frameComplete: false })
           ownershipBuffer = ''
@@ -737,7 +745,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       }
       if (
         first === 'fallback' ||
-        (scopedCleanupStarted && activeScopedCleanups.size > 0)
+        activeScopedCleanups.size > 0
       ) {
         ownershipProtocolFailed = true
       }

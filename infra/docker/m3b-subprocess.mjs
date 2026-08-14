@@ -20,6 +20,7 @@ import { fstatSync, readSync, writeSync } from 'node:fs'
 // 信号/超时清理不能依赖之后可能被调用方改写的全局 timer primitive。加载模块时
 // 就保存原始引用；这不是为了让测试通过，而是确保清理路径使用自己的受控原语。
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
+const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
 
 const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
 const aggregateOwnershipAuthFdName = 'MEAL_AGENT_STAGE09A_PGID_AUTH_FD'
@@ -485,11 +486,57 @@ const runCommandUnchecked = (
       detached: true,
       stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe']
     })
-    let settled = false
-    let timedOut = false
+    let settlementClaimed = false
     let childHandle = null
+    let timer = null
     const stdoutChunks = []
     const stderrChunks = []
+
+    const cancelTimer = () => {
+      if (timer === null) return true
+      const current = timer
+      timer = null
+      try {
+        nativeClearTimeout(current)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+    const releaseChild = () => {
+      const timerClean = cancelTimer()
+      if (childHandle !== null) {
+        processGroupLifecycle.markLeaderClosed(childHandle)
+        // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
+        processGroupLifecycle.retireIfGone(childHandle)
+      }
+      return timerClean
+    }
+
+    const rejectAfterCleanup = async (reason) => {
+      const timerClean = cancelTimer()
+      let survivors = childHandle === null ? [] : [childHandle]
+      let terminationFailed = false
+      try {
+        survivors =
+          childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
+      } catch {
+        terminationFailed = true
+      }
+      const suffix =
+        !timerClean || terminationFailed || survivors.length > 0
+          ? `; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
+          : ''
+      rejectPromise(new Error(`${reason}${suffix}`))
+    }
+
+    const claimFailure = (reason) => {
+      if (settlementClaimed) return false
+      settlementClaimed = true
+      void rejectAfterCleanup(reason)
+      return true
+    }
 
     // `spawn()` 成功返回后 pid 已经可用；在任何 timer / event 之前登记，
     // `timeoutMs: 0` 也不会落进「pid 存在但还没 generation」的窗口。
@@ -507,69 +554,32 @@ const runCommandUnchecked = (
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     child.stderr.on('data', (chunk) => stderrChunks.push(chunk))
 
-    // 超时调用方自己拥有 settlement：即使 leader 永远不发 `close`，
-    // TERM → KILL → 有界确认的预算到期后也会 reject，不把 hard bound 寄托给 close。
-    const timer = setTimeout(() => {
-      if (settled || timedOut || ownershipAnnouncementFailed) {
-        return
-      }
-      timedOut = true
-      void (async () => {
-        let survivors = []
-        let terminationFailed = false
-        try {
-          survivors =
-            childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
-        } catch {
-          terminationFailed = true
-          survivors = childHandle === null ? [] : [childHandle]
-        }
-        if (settled) {
-          return
-        }
-        settled = true
-        const suffix =
-          terminationFailed || survivors.length > 0
-            ? `; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
-            : ''
-        rejectPromise(new Error(`${args.join(' ')} timed out after ${String(timeoutMs)}ms${suffix}`))
-      })()
-    }, timeoutMs)
-
-    const releaseChild = () => {
-      clearTimeout(timer)
-      if (childHandle !== null) {
-        processGroupLifecycle.markLeaderClosed(childHandle)
-        // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
-        processGroupLifecycle.retireIfGone(childHandle)
-      }
-    }
     child.once('error', (error) => {
-      releaseChild()
+      const timerClean = releaseChild()
       if (ownershipAnnouncementFailed) {
         return
       }
-      if (!settled && !timedOut) {
-        settled = true
-        rejectPromise(new Error(`failed to run ${args.join(' ')}: ${error.message}`))
+      if (!settlementClaimed) {
+        settlementClaimed = true
+        rejectPromise(
+          new Error(timerClean ? 'command failed to start' : 'command timer cleanup failed')
+        )
       }
     })
 
     child.once('close', (code, signal) => {
-      releaseChild()
+      const timerClean = releaseChild()
       // announcement failure 已经把 settlement 所有权交给下面的异步终止分支；
       // 快速 `/usr/bin/true` 的 close 绝不能抢先 resolve status 0。
       if (ownershipAnnouncementFailed) {
         return
       }
-      if (settled) {
+      if (settlementClaimed) return
+      settlementClaimed = true
+      if (!timerClean) {
+        rejectPromise(new Error('command timer cleanup failed'))
         return
       }
-      if (timedOut) {
-        // timeout 分支独占 settlement；close 只做 release，不能抢先 reject。
-        return
-      }
-      settled = true
       resolvePromise({
         status: signal !== null ? null : code,
         signal,
@@ -580,54 +590,26 @@ const runCommandUnchecked = (
 
     if (stdin !== null) {
       child.stdin.once('error', () => {
-        if (settled || timedOut || ownershipAnnouncementFailed) {
-          return
-        }
-        // stdin EPIPE/stream error 与 timeout 共用同一条 cleanup-before-settlement
-        // 语义。先取得 settlement 所有权，再终止并确认整组，最后只返回固定原因。
-        settled = true
-        clearTimeout(timer)
-        void (async () => {
-          let survivors = childHandle === null ? [] : [childHandle]
-          let terminationFailed = false
-          try {
-            survivors =
-              childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
-          } catch {
-            terminationFailed = true
-          }
-          rejectPromise(
-            new Error(
-              terminationFailed || survivors.length > 0
-                ? 'command stdin failed; descendant process group was not confirmed gone'
-                : 'command stdin failed'
-            )
-          )
-        })()
+        if (ownershipAnnouncementFailed) return
+        claimFailure('command stdin failed')
       })
       child.stdin.end(stdin)
     }
 
     if (ownershipAnnouncementFailed && childHandle !== null) {
-      void (async () => {
-        let survivors = [childHandle]
-        try {
-          survivors = await processGroupLifecycle.terminate([childHandle])
-        } catch {
-          // 只返回固定诊断，不回显底层异常或命令。
-        }
-        if (!settled) {
-          settled = true
-          clearTimeout(timer)
-          rejectPromise(
-            new Error(
-              survivors.length === 0
-                ? 'aggregate ownership announcement failed'
-                : 'aggregate ownership announcement failed; descendant process group was not confirmed gone'
-            )
-          )
-        }
-      })()
+      claimFailure('aggregate ownership announcement failed')
+    }
+
+    // timer primitive 自身也属于受控边界。先装好 error/close/stdin handlers，
+    // 再创建 timeout；若 primitive 同步失败，必须先收掉已登记 PGID 才能 reject。
+    if (!settlementClaimed) {
+      try {
+        timer = nativeSetTimeout(() => {
+          claimFailure(`command timed out after ${String(timeoutMs)}ms`)
+        }, timeoutMs)
+      } catch {
+        claimFailure('command timer setup failed')
+      }
     }
   })
 

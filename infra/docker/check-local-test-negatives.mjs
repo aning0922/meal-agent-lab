@@ -87,7 +87,7 @@ const pass = (name, reason) => {
   process.stdout.write(`  caught: ${name} (${reason})\n`)
 }
 const fail = (name, detail) => {
-  failures.push(`${name}: ${detail}`)
+  failures.push(`${name}: ${safe(detail)}`)
 }
 
 // 异步 spawn（自成进程组、有超时）：与其余三个 M3B CLI 同一套子进程基础设施。
@@ -1469,12 +1469,12 @@ process.stdout.write('Group E: image isolation negatives\n')
     // 交错顺序：A build → B build → 再读两个 tag 的 image ID。
     const builtA = await buildFor(projectA, overrideA, secretsA)
     if (builtA.status !== 0) {
-      throw new Error(`project A build failed: ${builtA.stderr.slice(-400)}`)
+      throw new Error('project A build failed')
     }
     const idA1 = await imageIdOf(tagA)
     const builtB = await buildFor(projectB, overrideB, secretsB)
     if (builtB.status !== 0) {
-      throw new Error(`project B build failed: ${builtB.stderr.slice(-400)}`)
+      throw new Error('project B build failed')
     }
     const idA2 = await imageIdOf(tagA)
     const idB = await imageIdOf(tagB)

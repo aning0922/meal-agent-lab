@@ -17,11 +17,13 @@ import test from 'node:test'
 
 import {
   assertBackupTargetsIgnored,
+  promoteBackupNoReplace,
   writeChecksumSidecarNoReplace
 } from '../../infra/docker/backup-local-test.mjs'
 import { discardOverride, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
 import {
   connectOutcomeForErrorCode,
+  nonLoopbackOutcomeDisposition,
   requireNonLoopbackIsolationEvidence
 } from '../../infra/docker/local-test-containment.mjs'
 import {
@@ -32,6 +34,7 @@ import {
 
 import {
   composeRunOneOff,
+  createScopedArtifactCleanup,
   oneOffIsGone,
   removeLingeringOneOffs,
   startExistingContainer
@@ -44,24 +47,6 @@ import {
 } from '../../infra/docker/restore-local-test.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
-
-const requiredRound8CallsiteProblems = (sources) => {
-  const problems = []
-  const required = [
-    ['non-loopback final evidence', sources.containment, /requireNonLoopbackIsolationEvidence\(nonLoopbackIsolationEvidence, fail\)/],
-    ['SLSA attestation validation', sources.imageCore, /validateSlsaProvenanceStatement\(statement, fatal\)/],
-    ['runtime cleanup immutable-id recovery', sources.runtime, /cleanupState\.ownedImageId = parseDockerImageId/],
-    ['runtime cleanup post-removal absence', sources.runtime, /run image tag was not proven absent after cleanup/],
-    ['aggregate signal safe diagnostic', sources.aggregate, /safeDiagnostic\(`\\nstage09a:check: received \$\{signal\}/],
-    ['overflow generation quarantine', sources.aggregate, /quarantineRecognizableLineage\(line, \{ frameComplete: true \}\)/],
-    ['Group E first image cleanup', sources.negatives, /\['first', projectA, secretsA, tagA\]/],
-    ['Group E second image cleanup', sources.negatives, /\['second', projectB, secretsB, tagB\]/]
-  ]
-  for (const [label, source, pattern] of required) {
-    if (!pattern.test(source)) problems.push(label)
-  }
-  return problems
-}
 
 const processGroupIsAlive = (pgid) => {
   try {
@@ -81,6 +66,29 @@ const waitForGone = async (pgid, timeoutMs = 4_000) => {
   assert.equal(processGroupIsAlive(pgid), false, `process group ${String(pgid)} must reach ESRCH`)
 }
 
+test('M4 scoped artifact cleanup is failure-safe across every registered task', async () => {
+  const cleanup = createScopedArtifactCleanup()
+  const calls = []
+  cleanup.register(async () => {
+    calls.push('first')
+    throw new Error('UNTRUSTED-CLEANUP-SENTINEL')
+  })
+  cleanup.register(async () => {
+    calls.push('second')
+    return ['scoped artifact remains']
+  })
+  cleanup.register(async () => {
+    calls.push('third')
+    return []
+  })
+
+  assert.deepEqual(await cleanup.run(), [
+    'scoped artifact cleanup failed',
+    'scoped artifact remains'
+  ])
+  assert.deepEqual(calls, ['first', 'second', 'third'])
+})
+
 test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10_000 }, async () => {
   const before = new Set(observedDescendantPgids())
   await assert.rejects(
@@ -93,6 +101,25 @@ test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10
   const created = observedDescendantPgids().filter((pgid) => !before.has(pgid))
   assert.equal(created.length, 1)
   for (const pgid of created) await waitForGone(pgid)
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('runCommand is not redirected by caller timer primitive replacement', { timeout: 10_000 }, async () => {
+  const originalSetTimeout = globalThis.setTimeout
+  const originalClearTimeout = globalThis.clearTimeout
+  const sentinel = 'CALLER-TIMER-PRIMITIVE-SENTINEL'
+  try {
+    globalThis.setTimeout = () => { throw new Error(sentinel) }
+    globalThis.clearTimeout = () => { throw new Error(sentinel) }
+    const result = await runCommand(['/bin/sh', '-c', 'sleep 0.05; exit 0'], {
+      timeoutMs: 5_000
+    })
+    assert.equal(result.status, 0)
+    assert.equal(result.signal, null)
+  } finally {
+    globalThis.setTimeout = originalSetTimeout
+    globalThis.clearTimeout = originalClearTimeout
+  }
   assert.deepEqual(unconfirmedProcessGroups(), [])
 })
 
@@ -278,6 +305,50 @@ test('backup checksum sidecar creation is exclusive and never follows a symlink'
   }
 })
 
+test('a failed sidecar writer reports the created inode to the outer cleanup owner', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-sidecar-failure-owner-'))
+  try {
+    const sidecar = resolve(directory, 'fixture.dump.sha256')
+    const identities = []
+    assert.throws(
+      () => writeChecksumSidecarNoReplace(sidecar, 'unused', identities, {
+        write: () => { throw new Error('CALLER-SENTINEL') },
+        remove: () => false
+      }),
+      /could not be created exclusively/
+    )
+    assert.equal(identities.length, 1)
+    assert.equal(identities[0].path, sidecar)
+    assert.equal(existsSync(sidecar), true)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup no-replace promotion rejects a swapped staging inode without deleting it', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-promotion-'))
+  try {
+    const staging = resolve(directory, 'staging.dump')
+    const original = resolve(directory, 'original.dump')
+    const published = resolve(directory, 'published.dump')
+    writeFileSync(staging, 'PGDMP-OWNED')
+    assert.throws(
+      () => promoteBackupNoReplace(staging, published, {
+        afterSourceCheck: () => {
+          renameSync(staging, original)
+          writeFileSync(staging, 'PGDMP-FOREIGN')
+        }
+      }),
+      /inode changed during promotion/
+    )
+    assert.equal(readFileSync(staging, 'utf8'), 'PGDMP-FOREIGN')
+    assert.equal(readFileSync(original, 'utf8'), 'PGDMP-OWNED')
+    assert.equal(existsSync(published), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('M4 restarts only the exact existing container without traversing Compose dependencies', async () => {
   const calls = []
   await startExistingContainer(async (argv, options) => {
@@ -341,6 +412,26 @@ test('restore sidecars reject BOM, multiline, CRLF and NUL framing', () => {
     }
     writeFileSync(`${dump}.sha256`, `${line}\n`)
     assert.equal(verifyBackupChecksum(dump).sha256, digest)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('restore handoff bytes are the exact snapshot that passed checksum verification', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-restore-snapshot-'))
+  try {
+    const dump = resolve(directory, 'fixture.dump')
+    const replacement = resolve(directory, 'replacement.dump')
+    const verified = Buffer.from('PGDMP-VERIFIED-A')
+    const unverified = Buffer.from('PGDMP-UNVERIFIED-B')
+    const digest = createHash('sha256').update(verified).digest('hex')
+    writeFileSync(dump, verified)
+    writeFileSync(`${dump}.sha256`, `${digest}  fixture.dump\n`)
+    const snapshot = verifyBackupChecksum(dump)
+    writeFileSync(replacement, unverified)
+    renameSync(replacement, dump)
+    assert.deepEqual(snapshot.verifiedBytes, verified)
+    assert.notDeepEqual(readFileSync(dump), snapshot.verifiedBytes)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -413,39 +504,13 @@ test('only an explicit connection refusal is counted as refusal evidence', () =>
   }
 })
 
-test('Round 8 safety call sites are mutation-sensitive rather than inferred from helpers', () => {
-  const sources = {
-    containment: readFileSync(resolve(repositoryRoot, 'infra/docker/local-test-containment.mjs'), 'utf8'),
-    imageCore: readFileSync(resolve(repositoryRoot, 'infra/docker/api-image-scan.mjs'), 'utf8'),
-    runtime: readFileSync(resolve(repositoryRoot, 'infra/docker/check-api-runtime-image.mjs'), 'utf8'),
-    aggregate: readFileSync(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'), 'utf8'),
-    negatives: readFileSync(resolve(repositoryRoot, 'infra/docker/check-local-test-negatives.mjs'), 'utf8')
-  }
-  assert.deepEqual(requiredRound8CallsiteProblems(sources), [])
-
-  for (const key of Object.keys(sources)) {
-    const original = sources[key]
-    for (const pattern of [
-      /requireNonLoopbackIsolationEvidence\(nonLoopbackIsolationEvidence, fail\)/,
-      /validateSlsaProvenanceStatement\(statement, fatal\)/,
-      /cleanupState\.ownedImageId = parseDockerImageId/,
-      /run image tag was not proven absent after cleanup/,
-      /safeDiagnostic\(`\\nstage09a:check: received \$\{signal\}/,
-      /quarantineRecognizableLineage\(line, \{ frameComplete: true \}\)/,
-      /\['first', projectA, secretsA, tagA\]/,
-      /\['second', projectB, secretsB, tagB\]/
-    ]) {
-      if (!pattern.test(original)) continue
-      const mutant = {
-        ...sources,
-        [key]: original.replace(
-          new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`),
-          '/* removed by mutation */'
-        )
-      }
-      assert.notDeepEqual(requiredRound8CallsiteProblems(mutant), [])
-    }
-  }
+test('one unusable non-loopback probe invalidates a mixed evidence set', () => {
+  const dispositions = [
+    connectOutcomeForErrorCode('ECONNREFUSED'),
+    connectOutcomeForErrorCode('EMFILE')
+  ].map(nonLoopbackOutcomeDisposition)
+  assert.deepEqual(dispositions, ['evidence', 'fail'])
+  assert.equal(dispositions.includes('fail'), true)
 })
 
 test('temporary compose override cleanup is bound to the inode this run created', () => {

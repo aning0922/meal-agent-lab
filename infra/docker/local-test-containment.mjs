@@ -136,6 +136,13 @@ export const connectOutcomeForErrorCode = (rawCode) => {
   return `unusable:${code}`
 }
 
+export const nonLoopbackOutcomeDisposition = (outcome) => {
+  if (outcome.startsWith('unusable:')) return 'fail'
+  if (outcome.startsWith('unattemptable:')) return 'skip'
+  if (outcome === 'connected') return 'inspect-http'
+  return 'evidence'
+}
+
 const attemptConnect = (host, port, timeoutMs = 3_000) =>
   new Promise((resolveAttempt) => {
     // zone 后缀（fe80::…%en0）不影响 family 判定：按去掉 zone 的裸地址判。
@@ -924,7 +931,16 @@ export const runContainmentAndIsolation = async ({
   }
   for (const { interfaceName, address } of nonLoopback) {
     const outcome = await attemptConnect(address, hostPort)
-    if (outcome.startsWith('unattemptable:') || outcome.startsWith('unusable:')) {
+    const disposition = nonLoopbackOutcomeDisposition(outcome)
+    if (disposition === 'fail') {
+      // EMFILE/ENFILE/ENOMEM/EACCES/未知错误属于探针自身失效。即使别的接口已经
+      // 给出 refusal，也不能让一条坏探针混在证据集合中被计数掩盖。
+      fail(
+        `isolation: ${interfaceName} ${address}:${String(hostPort)} produced an unusable probe outcome`
+      )
+      continue
+    }
+    if (disposition === 'skip') {
       // 本机根本没能发起这次连接（地址族/路由/接口问题）。这**不是**隔离
       // 证据，如实记为无法取证，不算通过也不算失败。
       log(
@@ -934,7 +950,7 @@ export const runContainmentAndIsolation = async ({
       )
       continue
     }
-    if (outcome !== 'connected') {
+    if (disposition === 'evidence') {
       nonLoopbackIsolationEvidence += 1
       log(`isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} (as required)`)
       continue

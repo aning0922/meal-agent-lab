@@ -27,6 +27,7 @@ import {
   parseImageInspect,
   parseSavedImageConfig,
   parseSavedImageManifest,
+  requireBoundProvenance,
   validateOciDescriptor,
   validateSlsaProvenanceStatement,
   verifySavedImageLayers,
@@ -376,6 +377,19 @@ test('SLSA provenance requires the supported predicate envelope', () => {
       /invalid provenance attestation/
     )
   }
+})
+
+test('the selected platform manifest requires at least one bound provenance subject', () => {
+  const digest = `sha256:${'b'.repeat(64)}`
+  assert.doesNotThrow(() => requireBoundProvenance([digest], digest, throwingFatal))
+  assert.throws(
+    () => requireBoundProvenance([], digest, throwingFatal),
+    /provenance is missing or not bound/
+  )
+  assert.throws(
+    () => requireBoundProvenance([`sha256:${'c'.repeat(64)}`], digest, throwingFatal),
+    /provenance is missing or not bound/
+  )
 })
 
 test('Dockerfile FROM parsing sees --platform and refuses a missing stage graph', () => {
