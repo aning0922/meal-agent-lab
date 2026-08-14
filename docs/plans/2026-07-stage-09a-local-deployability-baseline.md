@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-14 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 已闭合最新 A/B BLOCK 的 14 项，正在重跑完整 14 步，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 已闭合最新 A/B BLOCK 的 14 项，证据候选 `1f2bf27` 已从头通过完整 14/14，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（最新独立复审 BLOCK 后第六轮整改完成，完整门禁重跑中，未 Accepted）
+### M5 实施记录（最新独立复审 BLOCK 后第六轮整改完成，完整门禁 14/14，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3728,8 +3728,11 @@ GitHub Actions 仍无真实 run。
 2 networks** 与 **22/22** 变异；M3B signal **5/5 deterministic + 5/5 real**；
 local-test **75/75**。完整聚合门禁首次运行的第 1—5 步均 PASS，第 6 步如实暴露
 topology seam 接线回退（5 条反例 wrong reason）；`db4e83f` 把反例驱动对齐到同一
-仓库外 seam 后 75/75 恢复，当前在干净候选重跑完整 14 步。该结果完成后仍须两个
-全新独立只读会话复审；M5 未 Accepted、09A 未 Pass。
+仓库外 seam 后 75/75 恢复。证据候选 `1f2bf27` 随后从头通过完整
+`pnpm stage09a:check` **14/14**（stage08、topology 及 22/22 变异、runtime image
+及 1+9+2 变异、M3B 75/75 + 69/69 + registry + 5+5、fresh smoke、8 份 Secret
+identity、lifecycle、restore 全部 PASS，运行自身清理结果均为零残留）。下一步仍须
+两个全新独立只读会话复审；M5 未 Accepted、09A 未 Pass。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的

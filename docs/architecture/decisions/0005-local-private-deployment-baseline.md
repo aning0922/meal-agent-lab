@@ -507,8 +507,9 @@ identity。Compose 变异只使用仓库外 inode-owned 副本；backup/restore 
 canonical Git view、override inode 与外部失败输出均 fail closed；新披露的 nanoid
 公告通过 `3.3.18` 修复，9 条既有例外未扩大也未续期。纯 Node 脚本测试 56/56、
 runtime image 正向与 1+9+2 变异、topology 22/22、signal 5+5、local-test 75/75
-已通过，完整 14 步正在干净候选重跑。该注记不改变本 ADR 的既有 Accepted 决策，
-也不把第六轮候选、M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
+已通过；证据候选 `1f2bf27` 已从头通过完整 `pnpm stage09a:check` 14/14。该注记
+不改变本 ADR 的既有 Accepted 决策，也不把第六轮候选、M5 或 09A 记为
+Accepted/Pass；远端 CI 仍无真实 run。
 
 以下条件触发复审：
 

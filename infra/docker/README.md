@@ -317,8 +317,8 @@ Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
 （见上方 M4 一节）。第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 已闭合最新
 两路独立审计确认的 14 项；定点 runtime image、22/22 topology mutation、signal
-5+5 与 local-test 75/75 已通过，完整 14 步正在干净候选重跑，之后等待独立 A/B
-复审，仍未 Accepted
+5+5 与 local-test 75/75 已通过，证据候选 `1f2bf27` 已从头通过完整 14/14，当前
+等待独立 A/B 复审，仍未 Accepted
 （见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
@@ -397,7 +397,7 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得历史本地全绿证据；第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 的最终
-14 步聚合门禁正在干净候选上重跑；远端 CI
+取得历史本地全绿证据；第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 形成的
+证据候选 `1f2bf27` 已从头通过最终 14/14；远端 CI
 workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

@@ -12,9 +12,9 @@ container 预登记及 image/tag identity cleanup，仓库外 Compose mutation +
 backup/restore 的物理路径、canonical Git view、override inode 与固定失败输出，以及
 `nanoid@3.3.18` 新公告修复。纯 Node 脚本测试 56/56、runtime image 正向和
 1 baseline + 9 built + 2 static-only 变异、22/22 topology mutation、M3B signal
-5/5 + 5/5、local-test 75/75 已分别通过；完整 14 步正在干净候选上重跑。
-M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；完整门禁通过后仍须全新 A/B
-独立只读复审。
+5/5 + 5/5、local-test 75/75 已分别通过；证据候选 `1f2bf27` 已从头通过完整
+`pnpm stage09a:check` **14/14**。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；
+下一门禁仍是基于该候选启动全新 A/B 独立只读复审。
 
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是
