@@ -29,6 +29,21 @@ import { writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const safeWrite = (fd, message) => {
+  const bytes = Buffer.from(message, 'utf8')
+  try {
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset)
+      if (!Number.isSafeInteger(written) || written <= 0) return false
+      offset += written
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const stepController = resolve(repositoryRoot, 'scripts/stage09a-step-controller.mjs')
 const usage = 'pnpm stage09a:check [-- --keep-failure]'
@@ -36,7 +51,7 @@ const usage = 'pnpm stage09a:check [-- --keep-failure]'
 const cliArguments = process.argv.slice(2)
 const keepFailure = cliArguments.includes('--keep-failure')
 if (cliArguments.some((argument) => argument !== '--keep-failure')) {
-  process.stderr.write(`usage: ${usage}\n`)
+  safeWrite(2, `usage: ${usage}\n`)
   process.exit(2)
 }
 
@@ -149,18 +164,12 @@ const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
 const cooperativeShutdownBudgetMs = 310_000
 
-const safeDiagnostic = (message) => {
-  const bytes = Buffer.from(message, 'utf8')
-  try {
-    let offset = 0
-    while (offset < bytes.length) {
-      const written = writeSync(2, bytes, offset, bytes.length - offset)
-      if (!Number.isSafeInteger(written) || written <= 0) return false
-      offset += written
-    }
-    return true
-  } catch {
-    return false
+const safeDiagnostic = (message) => safeWrite(2, message)
+
+const writeControlled = (fd, message) => {
+  if (!safeWrite(fd, message)) {
+    aggregatePrimitiveFailed = true
+    throw new Error('aggregate output channel failed')
   }
 }
 
@@ -452,7 +461,6 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     let settled = false
     let timedOut = false
     let closed = false
-    let leaderExited = false
     let ownershipStreamEnded = false
     let producerDone = false
     let ownershipBuffer = ''
@@ -509,26 +517,20 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     }
     const ownershipStream = child.stdio[3]
-    const registerRecognizableGroup = (text) => {
-      const prefix = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)/.exec(text)
-      if (prefix === null) {
-        const partial = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*)(?=[^0-9]|$)/.exec(text)
-        if (partial !== null) {
-          registerQuarantinedProcessGroup({
-            producer: Number(partial[1]),
-            pgid: Number(partial[2])
-          })
-        }
-        return
-      }
-      const handle = {
-        producer: Number(prefix[1]),
-        pgid: Number(prefix[2]),
-        generation: Number(prefix[3])
-      }
-      if (!registerOwnedProcessGroup(handle)) {
-        ownershipProtocolFailed = true
-      }
+    const quarantineRecognizableLineage = (text, { frameComplete }) => {
+      // EOF 本身不是数字 token 的边界：`... 123` 也可能只是实际 `12345` 的
+      // 截断前缀。只有完整 LF frame，或缓冲区中已经出现非数字字符时，producer
+      // 与 PGID 才可安全进入 quarantine。generation 可坏/溢出，但不能因此遗忘
+      // 已经完整证明的 lineage。
+      const pattern = frameComplete
+        ? /^GROUP ([1-9][0-9]*) ([1-9][0-9]*)(?: |$)/
+        : /^GROUP ([1-9][0-9]*) ([1-9][0-9]*)(?=[^0-9])/
+      const match = pattern.exec(text)
+      if (match === null) return false
+      return registerQuarantinedProcessGroup({
+        producer: Number(match[1]),
+        pgid: Number(match[2])
+      })
     }
     const recordOwnershipFrame = (line) => {
       const producerFrame = /^PRODUCER ([1-9][0-9]*) DONE$/.exec(line)
@@ -564,9 +566,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       }
       const groupFrame = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)$/.exec(line)
       if (groupFrame === null) {
-        // 协议失败不等于放弃清理。若前缀已含完整 producer/pgid/generation，
-        // 先登记该代，再把整帧判坏。
-        registerRecognizableGroup(line)
+        quarantineRecognizableLineage(line, { frameComplete: true })
         ownershipProtocolFailed = true
         return
       }
@@ -576,6 +576,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         generation: Number(groupFrame[3])
       }
       if (!registerOwnedProcessGroup(handle)) {
+        quarantineRecognizableLineage(line, { frameComplete: true })
         ownershipProtocolFailed = true
       }
     }
@@ -587,14 +588,14 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         const line = ownershipBuffer.slice(0, newline)
         ownershipBuffer = ownershipBuffer.slice(newline + 1)
         if (line.length > 4096) {
-          registerRecognizableGroup(line)
+          quarantineRecognizableLineage(line, { frameComplete: true })
           ownershipProtocolFailed = true
         } else {
           recordOwnershipFrame(line)
         }
       }
       if (ownershipBuffer.length > 4096) {
-        registerRecognizableGroup(ownershipBuffer)
+        quarantineRecognizableLineage(ownershipBuffer, { frameComplete: false })
         ownershipProtocolFailed = true
         ownershipBuffer = ''
         ownershipStream?.destroy()
@@ -609,7 +610,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       if (ownershipBuffer.length > 0) {
         // 缺少终止 LF 时仍登记可证明的 PGID 以便收尾，但协议必须失败，
         // 所以该 step 绝不能 PASS。
-        registerRecognizableGroup(ownershipBuffer)
+        quarantineRecognizableLineage(ownershipBuffer, { frameComplete: false })
         ownershipProtocolFailed = true
         ownershipBuffer = ''
       }
@@ -631,7 +632,6 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     })
     let ownershipDrainTimer = null
     child.once('exit', () => {
-      leaderExited = true
       if (controllerHandle !== null) {
         closedOwnedGroupLeaders.add(ownershipKey(controllerHandle))
       }
@@ -639,15 +639,15 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       // leader exit 后给内核 pipe 一个很短的 drain 窗口。即使 buffer 为空，
       // 未登记后代仍可能继承 fd 3 并永远不产生 EOF；旧实现会因此等不到 close。
       ownershipDrainTimer = nativeSetTimeout(() => {
-        if (ownershipStreamEnded) return
+        if (ownershipStreamEnded || scopedCleanupStarted) return
         if (ownershipBuffer.length > 0) {
-          registerRecognizableGroup(ownershipBuffer)
+          quarantineRecognizableLineage(ownershipBuffer, { frameComplete: false })
           ownershipBuffer = ''
         }
         ownershipProtocolFailed = true
         ownershipStream?.destroy()
         void terminateOwnedProcessGroups()
-      }, 500)
+      }, interruptedBy === null ? 500 : 2_500)
     })
     const cooperativeShutdown = async (signal) => {
       if (!closed) {
@@ -659,20 +659,37 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         }
       }
       const first = await Promise.race([
-        leaderExitedPromise.then(() => 'exit'),
+        leaderExitedPromise.then(() => 'leader-exit'),
+        closedPromise.then(() => 'closed'),
         cleanupStartedPromise.then(() => 'cleanup'),
         safeDelay(2_500, { ref: false }).then(() => 'fallback')
       ])
-      if (first === 'cleanup') {
+      const afterLeader =
+        first === 'leader-exit'
+          ? await Promise.race([
+              closedPromise.then(() => 'closed'),
+              cleanupStartedPromise.then(() => 'cleanup'),
+              safeDelay(2_500, { ref: false }).then(() => 'leader-grace-expired')
+            ])
+          : first
+      if (afterLeader === 'cleanup') {
         await Promise.race([
-          leaderExitedPromise,
+          closedPromise,
           safeDelay(cooperativeShutdownBudgetMs, { ref: false })
         ])
       }
-      if (scopedCleanupStarted && activeScopedCleanups.size > 0) {
+      if (
+        first === 'fallback' ||
+        (scopedCleanupStarted && activeScopedCleanups.size > 0)
+      ) {
         ownershipProtocolFailed = true
       }
-      return !ownershipProtocolFailed
+      // signal 可以在 PRODUCER DONE 之前结束 controller；这本身不是 scoped
+      // cleanup protocol 失败。普通 step 的完整 ownership 判据仍在 close 路径执行。
+      return (
+        (first !== 'fallback' || aggregatePrimitiveFailed) &&
+        activeScopedCleanups.size === 0
+      )
     }
     cooperativeShutdowns.add(cooperativeShutdown)
 
@@ -868,15 +885,15 @@ const runStep = (step) =>
   })
 
 const printSummary = () => {
-  process.stdout.write('\nstage09a:check summary:\n')
+  writeControlled(1, '\nstage09a:check summary:\n')
   for (const [index, step] of steps.entries()) {
     const result = results[index]
     if (result === undefined) {
-      process.stdout.write(`  SKIP ${step.id}\n`)
+      writeControlled(1, `  SKIP ${step.id}\n`)
       continue
     }
     const status = result.ok ? 'PASS' : 'FAIL'
-    process.stdout.write(`  ${status} ${step.id} (${String(result.seconds)}s${result.ok ? '' : `, ${result.detail}`})\n`)
+    writeControlled(1, `  ${status} ${step.id} (${String(result.seconds)}s${result.ok ? '' : `, ${result.detail}`})\n`)
   }
 }
 
@@ -896,7 +913,7 @@ const main = async () => {
   }
   if (interruptedBy !== null) {
     const cleanup = await convergeAfterSignal()
-    process.stderr.write(
+    writeControlled(2,
       cleanup.ok
         ? `stage09a:check FAIL — interrupted by ${interruptedBy} during prerequisite checks; no checks were run\n`
         : 'stage09a:check FAIL — signal cleanup did not confirm every descendant process group gone\n'
@@ -906,14 +923,14 @@ const main = async () => {
 
   const missingTools = probes.filter((entry) => !entry.ok)
   if (missingTools.length > 0) {
-    process.stderr.write('stage09a:check FAIL — missing prerequisite tools; no checks were run:\n')
+    writeControlled(2, 'stage09a:check FAIL — missing prerequisite tools; no checks were run:\n')
     for (const entry of missingTools) {
-      process.stderr.write(`  - ${entry.label}: ${entry.detail}\n`)
+      writeControlled(2, `  - ${entry.label}: ${entry.detail}\n`)
     }
-    process.stderr.write('Docker Engine with Compose v2 must be running before this gate can produce evidence.\n')
+    writeControlled(2, 'Docker Engine with Compose v2 must be running before this gate can produce evidence.\n')
     return 1
   }
-  process.stdout.write(
+  writeControlled(1,
     `stage09a:check: prerequisites present (Docker daemon ${probes[0].detail}, Compose ${probes[1].detail})\n`
   )
 
@@ -927,7 +944,7 @@ const main = async () => {
       }
       break
     }
-    process.stdout.write(
+    writeControlled(1,
       `\nstage09a:check step ${String(index + 1)}/${String(steps.length)}: ${step.id} — ${step.title}\n` +
         `stage09a:check   $ ${(step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv).join(' ')}\n`
     )
@@ -937,19 +954,19 @@ const main = async () => {
       failedStep = { step, result }
       break
     }
-    process.stdout.write(
+    writeControlled(1,
       `stage09a:check step ${String(index + 1)}/${String(steps.length)} PASS (${String(result.seconds)}s)\n`
     )
   }
 
   printSummary()
   if (failedStep !== null) {
-    process.stderr.write(
+    writeControlled(2,
       `stage09a:check FAIL at step ${failedStep.step.id} (${failedStep.result.detail}); later steps were not run\n`
     )
     return failedStep.result.exitCode === 0 ? 1 : failedStep.result.exitCode
   }
-  process.stdout.write(`stage09a:check PASS (${String(steps.length)}/${String(steps.length)} steps)\n`)
+  writeControlled(1, `stage09a:check PASS (${String(steps.length)}/${String(steps.length)} steps)\n`)
   return 0
 }
 
@@ -957,7 +974,7 @@ try {
   process.exitCode = await main()
 } catch {
   const cleanup = await terminateOwnedProcessGroups()
-  process.stderr.write(
+  safeDiagnostic(
     cleanup.ok
       ? 'stage09a:check FAIL — aggregate control failed\n'
       : 'stage09a:check FAIL — aggregate control failed and descendant cleanup was not confirmed\n'

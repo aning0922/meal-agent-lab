@@ -17,7 +17,7 @@
 // 变异 unpinned-base 只做静态判定，不构建：构建它意味着从网络拉取未固定的浮动
 // 标签，这正是该判据要阻止的事。
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -210,7 +210,8 @@ const cleanupState = {
   temporaryRoot: null,
   containerClaims: new Map(),
   builtTags: new Map(),
-  done: false
+  imageIdFiles: new Map(),
+  cleanupPromise: null
 }
 const cleanupProblems = []
 const cleanupOwnedDanglingImage = async (tag, ownedImageId) => {
@@ -240,11 +241,11 @@ const cleanupOwnedDanglingImage = async (tag, ownedImageId) => {
     cleanupProblems.push(`owned image identity could not be verified (${tag})`)
   }
 }
-const cleanup = async () => {
-  if (cleanupState.done) {
-    return
+const cleanup = () => {
+  if (cleanupState.cleanupPromise !== null) {
+    return cleanupState.cleanupPromise
   }
-  cleanupState.done = true
+  cleanupState.cleanupPromise = (async () => {
   for (const claim of [...cleanupState.containerClaims.values()]) {
     try {
       const current = await runCommand(['docker', 'container', 'inspect', claim.name], {
@@ -289,8 +290,21 @@ const cleanup = async () => {
       cleanupProblems.push('scratch container removal did not complete')
     }
   }
-  for (const [tag, ownedImageId] of cleanupState.builtTags) {
+  for (const [tag, recordedImageId] of cleanupState.builtTags) {
+    let ownedImageId = recordedImageId
     try {
+      const imageIdFile = cleanupState.imageIdFiles.get(tag)
+      if (ownedImageId === null && imageIdFile !== undefined && existsSync(imageIdFile)) {
+        try {
+          ownedImageId = parseDockerImageId(
+            readFileSync(imageIdFile, 'utf8'),
+            () => { throw new Error('invalid iidfile') }
+          )
+          cleanupState.builtTags.set(tag, ownedImageId)
+        } catch {
+          cleanupProblems.push(`built image identity could not be recovered (${tag})`)
+        }
+      }
       const current = await runCommand(
         ['docker', 'image', 'inspect', '--format', '{{.Id}}', tag],
         { timeoutMs: 60_000 }
@@ -326,6 +340,7 @@ const cleanup = async () => {
     }
   }
   cleanupState.builtTags.clear()
+  cleanupState.imageIdFiles.clear()
   if (cleanupState.temporaryRoot !== null) {
     try {
       rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
@@ -334,6 +349,9 @@ const cleanup = async () => {
     }
     cleanupState.temporaryRoot = null
   }
+  return [...cleanupProblems]
+  })()
+  return cleanupState.cleanupPromise
 }
 
 installSignalHandlers(() => cleanup(), { label: 'api runtime image mutation cleanup' })
@@ -345,6 +363,7 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
   const caseDirectory = join(cleanupState.temporaryRoot, `case-${caseId}`)
   mkdirSync(caseDirectory, { recursive: true })
   const imageIdFile = join(caseDirectory, 'built-image.id')
+  cleanupState.imageIdFiles.set(tag, imageIdFile)
   const buildArgs = viaStdin
     ? ['docker', 'build', '--iidfile', imageIdFile, '--file', '-', '--tag', tag, '.']
     : ['docker', 'build', '--iidfile', imageIdFile, '--file', 'services/api/Dockerfile', '--tag', tag, '.']

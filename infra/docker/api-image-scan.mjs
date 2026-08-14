@@ -130,13 +130,19 @@ export const createStrictRunner =
 // --------------------------------------------------------------------------
 export const checkDockerfileText = (text, problem) => {
   const stageAliases = new Set()
+  let fromCount = 0
   let sawUser = false
   let sawEmptyEntrypoint = false
   let sawExpectedCmd = false
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim()
-    const fromMatch = /^FROM\s+(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line)
-    if (fromMatch !== null) {
+    if (/^FROM\b/i.test(line)) {
+      const fromMatch = /^FROM(?:\s+--platform=(?:"[^"]+"|'[^']+'|\S+))?\s+(\S+)(?:\s+AS\s+(\S+))?$/i.exec(line)
+      if (fromMatch === null) {
+        problem('Dockerfile: FROM has an unsupported or incomplete instruction shape')
+        continue
+      }
+      fromCount += 1
       const [, reference, alias] = fromMatch
       if (reference !== pinnedBaseImage && !stageAliases.has(reference)) {
         problem('Dockerfile: FROM must use the pinned digest or a prior stage alias')
@@ -161,6 +167,9 @@ export const checkDockerfileText = (text, problem) => {
     if (line === 'CMD ["node", "/app/dist/index.js"]') {
       sawExpectedCmd = true
     }
+  }
+  if (fromCount === 0) {
+    problem('Dockerfile: at least one complete FROM instruction is required')
   }
   if (!sawUser) {
     problem('Dockerfile: exact line `USER 10001:10001` is required')
@@ -299,13 +308,29 @@ export const validateOciDescriptor = (descriptor, role, fatal) => {
 }
 
 export const validateSlsaProvenanceStatement = (statement, fatal) => {
+  const buildDefinition = statement?.predicate?.buildDefinition
+  const runDetails = statement?.predicate?.runDetails
   if (
     !isRecord(statement) ||
     statement._type !== 'https://in-toto.io/Statement/v1' ||
     statement.predicateType !== 'https://slsa.dev/provenance/v1' ||
     !isRecord(statement.predicate) ||
-    !isRecord(statement.predicate.buildDefinition) ||
-    !isRecord(statement.predicate.runDetails) ||
+    !isRecord(buildDefinition) ||
+    typeof buildDefinition.buildType !== 'string' ||
+    buildDefinition.buildType === '' ||
+    !isRecord(buildDefinition.externalParameters) ||
+    !isRecord(buildDefinition.internalParameters) ||
+    !Array.isArray(buildDefinition.resolvedDependencies) ||
+    !isRecord(runDetails) ||
+    !isRecord(runDetails.builder) ||
+    typeof runDetails.builder.id !== 'string' ||
+    !isRecord(runDetails.metadata) ||
+    typeof runDetails.metadata.invocationId !== 'string' ||
+    runDetails.metadata.invocationId === '' ||
+    typeof runDetails.metadata.startedOn !== 'string' ||
+    runDetails.metadata.startedOn === '' ||
+    typeof runDetails.metadata.finishedOn !== 'string' ||
+    runDetails.metadata.finishedOn === '' ||
     !Array.isArray(statement.subject) ||
     statement.subject.length === 0 ||
     statement.subject.some(

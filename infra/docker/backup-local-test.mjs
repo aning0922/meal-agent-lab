@@ -17,7 +17,24 @@
 //
 // `pg_dump` **不包含 cluster roles**（角色属于 pg_dumpall 的范围）：恢复路径
 // 必须先由 bootstrap 的 `cluster` + `logins` 重建角色，见 runbook。
-import { chmodSync, existsSync, mkdirSync, openSync, readSync, closeSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { createHash } from 'node:crypto'
 import { isAbsolute, relative, resolve, basename, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -55,6 +72,63 @@ export const readDumpMagic = (path) => {
 
 export const sha256OfFile = (path) =>
   createHash('sha256').update(readFileSync(path)).digest('hex')
+
+const fileIdentity = (path) => {
+  const stat = lstatSync(path, { bigint: true })
+  if (!stat.isFile() || stat.nlink !== 1n) {
+    throw new Error('backup handoff did not produce one regular file')
+  }
+  return Object.freeze({ path, dev: stat.dev, ino: stat.ino })
+}
+
+const identityMatches = (identity) => {
+  try {
+    const stat = lstatSync(identity.path, { bigint: true })
+    return stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino
+  } catch {
+    return false
+  }
+}
+
+const removeOwnedFile = (identity) => {
+  if (!identityMatches(identity)) return false
+  unlinkSync(identity.path)
+  return true
+}
+
+export const writeChecksumSidecarNoReplace = (path, content) => {
+  let descriptor = null
+  let identity = null
+  let failed = false
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        constants.O_NOFOLLOW,
+      0o600
+    )
+    const stat = fstatSync(descriptor, { bigint: true })
+    identity = Object.freeze({ path, dev: stat.dev, ino: stat.ino })
+    writeFileSync(descriptor, content)
+  } catch {
+    failed = true
+  } finally {
+    if (descriptor !== null) closeSync(descriptor)
+  }
+  if (failed) {
+    if (identity !== null) {
+      try {
+        removeOwnedFile(identity)
+      } catch {
+        // 固定错误覆盖所有外部细节；残留由调用方的路径存在性复查继续阻断。
+      }
+    }
+    throw new Error('the backup checksum sidecar could not be created exclusively')
+  }
+  return identity
+}
 
 /**
  * 将要写入的**具体文件路径**必须在仓库之外，或被 Git 忽略。判据必须落在
@@ -125,13 +199,22 @@ export const performBackup = async (
     throw new Error('the backup file name must be a plain *.dump basename')
   }
   const dumpPath = resolve(directory, name)
-  const hostPartial = `${dumpPath}.partial`
+  const shaPath = `${dumpPath}.sha256`
   const partial = `${name}.partial`
-  await assertBackupTargetsIgnored(run, [dumpPath, `${dumpPath}.sha256`])
+  await assertBackupTargetsIgnored(run, [dumpPath, shaPath])
   mkdirSync(directory, { recursive: true })
-  if (existsSync(dumpPath) || existsSync(hostPartial)) {
+  if (existsSync(dumpPath) || existsSync(shaPath)) {
     throw new Error('the backup output path already exists')
   }
+
+  // partial 位于本轮独占的 0700 目录内；docker cp 完成后先验证普通文件身份，
+  // 再以 link(2) 做 no-replace promotion。rename 会覆盖竞态中出现的外部文件，
+  // 不能承担发布边界。
+  const partialDirectory = mkdtempSync(resolve(directory, '.meal-agent-backup-'))
+  chmodSync(partialDirectory, 0o700)
+  const hostPartial = resolve(partialDirectory, partial)
+  let publishedIdentity = null
+  let publishedSidecarIdentity = null
 
   log(`backup: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
 
@@ -150,50 +233,82 @@ export const performBackup = async (
     `mv /transfer/${partial} /transfer/${name}`,
     'rm -f /tmp/backup.pgpass'
   ].join('\n')
-  const dump = await composeRunOneOff(
-    { compose, run, warn: log },
-    ['--entrypoint', 'bash', 'backup', '-c', script],
-    {
-      timeoutMs: 600_000,
-      beforeRemove: async ({ id }) => {
-        const copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
-          timeoutMs: 300_000
-        })
-        if (copied.status !== 0) {
-          throw new Error('backup handoff failed')
+  try {
+    const dump = await composeRunOneOff(
+      { compose, run, warn: log },
+      ['--entrypoint', 'bash', 'backup', '-c', script],
+      {
+        timeoutMs: 600_000,
+        beforeRemove: async ({ id }) => {
+          const copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
+            timeoutMs: 300_000
+          })
+          if (copied.status !== 0) {
+            throw new Error('backup handoff failed')
+          }
+          const partialIdentity = fileIdentity(hostPartial)
+          chmodSync(hostPartial, 0o600)
+          try {
+            linkSync(hostPartial, dumpPath)
+          } catch {
+            throw new Error('the backup output path appeared during no-replace promotion')
+          }
+          publishedIdentity = Object.freeze({ ...partialIdentity, path: dumpPath })
         }
-        renameSync(hostPartial, dumpPath)
+      }
+    )
+    if (dump.status !== 0) {
+      const tail = String(dump.stderr ?? '').trim().split('\n').slice(-6).join(' / ')
+      throw new Error(
+        `pg_dump failed with exit ${String(dump.status)}: ${tail === '' ? '(no stderr)' : tail}`
+      )
+    }
+
+    const magic = readDumpMagic(dumpPath)
+    if (magic !== customFormatMagic) {
+      throw new Error('the produced file does not carry the custom-format magic; refusing to checksum it')
+    }
+    const sha256 = sha256OfFile(dumpPath)
+    publishedSidecarIdentity = writeChecksumSidecarNoReplace(
+      shaPath,
+      `${sha256}  ${name}\n`
+    )
+
+    log(`backup complete: deployment=local-test project=${project} database=${targetDatabase}`)
+    log(`backup file: ${dumpPath}`)
+    log(`backup sha256: ${sha256}`)
+    return { dumpPath, shaPath, sha256 }
+  } catch (error) {
+    // 只有仍与本轮已登记 inode 相同的正式文件才可回滚；外部替换必须保留并把
+    // ownership drift 作为固定附加失败。partial 目录独立清理，不依赖 handoff
+    // callback 是否正常返回。
+    let ownershipDrifted = false
+    if (publishedSidecarIdentity !== null && existsSync(shaPath)) {
+      try {
+        ownershipDrifted = !removeOwnedFile(publishedSidecarIdentity) || ownershipDrifted
+      } catch {
+        ownershipDrifted = true
       }
     }
-  )
-  if (dump.status !== 0) {
-    // 失败路径不把半份导出（真实数据）留在备份目录里。partial 删不掉时把
-    // 这一事实并进错误——它是含数据的残留，不能静默。
-    let partialNote = ''
-    try {
-      rmSync(hostPartial, { force: true })
-    } catch {
-      partialNote = `; additionally the partial file ${partial} could not be removed`
+    if (publishedIdentity !== null && existsSync(dumpPath)) {
+      try {
+        ownershipDrifted = !removeOwnedFile(publishedIdentity) || ownershipDrifted
+      } catch {
+        ownershipDrifted = true
+      }
     }
-    const tail = String(dump.stderr ?? '').trim().split('\n').slice(-6).join(' / ')
-    throw new Error(
-      `pg_dump failed with exit ${String(dump.status)}: ${tail === '' ? '(no stderr)' : tail}${partialNote}`
-    )
+    if (ownershipDrifted) {
+      throw new Error('backup failed and the published artifact ownership drifted')
+    }
+    throw error
+  } finally {
+    try {
+      rmSync(partialDirectory, { recursive: true, force: true })
+    } catch {
+      // 含真实数据的 partial 清理失败必须覆盖普通业务错误，不能静默。
+      throw new Error('backup failed to remove its private partial directory')
+    }
   }
-
-  const magic = readDumpMagic(dumpPath)
-  if (magic !== customFormatMagic) {
-    throw new Error('the produced file does not carry the custom-format magic; refusing to checksum it')
-  }
-  const sha256 = sha256OfFile(dumpPath)
-  const shaPath = `${dumpPath}.sha256`
-  writeFileSync(shaPath, `${sha256}  ${name}\n`, { mode: 0o600 })
-  chmodSync(dumpPath, 0o600)
-
-  log(`backup complete: deployment=local-test project=${project} database=${targetDatabase}`)
-  log(`backup file: ${dumpPath}`)
-  log(`backup sha256: ${sha256}`)
-  return { dumpPath, shaPath, sha256 }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

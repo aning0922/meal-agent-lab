@@ -16,7 +16,7 @@
 // 每一项都必须**以指定理由**失败：只要求「失败了」不够——一条完全无关的报错
 // 也能让脚本变绿，那样证明不了断言本身存在。
 import { spawnSync } from 'node:child_process'
-import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,9 +24,29 @@ import { fileURLToPath } from 'node:url'
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
+const safeDiagnostic = (message) => {
+  try {
+    writeSync(2, Buffer.from(message, 'utf8'))
+    return true
+  } catch {
+    return false
+  }
+}
 // 先读 tracked 源文件：读取失败时尚未创建任何临时资源。
-const original = readFileSync(composeFile)
-const mutationDirectory = mkdtempSync(join(tmpdir(), 'meal-agent-compose-topology-'))
+let original
+try {
+  original = readFileSync(composeFile)
+} catch {
+  safeDiagnostic('FATAL: could not read the tracked topology source\n')
+  process.exit(1)
+}
+let mutationDirectory
+try {
+  mutationDirectory = mkdtempSync(join(tmpdir(), 'meal-agent-compose-topology-'))
+} catch {
+  safeDiagnostic('FATAL: could not create the topology mutation directory\n')
+  process.exit(1)
+}
 let mutationIdentity
 const mutationFile = resolve(mutationDirectory, 'compose.local-test.yaml')
 const checker = resolve(composeDirectory, 'check-compose-topology.mjs')
@@ -39,10 +59,10 @@ try {
   try {
     rmSync(mutationDirectory, { recursive: true, force: true })
   } catch {
-    process.stderr.write('FATAL: topology mutation setup and cleanup both failed\n')
+    safeDiagnostic('FATAL: topology mutation setup and cleanup both failed\n')
     process.exit(1)
   }
-  process.stderr.write('FATAL: could not create the topology mutation fixture\n')
+  safeDiagnostic('FATAL: could not create the topology mutation fixture\n')
   process.exit(1)
 }
 
@@ -61,9 +81,9 @@ const abort = (message) => {
   try {
     cleanupMutationDirectory()
   } catch {
-    process.stderr.write('FATAL: could not remove the owned topology mutation directory\n')
+    safeDiagnostic('FATAL: could not remove the owned topology mutation directory\n')
   }
-  process.stderr.write(`${message}\n`)
+  safeDiagnostic(`${message}\n`)
   process.exit(1)
 }
 
@@ -72,7 +92,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     try {
       cleanupMutationDirectory()
     } catch {
-      process.stderr.write('FATAL: topology mutation signal cleanup failed\n')
+      safeDiagnostic('FATAL: topology mutation signal cleanup failed\n')
       process.exit(1)
     }
     process.removeAllListeners(signal)
@@ -318,9 +338,9 @@ if (mutations.length !== expectedMutationCount) {
 }
 
 if (failures.length > 0) {
-  process.stderr.write('Compose topology mutation check FAIL\n')
+  safeDiagnostic('Compose topology mutation check FAIL\n')
   for (const message of failures) {
-    process.stderr.write(`  - ${message}\n`)
+    safeDiagnostic(`  - ${message}\n`)
   }
   process.exit(1)
 }

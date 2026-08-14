@@ -17,7 +17,7 @@
 // 权限与 secret↔环境变量精确映射，以及数据库 identity 不可被环境变量改写。
 // 运行期动态门禁（非 loopback 访问、镜像/日志 Secret 扫描）属于 M3 与 M5。
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,6 +30,15 @@ import {
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
 
+const safeDiagnostic = (message) => {
+  try {
+    writeSync(2, Buffer.from(message, 'utf8'))
+    return true
+  } catch {
+    return false
+  }
+}
+
 // 生产调用**零参数**，检查的永远是 tracked 的 compose.local-test.yaml。
 // `--compose-file <path>` 是 M3B 反例专用的受限 seam：它让变异反例改写**临时
 // 副本**而不是 tracked 文件（tracked 文件因此没有任何改写窗口）。副本必须是
@@ -40,7 +49,7 @@ const parseComposeFileArgument = (argv) => {
     return resolve(composeDirectory, 'compose.local-test.yaml')
   }
   if (argv.length !== 2 || argv[0] !== '--compose-file') {
-    process.stderr.write('usage: check-compose-topology.mjs [--compose-file <owned temporary path>]\n')
+    safeDiagnostic('usage: check-compose-topology.mjs [--compose-file <owned temporary path>]\n')
     process.exit(2)
   }
   const candidate = resolve(argv[1])
@@ -50,7 +59,7 @@ const parseComposeFileArgument = (argv) => {
     !basename(candidateDirectory).startsWith('meal-agent-compose-topology-') ||
     basename(candidate) !== 'compose.local-test.yaml'
   ) {
-    process.stderr.write(
+    safeDiagnostic(
       '--compose-file must name the fixed file inside an owned system-temporary directory\n'
     )
     process.exit(2)
@@ -502,7 +511,7 @@ const fail = (message) => {
   failures.push(message)
 }
 const abort = (message) => {
-  process.stderr.write(`${message}\n`)
+  safeDiagnostic(`${message}\n`)
   process.exit(1)
 }
 
@@ -611,7 +620,12 @@ const gitTracks = (path) => {
 // 会把**未被任何服务引用**的顶层 network / volume / secret 直接裁掉（`--no-normalize`
 // 同样如此），因此「新增一个没人用的声明」在解析后的配置里根本不可见。要让这类
 // 声明也失败，只能读源文件的顶层键。其余全部断言仍然只看解析后的配置。
-const composeSource = readFileSync(composeFile, 'utf8')
+let composeSource
+try {
+  composeSource = readFileSync(composeFile, 'utf8')
+} catch {
+  abort('compose topology check could not read the selected Compose source')
+}
 
 // 这三个 section **只允许** canonical bare key 写法。扫描是 fail closed 的：
 // 二级缩进上任何非空、非注释且不符合该文法的声明行都会报错，而不是被静默
@@ -701,9 +715,9 @@ for (const [section, expectedKeys] of [
   }
 }
 if (declaredSectionProblems.length > 0) {
-  process.stderr.write('Compose topology check FAIL\n')
+  safeDiagnostic('Compose topology check FAIL\n')
   for (const message of declaredSectionProblems) {
-    process.stderr.write(`  - ${message}\n`)
+    safeDiagnostic(`  - ${message}\n`)
   }
   process.exit(1)
 }
@@ -1336,9 +1350,9 @@ for (const forbidden of ['curl', 'wget', 'apt', 'apt-get', 'apk', 'npm', 'pnpm',
 // 结果
 // --------------------------------------------------------------------------
 if (failures.length > 0) {
-  process.stderr.write('Compose topology check FAIL\n')
+  safeDiagnostic('Compose topology check FAIL\n')
   for (const message of failures) {
-    process.stderr.write(`  - ${message}\n`)
+    safeDiagnostic(`  - ${message}\n`)
   }
   process.exit(1)
 }

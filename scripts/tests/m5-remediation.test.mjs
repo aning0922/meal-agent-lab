@@ -1,13 +1,33 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
 
-import { assertBackupTargetsIgnored } from '../../infra/docker/backup-local-test.mjs'
+import {
+  assertBackupTargetsIgnored,
+  writeChecksumSidecarNoReplace
+} from '../../infra/docker/backup-local-test.mjs'
 import { discardOverride, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
-import { requireNonLoopbackIsolationEvidence } from '../../infra/docker/local-test-containment.mjs'
+import {
+  connectOutcomeForErrorCode,
+  requireNonLoopbackIsolationEvidence
+} from '../../infra/docker/local-test-containment.mjs'
+import {
+  observedDescendantPgids,
+  runCommand,
+  unconfirmedProcessGroups
+} from '../../infra/docker/m3b-subprocess.mjs'
 
 import {
   composeRunOneOff,
@@ -17,11 +37,63 @@ import {
 } from '../../infra/docker/m4-lifecycle.mjs'
 import {
   checksumSidecarUnparseableReason,
+  createRestoreCommandRunner,
   runRestoreOneOff,
   verifyBackupChecksum
 } from '../../infra/docker/restore-local-test.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
+
+const requiredRound8CallsiteProblems = (sources) => {
+  const problems = []
+  const required = [
+    ['non-loopback final evidence', sources.containment, /requireNonLoopbackIsolationEvidence\(nonLoopbackIsolationEvidence, fail\)/],
+    ['SLSA attestation validation', sources.imageCore, /validateSlsaProvenanceStatement\(statement, fatal\)/],
+    ['runtime cleanup immutable-id recovery', sources.runtime, /cleanupState\.ownedImageId = parseDockerImageId/],
+    ['runtime cleanup post-removal absence', sources.runtime, /run image tag was not proven absent after cleanup/],
+    ['aggregate signal safe diagnostic', sources.aggregate, /safeDiagnostic\(`\\nstage09a:check: received \$\{signal\}/],
+    ['overflow generation quarantine', sources.aggregate, /quarantineRecognizableLineage\(line, \{ frameComplete: true \}\)/],
+    ['Group E first image cleanup', sources.negatives, /\['first', projectA, secretsA, tagA\]/],
+    ['Group E second image cleanup', sources.negatives, /\['second', projectB, secretsB, tagB\]/]
+  ]
+  for (const [label, source, pattern] of required) {
+    if (!pattern.test(source)) problems.push(label)
+  }
+  return problems
+}
+
+const processGroupIsAlive = (pgid) => {
+  try {
+    process.kill(-pgid, 0)
+    return true
+  } catch (error) {
+    return error?.code !== 'ESRCH'
+  }
+}
+
+const waitForGone = async (pgid, timeoutMs = 4_000) => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!processGroupIsAlive(pgid)) return
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
+  }
+  assert.equal(processGroupIsAlive(pgid), false, `process group ${String(pgid)} must reach ESRCH`)
+}
+
+test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10_000 }, async () => {
+  const before = new Set(observedDescendantPgids())
+  await assert.rejects(
+    runCommand(
+      ['/bin/sh', '-c', 'exec 0<&-; trap "" TERM INT HUP; sleep 30'],
+      { stdin: Buffer.alloc(16 * 1024 * 1024, 0x41), timeoutMs: 60_000 }
+    ),
+    (error) => error instanceof Error && error.message === 'command stdin failed'
+  )
+  const created = observedDescendantPgids().filter((pgid) => !before.has(pgid))
+  assert.equal(created.length, 1)
+  for (const pgid of created) await waitForGone(pgid)
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+})
 
 test('M4 absence evidence requires the exact single-line Docker result', () => {
   assert.equal(
@@ -143,6 +215,37 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
   assert.ok(observed.argv.includes('--no-TTY'))
   assert.equal(observed.options.stdin, payload)
   assert.equal(state, 'absent')
+})
+
+test('the standalone restore runner forwards the verified dump bytes as stdin', async () => {
+  const payload = Buffer.from([0x50, 0x47, 0x44, 0x4d, 0x50, 0x00, 0xff])
+  let observed = null
+  const run = createRestoreCommandRunner(async (argv, options) => {
+    observed = { argv, options }
+    return { status: 0, stdout: '', stderr: '' }
+  }, { defaultCwd: '/fixture', defaultEnv: { FIXTURE: 'yes' } })
+  await run(['docker', 'compose'], { stdin: payload, timeoutMs: 7 })
+  assert.deepEqual(observed.argv, ['docker', 'compose'])
+  assert.equal(observed.options.stdin, payload)
+  assert.equal(observed.options.cwd, '/fixture')
+  assert.deepEqual(observed.options.env, { FIXTURE: 'yes' })
+})
+
+test('backup checksum sidecar creation is exclusive and never follows a symlink', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-sidecar-'))
+  try {
+    const foreign = resolve(directory, 'foreign')
+    const sidecar = resolve(directory, 'fixture.dump.sha256')
+    writeFileSync(foreign, 'FOREIGN')
+    symlinkSync(foreign, sidecar)
+    assert.throws(
+      () => writeChecksumSidecarNoReplace(sidecar, 'a'.repeat(64)),
+      /could not be created exclusively/
+    )
+    assert.equal(readFileSync(foreign, 'utf8'), 'FOREIGN')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('M4 restarts only the exact existing container without traversing Compose dependencies', async () => {
@@ -270,6 +373,49 @@ test('zero usable non-loopback outcomes can never satisfy the isolation gate', (
   ])
   requireNonLoopbackIsolationEvidence(1, (message) => failures.push(message))
   assert.equal(failures.length, 1)
+})
+
+test('only an explicit connection refusal is counted as refusal evidence', () => {
+  assert.equal(connectOutcomeForErrorCode('ECONNREFUSED'), 'refused:ECONNREFUSED')
+  assert.equal(connectOutcomeForErrorCode('EHOSTUNREACH'), 'unattemptable:EHOSTUNREACH')
+  for (const code of ['EMFILE', 'ENFILE', 'ENOMEM', 'ECONNRESET', 'EACCES', 'unknown']) {
+    assert.equal(connectOutcomeForErrorCode(code), `unusable:${code}`)
+  }
+})
+
+test('Round 8 safety call sites are mutation-sensitive rather than inferred from helpers', () => {
+  const sources = {
+    containment: readFileSync(resolve(repositoryRoot, 'infra/docker/local-test-containment.mjs'), 'utf8'),
+    imageCore: readFileSync(resolve(repositoryRoot, 'infra/docker/api-image-scan.mjs'), 'utf8'),
+    runtime: readFileSync(resolve(repositoryRoot, 'infra/docker/check-api-runtime-image.mjs'), 'utf8'),
+    aggregate: readFileSync(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'), 'utf8'),
+    negatives: readFileSync(resolve(repositoryRoot, 'infra/docker/check-local-test-negatives.mjs'), 'utf8')
+  }
+  assert.deepEqual(requiredRound8CallsiteProblems(sources), [])
+
+  for (const key of Object.keys(sources)) {
+    const original = sources[key]
+    for (const pattern of [
+      /requireNonLoopbackIsolationEvidence\(nonLoopbackIsolationEvidence, fail\)/,
+      /validateSlsaProvenanceStatement\(statement, fatal\)/,
+      /cleanupState\.ownedImageId = parseDockerImageId/,
+      /run image tag was not proven absent after cleanup/,
+      /safeDiagnostic\(`\\nstage09a:check: received \$\{signal\}/,
+      /quarantineRecognizableLineage\(line, \{ frameComplete: true \}\)/,
+      /\['first', projectA, secretsA, tagA\]/,
+      /\['second', projectB, secretsB, tagB\]/
+    ]) {
+      if (!pattern.test(original)) continue
+      const mutant = {
+        ...sources,
+        [key]: original.replace(
+          new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`),
+          '/* removed by mutation */'
+        )
+      }
+      assert.notDeepEqual(requiredRound8CallsiteProblems(mutant), [])
+    }
+  }
 })
 
 test('temporary compose override cleanup is bound to the inode this run created', () => {

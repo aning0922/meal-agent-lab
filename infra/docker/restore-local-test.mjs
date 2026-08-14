@@ -256,6 +256,14 @@ export const runRestoreOneOff = async (oneOff, runArgs, options, failureReason) 
   }
 }
 
+export const createRestoreCommandRunner = (
+  runner,
+  { defaultCwd = composeDirectory, defaultEnv = process.env } = {}
+) => (
+  commandArgs,
+  { env, timeoutMs = 120_000, cwd = defaultCwd, stdin = null } = {}
+) => runner(commandArgs, { env: env ?? defaultEnv, timeoutMs, cwd, stdin })
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)
   let dumpPath = null
@@ -275,8 +283,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   const scrubber = createSecretScrubber()
   const log = (line) => process.stdout.write(`${scrubber.scrub(line)}\n`)
-  const run = (commandArgs, { env, timeoutMs = 120_000, cwd = composeDirectory } = {}) =>
-    runCommand(commandArgs, { env: env ?? process.env, timeoutMs, cwd })
+  const run = createRestoreCommandRunner(runCommand)
   const compose = (composeArgs, options = {}) =>
     run(
       [

@@ -129,6 +129,13 @@ const unattemptableErrorCodes = new Set([
   'EHOSTDOWN'
 ])
 
+export const connectOutcomeForErrorCode = (rawCode) => {
+  const code = String(rawCode ?? 'unknown')
+  if (code === 'ECONNREFUSED') return `refused:${code}`
+  if (unattemptableErrorCodes.has(code)) return `unattemptable:${code}`
+  return `unusable:${code}`
+}
+
 const attemptConnect = (host, port, timeoutMs = 3_000) =>
   new Promise((resolveAttempt) => {
     // zone 后缀（fe80::…%en0）不影响 family 判定：按去掉 zone 的裸地址判。
@@ -137,7 +144,7 @@ const attemptConnect = (host, port, timeoutMs = 3_000) =>
     try {
       socket = connect({ host, port, family: isIP(bare) === 6 ? 6 : 4 })
     } catch (error) {
-      resolveAttempt(`unattemptable:${String(error?.code ?? 'construct-failed')}`)
+      resolveAttempt(connectOutcomeForErrorCode(error?.code ?? 'construct-failed'))
       return
     }
     let settled = false
@@ -150,8 +157,7 @@ const attemptConnect = (host, port, timeoutMs = 3_000) =>
     }
     socket.once('connect', () => done('connected'))
     socket.once('error', (error) => {
-      const code = String(error.code ?? 'unknown')
-      done(unattemptableErrorCodes.has(code) ? `unattemptable:${code}` : `refused:${code}`)
+      done(connectOutcomeForErrorCode(error.code))
     })
     setTimeout(() => done('timeout'), timeoutMs).unref()
   })
@@ -788,8 +794,13 @@ export const runContainmentAndIsolation = async ({
       `isolation: [::1]:${String(hostPort)} accepted a TCP connection ` +
         `(http probe: ${http.outcome}); the API must not be reachable over IPv6 loopback`
     )
-  } else {
+  } else if (ipv6Loopback === 'refused:ECONNREFUSED' || ipv6Loopback === 'timeout') {
     log(`isolation: [::1]:${String(hostPort)} -> ${ipv6Loopback} (as required)`)
+  } else {
+    fail(
+      `isolation: [::1]:${String(hostPort)} produced ${ipv6Loopback}; ` +
+        'the IPv6 loopback publication boundary could not be proven'
+    )
   }
 
   // HTTP 探针的正向自检：它必须能在 127.0.0.1 上认出我们自己的 API，否则
@@ -913,12 +924,12 @@ export const runContainmentAndIsolation = async ({
   }
   for (const { interfaceName, address } of nonLoopback) {
     const outcome = await attemptConnect(address, hostPort)
-    if (outcome.startsWith('unattemptable:')) {
+    if (outcome.startsWith('unattemptable:') || outcome.startsWith('unusable:')) {
       // 本机根本没能发起这次连接（地址族/路由/接口问题）。这**不是**隔离
       // 证据，如实记为无法取证，不算通过也不算失败。
       log(
         `isolation: ${interfaceName} ${address}:${String(hostPort)} -> ${outcome} ` +
-          '(the host could not attempt this connection; no isolation evidence ' +
+        '(the host did not produce a closed isolation outcome; no isolation evidence ' +
           'is obtainable for this address)'
       )
       continue

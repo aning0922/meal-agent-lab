@@ -80,6 +80,7 @@ const templateFile = resolve(
 const failures = []
 /** 本套件用过的 docker project 名，收尾时逐个断言零残留。 */
 const usedNegativeProjects = []
+const usedNegativeCleanupScopes = []
 let caught = 0
 const pass = (name, reason) => {
   caught += 1
@@ -114,7 +115,21 @@ installSignalHandlers(async () => {
     if (result.status !== 0) return null
     return result.stdout.split('\n').map((entry) => entry.trim()).filter(Boolean)
   }
+  const scopedProjects = new Set()
+  for (const scope of usedNegativeCleanupScopes) {
+    scopedProjects.add(scope.project)
+    try {
+      residue.push(...await cleanupSmokeProject(
+        scope.project,
+        scope.secretsDirectory,
+        { imageTag: scope.imageTag }
+      ))
+    } catch {
+      residue.push(`scoped-cleanup:${scope.project}`)
+    }
+  }
   for (const project of [...new Set(usedNegativeProjects)]) {
+    if (scopedProjects.has(project)) continue
     for (const kind of ['container', 'network', 'volume']) {
       const ids = await cleanupListing(kind, project)
       if (ids === null) {
@@ -1422,6 +1437,10 @@ process.stdout.write('Group E: image isolation negatives\n')
   usedNegativeProjects.push(projectA, projectB)
   const secretsA = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
   const secretsB = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
+  usedNegativeCleanupScopes.push(
+    { project: projectA, secretsDirectory: secretsA, imageTag: tagA },
+    { project: projectB, secretsDirectory: secretsB, imageTag: tagB }
+  )
   try {
     generateSecretBundle(secretsA)
     generateSecretBundle(secretsB)
@@ -1489,13 +1508,21 @@ process.stdout.write('Group E: image isolation negatives\n')
   } catch (error) {
     fail(name, `image isolation negative threw: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
-    // 这里此前 `.catch(() => undefined)` 并丢弃返回的 residue：projectB 的镜像与
-    // 容器清理若失败，整个套件看不见。现在两种失败都记账。
-    const residueB = await cleanupSmokeProject(projectB, secretsB, { imageTag: tagB }).catch(
-      (error) => [`cleanup-error: ${safe(error instanceof Error ? error.message : String(error))}`]
-    )
-    if (residueB.length > 0) {
-      fail('suite cleanup', wrongReason('an empty residue list for the second image project', residueB))
+    // 无论 A build、B build、identity read 或断言在哪一步失败，两边都进入同一个
+    // failure-safe cleanup。此前 finally 只收 B，B build 失败会把 A tag 留下。
+    for (const [label, project, secrets, imageTag] of [
+      ['first', projectA, secretsA, tagA],
+      ['second', projectB, secretsB, tagB]
+    ]) {
+      const residue = await cleanupSmokeProject(project, secrets, { imageTag }).catch(
+        (error) => [`cleanup-error: ${safe(error instanceof Error ? error.message : String(error))}`]
+      )
+      if (residue.length > 0) {
+        fail(
+          'suite cleanup',
+          wrongReason(`an empty residue list for the ${label} image project`, residue)
+        )
+      }
     }
     for (const path of [overrideA, overrideB]) {
       rmSync(path, { force: true })

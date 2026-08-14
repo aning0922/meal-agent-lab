@@ -224,13 +224,32 @@ import { resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 const directory = process.env.STAGE09A_FIXTURE_DIR
 const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
-  detached: true,
+  detached: false,
   stdio: ['ignore', 'ignore', 'ignore', 'ignore']
 })
 child.unref()
 writeFileSync(resolve(directory, 'grandchild-pid'), String(child.pid))
-writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid))
+// EOF 不是数字 token 边界。这个 group 仍属于 controller 自己的 PGID，故聚合器
+// 可经 controller ownership 安全回收它，但绝不能把截断数字当成独立 PGID。
+writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(process.pid))
 await delay(500)
+`
+  )
+  writeFileSync(
+    resolve(directory, 'overflow-generation-parent.mjs'),
+    `import { spawn } from 'node:child_process'
+import { writeFileSync, writeSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
+  detached: true,
+  stdio: ['ignore', 'ignore', 'ignore', 'ignore']
+})
+child.unref()
+writeFileSync(resolve(directory, 'overflow-generation-pgid'), String(child.pid))
+await delay(200)
+writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid) + ' 999999999999999999999999999999\\n')
 `
   )
   writeFileSync(
@@ -349,6 +368,9 @@ if [ "\${STAGE09A_FIXTURE_MODE:-}" = shared-cleanup ]; then
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-partial ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/partial-parent.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-overflow-generation ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/overflow-generation-parent.mjs"
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-extra-token ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/extra-token-parent.mjs"
@@ -489,6 +511,34 @@ test('an EOF-partial ownership frame fails closed and the announced group reache
     }
     rmSync(fixture.directory, { recursive: true, force: true })
   }
+})
+
+test('a complete frame with an overflowing generation quarantines its proven PGID', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let pgid = null
+  try {
+    gate = spawnGate(fixture, 'ownership-overflow-generation')
+    const pidFile = resolve(fixture.directory, 'overflow-generation-pgid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'overflow-generation group')
+    pgid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processGroupIsAlive(pgid), true)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+    await waitFor(() => !processGroupIsAlive(pgid), 4_000, 'overflow-generation group ESRCH')
+  } finally {
+    if (pgid !== null && processGroupIsAlive(pgid)) process.kill(-pgid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('EOF is not accepted as the end of a partial PGID token', () => {
+  const source = readFileSync(entrypoint, 'utf8')
+  assert.match(source, /\(\?=\[\^0-9\]\)/)
+  assert.doesNotMatch(source, /\(\?=\[\^0-9\]\|\$\)/)
 })
 
 test('a recognizable PGID with an extra token fails closed and still reaches ESRCH', { timeout: 12_000 }, async () => {

@@ -343,23 +343,57 @@ test('OCI descriptor media types are exact for each evidence role', () => {
 })
 
 test('SLSA provenance requires the supported predicate envelope', () => {
+  const buildDefinition = {
+    buildType: 'https://mobyproject.org/buildkit@v1',
+    externalParameters: {},
+    internalParameters: {},
+    resolvedDependencies: []
+  }
+  const runDetails = {
+    builder: { id: '' },
+    metadata: {
+      invocationId: 'fixture',
+      startedOn: '2026-08-14T00:00:00Z',
+      finishedOn: '2026-08-14T00:00:01Z'
+    }
+  }
   const statement = {
     _type: 'https://in-toto.io/Statement/v1',
     predicateType: 'https://slsa.dev/provenance/v1',
     subject: [{ name: 'fixture', digest: { sha256: 'a'.repeat(64) } }],
-    predicate: { buildDefinition: {}, runDetails: {} }
+    predicate: { buildDefinition, runDetails }
   }
   assert.equal(validateSlsaProvenanceStatement(statement, throwingFatal), statement)
   for (const mutation of [
     { ...statement, predicate: undefined },
-    { ...statement, predicate: { runDetails: {} } },
-    { ...statement, predicate: { buildDefinition: {} } }
+    { ...statement, predicate: { runDetails } },
+    { ...statement, predicate: { buildDefinition } },
+    { ...statement, predicate: { buildDefinition: {}, runDetails } },
+    { ...statement, predicate: { buildDefinition, runDetails: {} } }
   ]) {
     assert.throws(
       () => validateSlsaProvenanceStatement(mutation, throwingFatal),
       /invalid provenance attestation/
     )
   }
+})
+
+test('Dockerfile FROM parsing sees --platform and refuses a missing stage graph', () => {
+  const base = [
+    'USER 10001:10001',
+    'ENTRYPOINT []',
+    'CMD ["node", "/app/dist/index.js"]'
+  ].join('\n')
+  const platformProblems = []
+  checkDockerfileText(
+    `FROM --platform=linux/amd64 node:latest AS node-base\n${base}\n`,
+    (message) => platformProblems.push(message)
+  )
+  assert.ok(platformProblems.includes('Dockerfile: FROM must use the pinned digest or a prior stage alias'))
+
+  const missingProblems = []
+  checkDockerfileText(base, (message) => missingProblems.push(message))
+  assert.ok(missingProblems.includes('Dockerfile: at least one complete FROM instruction is required'))
 })
 
 test('dependency payload evidence includes .bin and package file bytes', () => {
@@ -572,6 +606,10 @@ test('runtime image entrypoints bind builds and cleanup to immutable ownership e
     assert.match(source, /expectedImageId:/)
     assert.match(source, /parseOwnedScratchContainer/)
     assert.match(source, /foreign (?:container|tag) was preserved/)
+    assert.match(source, /cleanupPromise: null/)
+    assert.match(source, /return cleanupState\.cleanupPromise/)
+    assert.match(source, /built image identity could not be recovered/)
+    assert.match(source, /image tag (?:was not proven absent|still present) after (?:cleanup|removal)/)
   }
   assert.match(mutations, /builtTags: new Map\(\)/)
 })

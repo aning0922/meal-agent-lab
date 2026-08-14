@@ -17,6 +17,10 @@
 import { spawn } from 'node:child_process'
 import { writeSync } from 'node:fs'
 
+// 信号/超时清理不能依赖之后可能被调用方改写的全局 timer primitive。加载模块时
+// 就保存原始引用；这不是为了让测试通过，而是确保清理路径使用自己的受控原语。
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
+
 const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
 const aggregateOwnershipFd = (() => {
   const raw = process.env[aggregateOwnershipFdName]
@@ -68,6 +72,9 @@ const writeDiagnostic = (message) => {
     return false
   }
 }
+
+const reportDiagnosticFailure = (failed, message) =>
+  writeDiagnostic(message) ? failed : true
 
 const announceProcessGroupOwnership = ({ pgid, generation }) => {
   // 机器帧先于人类诊断：聚合器只接受带 producer + generation 的完整身份，
@@ -134,7 +141,7 @@ export const observedDescendantPgids = () => [...observedProcessGroups]
 
 const sleep = (milliseconds) =>
   new Promise((resolveSleep) => {
-    setTimeout(resolveSleep, milliseconds)
+    nativeSetTimeout(resolveSleep, milliseconds)
   })
 
 const killGroup = (pgid, signal) => {
@@ -260,17 +267,59 @@ export const createProcessGroupLifecycle = ({
     handles,
     { graceMs = 1_000, killWaitMs = 3_000 } = {}
   ) => {
-    const pending = handles.filter((handle) => !retireIfGone(handle))
+    let primitiveFailed = false
+    const pending = handles.filter((handle) => {
+      try {
+        return !retireIfGone(handle)
+      } catch {
+        primitiveFailed = true
+        return true
+      }
+    })
     for (const handle of pending) {
-      signalIfCurrent(handle, 'SIGTERM')
+      try {
+        signalIfCurrent(handle, 'SIGTERM')
+      } catch {
+        primitiveFailed = true
+      }
     }
-    await Promise.all(pending.map((handle) => waitForExit(handle, graceMs)))
-    const survivors = pending.filter((handle) => !retireIfGone(handle))
+    try {
+      await Promise.all(pending.map((handle) => waitForExit(handle, graceMs)))
+    } catch {
+      primitiveFailed = true
+    }
+    const survivors = pending.filter((handle) => {
+      try {
+        return !retireIfGone(handle)
+      } catch {
+        primitiveFailed = true
+        return true
+      }
+    })
     for (const handle of survivors) {
-      signalIfCurrent(handle, 'SIGKILL')
+      try {
+        signalIfCurrent(handle, 'SIGKILL')
+      } catch {
+        primitiveFailed = true
+      }
     }
-    await Promise.all(survivors.map((handle) => waitForExit(handle, killWaitMs)))
-    return survivors.filter((handle) => !retireIfGone(handle))
+    try {
+      await Promise.all(survivors.map((handle) => waitForExit(handle, killWaitMs)))
+    } catch {
+      primitiveFailed = true
+    }
+    const unconfirmed = survivors.filter((handle) => {
+      try {
+        return !retireIfGone(handle)
+      } catch {
+        primitiveFailed = true
+        return true
+      }
+    })
+    if (primitiveFailed) {
+      throw new Error('process-group cleanup primitive failed')
+    }
+    return unconfirmed
   }
 
   /**
@@ -421,9 +470,6 @@ const runCommandUnchecked = (
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     child.stderr.on('data', (chunk) => stderrChunks.push(chunk))
-    if (stdin !== null) {
-      child.stdin.end(stdin)
-    }
 
     // 超时调用方自己拥有 settlement：即使 leader 永远不发 `close`，
     // TERM → KILL → 有界确认的预算到期后也会 reject，不把 hard bound 寄托给 close。
@@ -496,6 +542,36 @@ const runCommandUnchecked = (
       })
     })
 
+    if (stdin !== null) {
+      child.stdin.once('error', () => {
+        if (settled || timedOut || ownershipAnnouncementFailed) {
+          return
+        }
+        // stdin EPIPE/stream error 与 timeout 共用同一条 cleanup-before-settlement
+        // 语义。先取得 settlement 所有权，再终止并确认整组，最后只返回固定原因。
+        settled = true
+        clearTimeout(timer)
+        void (async () => {
+          let survivors = childHandle === null ? [] : [childHandle]
+          let terminationFailed = false
+          try {
+            survivors =
+              childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
+          } catch {
+            terminationFailed = true
+          }
+          rejectPromise(
+            new Error(
+              terminationFailed || survivors.length > 0
+                ? 'command stdin failed; descendant process group was not confirmed gone'
+                : 'command stdin failed'
+            )
+          )
+        })()
+      })
+      child.stdin.end(stdin)
+    }
+
     if (ownershipAnnouncementFailed && childHandle !== null) {
       void (async () => {
         let survivors = [childHandle]
@@ -558,7 +634,9 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
     terminating = true
     pendingSignal = signal
     const cleanupStartAnnounced = announceCleanupState('START')
-    process.stderr.write(`\n${signal}: terminating child processes, then running ${label}\n`)
+    let diagnosticFailed = !writeDiagnostic(
+      `\n${signal}: terminating child processes, then running ${label}\n`
+    )
     void (async () => {
       let survivors = []
       let terminationFailed = false
@@ -568,7 +646,10 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
         survivors = await terminateControlledSubtree()
       } catch {
         terminationFailed = true
-        process.stderr.write('subtree termination failed\n')
+        diagnosticFailed = reportDiagnosticFailure(
+          diagnosticFailed,
+          'subtree termination failed\n'
+        )
       }
 
       // 达到 sweep 上限或仍有未确认组时，不能带着活跃子进程进入 scoped cleanup。
@@ -593,14 +674,23 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
           const residue = await cleanup(signal)
           if (!Array.isArray(residue)) {
             cleanupFailed = true
-            process.stderr.write(`${label} returned an invalid cleanup result\n`)
+            diagnosticFailed = reportDiagnosticFailure(
+              diagnosticFailed,
+              `${label} returned an invalid cleanup result\n`
+            )
           } else if (residue.length > 0) {
             cleanupFailed = true
-            process.stderr.write(`${label} left ${String(residue.length)} residue item(s)\n`)
+            diagnosticFailed = reportDiagnosticFailure(
+              diagnosticFailed,
+              `${label} left ${String(residue.length)} residue item(s)\n`
+            )
           }
         } catch {
           cleanupFailed = true
-          process.stderr.write(`${label} failed during signal cleanup\n`)
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            `${label} failed during signal cleanup\n`
+          )
         }
       }
       // cleanup 期间可能又派生了子进程（scoped cleanup 自己要跑 docker 命令）。
@@ -611,7 +701,10 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
         survivors = await terminateControlledSubtree()
       } catch {
         terminationFailed = true
-        process.stderr.write('subtree termination failed\n')
+        diagnosticFailed = reportDiagnosticFailure(
+          diagnosticFailed,
+          'subtree termination failed\n'
+        )
       }
       childProcessStartsClosed = true
       try {
@@ -619,7 +712,10 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
         survivors = [...new Set([...survivors, ...finalSurvivors])]
       } catch {
         if (!terminationFailed) {
-          process.stderr.write('subtree termination failed\n')
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
         }
         terminationFailed = true
       }
@@ -632,14 +728,14 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       // 永远悬空的 START。相反，若进程在这里之前消失，缺 DONE 仍会由聚合器拒绝。
       const cleanupDoneAnnounced = cleanupStartAnnounced && announceCleanupState('DONE')
       if (!cleanupDoneAnnounced) {
-        process.stderr.write('aggregate cleanup acknowledgement failed\n')
+        writeDiagnostic('aggregate cleanup acknowledgement failed\n')
         process.exit(1)
       }
-      if (terminationFailed || cleanupFailed || survivors.length > 0) {
+      if (terminationFailed || cleanupFailed || diagnosticFailed || survivors.length > 0) {
         // **fail closed**：受控子树或 scoped cleanup 任一失败，都不能用「干净的
         // 信号语义」收场。子树失败只报固定原因，不回显任何命令内容。
         if (terminationFailed || survivors.length > 0) {
-          process.stderr.write('descendant process groups were not confirmed gone\n')
+          writeDiagnostic('descendant process groups were not confirmed gone\n')
         }
         process.exit(1)
       }
@@ -649,7 +745,7 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
       } catch {
         // 最终 self-signal 也是一条会失败的 termination primitive。不得让它的
         // Error/stack（可能含调用方文字）逃到 Node 默认异常输出。
-        process.stderr.write('final signal rethrow failed\n')
+        writeDiagnostic('final signal rethrow failed\n')
         process.exit(1)
       }
     })()

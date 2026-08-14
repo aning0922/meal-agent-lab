@@ -27,7 +27,7 @@
 // 清理纪律：成功失败都删除本轮 container / image tag / 临时目录；失败现场只有
 // 显式 `--keep-failure` 才保留（保留物逐项公告）。清理失败本身也是门禁失败。
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -78,15 +78,16 @@ const cleanupState = {
   containerClaims: new Map(),
   ownedImageTag: false,
   ownedImageId: null,
-  done: false
+  imageIdFile: null,
+  cleanupPromise: null
 }
 
 const cleanupProblems = []
-const cleanup = async ({ keepScene = false } = {}) => {
-  if (cleanupState.done) {
-    return
+const cleanup = ({ keepScene = false } = {}) => {
+  if (cleanupState.cleanupPromise !== null) {
+    return cleanupState.cleanupPromise
   }
-  cleanupState.done = true
+  cleanupState.cleanupPromise = (async () => {
   if (keepScene) {
     process.stderr.write('image-scan: --keep-failure set; keeping the failure scene:\n')
     if (cleanupState.temporaryRoot !== null) {
@@ -98,7 +99,7 @@ const cleanup = async ({ keepScene = false } = {}) => {
     if (cleanupState.ownedImageTag) {
       process.stderr.write(`image-scan:   kept image tag ${imageTag}\n`)
     }
-    return
+    return []
   }
   for (const claim of [...cleanupState.containerClaims.values()]) {
     try {
@@ -146,6 +147,20 @@ const cleanup = async ({ keepScene = false } = {}) => {
   }
   if (cleanupState.ownedImageTag) {
     try {
+      if (
+        cleanupState.ownedImageId === null &&
+        cleanupState.imageIdFile !== null &&
+        existsSync(cleanupState.imageIdFile)
+      ) {
+        try {
+          cleanupState.ownedImageId = parseDockerImageId(
+            readFileSync(cleanupState.imageIdFile, 'utf8'),
+            () => { throw new Error('invalid iidfile') }
+          )
+        } catch {
+          cleanupProblems.push('built image identity could not be recovered from iidfile')
+        }
+      }
       const current = await runCommand(
         ['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag],
         { timeoutMs: 60_000 }
@@ -165,6 +180,19 @@ const cleanup = async ({ keepScene = false } = {}) => {
         )
       ) {
         cleanupProblems.push('run image tag identity could not be verified')
+      }
+
+      const gone = await runCommand(
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag],
+        { timeoutMs: 60_000 }
+      )
+      if (!(
+        gone.status === 1 &&
+        isAbsenceMessage(gone.stderr, { kind: 'image', name: imageTag })
+      )) {
+        cleanupProblems.push('run image tag was not proven absent after cleanup')
+      } else {
+        cleanupState.ownedImageTag = false
       }
 
       // 若 tag 在扫描中被重绑，绝不删除外来的新 tag；只清理由本轮记录的 A，
@@ -203,8 +231,7 @@ const cleanup = async ({ keepScene = false } = {}) => {
     } catch {
       cleanupProblems.push('run image tag removal did not complete')
     }
-    cleanupState.ownedImageTag = false
-    cleanupState.ownedImageId = null
+    if (!cleanupState.ownedImageTag) cleanupState.ownedImageId = null
   }
   if (cleanupState.temporaryRoot !== null) {
     try {
@@ -214,6 +241,9 @@ const cleanup = async ({ keepScene = false } = {}) => {
     }
     cleanupState.temporaryRoot = null
   }
+  return [...cleanupProblems]
+  })()
+  return cleanupState.cleanupPromise
 }
 
 installSignalHandlers(() => cleanup(), { label: 'api runtime image scan cleanup' })
@@ -268,6 +298,7 @@ const main = async () => {
 
   log(`building ${imageTag}`)
   const imageIdFile = join(cleanupState.temporaryRoot, 'built-image.id')
+  cleanupState.imageIdFile = imageIdFile
   const preexistingImage = await runCommand(['docker', 'image', 'inspect', imageTag], { timeoutMs: 60_000 })
   if (
     preexistingImage.status === 0 ||

@@ -1000,7 +1000,9 @@ const handlerCases = [
     label: 'termination-primitive',
     cleanup: 'async () => []',
     beforeSignal:
-      "globalThis.setTimeout = () => { throw new Error('CALLER-SENTINEL') }",
+      "let primitiveFailed = false; process.kill = (pid, signal) => { " +
+      "if (pid < 0 && signal === 'SIGTERM' && !primitiveFailed) { primitiveFailed = true; " +
+      "throw new Error('CALLER-SENTINEL') }; return nativeKill(pid, signal) }",
     expectedStatus: 1,
     expectedSignal: null,
     expectedReason: /subtree termination failed/
@@ -1071,7 +1073,10 @@ for (const handlerCase of handlerCases) {
       run.status !== handlerCase.expectedStatus ||
       run.signal !== handlerCase.expectedSignal
     ) {
-      handlerProblems.push(`${handlerCase.label}: cleanup outcome used the wrong exit semantics`)
+      handlerProblems.push(
+        `${handlerCase.label}: cleanup outcome used the wrong exit semantics ` +
+          `(status=${String(run.status)}, signal=${String(run.signal)})`
+      )
     } else if (!handlerCase.expectedReason.test(stderr)) {
       handlerProblems.push(`${handlerCase.label}: cleanup outcome used the wrong reason`)
     }
