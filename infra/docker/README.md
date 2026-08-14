@@ -219,7 +219,7 @@ ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：本轮唯一 tag 只用于第一次解析 immutable image ID，后续 Config/history/save/`docker create`/export 全部绑定该 ID；scratch container name 在 create 前先证明不存在并预登记，create 使用 immutable ID + ownership label，随后 `.Image` 必须精确一致。宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 与 dependency payload 精确相等；普通 package 文件、所有 README 与 `.bin` 都比较路径、类型、mode、长度和 SHA-256/symlink target，只跳过明确的 host-specific pnpm metadata，且仅归一化传入的 deploy root。history 同时验证 CLI JSON-lines 与 `docker image save` 的 content-addressed config blob；OCI index/manifest/config/layer/provenance media type 按角色精确固定，provenance 绑定 selected platform manifest，每层验证 compressed digest、uncompressed diff ID 与内层 tar framing。镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族）。`--keep-failure` 只说明存在 owned 临时目录，不输出物理路径 |
-| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **9 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、history-only secret、EXPOSE、secret 形态 ENV、root 用户；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；两项 static-only 不构建 |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **10 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、普通文件 mode 漂移、history-only secret、EXPOSE、secret 形态 ENV、root 用户；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；两项 static-only 不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
 期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
@@ -317,11 +317,12 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）。第七轮实现落点 `9c469f5` 已闭合第六轮两路独立审计确认的
-runtime image、聚合器生命周期、备份/恢复与门禁原子性缺口；runtime image
-mutation 为 1 baseline + 10 built + 2 static-only，topology mutation 22/22、signal
-5 个确定性回归 + 6 个真实窗口、local-test 75/75 均已通过。证据候选 `80d7399`
-已从头通过完整 14/14，当前等待新的独立 A/B 复审，仍未 Accepted
+（见上方 M4 一节）。第八轮实现落点 `b8346bb` 已闭合第七轮候选后两路独立审计
+确认的 stdin/诊断写、信号清理、ownership framing、backup/restore、runtime evidence、
+network、topology 与 mutation gate 缺口；runtime image mutation 为 1 baseline +
+10 built + 2 static-only，topology mutation 22/22、signal 5 个确定性回归 + 6 个真实
+窗口、local-test 75/75、targeted 69/69 与 restore drill 均已通过。完整 14/14 尚待
+本轮从头重跑；M5 仍未 Accepted
 （见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
@@ -400,7 +401,7 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得历史本地全绿证据；第七轮实现落点 `9c469f5` 形成的证据候选 `80d7399`
-已从头通过最终 14/14；远端 CI
+取得历史本地全绿证据；第八轮实现落点 `b8346bb` 的完整 14/14 尚待本轮从头
+重跑；远端 CI
 workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

@@ -248,9 +248,11 @@ db:migrate`（补齐到当前 ledger）`→ final → 验证`。
 - 备份/恢复入口操作的是**长驻**部署，不做自动清理；恢复失败时单事务已整体
   回滚（留下的空 `meal_agent` 库见 §3），重跑前先用 `psql` 确认 `meal_agent`
   是否存在，存在即按销毁流程处理后重来。
-- 备份失败时入口会删除写到一半的 `*.partial`；但进程被强杀（SIGKILL）或
-  client 侧超时中断备份时，这条清理不会执行，备份目录里可能残留
-  `*.partial`——它是**含真实数据的半份导出**，发现即直接删除。
+- 备份先把 handoff 写入备份目录内本轮独占的 0700
+  `.meal-agent-backup-*/<name>.partial`，再按 inode 身份用 no-replace 发布 dump 和
+  sidecar；普通失败会删除本轮 partial/dump/sidecar。进程被强杀（SIGKILL）时清理
+  不会执行，发现残留的 `.meal-agent-backup-*` 目录应按精确路径删除——其中可能是
+  **含真实数据的半份导出**，不得提交、上传或打开回显。
 - 入口的 SIGINT/SIGTERM 处置会先终止 client 子进程，再强制移除 daemon 侧仍在
   跑的一次性容器（连同匿名卷）；信号在飞时主流程不自行 exit，处置完成后按原
   信号语义退出（`128+signo`）。因此被取消的备份/恢复不会在后台悄悄跑完——
