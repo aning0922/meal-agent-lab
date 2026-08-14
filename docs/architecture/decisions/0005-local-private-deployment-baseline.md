@@ -535,6 +535,15 @@ restore drill 已通过；实现候选 `3dfb4af` 已从头通过完整 14/14，�
 真实容器证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI
 仍无真实 run。
 
+**M5 第九轮整改注记（2026-08-14）**：第八轮候选 `cbda742` 的两路独立审计仍为
+BLOCK。实现落点 `7c86d9a` 将 timer cleanup-before-settlement、聚合 cleanup 状态复位、
+restore 已验证字节连续性、backup inode/sidecar/transfer 与 M4 host artifact 所有权、
+runtime provenance/temp-root、Compose 未登记执行入口和失败输出、Group E 输出及 mixed
+network outcome 按生产根因收敛。纯 Node 78/78、runtime image 1+11+2、topology 23/23
+与真实 restore drill 已通过；完整聚合门禁正在重跑。本注记不改变本 ADR 已凭 M1—M4
+真实容器证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI
+仍无真实 run。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；

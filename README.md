@@ -6,7 +6,7 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted；M3B 验收落点为 `cf43452`，M4 验收落点为 `f671c51`。M5 第七轮候选后的两路独立复审仍为 **BLOCK**；第八轮实现提交 `b8346bb` / `a72499c` 已按生产根因关闭 stdin/诊断写失败、信号清理原语异常、ownership frame 溢出与 fd capability 认证、restore stdin、backup 原子发布、Dockerfile/SLSA 证据、runtime image cleanup、Group E 双项目清理、网络结果分类、mutation callsite 与 topology 固定诊断等缺口。实现候选 `3dfb4af` 已于 2026-08-14 从头通过完整 `pnpm stage09a:check` **14/14**；下一门禁是两个全新独立只读 A/B 审计，因此 **M5 仍未 Accepted，09A 总验收未完成，阶段不得记为 Pass**。GitHub Actions 只登记 workflow 已配置，**尚无真实远端 run**。[ADR-0005](docs/architecture/decisions/0005-local-private-deployment-baseline.md) 已凭既有真实容器证据转 `Accepted`，不等于 M5 或 09A 已通过。当前不购买服务器，不接真实微信配置，也不开放公网。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted；M3B 验收落点为 `cf43452`，M4 验收落点为 `f671c51`。M5 第八轮候选 `cbda742` 的两路独立审计仍为 **BLOCK**；第九轮实现落点 `7c86d9a` 已按生产根因关闭 timer cleanup-before-settlement、聚合 ownership sticky 状态、restore 已验证字节连续性、backup inode/sidecar/transfer artifact 所有权、M4 host artifact 信号清理、runtime provenance/temp-root、Compose topology 未登记执行入口与输出边界、Group E 输出及非 loopback mixed outcome 等缺口。当前正在执行第九轮完整门禁，完成后仍须两个全新独立只读 A/B 审计，因此 **M5 仍未 Accepted，09A 总验收未完成，阶段不得记为 Pass**。GitHub Actions 只登记 workflow 已配置，**尚无真实远端 run**。[ADR-0005](docs/architecture/decisions/0005-local-private-deployment-baseline.md) 已凭既有真实容器证据转 `Accepted`，不等于 M5 或 09A 已通过。当前不购买服务器，不接真实微信配置，也不开放公网。
 
 当前纵切覆盖：
 

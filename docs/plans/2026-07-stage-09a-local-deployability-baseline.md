@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-14 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第七轮候选后的 A/B 审计仍为 BLOCK，第八轮实现候选 `3dfb4af` 已从头通过完整 14/14，当前等待全新 A/B 独立只读复审，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 已完成，完整门禁正在重跑，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3820,6 +3820,31 @@ backup/restore drill PASS。实现候选 `3dfb4af` 随后于 2026-08-14 从头�
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的
 裁决，不在本记录声称范围内。
+
+#### M5 第九轮整改：资源所有权与证据连续性（2026-08-14）
+
+第八轮候选 `cbda742` 的两路独立审计仍判定 BLOCK。第九轮只追加实现/回归落点
+`7c86d9a`，未 amend/rebase/push/merge，也未自行标记 Accepted：
+
+1. `runCommand` 保存并使用原生 timer primitive，timer/输入/公告失败都在固定诊断前
+   TERM→KILL→有界确认 PGID；聚合器在一轮 scoped cleanup 完成后复位 wait point，
+   后续 fd3 holder 不能再借历史 DONE 绕过 drain。
+2. restore 以同一 fd 一次读取并保存的 Buffer 完成 checksum/magic 校验和 loader stdin；
+   backup dump promotion、sidecar 写入与最终成功均绑定创建时 dev/ino，失败清理继续收集；
+   named transfer volume 的 dump、宿主 backup/sidecar/private directory 均注册到信号与
+   正常路径共用的 scoped artifact cleanup。
+3. runtime 临时根目录按 dev/ino 删除，selected manifest 必须至少有一份绑定的 SLSA
+   provenance；`--provenance=false` 成为第 11 个真实 build mutation。topology 使用闭集
+   service 字段并新增 `post_start` 反例；外部 topology/Group E/backup 失败输出只保留固定
+   分类；non-loopback 混合结果中任一资源/权限/未知错误都会使整轮失败。
+4. 门禁证据不再依赖只匹配源码字符串的 callsite 测试；新增 restore byte snapshot、
+   backup sidecar/promotion、M4 failure-safe artifact collector、mixed network、sticky cleanup
+   和 provenance presence 回归。
+
+已完成的窄证据：纯 Node 脚本测试 **78/78**；runtime image 正向与 **1 baseline +
+11 built + 2 static-only** mutation；topology **23/23**；真实 restore drill PASS。完整
+`pnpm stage09a:check` 正在从本实现落点重跑；在完整链通过并形成文档提交后，仍须交给
+两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
 ## 验收门禁
 
