@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
@@ -93,6 +94,35 @@ test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10
   assert.equal(created.length, 1)
   for (const pgid of created) await waitForGone(pgid)
   assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('a stale aggregate fd environment value does not claim a closed descriptor', () => {
+  const modulePath = resolve(repositoryRoot, 'infra/docker/m3b-subprocess.mjs')
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      `const m = await import(${JSON.stringify(modulePath)}); ` +
+        `const result = await m.runCommand(['/bin/sh', '-c', 'exit 0']); ` +
+        `if (result.status !== 0) process.exit(2)`
+    ],
+    {
+      env: {
+        ...process.env,
+        MEAL_AGENT_STAGE09A_PGID_FD: '3',
+        MEAL_AGENT_STAGE09A_PGID_AUTH_FD: '4',
+        MEAL_AGENT_STAGE09A_PGID_AUTH_TOKEN: 'a'.repeat(64)
+      },
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']
+    }
+  )
+  assert.equal(child.error, undefined)
+  assert.equal(child.status, 0)
+  assert.equal(child.signal, null)
+  assert.doesNotMatch(`${String(child.stdout)}\n${String(child.stderr)}`, /announcement failed/)
 })
 
 test('M4 absence evidence requires the exact single-line Docker result', () => {

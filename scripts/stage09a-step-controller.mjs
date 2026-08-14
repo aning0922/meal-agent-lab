@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process'
 import { writeSync } from 'node:fs'
 
 const ownershipFd = 3
+const ownershipAuthFd = 4
 const heldSignals = ['SIGINT', 'SIGTERM', 'SIGHUP']
 const holdSignalUntilChildSettles = () => undefined
 for (const signal of heldSignals) {
@@ -49,7 +50,7 @@ const child = spawn(argv[0], argv.slice(1), {
     ...process.env,
     MEAL_AGENT_STAGE09A_PGID_FD: String(ownershipFd)
   },
-  stdio: ['inherit', 'inherit', 'inherit', ownershipFd]
+  stdio: ['inherit', 'inherit', 'inherit', ownershipFd, ownershipAuthFd]
 })
 
 let finished = false

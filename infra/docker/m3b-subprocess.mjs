@@ -15,21 +15,53 @@
 //
 // 本模块自身不打印任何 Secret：它只透传调用方给的参数与输出。
 import { spawn } from 'node:child_process'
-import { writeSync } from 'node:fs'
+import { fstatSync, readSync, writeSync } from 'node:fs'
 
 // 信号/超时清理不能依赖之后可能被调用方改写的全局 timer primitive。加载模块时
 // 就保存原始引用；这不是为了让测试通过，而是确保清理路径使用自己的受控原语。
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
 
 const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
+const aggregateOwnershipAuthFdName = 'MEAL_AGENT_STAGE09A_PGID_AUTH_FD'
+const aggregateOwnershipAuthTokenName = 'MEAL_AGENT_STAGE09A_PGID_AUTH_TOKEN'
 const aggregateOwnershipFd = (() => {
   const raw = process.env[aggregateOwnershipFdName]
+  const rawAuthFd = process.env[aggregateOwnershipAuthFdName]
+  const authToken = process.env[aggregateOwnershipAuthTokenName]
   if (raw === undefined) {
     return null
   }
   const value = Number(raw)
-  return Number.isSafeInteger(value) && value >= 3 ? value : null
+  const authFd = Number(rawAuthFd)
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 3 ||
+    !Number.isSafeInteger(authFd) ||
+    authFd < 3 ||
+    typeof authToken !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(authToken)
+  ) {
+    return null
+  }
+  // 聚合器的环境变量会被 pnpm/Node test runner 继续传给更深的后代，但它们未必
+  // 继承对应 fd，而且 fd 3 可能被 test runner 复用为自己的 IPC。除 ownership pipe
+  // 外再要求一个不可预测、只读且已 unlink 的 capability fd；环境遗留或同号 fd
+  // 复用都无法伪装成聚合器直连 producer。
+  try {
+    const stat = fstatSync(value)
+    const authStat = fstatSync(authFd)
+    if (!(stat.isFIFO() || stat.isSocket()) || !authStat.isFile()) {
+      return null
+    }
+    const bytes = Buffer.alloc(Buffer.byteLength(authToken))
+    const count = readSync(authFd, bytes, 0, bytes.length, 0)
+    return count === bytes.length && bytes.toString('utf8') === authToken ? value : null
+  } catch {
+    return null
+  }
 })()
+const aggregateOwnershipAuthFd =
+  aggregateOwnershipFd === null ? null : Number(process.env[aggregateOwnershipAuthFdName])
 
 const writeAggregateFrame = (frame) => {
   if (aggregateOwnershipFd === null) {
@@ -107,7 +139,9 @@ const announceCleanupState = (state) => {
  * 删除环境变量且不继承 fd；它们不直接持有聚合器通道。
  */
 export const ownershipAwareSpawnStdio = (stdio) =>
-  aggregateOwnershipFd === null ? stdio : [...stdio, aggregateOwnershipFd]
+  aggregateOwnershipFd === null
+    ? stdio
+    : [...stdio, aggregateOwnershipFd, aggregateOwnershipAuthFd]
 
 /**
  * 尚未确认消失的受控进程组：pgid → { leaderClosed }。
@@ -443,6 +477,8 @@ const runCommandUnchecked = (
   new Promise((resolvePromise, rejectPromise) => {
     const childEnvironment = { ...env }
     delete childEnvironment[aggregateOwnershipFdName]
+    delete childEnvironment[aggregateOwnershipAuthFdName]
+    delete childEnvironment[aggregateOwnershipAuthTokenName]
     const child = spawn(args[0], args.slice(1), {
       cwd,
       env: childEnvironment,

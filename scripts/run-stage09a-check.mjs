@@ -25,7 +25,18 @@
 // 每步有一个宽松的兜底超时（子门禁内部各有更紧的有界约束）：超时先 SIGTERM
 // 留给子门禁做自己的清理，宽限后 SIGKILL，一律判失败。
 import { spawn } from 'node:child_process'
-import { writeSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import {
+  closeSync,
+  mkdtempSync,
+  openSync,
+  rmSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -47,6 +58,36 @@ const safeWrite = (fd, message) => {
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const stepController = resolve(repositoryRoot, 'scripts/stage09a-step-controller.mjs')
 const usage = 'pnpm stage09a:check [-- --keep-failure]'
+const ownershipFd = 3
+const ownershipAuthFd = 4
+
+const createOwnershipCapability = () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-stage09a-owner-'))
+  const path = resolve(directory, 'capability')
+  const token = randomBytes(32).toString('hex')
+  let fd = null
+  try {
+    writeFileSync(path, token, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    fd = openSync(path, 'r')
+    unlinkSync(path)
+    rmdirSync(directory)
+    return Object.freeze({ fd, token })
+  } catch {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        // 下面只返回固定启动失败；外部错误不得进入诊断。
+      }
+    }
+    try {
+      rmSync(directory, { recursive: true, force: true })
+    } catch {
+      // 固定启动失败覆盖底层文本。
+    }
+    throw new Error('ownership capability creation failed')
+  }
+}
 
 const cliArguments = process.argv.slice(2)
 const keepFailure = cliArguments.includes('--keep-failure')
@@ -472,22 +513,9 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       resolveCleanupStarted = resolveStart
     })
     const stdoutChunks = []
-    const childEnvironment = {
-      ...process.env,
-      MEAL_AGENT_STAGE09A_PGID_FD: '3'
-    }
-    const childStdio =
-      stdio === 'inherit'
-        ? ['inherit', 'inherit', 'inherit', 'pipe']
-        : [stdio[0], stdio[1], stdio[2], 'pipe']
-    let child
+    let ownershipCapability
     try {
-      child = spawn(process.execPath, [stepController, JSON.stringify(argv)], {
-        cwd: repositoryRoot,
-        detached: true,
-        env: childEnvironment,
-        stdio: childStdio
-      })
+      ownershipCapability = createOwnershipCapability()
     } catch {
       resolvePromise({
         ok: false,
@@ -498,6 +526,35 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       })
       return
     }
+    const childEnvironment = {
+      ...process.env,
+      MEAL_AGENT_STAGE09A_PGID_FD: String(ownershipFd),
+      MEAL_AGENT_STAGE09A_PGID_AUTH_FD: String(ownershipAuthFd),
+      MEAL_AGENT_STAGE09A_PGID_AUTH_TOKEN: ownershipCapability.token
+    }
+    const childStdio = stdio === 'inherit'
+      ? ['inherit', 'inherit', 'inherit', 'pipe', ownershipCapability.fd]
+      : [stdio[0], stdio[1], stdio[2], 'pipe', ownershipCapability.fd]
+    let child
+    try {
+      child = spawn(process.execPath, [stepController, JSON.stringify(argv)], {
+        cwd: repositoryRoot,
+        detached: true,
+        env: childEnvironment,
+        stdio: childStdio
+      })
+    } catch {
+      closeSync(ownershipCapability.fd)
+      resolvePromise({
+        ok: false,
+        code: null,
+        signal: null,
+        stdout: '',
+        detail: 'failed to start'
+      })
+      return
+    }
+    closeSync(ownershipCapability.fd)
 
     let controllerHandle = null
     if (Number.isSafeInteger(child.pid) && child.pid > 0) {
@@ -516,7 +573,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     if (child.stdout !== null) {
       child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     }
-    const ownershipStream = child.stdio[3]
+    const ownershipStream = child.stdio[ownershipFd]
     const quarantineRecognizableLineage = (text, { frameComplete }) => {
       // EOF 本身不是数字 token 的边界：`... 123` 也可能只是实际 `12345` 的
       // 截断前缀。只有完整 LF frame，或缓冲区中已经出现非数字字符时，producer
