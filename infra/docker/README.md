@@ -317,7 +317,7 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）。第八轮实现落点 `b8346bb` 已闭合第七轮候选后两路独立审计
+（见上方 M4 一节）。第八轮实现提交 `b8346bb` / `a72499c` 已闭合第七轮候选后两路独立审计
 确认的 stdin/诊断写、信号清理、ownership framing、backup/restore、runtime evidence、
 network、topology 与 mutation gate 缺口；runtime image mutation 为 1 baseline +
 10 built + 2 static-only，topology mutation 22/22、signal 5 个确定性回归 + 6 个真实
@@ -401,7 +401,7 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得历史本地全绿证据；第八轮实现落点 `b8346bb` 的完整 14/14 尚待本轮从头
+取得历史本地全绿证据；第八轮实现提交 `b8346bb` / `a72499c` 的完整 14/14 尚待本轮从头
 重跑；远端 CI
 workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

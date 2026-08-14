@@ -523,11 +523,12 @@ topology 22/22、local-test 75/75、signal 5 个确定性 + 6 个真实窗口；
 Accepted/Pass；远端 CI 仍无真实 run。
 
 **M5 第八轮整改注记（2026-08-14）**：第七轮候选后的两路独立审计仍为 BLOCK；
-实现落点 `b8346bb` 关闭 stdin/同步诊断失败的 cleanup-before-settlement、信号清理
+实现提交 `b8346bb` / `a72499c` 关闭 stdin/同步诊断失败的 cleanup-before-settlement、信号清理
 原语异常后的 failure-safe 收敛、ownership frame generation 溢出、restore stdin
 转发、backup dump/sidecar no-replace 原子发布、Dockerfile/SLSA 空壳证据、runtime
 image cleanup identity/in-flight promise、Group E 双项目 cleanup、非 loopback 结果
-误分类及 topology/mutation 固定诊断与真实 callsite 判别力。纯 Node 70/70、runtime
+误分类、topology/mutation 固定诊断与真实 callsite 判别力，以及直连 ownership fd
+的随机 capability 认证。纯 Node 71/71、runtime
 image 1+10+2、topology 22/22、local-test 75/75、targeted 69/69、signal 5+6 与真实
 restore drill 已通过；完整 14/14 尚待本轮从头重跑。本注记不改变本 ADR 已凭 M1—M4
 真实容器证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI
