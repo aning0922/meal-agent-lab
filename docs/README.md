@@ -9,8 +9,9 @@
 restore 已验证字节、backup/sidecar/transfer 与 M4 host artifact 所有权、runtime provenance
 与 temp-root、topology 执行入口/输出、Group E 输出和 mixed network outcome。纯 Node 脚本
 回归 78/78、runtime image 正向与 1 baseline + 11 built + 2 static-only 变异、topology
-23/23、真实 restore drill 已通过；完整 `stage09a:check` 正在重跑。M5 未 Accepted、09A
-未 Pass、远端 CI 无真实 run；完整门禁后仍须全新 A/B 独立只读复审。
+23/23、真实 restore drill 已通过；固定诊断补丁 `b75a836` 后完整 `stage09a:check`
+从新 HEAD **14/14 PASS**。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；下一门禁
+仍是全新 A/B 独立只读复审。
 
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是

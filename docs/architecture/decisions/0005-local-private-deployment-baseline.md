@@ -540,9 +540,9 @@ BLOCK。实现落点 `7c86d9a` 将 timer cleanup-before-settlement、聚合 clea
 restore 已验证字节连续性、backup inode/sidecar/transfer 与 M4 host artifact 所有权、
 runtime provenance/temp-root、Compose 未登记执行入口和失败输出、Group E 输出及 mixed
 network outcome 按生产根因收敛。纯 Node 78/78、runtime image 1+11+2、topology 23/23
-与真实 restore drill 已通过；完整聚合门禁正在重跑。本注记不改变本 ADR 已凭 M1—M4
-真实容器证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI
-仍无真实 run。
+与真实 restore drill 已通过；固定诊断补丁 `b75a836` 后完整聚合门禁从新 HEAD
+**14/14 PASS**。本注记不改变本 ADR 已凭 M1—M4 真实容器证据作出的 Accepted 决策，
+也不把 M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
 
 以下条件触发复审：
 

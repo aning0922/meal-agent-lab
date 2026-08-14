@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-14 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 已完成，完整门禁正在重跑，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已通过完整 14/14，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3841,10 +3841,11 @@ backup/restore drill PASS。实现候选 `3dfb4af` 随后于 2026-08-14 从头�
    backup sidecar/promotion、M4 failure-safe artifact collector、mixed network、sticky cleanup
    和 provenance presence 回归。
 
-已完成的窄证据：纯 Node 脚本测试 **78/78**；runtime image 正向与 **1 baseline +
-11 built + 2 static-only** mutation；topology **23/23**；真实 restore drill PASS。完整
-`pnpm stage09a:check` 正在从本实现落点重跑；在完整链通过并形成文档提交后，仍须交给
-两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+已完成的证据：纯 Node 脚本测试 **78/78**；runtime image 正向与 **1 baseline +
+11 built + 2 static-only** mutation；topology **23/23**；真实 restore drill PASS。首轮
+完整链在 topology AppSecret sentinel 回显断言处 fail-fast；固定诊断补丁 `b75a836` 后，
+`pnpm stage09a:check` 从新 HEAD **14/14 PASS**。该候选仍须交给两个全新独立只读 A/B
+审计。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
 ## 验收门禁
 

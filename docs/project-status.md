@@ -11,8 +11,9 @@
 cleanup 状态复位、restore 已验证字节、backup inode/sidecar/transfer 与 M4 host artifact
 所有权、runtime provenance/temp-root、topology 未登记执行入口/输出、Group E 输出以及
 mixed network outcome。脚本测试 78/78、runtime image 正向与 1+11+2 变异、topology
-23/23、真实 restore drill 已通过；完整 `stage09a:check` 正在重跑。M5 未 Accepted，
-远端 CI 无真实 run，09A 仍为 In Progress；完整门禁后仍须全新 A/B 独立只读复审。
+23/23、真实 restore drill 已通过；固定诊断补丁 `b75a836` 后完整 `stage09a:check`
+从新 HEAD 14/14 PASS。M5 未 Accepted，远端 CI 无真实 run，09A 仍为 In Progress；
+下一门禁仍是全新 A/B 独立只读复审。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -126,7 +127,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK；第九轮实现落点 `7c86d9a` 已完成，完整 `pnpm stage09a:check` 正在重跑，仍未 Accepted**。GitHub Actions 复用同一命令，但**无真实远端 run，只登记已配置**。见计划文档 M5 实施记录 |
+| M5 门禁、CI 与文档 | **第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK；第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已从新 HEAD 通过完整 `pnpm stage09a:check` 14/14，仍未 Accepted**。GitHub Actions 复用同一命令，但**无真实远端 run，只登记已配置**。见计划文档 M5 实施记录 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族
@@ -517,8 +518,8 @@ sentinel 扫描，以及宿主全部非 loopback 地址的动态隔离证明，*
 （**当时状态：尚未取得运行证据**；这些证据现已由 M3B 取得，状态为
 M3B 已于 2026-08-11 Accepted，验收落点 `cf43452`，见本文档的 M3B 段）。
 M4 已于 2026-08-11 Accepted（验收落点 `f671c51`）；M5 第八轮候选 `cbda742` 的两路
-独立审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 已完成，完整聚合门禁正在重跑；完成后
-仍须全新 A/B 独立只读复审，M5 仍未 Accepted。
+独立审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已从新 HEAD
+通过完整聚合门禁 14/14；仍须全新 A/B 独立只读复审，M5 仍未 Accepted。
 
 **R8A 实际交付的**（全部属于**可观察性**，不含任何收敛）
 
@@ -769,7 +770,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted（各验收落点见上表）；**M5 第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 已完成、完整 14 步正在重跑，未 Accepted**。GitHub Actions 复用同一命令（无真实远端 run，只登记已配置）、依赖例外保持 9 条并修复新披露的 nanoid 公告（到期 2026-11-08，见 ADR-0004）。本轮受控修改了 M2B/M3B/M4 基础设施，不能声称冻结面零改动。ADR-0005 已凭既有真实容器证据转 `Accepted`；09A 总验收未完成，阶段 09A 未标记完成。PR #1 保持 Draft。
+- 阶段 09A 状态：**In Progress**。M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted（各验收落点见上表）；**M5 第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已通过完整 14 步，未 Accepted**。GitHub Actions 复用同一命令（无真实远端 run，只登记已配置）、依赖例外保持 9 条并修复新披露的 nanoid 公告（到期 2026-11-08，见 ADR-0004）。本轮受控修改了 M2B/M3B/M4 基础设施，不能声称冻结面零改动。ADR-0005 已凭既有真实容器证据转 `Accepted`；09A 总验收未完成，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（已于 2026-08-11 Accepted）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，69 cases）、`check-m3b-signal-windows.mjs`（M3B Accepted 时为 5 个确定性进程组回归 + 5 个真实信号窗口；当前 M5 第七轮门禁为 5 + 6）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
@@ -777,9 +778,9 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 - **恢复/安装流程分为两个阶段**：`bootstrap.sh acl` 是 containment（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），`bootstrap.sh grants` 是 final（migration 之后建立最终 ACL，并**同时**验证 PUBLIC、app、backup 与三个 login）。两个阶段执行同一段生成的收敛块：按真实 grantor 撤销一切不在 manifest 内的授权（含 grant option 与列级授权），再只重建允许项，后验同时比对 catalog ACL 与 `has_*_privilege` 有效权限。
 - 产品声明禁用 Large Object，收敛口径与上面的「Large Object 的口径」完全一致：**只有在目标库确实零真实 LO 时**，收敛才把 `pg_default_acl` 中 `defaclobjtype='L'` 的多余默认权限收敛为空，并收回 `pg_catalog` 中 20 个 LO 入口点（`lo_create`/`lo_creat`/`lo_from_bytea`/`lo_put`/`lo_import` …）上除函数 owner 之外的 `EXECUTE`；runtime login 与 backup 的真实反向测试证明创建入口已关闭。一旦库里存在**任意**真实 LO 对象，两个阶段都在**任何 ACL / default ACL mutation 之前** fail closed，只报告 OID 与 owner——**绝不修改它的 `lomacl`**、绝不改归属、绝不改数据、绝不解除链接，LO 的 OID 也不进入任何固定允许 manifest。`meal_agent_private` 的受控 routine 按 identity 精确匹配，没有 schema 级通配豁免。
 - 恢复的**受支持 ledger 窗口至少覆盖 N-1**：窗口内每个已发布 ledger 都必须保留对应的 containment manifest 状态；该约束已同步进阶段 09A 计划的 M4 与验收门禁第 14 条。当前只有一个 ledger，因此 M4 验证的是同一 ledger 的 round-trip。
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）。M3A、M3B、M4 的基线与 Accepted 落点见上表。M5 在 `claude/stage-09a-m5-gates` 上实施，基线 `5281482`；第九轮实现落点 `7c86d9a` 已完成，完整门禁正在重跑，未 Accepted。
+- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）。M3A、M3B、M4 的基线与 Accepted 落点见上表。M5 在 `claude/stage-09a-m5-gates` 上实施，基线 `5281482`；第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已通过完整 14/14，未 Accepted。
 - 当前目标只覆盖本地/私有测试部署包；腾讯云广州仅为未来阶段 09B 的默认候选，没有创建或购买任何云资源。
-- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 与 M3A 均已 Accepted，M3A 验收落点 `a839df1`）；环境模板、八份 Secret、完整 bootstrap 链、`/healthz=200`/`/readyz=200`、containment 扫描与网络隔离实证已由 M3B 交付（已于 2026-08-11 Accepted，验收落点 `cf43452`）；停止/重启持久化与备份恢复证据已由 M4 交付（Accepted，验收落点 `f671c51`）。阶段聚合门禁 `pnpm stage09a:check` 已由 M5 交付；第九轮实现落点正在重跑完整门禁，仍缺新的独立 A/B 复审、远端 CI 真实 run 与 09A 总验收。
+- API 已有 health/readiness、迁移校验和 production 拒绝 fake adapter。Dockerfile、数据库身份隔离、local-test Compose 拓扑与 Secret file 消费能力已实现（M2B 与 M3A 均已 Accepted，M3A 验收落点 `a839df1`）；环境模板、八份 Secret、完整 bootstrap 链、`/healthz=200`/`/readyz=200`、containment 扫描与网络隔离实证已由 M3B 交付（已于 2026-08-11 Accepted，验收落点 `cf43452`）；停止/重启持久化与备份恢复证据已由 M4 交付（Accepted，验收落点 `f671c51`）。阶段聚合门禁 `pnpm stage09a:check` 已由 M5 交付；第九轮实现已通过完整 14/14，仍缺新的独立 A/B 复审、远端 CI 真实 run 与 09A 总验收。
 - 总控机器现已具备 Docker（Engine 29.6.2 / Compose v5.3.1）与 PostgreSQL 18.4；容器构建、隔离 smoke test 与真实 PostgreSQL 18 权限测试均已本地执行。阶段 09A 仍未记录为 Pass。
 - GitHub `origin` 与 `main` upstream 已配置，仓库已有 CI workflow；当前只确认配置存在，没有在本次规划中读取或伪造远端 run Pass。
 
@@ -962,4 +963,4 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M1—M4 已 Accepted；**M5 第九轮实现落点 `7c86d9a` 已完成，完整 14 步正在重跑，仍未 Accepted；GitHub Actions workflow 已配置但无真实 run**；09A 总验收未完成。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M1—M4 已 Accepted；**M5 第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已通过完整 14 步，仍未 Accepted；GitHub Actions workflow 已配置但无真实 run**；09A 总验收未完成。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
