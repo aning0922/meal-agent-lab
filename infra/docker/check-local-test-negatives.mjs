@@ -1093,13 +1093,12 @@ process.stdout.write('Group B: compose mutation negatives\n')
       fail(mutation.name, `anchor appears ${String(occurrences)} times (expected exactly 1)`)
       continue
     }
-    const scratch = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-compose-'))
+    const scratch = mkdtempSync(resolve(tmpdir(), 'meal-agent-compose-topology-'))
     try {
-      // 副本必须与真实文件同目录名布局：门禁按 compose 文件所在目录解析
-      // ./postgres、./secrets 等相对路径。这里直接放进 infra/docker 的同级
-      // 临时目录并通过 symlink 复用真实资产是不安全的（会引入 symlink 语义），
-      // 因此改为把副本放在 infra/docker 下、用唯一文件名，跑完即删。
-      const copyPath = resolve(composeDirectory, `.m3b-neg-compose-${randomBytes(4).toString('hex')}.yaml`)
+      // topology seam 只接受系统临时目录里由 mkdtemp 独占的固定 basename；
+      // checker 自己通过 --project-directory 绑定真实 infra/docker 资产，所以无需
+      // 在仓库内制造任何短暂副本或 symlink。
+      const copyPath = resolve(scratch, 'compose.local-test.yaml')
       const anchorIndex = composeSource.indexOf(mutation.from)
       writeFileSync(
         copyPath,
