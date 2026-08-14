@@ -10,11 +10,11 @@
 独立审计仍为 BLOCK；第七轮实现落点 `9c469f5` 已按生产根因关闭聚合 ownership
 partial-frame/EPIPE、runtime image build/scratch/tag immutable ownership、OCI layer
 codec/provenance、dependency 普通文件 mode、backup/restore 固定失败、非 loopback
-零证据、Compose 变异 setup 与 local-test daemon signal cleanup。定点证据为纯 Node
-45/45、runtime image 正向、1 baseline + 10 built + 2 static-only 变异、topology
-22/22、local-test 75/75、signal 5+6；完整 `stage09a:check` 尚待从文档候选执行。
-M5 未 Accepted，远端 CI 无真实 run，09A 仍为 In Progress；下一门禁是完整聚合
-门禁通过后启动全新 A/B 独立只读复审。
+零证据、Compose 变异 setup 与 local-test daemon signal cleanup。完整门禁中的脚本
+测试 62/62、runtime image 正向、1 baseline + 10 built + 2 static-only 变异、topology
+22/22、local-test 75/75、signal 5+6 均通过；文档候选 `80d7399` 已从头通过完整
+`stage09a:check` **14/14**。M5 未 Accepted，远端 CI 无真实 run，09A 仍为
+In Progress；下一门禁是全新 A/B 独立只读复审。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -128,7 +128,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **第六轮候选 `abaf46f` 的 A/B 复审仍为 BLOCK；第七轮实现落点 `9c469f5` 已完成，定点门禁全绿，完整 `pnpm stage09a:check` 待从文档候选重跑，仍未 Accepted**。GitHub Actions 复用同一命令，但**无真实远端 run，只登记已配置**。见计划文档 M5 实施记录 |
+| M5 门禁、CI 与文档 | **第六轮候选 `abaf46f` 的 A/B 复审仍为 BLOCK；第七轮实现落点 `9c469f5` 已完成，文档候选 `80d7399` 已从头通过完整 `pnpm stage09a:check` 14/14，仍未 Accepted**。GitHub Actions 复用同一命令，但**无真实远端 run，只登记已配置**。见计划文档 M5 实施记录 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族

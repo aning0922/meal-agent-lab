@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（第六轮候选复审 BLOCK；第七轮实现已落地、完整门禁待重跑，未 Accepted）
+### M5 实施记录（第六轮候选复审 BLOCK；第七轮完整门禁 14/14，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3769,9 +3769,11 @@ identity、lifecycle、restore 全部 PASS，运行自身清理结果均为零�
    volume 并复查。因此 signal suite 现在是 **5 个确定性回归 + 6 个真实窗口**。
 
 定点证据：纯 Node 脚本回归 45/45、runtime image 正向、1+10+2 变异、topology
-22/22、local-test 75/75、signal 5+6 均通过。完整 `pnpm stage09a:check` 仍须从本
-文档候选重新执行；通过后还必须交给两个全新独立只读会话复审。M5 未 Accepted、
-09A 未 Pass、远端 CI 无真实 run。
+22/22、local-test 75/75、signal 5+6 均通过。文档候选 `80d7399` 随后从头通过
+完整 `pnpm stage09a:check` **14/14**：stage08、topology、runtime image、M3B 全套、
+fresh smoke、Secret identity、lifecycle、restore 全部 PASS，脚本运行自身均报告零
+残留。该候选仍必须交给两个全新独立只读会话复审。M5 未 Accepted、09A 未 Pass、
+远端 CI 无真实 run。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的

@@ -8,11 +8,11 @@
 A/B 审计仍为 BLOCK；第七轮实现落点 `9c469f5` 已关闭 partial ownership frame、
 真实 stderr EPIPE、scratch/container/image/tag 所有权、build immutable ID、OCI layer
 codec/provenance、普通文件 mode、backup/restore 外部失败、非 loopback 零证据、
-Compose 变异 setup 与 local-test daemon signal cleanup。定点证据为纯 Node 45/45、
+Compose 变异 setup 与 local-test daemon signal cleanup。完整门禁中的脚本测试 62/62、
 runtime image 正向、1 baseline + 10 built + 2 static-only 变异、topology 22/22、
-local-test 75/75、signal 5 个确定性 + 6 个真实窗口；完整 `stage09a:check` 尚待从
-文档候选执行。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；下一门禁是完整
-聚合门禁，随后才是全新 A/B 独立只读复审。
+local-test 75/75、signal 5 个确定性 + 6 个真实窗口均通过；文档候选 `80d7399`
+已从头通过 `stage09a:check` **14/14**。M5 未 Accepted、09A 未 Pass、远端 CI
+无真实 run；下一门禁是全新 A/B 独立只读复审。
 
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是

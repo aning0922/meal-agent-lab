@@ -516,10 +516,11 @@ BLOCK；实现落点 `9c469f5` 进一步关闭 ownership partial-frame 与真实
 把 runtime build/scratch/tag cleanup 绑定到 `--iidfile` 产生的 immutable image ID 与
 精确 container identity，补齐 OCI layer media-type/codec、SLSA predicate 与普通文件
 mode 证据。backup/restore、非 loopback 隔离、Compose mutation setup 和 local-test
-negative daemon signal cleanup 同步 fail closed。定点门禁为纯 Node 45/45、runtime
-image 1 baseline + 10 built + 2 static-only、topology 22/22、local-test 75/75、signal
-5 个确定性 + 6 个真实窗口；完整聚合门禁与全新 A/B 复审尚未完成。本注记不改变
-ADR 的既有 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
+negative daemon signal cleanup 同步 fail closed。文档候选 `80d7399` 已从头通过完整
+`stage09a:check` 14/14，其中 runtime image 为 1 baseline + 10 built + 2 static-only，
+topology 22/22、local-test 75/75、signal 5 个确定性 + 6 个真实窗口；全新 A/B 复审
+尚未完成。本注记不改变 ADR 的既有 Accepted 决策，也不把 M5 或 09A 记为
+Accepted/Pass；远端 CI 仍无真实 run。
 
 以下条件触发复审：
 
