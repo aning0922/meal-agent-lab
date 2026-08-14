@@ -570,16 +570,12 @@ const runCompose = (args, environmentOverrides = {}) => {
     }
   )
   if (result.error !== undefined) {
-    abort(
-      `compose topology check is missing a prerequisite tool: ` +
-        `failed to run docker (${result.error.message})`
-    )
+    abort('compose topology check is missing a prerequisite tool')
   }
   if (result.status !== 0) {
     abort(
       `compose topology check failed to resolve the configuration ` +
-        `(docker compose ${args.join(' ')} exit=${String(result.status)}): ` +
-        `${result.stderr.trim() || '(no stderr)'}`
+        `(docker compose evidence command failed)`
     )
   }
   return result.stdout
@@ -724,9 +720,14 @@ if (declaredSectionProblems.length > 0) {
   process.exit(1)
 }
 
-const resolved = JSON.parse(
-  runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'])
-)
+let resolved
+try {
+  resolved = JSON.parse(
+    runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'])
+  )
+} catch {
+  abort('compose topology check received invalid resolved configuration evidence')
+}
 const services = resolved.services ?? {}
 const serviceNames = Object.keys(services).sort()
 
@@ -893,20 +894,14 @@ for (const name of serviceOrder) {
     ])
   )
   if (!same(actualEnvironment, expected.environment)) {
-    fail(
-      `${name}: environment drifted: got ${JSON.stringify(actualEnvironment)}, ` +
-        `expected ${JSON.stringify(expected.environment)}`
-    )
+    fail(`${name}: environment drifted from the registered fixed set`)
   }
 
   // 消费者不直挂原始 Compose secret；*_FILE / PGPASSFILE 必须指向
   // 一个独立、只读的 materialized volume，且 volume 名与 secret 身份精确对应。
   for (const [key, target] of Object.entries(expected.secretEnv)) {
     if (actualEnvironment[key] !== target) {
-      fail(
-        `${name}: ${key} must point at ${target}, got ` +
-          `${actualEnvironment[key] ?? '(none)'}`
-      )
+      fail(`${name}: ${key} must point at its registered secret target`)
     }
     const nameFromPath = target
       .replace('/run/secrets/', '')
