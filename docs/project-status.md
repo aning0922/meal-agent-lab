@@ -6,17 +6,15 @@
 
 阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1、M2A、M2B、M3A 均已 Accepted；**M3B 已于 2026-08-11 Accepted（`cf43452`）**；**M4 已于 2026-08-11 Accepted（`f671c51`）**。M5 候选 `38f172d` 经两路独立复审仍判为 **BLOCK**；对应 P1 已在第二轮实现落点 `1689f1b` 定点整改，主工作树的 `pnpm stage09a:check` 于 2026-08-12 重新通过 14/14，**当前等待该新候选的独立 A/B 复审，仍未 Accepted**。本轮闭合了聚合门禁对嵌套 process group/scoped cleanup 的所有权、runtime image history/dependency payload 完整性、production audit 固定安全输出与重复 advisory 判据，以及 CI policy 的变异判别力；Actions 已固定到 commit SHA。远端 CI 只登记 workflow 已配置、无真实 run，ADR-0005 已转 `Accepted`。**09A 总验收未完成，阶段 09A 仍不得记为 Pass。**详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
-**当前 M5 更新（2026-08-14，覆盖上段历史句）**：第五轮候选后的两路独立审计
-仍为 BLOCK；第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 已闭合本轮 14 项：
-聚合 ownership frame 的 producer/generation 与 machine-frame/FD3/primitive 异常，
-runtime image 的 OCI descriptor/provenance/inner-tar 和完整 dependency payload，
-daemon-side scratch container 预登记及 image/tag identity cleanup，仓库外 Compose
-mutation 与 inode cleanup，backup/restore 的物理路径、canonical Git view、override
-inode 与固定失败输出，以及 `nanoid@3.3.18` 新公告修复。纯 Node 脚本测试 56/56、
-runtime image 正向及 1 baseline + 9 built + 2 static-only 变异、22/22 topology
-mutation、M3B signal 5/5 + 5/5、local-test 75/75 已分别通过；证据候选 `1f2bf27`
-已从头通过完整 `pnpm stage09a:check` **14/14**。M5 未 Accepted，远端 CI 无真实
-run，09A 仍为 In Progress；下一门禁是基于该候选启动全新 A/B 独立只读复审。
+**当前 M5 更新（2026-08-14，覆盖上段历史句）**：第六轮候选 `abaf46f` 的两路
+独立审计仍为 BLOCK；第七轮实现落点 `9c469f5` 已按生产根因关闭聚合 ownership
+partial-frame/EPIPE、runtime image build/scratch/tag immutable ownership、OCI layer
+codec/provenance、dependency 普通文件 mode、backup/restore 固定失败、非 loopback
+零证据、Compose 变异 setup 与 local-test daemon signal cleanup。定点证据为纯 Node
+45/45、runtime image 正向、1 baseline + 10 built + 2 static-only 变异、topology
+22/22、local-test 75/75、signal 5+6；完整 `stage09a:check` 尚待从文档候选执行。
+M5 未 Accepted，远端 CI 无真实 run，09A 仍为 In Progress；下一门禁是完整聚合
+门禁通过后启动全新 A/B 独立只读复审。
 
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
@@ -130,7 +128,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **第六轮实现落点 `44a750e` 与接线修订 `db4e83f` 已闭合最新 A/B BLOCK 的 14 项；证据候选 `1f2bf27` 已从头通过完整 `pnpm stage09a:check` 14/14，仍未 Accepted**。GitHub Actions 复用同一命令，但**无真实远端 run，只登记已配置**。见计划文档 M5 实施记录 |
+| M5 门禁、CI 与文档 | **第六轮候选 `abaf46f` 的 A/B 复审仍为 BLOCK；第七轮实现落点 `9c469f5` 已完成，定点门禁全绿，完整 `pnpm stage09a:check` 待从文档候选重跑，仍未 Accepted**。GitHub Actions 复用同一命令，但**无真实远端 run，只登记已配置**。见计划文档 M5 实施记录 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族

@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（最新独立复审 BLOCK 后第六轮整改完成，完整门禁 14/14，未 Accepted）
+### M5 实施记录（第六轮候选复审 BLOCK；第七轮实现已落地、完整门禁待重跑，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3733,6 +3733,45 @@ topology seam 接线回退（5 条反例 wrong reason）；`db4e83f` 把反例�
 及 1+9+2 变异、M3B 75/75 + 69/69 + registry + 5+5、fresh smoke、8 份 Secret
 identity、lifecycle、restore 全部 PASS，运行自身清理结果均为零残留）。下一步仍须
 两个全新独立只读会话复审；M5 未 Accepted、09A 未 Pass。
+
+#### M5 第七轮整改：异常前置所有权、不可变对象证据与失败路径收敛（2026-08-14）
+
+第六轮候选 `abaf46f` 的两路独立审计仍判定 BLOCK。本轮只追加实现/测试落点
+`9c469f5`，未 amend/rebase/push/merge，也未自行标记 Accepted。确认项按生产根因
+收敛如下：
+
+1. **聚合 ownership 在 generation 前也不失去对象。** ownership stream 收到
+   `GROUP <producer> <pgid>` 后即把 PGID 放入 quarantine；即使 EOF 恰好停在
+   generation 之前，也会先 TERM/KILL/ESRCH，再以固定协议失败收场。完整 frame
+   到达后才从 quarantine 升级为 `(producer, pgid, generation)`。
+2. **诊断通道 EPIPE 同步 fail closed。** `m3b-subprocess` 的 machine frame 与人类
+   诊断都用同步 `writeSync`；真实关闭 stderr pipe 的子进程反例证明 EPIPE 在调用栈
+   内被捕获并先本地清理，未再依赖未监听的异步 `error` 事件。
+3. **runtime build 与 scratch 全程按不可变身份。** build 用 `--iidfile` 得到本轮
+   image ID，tag 只作为首次对照；inspect/history/save/create/export 都使用 immutable
+   ID。scratch create 前登记 intent，create 后复核精确 ID/image/name/owner label；
+   删除后分别按 ID 与 name 独立证明不存在，失败则保留 ownership claim 交给 finally。
+4. **mutation cleanup 不删外部对象。** 每个 tag 记录其 build-produced image ID；
+   tag 被重绑时报告 drift 并保留外部 tag。本轮 dangling image 只有在 RepoTags 为空
+   时删除；container cleanup 同样按 ID/image/name/label 复核。
+5. **OCI 与 payload 证据补齐。** layer descriptor 的 media type 必须与 raw/gzip/zstd
+   实际 magic 一致后才解压；SLSA statement 必须含结构化 `predicate.buildDefinition`
+   与 `predicate.runDetails`。dependency payload 的普通文件 mode 与内容、路径、类型、
+   长度、symlink target 一起进入摘要；新增真实构建的 package-file-mode 变异，套件为
+   **1 baseline + 10 built + 2 static-only**。
+6. **M4 与隔离失败路径。** backup 的仓库 containment 只把精确 `..` 或
+   `../...` 视为越界，仓库内 `..foo` 不再绕过 Git ignore 门禁；restore 的 one-off
+   exception 统一换成固定阶段理由。动态网络隔离必须至少取得一个可用非 loopback
+   outcome，空地址或全部不可尝试均 fail closed。
+7. **门禁自身与信号 cleanup。** Compose topology mutation 的仓库外 fixture setup
+   failure 固定失败并按精确目录清理。local-test negative 在 daemon 容器创建后公告
+   可观测 marker；SIGTERM 时停止继续派生、按精确 project label 清 container/network/
+   volume 并复查。因此 signal suite 现在是 **5 个确定性回归 + 6 个真实窗口**。
+
+定点证据：纯 Node 脚本回归 45/45、runtime image 正向、1+10+2 变异、topology
+22/22、local-test 75/75、signal 5+6 均通过。完整 `pnpm stage09a:check` 仍须从本
+文档候选重新执行；通过后还必须交给两个全新独立只读会话复审。M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run。
 
 **M5 未取得/不声称**：远端 CI 真实 run（未推送远端；workflow 仅登记「已配置」）；
 09A 总验收（「## 验收门禁」全表）与合并 main 的建议属于总控在对抗审计后的
