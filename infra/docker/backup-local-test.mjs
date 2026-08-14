@@ -17,12 +17,15 @@
 //
 // `pg_dump` **不包含 cluster roles**（角色属于 pg_dumpall 的范围）：恢复路径
 // 必须先由 bootstrap 的 `cluster` + `logins` 重建角色，见 runbook。
-import { chmodSync, existsSync, mkdirSync, openSync, readSync, closeSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, openSync, readSync, closeSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { isAbsolute, relative, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { repositoryRoot } from './local-test-secrets-contract.mjs'
+import {
+  assertCanonicalGitRepositoryView,
+  repositoryRoot
+} from './local-test-secrets-contract.mjs'
 import {
   composeDirectory,
   composeFile,
@@ -62,20 +65,37 @@ export const sha256OfFile = (path) =>
  * 等于可以写）。
  */
 export const assertBackupTargetsIgnored = async (run, paths) => {
+  assertCanonicalGitRepositoryView(repositoryRoot, process.env)
+  const physicalRepositoryRoot = realpathSync(repositoryRoot)
   for (const target of paths) {
-    const relativePath = relative(repositoryRoot, target)
+    const absoluteTarget = resolve(target)
+    const missingTail = []
+    let existingAncestor = absoluteTarget
+    while (!existsSync(existingAncestor)) {
+      missingTail.unshift(basename(existingAncestor))
+      const parent = resolve(existingAncestor, '..')
+      if (parent === existingAncestor) {
+        throw new Error('cannot resolve the physical backup target boundary')
+      }
+      existingAncestor = parent
+    }
+    const physicalTarget = resolve(realpathSync(existingAncestor), ...missingTail)
+    const relativePath = relative(physicalRepositoryRoot, physicalTarget)
     if (relativePath.startsWith('..') || isAbsolute(relativePath)) {
       continue
     }
-    const check = await run(['git', 'check-ignore', '-q', '--', target], {
+    const check = await run(
+      ['git', '--no-replace-objects', 'check-ignore', '-q', '--', physicalTarget],
+      {
       cwd: repositoryRoot
-    })
+      }
+    )
     if (check.status === 0) {
       continue
     }
     if (check.status === 1) {
       throw new Error(
-        `refusing to write backup artifact ${target}: the path is inside the ` +
+        `refusing to write backup artifact ${physicalTarget}: the path is inside the ` +
           'repository but not git-ignored; backups must never enter Git'
       )
     }

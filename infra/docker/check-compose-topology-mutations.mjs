@@ -20,23 +20,54 @@
 // 每一项都必须**以指定理由**失败：只要求「失败了」不够——一条完全无关的报错
 // 也能让脚本变绿，那样证明不了断言本身存在。
 import { spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
-const mutationFile = resolve(
-  composeDirectory,
-  `.compose-topology-mutation-${randomBytes(8).toString('hex')}.yaml`
-)
+const mutationDirectory = mkdtempSync(join(tmpdir(), 'meal-agent-compose-topology-'))
+const mutationIdentity = (() => {
+  const stat = lstatSync(mutationDirectory, { bigint: true })
+  return { dev: stat.dev, ino: stat.ino }
+})()
+const mutationFile = resolve(mutationDirectory, 'compose.local-test.yaml')
 const checker = resolve(composeDirectory, 'check-compose-topology.mjs')
 
+let mutationDirectoryRemoved = false
+const cleanupMutationDirectory = () => {
+  if (mutationDirectoryRemoved) return
+  const observed = lstatSync(mutationDirectory, { bigint: true })
+  if (observed.dev !== mutationIdentity.dev || observed.ino !== mutationIdentity.ino) {
+    throw new Error('topology mutation directory ownership drifted')
+  }
+  rmSync(mutationDirectory, { recursive: true, force: false })
+  mutationDirectoryRemoved = true
+}
+
 const abort = (message) => {
+  try {
+    cleanupMutationDirectory()
+  } catch {
+    process.stderr.write('FATAL: could not remove the owned topology mutation directory\n')
+  }
   process.stderr.write(`${message}\n`)
   process.exit(1)
+}
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    try {
+      cleanupMutationDirectory()
+    } catch {
+      process.stderr.write('FATAL: topology mutation signal cleanup failed\n')
+      process.exit(1)
+    }
+    process.removeAllListeners(signal)
+    process.kill(process.pid, signal)
+  })
 }
 
 const original = readFileSync(composeFile)
@@ -260,10 +291,10 @@ try {
   }
 } finally {
   try {
-    unlinkSync(mutationFile)
+    cleanupMutationDirectory()
   } catch (error) {
     abort(
-      `FATAL: could not remove the owned topology mutation copy ` +
+      `FATAL: could not remove the owned topology mutation directory ` +
         `(${typeof error === 'object' && error !== null && 'code' in error ? error.code : 'unknown'})`
     )
   }

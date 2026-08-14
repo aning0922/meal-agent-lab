@@ -26,6 +26,7 @@ import {
   parseImageInspect,
   parseSavedImageConfig,
   parseSavedImageManifest,
+  validateOciDescriptor,
   verifySavedImageLayers,
   parseDockerContainerId,
   parseDockerImageId
@@ -224,7 +225,17 @@ test('immutable image, container and history evidence is identity-bound and comp
 test('saved layer blobs are bound by compressed digest and uncompressed diff ID', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-saved-layer-'))
   try {
-    const layerBytes = Buffer.from('fixture layer tar bytes\n')
+    const layerRoot = resolve(directory, 'layer-root')
+    mkdirSync(layerRoot)
+    writeFileSync(resolve(layerRoot, 'fixture.txt'), 'fixture layer bytes\n')
+    const layerArchive = resolve(directory, 'layer.tar')
+    const layerPacked = spawnSync(
+      'tar',
+      ['--format=ustar', '-cf', layerArchive, '-C', layerRoot, '.'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
+    assert.equal(layerPacked.status, 0, layerPacked.stderr)
+    const layerBytes = readFileSync(layerArchive)
     const digest = createHash('sha256').update(layerBytes).digest('hex')
     const blobDirectory = resolve(directory, 'root/blobs/sha256')
     mkdirSync(blobDirectory, { recursive: true })
@@ -253,8 +264,56 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
       ),
       /wrong diff ID/
     )
+
+    const truncatedBytes = layerBytes.subarray(0, layerBytes.length - 512)
+    const truncatedDigest = createHash('sha256').update(truncatedBytes).digest('hex')
+    writeFileSync(resolve(blobDirectory, truncatedDigest), truncatedBytes)
+    const truncatedArchive = resolve(directory, 'truncated-image.tar')
+    const truncatedPacked = spawnSync(
+      'tar',
+      ['--format=ustar', '-cf', truncatedArchive, '-C', resolve(directory, 'root'), 'blobs'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
+    assert.equal(truncatedPacked.status, 0, truncatedPacked.stderr)
+    await assert.rejects(
+      verifySavedImageLayers(
+        truncatedArchive,
+        [`blobs/sha256/${truncatedDigest}`],
+        [`sha256:${truncatedDigest}`],
+        throwingFatal
+      ),
+      /inner layer tar/
+    )
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('OCI descriptor media types are exact for each evidence role', () => {
+  const digest = `sha256:${'a'.repeat(64)}`
+  const valid = (mediaType) => ({ digest, size: 1, mediaType })
+  assert.doesNotThrow(() =>
+    validateOciDescriptor(valid('application/vnd.oci.image.manifest.v1+json'), 'root', throwingFatal)
+  )
+  assert.doesNotThrow(() =>
+    validateOciDescriptor(valid('application/vnd.oci.image.config.v1+json'), 'config', throwingFatal)
+  )
+  assert.doesNotThrow(() =>
+    validateOciDescriptor(valid('application/vnd.oci.image.layer.v1.tar+gzip'), 'layer', throwingFatal)
+  )
+  assert.doesNotThrow(() =>
+    validateOciDescriptor(valid('application/vnd.in-toto+json'), 'attestation', throwingFatal)
+  )
+  for (const [role, mediaType] of [
+    ['root', 'application/octet-stream'],
+    ['config', 'application/vnd.oci.image.layer.v1.tar'],
+    ['layer', 'application/vnd.oci.image.config.v1+json'],
+    ['attestation', 'application/vnd.oci.image.layer.v1.tar']
+  ]) {
+    assert.throws(
+      () => validateOciDescriptor(valid(mediaType), role, throwingFatal),
+      /invalid OCI descriptor/
+    )
   }
 })
 
@@ -351,15 +410,24 @@ test('dependency payload normalizes only its declared deploy root and binds the 
   }
 })
 
-test('an excluded package README cannot become an opaque directory subtree', () => {
+test('every image-side package README byte participates in the dependency payload', () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-image-skipped-path-'))
   try {
-    const readme = resolve(directory, '.pnpm/key/node_modules/@meal-agent/contracts/README.md')
-    mkdirSync(readme, { recursive: true })
-    writeFileSync(resolve(readme, 'hidden-client.js'), 'mutation')
+    const packageDirectory = resolve(directory, '.pnpm/key/node_modules/@meal-agent/contracts')
+    mkdirSync(packageDirectory, { recursive: true })
+    const readme = resolve(packageDirectory, 'README.md')
+    writeFileSync(readme, 'baseline')
     const problems = []
-    dependencyPayloadOf(directory, 'fixture', (message) => problems.push(message))
-    assert.deepEqual(problems, ['fixture: skipped dependency metadata must remain a regular file'])
+    const baseline = dependencyPayloadOf(directory, 'fixture', (message) => problems.push(message))
+    writeFileSync(readme, 'mutation')
+    const mutated = dependencyPayloadOf(directory, 'fixture', (message) => problems.push(message))
+    assert.notEqual(mutated.sha256, baseline.sha256)
+    rmSync(readme)
+    mkdirSync(readme)
+    writeFileSync(resolve(readme, 'hidden-client.js'), 'mutation')
+    const directoryMutation = dependencyPayloadOf(directory, 'fixture', (message) => problems.push(message))
+    assert.notEqual(directoryMutation.sha256, mutated.sha256)
+    assert.deepEqual(problems, [])
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -394,7 +462,7 @@ test('the scan resolves a mutable tag once and binds all later evidence to the i
   const source = readFileSync(resolve(import.meta.dirname, '../../infra/docker/api-image-scan.mjs'), 'utf8')
   const scanBody = source.slice(source.indexOf('export const scanImage'))
   assert.equal((scanBody.match(/imageTag/g) ?? []).length, 2, 'signature plus first tag resolution only')
-  assert.match(scanBody, /\['docker', 'create', imageId\]/)
+  assert.match(scanBody, /'docker',[\s\S]*?'create',[\s\S]*?'--name',[\s\S]*?imageId/)
   assert.match(scanBody, /\['docker', 'image', 'inspect', imageId\]/)
   assert.match(scanBody, /\['docker', 'container', 'inspect', containerId\]/)
   assert.match(scanBody, /parseContainerInspect\([\s\S]*?containerId,[\s\S]*?imageId,/)

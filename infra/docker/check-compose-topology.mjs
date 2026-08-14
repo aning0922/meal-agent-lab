@@ -18,7 +18,8 @@
 // 运行期动态门禁（非 loopback 访问、镜像/日志 Secret 扫描）属于 M3 与 M5。
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -31,22 +32,26 @@ const repositoryRoot = resolve(composeDirectory, '..', '..')
 
 // 生产调用**零参数**，检查的永远是 tracked 的 compose.local-test.yaml。
 // `--compose-file <path>` 是 M3B 反例专用的受限 seam：它让变异反例改写**临时
-// 副本**而不是 tracked 文件（tracked 文件因此没有任何改写窗口，信号中断也不会
-// 留下被篡改的拓扑）。副本必须位于本目录，否则 `./postgres`、`./secrets` 等
-// 相对资产会解析到别处，检查结果就不再等价——路径不合规时直接失败。
+// 副本**而不是 tracked 文件（tracked 文件因此没有任何改写窗口）。副本必须是
+// 系统 tmpdir 下本套件独占目录里的固定文件名；Compose 另显式固定
+// `--project-directory` 为 infra/docker，所以相对资产仍按生产位置解析。
 const parseComposeFileArgument = (argv) => {
   if (argv.length === 0) {
     return resolve(composeDirectory, 'compose.local-test.yaml')
   }
   if (argv.length !== 2 || argv[0] !== '--compose-file') {
-    process.stderr.write('usage: check-compose-topology.mjs [--compose-file <path in infra/docker>]\n')
+    process.stderr.write('usage: check-compose-topology.mjs [--compose-file <owned temporary path>]\n')
     process.exit(2)
   }
   const candidate = resolve(argv[1])
-  if (resolve(candidate, '..') !== composeDirectory) {
+  const candidateDirectory = dirname(candidate)
+  if (
+    dirname(candidateDirectory) !== resolve(tmpdir()) ||
+    !basename(candidateDirectory).startsWith('meal-agent-compose-topology-') ||
+    basename(candidate) !== 'compose.local-test.yaml'
+  ) {
     process.stderr.write(
-      `--compose-file must name a file inside ${composeDirectory} so that relative ` +
-        'asset paths resolve identically\n'
+      '--compose-file must name the fixed file inside an owned system-temporary directory\n'
     )
     process.exit(2)
   }
@@ -545,7 +550,7 @@ const runCompose = (args, environmentOverrides = {}) => {
   }
   const result = spawnSync(
     'docker',
-    ['compose', '--file', composeFile, ...args],
+    ['compose', '--project-directory', composeDirectory, '--file', composeFile, ...args],
     {
       cwd: composeDirectory,
       encoding: 'utf8',

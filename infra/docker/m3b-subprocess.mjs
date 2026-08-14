@@ -52,10 +52,27 @@ const writeAggregateFrame = (frame) => {
   }
 }
 
-const announceProcessGroupOwnership = (pgid) => {
-  process.stderr.write(`m3b-descendant-pgid ${String(pgid)}\n`)
-  if (!writeAggregateFrame(`${String(pgid)}\n`)) {
-    process.stderr.write('aggregate ownership announcement failed\n')
+const writeDiagnostic = (message) => {
+  try {
+    process.stderr.write(message)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const announceProcessGroupOwnership = ({ pgid, generation }) => {
+  // 机器帧先于人类诊断：聚合器只接受带 producer + generation 的完整身份，
+  // 不再把一个裸 PGID 当成可跨时间复用的所有权。任一写入原语失败都返回 false，
+  // 调用点随后由本地 registry 终止并确认该代消失；异常绝不能越过清理路径。
+  const frameWritten = writeAggregateFrame(
+    `GROUP ${String(process.pid)} ${String(pgid)} ${String(generation)}\n`
+  )
+  const diagnosticWritten = writeDiagnostic(
+    `m3b-descendant-pgid ${String(pgid)} generation ${String(generation)}\n`
+  )
+  if (!frameWritten || !diagnosticWritten) {
+    writeDiagnostic('aggregate ownership announcement failed\n')
     return false
   }
   return true
@@ -63,7 +80,7 @@ const announceProcessGroupOwnership = (pgid) => {
 
 const announceCleanupState = (state) => {
   if (!writeAggregateFrame(`CLEANUP ${String(process.pid)} ${state}\n`)) {
-    process.stderr.write('aggregate cleanup acknowledgement failed\n')
+    writeDiagnostic('aggregate cleanup acknowledgement failed\n')
     return false
   }
   return true
@@ -324,7 +341,7 @@ export const registerRawSpawnedChild = async (child) => {
     processGroupLifecycle.markLeaderClosed(handle)
     processGroupLifecycle.retireIfGone(handle)
   })
-  if (!announceProcessGroupOwnership(child.pid)) {
+  if (!announceProcessGroupOwnership(handle)) {
     let survivors = [handle]
     try {
       survivors = await processGroupLifecycle.terminate([handle])
@@ -391,7 +408,7 @@ const runCommandUnchecked = (
       // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
       // 返回空）。把真实 pgid 逐个公布出去，外部套件才可能真的核查后代是否
       // 全部消失，而不是做一次结构性空真的查询。
-      ownershipAnnouncementFailed = !announceProcessGroupOwnership(child.pid)
+      ownershipAnnouncementFailed = !announceProcessGroupOwnership(childHandle)
     }
 
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))

@@ -186,7 +186,8 @@ node infra/docker/restore-local-test.mjs --dump infra/docker/backups/<name>.dump
   不会被调用；
 - checksum 通过后，宿主只把 dump 字节经 stdin 送给无网络的
   `backup-transfer-loader`；它以 UID 999 写入 `backup-transfer` volume，随后专用
-  `restore` service 只挂载该 volume 与 admin URL。宿主路径不会直接 bind 进
+  `restore` service 只挂载该 volume 与 `postgres_admin_pgpass` 物化出的
+  `postgres_admin.pgpass`。宿主路径不会直接 bind 进
   PostgreSQL 工具容器；
 - 目标数据库必须不存在（恢复只进全新库，绝不覆盖既有数据）；
 - `createdb --owner=meal_agent_migrator` 后执行

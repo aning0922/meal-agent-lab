@@ -49,12 +49,6 @@ import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subp
 const targetDatabase = 'meal_agent'
 const migrationRole = 'meal_agent_migrator'
 
-/** 失败诊断的 stderr 尾部（调用方的输出边界统一负责打码）。 */
-const stderrTail = (result) => {
-  const tail = String(result.stderr ?? '').trim().split('\n').slice(-6).join(' / ')
-  return tail === '' ? '(no stderr)' : tail
-}
-
 /** 固定拒绝理由（演练的反例按整句断言，不接受任何别的失败冒充）。 */
 export const dumpNotRegularFileReason =
   'restore refused: the dump path does not resolve to a regular file; pg_restore was not invoked'
@@ -216,7 +210,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   )
   if (created.status !== 0) {
     throw new Error(
-      `createdb --owner=${migrationRole} failed with exit ${String(created.status)}: ${stderrTail(created)}`
+      'restore failed while creating the target database'
     )
   }
   log(`created ${targetDatabase} owned by ${migrationRole}`)
@@ -241,7 +235,7 @@ export const performRestore = async ({ compose, run, log }, { project, dumpPath 
   )
   if (restored.status !== 0) {
     throw new Error(
-      `pg_restore --single-transaction failed with exit ${String(restored.status)}: ${stderrTail(restored)}`
+      'restore failed while applying the verified backup'
     )
   }
   log(`restore complete: deployment=local-test project=${project} database=${targetDatabase} (single transaction)`)

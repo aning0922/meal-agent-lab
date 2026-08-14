@@ -172,7 +172,7 @@ const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
 })
 child.unref()
 writeFileSync(resolve(directory, 'inner-pgid'), String(child.pid))
-writeSync(3, String(child.pid) + '\\n')
+writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid) + ' 1\\n')
 
 let settling = false
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -220,7 +220,7 @@ const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
 })
 child.unref()
 writeFileSync(resolve(directory, 'grandchild-pid'), String(child.pid))
-writeSync(3, String(child.pid))
+writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid) + ' 1')
 await delay(500)
 `
   )
@@ -237,7 +237,7 @@ const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
 })
 child.unref()
 writeFileSync(resolve(directory, 'grandchild-pid'), String(child.pid))
-writeSync(3, String(child.pid) + ' EXTRA\\n')
+writeSync(3, 'GROUP ' + String(process.pid) + ' ' + String(child.pid) + ' 1 EXTRA\\n')
 await delay(500)
 `
   )
@@ -252,9 +252,72 @@ await delay(500)
 `
   )
   writeFileSync(
+    resolve(directory, 'fd-holder-parent.mjs'),
+    `import { spawn } from 'node:child_process'
+import { writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+const child = spawn(process.execPath, [resolve(directory, 'grandchild.mjs')], {
+  detached: false,
+  stdio: ['ignore', 'ignore', 'ignore', 3]
+})
+child.unref()
+writeFileSync(directory + '/fd-holder-pid', String(child.pid))
+`
+  )
+  writeFileSync(
+    resolve(directory, 'generation-replay-child.mjs'),
+    `import { writeFileSync } from 'node:fs'
+writeFileSync(process.env.STAGE09A_FIXTURE_DIR + '/generation-replay-ready', 'yes')
+process.on('SIGTERM', () => {})
+process.on('SIGINT', () => {})
+setInterval(() => {}, 1_000)
+`
+  )
+  writeFileSync(
+    resolve(directory, 'generation-replay-parent.mjs'),
+    `import { spawn } from 'node:child_process'
+import { existsSync, writeFileSync, writeSync } from 'node:fs'
+import { resolve } from 'node:path'
+const directory = process.env.STAGE09A_FIXTURE_DIR
+const child = spawn(process.execPath, [resolve(directory, 'generation-replay-child.mjs')], {
+  detached: true,
+  stdio: ['ignore', 'ignore', 'ignore']
+})
+child.unref()
+writeFileSync(resolve(directory, 'generation-replay-pgid'), String(child.pid))
+while (!existsSync(resolve(directory, 'generation-replay-ready'))) {
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 10))
+}
+const frame = 'GROUP ' + String(process.pid) + ' ' + String(child.pid) + ' 1\\n'
+writeSync(3, frame)
+writeSync(3, frame)
+writeSync(3, 'PRODUCER ' + String(process.pid) + ' DONE\\n')
+`
+  )
+  writeFileSync(
     resolve(directory, 'cleanup-missing-done.mjs'),
     `import { writeSync } from 'node:fs'
 writeSync(3, 'CLEANUP ' + String(process.pid) + ' START\\n')
+`
+  )
+  writeFileSync(
+    resolve(directory, 'announcement-failure.mjs'),
+    `import { writeFileSync } from 'node:fs'
+import { observedDescendantPgids, runCommand } from ${JSON.stringify(subprocessModule)}
+const directory = process.env.STAGE09A_FIXTURE_DIR
+const originalWrite = process.stderr.write.bind(process.stderr)
+process.stderr.write = () => { throw new Error('ANNOUNCEMENT-SENTINEL') }
+let outcome = 'resolved'
+try {
+  await runCommand(['/bin/sh', '-c', 'trap "" TERM INT HUP; sleep 30'], { timeoutMs: 60_000 })
+} catch (error) {
+  outcome = error instanceof Error ? error.message : 'non-error'
+}
+process.stderr.write = originalWrite
+writeFileSync(directory + '/announcement-outcome', outcome)
+writeFileSync(directory + '/announcement-pgids', observedDescendantPgids().join('\\n'))
+process.exit(outcome === 'aggregate ownership announcement failed' ? 7 : 8)
 `
   )
   writeExecutable(
@@ -284,8 +347,17 @@ fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-empty-eof ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/empty-eof-parent.mjs"
 fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-fd-holder ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/fd-holder-parent.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ownership-generation-replay ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/generation-replay-parent.mjs"
+fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = cleanup-missing-done ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/cleanup-missing-done.mjs"
+fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = announcement-failure ]; then
+  exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/announcement-failure.mjs"
 fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant ] || [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
   if [ "\${STAGE09A_FIXTURE_MODE:-}" = descendant-silent ]; then
@@ -449,6 +521,56 @@ test('the controller retains ownership when the direct command closes its inheri
   }
 })
 
+test('a leader exit with an inherited fd3 holder fails closed and cleans the controller group', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let holderPid = null
+  try {
+    gate = spawnGate(fixture, 'ownership-fd-holder')
+    const pidFile = resolve(fixture.directory, 'fd-holder-pid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'fd3 holder pid')
+    holderPid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(holderPid), true)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+    await waitFor(() => !processIsAlive(holderPid), 1_000, 'fd3 holder ESRCH')
+  } finally {
+    if (holderPid !== null && processIsAlive(holderPid)) process.kill(holderPid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('an ownership generation replay fails at the protocol boundary and cleans the exact group', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  let pgid = null
+  try {
+    gate = spawnGate(fixture, 'ownership-generation-replay')
+    const pidFile = resolve(fixture.directory, 'generation-replay-pgid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'generation replay group')
+    await waitFor(
+      () => existsSync(resolve(fixture.directory, 'generation-replay-ready')),
+      3_000,
+      'generation replay child readiness'
+    )
+    pgid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(pgid), true)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.match(output, /ownership channel failed/)
+    assert.doesNotMatch(output, /left 1 descendant process group/)
+    await waitFor(() => !processIsAlive(pgid), 1_000, 'generation replay group ESRCH')
+  } finally {
+    if (pgid !== null && processIsAlive(pgid)) process.kill(-pgid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('cleanup START without DONE can never become a successful step', { timeout: 12_000 }, async () => {
   const fixture = createFixture()
   let gate = null
@@ -463,6 +585,34 @@ test('cleanup START without DONE can never become a successful step', { timeout:
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })
+
+test('an ownership diagnostic exception is local-cleaned and cannot leak or skip the machine frame', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'announcement-failure')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    const result = readFileSync(resolve(fixture.directory, 'announcement-outcome'), 'utf8')
+    const pgids = readFileSync(resolve(fixture.directory, 'announcement-pgids'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map(Number)
+    assert.equal(result, 'aggregate ownership announcement failed')
+    assert.equal(pgidssafe(pgids), true)
+    assert.equal(outcome.code, 7)
+    assert.doesNotMatch(output, /ANNOUNCEMENT-SENTINEL/)
+    for (const pgid of pgids) {
+      await waitFor(() => !processIsAlive(pgid), 1_000, 'announcement-failure group ESRCH')
+    }
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+const pgidssafe = (pgids) =>
+  pgids.length === 1 && pgids.every((pgid) => Number.isSafeInteger(pgid) && pgid > 0)
 
 const waitForClose = (child, timeoutMs) =>
   new Promise((resolvePromise, rejectPromise) => {
@@ -516,6 +666,7 @@ test('every host detached spawn in the formal chain has an explicit ownership bo
       'infra/docker/m3b-subprocess.mjs',
       'infra/docker/postgres/no-ctty.mjs',
       'scripts/run-stage09a-check.mjs',
+      'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs'
@@ -627,6 +778,55 @@ test('a signal waits for the active step process group to reach ESRCH', { timeou
     if (gate !== null && processIsAlive(gate.child.pid)) {
       gate.child.kill('SIGKILL')
     }
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('a termination primitive exception is fixed-output, bounded, and does not skip later cleanup', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  const mutatedEntrypoint = resolve(fixture.directory, 'primitive-failure-stage09a.mjs')
+  const sentinel = 'TERMINATION-PRIMITIVE-SENTINEL'
+  const originalSource = readFileSync(entrypoint, 'utf8')
+  const mutatedSource = originalSource
+    .replace(
+      "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
+      `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
+    )
+    .replace(
+      'const nativeKill = process.kill.bind(process)',
+      `let primitiveFailureInjected = false
+const nativeKill = (pid, signal) => {
+  if (!primitiveFailureInjected && pid < 0 && signal === 'SIGTERM') {
+    primitiveFailureInjected = true
+    throw new Error(${JSON.stringify(sentinel)})
+  }
+  return process.kill(pid, signal)
+}`
+    )
+  assert.notEqual(mutatedSource, originalSource)
+  writeFileSync(mutatedEntrypoint, mutatedSource)
+
+  let gate = null
+  let grandchildPid = null
+  try {
+    gate = spawnGate(fixture, 'descendant', mutatedEntrypoint)
+    const pidFile = resolve(fixture.directory, 'grandchild-pid')
+    await waitFor(() => existsSync(pidFile), 3_000, 'primitive-failure descendant')
+    grandchildPid = Number(readFileSync(pidFile, 'utf8').trim())
+    assert.equal(processIsAlive(grandchildPid), true)
+    gate.child.kill('SIGTERM')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.match(output, /signal cleanup primitive failed/)
+    assert.doesNotMatch(output, new RegExp(sentinel))
+    await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'primitive-failure ESRCH')
+  } finally {
+    if (grandchildPid !== null && processIsAlive(grandchildPid)) {
+      process.kill(grandchildPid, 'SIGKILL')
+    }
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }
 })

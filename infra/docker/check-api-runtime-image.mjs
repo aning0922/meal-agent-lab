@@ -75,6 +75,7 @@ const cleanupState = {
   temporaryRoot: null,
   containerIds: new Set(),
   ownedImageTag: false,
+  ownedImageId: null,
   done: false
 }
 
@@ -87,7 +88,7 @@ const cleanup = async ({ keepScene = false } = {}) => {
   if (keepScene) {
     process.stderr.write('image-scan: --keep-failure set; keeping the failure scene:\n')
     if (cleanupState.temporaryRoot !== null) {
-      process.stderr.write(`image-scan:   kept temporary directory ${cleanupState.temporaryRoot}\n`)
+      process.stderr.write('image-scan:   kept owned temporary directory (path omitted)\n')
     }
     for (const containerId of cleanupState.containerIds) {
       process.stderr.write(`image-scan:   kept container ${containerId}\n`)
@@ -114,25 +115,65 @@ const cleanup = async ({ keepScene = false } = {}) => {
   }
   if (cleanupState.ownedImageTag) {
     try {
-      const removal = await runCommand(['docker', 'rmi', imageTag], { timeoutMs: 120_000 })
-      if (
-        removal.status !== 0 &&
-        !(removal.status === 1 && isAbsenceMessage(removal.stderr, { kind: 'image', name: imageTag }))
+      const current = await runCommand(
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag],
+        { timeoutMs: 60_000 }
+      )
+      const currentId = current.status === 0 ? current.stdout.trim() : null
+      if (current.status === 0 && currentId !== cleanupState.ownedImageId) {
+        cleanupProblems.push('run image tag ownership drifted; foreign tag was preserved')
+      } else if (current.status === 0) {
+        const removal = await runCommand(['docker', 'rmi', imageTag], { timeoutMs: 120_000 })
+        if (removal.status !== 0) {
+          cleanupProblems.push('run image tag removal failed')
+        }
+      } else if (
+        !(
+          current.status === 1 &&
+          isAbsenceMessage(current.stderr, { kind: 'image', name: imageTag })
+        )
       ) {
-        cleanupProblems.push('run image tag removal failed')
-      } else {
-        const gone = await runCommand(['docker', 'image', 'inspect', imageTag], { timeoutMs: 60_000 })
-        if (
-          gone.status === 0 ||
-          !(gone.status === 1 && isAbsenceMessage(gone.stderr, { kind: 'image', name: imageTag }))
+        cleanupProblems.push('run image tag identity could not be verified')
+      }
+
+      // 若 tag 在扫描中被重绑，绝不删除外来的新 tag；只清理由本轮记录的 A，
+      // 且仅当 A 已无任何 tag 时按 immutable ID 删除。已有其他 tag 表示镜像对象
+      // 并非本轮独占，必须保留。
+      if (cleanupState.ownedImageId !== null) {
+        const owned = await runCommand(
+          ['docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', cleanupState.ownedImageId],
+          { timeoutMs: 60_000 }
+        )
+        if (owned.status === 0) {
+          let repoTags
+          try {
+            repoTags = JSON.parse(owned.stdout.trim())
+          } catch {
+            cleanupProblems.push('owned image tag set was unreadable')
+          }
+          if (repoTags === null || (Array.isArray(repoTags) && repoTags.length === 0)) {
+            const removal = await runCommand(
+              ['docker', 'rmi', cleanupState.ownedImageId],
+              { timeoutMs: 120_000 }
+            )
+            if (removal.status !== 0) cleanupProblems.push('owned dangling image removal failed')
+          } else if (!Array.isArray(repoTags)) {
+            cleanupProblems.push('owned image tag set had an invalid shape')
+          }
+        } else if (
+          !(
+            owned.status === 1 &&
+            isAbsenceMessage(owned.stderr, { kind: 'image', name: cleanupState.ownedImageId })
+          )
         ) {
-          cleanupProblems.push('run image tag still present after removal')
+          cleanupProblems.push('owned image identity could not be verified')
         }
       }
     } catch {
       cleanupProblems.push('run image tag removal did not complete')
     }
     cleanupState.ownedImageTag = false
+    cleanupState.ownedImageId = null
   }
   if (cleanupState.temporaryRoot !== null) {
     try {
@@ -218,7 +259,11 @@ const main = async () => {
     fatal,
     problem,
     log,
+    scratchContainerName: `meal-agent-m5-image-scan-${runId}`,
     track: {
+      image: (id) => {
+        cleanupState.ownedImageId = id
+      },
       container: (id) => {
         cleanupState.containerIds.add(id)
       },

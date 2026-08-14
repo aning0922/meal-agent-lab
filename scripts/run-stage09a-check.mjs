@@ -26,8 +26,6 @@
 // 留给子门禁做自己的清理，宽限后 SIGKILL，一律判失败。
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
-import { performance } from 'node:perf_hooks'
-import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
@@ -136,49 +134,134 @@ const steps = [
 const results = []
 let interruptedBy = null
 let signalCleanupPromise = null
+let aggregatePrimitiveFailed = false
 const interruptionWaiters = new Set()
 const cooperativeShutdowns = new Set()
-const ownedProcessGroups = new Set()
+const ownedProcessGroups = new Map()
+const currentProcessGroupGenerations = new Map()
+const closedOwnedGroupLeaders = new Set()
+let aggregateGenerationCounter = 0
 const nativeKill = process.kill.bind(process)
+const nativeNow = Date.now.bind(Date)
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
+const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
 const cooperativeShutdownBudgetMs = 310_000
 
-const processGroupIsAlive = (pgid) => {
+const safeDelay = (milliseconds, { ref = true } = {}) =>
+  new Promise((resolveDelay) => {
+    const timer = nativeSetTimeout(resolveDelay, milliseconds)
+    if (!ref && typeof timer?.unref === 'function') {
+      timer.unref()
+    }
+  })
+
+const ownershipLineage = ({ producer, pgid }) =>
+  `${String(producer)}:${String(pgid)}`
+const ownershipKey = ({ producer, pgid, generation }) =>
+  `${ownershipLineage({ producer, pgid })}:${String(generation)}`
+
+const registerOwnedProcessGroup = (handle) => {
+  if (
+    !Number.isSafeInteger(handle?.producer) ||
+    handle.producer <= 0 ||
+    !Number.isSafeInteger(handle?.pgid) ||
+    handle.pgid <= 0 ||
+    !Number.isSafeInteger(handle?.generation) ||
+    handle.generation < 0
+  ) {
+    return false
+  }
+  const lineage = ownershipLineage(handle)
+  const previousGeneration = currentProcessGroupGenerations.get(lineage)
+  if (previousGeneration !== undefined && handle.generation <= previousGeneration) {
+    return false
+  }
+  if (previousGeneration !== undefined) {
+    ownedProcessGroups.delete(
+      ownershipKey({ ...handle, generation: previousGeneration })
+    )
+  }
+  currentProcessGroupGenerations.set(lineage, handle.generation)
+  ownedProcessGroups.set(ownershipKey(handle), Object.freeze({ ...handle }))
+  return true
+}
+
+const handleIsCurrent = (handle) =>
+  currentProcessGroupGenerations.get(ownershipLineage(handle)) ===
+  handle.generation
+
+const retireOwnedProcessGroup = (handle) => {
+  if (!handleIsCurrent(handle)) return
+  ownedProcessGroups.delete(ownershipKey(handle))
+  currentProcessGroupGenerations.delete(ownershipLineage(handle))
+}
+
+const processGroupIsAlive = (handle) => {
   try {
-    nativeKill(-pgid, 0)
-    return true
+    nativeKill(-handle.pgid, 0)
+    return { alive: true, primitiveFailed: false }
   } catch (error) {
-    return error?.code !== 'ESRCH'
+    if (error?.code === 'ESRCH') {
+      return { alive: false, primitiveFailed: false }
+    }
+    // macOS 会在已退出组长的数字 PGID 被其他 uid 很快复用时返回 EPERM。
+    // 该代组长的 exit 已由 ChildProcess 事件确认；继续把这个数字当成旧所有权
+    // 反而会对新代产生误杀风险。没有 leader-exit 证据的 EPERM 仍 fail closed。
+    if (error?.code === 'EPERM' && closedOwnedGroupLeaders.has(ownershipKey(handle))) {
+      return { alive: false, primitiveFailed: false }
+    }
+    return { alive: true, primitiveFailed: true }
   }
 }
 
 const purgeGoneProcessGroups = () => {
-  for (const pgid of ownedProcessGroups) {
-    if (!processGroupIsAlive(pgid)) {
-      ownedProcessGroups.delete(pgid)
+  let primitiveFailed = false
+  for (const handle of ownedProcessGroups.values()) {
+    if (!handleIsCurrent(handle)) {
+      ownedProcessGroups.delete(ownershipKey(handle))
+      continue
+    }
+    const probe = processGroupIsAlive(handle)
+    primitiveFailed = probe.primitiveFailed || primitiveFailed
+    if (!probe.alive) {
+      retireOwnedProcessGroup(handle)
     }
   }
+  return primitiveFailed
 }
 
-const signalOwnedGroup = (pgid, signal) => {
+const signalOwnedGroup = (handle, signal) => {
+  if (!handleIsCurrent(handle)) {
+    return { delivered: false, primitiveFailed: false }
+  }
   try {
-    nativeKill(-pgid, signal)
-    return true
+    nativeKill(-handle.pgid, signal)
+    return { delivered: true, primitiveFailed: false }
   } catch (error) {
-    return error?.code === 'ESRCH'
+    if (error?.code === 'ESRCH') {
+      retireOwnedProcessGroup(handle)
+      return { delivered: false, primitiveFailed: false }
+    }
+    if (error?.code === 'EPERM' && closedOwnedGroupLeaders.has(ownershipKey(handle))) {
+      retireOwnedProcessGroup(handle)
+      return { delivered: false, primitiveFailed: false }
+    }
+    return { delivered: false, primitiveFailed: true }
   }
 }
 
 const waitForOwnedGroups = async (budgetMs) => {
-  const deadline = performance.now() + budgetMs
-  do {
-    purgeGoneProcessGroups()
+  let primitiveFailed = false
+  const attempts = Math.max(1, Math.ceil(budgetMs / 25))
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
     if (ownedProcessGroups.size === 0) {
-      return true
+      return { gone: true, primitiveFailed }
     }
-    await delay(25)
-  } while (performance.now() < deadline)
-  purgeGoneProcessGroups()
-  return ownedProcessGroups.size === 0
+    await safeDelay(25)
+  }
+  primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
+  return { gone: ownedProcessGroups.size === 0, primitiveFailed }
 }
 
 // 聚合器不依赖子门禁的 termination abstraction 来做最后兜底：异常或永不
@@ -187,33 +270,39 @@ const waitForOwnedGroups = async (budgetMs) => {
 const terminateOwnedProcessGroups = async () => {
   let primitiveFailed = false
   let stablePasses = 0
-  for (let sweep = 0; sweep < 8; sweep += 1) {
-    purgeGoneProcessGroups()
-    const snapshot = [...ownedProcessGroups]
-    if (snapshot.length === 0) {
-      stablePasses += 1
-      if (stablePasses >= 2) {
-        return { ok: !primitiveFailed, survivors: [] }
+  try {
+    for (let sweep = 0; sweep < 8; sweep += 1) {
+      primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
+      const snapshot = [...ownedProcessGroups.values()]
+      if (snapshot.length === 0) {
+        stablePasses += 1
+        if (stablePasses >= 2) {
+          return { ok: !primitiveFailed, primitiveFailed, survivors: [] }
+        }
+        await safeDelay(25)
+        continue
       }
-      await delay(25)
-      continue
-    }
-    stablePasses = 0
-    for (const pgid of snapshot) {
-      if (!signalOwnedGroup(pgid, 'SIGTERM')) {
-        primitiveFailed = true
+      stablePasses = 0
+      for (const handle of snapshot) {
+        primitiveFailed = signalOwnedGroup(handle, 'SIGTERM').primitiveFailed || primitiveFailed
       }
-    }
-    await waitForOwnedGroups(500)
-    for (const pgid of [...ownedProcessGroups]) {
-      if (!signalOwnedGroup(pgid, 'SIGKILL')) {
-        primitiveFailed = true
+      const termWait = await waitForOwnedGroups(500)
+      primitiveFailed = termWait.primitiveFailed || primitiveFailed
+      for (const handle of [...ownedProcessGroups.values()]) {
+        primitiveFailed = signalOwnedGroup(handle, 'SIGKILL').primitiveFailed || primitiveFailed
       }
+      const killWait = await waitForOwnedGroups(3_000)
+      primitiveFailed = killWait.primitiveFailed || primitiveFailed
     }
-    await waitForOwnedGroups(3_000)
+  } catch {
+    primitiveFailed = true
   }
-  purgeGoneProcessGroups()
-  return { ok: !primitiveFailed && ownedProcessGroups.size === 0, survivors: [...ownedProcessGroups] }
+  primitiveFailed = purgeGoneProcessGroups() || primitiveFailed
+  return {
+    ok: !primitiveFailed && ownedProcessGroups.size === 0,
+    primitiveFailed,
+    survivors: [...ownedProcessGroups.values()]
+  }
 }
 
 const requestCooperativeShutdown = async () => {
@@ -225,19 +314,34 @@ const requestCooperativeShutdown = async () => {
   // 子门禁的 scoped cleanup（尤其 Docker/restore）本身有最长 300 秒的有界
   // residue 复查。聚合器必须等到 child 真正 close，才能把 cleanup 记为完成；
   // 不能用一个比内层预算更短的墙钟抢先 KILL 后宣称已经清理。
-  const results = await Promise.race([
-    Promise.all(attempts),
-    delay(cooperativeShutdownBudgetMs, undefined, { ref: false }).then(() => [false])
-  ])
-  return results.every((result) => result === true)
+  try {
+    const results = await Promise.race([
+      Promise.all(attempts),
+      safeDelay(cooperativeShutdownBudgetMs, { ref: false }).then(() => [false])
+    ])
+    return results.every((result) => result === true)
+  } catch {
+    return false
+  }
 }
 
 const convergeAfterSignal = () => {
   if (signalCleanupPromise === null) {
     signalCleanupPromise = (async () => {
-      const cooperativeOk = await requestCooperativeShutdown()
-      const cleanup = await terminateOwnedProcessGroups()
-      return { ok: cooperativeOk && cleanup.ok, survivorCount: cleanup.survivors.length }
+      try {
+        const cooperativeOk = await requestCooperativeShutdown()
+        const cleanup = await terminateOwnedProcessGroups()
+        const primitiveFailed = aggregatePrimitiveFailed || cleanup.primitiveFailed
+        return {
+          ok: cooperativeOk && cleanup.ok && !primitiveFailed,
+          cooperativeOk,
+          primitiveFailed,
+          survivorCount: cleanup.survivors.length
+        }
+      } catch {
+        const cleanup = await terminateOwnedProcessGroups()
+        return { ok: false, survivorCount: cleanup.survivors.length }
+      }
     })()
   }
   return signalCleanupPromise
@@ -256,7 +360,9 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     }
     interruptedBy = signal
     process.stderr.write(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)
-    void convergeAfterSignal().then(settleInterruptedRuns)
+    void convergeAfterSignal()
+      .then(settleInterruptedRuns)
+      .catch(() => settleInterruptedRuns({ ok: false, survivorCount: ownedProcessGroups.size }))
   })
 }
 
@@ -285,28 +391,55 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       stdio === 'inherit'
         ? ['inherit', 'inherit', 'inherit', 'pipe']
         : [stdio[0], stdio[1], stdio[2], 'pipe']
-    const child = spawn(process.execPath, [stepController, JSON.stringify(argv)], {
-      cwd: repositoryRoot,
-      detached: true,
-      env: childEnvironment,
-      stdio: childStdio
-    })
+    let child
+    try {
+      child = spawn(process.execPath, [stepController, JSON.stringify(argv)], {
+        cwd: repositoryRoot,
+        detached: true,
+        env: childEnvironment,
+        stdio: childStdio
+      })
+    } catch {
+      resolvePromise({
+        ok: false,
+        code: null,
+        signal: null,
+        stdout: '',
+        detail: 'failed to start'
+      })
+      return
+    }
 
+    let controllerHandle = null
     if (Number.isSafeInteger(child.pid) && child.pid > 0) {
-      ownedProcessGroups.add(child.pid)
+      aggregateGenerationCounter += 1
+      controllerHandle = Object.freeze({
+        producer: process.pid,
+        pgid: child.pid,
+        generation: aggregateGenerationCounter
+      })
+      if (!registerOwnedProcessGroup(controllerHandle)) {
+        ownershipProtocolFailed = true
+      }
+    } else {
+      ownershipProtocolFailed = true
     }
     if (child.stdout !== null) {
       child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     }
     const ownershipStream = child.stdio[3]
-    const registerRecognizablePgid = (text) => {
-      const prefix = /^([1-9][0-9]*)/.exec(text)
+    const registerRecognizableGroup = (text) => {
+      const prefix = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)/.exec(text)
       if (prefix === null) {
         return
       }
-      const pgid = Number(prefix[1])
-      if (Number.isSafeInteger(pgid) && pgid > 0) {
-        ownedProcessGroups.add(pgid)
+      const handle = {
+        producer: Number(prefix[1]),
+        pgid: Number(prefix[2]),
+        generation: Number(prefix[3])
+      }
+      if (!registerOwnedProcessGroup(handle)) {
+        ownershipProtocolFailed = true
       }
     }
     const recordOwnershipFrame = (line) => {
@@ -341,19 +474,22 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         }
         return
       }
-      if (!/^[1-9][0-9]*$/.test(line)) {
-        // 协议失败不等于放弃清理。若前缀已经足以证明一个 detached PGID，
-        // 先登记它，再把整帧判坏；否则 `123 EXTRA` 会固定 exit 1 却留下 123。
-        registerRecognizablePgid(line)
+      const groupFrame = /^GROUP ([1-9][0-9]*) ([1-9][0-9]*) ([1-9][0-9]*)$/.exec(line)
+      if (groupFrame === null) {
+        // 协议失败不等于放弃清理。若前缀已含完整 producer/pgid/generation，
+        // 先登记该代，再把整帧判坏。
+        registerRecognizableGroup(line)
         ownershipProtocolFailed = true
         return
       }
-      const pgid = Number(line)
-      if (!Number.isSafeInteger(pgid) || pgid <= 0) {
-        ownershipProtocolFailed = true
-        return
+      const handle = {
+        producer: Number(groupFrame[1]),
+        pgid: Number(groupFrame[2]),
+        generation: Number(groupFrame[3])
       }
-      ownedProcessGroups.add(pgid)
+      if (!registerOwnedProcessGroup(handle)) {
+        ownershipProtocolFailed = true
+      }
     }
     ownershipStream?.on('data', (chunk) => {
       ownershipBuffer += chunk.toString('utf8')
@@ -363,14 +499,14 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         const line = ownershipBuffer.slice(0, newline)
         ownershipBuffer = ownershipBuffer.slice(newline + 1)
         if (line.length > 4096) {
-          registerRecognizablePgid(line)
+          registerRecognizableGroup(line)
           ownershipProtocolFailed = true
         } else {
           recordOwnershipFrame(line)
         }
       }
       if (ownershipBuffer.length > 4096) {
-        registerRecognizablePgid(ownershipBuffer)
+        registerRecognizableGroup(ownershipBuffer)
         ownershipProtocolFailed = true
         ownershipBuffer = ''
         ownershipStream?.destroy()
@@ -384,7 +520,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       if (ownershipBuffer.length > 0) {
         // 缺少终止 LF 时仍登记可证明的 PGID 以便收尾，但协议必须失败，
         // 所以该 step 绝不能 PASS。
-        registerRecognizablePgid(ownershipBuffer)
+        registerRecognizableGroup(ownershipBuffer)
         ownershipProtocolFailed = true
         ownershipBuffer = ''
       }
@@ -402,18 +538,25 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     const leaderExitedPromise = new Promise((resolveExit) => {
       resolveLeaderExited = resolveExit
     })
+    let ownershipDrainTimer = null
     child.once('exit', () => {
       leaderExited = true
+      if (controllerHandle !== null) {
+        closedOwnedGroupLeaders.add(ownershipKey(controllerHandle))
+      }
       resolveLeaderExited()
-      if (ownershipBuffer.length > 0) {
-        registerRecognizablePgid(ownershipBuffer)
+      // leader exit 后给内核 pipe 一个很短的 drain 窗口。即使 buffer 为空，
+      // 未登记后代仍可能继承 fd 3 并永远不产生 EOF；旧实现会因此等不到 close。
+      ownershipDrainTimer = nativeSetTimeout(() => {
+        if (ownershipStreamEnded) return
+        if (ownershipBuffer.length > 0) {
+          registerRecognizableGroup(ownershipBuffer)
+          ownershipBuffer = ''
+        }
         ownershipProtocolFailed = true
-        ownershipBuffer = ''
-        // fd 被未登记后代继承时，等待 EOF 会形成循环依赖。leader exit 已证明
-        // 本轮 producer 不会再给出完整帧；关闭读端并按刚登记的 PGID 收敛。
         ownershipStream?.destroy()
         void terminateOwnedProcessGroups()
-      }
+      }, 500)
     })
     const cooperativeShutdown = async (signal) => {
       if (!closed) {
@@ -421,17 +564,18 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
           nativeKill(-child.pid, signal)
         } catch {
           // 最终收敛由聚合器自己的 owned-PGID fallback 保证。
+          aggregatePrimitiveFailed = true
         }
       }
       const first = await Promise.race([
         leaderExitedPromise.then(() => 'exit'),
         cleanupStartedPromise.then(() => 'cleanup'),
-        delay(2_500, 'fallback', { ref: false })
+        safeDelay(2_500, { ref: false }).then(() => 'fallback')
       ])
       if (first === 'cleanup') {
         await Promise.race([
           leaderExitedPromise,
-          delay(cooperativeShutdownBudgetMs, undefined, { ref: false })
+          safeDelay(cooperativeShutdownBudgetMs, { ref: false })
         ])
       }
       if (scopedCleanupStarted && activeScopedCleanups.size > 0) {
@@ -449,7 +593,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       }
     }
     const interruptionWaiter = (cleanup) => {
-      clearTimeout(timer)
+      nativeClearTimeout(timer)
       if (!cleanup.ok) {
         child.stdout?.destroy()
         child.stderr?.destroy()
@@ -459,7 +603,14 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         code: null,
         signal: null,
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-        detail: cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed'
+        detail:
+          cleanup.ok
+            ? `interrupted by ${interruptedBy}`
+            : cleanup.cooperativeOk === false
+              ? 'signal cleanup protocol failed'
+              : cleanup.primitiveFailed
+                ? 'signal cleanup primitive failed'
+                : 'signal cleanup failed'
       })
     }
     const release = () => {
@@ -468,34 +619,41 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       resolveClosed()
       purgeGoneProcessGroups()
     }
-    const timer = setTimeout(() => {
+    const timer = nativeSetTimeout(() => {
       if (settled || timedOut) {
         return
       }
       timedOut = true
       void (async () => {
-        await cooperativeShutdown('SIGTERM')
-        const cleanup = await terminateOwnedProcessGroups()
-        const survivors = cleanup.survivors
-        settle({
-          ok: false,
-          code: null,
-          signal: null,
-          stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-          detail:
-            !cleanup.ok || survivors.length > 0
-              ? `timed out; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
-              : 'timed out'
-        })
+        try {
+          await cooperativeShutdown('SIGTERM')
+          const cleanup = await terminateOwnedProcessGroups()
+          const survivors = cleanup.survivors
+          settle({
+            ok: false,
+            code: null,
+            signal: null,
+            stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+            detail:
+              !cleanup.ok || survivors.length > 0
+                ? `timed out; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
+                : 'timed out'
+          })
+        } catch {
+          settle({ ok: false, code: null, signal: null, stdout: '', detail: 'timed out; cleanup failed' })
+        }
       })()
     }, timeoutMs)
     interruptionWaiters.add(interruptionWaiter)
     if (interruptedBy !== null) {
-      void convergeAfterSignal().then(interruptionWaiter)
+      void convergeAfterSignal().then(interruptionWaiter).catch(() =>
+        interruptionWaiter({ ok: false, survivorCount: ownedProcessGroups.size })
+      )
     }
 
     child.once('error', (error) => {
-      clearTimeout(timer)
+      nativeClearTimeout(timer)
+      if (ownershipDrainTimer !== null) nativeClearTimeout(ownershipDrainTimer)
       resolveLeaderExited()
       release()
       if (settled || timedOut) {
@@ -510,7 +668,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
             stdout: '',
             detail: cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed'
           })
-        })
+        }).catch(() => settle({ ok: false, code: null, signal: null, stdout: '', detail: 'signal cleanup failed' }))
         return
       }
       settle({
@@ -522,7 +680,8 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       })
     })
     child.once('close', (code, signal) => {
-      clearTimeout(timer)
+      nativeClearTimeout(timer)
+      if (ownershipDrainTimer !== null) nativeClearTimeout(ownershipDrainTimer)
       release()
       if (settled || timedOut) {
         return
@@ -540,7 +699,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       if (interruptedBy !== null) {
         void convergeAfterSignal().then((cleanup) => {
           finish(cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed')
-        })
+        }).catch(() => finish('signal cleanup failed'))
         return
       }
       if (
@@ -559,7 +718,7 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
         return
       }
       purgeGoneProcessGroups()
-      const unexpectedGroups = [...ownedProcessGroups]
+      const unexpectedGroups = [...ownedProcessGroups.values()]
       if (unexpectedGroups.length > 0) {
         void (async () => {
           await terminateOwnedProcessGroups()
@@ -575,7 +734,12 @@ const probe = async (argv, label) => {
   if (interruptedBy !== null) {
     return { ok: false, label, detail: `interrupted by ${interruptedBy}` }
   }
-  const result = await runControlled({ argv, timeoutMs: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
+  let result
+  try {
+    result = await runControlled({ argv, timeoutMs: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch {
+    result = { ok: false, stdout: '', detail: 'failed to run prerequisite probe' }
+  }
   return {
     ok: result.ok,
     label,
@@ -590,16 +754,20 @@ const runStep = (step) =>
       return
     }
     const argv = step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv
-    const startedAt = performance.now()
-    void runControlled({ argv, timeoutMs: step.timeoutMs, stdio: 'inherit' }).then((result) => {
-      const seconds = Math.round((performance.now() - startedAt) / 1000)
-      resolvePromise({
-        ok: result.ok,
-        detail: result.detail,
-        exitCode: result.ok ? 0 : result.code === null || result.code === 0 ? 1 : result.code,
-        seconds
+    const startedAt = nativeNow()
+    void runControlled({ argv, timeoutMs: step.timeoutMs, stdio: 'inherit' })
+      .then((result) => {
+        const seconds = Math.max(0, Math.round((nativeNow() - startedAt) / 1000))
+        resolvePromise({
+          ok: result.ok,
+          detail: result.detail,
+          exitCode: result.ok ? 0 : result.code === null || result.code === 0 ? 1 : result.code,
+          seconds
+        })
       })
-    })
+      .catch(() => {
+        resolvePromise({ ok: false, detail: 'aggregate control failed', exitCode: 1, seconds: 0 })
+      })
   })
 
 const printSummary = () => {
@@ -688,4 +856,14 @@ const main = async () => {
   return 0
 }
 
-process.exitCode = await main()
+try {
+  process.exitCode = await main()
+} catch {
+  const cleanup = await terminateOwnedProcessGroups()
+  process.stderr.write(
+    cleanup.ok
+      ? 'stage09a:check FAIL — aggregate control failed\n'
+      : 'stage09a:check FAIL — aggregate control failed and descendant cleanup was not confirmed\n'
+  )
+  process.exitCode = 1
+}

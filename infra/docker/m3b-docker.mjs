@@ -24,6 +24,8 @@ export const runImageTagPrefix = 'meal-agent-api:m3b-'
 
 export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
 
+const ownedOverrideInodes = new Map()
+
 /** 唯一 tag 的临时 Compose override（三个 API 镜像服务共用同一个 tag）。 */
 export const writeImageOverride = (path, imageTag) => {
   writeFileSync(
@@ -35,8 +37,11 @@ export const writeImageOverride = (path, imageTag) => {
       `  api:\n    image: ${imageTag}\n` +
       `  migrate:\n    image: ${imageTag}\n` +
       `  bootstrap-schema:\n    image: ${imageTag}\n`,
-    { mode: 0o600 }
+    { flag: 'wx', mode: 0o600 }
   )
+  const identity = inodeIdentityOf(path)
+  ownedOverrideInodes.set(path, identity)
+  return identity
 }
 
 /**
@@ -414,10 +419,26 @@ const cleanupRunUnsynchronized = async ({
     if (overridePath === null) {
       return
     }
-    rmSync(overridePath, { force: true })
+    if (!existsSync(overridePath)) {
+      ownedOverrideInodes.delete(overridePath)
+      return
+    }
+    const expectedIdentity = ownedOverrideInodes.get(overridePath)
+    const observed = lstatSync(overridePath, { bigint: true })
+    if (
+      expectedIdentity === undefined ||
+      observed.dev !== expectedIdentity.dev ||
+      observed.ino !== expectedIdentity.ino
+    ) {
+      throw new DockerEvidenceError(
+        'ownership drift at the temporary compose override; refusing to remove it'
+      )
+    }
+    rmSync(overridePath, { force: false })
     if (existsSync(overridePath)) {
       throw new DockerEvidenceError('the temporary compose override still exists')
     }
+    ownedOverrideInodes.delete(overridePath)
   })
 
   // 阶段 8：匿名悬挂卷前后对照（匿名卷不带 project label，label sweep 看不见）。
@@ -499,7 +520,21 @@ export const verifyNoResidue = async ({
 /** 临时 override 文件的删除（用后即删，失败只记 residue）。 */
 export const discardOverride = (path) => {
   try {
-    rmSync(path, { force: true })
+    if (!existsSync(path)) {
+      ownedOverrideInodes.delete(path)
+      return
+    }
+    const expectedIdentity = ownedOverrideInodes.get(path)
+    const observed = lstatSync(path, { bigint: true })
+    if (
+      expectedIdentity === undefined ||
+      observed.dev !== expectedIdentity.dev ||
+      observed.ino !== expectedIdentity.ino
+    ) {
+      return
+    }
+    rmSync(path, { force: false })
+    ownedOverrideInodes.delete(path)
   } catch {
     // 尽力而为。
   }

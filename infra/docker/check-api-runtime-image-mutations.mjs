@@ -133,7 +133,7 @@ const mutations = [
         'RUN set -eu; \\\n set -- /app/node_modules/.pnpm/@meal-agent+contracts@*/node_modules/@meal-agent/contracts; \\\n [ "$#" -eq 1 ] && [ -d "$1" ]; \\\n target="$1/README.md"; \\\n rm -f "$target"; \\\n mkdir -p "$target"; \\\n printf mutation > "$target/hidden-client.js"\n\nUSER 10001:10001'
       ),
     expectStatic: [],
-    expectScan: ['skipped dependency metadata must remain a regular file']
+    expectScan: ['closure: dependency payload differs byte-for-byte from the deploy-derived closure']
   },
   {
     id: 'secret-shaped-image-history',
@@ -283,7 +283,9 @@ const buildAndScan = async ({ caseId, dockerfileText, viaStdin }) => {
     fatal,
     problem: (message) => problems.push(message),
     log: () => undefined,
+    scratchContainerName: `meal-agent-m5-image-mut-${runId}-${caseId}`,
     track: {
+      image: () => undefined,
       container: (id) => {
         cleanupState.containerIds.add(id)
       },

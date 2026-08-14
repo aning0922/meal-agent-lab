@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
+
+import { assertBackupTargetsIgnored } from '../../infra/docker/backup-local-test.mjs'
+import { discardOverride, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
 
 import {
   composeRunOneOff,
@@ -15,6 +18,8 @@ import {
   checksumSidecarUnparseableReason,
   verifyBackupChecksum
 } from '../../infra/docker/restore-local-test.mjs'
+
+const repositoryRoot = resolve(import.meta.dirname, '../..')
 
 test('M4 absence evidence requires the exact single-line Docker result', () => {
   assert.equal(
@@ -201,6 +206,46 @@ test('restore sidecars reject BOM, multiline, CRLF and NUL framing', () => {
     }
     writeFileSync(`${dump}.sha256`, `${line}\n`)
     assert.equal(verifyBackupChecksum(dump).sha256, digest)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup target containment follows a symlink alias to its physical repository path', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-alias-'))
+  try {
+    const alias = resolve(directory, 'alias')
+    symlinkSync(resolve(repositoryRoot, 'services/api'), alias)
+    const calls = []
+    await assert.rejects(
+      assertBackupTargetsIgnored(async (argv, options) => {
+        calls.push({ argv, options })
+        return { status: 1, stdout: '', stderr: '' }
+      }, [resolve(alias, 'audit.dump')]),
+      /inside the repository but not git-ignored/
+    )
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0].argv.slice(0, 3), ['git', '--no-replace-objects', 'check-ignore'])
+    assert.match(calls[0].argv.at(-1), /services\/api\/audit\.dump$/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('temporary compose override cleanup is bound to the inode this run created', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-override-owner-'))
+  try {
+    const path = resolve(directory, 'override.yaml')
+    const original = resolve(directory, 'owned.yaml')
+    writeImageOverride(path, 'meal-agent-api:m3b-fixture')
+    renameSync(path, original)
+    writeFileSync(path, 'foreign')
+    discardOverride(path)
+    assert.equal(existsSync(path), true, 'a replacement inode must be preserved')
+    rmSync(path)
+    renameSync(original, path)
+    discardOverride(path)
+    assert.equal(existsSync(path), false, 'the registered inode must be removable')
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

@@ -15,6 +15,8 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  rmSync,
+  writeSync,
   readFileSync,
   readdirSync,
   readlinkSync,
@@ -27,6 +29,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'n
 import { fileURLToPath } from 'node:url'
 
 import { runCommand } from './m3b-subprocess.mjs'
+import { isAbsenceMessage } from './m3b-docker.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 export const repositoryRoot = resolve(composeDirectory, '..', '..')
@@ -266,6 +269,34 @@ export const checkImageConfig = (imageConfig, problem, fatal) => {
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 const isImageId = (value) => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value)
+const ociIndexMediaType = 'application/vnd.oci.image.index.v1+json'
+const ociManifestMediaType = 'application/vnd.oci.image.manifest.v1+json'
+const ociConfigMediaType = 'application/vnd.oci.image.config.v1+json'
+const inTotoMediaType = 'application/vnd.in-toto+json'
+const layerMediaTypes = new Set([
+  'application/vnd.oci.image.layer.v1.tar',
+  'application/vnd.oci.image.layer.v1.tar+gzip',
+  'application/vnd.oci.image.layer.v1.tar+zstd',
+  'application/vnd.docker.image.rootfs.diff.tar.gzip'
+])
+
+export const validateOciDescriptor = (descriptor, role, fatal) => {
+  if (
+    !isRecord(descriptor) ||
+    !isImageId(descriptor.digest) ||
+    !Number.isSafeInteger(descriptor.size) ||
+    descriptor.size <= 0 ||
+    typeof descriptor.mediaType !== 'string' ||
+    (role === 'root' && ![ociIndexMediaType, ociManifestMediaType].includes(descriptor.mediaType)) ||
+    (role === 'config' && descriptor.mediaType !== ociConfigMediaType) ||
+    (role === 'layer' && !layerMediaTypes.has(descriptor.mediaType)) ||
+    (role === 'attestation' && descriptor.mediaType !== inTotoMediaType) ||
+    !['root', 'config', 'layer', 'attestation'].includes(role)
+  ) {
+    fatal('docker image save returned an invalid OCI descriptor')
+  }
+  return descriptor
+}
 const historySecretPattern = /(?:DATABASE_URL|APP_SECRET|APPSECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\s*=/i
 const historyTextContainsSecret = (value) => historySecretPattern.test(value)
 
@@ -623,16 +654,10 @@ export const validateSavedImageArchive = (
     fatal('docker image save OCI index is not bound to the immutable image ID')
   }
   let selectedManifest = null
-  const visitDescriptor = (descriptor) => {
-    if (
-      !isRecord(descriptor) ||
-      !isImageId(descriptor.digest) ||
-      !Number.isSafeInteger(descriptor.size) ||
-      descriptor.size <= 0 ||
-      typeof descriptor.mediaType !== 'string'
-    ) {
-      fatal('docker image save returned an invalid OCI descriptor')
-    }
+  let selectedManifestDescriptor = null
+  const attestationSubjects = []
+  const visitDescriptor = (descriptor, role) => {
+    validateOciDescriptor(descriptor, role, fatal)
     const path = `blobs/sha256/${descriptor.digest.slice('sha256:'.length)}`
     const member = members.get(path)
     const bytes = readArchiveMember(archivePath, member, fatal)
@@ -643,7 +668,35 @@ export const validateSavedImageArchive = (
       fatal('docker image save returned an OCI blob with the wrong identity')
     }
     allowed.add(path)
-    if (descriptor.mediaType === 'application/vnd.oci.image.index.v1+json') {
+    if (role === 'attestation') {
+      let statement
+      try {
+        statement = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+      } catch {
+        fatal('docker image save returned an unreadable provenance attestation')
+      }
+      if (
+        !isRecord(statement) ||
+        statement._type !== 'https://in-toto.io/Statement/v1' ||
+        statement.predicateType !== 'https://slsa.dev/provenance/v1' ||
+        !Array.isArray(statement.subject) ||
+        statement.subject.length === 0 ||
+        statement.subject.some(
+          (subject) =>
+            !isRecord(subject) ||
+            typeof subject.name !== 'string' ||
+            subject.name === '' ||
+            !isRecord(subject.digest) ||
+            typeof subject.digest.sha256 !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(subject.digest.sha256)
+        )
+      ) {
+        fatal('docker image save returned an invalid provenance attestation')
+      }
+      attestationSubjects.push(...statement.subject.map((subject) => `sha256:${subject.digest.sha256}`))
+      return
+    }
+    if (descriptor.mediaType === ociIndexMediaType) {
       let nested
       try { nested = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch {
         fatal('docker image save returned an unreadable nested OCI index')
@@ -651,10 +704,10 @@ export const validateSavedImageArchive = (
       if (!isRecord(nested) || nested.schemaVersion !== 2 || !Array.isArray(nested.manifests)) {
         fatal('docker image save returned an invalid nested OCI index')
       }
-      for (const child of nested.manifests) visitDescriptor(child)
+      for (const child of nested.manifests) visitDescriptor(child, 'root')
       return
     }
-    if (descriptor.mediaType === 'application/vnd.oci.image.manifest.v1+json') {
+    if (descriptor.mediaType === ociManifestMediaType) {
       let manifestPayload
       try { manifestPayload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) } catch {
         fatal('docker image save returned an unreadable OCI manifest')
@@ -668,19 +721,47 @@ export const validateSavedImageArchive = (
         fatal('docker image save returned an invalid OCI manifest')
       }
       const platform = descriptor.platform
-      if (
+      const isAttestation =
+        isRecord(descriptor.annotations) &&
+        descriptor.annotations['vnd.docker.reference.type'] === 'attestation-manifest' &&
+        isRecord(platform) &&
+        platform.architecture === 'unknown' &&
+        platform.os === 'unknown'
+      if (isAttestation) {
+        if (
+          manifestPayload.layers.length !== 1 ||
+          !isRecord(manifestPayload.layers[0]) ||
+          !isRecord(manifestPayload.layers[0].annotations) ||
+          manifestPayload.layers[0].annotations['in-toto.io/predicate-type'] !==
+            'https://slsa.dev/provenance/v1'
+        ) {
+          fatal('docker image save returned an invalid provenance attestation manifest')
+        }
+      } else if (
         isRecord(platform) &&
         platform.architecture === expectedImageEvidence.Architecture &&
         platform.os === expectedImageEvidence.Os
       ) {
         if (selectedManifest !== null) fatal('docker image save returned multiple matching platform manifests')
         selectedManifest = manifestPayload
+        selectedManifestDescriptor = descriptor
+      } else {
+        fatal('docker image save returned an unexpected platform manifest')
       }
-      visitDescriptor(manifestPayload.config)
-      for (const layer of manifestPayload.layers) visitDescriptor(layer)
+      visitDescriptor(manifestPayload.config, 'config')
+      for (const layer of manifestPayload.layers) {
+        visitDescriptor(layer, isAttestation ? 'attestation' : 'layer')
+      }
     }
   }
-  visitDescriptor(rootDescriptor)
+  visitDescriptor(rootDescriptor, 'root')
+  if (
+    attestationSubjects.length > 0 &&
+    (selectedManifestDescriptor === null ||
+      !attestationSubjects.includes(selectedManifestDescriptor.digest))
+  ) {
+    fatal('docker image save provenance is not bound to the selected platform manifest')
+  }
   if (
     selectedManifest === null ||
     selectedManifest.config.digest !== `sha256:${manifest.Config.slice('blobs/sha256/'.length)}` ||
@@ -725,6 +806,97 @@ const hashArchiveMember = async (archivePath, member, { decompress = false } = {
   return hash.digest('hex')
 }
 
+const validateLayerTarFraming = (path, fatal) => {
+  const fd = openSync(path, 'r')
+  try {
+    const size = fstatSync(fd).size
+    let offset = 0
+    let zeroBlocks = 0
+    let sawTerminator = false
+    while (offset + tarBlockSize <= size) {
+      const header = Buffer.alloc(tarBlockSize)
+      if (readSync(fd, header, 0, header.length, offset) !== header.length) {
+        fatal('docker image save returned a truncated inner layer tar header')
+      }
+      if (header.every((byte) => byte === 0)) {
+        zeroBlocks += 1
+        offset += tarBlockSize
+        if (zeroBlocks >= 2) sawTerminator = true
+        continue
+      }
+      if (sawTerminator) {
+        fatal('docker image save returned data after the inner layer tar terminator')
+      }
+      zeroBlocks = 0
+      const recordedChecksum = parseTarOctal(header.subarray(148, 156))
+      const checksumHeader = Buffer.from(header)
+      checksumHeader.fill(0x20, 148, 156)
+      const actualChecksum = checksumHeader.reduce((sum, byte) => sum + byte, 0)
+      const memberSize = parseTarOctal(header.subarray(124, 136))
+      const type = header[156]
+      const supportedTypes = new Set([
+        0, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+        0x67, 0x78, 0x4c, 0x4b
+      ])
+      if (
+        recordedChecksum === null ||
+        recordedChecksum !== actualChecksum ||
+        memberSize === null ||
+        !supportedTypes.has(type) ||
+        offset + tarBlockSize + memberSize > size
+      ) {
+        fatal('docker image save returned malformed inner layer tar evidence')
+      }
+      offset += tarBlockSize + Math.ceil(memberSize / tarBlockSize) * tarBlockSize
+    }
+    if (!sawTerminator || offset !== size) {
+      fatal('docker image save returned an unterminated or trailing inner layer tar')
+    }
+  } finally {
+    closeSync(fd)
+  }
+}
+
+const hashAndValidateLayer = async (archivePath, member, outputPath, fatal) => {
+  const hash = createHash('sha256')
+  let stream = createReadStream(archivePath, {
+    start: member.offset,
+    end: member.offset + member.size - 1
+  })
+  const fd = openSync(outputPath, 'wx', 0o600)
+  try {
+    const magicFd = openSync(archivePath, 'r')
+    const magic = Buffer.alloc(4)
+    try {
+      readSync(magicFd, magic, 0, magic.length, member.offset)
+    } finally {
+      closeSync(magicFd)
+    }
+    if (magic[0] === 0x1f && magic[1] === 0x8b) {
+      stream = stream.pipe(createGunzip())
+    } else if (magic.equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) {
+      stream = stream.pipe(createZstdDecompress())
+    }
+    for await (const chunk of stream) {
+      hash.update(chunk)
+      let offset = 0
+      while (offset < chunk.length) {
+        const written = writeSync(fd, chunk, offset, chunk.length - offset)
+        if (!Number.isSafeInteger(written) || written <= 0) {
+          fatal('docker image save inner layer spool did not make progress')
+        }
+        offset += written
+      }
+    }
+  } catch {
+    fatal('docker image save returned an unreadable compressed layer')
+  } finally {
+    closeSync(fd)
+  }
+  validateLayerTarFraming(outputPath, fatal)
+  return hash.digest('hex')
+}
+
 export const verifySavedImageLayers = async (
   archivePath,
   layerPaths,
@@ -735,18 +907,30 @@ export const verifySavedImageLayers = async (
     fatal('docker image save layer count does not match immutable image evidence')
   }
   const members = indexSavedImageTar(archivePath, fatal)
-  for (let index = 0; index < layerPaths.length; index += 1) {
-    const layerPath = layerPaths[index]
-    const member = members.get(layerPath)
-    if (member === undefined) fatal('docker image save omitted a declared layer blob')
-    const blobDigest = layerPath.slice('blobs/sha256/'.length)
-    if ((await hashArchiveMember(archivePath, member)) !== blobDigest) {
-      fatal('docker image save returned a layer blob with the wrong digest')
+  const layerWork = `${archivePath}.layers`
+  mkdirSync(layerWork, { recursive: false, mode: 0o700 })
+  try {
+    for (let index = 0; index < layerPaths.length; index += 1) {
+      const layerPath = layerPaths[index]
+      const member = members.get(layerPath)
+      if (member === undefined) fatal('docker image save omitted a declared layer blob')
+      const blobDigest = layerPath.slice('blobs/sha256/'.length)
+      if ((await hashArchiveMember(archivePath, member)) !== blobDigest) {
+        fatal('docker image save returned a layer blob with the wrong digest')
+      }
+      const diffDigest = expectedDiffIds[index].slice('sha256:'.length)
+      const actualDiff = await hashAndValidateLayer(
+        archivePath,
+        member,
+        join(layerWork, `${String(index)}.tar`),
+        fatal
+      )
+      if (actualDiff !== diffDigest) {
+        fatal('docker image save returned a layer blob with the wrong diff ID')
+      }
     }
-    const diffDigest = expectedDiffIds[index].slice('sha256:'.length)
-    if ((await hashArchiveMember(archivePath, member, { decompress: true })) !== diffDigest) {
-      fatal('docker image save returned a layer blob with the wrong diff ID')
-    }
+  } finally {
+    rmSync(layerWork, { recursive: true, force: true })
   }
 }
 
@@ -790,6 +974,7 @@ export const dependencyPayloadOf = (
   {
     shimDeployRoot = dirname(nodeModulesDirectory),
     shimWorkspaceRoot = null,
+    omitExpectedContractsReadme = false,
     expectedSelfLinkText = relative(
       join(nodeModulesDirectory, '@meal-agent'),
       dirname(nodeModulesDirectory)
@@ -802,16 +987,18 @@ export const dependencyPayloadOf = (
       const path = join(directory, entry.name)
       const name = relative(nodeModulesDirectory, path)
       const stat = lstatSync(path)
-      const isSkippedMetadata =
+      const isHostSpecificMetadata =
         name === '.modules.yaml' ||
         name === '.package-map.json' ||
-        name === '.pnpm/lock.yaml' ||
+        name === '.pnpm/lock.yaml'
+      const isExpectedOnlyContractsReadme =
+        omitExpectedContractsReadme &&
         name.endsWith('/node_modules/@meal-agent/contracts/README.md')
-      if (isSkippedMetadata) {
+      if (isHostSpecificMetadata || isExpectedOnlyContractsReadme) {
         // pnpm writes the absolute deploy directory into this host-local metadata file.
-        // Docker's filtered build context also omits the workspace README. These entries are
-        // not executable runtime payload, but their **filesystem type is still evidence**:
-        // skipping before lstat would let an attacker replace one file with an opaque tree.
+        // Docker's filtered build context omits the workspace README, so the host oracle drops
+        // that one host-only file. The image side never enables this option: every regular byte
+        // it actually ships (including a maliciously inserted README) enters the payload digest.
         if (!stat.isFile()) {
           problem(`${label}: skipped dependency metadata must remain a regular file`)
         }
@@ -895,6 +1082,7 @@ export const inventoryNodeModules = (
   {
     shimDeployRoot = dirname(nodeModulesDirectory),
     shimWorkspaceRoot = null,
+    omitExpectedContractsReadme = false,
     expectedSelfLinkText = relative(
       join(nodeModulesDirectory, '@meal-agent'),
       dirname(nodeModulesDirectory)
@@ -1091,6 +1279,7 @@ export const inventoryNodeModules = (
   const payload = dependencyPayloadOf(nodeModulesDirectory, label, problem, {
     shimDeployRoot,
     shimWorkspaceRoot,
+    omitExpectedContractsReadme,
     expectedSelfLinkText
   })
   return {
@@ -1129,6 +1318,7 @@ export const deriveExpectedClosure = async ({ runStrict, fatal, problem, tempora
       {
         shimDeployRoot: expectedDeployDirectory,
         shimWorkspaceRoot: repositoryRoot,
+        omitExpectedContractsReadme: true,
         expectedSelfLinkText: relative(
           join(expectedDeployDirectory, 'node_modules/.pnpm/node_modules/@meal-agent'),
           resolve(repositoryRoot, 'services/api')
@@ -1150,7 +1340,12 @@ export const scanImage = async ({
   fatal,
   problem,
   log,
-  track = { container: () => undefined, containerGone: () => undefined }
+  scratchContainerName,
+  track = {
+    image: () => undefined,
+    container: () => undefined,
+    containerGone: () => undefined
+  }
 }) => {
   const imageTarPath = join(temporaryRoot, 'image.tar')
   const savedImageTarPath = join(temporaryRoot, 'saved-image.tar')
@@ -1165,6 +1360,7 @@ export const scanImage = async ({
     ).stdout,
     fatal
   )
+  track.image(imageId)
   log(`image id ${imageId}`)
 
   // 从这一刻起只使用 immutable ID；tag 只是第一次解析入口，不能继续参与证据收集。
@@ -1217,10 +1413,44 @@ export const scanImage = async ({
     fatal
   )
   // ---- 全文件系统取证：不启动容器 ----
-  const created = await runStrict(['docker', 'create', imageId], {
+  if (
+    typeof scratchContainerName !== 'string' ||
+    !/^[a-z0-9][a-z0-9_.-]{0,127}$/.test(scratchContainerName)
+  ) {
+    fatal('scratch container name is not a canonical per-run identifier')
+  }
+  const preexistingContainer = await runCommand(
+    ['docker', 'container', 'inspect', scratchContainerName],
+    { timeoutMs: 60_000 }
+  )
+  if (
+    preexistingContainer.status === 0 ||
+    !(
+      preexistingContainer.status === 1 &&
+      isAbsenceMessage(preexistingContainer.stderr, {
+        kind: 'container',
+        name: scratchContainerName
+      })
+    )
+  ) {
+    fatal('per-run scratch container was not proven absent before create')
+  }
+  track.container(scratchContainerName)
+  const created = await runStrict(
+    [
+      'docker',
+      'create',
+      '--name',
+      scratchContainerName,
+      '--label',
+      `meal-agent.m5.owner=${scratchContainerName}`,
+      imageId
+    ],
+    {
     timeoutMs: 60_000,
     label: 'docker create (immutable image)'
-  })
+    }
+  )
   const containerId = parseDockerContainerId(created.stdout, fatal)
   track.container(containerId)
   parseContainerInspect(
@@ -1243,6 +1473,7 @@ export const scanImage = async ({
     problem('scratch container could not be removed after export')
   } else {
     track.containerGone(containerId)
+    track.containerGone(scratchContainerName)
   }
 
   const listing = (
