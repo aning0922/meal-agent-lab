@@ -3878,9 +3878,12 @@ Accepted：
 定点证据：纯 Node 脚本测试 **83/83**、topology **27/27**、M3B targeted
 **69/69**、local-test **75/75**、signal **5 个确定性 + 6 个真实窗口**、八份
 Compose Secret identity 全部通过，真实 backup/restore drill PASS；registry integrity
-与 tracked-template surface sweep 也通过。完整 `pnpm stage09a:check` 尚待从含本文档的
-新 HEAD 重跑；通过后仍须两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、
-远端 CI 无真实 run。
+与 tracked-template surface sweep 也通过。含本文档候选 `a8ad0b2` 的新 HEAD 已从头
+通过完整 `pnpm stage09a:check` **14/14**：stage08、27 项 topology mutation、runtime
+image（78 packages / 76 top-level links / 5 migrations）、1 baseline + 11 built + 2
+static-only image mutations、M3B 全套、fresh smoke、八份 Secret identity、lifecycle 与
+restore 全部 PASS。该候选仍须两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未
+Pass、远端 CI 无真实 run。
 
 ## 验收门禁
 

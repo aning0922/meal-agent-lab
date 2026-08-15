@@ -551,7 +551,8 @@ cleanup-before-settlement；backup 只在 transient cleanup 成功后提交正�
 Compose `build` 能力与 healthcheck 完整 argv 固定，topology、Docker image evidence 与
 Secret identity probe 的外部失败输出统一为固定分类。纯 Node 83/83、topology 27/27、
 targeted 69/69、local-test 75/75、signal 5+6、八份 Secret identity 与真实 restore drill
-已通过；完整聚合门禁仍待从新 HEAD 重跑。本注记不改变本 ADR 已凭 M1—M4 真实容器
+已通过；含文档候选 `a8ad0b2` 的新 HEAD 已从头通过完整聚合门禁 **14/14**。本注记
+不改变本 ADR 已凭 M1—M4 真实容器
 证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
 
 以下条件触发复审：

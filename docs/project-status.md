@@ -15,6 +15,11 @@ local-test 75/75、signal 5+6、八份 Secret identity 与真实 restore drill �
 `stage09a:check` 尚待从新 HEAD 重跑。M5 未 Accepted，远端 CI 无真实 run，09A 仍为
 In Progress；完整门禁通过后仍须全新 A/B 独立只读复审。
 
+**Round 10 完整门禁更新（2026-08-15，覆盖本文后续“待重跑”旧句）**：含文档候选
+`a8ad0b2` 的新 HEAD 已从头串行通过 `pnpm stage09a:check` **14/14**；fresh smoke、
+八份 Secret identity、lifecycle、restore 和最终 scoped cleanup 均 PASS。当前下一门禁
+是两个全新独立只读 A/B 复审；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
 当前仍采用 Node.js 24 + Fastify 5 模块化单体、PostgreSQL 18 + Drizzle/`pg`、共享 Zod contracts 和 Taro/React，不拆微服务、不换数据库/客户端框架、不引入向量数据库。
 
 ## 阶段 08 整改结果

@@ -10,9 +10,9 @@ primitive 的 cleanup-before-settlement、backup transfer cleanup 失败后的 f
 promotion link→lstat inode 所有权、Compose nested build/healthcheck 能力，以及 topology、
 Group E image evidence 与 Secret identity probe 的非可信输出边界。纯 Node 脚本回归
 83/83、topology 27/27、M3B targeted 69/69、local-test 75/75、signal 5 个确定性 +
-6 个真实窗口、八份 Secret identity 与真实 restore drill 已通过；完整聚合门禁尚待从
-新 HEAD 重跑。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；完整门禁通过后仍须
-全新 A/B 独立只读复审。
+6 个真实窗口、八份 Secret identity 与真实 restore drill 已通过；含文档候选
+`a8ad0b2` 的新 HEAD 已从头通过完整 `pnpm stage09a:check` **14/14**。M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run；下一门禁仍是全新 A/B 独立只读复审。
 
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是
