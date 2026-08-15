@@ -24,6 +24,18 @@ cleanup-before-settlement 断言移到 rejection settle 的当下（另有 early
 实现落点已串行通过 `pnpm stage09a:check` **14/14**。M5 仍未 Accepted、09A 未 Pass、
 远端 CI 无真实 run；下一门禁是两个全新独立只读 A/B 审计。
 
+**Round 12 当前更新（2026-08-15，覆盖上段 Round 11 状态）**：Round 11 候选后的
+独立审计仍为 BLOCK；Round 12 实现截至 `38698bc` 已把 resolved Compose 的 service
+能力、healthcheck cadence 与 dependency edge 投影为闭合对象，把 Docker image /
+container、Secret identity、M4 one-off/stop 与 cleanup tag 的成功证据绑定到 canonical
+immutable identity，并给子进程 stdout/stderr、前置工具证据和 probe 协议设置显式上限。
+进程组清理会重试瞬时 primitive 失败直到得到 ESRCH/survivor 事实，同时把“期间发生过
+primitive failure”保留给 signal handler 以固定 exit 1 fail closed。脚本测试
+**97/97**、topology mutation **33/33**、runtime image mutation **1 + 11 + 2**、
+targeted **69/69**、local-test **75/75**、signal **5+6** 均通过；同一落点已从头串行
+通过 `pnpm stage09a:check` **14/14**。M5 仍未 Accepted、09A 未 Pass、远端 CI 无
+真实 run；下一门禁是两个全新独立只读 A/B 审计。
+
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是
 非空字符串，结构与拓扑语义仍由独立 Compose 门禁验证。

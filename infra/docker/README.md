@@ -339,6 +339,17 @@ mutation 29/29、registry integrity 机械计数核对通过；同一落点已�
 `pnpm stage09a:check` 14/14。下一门禁是两个全新独立只读 A/B 审计；M5 未 Accepted、
 09A 未 Pass、远端 CI 无真实 run。
 
+**Round 12 当前事实（覆盖上段 Round 11 状态）**：实现截至 `38698bc`；resolved
+Compose 投影现在包含完整 healthcheck cadence/disable 与 depends_on condition/required/
+restart，topology mutation 为 **33/33**。Docker/Secret/M4 成功证据均要求 canonical
+identity、精确对象形状和有界协议；cleanup 只删除与记录 immutable image ID 一致的
+本轮 tag，信号路径在 image ID 取得后立即同步活动快照。子进程清理既会在预算内重试
+瞬时 termination primitive 失败，也会把该失败事实传给 signal handler 固定 exit 1。
+脚本测试 **97/97**、runtime image **1 baseline + 11 built + 2 static-only**、targeted
+**69/69**、local-test **75/75**、signal **5 deterministic + 6 real** 均通过；完整
+`pnpm stage09a:check` 已从头串行通过 **14/14**。下一门禁是两个全新独立只读 A/B
+审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
 消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。

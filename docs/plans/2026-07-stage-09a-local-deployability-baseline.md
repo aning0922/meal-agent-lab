@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-15 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」Round 10 候选 `df4a378` 的 A/B 审计均为 BLOCK；Round 11 实现落点 `9469bc9` 已通过完整 14/14，仍待全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」Round 11 候选后的独立审计仍为 BLOCK；Round 12 实现截至 `38698bc` 已通过完整 14/14，仍待全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（Round 10 候选复审 BLOCK；Round 11 已实现待独立审计，未 Accepted）
+### M5 实施记录（Round 11 候选审计 BLOCK；Round 12 已实现待独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3922,6 +3922,49 @@ Accepted：
 local-test 75/75、signal 5+6、fresh smoke、八份 Secret identity、lifecycle、restore 与
 最终 scoped cleanup 全部 PASS。下一门禁是两个全新独立只读 A/B 审计；M5 未
 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+#### M5 Round 12 整改：闭合能力证据、身份所有权与有界 settlement（2026-08-15）
+
+Round 11 候选后的独立审计仍为 BLOCK。Round 12 以 `2936bb8` 为开工基线，只追加
+实现/测试提交，当前实现截至 `38698bc`；未 amend/rebase/push/merge，也未自行标记
+Accepted。整改按“先定点反例、再生产实现、最后完整链”执行：
+
+1. **resolved Compose 是完整能力证据。** 新增共享 projection，逐服务读取精确对象；
+   healthcheck 同时绑定 `test`、`interval`、`timeout`、`retries`、`start_period`、
+   `start_interval`、`disable`，dependency edge 同时绑定 `condition`、`required`、
+   `restart`。Topology mutation 从 **29/29** 增至 **33/33**，新增 cadence、disable、
+   optional dependency 与 restart propagation 四条独立反例。
+2. **成功协议与身份全部闭合。** Docker image/container ID 只接受 canonical immutable
+   形状；Secret identity plan 由八份事实源派生，整段与单 record 均有字节上限；M4
+   one-off 必须证明 exact Name、ownership label、canonical ID、exited/Running=false、
+   exact ExitCode 与 FinishedAt，graceful stop 必须真的经历 running→exited；cleanup
+   只删除与本轮记录 immutable ID 一致的 image tag，identity drift 保留外部 tag。
+3. **子进程与前置证据有界。** M3B command runner 对 stdout/stderr 设置显式上限；
+   stage09a 前置工具只接受一行、非空、有界、精确语法的版本证据（含 canonical Apple
+   Git suffix）；signal cleanup 的 SIGKILL primitive 会在同一预算内重试到 ESRCH 或
+   survivor 事实，同时将期间发生过的 primitive failure 传给 handler 固定 exit 1，
+   不用干净信号语义掩盖异常。
+4. **登记完整性跨门禁机械核对。** Registry integrity 除 surface registry 外，还把
+   topology **33**、runtime image **11 built + 2 static-only**、local **75**、targeted
+   **69（collector 51 + resolved config 5）**、signal **5 + 6** 与各可执行脚本硬计数
+   交叉比对，并把 malformed registry 固定为 18 条。
+5. **两次中途失败如实保留。** 第一次完整链在 local-test 旧 fixture 未传 recorded
+   image ID 时 fail closed；更新真实 CLI fixture 后转为 75/75。第二次在 signal-window
+   抓到活动 scene 未同步 build 后 image ID，以及 primitive retry 后失败事实未送达
+   handler；分别增加快照同步与 detailed settlement 回归，信号门禁转为
+   **5/5 deterministic + 6/6 real**，所有 announced PGID 均有界到 ESRCH。
+
+最终证据：纯 Node 脚本测试 **97/97**、topology mutation **33/33**、runtime image
+**78 packages / 76 top-level links / 5 migrations**、image mutation **1 baseline + 11 built
++ 2 static-only**、local **75/75**、targeted **69/69**、signal **5+6**、八份 Secret
+identity 均为 UID 999/10001 + mode 0600 + regular/nlink=1/non-symlink/readable；fresh
+smoke、lifecycle 与 same-ledger restore 全部 PASS。最终从 `38698bc` 从头串行执行
+`pnpm stage09a:check` **14/14**，随后独立核对本轮容器、网络、卷、per-run tag、临时
+Secret/backup/override 与相关进程全部为零，tracked worktree clean。
+
+该证据只建立 Round 12 的本地实施候选。下一门禁是两个**全新、互相独立、只读**的
+A/B 审计；两路均 CLEAN 后才回到总控裁定。M5 未 Accepted、09A 未 Pass、远端 CI
+仍无真实 run。
 
 ## 验收门禁
 

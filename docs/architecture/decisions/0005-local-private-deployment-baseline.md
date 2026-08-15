@@ -567,6 +567,18 @@ mutation 的 README 数字同时由 registry integrity 与可执行硬计数机�
 不把 M5 或 09A 记为 Accepted/Pass；下一门禁是全新 A/B 独立只读审计，远端 CI 仍无
 真实 run。
 
+**M5 第十二轮整改注记（2026-08-15）**：Round 11 候选后的独立审计仍为 BLOCK；
+Round 12 实现截至 `38698bc` 已把 resolved Compose 的完整 healthcheck/dependency
+能力、Docker/Secret/M4 成功证据、cleanup immutable image ownership、前置工具与子
+进程输出上限纳入闭合边界。进程组 termination primitive 的瞬时失败会在有界预算内
+重试到 ESRCH/survivor 事实，但失败事实不会丢失：signal handler 固定 exit 1，而不
+伪装成干净原信号退出。脚本测试 **97/97**、topology mutation **33/33**、runtime
+image mutation **1 baseline + 11 built + 2 static-only**、signal **5 deterministic + 6
+real** 均通过；同一落点已从头串行通过完整聚合门禁 **14/14**，最终 Docker/PGID/
+Secret/override 残留为零。本注记不改变本 ADR 已凭 M1—M4 真实容器证据作出的
+Accepted 决策，也不把 Round 12 候选、M5 或 09A 记为 Accepted/Pass；下一门禁是
+两个全新独立只读 A/B 审计，远端 CI 仍无真实 run。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；
