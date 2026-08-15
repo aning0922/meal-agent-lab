@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-15 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」Round 11 候选后的独立审计仍为 BLOCK；Round 12 实现截至 `38698bc` 已通过完整 14/14，仍待全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」Round 12 cycle 1 候选 `09d883f` 的 A/B 审计均为 BLOCK；整改实现截至 `03e5e41` 已通过完整 14/14，仍待 cycle 2 全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（Round 11 候选审计 BLOCK；Round 12 已实现待独立审计，未 Accepted）
+### M5 实施记录（Round 12 cycle 1 审计 BLOCK；整改候选待 cycle 2 独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3965,6 +3965,39 @@ Secret/backup/override 与相关进程全部为零，tracked worktree clean。
 该证据只建立 Round 12 的本地实施候选。下一门禁是两个**全新、互相独立、只读**的
 A/B 审计；两路均 CLEAN 后才回到总控裁定。M5 未 Accepted、09A 未 Pass、远端 CI
 仍无真实 run。
+
+#### M5 Round 12 cycle 1 双审计 BLOCK 后整改（2026-08-16）
+
+固定候选 `09d883f` 的两个全新、用户可见、独立 worktree A/B 审计均给出 BLOCK。
+总控按生产根因去重，不把报告条数当实现条数；当前只追加 `cd86c12`、`67c3aad`、
+`03e5e41`，未 push/merge，也未自行标记 Accepted：
+
+1. **Compose 能力与门禁闭集**：resolved projection 固定 project name、network、
+   volume、logging、healthcheck 与 dependency edge；topology mutation 从 **33/33**
+   增至 **39/39**。
+2. **构建与镜像身份所有权**：BuildKit metadata 的 manifest identity 与 iidfile 的
+   config/index identity 分角色交叉核对；build 开始前登记唯一 claim label，中断时即使
+   metadata 尚未落盘，也只在 canonical ID、单一 RepoTag 与 claim 全部匹配时删除本轮
+   image。runtime image 增加非默认 StopSignal 反例，当前为 **1 baseline + 12 built +
+   2 static-only**。
+3. **M4/backup/restore 证据闭合**：one-shot 与 graceful stop 绑定完整容器身份；backup
+   的源摘要在已绑定的一次性容器退出前写入该次运行的闭合 stdout，宿主拷贝后再验摘要
+   与 `pg_restore --list`。完整链第二次运行正是因为旧实现试图对已退出容器执行
+   `docker exec` 而 fail closed；`03e5e41` 将摘要证据移回退出前并增加 handoff 回归。
+   restore 继续直接消费同一份已校验内存快照，cleanup 保持可重入且按 inode/identity
+   删除。
+4. **进程组 settlement**：termination primitive 返回 false 与抛异常同为失败事实；
+   signal cleanup 对 mutation-closed 集合反复收敛到 ESRCH 或固定 survivor 计数。
+   中断 build 窗口已纳入真实窗口，当前为 **5 deterministic + 6 real**。
+5. **门禁纪律**：第一次完整链在步骤 10 抓到 interrupted-build tag 残留；修复后从
+   步骤 1 重跑，第二次在步骤 14 抓到 backup 源摘要时序缺陷；再次修复后第三次从
+   步骤 1 串行执行，最终 `pnpm stage09a:check` **14/14**。脚本测试 **99/99**、
+   targeted **69/69**、local-test **75/75**、fresh smoke、八份 Secret identity、
+   lifecycle、same-ledger restore 与 scoped cleanup 全部 PASS。
+
+最终核对无本轮容器、网络、卷、per-run image tag、临时 Secret/backup/override 与相关
+进程残留。该证据仍只是本地整改候选；下一门禁是 **cycle 2 两个全新独立只读 A/B
+审计**。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
 ## 验收门禁
 

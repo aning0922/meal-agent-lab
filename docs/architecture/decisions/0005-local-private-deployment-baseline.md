@@ -579,6 +579,18 @@ Secret/override 残留为零。本注记不改变本 ADR 已凭 M1—M4 真实�
 Accepted 决策，也不把 Round 12 候选、M5 或 09A 记为 Accepted/Pass；下一门禁是
 两个全新独立只读 A/B 审计，远端 CI 仍无真实 run。
 
+**M5 Round 12 cycle 1 双审计后整改注记（2026-08-16）**：固定候选 `09d883f`
+的两个全新独立 A/B 审计均为 BLOCK。总控追加 `cd86c12`、`67c3aad` 与 `03e5e41`，
+闭合 resolved Compose 的 project/network/volume/logging 能力、BuildKit manifest 与
+iidfile identity、interrupted-build claim ownership、M4 container identity、backup
+源端/宿主 digest 与 archive 结构校验、restore byte binding，以及 mutation-closed
+进程组 settlement。完整聚合链先后在 signal window 与 restore drill 抓到两项真实
+缺陷；每次修复后均从步骤 1 重跑，最终 `pnpm stage09a:check` **14/14**，脚本测试
+**99/99**、topology mutation **39/39**、runtime image mutation **1 + 12 + 2**、
+signal **5+6**，最终 scoped cleanup 无残留。本注记不改变 ADR 既有 Accepted 决策，
+也不把当前整改候选、M5 或 09A 记为 Accepted/Pass；下一门禁是 cycle 2 两个全新
+独立只读 A/B 审计，远端 CI 仍无真实 run。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；

@@ -139,7 +139,7 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（14 服务、8 secret source、10 volume、2 网络、project scope） |
-| `node infra/docker/check-compose-topology-mutations.mjs` | **33 项**拓扑变异反例，全部要求以指定理由被拒；只变异仓库外临时副本，不改写 tracked Compose；除已登记 API build 与 postgres/API healthcheck 外，其他服务新增这两类可执行能力同样拒绝；逐项固定 healthcheck cadence/disable 与 depends_on condition/required/restart 语义 |
+| `node infra/docker/check-compose-topology-mutations.mjs` | **39 项**拓扑变异反例，全部要求以指定理由被拒；只变异仓库外临时副本，不改写 tracked Compose；除已登记 API build 与 postgres/API healthcheck 外，其他服务新增这两类可执行能力同样拒绝；逐项固定 project name、network/volume/logging 闭集、healthcheck cadence/disable 与 depends_on condition/required/restart 语义 |
 | `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
 | `node infra/docker/check-m3b-template-surface-sweep.mjs` | **tracked 模板绝对面普查**：以 `node --env-file` 为唯一 oracle，不问「这一轮改了什么」，只问「凡是会真的建立活键且取值非空的写法，扫描器看得见吗」。8 族 × 6 视图 = 48 格 + 一条 pathspec 检查。**它不声称扫描器干净**，而是把当前表面钉死：3 族登记为命中、5 族**登记为开着且逐族附原因**，两份扫描面外的 tracked 模板登记为已披露边界；另有 4 族门禁结构上表达不了（缺渲染面，见 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs) 的 `unguardedFamilies`），**零看守**。未登记族变沉默（新 fail-open）与已登记族被捕获（覆盖变好但登记失真）**同样转红**。登记表在 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs)，普查前先过一遍自校验；上面这一整组数字由 [`check-m3b-registry-integrity.mjs`](check-m3b-registry-integrity.mjs) 从登记表导出后与本行比对——**删掉一整族或一个视图时普查门禁自己是发现不了的**（它把一切都从登记表导出，少掉一族之后剩下的 42 格同样自洽），只有这条仓库外的形状声明能发现覆盖面缩水 |
 | `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：69 cases**；在既有 promotion / cleanup / Git index / Docker 证据 / dotenv、URL 与 Node oracle 门禁上，覆盖 active/nested/quoted/prose/comment 多视图的 split-stem（**含 split-stem 与 `=` 之间带 ASCII 空白的 140 格交叉维度**，以及 quoted 空占位在 compact/legacy 两条路径上的一致结论；运算符尾 `>=`/`+=` 的残留单列登记为当前行为）、slash-crossing 与 path 对照、ambient 与 repository-local Git replacement view（含 preflight 后竞态）、Docker container/image/history 的 envelope、深层元素 shape、immutable identity、history 完整性、失败 logs 的非物化、resolved Compose config 的非空证据、固定输出与精确 argv。collector 子门禁为 **51 个**唯一向量，resolved-config 子门禁为 **5 个**唯一向量。文件名保留旧入口名，**套件名称不带轮次** |
@@ -219,7 +219,7 @@ ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：本轮唯一 tag 只用于第一次解析 immutable image ID，后续 Config/history/save/`docker create`/export 全部绑定该 ID；scratch container name 在 create 前先证明不存在并预登记，create 使用 immutable ID + ownership label，随后 `.Image` 必须精确一致。宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 与 dependency payload 精确相等；普通 package 文件、所有 README 与 `.bin` 都比较路径、类型、mode、长度和 SHA-256/symlink target，只跳过明确的 host-specific pnpm metadata，且仅归一化传入的 deploy root。history 同时验证 CLI JSON-lines 与 `docker image save` 的 content-addressed config blob；OCI index/manifest/config/layer/provenance media type 按角色精确固定，provenance 绑定 selected platform manifest，每层验证 compressed digest、uncompressed diff ID 与内层 tar framing。镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族）。`--keep-failure` 只说明存在 owned 临时目录，不输出物理路径 |
-| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **11 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、普通文件 mode 漂移、history-only secret、EXPOSE、secret 形态 ENV、root 用户与 provenance 丢失；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；两项 static-only 不构建 |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **12 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、普通文件 mode 漂移、history-only secret、EXPOSE、secret 形态 ENV、root 用户、非默认 StopSignal 与 provenance 丢失；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；BuildKit metadata 的 manifest identity 与 iidfile 的 config/index identity 分角色交叉核对；两项 static-only 不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
 期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
@@ -349,6 +349,21 @@ identity、精确对象形状和有界协议；cleanup 只删除与记录 immuta
 **69/69**、local-test **75/75**、signal **5 deterministic + 6 real** 均通过；完整
 `pnpm stage09a:check` 已从头串行通过 **14/14**。下一门禁是两个全新独立只读 A/B
 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+**Round 12 cycle 1 审计 BLOCK 后的整改候选（2026-08-16）**：实现提交
+`cd86c12`、`67c3aad` 与 `03e5e41` 关闭本轮确认级证据所有权缺口。resolved Compose 现在固定 project name、
+network/volume/logging 闭集并拒绝未知嵌套字段，topology mutation 增至 **39/39**；
+runtime image 增加 StopSignal 反例，mutation 增至 **1 baseline + 12 built + 2
+static-only**。Docker build 从 BuildKit metadata 取得 manifest identity，并将 iidfile
+按 provenance 模式分别作为 config/index identity 交叉核对；后续扫描与 cleanup 不再
+从可变 tag 反推对象。M4 one-shot 与 graceful stop 均绑定完整容器身份，backup 在
+容器源端和宿主端做 digest 交叉核对且以 `pg_restore --list` 验证 archive，restore
+直接消费同一份已校验内存快照；进程组 termination primitive 返回 false 同样
+fail closed。完整链先在中断 build 窗口抓到 tag ownership，再在 restore drill 抓到
+退出后 `docker exec` 无法取得源摘要；两项都修复后从步骤 1 重跑。最终脚本测试
+**99/99**，同一落点从头串行通过 `stage09a:check` **14/14**，scoped cleanup 无残留。
+下一门禁是 cycle 2 两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、远端
+CI 无真实 run。
 
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
