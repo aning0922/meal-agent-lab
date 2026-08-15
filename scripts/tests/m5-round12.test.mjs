@@ -86,6 +86,20 @@ test('stage09a prerequisite success requires one canonical nonempty version line
     interpretPrerequisiteEvidence('Docker daemon', { ok: true, stdout: '29.6.2\n' }),
     { ok: true, detail: '29.6.2' }
   )
+  assert.deepEqual(
+    interpretPrerequisiteEvidence('git', {
+      ok: true,
+      stdout: 'git version 2.50.1 (Apple Git-155)\n'
+    }),
+    { ok: true, detail: 'git version 2.50.1 (Apple Git-155)' }
+  )
+  assert.deepEqual(
+    interpretPrerequisiteEvidence('git', {
+      ok: true,
+      stdout: 'git version 2.50.1 (Apple Git-155-UNTRUSTED)\n'
+    }),
+    { ok: false, detail: 'prerequisite evidence was invalid' }
+  )
   for (const stdout of [
     '',
     '\n',
