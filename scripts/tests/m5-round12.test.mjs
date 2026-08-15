@@ -246,11 +246,12 @@ test('a transient termination primitive failure is retried before lifecycle sett
   })
   const handle = lifecycle.register(4242)
 
-  const survivors = await lifecycle.terminate([handle], {
+  const outcome = await lifecycle.terminateDetailed([handle], {
     graceMs: 1,
     killWaitMs: 3
   })
-  assert.deepEqual(survivors, [])
+  assert.deepEqual(outcome.survivors, [])
+  assert.equal(outcome.primitiveFailed, true)
   assert.equal(killAttempts >= 2, true)
 })
 

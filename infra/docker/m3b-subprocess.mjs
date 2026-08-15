@@ -298,7 +298,7 @@ export const createProcessGroupLifecycle = ({
     return signalGroup(handle.pgid, signal)
   }
 
-  const terminate = async (
+  const terminateDetailed = async (
     handles,
     { graceMs = 1_000, killWaitMs = 3_000 } = {}
   ) => {
@@ -362,9 +362,14 @@ export const createProcessGroupLifecycle = ({
     }
     // `primitiveFailed` 只影响我们是否必须继续到预算末端；最终裁决始终来自
     // ownership registry 的 ESRCH 状态，不能让异常对象替代资源事实。
-    void primitiveFailed
-    return unconfirmed
+    return Object.freeze({ survivors: unconfirmed, primitiveFailed })
   }
+
+  // 既有调用点只消费 survivor 列表；详细出口额外保留「清理期间曾发生原语
+  // 异常」这一安全事实。资源可以在重试后到达 ESRCH，但 signal handler 仍必须
+  // fail closed，不能把一次 termination primitive 异常伪装成干净信号退出。
+  const terminate = async (handles, options = {}) =>
+    (await terminateDetailed(handles, options)).survivors
 
   /**
    * 把 registry 收敛到一个**稳定**状态，而不是只处置一次 `active` 快照。
@@ -375,7 +380,7 @@ export const createProcessGroupLifecycle = ({
    * stability window 都没有新代才算收敛。达到固定轮数仍不稳定则抛出固定错误，
    * 调用方必须 fail closed。
    */
-  const terminateAll = async ({
+  const terminateAllDetailed = async ({
     graceMs = 1_000,
     killWaitMs = 3_000,
     maxSweeps = 8,
@@ -384,6 +389,7 @@ export const createProcessGroupLifecycle = ({
   } = {}) => {
     const failed = new Set()
     let emptyPasses = 0
+    let primitiveFailed = false
 
     for (let sweep = 0; sweep < maxSweeps; sweep += 1) {
       const current = [...active.values()].filter((handle) => !retireIfGone(handle))
@@ -394,21 +400,24 @@ export const createProcessGroupLifecycle = ({
       if (pending.length === 0) {
         emptyPasses += 1
         if (emptyPasses >= stablePasses) {
-          return current
+          return Object.freeze({ survivors: current, primitiveFailed })
         }
         await delay(stabilityMs)
         continue
       }
 
       emptyPasses = 0
-      const survivors = await terminate(pending, { graceMs, killWaitMs })
-      for (const survivor of survivors) {
+      const outcome = await terminateDetailed(pending, { graceMs, killWaitMs })
+      primitiveFailed ||= outcome.primitiveFailed
+      for (const survivor of outcome.survivors) {
         failed.add(generationKey(survivor.pgid, survivor.generation))
       }
     }
 
     throw new Error('process-group cleanup did not reach a stable state')
   }
+  const terminateAll = async (options = {}) =>
+    (await terminateAllDetailed(options)).survivors
   const unconfirmed = () =>
     [...active.values()]
       .filter((handle) => !retired.has(generationKey(handle.pgid, handle.generation)))
@@ -419,7 +428,9 @@ export const createProcessGroupLifecycle = ({
     markLeaderClosed,
     retireIfGone,
     terminate,
+    terminateDetailed,
     terminateAll,
+    terminateAllDetailed,
     unconfirmed
   })
 }
@@ -688,6 +699,12 @@ export const terminateControlledSubtree = async ({
 } = {}) =>
   processGroupLifecycle.terminateAll({ graceMs, killWaitMs })
 
+const terminateControlledSubtreeDetailed = async ({
+  graceMs = 1_000,
+  killWaitMs = 3_000
+} = {}) =>
+  processGroupLifecycle.terminateAllDetailed({ graceMs, killWaitMs })
+
 /** 尚未确认消失的受控进程组（测试与门禁用）。 */
 export const unconfirmedProcessGroups = () =>
   processGroupLifecycle.unconfirmed()
@@ -719,7 +736,15 @@ export const installSignalHandlers = (cleanup, _options = {}) => {
       let cleanupFailed = false
       let cleanupMayRun = true
       try {
-        survivors = await terminateControlledSubtree()
+        const outcome = await terminateControlledSubtreeDetailed()
+        survivors = outcome.survivors
+        if (outcome.primitiveFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed ||= outcome.primitiveFailed
       } catch {
         terminationFailed = true
         diagnosticFailed = reportDiagnosticFailure(
@@ -735,7 +760,15 @@ export const installSignalHandlers = (cleanup, _options = {}) => {
         terminationFailed = true
         childProcessStartsClosed = true
         try {
-          survivors = await terminateControlledSubtree()
+          const outcome = await terminateControlledSubtreeDetailed()
+          survivors = outcome.survivors
+          if (outcome.primitiveFailed && !terminationFailed) {
+            diagnosticFailed = reportDiagnosticFailure(
+              diagnosticFailed,
+              'subtree termination failed\n'
+            )
+          }
+          terminationFailed ||= outcome.primitiveFailed
           cleanupMayRun = survivors.length === 0
         } catch {
           cleanupMayRun = false
@@ -774,7 +807,15 @@ export const installSignalHandlers = (cleanup, _options = {}) => {
       // 入口，再复核一次 registry；这样最终判定既能抓到 sweep 期间登记的新组，
       // 也不会在最后一次空快照与重投信号之间重新打开竞态窗口。
       try {
-        survivors = await terminateControlledSubtree()
+        const outcome = await terminateControlledSubtreeDetailed()
+        survivors = outcome.survivors
+        if (outcome.primitiveFailed && !terminationFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed ||= outcome.primitiveFailed
       } catch {
         terminationFailed = true
         diagnosticFailed = reportDiagnosticFailure(
@@ -784,8 +825,15 @@ export const installSignalHandlers = (cleanup, _options = {}) => {
       }
       childProcessStartsClosed = true
       try {
-        const finalSurvivors = await terminateControlledSubtree()
-        survivors = [...new Set([...survivors, ...finalSurvivors])]
+        const outcome = await terminateControlledSubtreeDetailed()
+        if (outcome.primitiveFailed && !terminationFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed ||= outcome.primitiveFailed
+        survivors = [...new Set([...survivors, ...outcome.survivors])]
       } catch {
         if (!terminationFailed) {
           diagnosticFailed = reportDiagnosticFailure(

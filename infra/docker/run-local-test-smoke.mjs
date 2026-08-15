@@ -539,6 +539,10 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
     }
     scene.imageId = builtImageId
+    // signal handler 持有的是 `activeScene` 的物化快照，而不是这个局部对象本身。
+    // immutable identity 一旦取得就必须立即同步过去；否则链路窗口收到信号时，
+    // cleanup 只能看到 tag 却看不到本轮记录的 ID，并会按设计拒绝无所有权删除。
+    smokeState.registerScene?.(scene)
     log(`api image built as ${imageTag} (image id ${builtImageId})`)
 
     // 2. 严格顺序执行完整链，独立读取每个一次性容器的退出码。
