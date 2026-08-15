@@ -14,6 +14,16 @@ Group E image evidence 与 Secret identity probe 的非可信输出边界。纯 
 `a8ad0b2` 的新 HEAD 已从头通过完整 `pnpm stage09a:check` **14/14**。M5 未 Accepted、
 09A 未 Pass、远端 CI 无真实 run；下一门禁仍是全新 A/B 独立只读复审。
 
+**Round 11 当前更新（2026-08-15，覆盖上段 Round 10 状态）**：Round 10 候选
+`df4a378` 的两路独立审计均为 BLOCK；Round 11 实现落点 `9469bc9` 已将 Compose
+`build`/`healthcheck` 收紧到逐服务能力闭集、将 `imageIdOf` 收紧到单行 canonical
+SHA-256、将 Secret identity stdout 收紧为精确 record/path/字段协议，并把
+cleanup-before-settlement 断言移到 rejection settle 的当下（另有 early-settlement mutant
+证明判别力）。README 的 topology/runtime-image mutation 数现在由 registry integrity
+与可执行脚本硬计数机械比对。脚本测试 **85/85**、topology mutation **29/29**，同一
+实现落点已串行通过 `pnpm stage09a:check` **14/14**。M5 仍未 Accepted、09A 未 Pass、
+远端 CI 无真实 run；下一门禁是两个全新独立只读 A/B 审计。
+
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是
 非空字符串，结构与拓扑语义仍由独立 Compose 门禁验证。

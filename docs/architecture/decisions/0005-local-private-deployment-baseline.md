@@ -555,6 +555,18 @@ targeted 69/69、local-test 75/75、signal 5+6、八份 Secret identity 与真�
 不改变本 ADR 已凭 M1—M4 真实容器
 证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
 
+**M5 第十一轮整改注记（2026-08-15）**：Round 10 候选 `df4a378` 的两路独立审计
+均为 BLOCK。实现落点 `9469bc9` 把 resolved Compose 的 build/healthcheck 从全局 key
+allowlist 收紧成逐服务能力闭集；`imageIdOf` 只接受一个 canonical immutable SHA-256
+行；Secret identity 的成功 stdout 必须与预期 path 集合、record 数量和固定字段协议
+精确一致；cleanup-before-settlement 回归在 rejection settle 当下断言 PGID 已 ESRCH，
+并由“先 reject、后 cleanup” mutant 反证门禁确有判别力。Topology/runtime-image
+mutation 的 README 数字同时由 registry integrity 与可执行硬计数机械比对。纯 Node
+**85/85**、topology mutation **29/29**，并已从同一实现落点通过完整聚合门禁
+**14/14**。本注记不改变本 ADR 已凭 M1—M4 真实容器证据作出的 Accepted 决策，也
+不把 M5 或 09A 记为 Accepted/Pass；下一门禁是全新 A/B 独立只读审计，远端 CI 仍无
+真实 run。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；

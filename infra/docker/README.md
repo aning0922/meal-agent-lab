@@ -331,6 +331,14 @@ restore drill 已通过。含文档候选 `a8ad0b2` 的新 HEAD 已从头通过�
 GitHub Actions workflow 复用同一命令但**尚无真实远端 run**，真实 run 成功之前
 只登记「已配置」。
 
+**Round 11 当前事实（覆盖上段 Round 10 状态）**：Round 10 候选 `df4a378` 的 A/B
+审计均为 BLOCK；实现落点 `9469bc9` 将 build/healthcheck 收紧为逐服务能力闭集、
+`imageIdOf` 收紧为单行 canonical SHA-256、Secret identity 收紧为精确成功协议，并在
+Promise settle 当下断言 cleanup 已让 PGID 达到 ESRCH。脚本测试 85/85、topology
+mutation 29/29、registry integrity 机械计数核对通过；同一落点已串行通过完整
+`pnpm stage09a:check` 14/14。下一门禁是两个全新独立只读 A/B 审计；M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run。
+
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
 消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。

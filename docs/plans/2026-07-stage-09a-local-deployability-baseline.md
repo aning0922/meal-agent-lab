@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-14 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第九轮候选 `4a72218` 的 A/B 审计仍为 BLOCK，第十轮实现落点 `3849bbd` 与文档候选 `a8ad0b2` 已从头通过完整 14/14，仍待全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 日期：2026-07-26（2026-08-15 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」Round 10 候选 `df4a378` 的 A/B 审计均为 BLOCK；Round 11 实现落点 `9469bc9` 已通过完整 14/14，仍待全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（第九轮候选复审 BLOCK；第十轮整改中，未 Accepted）
+### M5 实施记录（Round 10 候选复审 BLOCK；Round 11 已实现待独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3884,6 +3884,44 @@ image（78 packages / 76 top-level links / 5 migrations）、1 baseline + 11 bui
 static-only image mutations、M3B 全套、fresh smoke、八份 Secret identity、lifecycle 与
 restore 全部 PASS。该候选仍须两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未
 Pass、远端 CI 无真实 run。
+
+#### M5 Round 11 整改：逐服务能力与闭合成功证据（2026-08-15）
+
+Round 10 候选 `df4a378` 的两路独立只读审计均判定 BLOCK。共同确认的是四条实现/
+证据边界与一条文档门禁缺口：`build`/`healthcheck` 只在全局 key 集合中允许、
+`imageIdOf` 接受任意非空 status-0 stdout、Secret identity 只过滤 `PROBE` 前缀且覆盖
+重复字段/record，以及 cleanup-before-settlement 测试在 rejection 后继续轮询，无法
+区分“先 reject、稍后 cleanup”的 mutant；README 的 mutation 数也未与可执行硬计数
+交叉校验。
+
+Round 11 只追加实现落点 `9469bc9`，未 amend/rebase/push/merge，也未自行标记
+Accepted：
+
+1. **Compose 能力逐服务闭合。** 只有 `api`/`migrate`/`bootstrap-schema` 可以声明
+   build，只有 `postgres`/`api` 可以声明 healthcheck；postgres host-network build 与
+   migrate unconditional healthcheck 两个真实临时副本变异均按指定理由拒绝，topology
+   mutation 从 27 增为 **29/29**。
+2. **Docker image identity 只有一种成功形状。** status 0 只接受一个
+   `sha256:[0-9a-f]{64}` 行（容许 CLI 的一个末尾 LF）；空白、CRLF、多行、非 canonical
+   或输入 sentinel 一律固定理由失败，不向调用方传播。
+3. **Secret identity 是闭合协议。** 每个服务的 stdout 必须只有预期数量的 PROBE
+   record，path 集合、字段名/顺序/数量与 framing 精确一致；未知/重复字段、重复/缺失/
+   额外 path、非协议非空行全部固定理由 fail closed。
+4. **settlement 证据钉在 settle 当下。** EPIPE、同步 stdin 与 timer-clear 三条回归都在
+   rejection predicate 内直接要求 PGID 已为 ESRCH，不再先等 rejection、再轮询清理；
+   另起真实 detached group 的 early-settlement mutant 会被同一断言明确抓住，finally
+   只按准确 PGID 清理。
+5. **发表数字由代码反校验。** registry integrity 新增 README topology/runtime-image
+   mutation 数与两份可执行套件硬计数的机械比对；旧的 22/27 与 10-built 当前口径已
+   订正，Round 10 数字仅作为历史证据保留。
+
+定点证据：纯 Node 脚本测试 **85/85**、Compose topology PASS、topology mutation
+**29/29**、registry integrity PASS。随后同一实现落点从头串行通过
+`pnpm stage09a:check` **14/14**：runtime image（78 packages / 76 top-level links /
+5 migrations）、1 baseline + 11 built + 2 static-only image mutations、targeted 69/69、
+local-test 75/75、signal 5+6、fresh smoke、八份 Secret identity、lifecycle、restore 与
+最终 scoped cleanup 全部 PASS。下一门禁是两个全新独立只读 A/B 审计；M5 未
+Accepted、09A 未 Pass、远端 CI 无真实 run。
 
 ## 验收门禁
 
