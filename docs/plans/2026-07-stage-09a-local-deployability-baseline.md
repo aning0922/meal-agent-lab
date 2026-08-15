@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-14 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第八轮候选 `cbda742` 的 A/B 审计仍为 BLOCK，第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已通过完整 14/14，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」第九轮候选 `4a72218` 的 A/B 审计仍为 BLOCK，第十轮实现落点 `3849bbd` 已通过定点门禁，完整 14/14 待重跑，仍未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（第七轮候选复审 BLOCK；第八轮实现完成，待独立复审，未 Accepted）
+### M5 实施记录（第九轮候选复审 BLOCK；第十轮整改中，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3846,6 +3846,41 @@ backup/restore drill PASS。实现候选 `3dfb4af` 随后于 2026-08-14 从头�
 完整链在 topology AppSecret sentinel 回显断言处 fail-fast；固定诊断补丁 `b75a836` 后，
 `pnpm stage09a:check` 从新 HEAD **14/14 PASS**。该候选仍须交给两个全新独立只读 A/B
 审计。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+#### M5 第十轮整改：同步 primitive、正式制品回滚与固定证据边界（2026-08-15）
+
+第九轮候选 `4a72218` 的两路独立审计仍判定 BLOCK。确认项不是继续扩展 scanner
+特例，而是集中在三条资源/证据边界：`runCommand` 的同步 primitive 异常、backup
+promotion/cleanup 的所有权与提交时点，以及 Compose/Docker/Secret probe 的能力与输出。
+第十轮只追加实现/回归落点 `3849bbd`，未 amend/rebase/push/merge，也未自行标记
+Accepted：
+
+1. **同步失败仍先清理再 settle。** `createCommandRunner` 以窄依赖注入面分别构造
+   spawn 同步 throw、`stdin.end()` 同步 throw 与 timer-clear throw；生产 runner 仍使用
+   模块加载时捕获的原始原语。三条路径都只给固定原因，已登记 PGID 在 rejection 前
+   TERM→KILL→有界确认 ESRCH；clear 失败的 timer 另尽力 `unref()`，不再把已完成 CLI
+   吊到原始长超时预算。
+2. **backup 只有在 transient cleanup 成功后才提交正式制品。** transfer/private
+   transient cleanup 失败时，dump 与 checksum sidecar 仍处于未提交态并按创建时 inode
+   回滚；`link(2)` 后只有证明 published 名仍指向 link 前登记的 staging dev/ino 才取得
+   删除所有权，link→lstat 竞态中的外部替换既不会被登记也不会被删除。
+3. **Compose 能力闭集与健康检查逐 argv 固定。** service `build` 只接受 `context` 与
+   `dockerfile`，`network: host` 等新增 build 能力直接拒绝；postgres/API healthcheck
+   不再只看前缀，而是与完整命令逐项相等，无条件成功脚本不能通过。
+4. **非可信失败输出统一到固定分类。** topology 的 source/resolved actual、Docker
+   stderr/tag、Secret identity probe 的字段/runner 输出均不回显；canonical Git 环境只
+   输出登记过的变量名。topology mutation 新增 host-network、无条件 healthcheck、
+   resolved sentinel 与 source sentinel 四项，计数从 23 增为 **27/27**。
+5. **回归不是全绿计数替代品。** 新测试直接证明 synchronous primitive、promotion
+   竞态、transfer cleanup 回滚、Group E image evidence 与 Secret probe 失败输出；既有
+   local/signal suite 的断言只调整到新的固定诊断，不删除反例。
+
+定点证据：纯 Node 脚本测试 **83/83**、topology **27/27**、M3B targeted
+**69/69**、local-test **75/75**、signal **5 个确定性 + 6 个真实窗口**、八份
+Compose Secret identity 全部通过，真实 backup/restore drill PASS；registry integrity
+与 tracked-template surface sweep 也通过。完整 `pnpm stage09a:check` 尚待从含本文档的
+新 HEAD 重跑；通过后仍须两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、
+远端 CI 无真实 run。
 
 ## 验收门禁
 

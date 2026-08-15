@@ -303,8 +303,9 @@ bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/
 [`check-compose-topology-mutations.mjs`](check-compose-topology-mutations.mjs) 是
 上面那条门禁**自身的反向测试**：它把 Compose 复制到仓库外私有临时目录，只变异
 该副本，再要求每一项都**以指定理由**失败（只失败不够——一条无关报错也能让脚本
-变绿）。tracked Compose 从不进入写路径。当前 **23 项全部以指定理由捕获、0 漏网**；
-新增项明确拒绝未登记的 `post_start`/`pre_stop` 执行能力。
+变绿）。tracked Compose 从不进入写路径。当前 **27 项全部以指定理由捕获、0 漏网**；
+除未登记的 `post_start`/`pre_stop` 执行能力外，新增反例还明确拒绝 build host
+network、无条件成功 healthcheck，并证明 source/resolved sentinel 不会进入门禁诊断。
 
 Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前置工具 / 无法判定」
 失败退出，不降级成纯文本检查后宣称通过。
@@ -318,11 +319,12 @@ M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与
 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
 已于 2026-08-11 Accepted，验收落点 `cf43452`**。
 **M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
-（见上方 M4 一节）。第八轮候选 `cbda742` 的两路独立审计仍为 BLOCK；第九轮实现落点
-`7c86d9a` 已闭合 timer/聚合 ownership、backup/restore/transfer、runtime provenance/temp-root、
-network、topology 与输出边界缺口；runtime image mutation 为 1 baseline + 11 built +
-2 static-only，topology mutation 23/23，纯 Node 脚本回归 78/78，restore drill 已通过。
-固定诊断补丁 `b75a836` 后完整 14/14 已从新 HEAD 通过，之后仍须两个全新独立只读 A/B 审计；M5 仍未 Accepted
+（见上方 M4 一节）。第九轮候选 `4a72218` 的两路独立审计仍为 BLOCK；第十轮实现落点
+`3849bbd` 已闭合同步 primitive cleanup-before-settlement、backup formal artifact 回滚/
+promotion inode、build/healthcheck 能力与 topology/Group E/Secret probe 输出边界；runtime
+image mutation 保持 1 baseline + 11 built + 2 static-only，topology mutation 27/27，纯
+Node 脚本回归 83/83，targeted 69/69、local-test 75/75、signal 5+6、Secret identity 与
+restore drill 已通过。完整 14/14 尚待从新 HEAD 重跑，之后仍须两个全新独立只读 A/B 审计；M5 仍未 Accepted
 （见计划文档 M5 实施记录）；
 [ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
 已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
@@ -401,7 +403,7 @@ M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
 持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
 owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
 **Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
-取得历史本地全绿证据；第九轮实现落点 `7c86d9a` 与固定诊断补丁 `b75a836` 已从新 HEAD
-通过完整 14/14，之后仍须两个全新独立只读 A/B 审计；远端 CI
+取得历史本地全绿证据；第十轮实现落点 `3849bbd` 已通过定点门禁，完整 14/14 待从
+新 HEAD 重跑，之后仍须两个全新独立只读 A/B 审计；远端 CI
 workflow 复用同一命令但尚无真实 run，真实 run 成功
 之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

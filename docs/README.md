@@ -4,14 +4,15 @@
 
 阶段 08 最终审计整改已合并 `main`；FAM-003 已完成，FAM-004/FAM-005 仍为部分完成。阶段 09A **进行中**：M1 容器构建基线已 Accepted；M2A 数据库身份边界的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点 `ca65275`。R8A 只交付可观察性——canonical projector 是纯 SELECT，因此 ACL 全主体覆盖、default privilege 叠加语义与类型/Large Object 三项在 R8A **只做到可观察，收敛属于 R8B**。**R8B 已由项目总控 Accepted**：类型/Large Object 的既定策略已落实，projector 已接入 verify/converge，静态 grantee 名单已删除，`currentDefaultCte` 的整套 default privilege 缺陷（COALESCE 伪叠加、空 global 行语义、S→s）已统一替换，两个 adapter 已重新生成并复验。**M2A 整体已由项目总控 Accepted，验收落点 `5e480803`**；**M2B（Compose 拓扑）已由项目总控 Accepted，验收落点 `d0f2219`**——local-test Compose 拓扑与静态门禁已实现并取得实测证据（**M2B 的 Accepted 只覆盖拓扑本身**；完整 bootstrap 链与全栈启动的证据由 M3B 交付，见下）。**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted，验收落点 `a839df1`**：`DATABASE_URL`/`DATABASE_URL_FILE` 与三对 `MEAL_AGENT_*_PASSWORD` 的互斥来源解析、fail-closed 的 secret file 判据、连接串核心字段必须全部来自 URL、URL 无法覆盖的 8 个 ambient `PG*` 逐条拒绝、无默认值的部署阶段与暴露级别、官方 code2Session endpoint 收紧、中央 logger 脱敏边界与全响应安全头均已落地并有反向测试。**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）已于 2026-08-11 Accepted，验收落点 `cf43452`**：Compose Secret 的容器内 UID/mode 探针、单一来源生成与部署前预检、从空 volume 起的十步链（8 个 one-shot 真实退出码 0，postgres 与 api 两个服务 healthy）、migrate/grants 二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限、containment 扫描与宿主动态隔离均取得实证并有 75 cases（1 个正向 baseline + 74 个反例/边界检查）、M3B targeted negative suite 的 69 cases、15 项拓扑变异反例、5 个确定性进程组回归与 5 个真实信号窗口（经多轮对抗审计与总控整改后的定点修复：每轮唯一 image tag 与 immutable ID 绑定、真实信号窗口的零残留、Docker inspect/image/history 与 Compose resolved config 成功证据的深层 shape、identity、完整性与非空判据，以及 tracked template / 全仓 containment / Compose topology 三条生产路径的 canonical Git 扫描面 fail closed、nested/prose/comment 视图的 split-stem 扫描、带 zone 的 IPv6 实证、cleanup 的 inode ownership 与 scoped cleanup residue/非法返回/异常语义、受控进程组的 mutation-closed 有界收敛、生产忙等钩子删除、任意 scheme 与解码后 query key 的模板凭据扫描、one-shot ExitCode fail-closed、整串 stderr 的「不存在」判据、门禁输出边界）。**M4（生命周期、备份和恢复）已于 2026-08-11 Accepted，验收落点 `f671c51`；M5（门禁、CI 与文档）候选 `38f172d` 经两路独立复审仍为 BLOCK，第二轮定点整改已落在 `1689f1b` 并通过主工作树 `pnpm stage09a:check` 14/14，当前等待该新候选独立 A/B 复审，仍未 Accepted；API runtime image 扫描与 9 built + 2 static-only 变异反例已包含在同一聚合链内，GitHub Actions action 固定到 commit SHA 并复用同一命令（无真实远端 run，只登记已配置），依赖例外显式复核不续期。**阶段 09A 仍为 In Progress，ADR-0005 已凭真实容器证据转 `Accepted`，PR #1 保持 Draft。**09A 总验收未完成，阶段 09A 不得记为 Pass。**文档中的「目标设计」与「已实现事实」分节表述，不得互相冒充。真实微信、真机、云环境、体验版、发布和远端 CI 不得由本地自动化或模拟器证据替代。
 
-**当前 M5 更新（2026-08-14，覆盖上段旧 M5 句）**：第八轮候选 `cbda742` 的 A/B
-审计仍为 BLOCK；第九轮实现落点 `7c86d9a` 已关闭 timer settlement、聚合 cleanup 状态复位、
-restore 已验证字节、backup/sidecar/transfer 与 M4 host artifact 所有权、runtime provenance
-与 temp-root、topology 执行入口/输出、Group E 输出和 mixed network outcome。纯 Node 脚本
-回归 78/78、runtime image 正向与 1 baseline + 11 built + 2 static-only 变异、topology
-23/23、真实 restore drill 已通过；固定诊断补丁 `b75a836` 后完整 `stage09a:check`
-从新 HEAD **14/14 PASS**。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；下一门禁
-仍是全新 A/B 独立只读复审。
+**当前 M5 更新（2026-08-15，覆盖上段旧 M5 句）**：第九轮候选 `4a72218` 的 A/B
+独立审计仍为 BLOCK；第十轮实现落点 `3849bbd` 已关闭同步 spawn/stdin/timer-clear
+primitive 的 cleanup-before-settlement、backup transfer cleanup 失败后的 formal artifact 回滚、
+promotion link→lstat inode 所有权、Compose nested build/healthcheck 能力，以及 topology、
+Group E image evidence 与 Secret identity probe 的非可信输出边界。纯 Node 脚本回归
+83/83、topology 27/27、M3B targeted 69/69、local-test 75/75、signal 5 个确定性 +
+6 个真实窗口、八份 Secret identity 与真实 restore drill 已通过；完整聚合门禁尚待从
+新 HEAD 重跑。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；完整门禁通过后仍须
+全新 A/B 独立只读复审。
 
 上段所称 Docker 证据的“深层 shape、identity 与完整性”只适用于
 inspect/image/history；resolved Compose config helper 只证明命令成功且 stdout 是

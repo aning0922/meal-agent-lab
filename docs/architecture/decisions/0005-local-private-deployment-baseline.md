@@ -544,6 +544,16 @@ network outcome 按生产根因收敛。纯 Node 78/78、runtime image 1+11+2、
 **14/14 PASS**。本注记不改变本 ADR 已凭 M1—M4 真实容器证据作出的 Accepted 决策，
 也不把 M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
 
+**M5 第十轮整改注记（2026-08-15）**：第九轮候选 `4a72218` 的两路独立审计仍为
+BLOCK。实现落点 `3849bbd` 将同步 spawn/stdin/timer-clear primitive 失败统一纳入
+cleanup-before-settlement；backup 只在 transient cleanup 成功后提交正式 dump/sidecar，
+且 promotion 删除所有权只能来自 link 前登记并在 link 后再次证明的 staging inode；
+Compose `build` 能力与 healthcheck 完整 argv 固定，topology、Docker image evidence 与
+Secret identity probe 的外部失败输出统一为固定分类。纯 Node 83/83、topology 27/27、
+targeted 69/69、local-test 75/75、signal 5+6、八份 Secret identity 与真实 restore drill
+已通过；完整聚合门禁仍待从新 HEAD 重跑。本注记不改变本 ADR 已凭 M1—M4 真实容器
+证据作出的 Accepted 决策，也不把 M5 或 09A 记为 Accepted/Pass；远端 CI 仍无真实 run。
+
 以下条件触发复审：
 
 - 购买或创建远程测试环境；
