@@ -119,37 +119,37 @@ const mutations = [
     name: 'DEPLOYMENT_STAGE promoted to staging',
     from: '      DEPLOYMENT_STAGE: local-test\n',
     to: '      DEPLOYMENT_STAGE: staging\n',
-    expect: /DEPLOYMENT_STAGE must be local-test/
+    expect: /DEPLOYMENT_STAGE must use its registered local-test value/
   },
   {
     name: 'DEPLOYMENT_STAGE promoted to production',
     from: '      DEPLOYMENT_STAGE: local-test\n',
     to: '      DEPLOYMENT_STAGE: production\n',
-    expect: /DEPLOYMENT_STAGE must be local-test/
+    expect: /DEPLOYMENT_STAGE must use its registered local-test value/
   },
   {
     name: 'DEPLOYMENT_EXPOSURE widened to private-network',
     from: '      DEPLOYMENT_EXPOSURE: loopback\n',
     to: '      DEPLOYMENT_EXPOSURE: private-network\n',
-    expect: /DEPLOYMENT_EXPOSURE must be loopback/
+    expect: /DEPLOYMENT_EXPOSURE must use its registered local-test value/
   },
   {
     name: 'DEPLOYMENT_EXPOSURE widened to public',
     from: '      DEPLOYMENT_EXPOSURE: loopback\n',
     to: '      DEPLOYMENT_EXPOSURE: public\n',
-    expect: /DEPLOYMENT_EXPOSURE must be loopback/
+    expect: /DEPLOYMENT_EXPOSURE must use its registered local-test value/
   },
   {
     name: 'NODE_ENV switched to production while the adapter stays fake',
     from: '      NODE_ENV: development\n',
     to: '      NODE_ENV: production\n',
-    expect: /NODE_ENV must be development/
+    expect: /api: environment drifted from the registered fixed set/
   },
   {
     name: 'the adapter switched to real',
     from: '      WECHAT_ADAPTER: fake\n',
     to: '      WECHAT_ADAPTER: real\n',
-    expect: /WECHAT_ADAPTER must be fake/
+    expect: /api: environment drifted from the registered fixed set/
   },
   {
     name: 'a real WeChat AppID is injected',
@@ -184,13 +184,13 @@ const mutations = [
     name: 'the runtime connection string is inlined as an environment value',
     from: '      DATABASE_URL_FILE: /run/secrets/meal_agent_runtime_database_url/value\n',
     to: '      DATABASE_URL: postgresql://meal_agent_runtime_login:pw@postgres/meal_agent\n',
-    expect: /DATABASE_URL must not appear in Compose; use a secret file/
+    expect: /api: environment drifted from the registered fixed set/
   },
   {
     name: 'a bootstrap password is inlined as an environment value',
     from: '      MEAL_AGENT_BACKUP_PASSWORD_FILE: /run/secrets/meal_agent_backup_password/value\n',
     to: '      MEAL_AGENT_BACKUP_PASSWORD: inlined-password\n',
-    expect: /MEAL_AGENT_BACKUP_PASSWORD must not carry a value in Compose/
+    expect: /bootstrap-logins: environment drifted from the registered fixed set/
   },
   {
     name: 'the API host publish address is unqualified',
@@ -208,7 +208,7 @@ const mutations = [
     name: 'the transfer volume loses its UID 999 initialization',
     from: '        chmod 0700 /transfer\n        chown 999:999 /transfer\n',
     to: '',
-    expect: /secret-materializer: expected command/
+    expect: /secret-materializer: command drifted from the registered fixed value/
   },
   {
     name: 'postgres bypasses successful materialization',
@@ -266,6 +266,36 @@ const mutations = [
       '    healthcheck:\n' +
       '      # 只用镜像已有的 node（Node 24 自带 fetch），不临时安装 curl/wget。\n',
     expect: /api: resolved service contains unsupported capability fields/
+  },
+  {
+    name: 'the shared API build gains host-network execution capability',
+    from: '    dockerfile: services/api/Dockerfile\n',
+    to:
+      '    dockerfile: services/api/Dockerfile\n' +
+      '    network: host\n',
+    expect: /build contains unsupported execution capability fields/
+  },
+  {
+    name: 'the API healthcheck becomes an unconditional success',
+    from:
+      '        - "fetch(\'http://127.0.0.1:3000/healthz\').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"\n',
+    to: '        - "process.exit(0)"\n',
+    expect: /api: healthcheck drifted from the registered \/healthz probe argv/
+  },
+  {
+    name: 'an untrusted resolved healthcheck value is never echoed',
+    from:
+      '        - "fetch(\'http://127.0.0.1:3000/healthz\').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"\n',
+    to: '        - "TOPOLOGY-RESOLVED-SENTINEL"\n',
+    expect: /api: healthcheck drifted from the registered \/healthz probe argv/,
+    forbidEcho: 'TOPOLOGY-RESOLVED-SENTINEL'
+  },
+  {
+    name: 'a noncanonical top-level declaration never echoes its source line',
+    from: '  edge:\n',
+    to: '  "TOPOLOGY-SOURCE-SENTINEL": {}\n',
+    expect: /declared top-level networks uses a non-canonical declaration/,
+    forbidEcho: 'TOPOLOGY-SOURCE-SENTINEL'
   }
 ]
 
@@ -349,7 +379,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 23
+const expectedMutationCount = 27
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

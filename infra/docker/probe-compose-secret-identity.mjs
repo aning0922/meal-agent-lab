@@ -244,11 +244,11 @@ const main = async () => {
     activeProbeScene.composeArgs = composeArgs
     const build = await compose(['build', 'api'], { timeoutMs: 1_800_000 })
     if (build.status !== 0) {
-      throw new Error(`docker compose build api failed:\n${build.stderr.slice(-2000)}`)
+      throw new Error('docker compose build api failed')
     }
     const builtImageId = await imageIdOf(imageTag, { env: composeEnvironment })
     if (builtImageId === null) {
-      throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
+      throw new Error('the per-run image tag does not exist after build')
     }
     process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
 
@@ -283,8 +283,8 @@ const main = async () => {
       const result = await compose(args, { timeoutMs: 300_000 })
       if (result.status !== 0) {
         failures.push(
-          `${plan.service}: in-container probe exited ${String(result.status)}: ` +
-            `${result.stderr.trim().split('\n').slice(-3).join(' / ')}`
+          `${plan.service}: in-container probe failed ` +
+            `(${result.status === null ? 'signal' : `exit ${String(result.status)}`})`
         )
         // 信号在飞时**立即停止**创建新容器：否则 handler 已经跑完 label
         // sweep，这里再 spawn 出来的容器无人回收。
@@ -303,7 +303,7 @@ const main = async () => {
         const fields = byPath.get(target)
         const expectedUid = String(consumerUidOf(secretName))
         if (fields === undefined) {
-          failures.push(`${plan.service}: no probe record for ${target}`)
+          failures.push(`${plan.service}: an expected probe record is missing`)
           continue
         }
         const checks = [
@@ -316,16 +316,11 @@ const main = async () => {
         ]
         for (const [key, expected] of checks) {
           if (fields[key] !== expected) {
-            failures.push(
-              `${plan.service}: ${target} ${key}=${fields[key] ?? '(missing)'} (expected ${expected})`
-            )
+            failures.push(`${plan.service}: a Secret identity field drifted`)
           }
         }
         if (fields.mode !== '0400' && fields.mode !== '0600') {
-          failures.push(
-            `${plan.service}: ${target} mode=${fields.mode ?? '(missing)'} ` +
-              '(expected owner-only 0400 or 0600)'
-          )
+          failures.push(`${plan.service}: Secret mode is not owner-only 0400 or 0600`)
         }
         evidence.push(
           `${plan.service} (uid ${expectedUid}): ${target} ` +
@@ -334,8 +329,8 @@ const main = async () => {
         )
       }
     }
-  } catch (error) {
-    failures.push(error instanceof Error ? error.message : String(error))
+  } catch {
+    failures.push('Compose secret identity probe evidence collection failed')
   } finally {
     // 正常、失败与信号三条路径复用**同一套** scoped cleanup + 独立复查。
     // override 必须**在 cleanup 之后**删除：`compose down` 仍要用它解析配置。
@@ -345,15 +340,15 @@ const main = async () => {
       return
     }
     try {
-      failures.push(...(await cleanupProbe(activeProbeScene)))
-    } catch (error) {
-      failures.push(
-        `cleanup-error: ${error instanceof Error ? error.message : String(error)}`
-      )
+      const cleanupResidue = await cleanupProbe(activeProbeScene)
+      if (cleanupResidue.length > 0) {
+        failures.push(`probe scoped cleanup left ${String(cleanupResidue.length)} residue item(s)`)
+      }
+    } catch {
+      failures.push('probe scoped cleanup failed')
     }
     try {
-      failures.push(
-        ...(await verifyNoResidue({
+      const residue = await verifyNoResidue({
           project,
           imageTag: activeProbeScene.imageTag,
           secretsDirectory,
@@ -361,12 +356,12 @@ const main = async () => {
           danglingBaseline,
           composeEnvironment,
           exists: existsSync
-        }))
-      )
-    } catch (error) {
-      failures.push(
-        `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
-      )
+        })
+      if (residue.length > 0) {
+        failures.push(`probe residue recheck found ${String(residue.length)} item(s)`)
+      }
+    } catch {
+      failures.push('probe residue recheck failed')
     }
   }
 
@@ -426,12 +421,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   try {
     await main()
-  } catch (error) {
-    process.stderr.write(
-      `probe-compose-secret-identity: ${
-        error instanceof Error ? error.message : String(error)
-      }\n`
-    )
+  } catch {
+    process.stderr.write('probe-compose-secret-identity: unhandled probe failure\n')
     process.exit(1)
   }
 }

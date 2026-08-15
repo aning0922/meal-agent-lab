@@ -471,21 +471,34 @@ const refuseChildProcessStart = () => {
  * 超时处理：对整个进程组先 SIGTERM，1 秒宽限后 SIGKILL，随后以
  * 「timed out」reject——绝不静默把超时当成功。
  */
-const runCommandUnchecked = (
-  args,
-  { env = process.env, cwd, timeoutMs = 120_000, stdin = null } = {}
-) =>
-  new Promise((resolvePromise, rejectPromise) => {
+export const createCommandRunner = ({
+  spawnProcess = spawn,
+  clearTimer = nativeClearTimeout,
+  setTimer = nativeSetTimeout
+} = {}) =>
+  (
+    args,
+    { env = process.env, cwd, timeoutMs = 120_000, stdin = null } = {}
+  ) =>
+    new Promise((resolvePromise, rejectPromise) => {
     const childEnvironment = { ...env }
     delete childEnvironment[aggregateOwnershipFdName]
     delete childEnvironment[aggregateOwnershipAuthFdName]
     delete childEnvironment[aggregateOwnershipAuthTokenName]
-    const child = spawn(args[0], args.slice(1), {
-      cwd,
-      env: childEnvironment,
-      detached: true,
-      stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe']
-    })
+    let child
+    try {
+      child = spawnProcess(args[0], args.slice(1), {
+        cwd,
+        env: childEnvironment,
+        detached: true,
+        stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe']
+      })
+    } catch {
+      // spawn 的同步异常发生在任何 PGID 出现之前；Promise executor 不得把
+      // 调用方的 argv/cwd/异常对象原样变成 rejection。
+      rejectPromise(new Error('command failed to start'))
+      return
+    }
     let settlementClaimed = false
     let childHandle = null
     let timer = null
@@ -497,9 +510,17 @@ const runCommandUnchecked = (
       const current = timer
       timer = null
       try {
-        nativeClearTimeout(current)
+        clearTimer(current)
         return true
       } catch {
+        // clear primitive 失败后，这个 timeout 仍可能处于已注册状态。它不能在
+        // 已完成进程组清理和固定 rejection 之后继续把 CLI 吊到原始（最长数十
+        // 分钟）预算；尽力 unref，但不把 unref 成功伪装成 timer cleanup 成功。
+        try {
+          current?.unref?.()
+        } catch {
+          // 固定的 timer-cleanup failure 由调用方统一给出。
+        }
         return false
       }
     }
@@ -554,17 +575,12 @@ const runCommandUnchecked = (
     child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
     child.stderr.on('data', (chunk) => stderrChunks.push(chunk))
 
-    child.once('error', (error) => {
+    child.once('error', () => {
       const timerClean = releaseChild()
       if (ownershipAnnouncementFailed) {
         return
       }
-      if (!settlementClaimed) {
-        settlementClaimed = true
-        rejectPromise(
-          new Error(timerClean ? 'command failed to start' : 'command timer cleanup failed')
-        )
-      }
+      claimFailure(timerClean ? 'command failed to start' : 'command timer cleanup failed')
     })
 
     child.once('close', (code, signal) => {
@@ -575,11 +591,13 @@ const runCommandUnchecked = (
         return
       }
       if (settlementClaimed) return
-      settlementClaimed = true
       if (!timerClean) {
-        rejectPromise(new Error('command timer cleanup failed'))
+        // close 只证明 leader/stdio 已结束；同组 orphan 仍可能存活。timer-clear
+        // primitive 失败也必须走同一个进程组清理出口，不能直接 reject。
+        claimFailure('command timer cleanup failed')
         return
       }
+      settlementClaimed = true
       resolvePromise({
         status: signal !== null ? null : code,
         signal,
@@ -593,7 +611,13 @@ const runCommandUnchecked = (
         if (ownershipAnnouncementFailed) return
         claimFailure('command stdin failed')
       })
-      child.stdin.end(stdin)
+      try {
+        child.stdin.end(stdin)
+      } catch {
+        // Socket.end 的同步异常与异步 EPIPE 具有相同的资源语义：先收敛整组，
+        // 再以固定原因拒绝，绝不让原始异常越过边界。
+        claimFailure('command stdin failed')
+      }
     }
 
     if (ownershipAnnouncementFailed && childHandle !== null) {
@@ -604,14 +628,16 @@ const runCommandUnchecked = (
     // 再创建 timeout；若 primitive 同步失败，必须先收掉已登记 PGID 才能 reject。
     if (!settlementClaimed) {
       try {
-        timer = nativeSetTimeout(() => {
+        timer = setTimer(() => {
           claimFailure(`command timed out after ${String(timeoutMs)}ms`)
         }, timeoutMs)
       } catch {
         claimFailure('command timer setup failed')
       }
     }
-  })
+    })
+
+const runCommandUnchecked = createCommandRunner()
 
 export const runCommand = (args, options = {}) =>
   childProcessStartsClosed
@@ -643,7 +669,7 @@ export const unconfirmedProcessGroups = () =>
  *
  * 第二个同名/异名信号在清理期间只登记不重入。
  */
-export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
+export const installSignalHandlers = (cleanup, _options = {}) => {
   let terminating = false
   const handler = (signal) => {
     if (terminating) {
@@ -653,7 +679,7 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
     pendingSignal = signal
     const cleanupStartAnnounced = announceCleanupState('START')
     let diagnosticFailed = !writeDiagnostic(
-      `\n${signal}: terminating child processes, then running ${label}\n`
+      `\n${signal}: terminating child processes, then running scoped cleanup\n`
     )
     void (async () => {
       let survivors = []
@@ -694,20 +720,20 @@ export const installSignalHandlers = (cleanup, { label = 'cleanup' } = {}) => {
             cleanupFailed = true
             diagnosticFailed = reportDiagnosticFailure(
               diagnosticFailed,
-              `${label} returned an invalid cleanup result\n`
+              'scoped cleanup returned an invalid result\n'
             )
           } else if (residue.length > 0) {
             cleanupFailed = true
             diagnosticFailed = reportDiagnosticFailure(
               diagnosticFailed,
-              `${label} left ${String(residue.length)} residue item(s)\n`
+              `scoped cleanup left ${String(residue.length)} residue item(s)\n`
             )
           }
         } catch {
           cleanupFailed = true
           diagnosticFailed = reportDiagnosticFailure(
             diagnosticFailed,
-            `${label} failed during signal cleanup\n`
+            'scoped cleanup failed during signal handling\n'
           )
         }
       }

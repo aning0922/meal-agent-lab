@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
+  chmodSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -17,16 +18,18 @@ import test from 'node:test'
 
 import {
   assertBackupTargetsIgnored,
+  performBackup,
   promoteBackupNoReplace,
   writeChecksumSidecarNoReplace
 } from '../../infra/docker/backup-local-test.mjs'
-import { discardOverride, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
+import { discardOverride, imageIdOf, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
 import {
   connectOutcomeForErrorCode,
   nonLoopbackOutcomeDisposition,
   requireNonLoopbackIsolationEvidence
 } from '../../infra/docker/local-test-containment.mjs'
 import {
+  createCommandRunner,
   observedDescendantPgids,
   runCommand,
   unconfirmedProcessGroups
@@ -64,6 +67,18 @@ const waitForGone = async (pgid, timeoutMs = 4_000) => {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20))
   }
   assert.equal(processGroupIsAlive(pgid), false, `process group ${String(pgid)} must reach ESRCH`)
+}
+
+const runIsolatedNode = (source, timeout = 12_000) => {
+  const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    timeout,
+    maxBuffer: 8 * 1024 * 1024
+  })
+  assert.equal(outcome.error, undefined)
+  assert.equal(outcome.status, 0, outcome.stderr)
+  return JSON.parse(outcome.stdout)
 }
 
 test('M4 scoped artifact cleanup is failure-safe across every registered task', async () => {
@@ -120,6 +135,56 @@ test('runCommand is not redirected by caller timer primitive replacement', { tim
     globalThis.setTimeout = originalSetTimeout
     globalThis.clearTimeout = originalClearTimeout
   }
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('runCommand fixes synchronous spawn, stdin and timer-cleanup failures before settlement', { timeout: 15_000 }, async () => {
+  const spawnSentinel = 'CALLER-SPAWN-SENTINEL'
+  const runSpawnFailure = createCommandRunner({
+    spawnProcess: () => { throw new Error(spawnSentinel) }
+  })
+  await assert.rejects(
+    runSpawnFailure(['/bin/true']),
+    (error) => error instanceof Error && error.message === 'command failed to start'
+  )
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+
+  const stdinSentinel = 'CALLER-STDIN-SENTINEL'
+  const beforeStdin = new Set(observedDescendantPgids())
+  const runStdinFailure = createCommandRunner({
+    spawnProcess: (...args) => {
+      const child = spawn(...args)
+      child.stdin.end = () => { throw new Error(stdinSentinel) }
+      return child
+    }
+  })
+  await assert.rejects(
+    runStdinFailure(['/bin/sh', '-c', 'trap "" TERM INT HUP; sleep 30'], {
+      stdin: Buffer.from('fixture'), timeoutMs: 60_000
+    }),
+    (error) => error instanceof Error && error.message === 'command stdin failed'
+  )
+  const stdinGroups = observedDescendantPgids().filter((pgid) => !beforeStdin.has(pgid))
+  assert.equal(stdinGroups.length, 1)
+  for (const pgid of stdinGroups) await waitForGone(pgid)
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+
+  const timerSentinel = 'CALLER-TIMER-CLEAR-SENTINEL'
+  let timerPgid = null
+  const runTimerFailure = createCommandRunner({
+    spawnProcess: (...args) => {
+      const child = spawn(...args)
+      timerPgid = child.pid
+      return child
+    },
+    clearTimer: () => { throw new Error(timerSentinel) }
+  })
+  await assert.rejects(
+    runTimerFailure(['/usr/bin/true'], { timeoutMs: 60_000 }),
+    (error) => error instanceof Error && error.message === 'command timer cleanup failed'
+  )
+  assert.equal(Number.isSafeInteger(timerPgid) && timerPgid > 0, true)
+  await waitForGone(timerPgid)
   assert.deepEqual(unconfirmedProcessGroups(), [])
 })
 
@@ -343,7 +408,130 @@ test('backup no-replace promotion rejects a swapped staging inode without deleti
     )
     assert.equal(readFileSync(staging, 'utf8'), 'PGDMP-FOREIGN')
     assert.equal(readFileSync(original, 'utf8'), 'PGDMP-OWNED')
-    assert.equal(existsSync(published), false)
+    // link(2) 已经解析了被换入的名字；失败路径不能把这个外部 inode 的
+    // published hard link 当作本轮所有物删除。残留必须响亮失败并留给调用方处理。
+    assert.equal(readFileSync(published, 'utf8'), 'PGDMP-FOREIGN')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup promotion never acquires deletion ownership from a replaced published name', () => {
+  const modulePath = resolve(repositoryRoot, 'infra/docker/backup-local-test.mjs')
+  const result = runIsolatedNode(`
+    import { createRequire, syncBuiltinESMExports } from 'node:module'
+    import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+    import { tmpdir } from 'node:os'
+    import { resolve } from 'node:path'
+    const require = createRequire(import.meta.url)
+    const fs = require('node:fs')
+    const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-promotion-race-'))
+    const staging = resolve(directory, 'staging.dump')
+    const published = resolve(directory, 'published.dump')
+    const ownedAside = resolve(directory, 'owned-aside.dump')
+    writeFileSync(staging, 'PGDMP-OWNED')
+    const originalLstat = fs.lstatSync
+    let replaced = false
+    fs.lstatSync = function (path, options) {
+      if (!replaced && path === published && existsSync(published)) {
+        fs.renameSync(published, ownedAside)
+        fs.writeFileSync(published, 'PGDMP-FOREIGN')
+        replaced = true
+      }
+      return originalLstat.call(this, path, options)
+    }
+    syncBuiltinESMExports()
+    const m = await import(${JSON.stringify(`${modulePath}?published-race`)})
+    let message = ''
+    try { m.promoteBackupNoReplace(staging, published) } catch (error) { message = error.message }
+    fs.lstatSync = originalLstat
+    syncBuiltinESMExports()
+    const output = {
+      message,
+      replaced,
+      publishedExists: existsSync(published),
+      published: existsSync(published) ? readFileSync(published, 'utf8') : null,
+      ownedAside: existsSync(ownedAside) ? readFileSync(ownedAside, 'utf8') : null
+    }
+    rmSync(directory, { recursive: true, force: true })
+    process.stdout.write(JSON.stringify(output))
+  `)
+  assert.equal(result.replaced, true)
+  assert.match(result.message, /inode changed during promotion/)
+  assert.equal(result.publishedExists, true)
+  assert.equal(result.published, 'PGDMP-FOREIGN')
+  assert.equal(result.ownedAside, 'PGDMP-OWNED')
+})
+
+test('backup cleanup failure rolls back the formal dump and sidecar before rejection', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-settlement-'))
+  const containers = new Map()
+  const id = 'a'.repeat(64)
+  const absent = (name) => ({
+    status: 1,
+    signal: null,
+    stdout: '',
+    stderr: `Error response from daemon: No such container: ${name}\n`
+  })
+  const run = async (argv) => {
+    if (argv[0] === 'docker' && argv[1] === 'container' && argv[2] === 'inspect') {
+      const query = argv[3]
+      const entry = [...containers.values()].find(
+        (candidate) => candidate.name === query || candidate.id === query
+      )
+      if (entry === undefined) return absent(query)
+      return {
+        status: 0,
+        signal: null,
+        stdout: JSON.stringify([{
+          Id: entry.id,
+          Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': entry.token } }
+        }]),
+        stderr: ''
+      }
+    }
+    if (argv[0] === 'docker' && argv[1] === 'cp') {
+      writeFileSync(argv[3], 'PGDMPfixture')
+      return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    if (argv[0] === 'docker' && argv[1] === 'rm') {
+      const query = argv.at(-1)
+      for (const [name, entry] of containers) {
+        if (entry.id === query) containers.delete(name)
+      }
+      return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    throw new Error(`unexpected fixture command: ${argv.join(' ')}`)
+  }
+  const compose = async (argv) => {
+    const name = argv[argv.indexOf('--name') + 1]
+    const label = argv[argv.indexOf('--label') + 1]
+    const token = label.split('=')[1]
+    containers.set(name, { name, id, token })
+    const isTransferCleanup = argv.includes('backup-transfer-loader')
+    return {
+      status: isTransferCleanup ? 17 : 0,
+      signal: null,
+      stdout: '',
+      stderr: isTransferCleanup ? 'UNTRUSTED-TRANSFER-SENTINEL' : ''
+    }
+  }
+  const dumpPath = resolve(directory, 'fixture.dump')
+  const shaPath = `${dumpPath}.sha256`
+  try {
+    await assert.rejects(
+      performBackup(
+        { compose, run, log: () => undefined },
+        { project: 'meal-agent-fixture', outputDirectory: directory, fileName: 'fixture.dump' }
+      ),
+      (error) =>
+        error instanceof Error &&
+        error.message === 'backup artifact cleanup failed' &&
+        !error.message.includes('UNTRUSTED-TRANSFER-SENTINEL')
+    )
+    assert.equal(existsSync(dumpPath), false)
+    assert.equal(existsSync(shaPath), false)
+    assert.equal(containers.size, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -373,6 +561,58 @@ test('M4 restarts only the exact existing container without traversing Compose d
       error.message === 'existing container start failed with exit 7' &&
       !error.message.includes(sentinel)
   )
+})
+
+test('image evidence failures never echo Docker stderr or an untrusted tag', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-image-evidence-'))
+  const docker = resolve(directory, 'docker')
+  const sentinel = 'GROUP-E-DOCKER-SENTINEL'
+  try {
+    writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' '${sentinel}' >&2\nexit 7\n`)
+    chmodSync(docker, 0o700)
+    await assert.rejects(
+      imageIdOf('UNTRUSTED-TAG-SENTINEL', {
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}` }
+      }),
+      (error) =>
+        error instanceof Error &&
+        error.message === 'docker image inspect evidence failed (7)' &&
+        !error.message.includes(sentinel) &&
+        !error.message.includes('UNTRUSTED-TAG-SENTINEL')
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the Secret identity CLI reports Docker failures with fixed diagnostics', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-secret-probe-output-'))
+  const docker = resolve(directory, 'docker')
+  const sentinel = 'SECRET-IDENTITY-BUILD-SENTINEL'
+  try {
+    writeFileSync(
+      docker,
+      `#!/bin/sh\ncase " $* " in\n  *" compose "*" build api "*) printf '%s\\n' '${sentinel}' >&2; exit 7 ;;\nesac\nexit 0\n`
+    )
+    chmodSync(docker, 0o700)
+    const outcome = spawnSync(
+      process.execPath,
+      [resolve(repositoryRoot, 'infra/docker/probe-compose-secret-identity.mjs')],
+      {
+        cwd: repositoryRoot,
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}` },
+        encoding: 'utf8',
+        timeout: 20_000,
+        maxBuffer: 8 * 1024 * 1024
+      }
+    )
+    assert.equal(outcome.error, undefined)
+    assert.equal(outcome.status, 1)
+    assert.match(outcome.stderr, /Compose secret identity probe evidence collection failed/)
+    assert.doesNotMatch(`${outcome.stdout}${outcome.stderr}`, new RegExp(sentinel))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('restore sidecars must be bounded regular files', () => {

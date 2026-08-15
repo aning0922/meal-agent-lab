@@ -1122,7 +1122,7 @@ process.stdout.write('Group B: compose mutation negatives\n')
         '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n' +
         '      - admin-url-secret:/run/secrets/meal_agent_admin_database_url:ro\n' +
         '    ports:\n',
-      expect: /api: runtime must never receive the admin-url-secret credential volume/
+      expect: /api: runtime must never receive an admin, migration, or backup credential volume/
     },
     {
       name: 'api additionally mounts the migration secret',
@@ -1135,7 +1135,7 @@ process.stdout.write('Group B: compose mutation negatives\n')
         '      - runtime-url-secret:/run/secrets/meal_agent_runtime_database_url:ro\n' +
         '      - migration-url-secret:/run/secrets/meal_agent_migration_database_url:ro\n' +
         '    ports:\n',
-      expect: /api: runtime must never receive the migration-url-secret credential volume/
+      expect: /api: runtime must never receive an admin, migration, or backup credential volume/
     },
     {
       name: 'the api host publish address becomes 0.0.0.0',
@@ -1149,7 +1149,7 @@ process.stdout.write('Group B: compose mutation negatives\n')
       to:
         '    command:\n      - node\n      - /app/dist/database/migrate.js\n' +
         '      - postgresql://synthetic-user:synthetic-pass@postgres:5432/meal_agent\n',
-      expect: /migrate: expected command/
+      expect: /migrate: command drifted from the registered fixed value/
     }
   ]
   for (const mutation of composeMutations) {

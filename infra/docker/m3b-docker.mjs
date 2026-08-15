@@ -209,7 +209,7 @@ export const imageIdOf = async (tag, { env } = {}) => {
     const id = result.stdout.trim()
     if (id === '') {
       throw new DockerEvidenceError(
-        `docker image inspect ${tag} exited 0 without printing an image ID`
+        'docker image inspect exited 0 without printing an image ID'
       )
     }
     return id
@@ -218,9 +218,9 @@ export const imageIdOf = async (tag, { env } = {}) => {
     return null
   }
   throw new DockerEvidenceError(
-    `docker image inspect ${tag} exited ${
+    `docker image inspect evidence failed (${
       result.status === null ? `on signal ${String(result.signal)}` : String(result.status)
-    }: ${result.stderr.trim().split('\n').slice(-1)[0] ?? '(no stderr)'}`
+    })`
   )
 }
 

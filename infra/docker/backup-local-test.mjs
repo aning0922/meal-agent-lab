@@ -187,11 +187,6 @@ export const promoteBackupNoReplace = (
   let publishedIdentity = null
   try {
     const linkedStat = lstatSync(publishedPath, { bigint: true })
-    publishedIdentity = Object.freeze({
-      path: publishedPath,
-      dev: linkedStat.dev,
-      ino: linkedStat.ino
-    })
     if (
       !linkedStat.isFile() ||
       linkedStat.nlink !== 2n ||
@@ -201,6 +196,14 @@ export const promoteBackupNoReplace = (
     ) {
       throw new Error('the backup handoff inode changed during promotion')
     }
+    // 只有证明 published 名仍指向**创建 link 前登记的 staging inode**之后，
+    // 才能取得删除所有权。若名字在 link→lstat 窗口被外部替换，linkedStat
+    // 不匹配，publishedIdentity 继续为 null，catch 绝不会删除替换物。
+    publishedIdentity = Object.freeze({
+      path: publishedPath,
+      dev: stagingIdentity.dev,
+      ino: stagingIdentity.ino
+    })
     unlinkSync(stagingPath)
     const finalStat = lstatSync(publishedPath, { bigint: true })
     if (
@@ -213,8 +216,8 @@ export const promoteBackupNoReplace = (
     }
     return publishedIdentity
   } catch (error) {
-    // link(2) 成功创建的 published 名属于本轮；只在它仍指向刚观察到的 inode 时
-    // 撤销这一条 link。staging 名若被并发替换则原样保留。
+    // 只撤销**已经证明属于本轮 staging inode**的 published link。link 成功并不
+    // 自动赋予路径名所有权；名字可能在紧随其后的 lstat 前被外部替换。
     if (
       publishedIdentity !== null &&
       existsSync(publishedPath) &&
@@ -315,23 +318,10 @@ export const performBackup = async (
   const sidecarOwnedIdentities = []
   let completed = false
   let cleanupPromise = null
-  const cleanupArtifacts = () => {
-    cleanupPromise ??= (async () => {
+  let transientCleanupPromise = null
+  const cleanupTransientArtifacts = () => {
+    transientCleanupPromise ??= (async () => {
       const residue = []
-      if (!completed) {
-        for (const identity of [
-          ...sidecarOwnedIdentities,
-          publishedSidecarIdentity,
-          publishedIdentity
-        ]) {
-          if (identity === null || !existsSync(identity.path)) continue
-          try {
-            if (!removeOwnedFile(identity)) residue.push('backup artifact ownership drifted')
-          } catch {
-            residue.push('backup artifact cleanup failed')
-          }
-        }
-      }
       try {
         const current = lstatSync(partialDirectory, { bigint: true })
         if (
@@ -362,6 +352,28 @@ export const performBackup = async (
       } catch {
         residue.push('backup transfer artifact cleanup failed')
       }
+      return residue
+    })()
+    return transientCleanupPromise
+  }
+  const cleanupArtifacts = () => {
+    cleanupPromise ??= (async () => {
+      const residue = []
+      if (!completed) {
+        for (const identity of [
+          ...sidecarOwnedIdentities,
+          publishedSidecarIdentity,
+          publishedIdentity
+        ]) {
+          if (identity === null || !existsSync(identity.path)) continue
+          try {
+            if (!removeOwnedFile(identity)) residue.push('backup artifact ownership drifted')
+          } catch {
+            residue.push('backup artifact cleanup failed')
+          }
+        }
+      }
+      residue.push(...(await cleanupTransientArtifacts()))
       return residue
     })()
     return cleanupPromise
@@ -429,10 +441,26 @@ export const performBackup = async (
       throw new Error('the published backup artifact ownership drifted before completion')
     }
 
+    // 正式 artifact 的 commit 必须晚于 transfer/private transient cleanup。cleanup
+    // 失败时仍处于未提交态，catch/finally 会删除本轮 dump 与 sidecar；不能返回
+    // failure 却把两份敏感正式制品留在目标路径。
+    const transientResidue = await cleanupTransientArtifacts()
+    if (transientResidue.length > 0) {
+      throw new Error('backup artifact cleanup failed')
+    }
+    if (
+      publishedIdentity === null ||
+      !identityMatches(publishedIdentity) ||
+      sha256OfFile(dumpPath) !== sha256 ||
+      publishedSidecarIdentity === null ||
+      !identityMatches(publishedSidecarIdentity)
+    ) {
+      throw new Error('the published backup artifact ownership drifted before completion')
+    }
+    completed = true
     log(`backup complete: deployment=local-test project=${project} database=${targetDatabase}`)
     log(`backup file: ${dumpPath}`)
     log(`backup sha256: ${sha256}`)
-    completed = true
     return { dumpPath, shaPath, sha256 }
   } catch (error) {
     // 只有仍与本轮已登记 inode 相同的正式文件才可回滚；外部替换必须保留并把

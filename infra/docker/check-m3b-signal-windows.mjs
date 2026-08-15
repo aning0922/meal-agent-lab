@@ -978,7 +978,7 @@ const handlerCases = [
     beforeSignal: '',
     expectedStatus: 1,
     expectedSignal: null,
-    expectedReason: /fixture cleanup left 1 residue item/
+    expectedReason: /scoped cleanup left 1 residue item/
   },
   {
     label: 'throw',
@@ -986,7 +986,7 @@ const handlerCases = [
     beforeSignal: '',
     expectedStatus: 1,
     expectedSignal: null,
-    expectedReason: /fixture cleanup failed during signal cleanup/
+    expectedReason: /scoped cleanup failed during signal handling/
   },
   {
     label: 'invalid-return',
@@ -994,7 +994,7 @@ const handlerCases = [
     beforeSignal: '',
     expectedStatus: 1,
     expectedSignal: null,
-    expectedReason: /fixture cleanup returned an invalid cleanup result/
+    expectedReason: /scoped cleanup returned an invalid result/
   },
   {
     label: 'termination-primitive',

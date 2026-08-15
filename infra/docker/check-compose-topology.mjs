@@ -23,6 +23,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  ambientGitRepositoryViewOverrides,
   assertCanonicalGitRepositoryView,
   canonicalGitArguments
 } from './local-test-secrets-contract.mjs'
@@ -520,14 +521,17 @@ const abort = (message) => {
 // Git 的 ambient plumbing 变量能把 index/worktree/object database 整体替换掉；
 // 必须在第一次 Docker/Git 调用之前拒绝，而不是让后面的 `git ls-files` 在一张
 // alternate index 上得出「Secret 没被跟踪」的假结论。
+const ambientGitOverrides = ambientGitRepositoryViewOverrides()
+if (ambientGitOverrides.length > 0) {
+  abort(
+    `compose topology check requires the canonical Git repository view: ` +
+      `${ambientGitOverrides.join(', ')}`
+  )
+}
 try {
   assertCanonicalGitRepositoryView(repositoryRoot)
-} catch (error) {
-  abort(
-    `compose topology check requires the canonical Git repository view: ${
-      error instanceof Error ? error.message : 'Git repository view validation failed'
-    }`
-  )
+} catch {
+  abort('compose topology check requires the canonical Git repository view')
 }
 // 对象按键排序后再比较（Compose 输出的键序不稳定），数组保持顺序——argv 与
 // 挂载顺序是语义的一部分，不能被规范化掉。
@@ -594,10 +598,7 @@ const gitTracks = (path) => {
     maxBuffer: 8 * 1024 * 1024
   })
   if (result.error !== undefined) {
-    abort(
-      `compose topology check is missing a prerequisite tool: ` +
-        `failed to run git (${result.error.message})`
-    )
+    abort('compose topology check is missing a prerequisite tool')
   }
   if (result.status === 0) {
     return true
@@ -606,11 +607,7 @@ const gitTracks = (path) => {
   if (result.status === 1) {
     return false
   }
-  abort(
-    `compose topology check could not determine whether ${path} is tracked ` +
-      `(git ls-files exit=${String(result.status)}): ` +
-      `${result.stderr.trim() || '(no stderr)'}`
-  )
+  abort('compose topology check could not determine whether a required path is tracked')
   return true
 }
 
@@ -658,7 +655,7 @@ const declaredTopLevelSection = (section) => {
     }
     const match = canonicalBareKey.exec(line)
     if (match === null) {
-      problems.push(`line ${index + 1}: ${line.trim()}`)
+      problems.push(index + 1)
       continue
     }
     keys.push(match[1])
@@ -696,20 +693,15 @@ for (const [section, expectedKeys] of [
     )
     continue
   }
-  for (const problem of declared.problems) {
+  for (const lineNumber of declared.problems) {
     declaredSectionProblems.push(
       `declared top-level ${section} uses a non-canonical declaration ` +
-        `(${problem}); this section only accepts canonical bare keys so the ` +
-        `source scan can never silently miss a declaration`
+        `(line ${String(lineNumber)} omitted); this section only accepts canonical bare ` +
+        `keys so the source scan can never silently miss a declaration`
     )
   }
   if (!same(declared.keys, expectedKeys)) {
-    fail(
-      `declared top-level ${section} drifted: got [${declared.keys.join(', ')}], ` +
-        `expected [${expectedKeys.join(', ')}] ` +
-        `(unreferenced declarations are pruned from the resolved config, ` +
-        `so this one is read from the compose source)`
-    )
+    fail(`declared top-level ${section} drifted from its registered fixed set`)
   }
 }
 if (declaredSectionProblems.length > 0) {
@@ -735,10 +727,7 @@ const serviceNames = Object.keys(services).sort()
 // 1. 服务集合与显式调用边界
 // --------------------------------------------------------------------------
 if (!same(serviceNames, serviceOrder)) {
-  fail(
-    `unexpected service set: got [${serviceNames.join(', ')}], ` +
-      `expected [${serviceOrder.join(', ')}]`
-  )
+  fail('unexpected service set')
 }
 
 // 默认 profile 只能是 materializer/postgres/migrate/api：bootstrap 绝不能在 `docker compose
@@ -749,10 +738,7 @@ const activeByDefault = runCompose(['config', '--services'])
   .filter(Boolean)
   .sort()
 if (!same(activeByDefault, [...defaultServices].sort())) {
-  fail(
-    `default profile must contain exactly [${defaultServices.join(', ')}], ` +
-      `got [${activeByDefault.join(', ')}]`
-  )
+  fail('default profile must contain exactly the registered fixed service set')
 }
 
 // --------------------------------------------------------------------------
@@ -811,49 +797,31 @@ for (const name of serviceOrder) {
   }
 
   if (service.image !== expected.image) {
-    fail(`${name}: expected image ${expected.image}, got ${service.image ?? '(none)'}`)
+    fail(`${name}: image drifted from the registered fixed value`)
   }
   if (service.user !== expected.user) {
-    fail(`${name}: expected user ${expected.user}, got ${service.user ?? '(none)'}`)
+    fail(`${name}: user drifted from the registered fixed value`)
   }
   if (!same((service.profiles ?? []).slice().sort(), expected.profiles.slice().sort())) {
-    fail(
-      `${name}: expected profiles [${expected.profiles.join(', ')}], ` +
-        `got [${(service.profiles ?? []).join(', ')}]`
-    )
+    fail(`${name}: profile set drifted from the registered fixed set`)
   }
   if (!same(service.entrypoint ?? null, expected.entrypoint)) {
-    fail(
-      `${name}: expected entrypoint ${JSON.stringify(expected.entrypoint)}, ` +
-        `got ${JSON.stringify(service.entrypoint ?? null)}`
-    )
+    fail(`${name}: entrypoint drifted from the registered fixed value`)
   }
   if (!same(service.command ?? null, expected.command)) {
-    fail(
-      `${name}: expected command ${JSON.stringify(expected.command)}, ` +
-        `got ${JSON.stringify(service.command ?? null)}`
-    )
+    fail(`${name}: command drifted from the registered fixed value`)
   }
   if ((service.network_mode ?? null) !== (expected.networkMode ?? null)) {
-    fail(
-      `${name}: expected network_mode ${expected.networkMode ?? '(none)'}, ` +
-        `got ${service.network_mode ?? '(none)'}`
-    )
+    fail(`${name}: network_mode drifted from the registered fixed value`)
   }
   if (!same(Object.keys(service.networks ?? {}).sort(), expected.networks)) {
-    fail(
-      `${name}: expected networks [${expected.networks.join(', ')}], ` +
-        `got [${Object.keys(service.networks ?? {}).join(', ')}]`
-    )
+    fail(`${name}: network set drifted from the registered fixed set`)
   }
 
   const actualMounts = (service.volumes ?? []).map(normalizeMount)
   const expectedMounts = expected.mounts.map(normalizeMount)
   if (!same(actualMounts, expectedMounts)) {
-    fail(
-      `${name}: mount set drifted: got ${JSON.stringify(actualMounts)}, ` +
-        `expected ${JSON.stringify(expectedMounts)}`
-    )
+    fail(`${name}: mount set drifted from the registered fixed set`)
   }
 
   const actualSecrets = (service.secrets ?? []).map((entry) => ({
@@ -861,17 +829,11 @@ for (const name of serviceOrder) {
     target: entry.target
   }))
   if (!same(actualSecrets, expected.secrets ?? [])) {
-    fail(
-      `${name}: raw Compose secret set drifted: got ${JSON.stringify(actualSecrets)}, ` +
-        `expected ${JSON.stringify(expected.secrets ?? [])}`
-    )
+    fail(`${name}: raw Compose secret set drifted from the registered fixed set`)
   }
 
   if (!same(service.tmpfs ?? [], expected.tmpfs)) {
-    fail(
-      `${name}: tmpfs drifted: got ${JSON.stringify(service.tmpfs ?? [])}, ` +
-        `expected ${JSON.stringify(expected.tmpfs)}`
-    )
+    fail(`${name}: tmpfs drifted from the registered fixed set`)
   }
 
   const actualDependsOn = Object.fromEntries(
@@ -881,10 +843,7 @@ for (const name of serviceOrder) {
     ])
   )
   if (!same(actualDependsOn, expected.dependsOn)) {
-    fail(
-      `${name}: depends_on drifted: got ${JSON.stringify(actualDependsOn)}, ` +
-        `expected ${JSON.stringify(expected.dependsOn)}`
-    )
+    fail(`${name}: depends_on drifted from the registered fixed set`)
   }
 
   const actualEnvironment = Object.fromEntries(
@@ -915,10 +874,7 @@ for (const name of serviceOrder) {
       mount.source !== secretVolumes[nameFromPath] ||
       mount.read_only !== true
     ) {
-      fail(
-        `${name}: ${key} must be backed by the read-only materialized volume ` +
-          `${secretVolumes[nameFromPath] ?? '(unknown secret)'}`
-      )
+      fail(`${name}: ${key} must be backed by its registered read-only materialized volume`)
     }
   }
 }
@@ -926,7 +882,7 @@ for (const name of serviceOrder) {
 // API runtime 绝不能持有 admin / migration / backup 凭据（验收门禁 #4）。
 for (const entry of services.api?.volumes ?? []) {
   if (/admin|migration|backup/.test(String(entry.source ?? ''))) {
-    fail(`api: runtime must never receive the ${entry.source} credential volume`)
+    fail('api: runtime must never receive an admin, migration, or backup credential volume')
   }
 }
 
@@ -940,10 +896,10 @@ for (const name of serviceOrder) {
     continue
   }
   if (!digestPattern.test(image)) {
-    fail(`${name}: image must pin an immutable sha256 digest, got ${image}`)
+    fail(`${name}: image must pin an immutable sha256 digest`)
   }
   if (/:(latest|lts|stable)(@|$)/.test(image)) {
-    fail(`${name}: floating image tag is not allowed, got ${image}`)
+    fail(`${name}: floating image tag is not allowed`)
   }
 }
 
@@ -951,21 +907,19 @@ for (const name of serviceOrder) {
 // 的 Dockerfile。build 缺失即失败——不能因为「没写 build」就跳过检查。
 for (const name of apiImageServices) {
   const build = services[name]?.build
-  if (build === undefined) {
+  if (build === undefined || build === null || typeof build !== 'object' || Array.isArray(build)) {
     fail(`${name}: must declare a build stanza pinning ${apiDockerfile}`)
     continue
   }
+  const buildKeys = Object.keys(build).sort()
+  if (!same(buildKeys, ['context', 'dockerfile'])) {
+    fail(`${name}: build contains unsupported execution capability fields`)
+  }
   if (resolve(build.context ?? '') !== repositoryRoot) {
-    fail(
-      `${name}: build context must be the monorepo root ${repositoryRoot}, ` +
-        `got ${build.context ?? '(none)'}`
-    )
+    fail(`${name}: build context must be the registered monorepo root`)
   }
   if (build.dockerfile !== apiDockerfile) {
-    fail(
-      `${name}: build must use ${apiDockerfile}, got ` +
-        `${build.dockerfile ?? '(none)'}`
-    )
+    fail(`${name}: build must use the registered API Dockerfile`)
   }
 }
 
@@ -982,14 +936,14 @@ for (const name of serviceOrder) {
   for (const key of hostModes) {
     const value = service[key]
     if (typeof value === 'string' && value.split(':')[0] === 'host') {
-      fail(`${name}: ${key}: host is not allowed (got ${value})`)
+      fail(`${name}: ${key}: host is not allowed`)
     }
   }
   if (
     service.network_mode !== undefined &&
     service.network_mode !== expectations[name].networkMode
   ) {
-    fail(`${name}: unexpected network_mode ${service.network_mode}`)
+    fail(`${name}: unexpected network_mode`)
   }
 
   const securityOpt = service.security_opt ?? []
@@ -998,7 +952,7 @@ for (const name of serviceOrder) {
   }
   for (const option of securityOpt) {
     if (/unconfined/.test(option)) {
-      fail(`${name}: security_opt must not relax confinement (got ${option})`)
+      fail(`${name}: security_opt must not relax confinement`)
     }
   }
 
@@ -1008,16 +962,13 @@ for (const name of serviceOrder) {
   const capAdd = (service.cap_add ?? []).slice().sort()
   const expectedCapAdd = (expectations[name].capAdd ?? []).slice().sort()
   if (!same(capAdd, expectedCapAdd)) {
-    fail(
-      `${name}: cap_add drifted: got [${capAdd.join(', ')}], ` +
-        `expected [${expectedCapAdd.join(', ')}]`
-    )
+    fail(`${name}: cap_add drifted from the registered fixed set`)
   }
   if ((service.devices ?? []).length > 0) {
     fail(`${name}: device passthrough is not allowed`)
   }
   if (service.restart !== 'no') {
-    fail(`${name}: restart must be "no", got ${service.restart ?? '(none)'}`)
+  fail(`${name}: restart must be "no"`)
   }
   if (service.read_only !== true) {
     fail(`${name}: read_only root filesystem must be enabled`)
@@ -1031,7 +982,7 @@ for (const name of serviceOrder) {
 
   const logging = service.logging ?? {}
   if (logging.driver !== 'json-file') {
-    fail(`${name}: logging driver must be json-file, got ${logging.driver ?? '(none)'}`)
+    fail(`${name}: logging driver must be json-file`)
   }
   const loggingOptions = logging.options ?? {}
   if (loggingOptions['max-size'] === undefined || loggingOptions['max-file'] === undefined) {
@@ -1041,14 +992,14 @@ for (const name of serviceOrder) {
   for (const mount of service.volumes ?? []) {
     const source = String(mount.source ?? '')
     if (/docker\.sock/.test(source) || /docker\.sock/.test(String(mount.target ?? ''))) {
-      fail(`${name}: mounting the Docker socket is not allowed (${source})`)
+      fail(`${name}: mounting the Docker socket is not allowed`)
     }
     if (mount.type === 'bind') {
       if (mount.read_only !== true) {
-        fail(`${name}: bind mount ${source} must be read-only`)
+        fail(`${name}: every bind mount must be read-only`)
       }
       if (!insideRepository(source)) {
-        fail(`${name}: bind mount ${source} must stay inside the repository`)
+        fail(`${name}: every bind mount must stay inside the repository`)
       }
     }
   }
@@ -1070,24 +1021,21 @@ for (const name of serviceOrder) {
     continue
   }
   if (ports.length !== 1) {
-    fail(`${name}: expected exactly one published port, got ${ports.length}`)
+    fail(`${name}: expected exactly one published port`)
     continue
   }
   const [port] = ports
   if (port.host_ip !== apiHostIp) {
-    fail(
-      `${name}: host publish address must be exactly ${apiHostIp}, ` +
-        `got ${port.host_ip ?? '(unqualified)'}`
-    )
+    fail(`${name}: host publish address must be exactly ${apiHostIp}`)
   }
   if (Number(port.target) !== apiContainerPort) {
-    fail(`${name}: container port must be ${apiContainerPort}, got ${port.target}`)
+    fail(`${name}: container port must be ${apiContainerPort}`)
   }
   if ((port.protocol ?? 'tcp') !== 'tcp') {
-    fail(`${name}: published port must be tcp, got ${port.protocol}`)
+    fail(`${name}: published port must be tcp`)
   }
   if (!/^[0-9]+$/.test(String(port.published))) {
-    fail(`${name}: published host port must be a single number, got ${port.published}`)
+    fail(`${name}: published host port must be a single number`)
   }
 }
 
@@ -1096,17 +1044,10 @@ for (const name of serviceOrder) {
 // --------------------------------------------------------------------------
 const networks = resolved.networks ?? {}
 if (!same(Object.keys(networks).sort(), expectedNetworkKeys)) {
-  fail(
-    `top-level networks drifted: got [${Object.keys(networks).join(', ')}], ` +
-      `expected [${expectedNetworkKeys.join(', ')}]`
-  )
+  fail('top-level networks drifted from the registered fixed set')
 }
 if (!same(Object.keys(resolved.volumes ?? {}).sort(), expectedVolumeKeys)) {
-  fail(
-    `top-level volumes drifted: got ` +
-      `[${Object.keys(resolved.volumes ?? {}).join(', ')}], ` +
-      `expected [${expectedVolumeKeys.join(', ')}]`
-  )
+  fail('top-level volumes drifted from the registered fixed set')
 }
 if (networks.internal?.internal !== true) {
   fail('networks.internal must set internal: true (no gateway, no host port)')
@@ -1115,19 +1056,13 @@ if (networks.internal?.internal !== true) {
 for (const [key, definition] of Object.entries(networks)) {
   const expectedName = `${resolved.name}_${key}`
   if (definition.name !== expectedName) {
-    fail(
-      `networks.${key}: name must be project-scoped (${expectedName}), ` +
-        `got ${definition.name ?? '(none)'}`
-    )
+    fail('network names must be project-scoped')
   }
 }
 for (const [key, definition] of Object.entries(resolved.volumes ?? {})) {
   const expectedName = `${resolved.name}_${key}`
   if (definition.name !== expectedName) {
-    fail(
-      `volumes.${key}: name must be project-scoped (${expectedName}), ` +
-        `got ${definition.name ?? '(none)'}`
-    )
+    fail('volume names must be project-scoped')
   }
 }
 
@@ -1138,7 +1073,7 @@ const probes = probeNames.map((project) =>
 )
 for (const [index, probe] of probes.entries()) {
   if (probe.name !== probeNames[index]) {
-    fail(`--project-name ${probeNames[index]} was not honoured (got ${probe.name})`)
+    fail('the registered --project-name was not honoured')
   }
 }
 const probeIdentifiers = probes.map((probe) =>
@@ -1149,10 +1084,7 @@ const probeIdentifiers = probes.map((probe) =>
 )
 for (const identifier of probeIdentifiers[0]) {
   if (probeIdentifiers[1].includes(identifier)) {
-    fail(
-      `network/volume ${identifier} is shared across project names; ` +
-        `parallel worktrees would collide`
-    )
+    fail('a network or volume is shared across project names')
   }
 }
 
@@ -1165,10 +1097,7 @@ for (const poison of ['evil', '--host=evil', 'meal_agent postgres']) {
     MEAL_AGENT_DATABASE: poison
   })
   if (poisoned !== baseline) {
-    fail(
-      `database identity is influenced by MEAL_AGENT_DATABASE=${poison}; ` +
-        `M2B pins it to ${databaseName} and defers configurability to M3`
-    )
+    fail('database identity is influenced by an ambient override')
   }
 }
 for (const name of ['bootstrap-createdb', 'bootstrap-handoff', 'bootstrap-acl', 'bootstrap-grants']) {
@@ -1188,13 +1117,13 @@ for (const name of serviceOrder) {
   for (const [key, rawValue] of Object.entries(services[name]?.environment ?? {})) {
     const value = rawValue === null ? '' : String(rawValue)
     if (secretKeyPattern.test(key)) {
-      fail(`${name}: ${key} must not carry a value in Compose; use a secret file`)
+      fail(`${name}: a sensitive environment key must not carry a value in Compose`)
     }
     if (key === 'DATABASE_URL' || key === 'PGPASSWORD') {
-      fail(`${name}: ${key} must not appear in Compose; use a secret file`)
+      fail(`${name}: a database credential variable must not appear in Compose`)
     }
     if (connectionStringPattern.test(value) || credentialsInUrlPattern.test(value)) {
-      fail(`${name}: ${key} looks like a connection string with credentials`)
+      fail(`${name}: an environment value looks like a connection string with credentials`)
     }
   }
 }
@@ -1203,10 +1132,7 @@ for (const name of serviceOrder) {
 const secretNames = Object.keys(resolved.secrets ?? {}).sort()
 const expectedSecretNames = Object.keys(expectedSecretFiles).sort()
 if (!same(secretNames, expectedSecretNames)) {
-  fail(
-    `top-level secrets drifted: got [${secretNames.join(', ')}], ` +
-      `expected [${expectedSecretNames.join(', ')}]`
-  )
+  fail('top-level secrets drifted from the registered fixed set')
 }
 
 // 每个 secret 的 backing file 身份必须精确：effective 目录 + 期望文件名。
@@ -1215,15 +1141,12 @@ const assertSecretFiles = (definitions, directory, label) => {
   for (const [name, expectedFilename] of Object.entries(expectedSecretFiles)) {
     const file = definitions[name]?.file
     if (typeof file !== 'string' || file === '') {
-      fail(`secret ${name}: must be backed by a file (${label})`)
+      fail(`secret ${name}: must be backed by a file in the registered source mode`)
       continue
     }
     const expectedFile = resolve(directory, expectedFilename)
     if (resolve(file) !== expectedFile) {
-      fail(
-        `secret ${name}: backing file must be ${expectedFile} (${label}), ` +
-          `got ${resolve(file)}`
-      )
+      fail(`secret ${name}: backing file drifted from the registered source path`)
     }
   }
 }
@@ -1244,11 +1167,7 @@ for (const name of Object.keys(expectedSecretFiles)) {
   const emptyFile = emptySecrets[name]?.file
   const unsetFile = unsetSecrets[name]?.file
   if (emptyFile !== unsetFile) {
-    fail(
-      `MEAL_AGENT_SECRETS_DIR='' must resolve identically to leaving it unset; ` +
-        `secret ${name} resolved to ${emptyFile ?? '(none)'} when empty but ` +
-        `${unsetFile ?? '(none)'} when unset`
-    )
+    fail("MEAL_AGENT_SECRETS_DIR='' must resolve identically to leaving it unset")
   }
 }
 assertSecretFiles(
@@ -1273,16 +1192,13 @@ for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
   // 仓库外的 secret 目录是显式支持的分支：它不可能被 Git 跟踪，因此只检查权限。
   if (insideRepository(file)) {
     if (gitTracks(file)) {
-      fail(`secret ${name}: ${file} is tracked by git; secrets must stay untracked`)
+      fail(`secret ${name}: its backing file is tracked by git; secrets must stay untracked`)
     }
   }
   if (existsSync(file)) {
     const mode = statSync(file).mode & 0o777
     if ((mode & 0o077) !== 0) {
-      fail(
-        `secret ${name}: ${file} is group/world accessible ` +
-          `(mode ${mode.toString(8).padStart(3, '0')}); use chmod 600`
-      )
+      fail(`secret ${name}: its backing file is group/world accessible`)
     }
   }
 }
@@ -1309,26 +1225,17 @@ for (const [key, expectedValue] of Object.entries(pinnedDeployment)) {
     continue
   }
   if (apiEnvironment[key] !== expectedValue) {
-    fail(
-      `api: ${key} must be ${expectedValue} in the local-test topology, ` +
-        `got ${apiEnvironment[key]}`
-    )
+    fail(`api: ${key} must use its registered local-test value`)
   }
 }
 // 与 config.ts 完全相同的判据，在 Compose 层再执行一次：fake adapter 只允许
 // 出现在 local-test + loopback + 非 production 上。
 if (apiEnvironment['WECHAT_ADAPTER'] === 'fake') {
   if (apiEnvironment['DEPLOYMENT_STAGE'] !== 'local-test') {
-    fail(
-      `api: the fake WeChat adapter is only allowed at DEPLOYMENT_STAGE ` +
-        `local-test, got ${apiEnvironment['DEPLOYMENT_STAGE'] ?? '(none)'}`
-    )
+      fail('api: the fake WeChat adapter is only allowed at DEPLOYMENT_STAGE local-test')
   }
   if (apiEnvironment['DEPLOYMENT_EXPOSURE'] !== 'loopback') {
-    fail(
-      `api: the fake WeChat adapter is only allowed at DEPLOYMENT_EXPOSURE ` +
-        `loopback, got ${apiEnvironment['DEPLOYMENT_EXPOSURE'] ?? '(none)'}`
-    )
+      fail('api: the fake WeChat adapter is only allowed at DEPLOYMENT_EXPOSURE loopback')
   }
   if (apiEnvironment['NODE_ENV'] === 'production') {
     fail('api: the fake WeChat adapter is not allowed with NODE_ENV=production')
@@ -1362,18 +1269,27 @@ for (const name of serviceOrder) {
 // 9. 健康检查
 // --------------------------------------------------------------------------
 const postgresHealth = services.postgres?.healthcheck?.test ?? []
-if (postgresHealth[0] !== 'CMD' || postgresHealth[1] !== 'pg_isready') {
-  fail('postgres: healthcheck must use the image-provided pg_isready via CMD')
+const expectedPostgresHealth = [
+  'CMD',
+  'pg_isready',
+  '--host=127.0.0.1',
+  '--port=5432',
+  '--username=postgres',
+  '--dbname=postgres',
+  '--quiet'
+]
+if (!same(postgresHealth, expectedPostgresHealth)) {
+  fail('postgres: healthcheck drifted from the registered pg_isready argv')
 }
 const apiHealth = services.api?.healthcheck?.test ?? []
-if (apiHealth[0] !== 'CMD' || apiHealth[1] !== 'node') {
-  fail('api: healthcheck must use the image-provided node binary via CMD')
-}
-const apiHealthText = apiHealth.join(' ')
-for (const forbidden of ['curl', 'wget', 'apt', 'apt-get', 'apk', 'npm', 'pnpm', 'yarn']) {
-  if (new RegExp(`(^|[^a-z])${forbidden}([^a-z]|$)`).test(apiHealthText)) {
-    fail(`api: healthcheck must not depend on ${forbidden} (nothing is installed at runtime)`)
-  }
+const expectedApiHealth = [
+  'CMD',
+  'node',
+  '-e',
+  "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+]
+if (!same(apiHealth, expectedApiHealth)) {
+  fail('api: healthcheck drifted from the registered /healthz probe argv')
 }
 
 // --------------------------------------------------------------------------
