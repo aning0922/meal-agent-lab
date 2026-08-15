@@ -123,14 +123,46 @@ for (const f of ${JSON.stringify(targets)}) {
 }
 `
 
-const parseProbeLine = (line) => {
-  const fields = {}
-  const parts = line.trim().split(/\s+/)
-  for (const part of parts.slice(2)) {
-    const [key, value] = part.split('=')
-    fields[key] = value
+const probeRecordPattern =
+  /^PROBE (\S+) euid=([0-9]+) uid=([0-9]+) mode=([0-7]{4}) nlink=([0-9]+) regular=(yes|no) readable=(yes|no) symlink=(yes|no)$/
+
+/**
+ * 把容器 stdout 解释成一个**闭合协议**，而不是从任意文本里捞出看起来像 PROBE 的行。
+ * 字段名、顺序、数量、record 数量与 path 集合全部精确；未知/重复字段、额外文本、
+ * 重复/缺失/额外 path 都用同一个固定异常拒绝，绝不把原始输出带进诊断。
+ */
+export const parseProbeEvidence = (stdout, expectedPaths) => {
+  const invalid = () => {
+    throw new Error('invalid probe evidence protocol')
   }
-  return { path: parts[1], fields }
+  if (typeof stdout !== 'string' || !Array.isArray(expectedPaths) || expectedPaths.length === 0) {
+    invalid()
+  }
+  const framed = stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout
+  const lines = framed.split('\n')
+  if (lines.length !== expectedPaths.length || lines.some((line) => line.length === 0)) {
+    invalid()
+  }
+  const expected = new Set(expectedPaths)
+  if (expected.size !== expectedPaths.length) invalid()
+  const byPath = new Map()
+  for (const line of lines) {
+    const match = probeRecordPattern.exec(line)
+    if (match === null || !expected.has(match[1]) || byPath.has(match[1])) {
+      invalid()
+    }
+    byPath.set(match[1], {
+      euid: match[2],
+      uid: match[3],
+      mode: match[4],
+      nlink: match[5],
+      regular: match[6],
+      readable: match[7],
+      symlink: match[8]
+    })
+  }
+  if (byPath.size !== expected.size) invalid()
+  return byPath
 }
 
 /** CLI 信号处置读取的现场登记（正常、失败、信号三条路径共用同一套 cleanup）。 */
@@ -293,11 +325,16 @@ const main = async () => {
         }
         continue
       }
-      const lines = result.stdout.split('\n').filter((line) => line.startsWith('PROBE '))
-      const byPath = new Map(lines.map((line) => {
-        const parsed = parseProbeLine(line)
-        return [parsed.path, parsed.fields]
-      }))
+      const expectedPaths = plan.secrets.map(
+        (secretName) => `/run/secrets/${secretName}/value`
+      )
+      let byPath
+      try {
+        byPath = parseProbeEvidence(result.stdout, expectedPaths)
+      } catch {
+        failures.push(`${plan.service}: in-container probe returned an invalid evidence protocol`)
+        continue
+      }
       for (const secretName of plan.secrets) {
         const target = `/run/secrets/${secretName}/value`
         const fields = byPath.get(target)

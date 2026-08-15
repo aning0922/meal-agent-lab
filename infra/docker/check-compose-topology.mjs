@@ -796,6 +796,17 @@ for (const name of serviceOrder) {
     fail(`${name}: resolved service contains unsupported capability fields`)
   }
 
+  // `build` / `healthcheck` 不能只靠全局 key allowlist。它们都是可执行能力：
+  // 前者能改变 build network/secret/ssh 等边界，后者能在容器内周期执行命令。
+  // 只有登记过的服务可以持有；否则即使后面的“已知服务形状”检查全绿，也会把
+  // 新能力静默留在 resolved Compose 里。
+  if (!apiImageServices.includes(name) && service.build !== undefined) {
+    fail(`${name}: must not declare a build stanza`)
+  }
+  if (name !== 'postgres' && name !== 'api' && service.healthcheck !== undefined) {
+    fail(`${name}: must not declare a healthcheck`)
+  }
+
   if (service.image !== expected.image) {
     fail(`${name}: image drifted from the registered fixed value`)
   }

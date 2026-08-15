@@ -23,6 +23,7 @@ import {
   writeChecksumSidecarNoReplace
 } from '../../infra/docker/backup-local-test.mjs'
 import { discardOverride, imageIdOf, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
+import { parseProbeEvidence } from '../../infra/docker/probe-compose-secret-identity.mjs'
 import {
   connectOutcomeForErrorCode,
   nonLoopbackOutcomeDisposition,
@@ -69,6 +70,15 @@ const waitForGone = async (pgid, timeoutMs = 4_000) => {
   assert.equal(processGroupIsAlive(pgid), false, `process group ${String(pgid)} must reach ESRCH`)
 }
 
+const assertProcessGroupGoneAtSettlement = (pgid) => {
+  assert.equal(Number.isSafeInteger(pgid) && pgid > 0, true)
+  assert.throws(
+    () => process.kill(-pgid, 0),
+    (error) => error?.code === 'ESRCH',
+    `process group ${String(pgid)} must already be ESRCH when the promise settles`
+  )
+}
+
 const runIsolatedNode = (source, timeout = 12_000) => {
   const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
     cwd: repositoryRoot,
@@ -111,11 +121,14 @@ test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10
       ['/bin/sh', '-c', 'exec 0<&-; trap "" TERM INT HUP; sleep 30'],
       { stdin: Buffer.alloc(16 * 1024 * 1024, 0x41), timeoutMs: 60_000 }
     ),
-    (error) => error instanceof Error && error.message === 'command stdin failed'
+    (error) => {
+      assert.equal(error instanceof Error && error.message === 'command stdin failed', true)
+      const created = observedDescendantPgids().filter((pgid) => !before.has(pgid))
+      assert.equal(created.length, 1)
+      assertProcessGroupGoneAtSettlement(created[0])
+      return true
+    }
   )
-  const created = observedDescendantPgids().filter((pgid) => !before.has(pgid))
-  assert.equal(created.length, 1)
-  for (const pgid of created) await waitForGone(pgid)
   assert.deepEqual(unconfirmedProcessGroups(), [])
 })
 
@@ -150,10 +163,11 @@ test('runCommand fixes synchronous spawn, stdin and timer-cleanup failures befor
   assert.deepEqual(unconfirmedProcessGroups(), [])
 
   const stdinSentinel = 'CALLER-STDIN-SENTINEL'
-  const beforeStdin = new Set(observedDescendantPgids())
+  let stdinPgid = null
   const runStdinFailure = createCommandRunner({
     spawnProcess: (...args) => {
       const child = spawn(...args)
+      stdinPgid = child.pid
       child.stdin.end = () => { throw new Error(stdinSentinel) }
       return child
     }
@@ -162,11 +176,12 @@ test('runCommand fixes synchronous spawn, stdin and timer-cleanup failures befor
     runStdinFailure(['/bin/sh', '-c', 'trap "" TERM INT HUP; sleep 30'], {
       stdin: Buffer.from('fixture'), timeoutMs: 60_000
     }),
-    (error) => error instanceof Error && error.message === 'command stdin failed'
+    (error) => {
+      assert.equal(error instanceof Error && error.message === 'command stdin failed', true)
+      assertProcessGroupGoneAtSettlement(stdinPgid)
+      return true
+    }
   )
-  const stdinGroups = observedDescendantPgids().filter((pgid) => !beforeStdin.has(pgid))
-  assert.equal(stdinGroups.length, 1)
-  for (const pgid of stdinGroups) await waitForGone(pgid)
   assert.deepEqual(unconfirmedProcessGroups(), [])
 
   const timerSentinel = 'CALLER-TIMER-CLEAR-SENTINEL'
@@ -180,12 +195,52 @@ test('runCommand fixes synchronous spawn, stdin and timer-cleanup failures befor
     clearTimer: () => { throw new Error(timerSentinel) }
   })
   await assert.rejects(
-    runTimerFailure(['/usr/bin/true'], { timeoutMs: 60_000 }),
-    (error) => error instanceof Error && error.message === 'command timer cleanup failed'
+    runTimerFailure(
+      ['/bin/sh', '-c', 'trap "" TERM INT HUP; sleep 30 </dev/null >/dev/null 2>&1 & exit 0'],
+      { timeoutMs: 60_000 }
+    ),
+    (error) => {
+      assert.equal(error instanceof Error && error.message === 'command timer cleanup failed', true)
+      assertProcessGroupGoneAtSettlement(timerPgid)
+      return true
+    }
   )
-  assert.equal(Number.isSafeInteger(timerPgid) && timerPgid > 0, true)
-  await waitForGone(timerPgid)
   assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('the settlement assertion rejects an early-settlement cleanup mutant', { timeout: 10_000 }, async () => {
+  const child = spawn(
+    '/bin/sh',
+    ['-c', 'trap "" TERM INT HUP; sleep 30 </dev/null >/dev/null 2>&1'],
+    { detached: true, stdio: 'ignore' }
+  )
+  const pgid = child.pid
+  try {
+    await new Promise((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', resolveSpawn)
+      child.once('error', rejectSpawn)
+    })
+    assert.equal(processGroupIsAlive(pgid), true)
+    await assert.rejects(
+      assert.rejects(
+        Promise.reject(new Error('mutant rejected before cleanup')),
+        (error) => {
+          assert.equal(error.message, 'mutant rejected before cleanup')
+          assertProcessGroupGoneAtSettlement(pgid)
+          return true
+        }
+      ),
+      /must already be ESRCH when the promise settles/
+    )
+  } finally {
+    try {
+      process.kill(-pgid, 'SIGKILL')
+    } catch (error) {
+      if (error?.code !== 'ESRCH') throw error
+    }
+    await new Promise((resolveClose) => child.once('close', resolveClose))
+    await waitForGone(pgid)
+  }
 })
 
 test('a stale aggregate fd environment value does not claim a closed descriptor', () => {
@@ -563,13 +618,48 @@ test('M4 restarts only the exact existing container without traversing Compose d
   )
 })
 
-test('image evidence failures never echo Docker stderr or an untrusted tag', async () => {
+test('image identity evidence is one canonical sha256 line and failures never echo input', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-image-evidence-'))
   const docker = resolve(directory, 'docker')
   const sentinel = 'GROUP-E-DOCKER-SENTINEL'
   try {
-    writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' '${sentinel}' >&2\nexit 7\n`)
+    const canonicalId = `sha256:${'a'.repeat(64)}`
+    writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' '${canonicalId}'\n`)
     chmodSync(docker, 0o700)
+    assert.equal(
+      await imageIdOf('fixture', {
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}` }
+      }),
+      canonicalId
+    )
+
+    for (const invalid of [
+      '',
+      '   ',
+      'not-an-image-id',
+      `sha256:${'A'.repeat(64)}`,
+      `${canonicalId}\n${canonicalId}`,
+      `${canonicalId}\r\n`,
+      sentinel
+    ]) {
+      writeFileSync(
+        docker,
+        `#!${process.execPath}\nprocess.stdout.write(Buffer.from(` +
+          `${JSON.stringify(Buffer.from(invalid).toString('base64'))}, 'base64'))\n`
+      )
+      await assert.rejects(
+        imageIdOf('UNTRUSTED-TAG-SENTINEL', {
+          env: { ...process.env, PATH: `${directory}:${process.env.PATH}` }
+        }),
+        (error) =>
+          error instanceof Error &&
+          error.message === 'docker image inspect returned an invalid image ID' &&
+          !error.message.includes(sentinel) &&
+          !error.message.includes('UNTRUSTED-TAG-SENTINEL')
+      )
+    }
+
+    writeFileSync(docker, `#!/bin/sh\nprintf '%s\\n' '${sentinel}' >&2\nexit 7\n`)
     await assert.rejects(
       imageIdOf('UNTRUSTED-TAG-SENTINEL', {
         env: { ...process.env, PATH: `${directory}:${process.env.PATH}` }
@@ -612,6 +702,37 @@ test('the Secret identity CLI reports Docker failures with fixed diagnostics', (
     assert.doesNotMatch(`${outcome.stdout}${outcome.stderr}`, new RegExp(sentinel))
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Secret identity success evidence is an exact closed protocol', () => {
+  const first = '/run/secrets/first/value'
+  const second = '/run/secrets/second/value'
+  const record = (path) =>
+    `PROBE ${path} euid=10001 uid=10001 mode=0600 nlink=1 ` +
+    'regular=yes readable=yes symlink=no'
+  assert.deepEqual(
+    [...parseProbeEvidence(`${record(first)}\n${record(second)}\n`, [first, second]).keys()],
+    [first, second]
+  )
+
+  const sentinel = 'SECRET-PROBE-PROTOCOL-SENTINEL'
+  for (const invalid of [
+    `${record(first)}\n${record(second)}\n${sentinel}\n`,
+    `${record(first)}\nignored ${sentinel}\n`,
+    `${record(first)} extra=yes\n${record(second)}\n`,
+    `${record(first).replace(' uid=', ' euid=10001 uid=')}\n${record(second)}\n`,
+    `${record(first)}\n${record(first)}\n`,
+    `${record(first)}\n`,
+    `${record(first)}\n${record('/run/secrets/extra/value')}\n`
+  ]) {
+    assert.throws(
+      () => parseProbeEvidence(invalid, [first, second]),
+      (error) =>
+        error instanceof Error &&
+        error.message === 'invalid probe evidence protocol' &&
+        !error.message.includes(sentinel)
+    )
   }
 })
 

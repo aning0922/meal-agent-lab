@@ -276,6 +276,32 @@ const mutations = [
     expect: /build contains unsupported execution capability fields/
   },
   {
+    name: 'postgres gains an unregistered host-network build capability',
+    from: '  postgres:\n    <<: *hardening\n',
+    to:
+      '  postgres:\n' +
+      '    <<: *hardening\n' +
+      '    build:\n' +
+      '      context: ../..\n' +
+      '      dockerfile: services/api/Dockerfile\n' +
+      '      network: host\n',
+    expect: /postgres: must not declare a build stanza/
+  },
+  {
+    name: 'migrate gains an unconditional healthcheck capability',
+    from:
+      '  migrate:\n' +
+      '    <<: [*hardening, *api-image]\n' +
+      '    command:\n',
+    to:
+      '  migrate:\n' +
+      '    <<: [*hardening, *api-image]\n' +
+      '    healthcheck:\n' +
+      '      test: ["CMD", "node", "-e", "process.exit(0)"]\n' +
+      '    command:\n',
+    expect: /migrate: must not declare a healthcheck/
+  },
+  {
     name: 'the API healthcheck becomes an unconditional success',
     from:
       '        - "fetch(\'http://127.0.0.1:3000/healthz\').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"\n',
@@ -379,7 +405,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 27
+const expectedMutationCount = 29
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

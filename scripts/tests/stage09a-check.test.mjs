@@ -778,6 +778,7 @@ test('every host detached spawn in the formal chain has an explicit ownership bo
       'infra/docker/m3b-subprocess.mjs',
       'infra/docker/postgres/no-ctty.mjs',
       'scripts/run-stage09a-check.mjs',
+      'scripts/tests/m5-remediation.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',
       'scripts/tests/stage09a-check.test.mjs',

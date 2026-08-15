@@ -206,13 +206,15 @@ export const imageIdOf = async (tag, { env } = {}) => {
     { env }
   )
   if (result.status === 0) {
-    const id = result.stdout.trim()
-    if (id === '') {
-      throw new DockerEvidenceError(
-        'docker image inspect exited 0 without printing an image ID'
-      )
+    // Docker 的成功证据必须是**一行 canonical immutable ID**。`trim()` 会把空白、
+    // CRLF 与多行包装都规范化掉，使调用方随后把任意 status-0 stdout 当成 image
+    // identity 传给 inspect/create/cleanup。只容许 CLI 常见的一个末尾 LF；其余 framing
+    // 与非 sha256 identity 一律固定理由 fail closed。
+    const match = /^(sha256:[0-9a-f]{64})\n?$/.exec(result.stdout)
+    if (match === null) {
+      throw new DockerEvidenceError('docker image inspect returned an invalid image ID')
     }
-    return id
+    return match[1]
   }
   if (result.status === 1 && isAbsenceMessage(result.stderr, { kind: 'image', name: tag })) {
     return null

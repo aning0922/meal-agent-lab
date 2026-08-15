@@ -23,6 +23,7 @@
  *   §5 已发表的反引号行数 ↔ 真实文件行数
  *   §6 已发表的 tracked 文件数 ↔ `git ls-files`
  *   §7 已发表的门禁清单 ↔ 仓库里真实的门禁脚本集合
+ *   §8 README 当前 mutation 数 ↔ 两份可执行套件的硬计数
  *
  * 输出纪律：只报**本文件/登记表里的静态字面量 + 计数**。文档侧多出来的内容一律
  * 只报数量、不回显（文档是可被改写的输入）；合成取值一律 `AUDITVALUE`，绝不使用
@@ -785,6 +786,57 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
           `${String(executable.length)} 份可执行脚本全部被 README 记录，无悬空条目`
       )
     }
+  }
+}
+
+// ===========================================================================
+// §8 已发表的 mutation 计数 ↔ 可执行套件硬计数
+// ===========================================================================
+{
+  const name = 'published mutation counts match the executable hard gates'
+  const readme = readDocument(DOCKER_README)
+  const topologySource = readDocument('infra/docker/check-compose-topology-mutations.mjs')
+  const imageSource = readDocument('infra/docker/check-api-runtime-image-mutations.mjs')
+  const topologyPublished = uniqueMatch(
+    readme,
+    /^\| `node infra\/docker\/check-compose-topology-mutations\.mjs` \| \*\*(\d+) 项\*\*/gm
+  )
+  const imagePublished = uniqueMatch(
+    readme,
+    /^\| `node infra\/docker\/check-api-runtime-image-mutations\.mjs` \|[^\n]*\*\*(\d+) 个 built \+ (\d+) 个 static-only\*\*/gm
+  )
+  const topologyExecutable = uniqueMatch(
+    topologySource,
+    /^const expectedMutationCount = (\d+)$/gm
+  )
+  const imageBuiltExecutable = uniqueMatch(
+    imageSource,
+    /^const expectedBuiltMutationCount = (\d+)$/gm
+  )
+  const imageStaticExecutable = uniqueMatch(
+    imageSource,
+    /^const expectedStaticOnlyMutationCount = (\d+)$/gm
+  )
+  if (
+    topologyPublished === null ||
+    imagePublished === null ||
+    topologyExecutable === null ||
+    imageBuiltExecutable === null ||
+    imageStaticExecutable === null
+  ) {
+    fail(name, 'README 或可执行套件缺少唯一的 mutation 计数锚点')
+  } else if (
+    topologyPublished[1] !== topologyExecutable[1] ||
+    imagePublished[1] !== imageBuiltExecutable[1] ||
+    imagePublished[2] !== imageStaticExecutable[1]
+  ) {
+    fail(name, 'README 发表的 mutation 计数与可执行套件硬门禁不一致')
+  } else {
+    pass(
+      name,
+      `topology ${topologyExecutable[1]}；runtime image ` +
+        `${imageBuiltExecutable[1]} built + ${imageStaticExecutable[1]} static-only`
+    )
   }
 }
 
