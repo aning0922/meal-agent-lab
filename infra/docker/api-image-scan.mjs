@@ -159,6 +159,9 @@ export const checkDockerfileText = (text, problem) => {
     if (/^(ARG|EXPOSE)\b/i.test(line)) {
       problem('Dockerfile: ARG/EXPOSE instructions are not allowed in this image')
     }
+    if (/^STOPSIGNAL\b/i.test(line)) {
+      problem('Dockerfile: STOPSIGNAL must be absent so Docker uses SIGTERM')
+    }
     if (/^COPY\b/i.test(line) && /apps\/|packages\/ui/.test(line)) {
       problem('Dockerfile: COPY must not reference client workspaces')
     }
@@ -277,6 +280,13 @@ export const checkImageConfig = (imageConfig, problem, fatal) => {
     if (value !== null && value !== undefined) {
       problem(`image config: ${field} must be absent`)
     }
+  }
+  if (
+    imageConfig.StopSignal !== null &&
+    imageConfig.StopSignal !== undefined &&
+    imageConfig.StopSignal !== ''
+  ) {
+    problem('image config: StopSignal must be absent so Docker uses SIGTERM')
   }
 }
 

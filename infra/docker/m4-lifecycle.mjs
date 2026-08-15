@@ -6,7 +6,7 @@
 // 沉淀下来的库（m3b-docker / m3b-subprocess / m3b-safe-output / secrets 契约）
 // 与链式步骤**模式**，不是复制一份形状相同的抄件能替代的那几条硬保证：
 //
-//   - 所有 Docker 证据读取 fail closed（inspectStrict / parseInspectedExitCode）；
+//   - 所有 Docker 证据读取 fail closed（exact singleton inspect + inspectStrict）；
 //   - 分阶段 scoped cleanup + 独立 residue 复查（cleanupRun / verifyNoResidue）；
 //   - 输出边界：本仓自己的证据行按取值打码，外来文本按取值 + 形状打码；
 //   - 子进程自成进程组、有超时，SIGINT/SIGTERM 全程可被处理。
@@ -26,17 +26,16 @@ import { generateAndPreflight } from './generate-local-test-secrets.mjs'
 import { buildNeedles } from './local-test-containment.mjs'
 import { checkSecretBundle, repositoryRoot } from './local-test-secrets-contract.mjs'
 import {
+  buildApiImage,
   cleanupRun,
   danglingVolumes,
   dockerStrict,
-  imageIdOf,
   inodeIdentityOf,
   inspectJsonStrict,
   inspectStrict,
   isAbsenceMessage,
   listByProject,
   overridePathFor,
-  parseInspectedExitCode,
   runImageTagFor,
   verifyNoResidue,
   writeImageOverride
@@ -76,8 +75,20 @@ export const parseContainerRuntimeState = (value) => {
 }
 
 export const assertGracefulStopTransition = (before, after) => {
-  const initial = parseContainerRuntimeState(before)
-  const final = parseContainerRuntimeState(after)
+  const identityKeys = ['id', 'name', 'image', 'project', 'service']
+  if (
+    before === null ||
+    typeof before !== 'object' ||
+    after === null ||
+    typeof after !== 'object' ||
+    identityKeys.some(
+      (key) => typeof before[key] !== 'string' || before[key] === '' || before[key] !== after[key]
+    )
+  ) {
+    throw new Error('container did not prove one stable graceful-stop identity')
+  }
+  const initial = parseContainerRuntimeState(before.state)
+  const final = parseContainerRuntimeState(after.state)
   if (
     initial.status !== 'running' ||
     initial.running !== true ||
@@ -93,8 +104,35 @@ export const assertGracefulStopTransition = (before, after) => {
   return true
 }
 
-export const readContainerRuntimeState = async (name, environment) =>
-  inspectJsonStrict(name, '{{json .State}}', { env: environment })
+export const readContainerRuntimeState = async (name, environment) => {
+  const container = await inspectJsonStrict(name, '{{json .}}', { env: environment })
+  const labels = container?.Config?.Labels
+  const evidence = {
+    id: container?.Id,
+    name: container?.Name,
+    image: container?.Image,
+    project: labels?.['com.docker.compose.project'],
+    service: labels?.['com.docker.compose.service'],
+    state: container?.State
+  }
+  if (
+    typeof evidence.id !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(evidence.id) ||
+    evidence.name !== `/${name}` ||
+    typeof evidence.image !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/.test(evidence.image) ||
+    typeof evidence.project !== 'string' ||
+    evidence.project === '' ||
+    typeof evidence.service !== 'string' ||
+    evidence.service === '' ||
+    evidence.state === null ||
+    typeof evidence.state !== 'object' ||
+    Array.isArray(evidence.state)
+  ) {
+    throw new Error('container graceful-stop identity evidence was malformed')
+  }
+  return evidence
+}
 
 /** 默认（长驻）local-test 部署的 project name：compose 文件里的 `name:`。 */
 export const defaultProjectName = 'meal-agent-local-test'
@@ -476,15 +514,16 @@ export const oneOffIsGone = (removed, name) =>
   (removed.status === 1 && isAbsenceMessage(removed.stderr, { kind: 'container', name }))
 
 const inspectOneOff = async (run, entry, environment) => {
+  const target = entry.id ?? entry.name
   let inspected
   try {
-    inspected = await run(['docker', 'container', 'inspect', entry.name], { env: environment })
+    inspected = await run(['docker', 'container', 'inspect', target], { env: environment })
   } catch {
     return { state: 'unreadable', id: null }
   }
   if (
     inspected.status === 1 &&
-    isAbsenceMessage(inspected.stderr, { kind: 'container', name: entry.name })
+    isAbsenceMessage(inspected.stderr, { kind: 'container', name: target })
   ) {
     return { state: 'absent', id: null }
   }
@@ -504,7 +543,8 @@ const inspectOneOff = async (run, entry, environment) => {
   if (
     typeof id !== 'string' ||
     !/^[0-9a-f]{64}$/.test(id) ||
-    name !== `/${entry.name}` ||
+    (entry.id === undefined && name !== `/${entry.name}`) ||
+    (entry.id !== undefined && id !== entry.id) ||
     labels === null ||
     typeof labels !== 'object' ||
     Array.isArray(labels)
@@ -567,7 +607,7 @@ export const composeRunOneOff = async (
   { timeoutMs = 120_000, stdin = null, beforeRemove = null } = {}
 ) => {
   const name = `m4-oneoff-${randomBytes(12).toString('hex')}`
-  const entry = { name, token: randomBytes(16).toString('hex') }
+  const entry = { name, token: randomBytes(16).toString('hex'), id: undefined }
   const baseline = await inspectOneOff(run, entry, environment)
   if (baseline.state !== 'absent') {
     throw new Error('one-off container name was not proven absent before create')
@@ -599,7 +639,13 @@ export const composeRunOneOff = async (
       composeError = new Error('one-off success evidence did not identify the owned container')
     } else if (result.status !== 0) {
       composeError = new Error('one-off command failed')
-    } else if (beforeRemove !== null) {
+    } else {
+      // 第一次 exact singleton inspect 一旦确认 owner token，就把 immutable ID
+      // 写回 registry。之后即使并发 rename，cleanup 仍按 ID 找到并删除本轮对象；
+      // 可变 name 只用于创建前的 absent 证明。
+      entry.id = inspected.id
+    }
+    if (composeError === null && beforeRemove !== null) {
       try {
         await beforeRemove({ id: inspected.id, name: entry.name })
       } catch {
@@ -785,6 +831,38 @@ export const createM4Run = ({ kind }) => {
       }
       return port
     }
+    const inspectStackService = async (service) => {
+      const name = stack.containerName(service)
+      const inspected = await run(['docker', 'container', 'inspect', name], {
+        env: stack.composeEnvironment
+      })
+      if (inspected.status !== 0 || typeof inspected.stdout !== 'string' || inspected.stdout === '') {
+        throw new Error(`${service}: container evidence was unavailable`)
+      }
+      let payload
+      try {
+        payload = JSON.parse(inspected.stdout)
+      } catch {
+        throw new Error(`${service}: container evidence was malformed`)
+      }
+      const container = Array.isArray(payload) && payload.length === 1 ? payload[0] : null
+      const labels = container?.Config?.Labels
+      if (
+        typeof container?.Id !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(container.Id) ||
+        container.Name !== `/${name}` ||
+        typeof container.Image !== 'string' ||
+        !/^sha256:[0-9a-f]{64}$/.test(container.Image) ||
+        labels?.['com.docker.compose.project'] !== stack.project ||
+        labels?.['com.docker.compose.service'] !== service ||
+        container.State === null ||
+        typeof container.State !== 'object' ||
+        Array.isArray(container.State)
+      ) {
+        throw new Error(`${service}: container identity evidence was invalid`)
+      }
+      return container
+    }
     /** 一次性服务：启动 → 等 exited → 严格读取真实退出码。 */
     stack.runOneShot = async (service, timeoutMs) => {
       throwIfInterrupted()
@@ -795,29 +873,38 @@ export const createM4Run = ({ kind }) => {
       if (started.status !== 0) {
         throw new Error(`compose up ${service} failed`)
       }
-      await waitFor(
+      let claimedId = null
+      const container = await waitFor(
         `${service} run`,
-        async () =>
-          (await inspectStrict(name, '{{.State.Status}}', { env: stack.composeEnvironment })) ===
-          'exited'
-            ? 'exited'
-            : null,
+        async () => {
+          const current = await inspectStackService(service)
+          if (claimedId === null) claimedId = current.Id
+          if (current.Id !== claimedId) {
+            throw new Error(`${service}: container identity changed while collecting evidence`)
+          }
+          return current.State.Status === 'exited' ? current : null
+        },
         timeoutMs,
         1_000
       )
-      const exitCodeText = await inspectStrict(name, '{{.State.ExitCode}}', {
-        env: stack.composeEnvironment
-      })
-      const parsedExitCode = parseInspectedExitCode(exitCodeText)
-      if (!parsedExitCode.ok) {
-        throw new Error(`${service}: refusing to read an exit code that is ${parsedExitCode.reason}`)
+      if (
+        container.State.Running !== false ||
+        !Number.isSafeInteger(container.State.ExitCode) ||
+        container.State.ExitCode < 0 ||
+        typeof container.State.StartedAt !== 'string' ||
+        container.State.StartedAt === '' ||
+        typeof container.State.FinishedAt !== 'string' ||
+        container.State.FinishedAt === '' ||
+        container.State.FinishedAt === zeroDockerTimestamp
+      ) {
+        throw new Error(`${service}: exited container state evidence was invalid`)
       }
       return {
         service,
-        exitCode: parsedExitCode.value,
-        startedAt: await inspectStrict(name, '{{.State.StartedAt}}', {
-          env: stack.composeEnvironment
-        })
+        exitCode: container.State.ExitCode,
+        startedAt: container.State.StartedAt,
+        containerId: container.Id,
+        imageId: container.Image
       }
     }
     /** 一次性服务 + 非零即抛（带日志摘录）。 */
@@ -1014,14 +1101,11 @@ export const createM4Run = ({ kind }) => {
     writeImageOverride(overridePath, imageTag)
     shared.overrideCreated = true
     shared.imageTag = imageTag
-    const build = await stack.compose(['build', 'api'], { timeoutMs: 1_800_000 })
-    if (build.status !== 0) {
-      throw new Error('docker compose build api failed')
-    }
-    const builtImageId = await imageIdOf(imageTag, { env: stack.composeEnvironment })
-    if (builtImageId === null) {
-      throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
-    }
+    const builtImageId = await buildApiImage({
+      imageTag,
+      repositoryRoot,
+      env: stack.composeEnvironment
+    })
     shared.imageId = builtImageId
     log(`api image built as ${imageTag} (image id ${builtImageId})`)
     return builtImageId

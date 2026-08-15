@@ -104,6 +104,56 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 // `from` 必须在源文件中**恰好出现一次**，否则变异本身就不确定。
 const mutations = [
   {
+    name: 'the fixed Compose project name is changed',
+    from: 'name: meal-agent-local-test\n',
+    to: 'name: meal-agent-local-test-mutated\n',
+    expect: /Compose project name drifted from the registered fixed value/
+  },
+  {
+    name: 'the internal network gains driver options',
+    from: '  internal:\n    driver: bridge\n    internal: true\n',
+    to:
+      '  internal:\n' +
+      '    driver: bridge\n' +
+      '    driver_opts:\n' +
+      '      com.docker.network.bridge.enable_icc: "true"\n' +
+      '    internal: true\n',
+    expect: /network internal: capability fields drifted/
+  },
+  {
+    name: 'the database volume becomes external',
+    from: '  postgres-data: {}\n',
+    to: '  postgres-data:\n    external: true\n',
+    expect: /volume postgres-data: capability fields drifted/
+  },
+  {
+    name: 'the shared log size bound is relaxed',
+    from: '      max-size: "10m"\n',
+    to: '      max-size: "100m"\n',
+    expect: /logging must match the registered bounded local rotation policy/
+  },
+  {
+    name: 'the API healthcheck gains a start interval',
+    from: '      start_period: 15s\n',
+    to: '      start_period: 15s\n      start_interval: 1s\n',
+    expect: /api: healthcheck drifted from the registered fixed semantics/
+  },
+  {
+    name: 'the API network attachment gains priority metadata',
+    from:
+      '    networks:\n' +
+      '      # edge 只承载上面这个 loopback publish；数据库流量仍走 internal。\n' +
+      '      - internal\n' +
+      '      - edge\n',
+    to:
+      '    networks:\n' +
+      '      # edge 只承载上面这个 loopback publish；数据库流量仍走 internal。\n' +
+      '      internal:\n' +
+      '        priority: 100\n' +
+      '      edge: {}\n',
+    expect: /api: resolved nested capability evidence has an unsupported shape/
+  },
+  {
     name: 'DEPLOYMENT_STAGE removed',
     from: '      DEPLOYMENT_STAGE: local-test\n',
     to: '',
@@ -455,7 +505,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 33
+const expectedMutationCount = 39
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

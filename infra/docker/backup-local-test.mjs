@@ -189,7 +189,6 @@ export const promoteBackupNoReplace = (
     const linkedStat = lstatSync(publishedPath, { bigint: true })
     if (
       !linkedStat.isFile() ||
-      linkedStat.nlink !== 2n ||
       linkedStat.dev !== stagingIdentity.dev ||
       linkedStat.ino !== stagingIdentity.ino ||
       !identityMatches(stagingIdentity)
@@ -204,6 +203,12 @@ export const promoteBackupNoReplace = (
       dev: stagingIdentity.dev,
       ino: stagingIdentity.ino
     })
+    // 外部并发者若在 promotion 前给 staging inode 增加 hardlink，nlink 会是 3+
+    // 而不是 2。先登记刚证明属于本轮 inode 的 published 名，再拒绝；catch 才能
+    // 安全撤销我们创建的 link，而不会把正式路径遗留在失败结果里。
+    if (linkedStat.nlink !== 2n) {
+      throw new Error('the backup handoff link count drifted during promotion')
+    }
     unlinkSync(stagingPath)
     const finalStat = lstatSync(publishedPath, { bigint: true })
     if (
@@ -317,10 +322,10 @@ export const performBackup = async (
   let publishedSidecarIdentity = null
   const sidecarOwnedIdentities = []
   let completed = false
-  let cleanupPromise = null
-  let transientCleanupPromise = null
+  let cleanupChain = Promise.resolve()
+  let transientCleanupChain = Promise.resolve()
   const cleanupTransientArtifacts = () => {
-    transientCleanupPromise ??= (async () => {
+    const next = transientCleanupChain.then(async () => {
       const residue = []
       try {
         const current = lstatSync(partialDirectory, { bigint: true })
@@ -353,11 +358,12 @@ export const performBackup = async (
         residue.push('backup transfer artifact cleanup failed')
       }
       return residue
-    })()
-    return transientCleanupPromise
+    }, async () => ['backup transient cleanup sequencing failed'])
+    transientCleanupChain = next.then(() => undefined, () => undefined)
+    return next
   }
   const cleanupArtifacts = () => {
-    cleanupPromise ??= (async () => {
+    const next = cleanupChain.then(async () => {
       const residue = []
       if (!completed) {
         for (const identity of [
@@ -375,8 +381,9 @@ export const performBackup = async (
       }
       residue.push(...(await cleanupTransientArtifacts()))
       return residue
-    })()
-    return cleanupPromise
+    }, async () => ['backup cleanup sequencing failed'])
+    cleanupChain = next.then(() => undefined, () => undefined)
+    return next
   }
   const unregisterCleanup = registerCleanup?.(cleanupArtifacts) ?? (() => false)
 
@@ -404,11 +411,37 @@ export const performBackup = async (
       {
         timeoutMs: 600_000,
         beforeRemove: async ({ id }) => {
+          const sourceDigest = await run(
+            ['docker', 'exec', id, 'sha256sum', `/transfer/${name}`],
+            { timeoutMs: 120_000 }
+          )
+          const digestMatch =
+            sourceDigest.status === 0
+              ? new RegExp(
+                  `^([0-9a-f]{64})[ \\t]+\\*?\\/transfer\\/${name.replace(
+                    /[.*+?^${}()|[\]\\]/g,
+                    '\\$&'
+                  )}\\n?$`
+                ).exec(sourceDigest.stdout)
+              : null
+          if (digestMatch === null) {
+            throw new Error('backup source digest evidence failed')
+          }
           const copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
             timeoutMs: 300_000
           })
           if (copied.status !== 0) {
             throw new Error('backup handoff failed')
+          }
+          if (sha256OfFile(hostPartial) !== digestMatch[1]) {
+            throw new Error('backup handoff bytes differed from the container source')
+          }
+          const listed = await run(['pg_restore', '--list', hostPartial], {
+            timeoutMs: 120_000,
+            cwd: repositoryRoot
+          })
+          if (listed.status !== 0 || typeof listed.stdout !== 'string' || listed.stdout === '') {
+            throw new Error('the backup archive structure could not be validated')
           }
           publishedIdentity = promoteBackupNoReplace(hostPartial, dumpPath)
         }

@@ -429,7 +429,7 @@ assertCleanScene(
     script: 'run-local-test-smoke.mjs',
     trigger: /host port: /,
     signal: 'SIGINT',
-    waitForProcess: /compose.*build api/
+    waitForProcess: /docker.*build.*meal-agent-api:m3b-/
   }),
   { expectSignal: 'SIGINT' }
 )
@@ -960,6 +960,31 @@ if (mutationProblems.length > 0) {
 
 // --- signal handler：终止原语、scoped cleanup residue/异常都不得伪装成干净信号退出 ---
 const handlerProblems = []
+try {
+  let syntheticAlive = true
+  const falseReturningLifecycle = createProcessGroupLifecycle({
+    probeGroup: () => syntheticAlive,
+    signalGroup: () => {
+      // 确定性模拟 EPERM / 未投递：随后资源恰好自行消失，不能据此抹掉
+      // signal primitive 已经明确返回 false 的失败事实。
+      syntheticAlive = false
+      return false
+    },
+    delay: async () => undefined
+  })
+  const handle = falseReturningLifecycle.register(73)
+  const outcome = await falseReturningLifecycle.terminateDetailed([handle], {
+    graceMs: 1,
+    killWaitMs: 1
+  })
+  if (!outcome.primitiveFailed || outcome.survivors.length !== 0) {
+    handlerProblems.push(
+      'a false-returning termination primitive was erased after the group disappeared'
+    )
+  }
+} catch {
+  handlerProblems.push('the false-returning termination primitive probe threw')
+}
 const handlerCases = [
   {
     label: 'clean',

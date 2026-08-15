@@ -31,13 +31,14 @@ import { generateAndPreflight } from './generate-local-test-secrets.mjs'
 import {
   assertCanonicalSecretProbePlan,
   canonicalSecretProbePlan,
+  repositoryRoot,
   secretFiles
 } from './local-test-secrets-contract.mjs'
 import {
+  buildApiImage,
   cleanupRun,
   inodeIdentityOf,
   danglingVolumes,
-  imageIdOf,
   overridePathFor,
   runImageTagFor,
   verifyNoResidue,
@@ -281,14 +282,11 @@ const main = async () => {
     activeProbeScene.overrideCreated = true
     activeProbeScene.imageTag = imageTag
     activeProbeScene.composeArgs = composeArgs
-    const build = await compose(['build', 'api'], { timeoutMs: 1_800_000 })
-    if (build.status !== 0) {
-      throw new Error('docker compose build api failed')
-    }
-    const builtImageId = await imageIdOf(imageTag, { env: composeEnvironment })
-    if (builtImageId === null) {
-      throw new Error('the per-run image tag does not exist after build')
-    }
+    const builtImageId = await buildApiImage({
+      imageTag,
+      repositoryRoot,
+      env: composeEnvironment
+    })
     activeProbeScene.imageId = builtImageId
     process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
 

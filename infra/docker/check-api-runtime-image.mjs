@@ -175,9 +175,30 @@ const cleanup = ({ keepScene = false } = {}) => {
       if (current.status === 0 && currentId !== cleanupState.ownedImageId) {
         cleanupProblems.push('run image tag ownership drifted; foreign tag was preserved')
       } else if (current.status === 0) {
-        const removal = await runCommand(['docker', 'rmi', imageTag], { timeoutMs: 120_000 })
-        if (removal.status !== 0) {
-          cleanupProblems.push('run image tag removal failed')
+        const owned = await runCommand(
+          ['docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', cleanupState.ownedImageId],
+          { timeoutMs: 60_000 }
+        )
+        let exclusivelyOwned = false
+        if (owned.status === 0) {
+          try {
+            const repoTags = JSON.parse(owned.stdout)
+            exclusivelyOwned =
+              Array.isArray(repoTags) && repoTags.length === 1 && repoTags[0] === imageTag
+          } catch {
+            cleanupProblems.push('owned image tag set was unreadable')
+          }
+        }
+        if (!exclusivelyOwned) {
+          cleanupProblems.push('recorded image identity was not exclusively owned by the run tag')
+        } else {
+          const removal = await runCommand(
+            ['docker', 'rmi', cleanupState.ownedImageId],
+            { timeoutMs: 120_000 }
+          )
+          if (removal.status !== 0) {
+            cleanupProblems.push('run image identity removal failed')
+          }
         }
       } else if (
         !(

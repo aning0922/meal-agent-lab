@@ -40,9 +40,9 @@ import { generateAndPreflight } from './generate-local-test-secrets.mjs'
 import { buildNeedles, runContainmentAndIsolation } from './local-test-containment.mjs'
 import { checkSecretBundle, repositoryRoot } from './local-test-secrets-contract.mjs'
 import {
+  buildApiImage,
   cleanupRun,
   danglingVolumes,
-  imageIdOf,
   inodeIdentityOf,
   inspectJsonStrict,
   inspectStrict,
@@ -530,14 +530,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     scene.imageTag = imageTag
     scene.composeArgs = composeArgs
     smokeState.registerScene?.(scene)
-    const build = await compose(['build', 'api'], { timeoutMs: 1_800_000 })
-    if (build.status !== 0) {
-      throw new Error(`docker compose build api failed:\n${scrub(build.stderr.slice(-2000))}`)
-    }
-    builtImageId = await imageIdOf(imageTag, { env: composeEnvironment })
-    if (builtImageId === null) {
-      throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
-    }
+    builtImageId = await buildApiImage({ imageTag, repositoryRoot, env: composeEnvironment })
     scene.imageId = builtImageId
     // signal handler 持有的是 `activeScene` 的物化快照，而不是这个局部对象本身。
     // immutable identity 一旦取得就必须立即同步过去；否则链路窗口收到信号时，

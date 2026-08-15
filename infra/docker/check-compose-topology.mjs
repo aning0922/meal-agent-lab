@@ -29,6 +29,7 @@ import {
 } from './local-test-secrets-contract.mjs'
 import {
   isResolvedServiceRecord,
+  parseResolvedComposeDocument,
   resolvedDependencyProjection,
   resolvedHealthcheckProjection
 } from './compose-topology-evidence.mjs'
@@ -88,6 +89,7 @@ const apiHostIp = '127.0.0.1'
 const apiUser = '10001:10001'
 const postgresUser = '999:999'
 const bootstrapProfile = 'bootstrap'
+const composeProjectName = 'meal-agent-local-test'
 // M2B 固定数据库 identity。可配置能力归 M3B：届时由统一配置 schema 先校验
 // ^meal_agent(_[a-z0-9_]+)?$ 与 63 字节上限，再同时生成 URL 与 Compose 参数。
 const databaseName = 'meal_agent'
@@ -522,6 +524,14 @@ const abort = (message) => {
   safeDiagnostic(`${diagnosticScrubber.scrubUntrusted(message)}\n`)
   process.exit(1)
 }
+// 任一尚未被逐层 shape guard 覆盖的外部证据也必须固定理由失败，不能让
+// TypeError/JSON exception 与其携带的非可信内容落到 Node 默认 stack。
+process.on('uncaughtException', () => {
+  abort('compose topology check received malformed resolved configuration evidence')
+})
+process.on('unhandledRejection', () => {
+  abort('compose topology check received malformed resolved configuration evidence')
+})
 
 // Git 的 ambient plumbing 变量能把 index/worktree/object database 整体替换掉；
 // 必须在第一次 Docker/Git 调用之前拒绝，而不是让后面的 `git ls-files` 在一张
@@ -718,14 +728,16 @@ if (declaredSectionProblems.length > 0) {
 }
 
 let resolved
-try {
-  resolved = JSON.parse(
-    runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'])
-  )
-} catch {
+resolved = parseResolvedComposeDocument(
+  runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'])
+)
+if (resolved === null) {
   abort('compose topology check received invalid resolved configuration evidence')
 }
-const services = resolved.services ?? {}
+if (resolved.name !== composeProjectName) {
+  fail('Compose project name drifted from the registered fixed value')
+}
+const services = resolved.services
 const serviceNames = Object.keys(services).sort()
 
 // --------------------------------------------------------------------------
@@ -759,6 +771,22 @@ const normalizeMount = (mount) => ({
   target: mount.target,
   read_only: mount.read_only === true
 })
+const hasOnlyKeys = (value, allowed) =>
+  isResolvedServiceRecord(value) &&
+  Object.keys(value).every((key) => allowed.has(key))
+const mountShapeIsClosed = (mount) => {
+  if (!isResolvedServiceRecord(mount)) return false
+  const allowed = new Set(['type', 'source', 'target', 'read_only', 'bind', 'volume'])
+  if (!hasOnlyKeys(mount, allowed)) return false
+  if (!['bind', 'volume'].includes(mount.type)) return false
+  if (typeof mount.source !== 'string' || typeof mount.target !== 'string') return false
+  if (mount.read_only !== undefined && typeof mount.read_only !== 'boolean') return false
+  if (mount.bind !== undefined && !same(mount.bind, {})) return false
+  if (mount.volume !== undefined && !same(mount.volume, {})) return false
+  if (mount.type === 'bind' && mount.volume !== undefined) return false
+  if (mount.type === 'volume' && mount.bind !== undefined) return false
+  return true
+}
 
 // resolved Compose service 是可执行能力面，不只 entrypoint/command。未知字段可能
 // 承载 post_start/pre_stop 等 lifecycle hook；因此按当前受审解析结果做闭集，新增
@@ -803,6 +831,26 @@ for (const name of serviceOrder) {
   )
   if (unknownKeys.length > 0) {
     fail(`${name}: resolved service contains unsupported capability fields`)
+  }
+  if (
+    !Array.isArray(service.profiles ?? []) ||
+    !Array.isArray(service.volumes ?? []) ||
+    !(service.volumes ?? []).every(mountShapeIsClosed) ||
+    !Array.isArray(service.secrets ?? []) ||
+    !(service.secrets ?? []).every(
+      (entry) =>
+        hasOnlyKeys(entry, new Set(['source', 'target'])) &&
+        typeof entry.source === 'string' &&
+        typeof entry.target === 'string'
+    ) ||
+    !Array.isArray(service.tmpfs ?? []) ||
+    !isResolvedServiceRecord(service.networks ?? {}) ||
+    Object.values(service.networks ?? {}).some((attachment) => attachment !== null) ||
+    !isResolvedServiceRecord(service.depends_on ?? {}) ||
+    !isResolvedServiceRecord(service.environment ?? {})
+  ) {
+    fail(`${name}: resolved nested capability evidence has an unsupported shape`)
+    continue
   }
 
   // `build` / `healthcheck` 不能只靠全局 key allowlist。它们都是可执行能力：
@@ -1004,12 +1052,13 @@ for (const name of serviceOrder) {
   }
 
   const logging = service.logging ?? {}
-  if (logging.driver !== 'json-file') {
-    fail(`${name}: logging driver must be json-file`)
-  }
-  const loggingOptions = logging.options ?? {}
-  if (loggingOptions['max-size'] === undefined || loggingOptions['max-file'] === undefined) {
-    fail(`${name}: logging must set both max-size and max-file (bounded local rotation)`)
+  if (
+    !same(logging, {
+      driver: 'json-file',
+      options: { 'max-file': '3', 'max-size': '10m' }
+    })
+  ) {
+    fail(`${name}: logging must match the registered bounded local rotation policy`)
   }
 
   for (const mount of service.volumes ?? []) {
@@ -1075,6 +1124,25 @@ if (!same(Object.keys(resolved.volumes ?? {}).sort(), expectedVolumeKeys)) {
 if (networks.internal?.internal !== true) {
   fail('networks.internal must set internal: true (no gateway, no host port)')
 }
+for (const [key, definition] of Object.entries(networks)) {
+  const expectedDefinition =
+    key === 'internal'
+      ? {
+          name: `${resolved.name}_${key}`,
+          driver: 'bridge',
+          ipam: {},
+          internal: true
+        }
+      : { name: `${resolved.name}_${key}`, driver: 'bridge', ipam: {} }
+  if (!same(definition, expectedDefinition)) {
+    fail(`network ${key}: capability fields drifted from the registered fixed shape`)
+  }
+}
+for (const [key, definition] of Object.entries(resolved.volumes ?? {})) {
+  if (!same(definition, { name: `${resolved.name}_${key}` })) {
+    fail(`volume ${key}: capability fields drifted from the registered fixed shape`)
+  }
+}
 // 网络与卷不得写死全局 name：并行 worktree 必须能靠 project name 互相隔离。
 for (const [key, definition] of Object.entries(networks)) {
   const expectedName = `${resolved.name}_${key}`
@@ -1091,9 +1159,15 @@ for (const [key, definition] of Object.entries(resolved.volumes ?? {})) {
 
 // 两个不同 project name 必须解析出互不相同的 network 与 volume 真实名称。
 const probeNames = ['meal-agent-m2b-probe-alpha', 'meal-agent-m2b-probe-beta']
-const probes = probeNames.map((project) =>
-  JSON.parse(runCompose(['--project-name', project, 'config', '--format', 'json']))
-)
+const probes = probeNames.map((project) => {
+  const probe = parseResolvedComposeDocument(
+    runCompose(['--project-name', project, 'config', '--format', 'json'])
+  )
+  if (probe === null) {
+    abort('compose topology check received invalid project-scope probe evidence')
+  }
+  return probe
+})
 for (const [index, probe] of probes.entries()) {
   if (probe.name !== probeNames[index]) {
     fail('the registered --project-name was not honoured')
@@ -1175,12 +1249,17 @@ const assertSecretFiles = (definitions, directory, label) => {
 }
 // 两条分支都**显式**指定 MEAL_AGENT_SECRETS_DIR，因此结果与调用 checker 时的
 // 宿主环境无关：预先导出了该变量也不会让默认分支变成在测 override。
-const resolveSecretsWith = (override) =>
-  JSON.parse(
+const resolveSecretsWith = (override) => {
+  const evidence = parseResolvedComposeDocument(
     runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'], {
       MEAL_AGENT_SECRETS_DIR: override
     })
-  ).secrets ?? {}
+  )
+  if (evidence === null) {
+    abort('compose topology check received invalid Secret resolution evidence')
+  }
+  return evidence.secrets
+}
 
 // 分支一：空字符串必须与「未设置」语义完全一致，回落到 <compose 目录>/secrets/，
 // 而**不是**把 compose 目录本身当成 secret 目录。

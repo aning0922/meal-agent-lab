@@ -8,6 +8,7 @@ import {
 } from '../../infra/docker/api-image-scan.mjs'
 import {
   isResolvedServiceRecord,
+  parseResolvedComposeDocument,
   resolvedDependencyProjection,
   resolvedHealthcheckProjection
 } from '../../infra/docker/compose-topology-evidence.mjs'
@@ -23,13 +24,51 @@ import {
   createCommandRunner,
   createProcessGroupLifecycle
 } from '../../infra/docker/m3b-subprocess.mjs'
-import { classifyOwnedImageTag } from '../../infra/docker/m3b-docker.mjs'
+import {
+  classifyOwnedImageTag,
+  parseBuildMetadataImageIdentity
+} from '../../infra/docker/m3b-docker.mjs'
 import { parseProbeEvidence } from '../../infra/docker/probe-compose-secret-identity.mjs'
 import { interpretPrerequisiteEvidence } from '../stage09a-prerequisite-evidence.mjs'
 
 const fatal = (message) => {
   throw new Error(message)
 }
+
+test('BuildKit metadata keeps manifest and config identities distinct and fail closed', () => {
+  const manifest = `sha256:${'a'.repeat(64)}`
+  const config = `sha256:${'b'.repeat(64)}`
+  assert.deepEqual(
+    parseBuildMetadataImageIdentity(JSON.stringify({
+      'containerimage.digest': manifest,
+      'containerimage.config.digest': config,
+      'containerimage.descriptor': { digest: manifest }
+    })),
+    { imageId: manifest, configId: config }
+  )
+  assert.deepEqual(
+    parseBuildMetadataImageIdentity(JSON.stringify({
+      'containerimage.digest': manifest,
+      'containerimage.descriptor': { digest: manifest }
+    })),
+    { imageId: manifest, configId: null }
+  )
+  for (const malformed of [
+    'not-json-METADATA-SENTINEL',
+    '[]',
+    '{}',
+    JSON.stringify({
+      'containerimage.digest': manifest,
+      'containerimage.config.digest': config,
+      'containerimage.descriptor': { digest: `sha256:${'c'.repeat(64)}` }
+    })
+  ]) {
+    assert.throws(
+      () => parseBuildMetadataImageIdentity(malformed),
+      (error) => !String(error).includes('METADATA-SENTINEL')
+    )
+  }
+})
 
 test('resolved Compose capabilities reject null services and project every nested field', () => {
   assert.equal(isResolvedServiceRecord(null), false)
@@ -62,6 +101,29 @@ test('resolved Compose capabilities reject null services and project every neste
     start_interval: null,
     disable: true
   })
+  assert.equal(
+    resolvedHealthcheckProjection({ test: ['NONE'], disable: true, post_start: ['id'] }),
+    null
+  )
+
+  const document = JSON.stringify({
+    name: 'meal-agent-local-test',
+    services: {},
+    networks: {},
+    volumes: {},
+    secrets: {}
+  })
+  assert.equal(parseResolvedComposeDocument(document)?.name, 'meal-agent-local-test')
+  for (const malformed of [
+    '',
+    'null',
+    '[]',
+    '{',
+    JSON.stringify({ name: 'x', services: [], networks: {}, volumes: {}, secrets: {} }),
+    JSON.stringify({ name: 'x', services: {}, networks: null, volumes: {}, secrets: {} })
+  ]) {
+    assert.equal(parseResolvedComposeDocument(malformed), null)
+  }
 })
 
 test('the Secret identity plan is bound to the canonical eight facts', () => {
@@ -209,11 +271,18 @@ test('a status-zero one-off result is not evidence unless the owned container ac
 
 test('a no-op lifecycle stop cannot pass as graceful SIGTERM evidence', () => {
   const running = {
-    Status: 'running',
-    Running: true,
-    ExitCode: 0,
-    StartedAt: '2026-08-15T01:00:00Z',
-    FinishedAt: '0001-01-01T00:00:00Z'
+    id: 'a'.repeat(64),
+    name: '/meal-agent-m4-lifecycle-api-1',
+    image: `sha256:${'b'.repeat(64)}`,
+    project: 'meal-agent-m4-lifecycle-fixture',
+    service: 'api',
+    state: {
+      Status: 'running',
+      Running: true,
+      ExitCode: 0,
+      StartedAt: '2026-08-15T01:00:00Z',
+      FinishedAt: '0001-01-01T00:00:00Z'
+    }
   }
   assert.throws(
     () => assertGracefulStopTransition(running, running),
@@ -222,11 +291,23 @@ test('a no-op lifecycle stop cannot pass as graceful SIGTERM evidence', () => {
   assert.equal(
     assertGracefulStopTransition(running, {
       ...running,
-      Status: 'exited',
-      Running: false,
-      FinishedAt: '2026-08-15T01:00:01Z'
+      state: {
+        ...running.state,
+        Status: 'exited',
+        Running: false,
+        FinishedAt: '2026-08-15T01:00:01Z'
+      }
     }),
     true
+  )
+  assert.throws(
+    () =>
+      assertGracefulStopTransition(running, {
+        ...running,
+        id: 'c'.repeat(64),
+        state: { ...running.state, Status: 'exited', Running: false }
+      }),
+    /stable graceful-stop identity/
   )
 })
 

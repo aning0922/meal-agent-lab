@@ -32,7 +32,11 @@ import {
   parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
-import { isAbsenceMessage } from './m3b-docker.mjs'
+import {
+  isAbsenceMessage,
+  parseBuildMetadataImageIdentity,
+  parseCanonicalDockerImageId
+} from './m3b-docker.mjs'
 import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
 
 const usage = 'node infra/docker/check-api-runtime-image-mutations.mjs'
@@ -188,12 +192,22 @@ const mutations = [
     expectScan: ['image config: User must be 10001:10001']
   },
   {
+    id: 'wrong-stop-signal',
+    describe: 'replace Docker default SIGTERM shutdown with SIGINT',
+    build: true,
+    mutate: (text) => `${text}\nSTOPSIGNAL SIGINT\n`,
+    expectStatic: ['STOPSIGNAL must be absent so Docker uses SIGTERM'],
+    expectScan: ['image config: StopSignal must be absent so Docker uses SIGTERM']
+  },
+  {
     id: 'missing-provenance',
     describe: 'build an otherwise valid image with provenance explicitly disabled',
     build: true,
     buildOptions: ['--provenance=false'],
-    resolveImageFromTag: true,
-    mutate: (text) => `${text}\n# provenance-disabled mutation\n`,
+    // A unique label prevents this intentionally provenance-free build from sharing one
+    // manifest identity with another case. Cleanup can therefore prove exclusive ownership
+    // and remove the immutable ID rather than trusting a mutable tag.
+    mutate: (text) => `${text}\nLABEL meal-agent.m5.mutation=${runId}-missing-provenance\n`,
     expectStatic: [],
     expectScan: ['provenance is missing or not bound to the selected platform manifest']
   },
@@ -213,7 +227,7 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 11
+const expectedBuiltMutationCount = 12
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
@@ -307,10 +321,9 @@ const cleanup = () => {
       const imageIdFile = cleanupState.imageIdFiles.get(tag)
       if (ownedImageId === null && imageIdFile !== undefined && existsSync(imageIdFile)) {
         try {
-          ownedImageId = parseDockerImageId(
-            readFileSync(imageIdFile, 'utf8'),
-            () => { throw new Error('invalid iidfile') }
-          )
+          ownedImageId = parseBuildMetadataImageIdentity(
+            readFileSync(imageIdFile, 'utf8')
+          ).imageId
           cleanupState.builtTags.set(tag, ownedImageId)
         } catch {
           cleanupProblems.push(`built image identity could not be recovered (${tag})`)
@@ -329,9 +342,27 @@ const cleanup = () => {
           await cleanupOwnedDanglingImage(tag, ownedImageId)
           continue
         }
-        const removal = await runCommand(['docker', 'rmi', tag], { timeoutMs: 120_000 })
+        const owned = await runCommand(
+          ['docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', ownedImageId],
+          { timeoutMs: 60_000 }
+        )
+        let exclusivelyOwned = false
+        if (owned.status === 0) {
+          try {
+            const repoTags = JSON.parse(owned.stdout)
+            exclusivelyOwned =
+              Array.isArray(repoTags) && repoTags.length === 1 && repoTags[0] === tag
+          } catch {
+            cleanupProblems.push(`owned image tag set was unreadable (${tag})`)
+          }
+        }
+        if (!exclusivelyOwned) {
+          cleanupProblems.push(`recorded image was not exclusively owned (${tag})`)
+          continue
+        }
+        const removal = await runCommand(['docker', 'rmi', ownedImageId], { timeoutMs: 120_000 })
         if (removal.status !== 0) {
-          cleanupProblems.push(`image tag removal failed (${tag})`)
+          cleanupProblems.push(`image identity removal failed (${tag})`)
           continue
         }
       } else if (!(
@@ -388,17 +419,17 @@ const buildAndScan = async ({
   caseId,
   dockerfileText,
   viaStdin,
-  buildOptions = [],
-  resolveImageFromTag = false
+  buildOptions = []
 }) => {
   const tag = tagFor(caseId)
   const caseDirectory = join(cleanupState.temporaryRoot, `case-${caseId}`)
   mkdirSync(caseDirectory, { recursive: true })
   const imageIdFile = join(caseDirectory, 'built-image.id')
-  cleanupState.imageIdFiles.set(tag, imageIdFile)
+  const metadataFile = join(caseDirectory, 'built-image.metadata.json')
+  cleanupState.imageIdFiles.set(tag, metadataFile)
   const buildArgs = viaStdin
-    ? ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--file', '-', '--tag', tag, '.']
-    : ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--file', 'services/api/Dockerfile', '--tag', tag, '.']
+    ? ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--metadata-file', metadataFile, '--file', '-', '--tag', tag, '.']
+    : ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--metadata-file', metadataFile, '--file', 'services/api/Dockerfile', '--tag', tag, '.']
   const preexistingImage = await runCommand(['docker', 'image', 'inspect', tag], { timeoutMs: 60_000 })
   if (
     preexistingImage.status === 0 ||
@@ -412,15 +443,13 @@ const buildAndScan = async ({
     label: `docker build (${caseId})`,
     stdin: viaStdin ? dockerfileText : null
   })
-  let builtImageId
-  if (resolveImageFromTag) {
-    const inspected = await runStrict(
-      ['docker', 'image', 'inspect', '--format', '{{.Id}}', tag],
-      { timeoutMs: 60_000, label: `docker image inspect (${caseId})` }
-    )
-    builtImageId = parseDockerImageId(inspected.stdout, fatal)
-  } else {
-    builtImageId = parseDockerImageId(readFileSync(imageIdFile, 'utf8'), fatal)
+  const { imageId: builtImageId, configId } = parseBuildMetadataImageIdentity(
+    readFileSync(metadataFile, 'utf8')
+  )
+  if (
+    parseCanonicalDockerImageId(readFileSync(imageIdFile, 'utf8')) !== (configId ?? builtImageId)
+  ) {
+    fatal('docker build iidfile did not match build metadata')
   }
   cleanupState.builtTags.set(tag, builtImageId)
   const problems = []
@@ -559,8 +588,7 @@ const main = async () => {
       caseId: mutation.id,
       dockerfileText: mutated,
       viaStdin: true,
-      buildOptions: mutation.buildOptions ?? [],
-      resolveImageFromTag: mutation.resolveImageFromTag === true
+      buildOptions: mutation.buildOptions ?? []
     })
     let missed = false
     for (const expected of mutation.expectScan) {

@@ -313,7 +313,14 @@ export const createProcessGroupLifecycle = ({
     })
     for (const handle of pending) {
       try {
-        signalIfCurrent(handle, 'SIGTERM')
+        if (!signalIfCurrent(handle, 'SIGTERM')) {
+          // `false` is not proof that the signal was delivered.  The default
+          // primitive uses it for ESRCH/EPERM and injected lifecycle
+          // implementations may use it for another delivery failure.  A
+          // later probe can still prove the group gone, but the cleanup must
+          // retain the failed-delivery fact and fail closed.
+          primitiveFailed = true
+        }
       } catch {
         primitiveFailed = true
       }
@@ -341,7 +348,9 @@ export const createProcessGroupLifecycle = ({
     for (let attempt = 0; attempt < killSteps && unconfirmed.length > 0; attempt += 1) {
       for (const handle of unconfirmed) {
         try {
-          signalIfCurrent(handle, 'SIGKILL')
+          if (!signalIfCurrent(handle, 'SIGKILL')) {
+            primitiveFailed = true
+          }
         } catch {
           primitiveFailed = true
         }

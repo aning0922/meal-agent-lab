@@ -28,7 +28,7 @@ import {
   sentinelSnapshotStatements
 } from './m4-lifecycle.mjs'
 
-const drillBody = async ({ stacks, log, fail, timed, buildImage }) => {
+const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
   const [stack] = stacks
 
   await stack.assignHostPort()
@@ -86,6 +86,17 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage }) => {
     const afterStop = await readContainerRuntimeState(apiName, stack.composeEnvironment)
     try {
       assertGracefulStopTransition(beforeStop, afterStop)
+      const shutdownLogs = await run(['docker', 'logs', apiName], {
+        env: stack.composeEnvironment,
+        timeoutMs: 60_000
+      })
+      if (
+        shutdownLogs.status !== 0 ||
+        !shutdownLogs.stdout.includes('"event":"shutdown.started"') ||
+        !shutdownLogs.stdout.includes('"signal":"SIGTERM"')
+      ) {
+        throw new Error('the owned API container did not record the SIGTERM shutdown event')
+      }
       log(`api stopped gracefully on SIGTERM in ${String(stopMs)}ms (container exit code 0)`)
     } catch {
       fail('api stop did not prove a running-to-exited graceful transition')

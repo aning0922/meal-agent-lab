@@ -654,7 +654,7 @@ test('static and Config failures use fixed diagnostics without evidence-controll
   const sentinel = 'RUNTIME-IMAGE-SCAN-SENTINEL-DO-NOT-ECHO'
   const problems = []
   checkDockerfileText(
-    `FROM ${sentinel} AS node-base\nCOPY apps/${sentinel} /app\n`,
+    `FROM ${sentinel} AS node-base\nCOPY apps/${sentinel} /app\nSTOPSIGNAL ${sentinel}\n`,
     (message) => problems.push(message)
   )
   checkDockerignoreText(
@@ -670,7 +670,8 @@ test('static and Config failures use fixed diagnostics without evidence-controll
       Env: [`PASSWORD=${sentinel}`],
       ExposedPorts: { [sentinel]: {} },
       Volumes: { [sentinel]: {} },
-      Healthcheck: { Test: [sentinel] }
+      Healthcheck: { Test: [sentinel] },
+      StopSignal: sentinel
     },
     (message) => problems.push(message),
     throwingFatal

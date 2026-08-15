@@ -13,9 +13,16 @@
 // 每次 smoke/probe 运行使用**唯一 image tag**（`meal-agent-api:m3b-<run id>`），
 // 通过临时 Compose override 注入，因此并行 worktree/project 不会互相覆盖；
 // build 之后读取 immutable image ID 并绑定到三个 API 镜像服务的 `.Image`。
-import { existsSync, lstatSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { runCommand } from './m3b-subprocess.mjs'
 
@@ -25,6 +32,22 @@ export const runImageTagPrefix = 'meal-agent-api:m3b-'
 export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
 
 const ownedOverrideInodes = new Map()
+const ownedBuildEvidenceDirectories = new Map()
+
+const removeOwnedBuildEvidenceDirectory = (directory) => {
+  const expected = ownedBuildEvidenceDirectories.get(directory)
+  if (expected === undefined) return
+  if (!existsSync(directory)) {
+    ownedBuildEvidenceDirectories.delete(directory)
+    return
+  }
+  const observed = lstatSync(directory, { bigint: true })
+  if (observed.dev !== expected.dev || observed.ino !== expected.ino) {
+    throw new DockerEvidenceError('build evidence directory ownership drifted')
+  }
+  rmSync(directory, { recursive: true, force: false })
+  ownedBuildEvidenceDirectories.delete(directory)
+}
 
 /** 唯一 tag 的临时 Compose override（三个 API 镜像服务共用同一个 tag）。 */
 export const writeImageOverride = (path, imageTag) => {
@@ -90,6 +113,37 @@ export const parseCanonicalDockerContainerId = (raw) =>
     /^([0-9a-f]{64})\n?$/,
     'docker container evidence returned an invalid container ID'
   )
+
+/**
+ * BuildKit 的 `--metadata-file` 同时给出 manifest digest 与 config digest。Docker
+ * Desktop 的 `--iidfile` 是 config digest，而 `docker image inspect .Id` 是 manifest
+ * digest；开启 provenance 时 iidfile 则是 manifest-list digest。这里要求 metadata
+ * 的两处 manifest identity 自洽，并把可选的 config identity 留给调用方与 iidfile
+ * 交叉核对。
+ */
+export const parseBuildMetadataImageIdentity = (raw) => {
+  let value
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    throw new DockerEvidenceError('docker build metadata was not valid JSON')
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new DockerEvidenceError('docker build metadata had an invalid shape')
+  }
+  const descriptor = value['containerimage.descriptor']
+  if (descriptor === null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+    throw new DockerEvidenceError('docker build metadata had an invalid descriptor')
+  }
+  const imageId = parseCanonicalDockerImageId(value['containerimage.digest'])
+  if (parseCanonicalDockerImageId(descriptor.digest) !== imageId) {
+    throw new DockerEvidenceError('docker build metadata identities did not agree')
+  }
+  const configId = value['containerimage.config.digest'] === undefined
+    ? null
+    : parseCanonicalDockerImageId(value['containerimage.config.digest'])
+  return { imageId, configId }
+}
 
 export const classifyOwnedImageTag = (currentImageId, recordedImageId) => {
   if (currentImageId === null) {
@@ -270,6 +324,59 @@ export const imageIdOf = async (tag, { env } = {}) => {
 }
 
 /**
+ * 构建三个 API 服务共用的本轮镜像。manifest identity 来自 BuildKit 自己写出的
+ * `--metadata-file`，config identity 则与 `--iidfile` 交叉核对；Compose override
+ * 只负责运行期引用，不再承担“从可变 tag 反推构建对象”的证据职责。
+ */
+export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.env }) => {
+  if (!imageTag.startsWith(runImageTagPrefix)) {
+    throw new DockerEvidenceError('refusing to build outside the per-run image tag namespace')
+  }
+  if ((await imageIdOf(imageTag, { env })) !== null) {
+    throw new DockerEvidenceError('per-run image tag was not absent before build')
+  }
+  const directory = mkdtempSync(join(tmpdir(), 'meal-agent-m3b-build-'))
+  ownedBuildEvidenceDirectories.set(directory, inodeIdentityOf(directory))
+  const iidfile = resolve(directory, 'built-image.id')
+  const metadataFile = resolve(directory, 'built-image.metadata.json')
+  try {
+    const result = await runCommand(
+      [
+        'docker',
+        'build',
+        '--iidfile',
+        iidfile,
+        '--metadata-file',
+        metadataFile,
+        '--file',
+        'services/api/Dockerfile',
+        '--tag',
+        imageTag,
+        '.'
+      ],
+      { timeoutMs: 1_800_000, env, cwd: repositoryRoot }
+    )
+    if (result.status !== 0) {
+      throw new DockerEvidenceError('docker build failed')
+    }
+    const { imageId, configId } = parseBuildMetadataImageIdentity(
+      readFileSync(metadataFile, 'utf8')
+    )
+    if (
+      parseCanonicalDockerImageId(readFileSync(iidfile, 'utf8')) !== (configId ?? imageId)
+    ) {
+      throw new DockerEvidenceError('docker build iidfile did not match build metadata')
+    }
+    if ((await imageIdOf(imageTag, { env })) !== imageId) {
+      throw new DockerEvidenceError('built image tag was not bound to its iidfile identity')
+    }
+    return imageId
+  } finally {
+    removeOwnedBuildEvidenceDirectory(directory)
+  }
+}
+
+/**
  * 分阶段 scoped cleanup。stages 之间互不阻断，全部问题聚合进 residue。
  *
  * 顺序是刻意的：**明文 Secret 目录最先删**（Docker 侧任何失败都不允许把它
@@ -360,6 +467,14 @@ const cleanupRunUnsynchronized = async ({
       }
     }
     rmSync(realDir, { recursive: true, force: true })
+  })
+
+  // 阶段 1.5：build iidfile 的独占临时目录。正常路径会在 build 返回时删除；
+  // signal/异常路径仍由 scoped cleanup 以 inode 身份逐个收敛。
+  await stage('build-evidence', async () => {
+    for (const directory of [...ownedBuildEvidenceDirectories.keys()]) {
+      removeOwnedBuildEvidenceDirectory(directory)
+    }
   })
 
   if (typeof project !== 'string' || !projectPattern.test(project)) {
@@ -462,7 +577,17 @@ const cleanupRunUnsynchronized = async ({
       )
     }
     if (ownership === 'owned') {
-      await dockerStrict(['docker', 'image', 'rm', imageTag], {
+      const repoTags = await inspectJsonStrict(imageId, '{{json .RepoTags}}', {
+        env: composeEnvironment
+      })
+      if (!Array.isArray(repoTags) || repoTags.length !== 1 || repoTags[0] !== imageTag) {
+        throw new DockerEvidenceError(
+          'recorded image identity is not exclusively owned by the per-run tag'
+        )
+      }
+      // 绝不把可变 tag 交给删除命令。即使它在上面的 identity 读取之后被并发
+      // 重绑到 B，这里仍只删除本轮记录的 A；末尾 tag 复查会保留 B 并报告 drift。
+      await dockerStrict(['docker', 'image', 'rm', imageId], {
         env: composeEnvironment
       })
     }

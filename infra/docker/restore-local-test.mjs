@@ -159,7 +159,7 @@ export const verifyBackupChecksum = (dumpPath) => {
  * `compose(args, options)` 与 `run` 由调用方提供。
  */
 export const performRestore = async (
-  { compose, run, log, registerCleanup = null },
+  { compose, run, log },
   { project, dumpPath }
 ) => {
   const { sha256, verifiedBytes } = verifyBackupChecksum(resolve(dumpPath))
@@ -170,49 +170,8 @@ export const performRestore = async (
   const safeOneOff = (runArgs, options, failureReason) =>
     runRestoreOneOff(oneOff, runArgs, options, failureReason)
 
-  let cleanupPromise = null
-  const cleanupTransfer = () => {
-    cleanupPromise ??= (async () => {
-      try {
-        const cleaned = await oneOff(
-          [
-            '--entrypoint',
-            'bash',
-            'backup-transfer-loader',
-            '-euc',
-            'rm -f /transfer/input.dump.new /transfer/input.dump; test ! -e /transfer/input.dump.new; test ! -e /transfer/input.dump'
-          ],
-          { timeoutMs: 120_000 }
-        )
-        return cleaned.status === 0 ? [] : ['restore transfer artifact cleanup failed']
-      } catch {
-        return ['restore transfer artifact cleanup failed']
-      }
-    })()
-    return cleanupPromise
-  }
-  const unregisterCleanup = registerCleanup?.(cleanupTransfer) ?? (() => false)
-
-  try {
-    log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
+  log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
     log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
-
-  // 宿主已校验的 bytes 经 stdin 送入无网络、无 Secret 的 loader，由 UID999 在
-  // project-scoped transfer volume 内物化为 0600；不依赖宿主目录 owner/mode。
-  const loaded = await safeOneOff(
-    [
-      '--entrypoint',
-      'bash',
-      'backup-transfer-loader',
-      '-euc',
-      'umask 077; cat > /transfer/input.dump.new; mv -f /transfer/input.dump.new /transfer/input.dump'
-    ],
-    { timeoutMs: 300_000, stdin: verifiedBytes },
-    'restore handoff into the controlled transfer volume failed'
-  )
-  if (loaded.status !== 0) {
-    throw new Error('restore handoff into the controlled transfer volume failed')
-  }
 
   // 目标数据库必须不存在：恢复只进全新库。
   const present = await safeOneOff(
@@ -263,8 +222,9 @@ export const performRestore = async (
   }
   log(`created ${targetDatabase} owned by ${migrationRole}`)
 
-  // 单事务恢复：要么全部成功，要么整体回滚。凭据是 cluster admin 的
-  // PGPASSFILE（bootstrap-acl 服务声明的 secret），不经 argv。
+  // 单事务恢复：要么全部成功，要么整体回滚。**同一个已校验 Buffer**直接作为
+  // pg_restore stdin；不再把它物化到共享 `/transfer/input.dump` 后重新打开，
+  // 因而不存在校验 A、恢复 B 的路径替换窗口。凭据仍只经 PGPASSFILE。
   const restored = await safeOneOff(
     [
       '--entrypoint',
@@ -276,10 +236,9 @@ export const performRestore = async (
       '--host=postgres',
       '--port=5432',
       '--username=postgres',
-      `--dbname=${targetDatabase}`,
-      '/transfer/input.dump'
+      `--dbname=${targetDatabase}`
     ],
-    { timeoutMs: 900_000 },
+    { timeoutMs: 900_000, stdin: verifiedBytes },
     'restore failed while applying the verified backup'
   )
   if (restored.status !== 0) {
@@ -288,12 +247,7 @@ export const performRestore = async (
     )
   }
   log(`restore complete: deployment=local-test project=${project} database=${targetDatabase} (single transaction)`)
-    return { sha256 }
-  } finally {
-    const residue = await cleanupTransfer()
-    unregisterCleanup()
-    if (residue.length > 0) throw new Error('restore transfer artifact cleanup failed')
-  }
+  return { sha256 }
 }
 
 export const runRestoreOneOff = async (oneOff, runArgs, options, failureReason) => {

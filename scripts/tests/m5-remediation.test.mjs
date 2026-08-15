@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import {
   existsSync,
   chmodSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -473,6 +474,27 @@ test('backup no-replace promotion rejects a swapped staging inode without deleti
     // link(2) 已经解析了被换入的名字；失败路径不能把这个外部 inode 的
     // published hard link 当作本轮所有物删除。残留必须响亮失败并留给调用方处理。
     assert.equal(readFileSync(published, 'utf8'), 'PGDMP-FOREIGN')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup no-replace promotion retracts its own published link when nlink drifts to three', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-nlink-'))
+  try {
+    const staging = resolve(directory, 'staging.dump')
+    const externalLink = resolve(directory, 'external.dump')
+    const published = resolve(directory, 'published.dump')
+    writeFileSync(staging, 'PGDMP-OWNED')
+    assert.throws(
+      () => promoteBackupNoReplace(staging, published, {
+        afterSourceCheck: () => linkSync(staging, externalLink)
+      }),
+      /link count drifted/
+    )
+    assert.equal(existsSync(published), false)
+    assert.equal(readFileSync(staging, 'utf8'), 'PGDMP-OWNED')
+    assert.equal(readFileSync(externalLink, 'utf8'), 'PGDMP-OWNED')
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

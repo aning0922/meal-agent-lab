@@ -96,6 +96,38 @@ const PLAN = 'docs/plans/2026-07-stage-09a-local-deployability-baseline.md'
 const STATUS = 'docs/project-status.md'
 const ADR = 'docs/architecture/decisions/0005-local-private-deployment-baseline.md'
 const DOCKER_README = 'infra/docker/README.md'
+const EVIDENCE_BASELINE = 'infra/docker/m3b-evidence-baseline.json'
+
+let evidenceBaseline = null
+try {
+  const parsed = JSON.parse(readDocument(EVIDENCE_BASELINE))
+  const keys = Object.keys(parsed).sort()
+  const expectedKeys = [
+    'malformedRegistryCaseNames',
+    'runtimeImageMutationIds',
+    'schemaVersion',
+    'topologyMutationNames',
+    'trackedFileCount'
+  ]
+  if (
+    JSON.stringify(keys) !== JSON.stringify(expectedKeys) ||
+    parsed.schemaVersion !== 1 ||
+    !Number.isSafeInteger(parsed.trackedFileCount) ||
+    parsed.trackedFileCount < 1 ||
+    !['malformedRegistryCaseNames', 'runtimeImageMutationIds', 'topologyMutationNames'].every(
+      (key) =>
+        Array.isArray(parsed[key]) &&
+        parsed[key].length > 0 &&
+        parsed[key].every((value) => typeof value === 'string' && value !== '') &&
+        new Set(parsed[key]).size === parsed[key].length
+    )
+  ) {
+    throw new Error('invalid baseline')
+  }
+  evidenceBaseline = parsed
+} catch {
+  fail('the committed evidence baseline is readable and closed', '固定登记清单无法读取或 shape 漂移')
+}
 
 /**
  * 族 id 的**形状**，§2 与 §4b 共用。
@@ -181,6 +213,7 @@ const sameSet = (left, right) => {
     ['零看守族 id 与受测族冲突', { families: [ok], unguardedFamilies: [{ id: 'control/x', whyUnguarded: 'y' }], views }, '与受测族冲突']
   ]
   const expectedMalformedRegistryCount = 18
+  const actualCaseNames = cases.map(([label]) => label)
   const missed = cases.filter(
     ([, bad, reason]) => !validateRegistry(bad).some((problem) => problem.includes(reason))
   )
@@ -191,7 +224,13 @@ const sameSet = (left, right) => {
     views: viewsOf(2)
   }
   const goodProblems = validateRegistry(goodMixed)
-  if (cases.length !== expectedMalformedRegistryCount) {
+  if (
+    evidenceBaseline === null ||
+    JSON.stringify(actualCaseNames) !==
+      JSON.stringify(evidenceBaseline.malformedRegistryCaseNames)
+  ) {
+    fail(name, '畸形登记表用例成员与独立 baseline 清单不符')
+  } else if (cases.length !== expectedMalformedRegistryCount) {
     fail(
       name,
       `畸形登记表用例数漂移：应为 ${String(expectedMalformedRegistryCount)}，实际 ${String(cases.length)}`
@@ -700,14 +739,22 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     fail(name, 'git ls-files 失败')
   } else {
     const tracked = listing.stdout.split('\u0000').filter(Boolean).length
-    const claim = uniqueMatch(
-      readDocument(PLAN),
-      /artifacts × `git ls-files` 派生的 tracked 文件/g
-    )
-    if (claim === null) {
-      fail(name, '计划文档里的 tracked 文件证据没有唯一声明为 git ls-files 派生')
+    if (evidenceBaseline === null || tracked !== evidenceBaseline.trackedFileCount) {
+      fail(
+        name,
+        `tracked 文件数与独立 baseline 不符：实测 ${String(tracked)}，` +
+          `baseline ${String(evidenceBaseline?.trackedFileCount ?? 0)}`
+      )
     } else {
-      pass(name, `tracked 文件证据由 git ls-files 派生（本次 ${String(tracked)} 个）`)
+      const claim = uniqueMatch(
+        readDocument(PLAN),
+        /artifacts × `git ls-files` 派生的 tracked 文件/g
+      )
+      if (claim === null) {
+        fail(name, '计划文档里的 tracked 文件证据没有唯一声明为 git ls-files 派生')
+      } else {
+        pass(name, `tracked 文件证据由 git ls-files 派生（本次 ${String(tracked)} 个）`)
+      }
     }
   }
 }
@@ -803,6 +850,12 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
   const readme = readDocument(DOCKER_README)
   const topologySource = readDocument('infra/docker/check-compose-topology-mutations.mjs')
   const imageSource = readDocument('infra/docker/check-api-runtime-image-mutations.mjs')
+  const topologyNames = [...topologySource.matchAll(/^    name: '([^']+)'/gm)].map(
+    (match) => match[1]
+  )
+  const imageIds = [...imageSource.matchAll(/^    id: '([^']+)'/gm)].map(
+    (match) => match[1]
+  )
   const localSource = readDocument('infra/docker/check-local-test-negatives.mjs')
   const targetedSource = readDocument('infra/docker/check-m3b-round2-negatives.mjs')
   const signalSource = readDocument('infra/docker/check-m3b-signal-windows.mjs')
@@ -849,6 +902,14 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
   )
   const signalRealExecutable = uniqueMatch(signalSource, /^const expectedCount = (\d+)$/gm)
   if (
+    evidenceBaseline === null ||
+    JSON.stringify(topologyNames) !==
+      JSON.stringify(evidenceBaseline.topologyMutationNames) ||
+    JSON.stringify(imageIds) !==
+      JSON.stringify(evidenceBaseline.runtimeImageMutationIds)
+  ) {
+    fail(name, 'mutation 成员与独立 baseline 清单不符')
+  } else if (
     topologyPublished === null ||
     imagePublished === null ||
     topologyExecutable === null ||
