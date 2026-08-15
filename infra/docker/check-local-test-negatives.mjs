@@ -122,7 +122,7 @@ installSignalHandlers(async () => {
       residue.push(...await cleanupSmokeProject(
         scope.project,
         scope.secretsDirectory,
-        { imageTag: scope.imageTag }
+        { imageTag: scope.imageTag, imageId: scope.imageId ?? null }
       ))
     } catch {
       residue.push(`scoped-cleanup:${scope.project}`)
@@ -1437,9 +1437,23 @@ process.stdout.write('Group E: image isolation negatives\n')
   usedNegativeProjects.push(projectA, projectB)
   const secretsA = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
   const secretsB = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
+  let recordedImageIdA = null
+  let recordedImageIdB = null
+  const cleanupScopeA = {
+    project: projectA,
+    secretsDirectory: secretsA,
+    imageTag: tagA,
+    imageId: null
+  }
+  const cleanupScopeB = {
+    project: projectB,
+    secretsDirectory: secretsB,
+    imageTag: tagB,
+    imageId: null
+  }
   usedNegativeCleanupScopes.push(
-    { project: projectA, secretsDirectory: secretsA, imageTag: tagA },
-    { project: projectB, secretsDirectory: secretsB, imageTag: tagB }
+    cleanupScopeA,
+    cleanupScopeB
   )
   try {
     generateSecretBundle(secretsA)
@@ -1472,12 +1486,16 @@ process.stdout.write('Group E: image isolation negatives\n')
       throw new Error('project A build failed')
     }
     const idA1 = await imageIdOf(tagA)
+    recordedImageIdA = idA1
+    cleanupScopeA.imageId = idA1
     const builtB = await buildFor(projectB, overrideB, secretsB)
     if (builtB.status !== 0) {
       throw new Error('project B build failed')
     }
     const idA2 = await imageIdOf(tagA)
     const idB = await imageIdOf(tagB)
+    recordedImageIdB = idB
+    cleanupScopeB.imageId = idB
     if (idA1 === null || idB === null) {
       fail(name, 'a per-run tag does not exist after its own build')
     } else if (idA2 !== idA1) {
@@ -1493,7 +1511,10 @@ process.stdout.write('Group E: image isolation negatives\n')
 
     // cleanup 只删自己那一个 tag：删 A 之后 B 必须还在。
     const cleanupName = 'per-run cleanup removes only its own image tag'
-    const residueA = await cleanupSmokeProject(projectA, secretsA, { imageTag: tagA })
+    const residueA = await cleanupSmokeProject(projectA, secretsA, {
+      imageTag: tagA,
+      imageId: recordedImageIdA
+    })
     const afterA = await imageIdOf(tagA)
     const survivingB = await imageIdOf(tagB)
     if (residueA.length > 0) {
@@ -1510,11 +1531,11 @@ process.stdout.write('Group E: image isolation negatives\n')
   } finally {
     // 无论 A build、B build、identity read 或断言在哪一步失败，两边都进入同一个
     // failure-safe cleanup。此前 finally 只收 B，B build 失败会把 A tag 留下。
-    for (const [label, project, secrets, imageTag] of [
-      ['first', projectA, secretsA, tagA],
-      ['second', projectB, secretsB, tagB]
+    for (const [label, project, secrets, imageTag, imageId] of [
+      ['first', projectA, secretsA, tagA, recordedImageIdA],
+      ['second', projectB, secretsB, tagB, recordedImageIdB]
     ]) {
-      const residue = await cleanupSmokeProject(project, secrets, { imageTag }).catch(
+      const residue = await cleanupSmokeProject(project, secrets, { imageTag, imageId }).catch(
         (error) => [`cleanup-error: ${safe(error instanceof Error ? error.message : String(error))}`]
       )
       if (residue.length > 0) {
@@ -1559,17 +1580,17 @@ process.stdout.write('Group F: docker evidence fail-closed negatives\n')
     {
       name: 'a failing docker ps makes the container sweep report residue instead of passing',
       script: 'if [ "$1" = "ps" ]; then echo "boom" >&2; exit 7; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /container-sweep: docker ps .*exited 7/
+      expect: /container-sweep: docker command failed \(7\)/
     },
     {
       name: 'a failing docker volume ls makes the dangling check report residue',
       script: 'if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then echo "boom" >&2; exit 9; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /(volume-sweep|dangling-volumes): docker volume ls .*exited 9/
+      expect: /(volume-sweep|dangling-volumes): docker command failed \(9\)/
     },
     {
       name: 'a failing docker compose down is reported instead of silently ignored',
       script: 'if [ "$1" = "compose" ]; then echo "boom" >&2; exit 5; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /compose-down: docker compose .*exited 5/
+      expect: /compose-down: docker command failed \(5\)/
     }
   ]
   // `which docker` 的退出码必须检查：读不到真实路径时 shim 会退化成
