@@ -349,6 +349,7 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
   let state = 'absent'
   let ownerToken = null
   let observed = null
+  let handoff = null
   const run = async (argv) => {
     if (argv[1] === 'container' && argv[2] === 'inspect') {
       const name = argv[3]
@@ -394,11 +395,18 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
   const result = await composeRunOneOff(
     { compose, run },
     ['--entrypoint', 'bash', 'backup-transfer-loader', '-c', 'cat >/transfer/input.dump'],
-    { stdin: payload }
+    {
+      stdin: payload,
+      beforeRemove: async (evidence) => {
+        handoff = evidence
+      }
+    }
   )
   assert.equal(result.status, 0)
   assert.ok(observed.argv.includes('--no-TTY'))
   assert.equal(observed.options.stdin, payload)
+  assert.equal(handoff.id, 'b'.repeat(64))
+  assert.equal(handoff.result, result)
   assert.equal(state, 'absent')
 })
 

@@ -402,7 +402,10 @@ export const performBackup = async (
       ` --username=meal_agent_backup_login --dbname=${targetDatabase}` +
       ` --file=/transfer/${partial}`,
     `mv /transfer/${partial} /transfer/${name}`,
-    'rm -f /tmp/backup.pgpass'
+    'rm -f /tmp/backup.pgpass',
+    // `docker exec` cannot inspect an exited one-shot container. Emit the digest
+    // before exit and bind the handoff to the already identity-checked run result.
+    `sha256sum /transfer/${name}`
   ].join('\n')
   try {
     const dump = await composeRunOneOff(
@@ -410,19 +413,15 @@ export const performBackup = async (
       ['--entrypoint', 'bash', 'backup', '-c', script],
       {
         timeoutMs: 600_000,
-        beforeRemove: async ({ id }) => {
-          const sourceDigest = await run(
-            ['docker', 'exec', id, 'sha256sum', `/transfer/${name}`],
-            { timeoutMs: 120_000 }
-          )
+        beforeRemove: async ({ id, result }) => {
           const digestMatch =
-            sourceDigest.status === 0
+            result.status === 0 && typeof result.stdout === 'string'
               ? new RegExp(
                   `^([0-9a-f]{64})[ \\t]+\\*?\\/transfer\\/${name.replace(
                     /[.*+?^${}()|[\]\\]/g,
                     '\\$&'
                   )}\\n?$`
-                ).exec(sourceDigest.stdout)
+                ).exec(result.stdout)
               : null
           if (digestMatch === null) {
             throw new Error('backup source digest evidence failed')

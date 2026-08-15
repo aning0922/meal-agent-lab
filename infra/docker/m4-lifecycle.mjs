@@ -647,7 +647,7 @@ export const composeRunOneOff = async (
     }
     if (composeError === null && beforeRemove !== null) {
       try {
-        await beforeRemove({ id: inspected.id, name: entry.name })
+        await beforeRemove({ id: inspected.id, name: entry.name, result })
       } catch {
         composeError = new Error('one-off container handoff failed')
       }
