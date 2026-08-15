@@ -21,6 +21,7 @@ import {
   rmSync,
   writeFileSync
 } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -33,10 +34,12 @@ export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
 
 const ownedOverrideInodes = new Map()
 const ownedBuildEvidenceDirectories = new Map()
+const buildClaimLabel = 'meal-agent.m3b.build-claim'
 
 const removeOwnedBuildEvidenceDirectory = (directory) => {
-  const expected = ownedBuildEvidenceDirectories.get(directory)
-  if (expected === undefined) return
+  const record = ownedBuildEvidenceDirectories.get(directory)
+  if (record === undefined) return
+  const expected = record.identity
   if (!existsSync(directory)) {
     ownedBuildEvidenceDirectories.delete(directory)
     return
@@ -336,11 +339,17 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
     throw new DockerEvidenceError('per-run image tag was not absent before build')
   }
   const directory = mkdtempSync(join(tmpdir(), 'meal-agent-m3b-build-'))
-  ownedBuildEvidenceDirectories.set(directory, inodeIdentityOf(directory))
-  const iidfile = resolve(directory, 'built-image.id')
   const metadataFile = resolve(directory, 'built-image.metadata.json')
-  try {
-    const result = await runCommand(
+  const claimToken = randomBytes(16).toString('hex')
+  ownedBuildEvidenceDirectories.set(directory, Object.freeze({
+    identity: inodeIdentityOf(directory),
+    imageTag,
+    metadataFile,
+    iidfile: resolve(directory, 'built-image.id'),
+    claimToken
+  }))
+  const iidfile = resolve(directory, 'built-image.id')
+  const result = await runCommand(
       [
         'docker',
         'build',
@@ -348,6 +357,8 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
         iidfile,
         '--metadata-file',
         metadataFile,
+        '--label',
+        `${buildClaimLabel}=${claimToken}`,
         '--file',
         'services/api/Dockerfile',
         '--tag',
@@ -356,24 +367,21 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
       ],
       { timeoutMs: 1_800_000, env, cwd: repositoryRoot }
     )
-    if (result.status !== 0) {
-      throw new DockerEvidenceError('docker build failed')
-    }
-    const { imageId, configId } = parseBuildMetadataImageIdentity(
-      readFileSync(metadataFile, 'utf8')
-    )
-    if (
-      parseCanonicalDockerImageId(readFileSync(iidfile, 'utf8')) !== (configId ?? imageId)
-    ) {
-      throw new DockerEvidenceError('docker build iidfile did not match build metadata')
-    }
-    if ((await imageIdOf(imageTag, { env })) !== imageId) {
-      throw new DockerEvidenceError('built image tag was not bound to its iidfile identity')
-    }
-    return imageId
-  } finally {
-    removeOwnedBuildEvidenceDirectory(directory)
+  if (result.status !== 0) {
+    throw new DockerEvidenceError('docker build failed')
   }
+  const { imageId, configId } = parseBuildMetadataImageIdentity(
+    readFileSync(metadataFile, 'utf8')
+  )
+  if (
+    parseCanonicalDockerImageId(readFileSync(iidfile, 'utf8')) !== (configId ?? imageId)
+  ) {
+    throw new DockerEvidenceError('docker build iidfile did not match build metadata')
+  }
+  if ((await imageIdOf(imageTag, { env })) !== imageId) {
+    throw new DockerEvidenceError('built image tag was not bound to its metadata identity')
+  }
+  return imageId
 }
 
 /**
@@ -420,6 +428,7 @@ const cleanupRunUnsynchronized = async ({
   realpath
 }) => {
   const residue = []
+  let resolvedImageId = imageId
   const stage = async (label, run) => {
     try {
       await run()
@@ -472,7 +481,51 @@ const cleanupRunUnsynchronized = async ({
   // 阶段 1.5：build iidfile 的独占临时目录。正常路径会在 build 返回时删除；
   // signal/异常路径仍由 scoped cleanup 以 inode 身份逐个收敛。
   await stage('build-evidence', async () => {
-    for (const directory of [...ownedBuildEvidenceDirectories.keys()]) {
+    for (const [directory, record] of [...ownedBuildEvidenceDirectories.entries()]) {
+      if (record.imageTag === imageTag && resolvedImageId === null) {
+        try {
+          const { imageId: recoveredImageId, configId } = parseBuildMetadataImageIdentity(
+            readFileSync(record.metadataFile, 'utf8')
+          )
+          if (
+            parseCanonicalDockerImageId(readFileSync(record.iidfile, 'utf8')) !==
+            (configId ?? recoveredImageId)
+          ) {
+            throw new DockerEvidenceError('docker build evidence identities did not agree')
+          }
+          resolvedImageId = recoveredImageId
+        } catch {
+          // Docker Desktop can publish the final tag just before the client writes metadata.
+          // The image was pre-claimed with an unguessable label before build started, so this
+          // fallback binds the interrupted result by immutable config evidence rather than by
+          // tag name alone. If no tag was published there is simply no image to clean.
+          const current = await imageIdOf(record.imageTag, { env: composeEnvironment })
+          if (current !== null) {
+            const inspected = await inspectJsonStrict(record.imageTag, '{{json .}}', {
+              env: composeEnvironment
+            })
+            const labels = inspected?.Config?.Labels
+            if (
+              inspected === null ||
+              typeof inspected !== 'object' ||
+              Array.isArray(inspected) ||
+              parseCanonicalDockerImageId(inspected.Id) !== current ||
+              !Array.isArray(inspected.RepoTags) ||
+              inspected.RepoTags.length !== 1 ||
+              inspected.RepoTags[0] !== record.imageTag ||
+              labels === null ||
+              typeof labels !== 'object' ||
+              Array.isArray(labels) ||
+              labels[buildClaimLabel] !== record.claimToken
+            ) {
+              throw new DockerEvidenceError(
+                'interrupted docker build ownership evidence did not match its claim'
+              )
+            }
+            resolvedImageId = current
+          }
+        }
+      }
       removeOwnedBuildEvidenceDirectory(directory)
     }
   })
@@ -565,7 +618,7 @@ const cleanupRunUnsynchronized = async ({
       )
     }
     const currentImageId = await imageIdOf(imageTag, { env: composeEnvironment })
-    const ownership = classifyOwnedImageTag(currentImageId, imageId)
+    const ownership = classifyOwnedImageTag(currentImageId, resolvedImageId)
     if (ownership === 'unproven') {
       throw new DockerEvidenceError(
         'refusing to remove the per-run image tag without its recorded immutable identity'
@@ -577,7 +630,7 @@ const cleanupRunUnsynchronized = async ({
       )
     }
     if (ownership === 'owned') {
-      const repoTags = await inspectJsonStrict(imageId, '{{json .RepoTags}}', {
+      const repoTags = await inspectJsonStrict(resolvedImageId, '{{json .RepoTags}}', {
         env: composeEnvironment
       })
       if (!Array.isArray(repoTags) || repoTags.length !== 1 || repoTags[0] !== imageTag) {
@@ -587,7 +640,7 @@ const cleanupRunUnsynchronized = async ({
       }
       // 绝不把可变 tag 交给删除命令。即使它在上面的 identity 读取之后被并发
       // 重绑到 B，这里仍只删除本轮记录的 A；末尾 tag 复查会保留 B 并报告 drift。
-      await dockerStrict(['docker', 'image', 'rm', imageId], {
+      await dockerStrict(['docker', 'image', 'rm', resolvedImageId], {
         env: composeEnvironment
       })
     }
