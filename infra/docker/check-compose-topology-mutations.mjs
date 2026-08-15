@@ -306,15 +306,65 @@ const mutations = [
     from:
       '        - "fetch(\'http://127.0.0.1:3000/healthz\').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"\n',
     to: '        - "process.exit(0)"\n',
-    expect: /api: healthcheck drifted from the registered \/healthz probe argv/
+    expect: /api: healthcheck drifted from the registered fixed semantics/
   },
   {
     name: 'an untrusted resolved healthcheck value is never echoed',
     from:
       '        - "fetch(\'http://127.0.0.1:3000/healthz\').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"\n',
     to: '        - "TOPOLOGY-RESOLVED-SENTINEL"\n',
-    expect: /api: healthcheck drifted from the registered \/healthz probe argv/,
+    expect: /api: healthcheck drifted from the registered fixed semantics/,
     forbidEcho: 'TOPOLOGY-RESOLVED-SENTINEL'
+  },
+  {
+    name: 'the API healthcheck cadence is relaxed',
+    from: '      interval: 10s\n',
+    to: '      interval: 11s\n',
+    expect: /api: healthcheck drifted from the registered fixed semantics/
+  },
+  {
+    name: 'the API healthcheck is disabled',
+    from:
+      '      test:\n' +
+      '        - CMD\n' +
+      '        - node\n' +
+      '        - -e\n' +
+      '        - "fetch(\'http://127.0.0.1:3000/healthz\').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"\n',
+    to:
+      '      disable: true\n' +
+      '      test:\n' +
+      '        - NONE\n',
+    expect: /api: healthcheck drifted from the registered fixed semantics/
+  },
+  {
+    name: 'an API dependency is made optional',
+    from:
+      '    depends_on:\n' +
+      '      postgres:\n' +
+      '        condition: service_healthy\n' +
+      '      migrate:\n' +
+      '        condition: service_completed_successfully\n',
+    to:
+      '    depends_on:\n' +
+      '      postgres:\n' +
+      '        condition: service_healthy\n' +
+      '      migrate:\n' +
+      '        condition: service_completed_successfully\n' +
+      '        required: false\n',
+    expect: /api: depends_on metadata drifted from the registered fixed semantics/
+  },
+  {
+    name: 'an API dependency gains restart propagation',
+    from:
+      '      postgres:\n' +
+      '        condition: service_healthy\n' +
+      '      migrate:\n',
+    to:
+      '      postgres:\n' +
+      '        condition: service_healthy\n' +
+      '        restart: true\n' +
+      '      migrate:\n',
+    expect: /api: depends_on metadata drifted from the registered fixed semantics/
   },
   {
     name: 'a noncanonical top-level declaration never echoes its source line',
@@ -405,7 +455,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 29
+const expectedMutationCount = 33
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

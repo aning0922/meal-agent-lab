@@ -147,6 +147,11 @@ const createFixture = () => {
     `#!/bin/sh
 set -eu
 if [ "\${1:-}" = version ]; then
+  if [ "\${STAGE09A_FIXTURE_MODE:-}" = prerequisite-overflow ]; then
+    head -c 1048576 /dev/zero | tr '\\000' A
+    printf '%s\\n' 'UNTRUSTED-PREREQUISITE-OVERFLOW-SENTINEL'
+    exit 0
+  fi
   if [ "\${STAGE09A_FIXTURE_MODE:-}" = preflight ]; then
     printf '%s\\n' "$$" > "\${STAGE09A_FIXTURE_DIR}/probe-pid"
     : > "\${STAGE09A_FIXTURE_DIR}/probe-ready"
@@ -737,6 +742,23 @@ const waitForClose = (child, timeoutMs) =>
     })
   })
 
+test('oversized prerequisite evidence fails closed before any gate starts', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'prerequisite-overflow')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.doesNotMatch(output, /UNTRUSTED-PREREQUISITE-OVERFLOW-SENTINEL/)
+    assert.equal(existsSync(resolve(fixture.directory, 'step-started')), false)
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('the aggregate registry keeps the exact accepted gate order', () => {
   const source = readFileSync(entrypoint, 'utf8')
   const actualStepIds = [...source.matchAll(/^    id: '([^']+)',$/gm)].map((match) => match[1])
@@ -902,6 +924,10 @@ test('a termination primitive exception is fixed-output, bounded, and does not s
   const sentinel = 'TERMINATION-PRIMITIVE-SENTINEL'
   const originalSource = readFileSync(entrypoint, 'utf8')
   const mutatedSource = originalSource
+    .replace(
+      "from './stage09a-prerequisite-evidence.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+    )
     .replace(
       "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
       `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`

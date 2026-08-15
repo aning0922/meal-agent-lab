@@ -383,9 +383,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (terminationSignal() !== null) {
       log(`interrupted by ${terminationSignal()}; the signal handler owns the cleanup`)
     } else {
-      process.stderr.write(
-        `${scrubber.scrubUntrusted(error instanceof Error ? error.message : String(error))}\n`
-      )
+      process.stderr.write('restore operation failed\n')
       await exitAfterSweepUnlessSignalled(1)
     }
   }

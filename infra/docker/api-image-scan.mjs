@@ -29,7 +29,11 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'n
 import { fileURLToPath } from 'node:url'
 
 import { runCommand } from './m3b-subprocess.mjs'
-import { isAbsenceMessage } from './m3b-docker.mjs'
+import {
+  isAbsenceMessage,
+  parseCanonicalDockerContainerId,
+  parseCanonicalDockerImageId
+} from './m3b-docker.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 export const repositoryRoot = resolve(composeDirectory, '..', '..')
@@ -225,19 +229,19 @@ export const checkDockerignoreText = (text, problem) => {
 }
 
 export const parseDockerImageId = (stdout, fatal) => {
-  const value = stdout.trim()
-  if (!/^sha256:[0-9a-f]{64}$/.test(value)) {
+  try {
+    return parseCanonicalDockerImageId(stdout)
+  } catch {
     fatal('docker image inspect returned a noncanonical image ID')
   }
-  return value
 }
 
 export const parseDockerContainerId = (stdout, fatal) => {
-  const value = stdout.trim()
-  if (!/^[0-9a-f]{64}$/.test(value)) {
+  try {
+    return parseCanonicalDockerContainerId(stdout)
+  } catch {
     fatal('docker create returned a noncanonical container ID')
   }
-  return value
 }
 
 export const checkImageConfig = (imageConfig, problem, fatal) => {

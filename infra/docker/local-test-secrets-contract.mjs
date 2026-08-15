@@ -177,35 +177,45 @@ export const secretFiles = Object.freeze([
     filename: 'postgres_superuser_password',
     kind: 'password',
     role: 'superuser',
-    consumerUid: 999
+    consumerUid: 999,
+    probeService: 'postgres',
+    probeRuntime: 'bash'
   }),
   Object.freeze({
     name: 'postgres_admin_pgpass',
     filename: 'postgres_admin.pgpass',
     kind: 'pgpass',
     role: 'superuser',
-    consumerUid: 999
+    consumerUid: 999,
+    probeService: 'bootstrap-logins',
+    probeRuntime: 'bash'
   }),
   Object.freeze({
     name: 'meal_agent_migration_password',
     filename: 'meal_agent_migration_password',
     kind: 'password',
     role: 'migration',
-    consumerUid: 999
+    consumerUid: 999,
+    probeService: 'bootstrap-logins',
+    probeRuntime: 'bash'
   }),
   Object.freeze({
     name: 'meal_agent_runtime_password',
     filename: 'meal_agent_runtime_password',
     kind: 'password',
     role: 'runtime',
-    consumerUid: 999
+    consumerUid: 999,
+    probeService: 'bootstrap-logins',
+    probeRuntime: 'bash'
   }),
   Object.freeze({
     name: 'meal_agent_backup_password',
     filename: 'meal_agent_backup_password',
     kind: 'password',
     role: 'backup',
-    consumerUid: 999
+    consumerUid: 999,
+    probeService: 'backup',
+    probeRuntime: 'bash'
   }),
   Object.freeze({
     name: 'meal_agent_admin_database_url',
@@ -213,7 +223,9 @@ export const secretFiles = Object.freeze([
     kind: 'url',
     role: 'superuser',
     user: deploymentIdentity.adminUser,
-    consumerUid: 10001
+    consumerUid: 10001,
+    probeService: 'bootstrap-schema',
+    probeRuntime: 'node'
   }),
   Object.freeze({
     name: 'meal_agent_migration_database_url',
@@ -221,7 +233,9 @@ export const secretFiles = Object.freeze([
     kind: 'url',
     role: 'migration',
     user: deploymentIdentity.migrationUser,
-    consumerUid: 10001
+    consumerUid: 10001,
+    probeService: 'migrate',
+    probeRuntime: 'node'
   }),
   Object.freeze({
     name: 'meal_agent_runtime_database_url',
@@ -229,9 +243,62 @@ export const secretFiles = Object.freeze([
     kind: 'url',
     role: 'runtime',
     user: deploymentIdentity.runtimeUser,
-    consumerUid: 10001
+    consumerUid: 10001,
+    probeService: 'api',
+    probeRuntime: 'node'
   })
 ])
+
+export const expectedSecretFileCount = 8
+if (secretFiles.length !== expectedSecretFileCount) {
+  throw new Error('the canonical local-test Secret registry must contain exactly eight entries')
+}
+
+/**
+ * Secret identity probe 的计划由八份 Secret 的唯一事实源派生。测试若删掉一个
+ * plan entry，期望集合仍来自这里，不会跟着被测 plan 一起缩小后自洽通过。
+ */
+export const canonicalSecretProbePlan = Object.freeze(
+  [...secretFiles.reduce((groups, entry) => {
+    const key = `${entry.probeService}\0${entry.probeRuntime}`
+    const current = groups.get(key) ?? {
+      service: entry.probeService,
+      runtime: entry.probeRuntime,
+      secrets: []
+    }
+    current.secrets.push(entry.name)
+    groups.set(key, current)
+    return groups
+  }, new Map()).values()].map((entry) =>
+    Object.freeze({
+      service: entry.service,
+      runtime: entry.runtime,
+      secrets: Object.freeze([...entry.secrets])
+    })
+  )
+)
+
+export const assertCanonicalSecretProbePlan = (plan) => {
+  const flatten = (entries) =>
+    entries.flatMap((entry) =>
+      entry.secrets.map((name) => ({
+        name,
+        service: entry.service,
+        runtime: entry.runtime
+      }))
+    )
+  const expected = flatten(canonicalSecretProbePlan)
+  let actual
+  try {
+    actual = flatten(plan)
+  } catch {
+    throw new Error('Secret identity probe plan drifted from the canonical eight facts')
+  }
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error('Secret identity probe plan drifted from the canonical eight facts')
+  }
+  return true
+}
 
 export const secretFilenames = Object.freeze(
   secretFiles.map((entry) => entry.filename)

@@ -166,7 +166,12 @@ const cleanup = ({ keepScene = false } = {}) => {
         ['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag],
         { timeoutMs: 60_000 }
       )
-      const currentId = current.status === 0 ? current.stdout.trim() : null
+      let currentId = null
+      if (current.status === 0) {
+        currentId = parseDockerImageId(current.stdout, () => {
+          throw new Error('invalid image identity')
+        })
+      }
       if (current.status === 0 && currentId !== cleanupState.ownedImageId) {
         cleanupProblems.push('run image tag ownership drifted; foreign tag was preserved')
       } else if (current.status === 0) {

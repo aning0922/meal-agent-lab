@@ -27,6 +27,11 @@ import {
   assertCanonicalGitRepositoryView,
   canonicalGitArguments
 } from './local-test-secrets-contract.mjs'
+import {
+  isResolvedServiceRecord,
+  resolvedDependencyProjection,
+  resolvedHealthcheckProjection
+} from './compose-topology-evidence.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -788,6 +793,10 @@ for (const name of serviceOrder) {
     fail(`${name}: service is missing from the resolved configuration`)
     continue
   }
+  if (!isResolvedServiceRecord(service)) {
+    fail(`${name}: resolved service must be a plain object`)
+    continue
+  }
   const expected = expectations[name]
   const unknownKeys = Object.keys(service).filter(
     (key) => !allowedResolvedServiceKeys.has(key)
@@ -847,12 +856,15 @@ for (const name of serviceOrder) {
     fail(`${name}: tmpfs drifted from the registered fixed set`)
   }
 
-  const actualDependsOn = Object.fromEntries(
-    Object.entries(service.depends_on ?? {}).map(([key, value]) => [
-      key,
-      value.condition
-    ])
-  )
+  const actualDependsOn = {}
+  for (const [key, value] of Object.entries(service.depends_on ?? {})) {
+    const condition = resolvedDependencyProjection(value)
+    if (condition === null) {
+      fail(`${name}: depends_on metadata drifted from the registered fixed semantics`)
+      continue
+    }
+    actualDependsOn[key] = condition
+  }
   if (!same(actualDependsOn, expected.dependsOn)) {
     fail(`${name}: depends_on drifted from the registered fixed set`)
   }
@@ -1279,7 +1291,7 @@ for (const name of serviceOrder) {
 // --------------------------------------------------------------------------
 // 9. 健康检查
 // --------------------------------------------------------------------------
-const postgresHealth = services.postgres?.healthcheck?.test ?? []
+const postgresHealth = resolvedHealthcheckProjection(services.postgres?.healthcheck)
 const expectedPostgresHealth = [
   'CMD',
   'pg_isready',
@@ -1289,18 +1301,38 @@ const expectedPostgresHealth = [
   '--dbname=postgres',
   '--quiet'
 ]
-if (!same(postgresHealth, expectedPostgresHealth)) {
-  fail('postgres: healthcheck drifted from the registered pg_isready argv')
+if (
+  !same(postgresHealth, {
+    test: expectedPostgresHealth,
+    interval: '5s',
+    timeout: '5s',
+    retries: 24,
+    start_period: '30s',
+    start_interval: null,
+    disable: null
+  })
+) {
+  fail('postgres: healthcheck drifted from the registered fixed semantics')
 }
-const apiHealth = services.api?.healthcheck?.test ?? []
+const apiHealth = resolvedHealthcheckProjection(services.api?.healthcheck)
 const expectedApiHealth = [
   'CMD',
   'node',
   '-e',
   "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
 ]
-if (!same(apiHealth, expectedApiHealth)) {
-  fail('api: healthcheck drifted from the registered /healthz probe argv')
+if (
+  !same(apiHealth, {
+    test: expectedApiHealth,
+    interval: '10s',
+    timeout: '5s',
+    retries: 5,
+    start_period: '15s',
+    start_interval: null,
+    disable: null
+  })
+) {
+  fail('api: healthcheck drifted from the registered fixed semantics')
 }
 
 // --------------------------------------------------------------------------

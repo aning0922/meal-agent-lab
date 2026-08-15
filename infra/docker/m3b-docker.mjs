@@ -61,13 +61,54 @@ export class DockerEvidenceError extends Error {
   }
 }
 
+const canonicalDockerLine = (raw, pattern, reason) => {
+  if (typeof raw !== 'string') {
+    throw new DockerEvidenceError(reason)
+  }
+  const match = pattern.exec(raw)
+  if (match === null) {
+    throw new DockerEvidenceError(reason)
+  }
+  return match[1]
+}
+
+/**
+ * Docker CLI 的 immutable identity 统一文法。只允许 canonical 值本身，或 CLI
+ * 常见的**一个**末尾 LF；禁止 trim/CRLF/首尾空白/多行包装。所有 sibling
+ * checker、cleanup 与 iidfile 读取必须复用这里，不能各自维护宽松版本。
+ */
+export const parseCanonicalDockerImageId = (raw) =>
+  canonicalDockerLine(
+    raw,
+    /^(sha256:[0-9a-f]{64})\n?$/,
+    'docker image inspect returned an invalid image ID'
+  )
+
+export const parseCanonicalDockerContainerId = (raw) =>
+  canonicalDockerLine(
+    raw,
+    /^([0-9a-f]{64})\n?$/,
+    'docker container evidence returned an invalid container ID'
+  )
+
+export const classifyOwnedImageTag = (currentImageId, recordedImageId) => {
+  if (currentImageId === null) {
+    return 'absent'
+  }
+  if (recordedImageId === null) {
+    return 'unproven'
+  }
+  return currentImageId === recordedImageId ? 'owned' : 'drifted'
+}
+
 /** 执行一条 docker 命令并要求退出码为 0；否则抛 DockerEvidenceError。 */
 export const dockerStrict = async (args, { timeoutMs = 120_000, env } = {}) => {
   const result = await runCommand(args, { timeoutMs, env })
   if (result.status !== 0) {
     throw new DockerEvidenceError(
-      `${args.join(' ')} exited ${String(result.status ?? `signal ${result.signal}`)}: ` +
-        `${result.stderr.trim().split('\n').slice(-2).join(' / ') || '(no stderr)'}`
+      `docker command failed (${
+        result.status === null ? `signal ${String(result.signal ?? 'unknown')}` : String(result.status)
+      })`
     )
   }
   return result
@@ -87,7 +128,13 @@ export const inspectStrict = async (target, format, { env, allowEmpty = false } 
     ['docker', 'inspect', '--format', format, target],
     { env }
   )
-  const value = result.stdout.trim()
+  const raw = result.stdout
+  const value = raw.endsWith('\n') ? raw.slice(0, -1) : raw
+  if (/\r|\n/.test(value)) {
+    throw new DockerEvidenceError(
+      'docker inspect returned a noncanonical multiline field'
+    )
+  }
   if (value === '' && !allowEmpty) {
     throw new DockerEvidenceError(
       `docker inspect ${target} ${format} exited 0 but printed nothing; ` +
@@ -210,11 +257,7 @@ export const imageIdOf = async (tag, { env } = {}) => {
     // CRLF 与多行包装都规范化掉，使调用方随后把任意 status-0 stdout 当成 image
     // identity 传给 inspect/create/cleanup。只容许 CLI 常见的一个末尾 LF；其余 framing
     // 与非 sha256 identity 一律固定理由 fail closed。
-    const match = /^(sha256:[0-9a-f]{64})\n?$/.exec(result.stdout)
-    if (match === null) {
-      throw new DockerEvidenceError('docker image inspect returned an invalid image ID')
-    }
-    return match[1]
+    return parseCanonicalDockerImageId(result.stdout)
   }
   if (result.status === 1 && isAbsenceMessage(result.stderr, { kind: 'image', name: tag })) {
     return null
@@ -261,6 +304,7 @@ const cleanupRunUnsynchronized = async ({
   secretsIdentity = null,
   secretsPrefix,
   imageTag = null,
+  imageId = null,
   overridePath = null,
   composeFile,
   composeEnvironment = process.env,
@@ -405,7 +449,19 @@ const cleanupRunUnsynchronized = async ({
         `refusing to remove ${imageTag}: not a per-run ${runImageTagPrefix}* tag`
       )
     }
-    if ((await imageIdOf(imageTag, { env: composeEnvironment })) !== null) {
+    const currentImageId = await imageIdOf(imageTag, { env: composeEnvironment })
+    const ownership = classifyOwnedImageTag(currentImageId, imageId)
+    if (ownership === 'unproven') {
+      throw new DockerEvidenceError(
+        'refusing to remove the per-run image tag without its recorded immutable identity'
+      )
+    }
+    if (ownership === 'drifted') {
+      throw new DockerEvidenceError(
+        'per-run image tag ownership drifted; the foreign tag was preserved'
+      )
+    }
+    if (ownership === 'owned') {
       await dockerStrict(['docker', 'image', 'rm', imageTag], {
         env: composeEnvironment
       })

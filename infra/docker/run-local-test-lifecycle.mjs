@@ -20,12 +20,13 @@ import {
   authorizedReadScript,
   executeDrill,
   expectedLedgerFromDisk,
+  assertGracefulStopTransition,
   parseDrillArguments,
+  readContainerRuntimeState,
   runFreshInstallChain,
   sentinelInsertStatements,
   sentinelSnapshotStatements
 } from './m4-lifecycle.mjs'
-import { inspectStrict, parseInspectedExitCode } from './m3b-docker.mjs'
 
 const drillBody = async ({ stacks, log, fail, timed, buildImage }) => {
   const [stack] = stacks
@@ -70,6 +71,7 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage }) => {
   // --- 停止并重启：数据仍在 -------------------------------------------------
   await timed('graceful stop (SIGTERM path)', async () => {
     const apiName = stack.containerName('api')
+    const beforeStop = await readContainerRuntimeState(apiName, stack.composeEnvironment)
     const stopStart = performance.now()
     // 30 秒宽限：留给 shutdown.ts 的 10 秒强制退出分支充分表达自己——若容器
     // 是被 compose 的 SIGKILL 收走的，退出码会是 137 而不是 0/1。
@@ -81,19 +83,12 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage }) => {
       fail(`compose stop api failed with exit ${String(stopped.status)}`)
       return
     }
-    const exitCodeText = await inspectStrict(apiName, '{{.State.ExitCode}}', {
-      env: stack.composeEnvironment
-    })
-    const parsed = parseInspectedExitCode(exitCodeText)
-    if (!parsed.ok) {
-      fail(`api stop: refusing to read an exit code that is ${parsed.reason}`)
-    } else if (parsed.value !== 0) {
-      fail(
-        `api container exited ${String(parsed.value)} on SIGTERM; the graceful ` +
-          'path must exit 0 (1 would be the forced-exit branch, 137 a SIGKILL)'
-      )
-    } else {
+    const afterStop = await readContainerRuntimeState(apiName, stack.composeEnvironment)
+    try {
+      assertGracefulStopTransition(beforeStop, afterStop)
       log(`api stopped gracefully on SIGTERM in ${String(stopMs)}ms (container exit code 0)`)
+    } catch {
+      fail('api stop did not prove a running-to-exited graceful transition')
     }
     const rest = await stack.compose(['stop', '--timeout', '30'], { timeoutMs: 300_000 })
     if (rest.status !== 0) {

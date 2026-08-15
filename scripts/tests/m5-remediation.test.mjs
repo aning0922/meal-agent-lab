@@ -363,7 +363,14 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
         stdout: JSON.stringify([
           {
             Id: 'b'.repeat(64),
-            Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': ownerToken } }
+            Name: `/${name}`,
+            Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': ownerToken } },
+            State: {
+              Status: 'exited',
+              Running: false,
+              ExitCode: 0,
+              FinishedAt: '2026-08-15T01:00:01Z'
+            }
           }
         ]),
         stderr: ''
@@ -540,7 +547,14 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
         signal: null,
         stdout: JSON.stringify([{
           Id: entry.id,
-          Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': entry.token } }
+          Name: `/${entry.name}`,
+          Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': entry.token } },
+          State: {
+            Status: 'exited',
+            Running: false,
+            ExitCode: entry.exitCode,
+            FinishedAt: '2026-08-15T01:00:01Z'
+          }
         }]),
         stderr: ''
       }
@@ -562,8 +576,8 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     const name = argv[argv.indexOf('--name') + 1]
     const label = argv[argv.indexOf('--label') + 1]
     const token = label.split('=')[1]
-    containers.set(name, { name, id, token })
     const isTransferCleanup = argv.includes('backup-transfer-loader')
+    containers.set(name, { name, id, token, exitCode: isTransferCleanup ? 17 : 0 })
     return {
       status: isTransferCleanup ? 17 : 0,
       signal: null,

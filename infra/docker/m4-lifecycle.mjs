@@ -31,6 +31,7 @@ import {
   dockerStrict,
   imageIdOf,
   inodeIdentityOf,
+  inspectJsonStrict,
   inspectStrict,
   isAbsenceMessage,
   listByProject,
@@ -46,6 +47,54 @@ import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subp
 export const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 export const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
 export const migrationsDirectory = resolve(repositoryRoot, 'services/api/migrations')
+
+const zeroDockerTimestamp = '0001-01-01T00:00:00Z'
+
+export const parseContainerRuntimeState = (value) => {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !['running', 'exited'].includes(value.Status) ||
+    typeof value.Running !== 'boolean' ||
+    !Number.isSafeInteger(value.ExitCode) ||
+    value.ExitCode < 0 ||
+    typeof value.StartedAt !== 'string' ||
+    value.StartedAt === '' ||
+    typeof value.FinishedAt !== 'string' ||
+    value.FinishedAt === ''
+  ) {
+    throw new Error('container lifecycle evidence was invalid')
+  }
+  return Object.freeze({
+    status: value.Status,
+    running: value.Running,
+    exitCode: value.ExitCode,
+    startedAt: value.StartedAt,
+    finishedAt: value.FinishedAt
+  })
+}
+
+export const assertGracefulStopTransition = (before, after) => {
+  const initial = parseContainerRuntimeState(before)
+  const final = parseContainerRuntimeState(after)
+  if (
+    initial.status !== 'running' ||
+    initial.running !== true ||
+    final.status !== 'exited' ||
+    final.running !== false ||
+    final.exitCode !== 0 ||
+    final.startedAt !== initial.startedAt ||
+    final.finishedAt === zeroDockerTimestamp ||
+    final.finishedAt === initial.finishedAt
+  ) {
+    throw new Error('container did not prove a running-to-exited graceful stop transition')
+  }
+  return true
+}
+
+export const readContainerRuntimeState = async (name, environment) =>
+  inspectJsonStrict(name, '{{json .State}}', { env: environment })
 
 /** 默认（长驻）local-test 部署的 project name：compose 文件里的 `name:`。 */
 export const defaultProjectName = 'meal-agent-local-test'
@@ -450,10 +499,12 @@ const inspectOneOff = async (run, entry, environment) => {
   }
   const container = Array.isArray(payload) && payload.length === 1 ? payload[0] : null
   const id = container?.Id
+  const name = container?.Name
   const labels = container?.Config?.Labels
   if (
     typeof id !== 'string' ||
     !/^[0-9a-f]{64}$/.test(id) ||
+    name !== `/${entry.name}` ||
     labels === null ||
     typeof labels !== 'object' ||
     Array.isArray(labels)
@@ -461,8 +512,26 @@ const inspectOneOff = async (run, entry, environment) => {
     return { state: 'unreadable', id: null }
   }
   return labels[oneOffOwnershipLabel] === entry.token
-    ? { state: 'owned', id }
+    ? { state: 'owned', id, container }
     : { state: 'foreign', id: null }
+}
+
+const oneOffOutcomeIsBound = (inspected, result) => {
+  const state = inspected.container?.State
+  return (
+    inspected.state === 'owned' &&
+    state !== null &&
+    typeof state === 'object' &&
+    !Array.isArray(state) &&
+    state.Status === 'exited' &&
+    state.Running === false &&
+    Number.isSafeInteger(state.ExitCode) &&
+    state.ExitCode >= 0 &&
+    state.ExitCode === result?.status &&
+    typeof state.FinishedAt === 'string' &&
+    state.FinishedAt !== '' &&
+    state.FinishedAt !== '0001-01-01T00:00:00Z'
+  )
 }
 
 const removeOwnedOneOff = async (run, entry, environment) => {
@@ -522,13 +591,15 @@ export const composeRunOneOff = async (
       { timeoutMs, stdin }
     )
   } catch (error) {
-    composeError = error
+    composeError = new Error('one-off command execution failed')
   }
-  if (composeError === null && result?.status === 0 && beforeRemove !== null) {
+  if (composeError === null) {
     const inspected = await inspectOneOff(run, entry, environment)
-    if (inspected.state !== 'owned') {
-      composeError = new Error('one-off container was not provably owned before handoff')
-    } else {
+    if (!oneOffOutcomeIsBound(inspected, result)) {
+      composeError = new Error('one-off success evidence did not identify the owned container')
+    } else if (result.status !== 0) {
+      composeError = new Error('one-off command failed')
+    } else if (beforeRemove !== null) {
       try {
         await beforeRemove({ id: inspected.id, name: entry.name })
       } catch {
@@ -637,6 +708,7 @@ export const createM4Run = ({ kind }) => {
 
   const shared = {
     imageTag: null,
+    imageId: null,
     overridePath,
     overrideCreated: false,
     danglingBaseline: null
@@ -666,15 +738,11 @@ export const createM4Run = ({ kind }) => {
   const logExcerpt = async (containerName, environment) => {
     const logs = await run(['docker', 'logs', containerName], { env: environment })
     if (logs.status !== 0) {
-      return (
-        'the log excerpt is unavailable: docker logs exited ' +
-        `${logs.status === null ? `on signal ${String(logs.signal)}` : String(logs.status)}`
-      )
+      return 'the container log evidence was unavailable'
     }
-    const excerpt = (logs.stdout + logs.stderr).split('\n').slice(-15).join('\n')
-    return excerpt.trim() === ''
+    return logs.stdout === '' && logs.stderr === ''
       ? 'docker logs succeeded but the container produced no output'
-      : `last log lines:\n${scrubber.scrubUntrusted(excerpt)}`
+      : 'the container log was withheld at the trust boundary'
   }
 
   const createStack = (suffix) => {
@@ -725,9 +793,7 @@ export const createM4Run = ({ kind }) => {
         timeoutMs: 180_000
       })
       if (started.status !== 0) {
-        throw new Error(
-          `compose up ${service} failed: ${scrubber.scrubUntrusted(started.stderr.trim())}`
-        )
+        throw new Error(`compose up ${service} failed`)
       }
       await waitFor(
         `${service} run`,
@@ -773,9 +839,7 @@ export const createM4Run = ({ kind }) => {
         timeoutMs: 180_000
       })
       if (started.status !== 0) {
-        throw new Error(
-          `compose up ${service} failed: ${scrubber.scrubUntrusted(started.stderr.trim())}`
-        )
+        throw new Error(`compose up ${service} failed`)
       }
       await waitFor(
         `${service} health`,
@@ -875,9 +939,7 @@ export const createM4Run = ({ kind }) => {
         { timeoutMs }
       )
       if (result.status !== 0) {
-        throw new Error(
-          `admin evidence query failed: ${scrubber.scrubUntrusted(result.stderr.trim())}`
-        )
+        throw new Error('admin evidence query failed')
       }
       return result.stdout
     }
@@ -917,10 +979,7 @@ export const createM4Run = ({ kind }) => {
         }
       }
       if (problems > 0) {
-        // 诊断输出（打码后）：没有它，「needle 不在」的失败无从排查。
-        const excerpt = (probe.stdout + probe.stderr).split('\n').slice(-20).join('\n')
-        log(`--- ${label}: probe output for diagnosis ---`)
-        log(scrubber.scrubUntrusted(excerpt))
+        log(`${label}: probe output withheld at the trust boundary`)
       } else {
         // 成功证据只在该组零 problem 时输出（与 smoke 的 P1-7 同口径）。
         log(`${label}: all ${String(expectations.length)} expectations hold`)
@@ -957,14 +1016,13 @@ export const createM4Run = ({ kind }) => {
     shared.imageTag = imageTag
     const build = await stack.compose(['build', 'api'], { timeoutMs: 1_800_000 })
     if (build.status !== 0) {
-      throw new Error(
-        `docker compose build api failed:\n${scrubber.scrubUntrusted(build.stderr.slice(-2000))}`
-      )
+      throw new Error('docker compose build api failed')
     }
     const builtImageId = await imageIdOf(imageTag, { env: stack.composeEnvironment })
     if (builtImageId === null) {
       throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
     }
+    shared.imageId = builtImageId
     log(`api image built as ${imageTag} (image id ${builtImageId})`)
     return builtImageId
   }
@@ -979,10 +1037,8 @@ export const createM4Run = ({ kind }) => {
     // 第一道兜底：未确认移除的一次性容器（label sweep 之外多一层显式确认）。
     try {
       residue.push(...(await removeLingeringOneOffs(run)))
-    } catch (error) {
-      residue.push(
-        `one-off sweep failed: ${error instanceof Error ? error.message : String(error)}`
-      )
+    } catch {
+      residue.push('one-off sweep failed')
     }
     for (let index = 0; index < stacks.length; index += 1) {
       const first = index === 0
@@ -996,6 +1052,7 @@ export const createM4Run = ({ kind }) => {
             secretsIdentity: first ? secretsIdentity : null,
             secretsPrefix: temporarySecretsPrefix,
             imageTag: last ? shared.imageTag : null,
+            imageId: last ? shared.imageId : null,
             overridePath: last && shared.overrideCreated ? overridePath : null,
             composeFile,
             composeEnvironment: stacks[index].composeEnvironment,
@@ -1005,8 +1062,8 @@ export const createM4Run = ({ kind }) => {
             realpath: realpathSync
           }))
         )
-      } catch (error) {
-        residue.push(`cleanup-error: ${error instanceof Error ? error.message : String(error)}`)
+      } catch {
+        residue.push('cleanup failed')
       }
     }
     return residue
@@ -1030,10 +1087,8 @@ export const createM4Run = ({ kind }) => {
             exists: existsSync
           }))
         )
-      } catch (error) {
-        problems.push(
-          `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
-        )
+      } catch {
+        problems.push('residue recheck failed')
       }
     }
     return problems
@@ -1119,7 +1174,7 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
     if (error instanceof DrillInterrupted || terminationSignal() !== null) {
       log(`interrupted by ${terminationSignal() ?? 'a signal'}; the signal handler owns the cleanup`)
     } else {
-      fail(error instanceof Error ? error.message : String(error))
+      fail('drill execution failed')
     }
   } finally {
     if (terminationSignal() !== null) {
@@ -1139,15 +1194,13 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
       try {
         residue = await context.cleanupArtifacts()
         residue.push(...(await context.cleanupAll()))
-      } catch (error) {
-        residue = [`cleanup-error: ${error instanceof Error ? error.message : String(error)}`]
+      } catch {
+        residue = ['cleanup failed']
       }
       try {
         residue.push(...(await context.verifyResidueAll()))
-      } catch (error) {
-        residue.push(
-          `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
-        )
+      } catch {
+        residue.push('residue recheck failed')
       }
       if (residue.length > 0) {
         fail(`cleanup residue: ${residue.join(', ')}`)

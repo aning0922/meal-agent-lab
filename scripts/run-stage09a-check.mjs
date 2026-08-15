@@ -40,6 +40,8 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { interpretPrerequisiteEvidence } from './stage09a-prerequisite-evidence.mjs'
+
 const safeWrite = (fd, message) => {
   const bytes = Buffer.from(message, 'utf8')
   try {
@@ -497,7 +499,7 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   })
 }
 
-const runControlled = ({ argv, timeoutMs, stdio }) =>
+const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 1024 }) =>
   new Promise((resolvePromise) => {
     let settled = false
     let timedOut = false
@@ -516,6 +518,8 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
     }
     resetCleanupStartedPromise()
     const stdoutChunks = []
+    let stdoutBytes = 0
+    let stdoutOverflow = false
     let ownershipCapability
     try {
       ownershipCapability = createOwnershipCapability()
@@ -574,7 +578,18 @@ const runControlled = ({ argv, timeoutMs, stdio }) =>
       ownershipProtocolFailed = true
     }
     if (child.stdout !== null) {
-      child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
+      child.stdout.on('data', (chunk) => {
+        if (stdoutOverflow) return
+        stdoutBytes += Buffer.byteLength(chunk)
+        if (!Number.isSafeInteger(maxStdoutBytes) || maxStdoutBytes < 0 || stdoutBytes > maxStdoutBytes) {
+          stdoutOverflow = true
+          ownershipProtocolFailed = true
+          child.stdout?.destroy()
+          void terminateOwnedProcessGroups()
+          return
+        }
+        stdoutChunks.push(chunk)
+      })
     }
     const ownershipStream = child.stdio[ownershipFd]
     const quarantineRecognizableLineage = (text, { frameComplete }) => {
@@ -915,15 +930,16 @@ const probe = async (argv, label) => {
   }
   let result
   try {
-    result = await runControlled({ argv, timeoutMs: 60_000, stdio: ['ignore', 'pipe', 'pipe'] })
+    result = await runControlled({
+      argv,
+      timeoutMs: 60_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxStdoutBytes: 256
+    })
   } catch {
     result = { ok: false, stdout: '', detail: 'failed to run prerequisite probe' }
   }
-  return {
-    ok: result.ok,
-    label,
-    detail: result.ok ? result.stdout.trim().split('\n')[0] : result.detail
-  }
+  return { label, ...interpretPrerequisiteEvidence(label, result) }
 }
 
 const runStep = (step) =>

@@ -180,6 +180,7 @@ const sameSet = (left, right) => {
     ['零看守族缺 whyUnguarded', { families: [ok], unguardedFamilies: [{ id: 'u/x' }], views }, '必须写明为什么看不住'],
     ['零看守族 id 与受测族冲突', { families: [ok], unguardedFamilies: [{ id: 'control/x', whyUnguarded: 'y' }], views }, '与受测族冲突']
   ]
+  const expectedMalformedRegistryCount = 18
   const missed = cases.filter(
     ([, bad, reason]) => !validateRegistry(bad).some((problem) => problem.includes(reason))
   )
@@ -190,7 +191,12 @@ const sameSet = (left, right) => {
     views: viewsOf(2)
   }
   const goodProblems = validateRegistry(goodMixed)
-  if (missed.length > 0) {
+  if (cases.length !== expectedMalformedRegistryCount) {
+    fail(
+      name,
+      `畸形登记表用例数漂移：应为 ${String(expectedMalformedRegistryCount)}，实际 ${String(cases.length)}`
+    )
+  } else if (missed.length > 0) {
     fail(name, `${String(missed.length)}/${String(cases.length)} 条畸形登记表未被校验器以指定理由拒绝`)
   } else if (goodProblems.length > 0) {
     fail(name, `合法的 mixed 登记表被误拒，${String(goodProblems.length)} 条问题`)
@@ -790,13 +796,16 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
 }
 
 // ===========================================================================
-// §8 已发表的 mutation 计数 ↔ 可执行套件硬计数
+// §8 已发表的当前计数 ↔ 可执行套件硬计数
 // ===========================================================================
 {
-  const name = 'published mutation counts match the executable hard gates'
+  const name = 'published executable counts match the executable hard gates'
   const readme = readDocument(DOCKER_README)
   const topologySource = readDocument('infra/docker/check-compose-topology-mutations.mjs')
   const imageSource = readDocument('infra/docker/check-api-runtime-image-mutations.mjs')
+  const localSource = readDocument('infra/docker/check-local-test-negatives.mjs')
+  const targetedSource = readDocument('infra/docker/check-m3b-round2-negatives.mjs')
+  const signalSource = readDocument('infra/docker/check-m3b-signal-windows.mjs')
   const topologyPublished = uniqueMatch(
     readme,
     /^\| `node infra\/docker\/check-compose-topology-mutations\.mjs` \| \*\*(\d+) 项\*\*/gm
@@ -817,25 +826,65 @@ const tableColumnsOf = (line) => line.split('|').slice(1, -1).map((column) => co
     imageSource,
     /^const expectedStaticOnlyMutationCount = (\d+)$/gm
   )
+  const localPublished = uniqueMatch(
+    readme,
+    /^\| `node infra\/docker\/check-local-test-negatives\.mjs` \| \*\*(\d+) cases = 1 个正向 baseline \+ (\d+) 个反例\/边界检查\*\*/gm
+  )
+  const localExecutable = uniqueMatch(localSource, /^const expectedCaseCount = (\d+)$/gm)
+  const targetedPublished = uniqueMatch(
+    readme,
+    /^\| `node infra\/docker\/check-m3b-round2-negatives\.mjs` \| \*\*M3B targeted negative suite：(\d+) cases\*\*[\s\S]*?collector 子门禁为 \*\*(\d+) 个\*\*唯一向量，resolved-config 子门禁为 \*\*(\d+) 个\*\*唯一向量。/gm
+  )
+  const targetedExecutable = uniqueMatch(targetedSource, /^const expectedCount = (\d+)$/gm)
+  const vectorCounts = [...targetedSource.matchAll(/^  const expectedVectorCount = (\d+)$/gm)].map(
+    (match) => match[1]
+  )
+  const signalPublished = uniqueMatch(
+    readme,
+    /^\| `node infra\/docker\/check-m3b-signal-windows\.mjs` \| \*\*(\d+) 个\*\*[\s\S]*?\+ \*\*(\d+) 个\*\*真实信号窗口/gm
+  )
+  const signalDeterministicExecutable = uniqueMatch(
+    signalSource,
+    /^const expectedRegressionChecks = (\d+)$/gm
+  )
+  const signalRealExecutable = uniqueMatch(signalSource, /^const expectedCount = (\d+)$/gm)
   if (
     topologyPublished === null ||
     imagePublished === null ||
     topologyExecutable === null ||
     imageBuiltExecutable === null ||
-    imageStaticExecutable === null
+    imageStaticExecutable === null ||
+    localPublished === null ||
+    localExecutable === null ||
+    targetedPublished === null ||
+    targetedExecutable === null ||
+    vectorCounts.length !== 2 ||
+    signalPublished === null ||
+    signalDeterministicExecutable === null ||
+    signalRealExecutable === null
   ) {
-    fail(name, 'README 或可执行套件缺少唯一的 mutation 计数锚点')
+    fail(name, 'README 或可执行套件缺少唯一的当前计数锚点')
   } else if (
     topologyPublished[1] !== topologyExecutable[1] ||
     imagePublished[1] !== imageBuiltExecutable[1] ||
-    imagePublished[2] !== imageStaticExecutable[1]
+    imagePublished[2] !== imageStaticExecutable[1] ||
+    localPublished[1] !== localExecutable[1] ||
+    Number(localPublished[2]) !== Number(localExecutable[1]) - 1 ||
+    targetedPublished[1] !== targetedExecutable[1] ||
+    targetedPublished[2] !== vectorCounts[0] ||
+    targetedPublished[3] !== vectorCounts[1] ||
+    signalPublished[1] !== signalDeterministicExecutable[1] ||
+    signalPublished[2] !== signalRealExecutable[1]
   ) {
-    fail(name, 'README 发表的 mutation 计数与可执行套件硬门禁不一致')
+    fail(name, 'README 发表的当前计数与可执行套件硬门禁不一致')
   } else {
     pass(
       name,
       `topology ${topologyExecutable[1]}；runtime image ` +
-        `${imageBuiltExecutable[1]} built + ${imageStaticExecutable[1]} static-only`
+        `${imageBuiltExecutable[1]} built + ${imageStaticExecutable[1]} static-only；` +
+        `local ${localExecutable[1]}；targeted ${targetedExecutable[1]} ` +
+        `(collector ${vectorCounts[0]} + resolved ${vectorCounts[1]})；signal ` +
+        `${signalDeterministicExecutable[1]} + ${signalRealExecutable[1]}`
     )
   }
 }

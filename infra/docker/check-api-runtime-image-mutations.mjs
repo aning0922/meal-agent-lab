@@ -321,7 +321,10 @@ const cleanup = () => {
         { timeoutMs: 60_000 }
       )
       if (current.status === 0) {
-        if (ownedImageId === null || current.stdout.trim() !== ownedImageId) {
+        const currentId = parseDockerImageId(current.stdout, () => {
+          throw new Error('invalid image identity')
+        })
+        if (ownedImageId === null || currentId !== ownedImageId) {
           cleanupProblems.push(`image tag ownership drifted; foreign tag was preserved (${tag})`)
           await cleanupOwnedDanglingImage(tag, ownedImageId)
           continue

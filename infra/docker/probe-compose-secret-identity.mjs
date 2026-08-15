@@ -28,7 +28,11 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { generateAndPreflight } from './generate-local-test-secrets.mjs'
-import { secretFiles } from './local-test-secrets-contract.mjs'
+import {
+  assertCanonicalSecretProbePlan,
+  canonicalSecretProbePlan,
+  secretFiles
+} from './local-test-secrets-contract.mjs'
 import {
   cleanupRun,
   inodeIdentityOf,
@@ -48,22 +52,8 @@ const probeProjectPattern = /^meal-agent-m3b-probe-[a-z0-9]+$/
 const probeSecretsPrefix = 'meal-agent-m3b-probe-'
 
 /** 每份 secret 在哪个服务里被消费（与 compose.local-test.yaml 的 secrets 一致）。 */
-const probePlan = [
-  { service: 'postgres', runtime: 'bash', secrets: ['postgres_superuser_password'] },
-  {
-    service: 'bootstrap-logins',
-    runtime: 'bash',
-    secrets: [
-      'postgres_admin_pgpass',
-      'meal_agent_migration_password',
-      'meal_agent_runtime_password'
-    ]
-  },
-  { service: 'backup', runtime: 'bash', secrets: ['meal_agent_backup_password'] },
-  { service: 'bootstrap-schema', runtime: 'node', secrets: ['meal_agent_admin_database_url'] },
-  { service: 'migrate', runtime: 'node', secrets: ['meal_agent_migration_database_url'] },
-  { service: 'api', runtime: 'node', secrets: ['meal_agent_runtime_database_url'] }
-]
+const probePlan = canonicalSecretProbePlan
+assertCanonicalSecretProbePlan(probePlan)
 
 const consumerUidOf = (secretName) => {
   const entry = secretFiles.find((candidate) => candidate.name === secretName)
@@ -126,6 +116,9 @@ for (const f of ${JSON.stringify(targets)}) {
 const probeRecordPattern =
   /^PROBE (\S+) euid=([0-9]+) uid=([0-9]+) mode=([0-7]{4}) nlink=([0-9]+) regular=(yes|no) readable=(yes|no) symlink=(yes|no)$/
 
+export const maximumProbeEvidenceBytes = 16 * 1024
+const maximumProbeRecordBytes = 2 * 1024
+
 /**
  * 把容器 stdout 解释成一个**闭合协议**，而不是从任意文本里捞出看起来像 PROBE 的行。
  * 字段名、顺序、数量、record 数量与 path 集合全部精确；未知/重复字段、额外文本、
@@ -135,12 +128,23 @@ export const parseProbeEvidence = (stdout, expectedPaths) => {
   const invalid = () => {
     throw new Error('invalid probe evidence protocol')
   }
-  if (typeof stdout !== 'string' || !Array.isArray(expectedPaths) || expectedPaths.length === 0) {
+  if (
+    typeof stdout !== 'string' ||
+    Buffer.byteLength(stdout) > maximumProbeEvidenceBytes ||
+    !Array.isArray(expectedPaths) ||
+    expectedPaths.length === 0 ||
+    expectedPaths.length > 8
+  ) {
     invalid()
   }
   const framed = stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout
   const lines = framed.split('\n')
-  if (lines.length !== expectedPaths.length || lines.some((line) => line.length === 0)) {
+  if (
+    lines.length !== expectedPaths.length ||
+    lines.some(
+      (line) => line.length === 0 || Buffer.byteLength(line) > maximumProbeRecordBytes
+    )
+  ) {
     invalid()
   }
   const expected = new Set(expectedPaths)
@@ -171,6 +175,7 @@ const activeProbeScene = {
   secretsDirectory: null,
   secretsIdentity: null,
   imageTag: null,
+  imageId: null,
   overridePath: null,
   composeEnvironment: process.env,
   composeArgs: [],
@@ -187,6 +192,7 @@ const cleanupProbe = async (scene) =>
     secretsIdentity: scene.secretsIdentity ?? null,
     secretsPrefix: probeSecretsPrefix,
     imageTag: scene.imageTag,
+    imageId: scene.imageId,
     // override 只在**确实创建过**时才交给 cleanup（P1-4）：未创建时引用它会
     // 让 compose down 以 "no such file" 失败并被报成 residue。
     overridePath: scene.overrideCreated === true ? scene.overridePath : null,
@@ -212,6 +218,7 @@ const main = async () => {
     secretsDirectory,
     secretsIdentity,
     imageTag: null,
+    imageId: null,
     overridePath: null,
     overrideCreated: false,
     composeEnvironment: { ...process.env, MEAL_AGENT_SECRETS_DIR: secretsDirectory },
@@ -282,6 +289,7 @@ const main = async () => {
     if (builtImageId === null) {
       throw new Error('the per-run image tag does not exist after build')
     }
+    activeProbeScene.imageId = builtImageId
     process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
 
     // 先跑真实 materializer；下面的 `run --no-deps` 只能看到已经物化
@@ -312,7 +320,11 @@ const main = async () => {
         plan.runtime === 'bash'
           ? ['run', '--rm', '--no-deps', '--entrypoint', 'bash', plan.service, '-c', bashProbeScript(targets)]
           : ['run', '--rm', '--no-deps', '--entrypoint', 'node', plan.service, '-e', nodeProbeScript(targets)]
-      const result = await compose(args, { timeoutMs: 300_000 })
+      const result = await compose(args, {
+        timeoutMs: 300_000,
+        maxStdoutBytes: maximumProbeEvidenceBytes,
+        maxStderrBytes: 64 * 1024
+      })
       if (result.status !== 0) {
         failures.push(
           `${plan.service}: in-container probe failed ` +

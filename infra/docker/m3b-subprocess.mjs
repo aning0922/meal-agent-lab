@@ -331,29 +331,38 @@ export const createProcessGroupLifecycle = ({
         return true
       }
     })
-    for (const handle of survivors) {
+    // SIGKILL primitive 本身也可能瞬时失败。旧实现只调用一次，然后无论组是否
+    // 还活着都在 killWait 后抛异常；调用方随即 settlement，真实 PGID 却仍存活。
+    // 这里在同一个有界预算内反复执行「probe → KILL → delay」，直到 ESRCH。
+    // primitive 曾失败但后来已确认 ESRCH，不再把一次瞬时异常升级成假 residue；
+    // 预算耗尽时则返回真实 survivor，由调用方固定理由 fail closed。
+    let unconfirmed = survivors
+    const killSteps = Math.max(2, Math.ceil(killWaitMs / 25))
+    for (let attempt = 0; attempt < killSteps && unconfirmed.length > 0; attempt += 1) {
+      for (const handle of unconfirmed) {
+        try {
+          signalIfCurrent(handle, 'SIGKILL')
+        } catch {
+          primitiveFailed = true
+        }
+      }
       try {
-        signalIfCurrent(handle, 'SIGKILL')
+        await delay(25)
       } catch {
         primitiveFailed = true
       }
+      unconfirmed = unconfirmed.filter((handle) => {
+        try {
+          return !retireIfGone(handle)
+        } catch {
+          primitiveFailed = true
+          return true
+        }
+      })
     }
-    try {
-      await Promise.all(survivors.map((handle) => waitForExit(handle, killWaitMs)))
-    } catch {
-      primitiveFailed = true
-    }
-    const unconfirmed = survivors.filter((handle) => {
-      try {
-        return !retireIfGone(handle)
-      } catch {
-        primitiveFailed = true
-        return true
-      }
-    })
-    if (primitiveFailed) {
-      throw new Error('process-group cleanup primitive failed')
-    }
+    // `primitiveFailed` 只影响我们是否必须继续到预算末端；最终裁决始终来自
+    // ownership registry 的 ESRCH 状态，不能让异常对象替代资源事实。
+    void primitiveFailed
     return unconfirmed
   }
 
@@ -478,7 +487,14 @@ export const createCommandRunner = ({
 } = {}) =>
   (
     args,
-    { env = process.env, cwd, timeoutMs = 120_000, stdin = null } = {}
+    {
+      env = process.env,
+      cwd,
+      timeoutMs = 120_000,
+      stdin = null,
+      maxStdoutBytes = 64 * 1024 * 1024,
+      maxStderrBytes = 64 * 1024 * 1024
+    } = {}
   ) =>
     new Promise((resolvePromise, rejectPromise) => {
     const childEnvironment = { ...env }
@@ -504,6 +520,8 @@ export const createCommandRunner = ({
     let timer = null
     const stdoutChunks = []
     const stderrChunks = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
 
     const cancelTimer = () => {
       if (timer === null) return true
@@ -559,6 +577,20 @@ export const createCommandRunner = ({
       return true
     }
 
+    const collectBounded = (chunk, chunks, kind) => {
+      if (settlementClaimed) return
+      const bytes = Buffer.byteLength(chunk)
+      const current = kind === 'stdout' ? stdoutBytes : stderrBytes
+      const limit = kind === 'stdout' ? maxStdoutBytes : maxStderrBytes
+      if (!Number.isSafeInteger(limit) || limit < 0 || current + bytes > limit) {
+        claimFailure(`command ${kind} exceeded its byte limit`)
+        return
+      }
+      if (kind === 'stdout') stdoutBytes += bytes
+      else stderrBytes += bytes
+      chunks.push(chunk)
+    }
+
     // `spawn()` 成功返回后 pid 已经可用；在任何 timer / event 之前登记，
     // `timeoutMs: 0` 也不会落进「pid 存在但还没 generation」的窗口。
     let ownershipAnnouncementFailed = false
@@ -572,8 +604,8 @@ export const createCommandRunner = ({
       ownershipAnnouncementFailed = !announceProcessGroupOwnership(childHandle)
     }
 
-    child.stdout.on('data', (chunk) => stdoutChunks.push(chunk))
-    child.stderr.on('data', (chunk) => stderrChunks.push(chunk))
+    child.stdout.on('data', (chunk) => collectBounded(chunk, stdoutChunks, 'stdout'))
+    child.stderr.on('data', (chunk) => collectBounded(chunk, stderrChunks, 'stderr'))
 
     child.once('error', () => {
       const timerClean = releaseChild()

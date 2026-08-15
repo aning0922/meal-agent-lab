@@ -295,6 +295,7 @@ export const cleanupSmokeProject = async (
   {
     composeEnvironment = process.env,
     imageTag = null,
+    imageId = null,
     composeArgs = [],
     danglingBaseline = null,
     overridePath = null,
@@ -309,6 +310,7 @@ export const cleanupSmokeProject = async (
     secretsIdentity,
     secretsPrefix: temporarySecretsPrefix,
     imageTag,
+    imageId,
     // override 是**正式 cleanup 阶段**（P1-4），排在 compose down 之后并进入
     // residue 复查；未创建时传 null，cleanup 不得引用它。
     overridePath,
@@ -338,6 +340,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     secretsDirectory,
     secretsIdentity,
     imageTag: null,
+    imageId: null,
     overridePath: null,
     overrideCreated: false,
     composeEnvironment: { ...process.env, MEAL_AGENT_SECRETS_DIR: secretsDirectory },
@@ -535,6 +538,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     if (builtImageId === null) {
       throw new Error(`the per-run image tag ${imageTag} does not exist after build`)
     }
+    scene.imageId = builtImageId
     log(`api image built as ${imageTag} (image id ${builtImageId})`)
 
     // 2. 严格顺序执行完整链，独立读取每个一次性容器的退出码。
@@ -960,6 +964,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
           composeEnvironment,
           secretsIdentity,
           imageTag: scene.imageTag,
+          imageId: scene.imageId,
           composeArgs: scene.overrideCreated ? composeArgs : [],
           overridePath: scene.overrideCreated ? overridePath : null,
           danglingBaseline
@@ -1042,6 +1047,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     secretsDirectory: null,
     secretsIdentity: null,
     imageTag: null,
+    imageId: null,
     overridePath: null,
     overrideCreated: false,
     composeEnvironment: process.env,
@@ -1061,6 +1067,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             composeEnvironment: activeScene.composeEnvironment,
             secretsIdentity: activeScene.secretsIdentity,
             imageTag: activeScene.imageTag,
+            imageId: activeScene.imageId,
             composeArgs: activeScene.overrideCreated ? activeScene.composeArgs : [],
             overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline
