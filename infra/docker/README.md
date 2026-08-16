@@ -365,6 +365,17 @@ fail closed。完整链先在中断 build 窗口抓到 tag ownership，再在 re
 下一门禁是 cycle 2 两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、远端
 CI 无真实 run。
 
+**架构级证据所有权整改候选（2026-08-16，覆盖上段 Round 12 cycle 1 状态）**：
+有界自动审计循环因同一证据拼接根因连续两轮出现而停止；经重新授权，实现落点
+`27e7467` 以 ADR-0006 统一 closed-schema evidence、immutable identity/claim、
+ownership journal、验证后独占发布、generation settlement 与 15 项 critical-guard
+registry。resolved Compose 新增 profiles、`security_opt` 与 port 结构闭集，topology
+mutation 增至 **44/44**；runtime image mutation 保持 **1 baseline + 12 built + 2
+static-only**，signal 保持 **5 deterministic + 6 real**。完整链从步骤 1 串行通过
+`pnpm stage09a:check` **14/14**，脚本测试 **109/109**，fresh smoke、八份 Secret
+identity、lifecycle、same-ledger restore 与 scoped cleanup 均 PASS。下一门禁是两个
+全新独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
 消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。

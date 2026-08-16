@@ -69,10 +69,19 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 
 ## 后果
 
-- M5 在本 ADR 实施完成并经两个全新独立 A/B 审计 CLEAN 前保持 Blocked；阶段 09A
-  保持 In Progress。
+- M5 在本 ADR 实施完成并经两个全新独立 A/B 审计 CLEAN 前保持“已实现、待复核，
+  未 Accepted”；阶段 09A 保持 In Progress。
 - 共享 parser 与 ownership helper 会增加少量代码，但减少各入口独立解释同一外部
   证据的分叉。
 - 同 EUID、能够在同步系统调用之间任意篡改内存或内核对象的攻击者仍不在 local-test
   威胁模型内；所有异步等待窗口、路径替换、tag 重绑和已登记资源 rename 必须覆盖。
 - 本地 14/14 正向门禁不再单独构成 Accepted 证据；独立反例的判别力属于验收条件。
+
+## 实施注记
+
+2026-08-16 的实现落点为 `27e7467`。该落点从步骤 1 串行通过
+`pnpm stage09a:check` 14/14；脚本测试 109/109、Compose topology mutation 44/44、
+runtime image mutation 1 baseline + 12 built + 2 static-only、M3B signal 5+6，且 fresh
+smoke、八份 Secret identity、lifecycle 与 same-ledger restore 均通过。该证据只证明
+本地实现候选；两个全新独立 A/B 审计、M5 Accepted、远端 CI 真实 run 和 09A 总验收
+均未完成。

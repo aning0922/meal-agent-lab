@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-15 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」Round 12 cycle 1 候选 `09d883f` 的 A/B 审计均为 BLOCK；整改实现截至 `03e5e41` 已通过完整 14/14，仍待 cycle 2 全新 A/B 复审、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 日期：2026-07-26（2026-08-16 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」的有界自动审计循环因同一证据所有权根因连续两轮出现而停止；经重新授权的架构整改落点 `27e7467` 已通过完整 14/14，仍待两个全新 A/B 独立只读审计、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（Round 12 cycle 1 审计 BLOCK；整改候选待 cycle 2 独立审计，未 Accepted）
+### M5 实施记录（架构级证据所有权整改候选待全新 A/B 独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3998,6 +3998,47 @@ A/B 审计；两路均 CLEAN 后才回到总控裁定。M5 未 Accepted、09A �
 最终核对无本轮容器、网络、卷、per-run image tag、临时 Secret/backup/override 与相关
 进程残留。该证据仍只是本地整改候选；下一门禁是 **cycle 2 两个全新独立只读 A/B
 审计**。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+#### M5 Round 12 自动循环停止后的架构级证据所有权整改（2026-08-16）
+
+cycle 2 的两个独立审计再次确认同一根因：不同名字、tag、路径、generation 或一次
+status-0 输出仍可能被拼成同一份成功证据。自动循环按“同根连续两轮”规则停止；
+产品负责人随后明确授权一次架构级整改。实现落点 `27e7467`，未 push/merge，未自行
+标记 Accepted：
+
+1. **统一证据协议**：新增 [ADR-0006](../architecture/decisions/0006-stage09a-evidence-ownership-protocol.md)
+   与 `m5-evidence-protocol.mjs`。Compose/Docker/PostgreSQL 成功 payload 必须先经闭集
+   schema 解析；locator 与 ownership 分离，ownership 只来自 immutable ID、claim、
+   scope、generation 与 provenance 的闭合记录。
+2. **构建、镜像与清理同一所有权链**：BuildKit metadata、iidfile 与 claim label 交叉
+   绑定；后续 inspect/scan/cleanup 只使用 immutable image ID。tag 漂移或 claim 不匹配
+   只会保留外部对象并报告 residue，不会按名字删除。
+3. **Compose 能力闭集**：resolved root/source 都拒绝未知键；显式覆盖 profiles、
+   `security_opt` 与 port 的 mode/未知字段。topology mutation 从 **39/39** 增至
+   **44/44**，新增 unused config、隐藏 profile privileged service、额外 security option、
+   ingress port 与未知 port 字段五个反例。
+4. **artifact 验证后发布**：backup 的容器 digest、宿主 Buffer、archive TOC、正式 dump
+   与 sidecar 绑定同一摘要；正式路径用独占创建并复核 inode/nlink/size/digest。restore
+   在第一次 Compose/数据库副作用前验证同一份内存快照的 TOC。
+5. **进程与 lifecycle generation**：未知 PGID probe 异常不再等同 ESRCH；one-shot 与
+   常驻容器在副作用前拍 baseline，之后绑定 ID/image/project/service/StartedAt，旧 exited
+   对象或 foreign replacement 不能与本轮成功状态拼接。
+6. **guard 与反例同源**：新增 15 项 critical-guard registry，每项绑定稳定 id、生产
+   检查与最小反例；mutation 必须因为指定 guard 缺失而红，earlier guard、总计数或
+   未捕获异常不能冒充判别力。
+
+实现期间完整门禁先后真实抓到两处测试接线问题：Group E 仍用未带 claim 的旧 build
+fixture，以及 registry baseline 仍登记 39 条 topology mutation；两项均修复后从步骤 1
+重新执行。最终 `pnpm stage09a:check` **14/14**：脚本测试 **109/109**、topology
+mutation **44/44**、runtime image mutation **1 baseline + 12 built + 2 static-only**、
+local-test **75/75**、targeted **69/69**、signal **5 deterministic + 6 real**，fresh smoke、
+八份 Secret identity、lifecycle 与 same-ledger restore 全部 PASS。Markdown 本地链接
+**63 files / 263 links**、`git diff --check` 通过；本轮容器、网络、卷、per-run tag、
+临时 Secret/backup/override、相关进程与 announced PGID 均为零残留。
+
+该结果只建立新的本地候选。下一门禁是两个**全新、用户可见、互相独立、只读**的
+A/B 审计（A 禁止 Docker，B 独占 Docker）；两路 CLEAN 后才回到总控 Accepted 裁定。
+M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持 `Proposed`。
 
 ## 验收门禁
 
