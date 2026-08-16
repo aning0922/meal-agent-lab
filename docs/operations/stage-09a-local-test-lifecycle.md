@@ -184,11 +184,12 @@ node infra/docker/restore-local-test.mjs --dump infra/docker/backups/<name>.dump
   `pg_dump` 自定义格式魔数——任一情形都以各自的固定理由拒绝（理由清单见
   `infra/docker/restore-local-test.mjs` 导出的常量），此时 `pg_restore` 根本
   不会被调用；
-- checksum 通过后，宿主只把 dump 字节经 stdin 送给无网络的
-  `backup-transfer-loader`；它以 UID 999 写入 `backup-transfer` volume，随后专用
-  `restore` service 只挂载该 volume 与 `postgres_admin_pgpass` 物化出的
-  `postgres_admin.pgpass`。宿主路径不会直接 bind 进
-  PostgreSQL 工具容器；
+- checksum 与 archive/TOC 判据通过后，宿主持有同一份已验证字节快照，并直接把它经
+  stdin 送给专用 `restore` service 的 `pg_restore`；恢复路径不会重新打开调用方路径，
+  也不会把 `backup-transfer` volume 当作恢复证据源。`restore` 只使用物化后的
+  `postgres_admin.pgpass` 连接目标库，宿主路径不会直接 bind 进 PostgreSQL 工具容器。
+  `backup-transfer-loader` 与 transfer volume 仍是备份链的无凭据 ferry/声明兼容面，
+  不是当前恢复实现的数据来源；
 - 目标数据库必须不存在（恢复只进全新库，绝不覆盖既有数据）；
 - `createdb --owner=meal_agent_migrator` 后执行
   `pg_restore --single-transaction --exit-on-error`：恢复内容要么全部提交，

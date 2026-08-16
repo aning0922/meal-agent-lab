@@ -389,8 +389,9 @@ services:
       postgres:
         condition: service_healthy
 
-  # 无凭据的数据 ferry：restore 把已在宿主验过摘要的 dump 经 stdin 写进 transfer
-  # volume。它不接网络，也看不到任何 Secret。
+  # 无凭据的数据 ferry：backup 链可把字节经 stdin 写进 transfer volume。当前 restore
+  # 实现直接把宿主已验证的同一份 Buffer 送给 pg_restore stdin，不从该 volume 重开。
+  # 本服务不接网络，也看不到任何 Secret。
   backup-transfer-loader:
     <<: *hardening
     image: docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
@@ -404,7 +405,8 @@ services:
     profiles:
       - bootstrap
 
-  # 恢复中段专用：admin pgpass + 只读 transfer dump；不继承登录口令 bundle。
+  # 恢复中段专用：admin pgpass；当前 dump 来自宿主已验证 Buffer 的 stdin。只读
+  # transfer mount 保留为声明兼容面，不是当前恢复证据源；不继承登录口令 bundle。
   restore:
     <<: [*hardening, *bootstrap-psql]
     volumes:

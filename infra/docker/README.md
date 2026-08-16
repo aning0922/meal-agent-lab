@@ -388,7 +388,8 @@ dump 发布同一字节。15 项 critical-guard registry 只做生产调用点�
 fresh smoke、八份 Secret identity、lifecycle 与 restore 全部 PASS。下一门禁是两个全新
 独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
-**当前证据所有权整改（2026-08-16，覆盖上段候选状态）**：实现落点 `6bdfd25` 将
+**当前证据所有权整改（2026-08-16，覆盖上段候选状态）**：候选 `c28cf35` 经两路
+独立审计判定 BLOCK；本轮只追加 `1d30f18`、`23e6e23` 与 `83ad2c0`，将
 M5 runtime scan 的无 tag immutable-ID 路径，与 M3B/M4 恢复型 build 的唯一 per-run
 tag locator 分开；后者只有在 immutable ID、build claim 与精确 tag 三者一致后才取得
 清理权。provenance descriptor、selected manifest、Config/history 与 OCI layer replay
@@ -399,8 +400,8 @@ Compose 每轮以 128-bit run claim 同时标记 14 服务、2 网络与 10 volu
 观察取得的 container ID。进程 status 0 与 stdin EPIPE 只能在整组 PGID 到达 ESRCH 后
 settle。backup 的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、
 uid/gid/mode，TOC 文法按 PostgreSQL 18 真实输出校验 database 项与 declared/visible
-计数。当前硬计数为脚本测试 **123/123**、topology mutation **45/45**、runtime image
-mutation **1 baseline + 14 built + 2 static-only**、targeted **69/69**、local-test
+计数。当前硬计数为脚本测试 **131/131**、topology mutation **45/45**、runtime image
+mutation **1 baseline + 15 built + 2 static-only**、targeted **69/69**、local-test
 **75/75**、signal **5 deterministic + 6 real**。同一实现已从步骤 1 完整通过
 `pnpm stage09a:check` 14/14；下一门禁是两个全新独立只读 A/B 审计。M5 未 Accepted、
 09A 未 Pass、远端 CI 无真实 run。

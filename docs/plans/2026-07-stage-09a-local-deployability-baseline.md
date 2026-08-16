@@ -4132,6 +4132,37 @@ identity、路径被当作字节所有权、leader close 被当作整组退出�
 A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI
 无真实 run；ADR-0006 保持 `Proposed`。
 
+#### M5 候选 `c28cf35` 两路 BLOCK 后的不可变证据与 cleanup 收口（2026-08-16）
+
+两路独立审计确认候选 `c28cf35` 的 OCI lexical alias、PAX closed schema、provenance
+subject、archive fd、evidence cleanup、backup artifact/TOC 与 generation settlement 仍有
+共同证据所有权缺口。本轮总控只追加三个提交：
+
+1. **`1d30f18`（生产根因与回归）**：OCI rootfs 拒绝 lexical alias，PAX 采用闭集
+   schema，最终 entrypoint 以精确 `lstat` 判定；provenance subject 必须唯一绑定所选
+   digest，archive 从验证到重放持续使用同一只读 fd。runtime/M3B evidence 与 Secret
+   cleanup 使用完整 inode journal；backup 在 close 前取得制品所有权，TOC 使用严格的
+   PostgreSQL 18 文法；进程组自然到达 ESRCH 视为干净，unknown/EPERM 保持 fail closed。
+2. **`23e6e23`（真实门禁抓出的 cleanup identity）**：第一次完整 14 步链在
+   local-test negatives 中抓出 Secret bundle 只登记目录、未登记八个成员 identity 的
+   漂移；生成前登记目录，生成后取得完整八文件快照，normal/finally/signal 三路复用同一
+   cleanup 证据。窄套件重新通过 75/75。
+3. **`83ad2c0`（真实门禁抓出的 registry 漂移）**：第二次完整链在 registry integrity
+   中抓出新增 same-tree entrypoint symlink mutation 未登记；evidence baseline 与运维表
+   同步为 **15 built + 2 static-only**，registry 门禁重新通过。
+4. **最终串行结果**：第三次从步骤 1 运行 `pnpm stage09a:check`，**14/14** 全部 PASS；
+   脚本测试 **131/131**、topology mutation **45/45**、runtime image mutation
+   **1 baseline + 15 built + 2 static-only**、targeted **69/69**、local-test **75/75**、
+   signal **5 deterministic + 6 real**，fresh smoke、八份 Secret identity、lifecycle、
+   same-ledger restore 与最终精确 cleanup 均通过。
+5. **恢复证据源订正**：当前 restore 不从 transfer volume 重新打开 dump；checksum、
+   archive 与 TOC 验证后的同一份 Buffer 直接作为 `pg_restore` stdin。transfer loader/
+   volume 仍是备份链的无凭据 ferry 与 Compose 声明兼容面，不是恢复证据源。
+
+该结果仍只是本地实施候选。下一门禁是两个**全新、用户可见、互相独立、只读**的
+A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI
+无真实 run；ADR-0006 保持 `Proposed`。
+
 ## 验收门禁
 
 | # | 必须满足 |

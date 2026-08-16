@@ -110,7 +110,8 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 
 ## 实施注记
 
-2026-08-16 的实现落点 `6bdfd25` 继续闭合本 ADR。M5 runtime scan 无 tag 构建并直接
+2026-08-16 的候选 `c28cf35` 经两路独立审计判定 BLOCK；后续只追加 `1d30f18`、
+`23e6e23` 与 `83ad2c0` 继续闭合本 ADR。M5 runtime scan 无 tag 构建并直接
 绑定 immutable ID；M3B/M4 恢复型 build 在 BuildKit 前登记唯一 per-run tag 作为异常
 窗口 locator，只有 immutable ID、build claim 与精确 tag 三者一致才取得清理权。
 provenance descriptor、selected manifest、Config/history 与 OCI layer replay 绑定同一
@@ -122,8 +123,8 @@ Compose 的 14 服务、2 网络、10 volume 绑定 128-bit run claim，
 备份的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、uid/gid/mode，
 TOC 按 PostgreSQL 18 的真实 database/declared/visible 文法验证。24 项 registry 仍只负责
 生产调用点漂移索引，不代替动态反例和 mutation 判别力。该候选从步骤 1 串行通过
-`pnpm stage09a:check` 14/14；脚本测试 123/123、Compose topology mutation 45/45、
-runtime image mutation 1 baseline + 14 built + 2 static-only、M3B signal 5+6，且 fresh
+`pnpm stage09a:check` 14/14；脚本测试 131/131、Compose topology mutation 45/45、
+runtime image mutation 1 baseline + 15 built + 2 static-only、M3B signal 5+6，且 fresh
 smoke、八份 Secret identity、lifecycle 与 same-ledger restore 均通过。该证据只证明
 本地实现候选；两个全新独立 A/B 审计、M5 Accepted、远端 CI 真实 run 和 09A 总验收
 均未完成。
