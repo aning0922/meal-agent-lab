@@ -56,7 +56,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'runtime.saved-archive-layer-fd-v1',
     file: 'infra/docker/api-image-scan.mjs',
-    needle: 'verifySavedImageLayers(\n      savedImageFd,',
+    needle: 'verifySavedImageLayers(\n        savedImageFd,',
     occurrences: 1
   },
   {
@@ -74,7 +74,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'runtime.provenance-conflict-v1',
     file: 'infra/docker/api-image-scan.mjs',
-    needle: ': evidence.subjects.includes(evidence.referenceDigest)',
+    needle: ': evidence.subjects.length === 1 && evidence.subjects[0] === evidence.referenceDigest',
     occurrences: 1
   },
   {
@@ -86,7 +86,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'm4.stack-one-shot-fresh-v1',
     file: 'infra/docker/m4-lifecycle.mjs',
-    needle: 'current.State?.StartedAt === baseline.State?.StartedAt',
+    needle: 'requireFreshContainerGeneration(baseline, current, {',
     occurrences: 2
   },
   {
@@ -110,7 +110,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'compose.persistent-fresh-generation-v1',
     file: 'infra/docker/run-local-test-smoke.mjs',
-    needle: 'requireFreshContainerGeneration(baseline, current, {',
+    needle: "code: 'persistent-service-generation'",
     occurrences: 1
   },
   {

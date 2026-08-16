@@ -184,9 +184,10 @@ const killGroup = (pgid, signal) => {
     process.kill(-pgid, signal)
     return true
   } catch (error) {
-    if (error?.code === 'ESRCH' || error?.code === 'EPERM') {
-      return false
-    }
+    // ESRCH is positive settlement evidence, not a failed termination
+    // primitive.  EPERM means the group still exists but delivery failed.
+    if (error?.code === 'ESRCH') return null
+    if (error?.code === 'EPERM') return false
     throw error
   }
 }
@@ -292,15 +293,17 @@ export const createProcessGroupLifecycle = ({
 
   const signalIfCurrent = (handle, signal) => {
     if (retireIfGone(handle)) {
-      return false
+      return null
     }
     // probe 与 signal 都是同步调用；JS 无法在两者之间登记一个新代。仍在
     // signal 前再查一次 generation，把所有权判据写在真正的副作用边界上。
     if (currentEntry(handle) === null) {
       retire(handle)
-      return false
+      return null
     }
-    return signalGroup(handle.pgid, signal)
+    const result = signalGroup(handle.pgid, signal)
+    if (result === null) retire(handle)
+    return result
   }
 
   const terminateDetailed = async (
@@ -318,10 +321,11 @@ export const createProcessGroupLifecycle = ({
     })
     for (const handle of pending) {
       try {
-        if (!signalIfCurrent(handle, 'SIGTERM')) {
+        if (signalIfCurrent(handle, 'SIGTERM') === false) {
           // `false` is not proof that the signal was delivered.  The default
-          // primitive uses it for ESRCH/EPERM and injected lifecycle
-          // implementations may use it for another delivery failure.  A
+          // primitive uses it for EPERM and injected lifecycle implementations
+          // may use it for another delivery failure. ESRCH returns null and is
+          // clean settlement. A
           // later probe can still prove the group gone, but the cleanup must
           // retain the failed-delivery fact and fail closed.
           primitiveFailed = true
@@ -353,7 +357,7 @@ export const createProcessGroupLifecycle = ({
     for (let attempt = 0; attempt < killSteps && unconfirmed.length > 0; attempt += 1) {
       for (const handle of unconfirmed) {
         try {
-          if (!signalIfCurrent(handle, 'SIGKILL')) {
+          if (signalIfCurrent(handle, 'SIGKILL') === false) {
             primitiveFailed = true
           }
         } catch {

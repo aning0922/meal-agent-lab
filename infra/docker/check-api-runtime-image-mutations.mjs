@@ -18,7 +18,7 @@
 // 变异 unpinned-base 只做静态判定，不构建：构建它意味着从网络拉取未固定的浮动
 // 标签，这正是该判据要阻止的事。
 import { randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -39,6 +39,11 @@ import {
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
 import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import {
+  createOwnedTreeJournal,
+  registerOwnedTree,
+  retireOwnedTree
+} from './m5-evidence-protocol.mjs'
 
 const usage = 'node infra/docker/check-api-runtime-image-mutations.mjs'
 if (process.argv.length > 2) {
@@ -169,6 +174,19 @@ const mutations = [
     expectScan: ['runtime payload symlink escaped the protected app tree']
   },
   {
+    id: 'runtime-entrypoint-same-tree-symlink',
+    describe: 'replace the runtime entrypoint with a same-tree symlink',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        'RUN mv /app/dist/index.js /app/dist/index.real.js && ln -s index.real.js /app/dist/index.js\n\nUSER 10001:10001'
+      ),
+    expectStatic: [],
+    expectScan: ['runtime entrypoint was not a verified regular file']
+  },
+  {
     id: 'replace-skipped-readme-with-directory',
     describe: 'turn the skipped contracts README path into an opaque directory tree',
     build: true,
@@ -254,12 +272,13 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 14
+const expectedBuiltMutationCount = 15
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {
   temporaryRoot: null,
   temporaryRootIdentity: null,
+  temporaryJournal: null,
   builds: new Map(),
   cleanupPromise: null
 }
@@ -356,7 +375,11 @@ const cleanup = () => {
       ) {
         cleanupProblems.push('temporary directory ownership drifted')
       } else {
-        rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
+        if (cleanupState.temporaryJournal === null) {
+          cleanupProblems.push('temporary directory ownership journal was unavailable')
+        } else {
+          retireOwnedTree(cleanupState.temporaryJournal)
+        }
       }
     } catch {
       if (existsSync(cleanupState.temporaryRoot)) {
@@ -365,6 +388,7 @@ const cleanup = () => {
     }
     cleanupState.temporaryRoot = null
     cleanupState.temporaryRootIdentity = null
+    cleanupState.temporaryJournal = null
   }
   return [...cleanupProblems]
   })()
@@ -383,6 +407,7 @@ const buildAndScan = async ({
 }) => {
   const caseDirectory = join(cleanupState.temporaryRoot, `case-${caseId}`)
   mkdirSync(caseDirectory, { recursive: true })
+  registerOwnedTree(cleanupState.temporaryJournal, caseDirectory)
   const imageIdFile = join(caseDirectory, 'built-image.id')
   const metadataFile = join(caseDirectory, 'built-image.metadata.json')
   const claimToken = randomBytes(16).toString('hex')
@@ -396,6 +421,8 @@ const buildAndScan = async ({
     label: `docker build (${caseId})`,
     stdin: viaStdin ? dockerfileText : null
   })
+  registerOwnedTree(cleanupState.temporaryJournal, imageIdFile)
+  registerOwnedTree(cleanupState.temporaryJournal, metadataFile)
   const buildEvidence = parseBuildMetadataImageIdentity(
     readFileSync(metadataFile, 'utf8')
   )
@@ -438,7 +465,8 @@ const buildAndScan = async ({
       problem: (message) => problems.push(message),
       log: () => undefined,
       track: {
-        image: () => undefined
+        image: () => undefined,
+        path: (path) => registerOwnedTree(cleanupState.temporaryJournal, path)
       }
     })
   } catch (error) {
@@ -489,6 +517,7 @@ const main = async () => {
   {
     const stat = lstatSync(cleanupState.temporaryRoot, { bigint: true })
     cleanupState.temporaryRootIdentity = { dev: stat.dev, ino: stat.ino }
+    cleanupState.temporaryJournal = createOwnedTreeJournal(cleanupState.temporaryRoot)
   }
 
   suiteExpected = await deriveExpectedClosure({
@@ -498,6 +527,7 @@ const main = async () => {
     temporaryRoot: cleanupState.temporaryRoot,
     log
   })
+  registerOwnedTree(cleanupState.temporaryJournal, suiteExpected.deployDirectory)
 
   // ---- 正向 baseline：真实 Dockerfile 必须静态零 problem、扫描零 problem ----
   const baselineStatic = []

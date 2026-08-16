@@ -461,21 +461,18 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     if (started.status !== 0) {
       throw new Error(`compose up ${service} failed`)
     }
-    let claimedId = baseline?.Id ?? null
+    let claimedId = null
     const container = await waitFor(
       `${service} run`,
       async () => {
         const current = await inspectServiceOptional(service, claimedId)
         if (current === null) return null
+        requireFreshContainerGeneration(baseline, current, {
+          code: 'one-shot-generation'
+        })
         if (claimedId === null) claimedId = current.Id
         if (current.Id !== claimedId) {
           throw new Error(`${service}: container identity changed while collecting evidence`)
-        }
-        if (
-          baseline !== null &&
-          (current.Id !== baseline.Id || current.State?.StartedAt === baseline.State?.StartedAt)
-        ) {
-          return null
         }
         return current.State?.Status === 'exited' ? current : null
       },

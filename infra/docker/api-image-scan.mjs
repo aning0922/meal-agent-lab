@@ -386,10 +386,11 @@ export const requireBoundProvenance = (
       }
       // BuildKit may emit an empty subject for an untagged build. Only that exact
       // case may use the attestation descriptor reference as the binding. Once the
-      // statement names any subject, the statement and descriptor must agree.
+      // statement names a subject, this local single-output protocol requires one
+      // canonical subject and no conflicting/duplicate companions.
       const binding = evidence.subjects.length === 0
         ? evidence.referenceDigest
-        : evidence.subjects.includes(evidence.referenceDigest)
+        : evidence.subjects.length === 1 && evidence.subjects[0] === evidence.referenceDigest
           ? evidence.referenceDigest
           : null
       return binding !== selectedManifestDigest
@@ -1016,12 +1017,22 @@ const tarString = (bytes) => {
 }
 
 const normalizeLayerMemberName = (name, fatal) => {
-  const stripped = name.replace(/^\.\//, '').replace(/\/$/, '')
+  if (typeof name !== 'string') {
+    fatal('docker image layer contained an unsafe archive path')
+  }
+  // A single conventional `./` root marker and one directory trailing slash are
+  // admissible. Any further lexical alias is rejected rather than normalized:
+  // the evidence ledger and the host tar replay must have exactly one path key.
+  const withoutRootMarker = name.startsWith('./') ? name.slice(2) : name
+  const stripped = withoutRootMarker.endsWith('/')
+    ? withoutRootMarker.slice(0, -1)
+    : withoutRootMarker
   if (stripped === '') return null
   if (
     stripped.includes('\u0000') ||
     posix.isAbsolute(stripped) ||
-    stripped.split('/').includes('..')
+    stripped.split('/').includes('..') ||
+    posix.normalize(stripped) !== stripped
   ) {
     fatal('docker image layer contained an unsafe archive path')
   }
@@ -1065,8 +1076,21 @@ const parsePaxMetadata = (bytes, fatal) => {
       const value = record.subarray(equals + 1, -1).toString('utf8')
       if (seen.has(key)) fatal('docker image layer PAX metadata was ambiguous')
       seen.add(key)
-      if (key === 'path') path = value
-      if (key === 'linkpath') linkPath = value
+      const ignoredMetadataKeys = new Set(['mtime', 'atime', 'ctime', 'uname', 'gname'])
+      if (
+        !['path', 'linkpath', 'uid', 'gid'].includes(key) &&
+        !ignoredMetadataKeys.has(key)
+      ) {
+        fatal('docker image layer contained unsupported PAX filesystem metadata')
+      }
+      if (key === 'path') {
+        if (value === '') fatal('docker image layer PAX path metadata was empty')
+        path = value
+      }
+      if (key === 'linkpath') {
+        if (value === '') fatal('docker image layer PAX link metadata was empty')
+        linkPath = value
+      }
       if (key === 'uid' || key === 'gid') {
         if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
           fatal('docker image layer PAX identity metadata was malformed')
@@ -1078,17 +1102,8 @@ const parsePaxMetadata = (bytes, fatal) => {
         if (key === 'uid') uid = numeric
         else gid = numeric
       }
-      // These keys alter the filesystem semantics consumed by tar, but the bounded
-      // replay below does not implement their extended representation. Reject them
-      // instead of silently trusting the raw ustar header.
-      if (
-        key === 'size' ||
-        key === 'SCHILY.mode' ||
-        key === 'SCHILY.devmajor' ||
-        key === 'SCHILY.devminor' ||
-        key.startsWith('GNU.sparse.')
-      ) {
-        fatal('docker image layer contained unsupported PAX filesystem metadata')
+      if (['mtime', 'atime', 'ctime'].includes(key) && !/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value)) {
+        fatal('docker image layer PAX timestamp metadata was malformed')
       }
     }
     cursor += length
@@ -1153,8 +1168,10 @@ export const parseLayerTarEvidence = (fd, fatal) => {
       }
     } else if (type === 0x4c) {
       pendingPath = tarString(readTarPayload(fd, payloadOffset, memberSize, fatal))
+      if (pendingPath === '') fatal('docker image layer long path metadata was empty')
     } else if (type === 0x4b) {
       pendingLinkPath = tarString(readTarPayload(fd, payloadOffset, memberSize, fatal))
+      if (pendingLinkPath === '') fatal('docker image layer long link metadata was empty')
     } else {
       const prefix = tarString(header.subarray(345, 500))
       const headerName = tarString(header.subarray(0, 100))
@@ -1479,6 +1496,14 @@ export const verifySavedImageLayers = async (
         const entry = identityByPath.get(required)
         if (entry === undefined || ![0, 0x30].includes(entry.type)) {
           fatal('docker image runtime entrypoint was not a verified regular file')
+        }
+        const materialized = lstatSync(join(materializeRoot, required))
+        if (
+          !materialized.isFile() ||
+          materialized.isSymbolicLink() ||
+          (materialized.mode & 0o7777) !== entry.mode
+        ) {
+          fatal('docker image runtime entrypoint replay did not match its identity ledger')
         }
       }
     }
@@ -2086,6 +2111,7 @@ export const scanImage = async ({
     timeoutMs: 300_000,
     label: 'docker image save (content-addressed history evidence)'
   })
+  track.path?.(savedImageTarPath)
   const savedImageFd = openSync(savedImageTarPath, 'r')
   try {
     const savedImageStat = fstatSync(savedImageFd, { bigint: true })
@@ -2102,14 +2128,18 @@ export const scanImage = async ({
     )
     const savedManifest = archiveEvidence.manifest
     mkdirSync(extractedRoot, { recursive: false, mode: 0o700 })
-    await verifySavedImageLayers(
-      savedImageFd,
-      savedManifest.Layers,
-      archiveEvidence.layerDescriptors,
-      imageInspect.RootFS.Layers,
-      fatal,
-      { materializeRoot: extractedRoot, runStrict }
-    )
+    try {
+      await verifySavedImageLayers(
+        savedImageFd,
+        savedManifest.Layers,
+        archiveEvidence.layerDescriptors,
+        imageInspect.RootFS.Layers,
+        fatal,
+        { materializeRoot: extractedRoot, runStrict }
+      )
+    } finally {
+      if (existsSync(extractedRoot)) track.path?.(extractedRoot)
+    }
   } finally {
     closeSync(savedImageFd)
   }

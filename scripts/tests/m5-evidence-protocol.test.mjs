@@ -3,6 +3,7 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   linkSync,
   rmSync,
@@ -15,11 +16,14 @@ import test from 'node:test'
 
 import {
   EvidenceProtocolError,
+  createOwnedTreeJournal,
   parsePgRestoreListEvidence,
   parseSignalResidueListing,
   readStableRegularFile,
+  registerOwnedTree,
   requireFreshContainerGeneration,
   requireClosedRecord,
+  retireOwnedTree,
   verifyPublishedFileEvidence,
   writeExclusiveEvidenceFile
 } from '../../infra/docker/m5-evidence-protocol.mjs'
@@ -152,6 +156,22 @@ test('pg_restore list evidence binds the database header and the complete visibl
       ),
     EvidenceProtocolError
   )
+  const canonical =
+    '; Archive created at 2026-08-16 00:00:00 UTC\n' +
+    ';     TOC Entries: 5\n' +
+    ';     Dump Version: 1.16-0\n' +
+    ';     Format: CUSTOM\n' +
+    ';     dbname: meal_agent\n' +
+    '1; 1262 16384 DATABASE - meal_agent owner\n' +
+    '2; 0 0 DATABASE PROPERTIES - meal_agent owner\n'
+  for (const malformed of [
+    canonical.replace('1; 1262 16384 DATABASE', '1; 9999 16384 DATABASE'),
+    canonical.replace('2; 0 0 DATABASE PROPERTIES', '2; 1 1 DATABASE PROPERTIES'),
+    canonical.slice(0, -1),
+    canonical.replace('dbname: meal_agent', 'dbname: foreign-name')
+  ]) {
+    assert.throws(() => parsePgRestoreListEvidence(malformed), EvidenceProtocolError)
+  }
 })
 
 test('published file evidence binds bytes, inode, link count and exclusive name', () => {
@@ -179,6 +199,29 @@ test('published file evidence binds bytes, inode, link count and exclusive name'
   }
 })
 
+test('owned tree retirement preserves unknown children and inode replacements', () => {
+  for (const variant of ['unknown', 'replacement']) {
+    const directory = mkdtempSync(join(tmpdir(), `m5-owned-tree-${variant}-`))
+    try {
+      const journal = createOwnedTreeJournal(directory)
+      const registered = join(directory, 'registered')
+      writeFileSync(registered, 'owned')
+      registerOwnedTree(journal, registered)
+      if (variant === 'unknown') {
+        writeFileSync(join(directory, 'foreign'), 'foreign')
+      } else {
+        rmSync(registered)
+        writeFileSync(registered, 'replacement')
+      }
+      assert.throws(() => retireOwnedTree(journal), EvidenceProtocolError)
+      assert.equal(existsSync(directory), true)
+      assert.equal(existsSync(registered), true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
+})
+
 test('a close failure retracts the exact file created by exclusive publication', () => {
   const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-close-'))
   try {
@@ -199,13 +242,57 @@ test('a close failure retracts the exact file created by exclusive publication',
   }
 })
 
+test('exclusive publication reports the created inode before close and rollback can fail', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-journal-'))
+  try {
+    const path = join(directory, 'artifact')
+    let journaled = null
+    assert.throws(
+      () =>
+        writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
+          registerCreatedIdentity: (identity) => {
+            journaled = identity
+          },
+          closeFile: (fd) => {
+            closeSync(fd)
+            chmodSync(directory, 0o500)
+            throw new Error('hostile close text')
+          }
+        }),
+      EvidenceProtocolError
+    )
+    assert.notEqual(journaled, null)
+    assert.equal(journaled.path, path)
+    assert.equal(typeof journaled.dev, 'bigint')
+    assert.equal(typeof journaled.ino, 'bigint')
+    chmodSync(directory, 0o700)
+    const observed = lstatSync(path, { bigint: true })
+    assert.equal(observed.dev, journaled.dev)
+    assert.equal(observed.ino, journaled.ino)
+    rmSync(path)
+  } finally {
+    chmodSync(directory, 0o700)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('Compose success requires a fresh container generation', () => {
   const old = { Id: 'old', State: { StartedAt: '2026-08-16T00:00:00Z' } }
   const freshSameId = { Id: 'old', State: { StartedAt: '2026-08-16T00:00:01Z' } }
   const freshNewId = { Id: 'new', State: { StartedAt: '2026-08-16T00:00:00Z' } }
   assert.equal(requireFreshContainerGeneration(null, old), old)
   assert.equal(requireFreshContainerGeneration(old, freshSameId), freshSameId)
-  assert.equal(requireFreshContainerGeneration(old, freshNewId), freshNewId)
+  assert.throws(
+    () => requireFreshContainerGeneration(old, freshNewId),
+    EvidenceProtocolError
+  )
+  assert.equal(
+    requireFreshContainerGeneration(old, {
+      Id: 'new',
+      State: { StartedAt: '2026-08-16T00:00:01Z' }
+    }).Id,
+    'new'
+  )
   assert.throws(() => requireFreshContainerGeneration(old, old), EvidenceProtocolError)
   assert.throws(
     () => requireFreshContainerGeneration(old, { Id: 'new', State: { StartedAt: '' } }),
@@ -343,6 +430,27 @@ test('the production process-group probe distinguishes gone, denied and unknown 
     () => probeProcessGroup(4242, () => { throw new Error('unknown') }),
     /unknown/
   )
+})
+
+test('a process group that reaches ESRCH before signal delivery is clean settlement', async () => {
+  let probes = 0
+  let signals = 0
+  const lifecycle = createProcessGroupLifecycle({
+    probeGroup: () => {
+      probes += 1
+      return probes === 1
+    },
+    signalGroup: () => {
+      signals += 1
+      return true
+    },
+    delay: async () => undefined
+  })
+  const handle = lifecycle.register(4242)
+  const outcome = await lifecycle.terminateDetailed([handle], { graceMs: 0, killWaitMs: 0 })
+  assert.deepEqual(outcome.survivors, [])
+  assert.equal(outcome.primitiveFailed, false)
+  assert.equal(signals, 0)
 })
 
 test('every critical evidence guard remains mapped to its registered production call site', () => {

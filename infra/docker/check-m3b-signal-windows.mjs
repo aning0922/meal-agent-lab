@@ -155,6 +155,9 @@ const runAndSignal = async ({
   waitForProcess = null,
   signalDelayMs = 1_500
 }) => {
+  const buildEvidenceBaseline = new Set(
+    readdirSync(tmpdir()).filter((name) => name.startsWith('meal-agent-m3b-build-'))
+  )
   const child = await registerRawSpawnedChild(
     spawn(process.execPath, [resolve(composeDirectory, script)], {
       cwd: repositoryRoot,
@@ -166,7 +169,7 @@ const runAndSignal = async ({
   let stderr = ''
   let signalled = false
   let windowConfirmed = waitForProcess === null
-  const scene = { project: null, imageId: null, secretsDirectory: null }
+  const scene = { project: null, imageId: null, secretsDirectory: null, buildEvidenceBaseline }
 
   const observe = (text) => {
     const project = /(?:smoke project|probe project|negative project): (\S+)/.exec(text)
@@ -309,6 +312,17 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   if (scene.secretsDirectory !== null && existsSync(scene.secretsDirectory)) {
     problems.push('the temporary secrets directory still exists')
   }
+  const newBuildEvidence = readdirSync(tmpdir()).filter(
+    (name) =>
+      name.startsWith('meal-agent-m3b-build-') &&
+      !scene.buildEvidenceBaseline.has(name)
+  )
+  if (newBuildEvidence.length > 0) {
+    problems.push(
+      `${String(newBuildEvidence.length)} build-evidence director` +
+        `${newBuildEvidence.length === 1 ? 'y' : 'ies'} remain from this window`
+    )
+  }
   // 只查**本轮**的 override（按 run id）：并发的 M3B 运行不该让这里误红。
   const runId =
     scene.project === null
@@ -416,7 +430,7 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   } else {
     pass(
       name,
-      `${expectSignal} honoured; no container/network/volume/image/secret/override residue`
+      `${expectSignal} honoured; no container/network/volume/image/secret/build-evidence/override residue`
     )
   }
 }
@@ -1152,5 +1166,5 @@ process.stdout.write(
     'process-group regression (no Docker) + ' +
     `${String(caught - regressionCaught)}/${String(expectedCount)} real signal windows: ` +
     'announced descendant pgids confirmed gone by bounded polling, tracked files unchanged, ' +
-    'zero docker/secret/image residue)\n'
+    'zero docker/secret/image/build-evidence residue)\n'
 )

@@ -10,11 +10,13 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readdirSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { resolve } from 'node:path'
+import { relative, resolve, sep } from 'node:path'
 
 const sha256Pattern = /^[0-9a-f]{64}$/
 
@@ -24,6 +26,105 @@ export class EvidenceProtocolError extends Error {
     this.name = 'EvidenceProtocolError'
     this.code = code
   }
+}
+
+const treeEntryType = (stat) =>
+  stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : null
+
+const assertJournalRoot = (journal) => {
+  const observed = lstatSync(journal.root, { bigint: true })
+  if (
+    !observed.isDirectory() ||
+    observed.dev !== journal.rootIdentity.dev ||
+    observed.ino !== journal.rootIdentity.ino
+  ) {
+    throw new EvidenceProtocolError('owned-tree-root-drift')
+  }
+}
+
+export const createOwnedTreeJournal = (root) => {
+  const absoluteRoot = resolve(root)
+  const stat = lstatSync(absoluteRoot, { bigint: true })
+  if (!stat.isDirectory()) throw new EvidenceProtocolError('owned-tree-root')
+  return {
+    root: absoluteRoot,
+    rootIdentity: Object.freeze({ dev: stat.dev, ino: stat.ino }),
+    entries: new Map()
+  }
+}
+
+/** Register a controlled output immediately after its creating operation settles. */
+export const registerOwnedTree = (journal, target) => {
+  assertJournalRoot(journal)
+  const absoluteTarget = resolve(target)
+  const relativeTarget = relative(journal.root, absoluteTarget)
+  if (
+    relativeTarget === '' ||
+    relativeTarget === '..' ||
+    relativeTarget.startsWith(`..${sep}`)
+  ) {
+    throw new EvidenceProtocolError('owned-tree-scope')
+  }
+  const visit = (path) => {
+    const stat = lstatSync(path, { bigint: true })
+    const type = treeEntryType(stat)
+    if (type === null) throw new EvidenceProtocolError('owned-tree-entry-type')
+    const key = relative(journal.root, path)
+    const previous = journal.entries.get(key)
+    if (
+      previous !== undefined &&
+      (previous.dev !== stat.dev || previous.ino !== stat.ino || previous.type !== type)
+    ) {
+      throw new EvidenceProtocolError('owned-tree-entry-drift')
+    }
+    journal.entries.set(key, Object.freeze({
+      path,
+      dev: stat.dev,
+      ino: stat.ino,
+      nlink: stat.nlink,
+      type
+    }))
+    if (type === 'directory') {
+      for (const name of readdirSync(path).sort()) visit(resolve(path, name))
+    }
+  }
+  visit(absoluteTarget)
+}
+
+/**
+ * Validate the complete current tree before deleting the first name. Unknown
+ * children and inode replacements remain untouched and turn cleanup red.
+ */
+export const retireOwnedTree = (journal) => {
+  assertJournalRoot(journal)
+  const observedEntries = []
+  const visit = (path) => {
+    const stat = lstatSync(path, { bigint: true })
+    const type = treeEntryType(stat)
+    const key = relative(journal.root, path)
+    const expected = journal.entries.get(key)
+    if (
+      type === null ||
+      expected === undefined ||
+      expected.dev !== stat.dev ||
+      expected.ino !== stat.ino ||
+      (type !== 'directory' && expected.nlink !== stat.nlink) ||
+      expected.type !== type
+    ) {
+      throw new EvidenceProtocolError('owned-tree-entry-drift')
+    }
+    observedEntries.push({ path, key, type })
+    if (type === 'directory') {
+      for (const name of readdirSync(path).sort()) visit(resolve(path, name))
+    }
+  }
+  for (const name of readdirSync(journal.root).sort()) visit(resolve(journal.root, name))
+  observedEntries.sort((left, right) => right.key.split(sep).length - left.key.split(sep).length)
+  for (const entry of observedEntries) {
+    if (entry.type === 'directory') rmdirSync(entry.path)
+    else unlinkSync(entry.path)
+  }
+  rmdirSync(journal.root)
 }
 
 export const sameKeySet = (value, expectedKeys) =>
@@ -68,6 +169,7 @@ export const parsePgRestoreListEvidence = (
     typeof text !== 'string' ||
     text.length === 0 ||
     text.length > 16 * 1024 * 1024 ||
+    !text.endsWith('\n') ||
     /[\u0000\r]/.test(text)
   ) {
     throw new EvidenceProtocolError('archive-list-framing')
@@ -107,6 +209,9 @@ export const parsePgRestoreListEvidence = (
         dumpVersionHeaders += 1
       }
       const databaseHeader = /^;\s+dbname: ([A-Za-z_][A-Za-z0-9_]*)$/.exec(line)
+      if (/^;\s+dbname:/.test(line) && databaseHeader === null) {
+        throw new EvidenceProtocolError('archive-list-shape')
+      }
       if (databaseHeader !== null) {
         databaseHeaders += 1
         headerDatabase = databaseHeader[1]
@@ -127,12 +232,18 @@ export const parsePgRestoreListEvidence = (
       throw new EvidenceProtocolError('archive-list-shape')
     }
     if (databaseEntry !== null) {
+      if (entry[2] !== '1262' || !/^[1-9][0-9]*$/.test(entry[3])) {
+        throw new EvidenceProtocolError('archive-list-shape')
+      }
       databaseEntries += 1
       if (databaseEntry[1] === expectedDatabase) {
         targetDatabaseEntries += 1
       }
     }
     if (databasePropertyEntry !== null) {
+      if (entry[2] !== '0' || entry[3] !== '0') {
+        throw new EvidenceProtocolError('archive-list-shape')
+      }
       databasePropertyEntries += 1
       if (databasePropertyEntry[1] === expectedDatabase) {
         targetDatabasePropertyEntries += 1
@@ -298,7 +409,12 @@ export const verifyPublishedFileEvidence = (identity, expectedBytes) => {
 export const writeExclusiveEvidenceFile = (
   path,
   bytes,
-  { mode = 0o600, code = 'exclusive-publish', closeFile = closeSync } = {}
+  {
+    mode = 0o600,
+    code = 'exclusive-publish',
+    closeFile = closeSync,
+    registerCreatedIdentity = null
+  } = {}
 ) => {
   if (!Buffer.isBuffer(bytes)) throw new EvidenceProtocolError(code)
   let fd = null
@@ -320,6 +436,10 @@ export const writeExclusiveEvidenceFile = (
       throw new EvidenceProtocolError(code)
     }
     createdIdentity = statIdentity(path, opened, sha256OfBytes(Buffer.alloc(0)))
+    // Ownership is acquired at O_EXCL creation, not after write/close succeeds.
+    // The caller must be able to retry exact-inode cleanup when close and the
+    // helper's first rollback attempt both fail.
+    registerCreatedIdentity?.(createdIdentity)
     writeFileSync(fd, bytes)
     const stat = fstatSync(fd, { bigint: true })
     if (
@@ -396,7 +516,7 @@ export const requireFreshContainerGeneration = (
     !isRecord(baseline.State) ||
     typeof baseline.State.StartedAt !== 'string' ||
     baseline.State.StartedAt === '' ||
-    (baseline.Id === current.Id && baseline.State.StartedAt === current.State.StartedAt)
+    baseline.State.StartedAt === current.State.StartedAt
   ) {
     throw new EvidenceProtocolError(code)
   }

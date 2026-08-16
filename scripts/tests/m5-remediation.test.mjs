@@ -9,9 +9,11 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -26,6 +28,7 @@ import {
   writeChecksumSidecarNoReplace
 } from '../../infra/docker/backup-local-test.mjs'
 import {
+  captureBuildEvidenceFiles,
   discardOverride,
   imageIdOf,
   inodeIdentityOf,
@@ -61,6 +64,10 @@ import {
   runRestoreOneOff,
   verifyBackupChecksum
 } from '../../infra/docker/restore-local-test.mjs'
+import {
+  readStableRegularFile,
+  writeExclusiveEvidenceFile
+} from '../../infra/docker/m5-evidence-protocol.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 
@@ -147,8 +154,48 @@ test('Secret cleanup removes only registered files and refuses an unknown child'
     assert.equal(readFileSync(resolve(directory, 'foreign-child'), 'utf8'), 'must survive')
     assert.deepEqual(
       filenames.filter((filename) => existsSync(resolve(directory, filename))),
-      []
+      filenames
     )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Secret cleanup never adopts an unregistered reserved name', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-secret-unregistered-'))
+  try {
+    const identity = inodeIdentityOf(directory)
+    const victim = resolve(directory, 'postgres_superuser_password')
+    writeFileSync(victim, 'FOREIGN')
+    assert.throws(
+      () => retireSecretBundleDirectory(directory, identity),
+      /temporary secret file ownership drifted/
+    )
+    assert.equal(readFileSync(victim, 'utf8'), 'FOREIGN')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('BuildKit evidence ownership is acquired from its output inode and never reacquired', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-build-evidence-'))
+  const metadataFile = resolve(directory, 'built-image.metadata.json')
+  const iidfile = resolve(directory, 'built-image.id')
+  const record = { metadataFile, iidfile, fileIdentities: new Map() }
+  try {
+    writeFileSync(metadataFile, '{"containerimage.digest":"sha256:' + 'a'.repeat(64) + '"}')
+    writeFileSync(iidfile, `sha256:${'a'.repeat(64)}\n`)
+    const captured = captureBuildEvidenceFiles(record)
+    assert.match(captured.metadataText, /containerimage\.digest/)
+    assert.match(captured.iidText, /^sha256:/)
+    const original = record.fileIdentities.get(iidfile)
+    unlinkSync(iidfile)
+    writeFileSync(iidfile, `sha256:${'b'.repeat(64)}\n`)
+    assert.throws(
+      () => captureBuildEvidenceFiles(record),
+      /docker build evidence file ownership drifted/
+    )
+    assert.equal(record.fileIdentities.get(iidfile), original)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -765,6 +812,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
   const archiveDigest = createHash('sha256').update(archiveBytes).digest('hex')
   let copied = 0
   let listed = 0
+  let simulatedDumpPublishFailure = false
   const run = async (argv) => {
     if (argv[0] === 'docker' && argv[1] === 'container' && argv[2] === 'inspect') {
       const query = argv[3]
@@ -847,10 +895,21 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
   }
   const dumpPath = resolve(directory, 'fixture.dump')
   const shaPath = `${dumpPath}.sha256`
+  const publishFile = (path, bytes, options) => {
+    if (!path.endsWith('/fixture.dump')) return writeExclusiveEvidenceFile(path, bytes, options)
+    writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 })
+    const identity = readStableRegularFile(path, { code: 'fixture-publish' }).identity
+    options.registerCreatedIdentity(identity)
+    simulatedDumpPublishFailure = true
+    // Model the exact helper boundary: create succeeded, close failed, and the
+    // helper's own rollback could not unlink.  The outer backup journal must
+    // still retract this exact inode.
+    throw new Error('fixture close and rollback failed')
+  }
   try {
     await assert.rejects(
       performBackup(
-        { compose, run, log: () => undefined },
+        { compose, run, log: () => undefined, publishFile },
         { project: 'meal-agent-fixture', outputDirectory: directory, fileName: 'fixture.dump' }
       ),
       (error) =>
@@ -860,6 +919,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     )
     assert.equal(existsSync(dumpPath), false)
     assert.equal(existsSync(shaPath), false)
+    assert.equal(simulatedDumpPublishFailure, true)
     assert.equal(copied, 1)
     assert.equal(listed, 1)
     assert.equal(containers.size, 0)
@@ -1123,6 +1183,26 @@ test('backup target containment follows a symlink alias to its physical reposito
     assert.equal(calls.length, 1)
     assert.deepEqual(calls[0].argv.slice(0, 3), ['git', '--no-replace-objects', 'check-ignore'])
     assert.match(calls[0].argv.at(-1), /services\/api\/audit\.dump$/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup ignore evidence returns the checked physical path across an await-time alias swap', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-alias-swap-'))
+  try {
+    const alias = resolve(directory, 'alias')
+    const ignored = resolve(repositoryRoot, 'infra/docker/backups')
+    symlinkSync(ignored, alias)
+    const [evidence] = await assertBackupTargetsIgnored(async (argv) => {
+      assert.match(argv.at(-1), /infra\/docker\/backups\/audit\.dump$/)
+      unlinkSync(alias)
+      symlinkSync(resolve(repositoryRoot, 'services/api'), alias)
+      return { status: 0, stdout: '', stderr: '' }
+    }, [resolve(alias, 'audit.dump')])
+    assert.equal(evidence.path, resolve(ignored, 'audit.dump'))
+    assert.equal(resolve(alias, 'audit.dump'), resolve(directory, 'alias/audit.dump'))
+    assert.notEqual(evidence.path, resolve(realpathSync(alias), 'audit.dump'))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

@@ -43,6 +43,7 @@ import {
 } from './m3b-docker.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import { requireFreshContainerGeneration } from './m5-evidence-protocol.mjs'
 
 export const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 export const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -995,11 +996,11 @@ export const createM4Run = ({ kind }) => {
           if (current.Id !== claimedId) {
             throw new Error(`${service}: container identity changed while collecting evidence`)
           }
-          if (
-            baseline !== null &&
-            current.Id === baseline.Id &&
-            current.State?.StartedAt === baseline.State?.StartedAt
-          ) {
+          try {
+            requireFreshContainerGeneration(baseline, current, {
+              code: 'm4-one-shot-generation'
+            })
+          } catch {
             throw new Error(`${service}: compose up did not start a fresh one-shot generation`)
           }
           return current.State.Status === 'exited' ? current : null
@@ -1058,11 +1059,11 @@ export const createM4Run = ({ kind }) => {
           if (current.Id !== claimedId) {
             throw new Error(`${service}: container identity changed while collecting health evidence`)
           }
-          if (
-            baseline !== null &&
-            current.Id === baseline.Id &&
-            current.State?.StartedAt === baseline.State?.StartedAt
-          ) {
+          try {
+            requireFreshContainerGeneration(baseline, current, {
+              code: 'm4-service-generation'
+            })
+          } catch {
             throw new Error(`${service}: compose up did not start a fresh service generation`)
           }
           if (current.State.Status === 'exited') {

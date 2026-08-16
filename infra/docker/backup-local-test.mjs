@@ -37,7 +37,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { isAbsolute, relative, resolve, basename, sep } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, basename, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
@@ -291,6 +291,7 @@ export const promoteBackupNoReplace = (
 export const assertBackupTargetsIgnored = async (run, paths) => {
   assertCanonicalGitRepositoryView(repositoryRoot, process.env)
   const physicalRepositoryRoot = realpathSync(repositoryRoot)
+  const evidence = []
   for (const target of paths) {
     const absoluteTarget = resolve(target)
     const missingTail = []
@@ -303,13 +304,24 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
       }
       existingAncestor = parent
     }
-    const physicalTarget = resolve(realpathSync(existingAncestor), ...missingTail)
+    const physicalAncestor = realpathSync(existingAncestor)
+    const ancestorStat = lstatSync(physicalAncestor, { bigint: true })
+    if (!ancestorStat.isDirectory()) {
+      throw new Error('cannot resolve the physical backup target boundary')
+    }
+    const physicalTarget = resolve(physicalAncestor, ...missingTail)
     const relativePath = relative(physicalRepositoryRoot, physicalTarget)
     if (
       relativePath === '..' ||
       relativePath.startsWith(`..${sep}`) ||
       isAbsolute(relativePath)
     ) {
+      evidence.push(Object.freeze({
+        path: physicalTarget,
+        ancestorPath: physicalAncestor,
+        ancestorDev: ancestorStat.dev,
+        ancestorIno: ancestorStat.ino
+      }))
       continue
     }
     const check = await run(
@@ -319,6 +331,12 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
       }
     )
     if (check.status === 0) {
+      evidence.push(Object.freeze({
+        path: physicalTarget,
+        ancestorPath: physicalAncestor,
+        ancestorDev: ancestorStat.dev,
+        ancestorIno: ancestorStat.ino
+      }))
       continue
     }
     if (check.status === 1) {
@@ -331,6 +349,20 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
       'git check-ignore failed; cannot prove the backup target is ignored, refusing to proceed'
     )
   }
+  return Object.freeze(evidence)
+}
+
+const backupTargetEvidenceStillNamesAncestor = (evidence) => {
+  try {
+    const observed = lstatSync(evidence.ancestorPath, { bigint: true })
+    return (
+      observed.isDirectory() &&
+      observed.dev === evidence.ancestorDev &&
+      observed.ino === evidence.ancestorIno
+    )
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -339,19 +371,42 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
  * 及 SHA-256。
  */
 export const performBackup = async (
-  { compose, run, log, registerCleanup = null },
+  {
+    compose,
+    run,
+    log,
+    registerCleanup = null,
+    publishFile = writeExclusiveEvidenceFile
+  },
   { project, outputDirectory, fileName = null }
 ) => {
-  const directory = resolve(outputDirectory)
+  const requestedDirectory = resolve(outputDirectory)
   const name =
     fileName ?? `${project}-${new Date().toISOString().replace(/[:.]/g, '-')}.dump`
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.dump$/.test(name)) {
     throw new Error('the backup file name must be a plain *.dump basename')
   }
-  const dumpPath = resolve(directory, name)
-  const shaPath = `${dumpPath}.sha256`
+  const requestedDumpPath = resolve(requestedDirectory, name)
+  const requestedShaPath = `${requestedDumpPath}.sha256`
   const partial = `${name}.partial`
-  await assertBackupTargetsIgnored(run, [dumpPath, shaPath])
+  const [dumpTarget, shaTarget] = await assertBackupTargetsIgnored(
+    run,
+    [requestedDumpPath, requestedShaPath]
+  )
+  if (
+    dumpTarget === undefined ||
+    shaTarget === undefined ||
+    !backupTargetEvidenceStillNamesAncestor(dumpTarget) ||
+    !backupTargetEvidenceStillNamesAncestor(shaTarget)
+  ) {
+    throw new Error('the backup output path ownership drifted during ignore validation')
+  }
+  const dumpPath = dumpTarget.path
+  const shaPath = shaTarget.path
+  const directory = dirname(dumpPath)
+  if (dirname(shaPath) !== directory) {
+    throw new Error('the backup output path ownership drifted during ignore validation')
+  }
   mkdirSync(directory, { recursive: true })
   const outputDirectoryIdentity = snapshotDirectoryEvidence(directory, {
     code: 'backup-output-directory'
@@ -372,6 +427,7 @@ export const performBackup = async (
   let publishedDumpBytes = null
   let publishedSidecarBytes = null
   const sidecarOwnedIdentities = []
+  const formalOwnedIdentities = []
   let completed = false
   let cleanupChain = Promise.resolve()
   let transientCleanupChain = Promise.resolve()
@@ -427,6 +483,7 @@ export const performBackup = async (
       if (!completed) {
         for (const identity of [
           ...sidecarOwnedIdentities,
+          ...formalOwnedIdentities,
           publishedSidecarIdentity,
           publishedIdentity
         ]) {
@@ -550,10 +607,13 @@ export const performBackup = async (
 
           // Reserve and publish the sidecar first.  A competing sidecar therefore fails
           // before the sensitive formal dump name is ever created.
-          publishedSidecarIdentity = writeExclusiveEvidenceFile(
+          publishedSidecarIdentity = publishFile(
             shaPath,
             publishedSidecarBytes,
-            { code: 'backup-sidecar-publish' }
+            {
+              code: 'backup-sidecar-publish',
+              registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
+            }
           )
           if (
             !directoryEvidenceStillNames(outputDirectoryIdentity) ||
@@ -562,8 +622,9 @@ export const performBackup = async (
             throw new Error('the backup output directory ownership drifted before publication')
           }
           log('backup evidence: checksum sidecar published with no-replace semantics')
-          publishedIdentity = writeExclusiveEvidenceFile(dumpPath, publishedDumpBytes, {
-            code: 'backup-dump-publish'
+          publishedIdentity = publishFile(dumpPath, publishedDumpBytes, {
+            code: 'backup-dump-publish',
+            registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
           })
           log('backup evidence: dump published from the validated byte snapshot')
         }
@@ -617,7 +678,7 @@ export const performBackup = async (
     // ownership drift 作为固定附加失败。partial 目录独立清理，不依赖 handoff
     // callback 是否正常返回。
     let ownershipDrifted = false
-    for (const identity of sidecarOwnedIdentities) {
+    for (const identity of [...sidecarOwnedIdentities, ...formalOwnedIdentities]) {
       if (!existsSync(identity.path)) continue
       try {
         ownershipDrifted = !removeOwnedFile(identity) || ownershipDrifted

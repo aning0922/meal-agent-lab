@@ -27,7 +27,7 @@
 // 清理纪律：成功失败都删除本轮 immutable image / 临时目录；失败现场只有
 // 显式 `--keep-failure` 才保留（保留物逐项公告）。清理失败本身也是门禁失败。
 import { randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -48,6 +48,11 @@ import {
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
 import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import {
+  createOwnedTreeJournal,
+  registerOwnedTree,
+  retireOwnedTree
+} from './m5-evidence-protocol.mjs'
 
 const usage = 'node infra/docker/check-api-runtime-image.mjs [--keep-failure]'
 const cliArguments = process.argv.slice(2)
@@ -77,6 +82,7 @@ const runStrict = createStrictRunner(fatal)
 const cleanupState = {
   temporaryRoot: null,
   temporaryRootIdentity: null,
+  temporaryJournal: null,
   imageBuildStarted: false,
   ownedImageId: null,
   imageIdFile: null,
@@ -202,7 +208,11 @@ const cleanup = ({ keepScene = false } = {}) => {
       ) {
         cleanupProblems.push('temporary directory ownership drifted')
       } else {
-        rmSync(cleanupState.temporaryRoot, { recursive: true, force: true })
+        if (cleanupState.temporaryJournal === null) {
+          cleanupProblems.push('temporary directory ownership journal was unavailable')
+        } else {
+          retireOwnedTree(cleanupState.temporaryJournal)
+        }
       }
     } catch {
       if (existsSync(cleanupState.temporaryRoot)) {
@@ -211,6 +221,7 @@ const cleanup = ({ keepScene = false } = {}) => {
     }
     cleanupState.temporaryRoot = null
     cleanupState.temporaryRootIdentity = null
+    cleanupState.temporaryJournal = null
   }
   return [...cleanupProblems]
   })()
@@ -261,6 +272,7 @@ const main = async () => {
   {
     const stat = lstatSync(cleanupState.temporaryRoot, { bigint: true })
     cleanupState.temporaryRootIdentity = { dev: stat.dev, ino: stat.ino }
+    cleanupState.temporaryJournal = createOwnedTreeJournal(cleanupState.temporaryRoot)
   }
 
   const expected = await deriveExpectedClosure({
@@ -270,6 +282,7 @@ const main = async () => {
     temporaryRoot: cleanupState.temporaryRoot,
     log
   })
+  registerOwnedTree(cleanupState.temporaryJournal, expected.deployDirectory)
 
   log('building an untagged claimed runtime image')
   const imageIdFile = join(cleanupState.temporaryRoot, 'built-image.id')
@@ -283,6 +296,8 @@ const main = async () => {
     timeoutMs: 900_000,
     label: 'docker build'
   })
+  registerOwnedTree(cleanupState.temporaryJournal, imageIdFile)
+  registerOwnedTree(cleanupState.temporaryJournal, imageMetadataFile)
   const metadata = parseBuildMetadataImageIdentity(readFileSync(imageMetadataFile, 'utf8'))
   const iid = parseCanonicalDockerImageId(readFileSync(imageIdFile, 'utf8'))
   if (iid !== metadata.imageId && iid !== metadata.configId) {
@@ -318,6 +333,9 @@ const main = async () => {
     track: {
       image: (id) => {
         cleanupState.ownedImageId = id
+      },
+      path: (path) => {
+        registerOwnedTree(cleanupState.temporaryJournal, path)
       }
     }
   })

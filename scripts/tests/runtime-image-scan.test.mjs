@@ -16,6 +16,7 @@ import {
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
+import { createRequire } from 'node:module'
 
 import {
   checkDockerignoreText,
@@ -40,6 +41,9 @@ import {
   parseDockerContainerId,
   parseDockerImageId
 } from '../../infra/docker/api-image-scan.mjs'
+
+const requireFromApi = createRequire(new URL('../../services/api/package.json', import.meta.url))
+const ts = requireFromApi('typescript')
 
 const throwingFatal = (message) => {
   throw new Error(message)
@@ -82,6 +86,59 @@ const padTarPayload = (bytes) => Buffer.concat([
   Buffer.alloc((512 - (bytes.length % 512)) % 512)
 ])
 
+const assertSavedArchiveDescriptorDataflow = (source) => {
+  const sourceFile = ts.createSourceFile(
+    'api-image-scan.mjs',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS
+  )
+  let scanBody = null
+  const findScan = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'scanImage'
+    ) {
+      scanBody = node.initializer
+      return
+    }
+    ts.forEachChild(node, findScan)
+  }
+  findScan(sourceFile)
+  assert.notEqual(scanBody, null)
+
+  const openedDescriptors = new Set()
+  const consumerArguments = []
+  const visit = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer !== undefined &&
+      ts.isCallExpression(node.initializer) &&
+      ts.isIdentifier(node.initializer.expression) &&
+      node.initializer.expression.text === 'openSync'
+    ) {
+      openedDescriptors.add(node.name.text)
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      ['validateSavedImageArchive', 'verifySavedImageLayers'].includes(node.expression.text)
+    ) {
+      consumerArguments.push(node.arguments[0])
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(scanBody)
+  assert.equal(consumerArguments.length, 2)
+  assert.equal(consumerArguments.every((argument) => ts.isIdentifier(argument)), true)
+  const names = consumerArguments.map((argument) => argument.text)
+  assert.equal(new Set(names).size, 1)
+  assert.equal(openedDescriptors.has(names[0]), true)
+}
+
 test('saved-image archive parsing stays on the inherited descriptor after path replacement', () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-saved-image-custody-'))
   const archive = resolve(directory, 'image.tar')
@@ -109,6 +166,17 @@ test('saved-image archive parsing stays on the inherited descriptor after path r
     closeSync(fd)
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('the archive validator and layer replay consume the same opened descriptor', () => {
+  const source = readFileSync(resolve(repositoryRoot, 'infra/docker/api-image-scan.mjs'), 'utf8')
+  assert.doesNotThrow(() => assertSavedArchiveDescriptorDataflow(source))
+  const mutant = source.replace(
+    'verifySavedImageLayers(\n        savedImageFd,',
+    'verifySavedImageLayers(\n        savedImageTarPath,'
+  )
+  assert.notEqual(mutant, source)
+  assert.throws(() => assertSavedArchiveDescriptorDataflow(mutant))
 })
 
 test('the checked-in dockerignore keeps every secret exclusion after all negations', () => {
@@ -568,6 +636,58 @@ test('PAX identity overrides and app symlink boundaries are part of rootfs evide
   }
 })
 
+test('layer paths have one lexical identity and PAX filesystem metadata is closed', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-layer-canonical-'))
+  try {
+    for (const [label, records] of [
+      [
+        'double-root-alias',
+        [tarHeader({ name: '././app/dist/index.js', size: 1 }), padTarPayload(Buffer.from('x'))]
+      ],
+      [
+        'repeated-slash-alias',
+        [tarHeader({ name: 'app//dist/index.js', size: 1 }), padTarPayload(Buffer.from('x'))]
+      ],
+      [
+        'empty-pax-path',
+        [
+          tarHeader({ name: 'PaxHeader', size: paxRecord('path', '').length, type: 'x' }),
+          padTarPayload(paxRecord('path', '')),
+          tarHeader({ name: 'app/dist/index.js', size: 1 }),
+          padTarPayload(Buffer.from('x'))
+        ]
+      ],
+      [
+        'xattr-pax',
+        [
+          tarHeader({
+            name: 'PaxHeader',
+            size: paxRecord('SCHILY.xattr.security.capability', 'AAAA').length,
+            type: 'x'
+          }),
+          padTarPayload(paxRecord('SCHILY.xattr.security.capability', 'AAAA')),
+          tarHeader({ name: 'app/dist/index.js', size: 1 }),
+          padTarPayload(Buffer.from('x'))
+        ]
+      ]
+    ]) {
+      const archive = resolve(directory, `${label}.tar`)
+      writeFileSync(archive, Buffer.concat([...records, Buffer.alloc(1024)]))
+      const fd = openSync(archive, 'r')
+      try {
+        assert.throws(
+          () => parseLayerTarEvidence(fd, throwingFatal),
+          /unsafe archive path|PAX path metadata was empty|unsupported PAX filesystem metadata/
+        )
+      } finally {
+        closeSync(fd)
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('OCI descriptor media types are exact for each evidence role', () => {
   const digest = `sha256:${'a'.repeat(64)}`
   const valid = (mediaType) => ({ digest, size: 1, mediaType })
@@ -699,6 +819,16 @@ test('the selected platform manifest requires at least one bound provenance subj
       ),
     /provenance is missing or not bound/
   )
+  for (const subjects of [
+    [digest, `sha256:${'c'.repeat(64)}`],
+    [`sha256:${'c'.repeat(64)}`, digest],
+    [digest, digest]
+  ]) {
+    assert.throws(
+      () => requireBoundProvenance([{ referenceDigest: digest, subjects }], digest, throwingFatal),
+      /provenance is missing or not bound/
+    )
+  }
 })
 
 test('Dockerfile FROM parsing sees --platform and refuses a missing stage graph', () => {
