@@ -57,7 +57,8 @@ import {
   inodeIdentityOf,
   isAbsenceMessage,
   runClaimLabel,
-  runImageTagFor
+  runImageTagFor,
+  snapshotSecretBundleIdentity
 } from './m3b-docker.mjs'
 import { createSecretScrubber, wrongReason } from './m3b-safe-output.mjs'
 import {
@@ -139,7 +140,11 @@ installSignalHandlers(async () => {
       residue.push(...await cleanupSmokeProject(
         scope.project,
         scope.secretsDirectory,
-        { imageTag: scope.imageTag, imageId: scope.imageId ?? null }
+        {
+          imageTag: scope.imageTag,
+          imageId: scope.imageId ?? null,
+          secretsIdentity: scope.secretsIdentity ?? null
+        }
       ))
     } catch {
       residue.push(`scoped-cleanup:${scope.project}`)
@@ -1461,17 +1466,21 @@ process.stdout.write('Group E: image isolation negatives\n')
   usedNegativeProjects.push(projectA, projectB)
   const secretsA = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
   const secretsB = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
+  let secretsIdentityA = inodeIdentityOf(secretsA)
+  let secretsIdentityB = inodeIdentityOf(secretsB)
   let recordedImageIdA = null
   let recordedImageIdB = null
   const cleanupScopeA = {
     project: projectA,
     secretsDirectory: secretsA,
+    secretsIdentity: secretsIdentityA,
     imageTag: tagA,
     imageId: null
   }
   const cleanupScopeB = {
     project: projectB,
     secretsDirectory: secretsB,
+    secretsIdentity: secretsIdentityB,
     imageTag: tagB,
     imageId: null
   }
@@ -1482,6 +1491,10 @@ process.stdout.write('Group E: image isolation negatives\n')
   try {
     generateSecretBundle(secretsA)
     generateSecretBundle(secretsB)
+    secretsIdentityA = snapshotSecretBundleIdentity(secretsA, secretsIdentityA)
+    secretsIdentityB = snapshotSecretBundleIdentity(secretsB, secretsIdentityB)
+    cleanupScopeA.secretsIdentity = secretsIdentityA
+    cleanupScopeB.secretsIdentity = secretsIdentityB
     // 交错顺序：A build → B build。反例必须走与
     // smoke 相同的 build ownership protocol；直接 `docker compose build` 造出的
     // 无 claim 镜像已经不是 cleanup 有权删除的测试资产。
@@ -1508,9 +1521,10 @@ process.stdout.write('Group E: image isolation negatives\n')
 
     // cleanup 只删自己那一个 immutable image：删 A 之后 B 必须还在。
       const cleanupName = 'per-run cleanup removes only its own immutable image'
-      const residueA = await cleanupSmokeProject(projectA, secretsA, {
+    const residueA = await cleanupSmokeProject(projectA, secretsA, {
       imageTag: tagA,
-      imageId: recordedImageIdA
+      imageId: recordedImageIdA,
+      secretsIdentity: secretsIdentityA
     })
     const afterA = await imageIdOf(idA1)
     const survivingB = await imageIdOf(idB)
@@ -1528,13 +1542,17 @@ process.stdout.write('Group E: image isolation negatives\n')
   } finally {
     // 无论 A build、B build、identity read 或断言在哪一步失败，两边都进入同一个
     // failure-safe cleanup。此前 finally 只收 B，B build 失败会把 A image 留下。
-    for (const [label, project, secrets, imageTag, imageId] of [
-      ['first', projectA, secretsA, tagA, recordedImageIdA],
-      ['second', projectB, secretsB, tagB, recordedImageIdB]
+    for (const [label, project, secrets, secretsIdentity, imageTag, imageId] of [
+      ['first', projectA, secretsA, secretsIdentityA, tagA, recordedImageIdA],
+      ['second', projectB, secretsB, secretsIdentityB, tagB, recordedImageIdB]
     ]) {
-      const residue = await cleanupSmokeProject(project, secrets, { imageTag, imageId }).catch(
-        (error) => [`cleanup-error: ${safe(error instanceof Error ? error.message : String(error))}`]
-      )
+      const residue = await cleanupSmokeProject(project, secrets, {
+        imageTag,
+        imageId,
+        secretsIdentity
+      }).catch((error) => [
+        `cleanup-error: ${safe(error instanceof Error ? error.message : String(error))}`
+      ])
       if (residue.length > 0) {
         fail(
           'suite cleanup',
