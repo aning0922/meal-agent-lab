@@ -9,6 +9,7 @@
 // 清理责任也在调用方。
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   fstatSync,
   lstatSync,
@@ -21,11 +22,12 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  symlinkSync,
   createReadStream
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { createGunzip, createZstdDecompress } from 'node:zlib'
-import { basename, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { runCommand } from './m3b-subprocess.mjs'
@@ -1021,7 +1023,8 @@ export const verifySavedImageLayers = async (
   layerPaths,
   layerDescriptors,
   expectedDiffIds,
-  fatal
+  fatal,
+  { materializeRoot = null, runStrict = null } = {}
 ) => {
   if (
     layerPaths.length !== expectedDiffIds.length ||
@@ -1060,10 +1063,136 @@ export const verifySavedImageLayers = async (
       if (actualDiff !== diffDigest) {
         fatal('docker image save returned a layer blob with the wrong diff ID')
       }
+      if (materializeRoot !== null) {
+        if (runStrict === null) fatal('docker image rootfs materializer was unavailable')
+        await applyVerifiedLayer(
+          join(layerWork, `${String(index)}.tar`),
+          join(layerWork, `${String(index)}.root`),
+          materializeRoot,
+          runStrict,
+          fatal
+        )
+      }
     }
   } finally {
     rmSync(layerWork, { recursive: true, force: true })
   }
+}
+
+const materializedSymlinkTarget = (relativeName, target) => {
+  if (typeof target !== 'string' || target === '') return null
+  if (
+    relativeName === 'app/node_modules/.pnpm/node_modules/@meal-agent/api' &&
+    target === '../../../../../../workspace/services/api'
+  ) {
+    // pnpm deploy's documented self-link points back to the build workspace and is
+    // deliberately dangling in the runtime image.  The inventory treats this exact
+    // link as data and never follows it; no other root-escaping link is admissible.
+    return target
+  }
+  if (posix.isAbsolute(target)) {
+    const rootRelative = posix.normalize(target).replace(/^\/+/, '')
+    if (rootRelative === '' || rootRelative === '..' || rootRelative.startsWith('../')) return null
+    return posix.relative(posix.dirname(relativeName), rootRelative)
+  }
+  const stack = posix.dirname(relativeName).split('/').filter(Boolean)
+  for (const segment of target.split('/')) {
+    if (segment === '' || segment === '.') continue
+    if (segment === '..') {
+      if (stack.length === 0) return null
+      stack.pop()
+    } else {
+      stack.push(segment)
+    }
+  }
+  return target
+}
+
+const mergeVerifiedLayerTree = (source, target, root, fatal) => {
+  const entries = readdirSync(source, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  )
+  if (entries.some((entry) => entry.name === '.wh..wh..opq')) {
+    rmSync(target, { recursive: true, force: true })
+    mkdirSync(target, { recursive: true, mode: 0o700 })
+  }
+  for (const entry of entries) {
+    if (entry.name === '.wh..wh..opq') continue
+    if (entry.name.startsWith('.wh.')) {
+      rmSync(join(target, entry.name.slice('.wh.'.length)), {
+        recursive: true,
+        force: true
+      })
+    }
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.wh.')) continue
+    const sourcePath = join(source, entry.name)
+    const targetPath = join(target, entry.name)
+    const relativeName = relative(root, targetPath).split(sep).join('/')
+    const stat = lstatSync(sourcePath)
+    if (stat.isDirectory()) {
+      if (existsSync(targetPath) && !lstatSync(targetPath).isDirectory()) {
+        rmSync(targetPath, { recursive: true, force: true })
+      }
+      mkdirSync(targetPath, { recursive: true, mode: 0o700 })
+      mergeVerifiedLayerTree(sourcePath, targetPath, root, fatal)
+    } else if (stat.isSymbolicLink()) {
+      const linkTarget = materializedSymlinkTarget(relativeName, readlinkSync(sourcePath))
+      if (linkTarget === null) {
+        fatal('docker image layer contained a symlink outside the materialized rootfs')
+      }
+      rmSync(targetPath, { recursive: true, force: true })
+      mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 })
+      symlinkSync(linkTarget, targetPath)
+    } else if (stat.isFile()) {
+      rmSync(targetPath, { recursive: true, force: true })
+      mkdirSync(dirname(targetPath), { recursive: true, mode: 0o700 })
+      copyFileSync(sourcePath, targetPath)
+    } else {
+      fatal('docker image layer contained an unsupported filesystem entry')
+    }
+  }
+}
+
+const applyVerifiedLayer = async (layerTar, layerRoot, root, runStrict, fatal) => {
+  mkdirSync(layerRoot, { recursive: false, mode: 0o700 })
+  const listing = (
+    await runStrict(['tar', '-tf', layerTar], {
+      timeoutMs: 300_000,
+      label: 'verified layer listing'
+    })
+  ).stdout.split('\n').filter(Boolean)
+  if (
+    listing.some((name) =>
+      name.includes('\u0000') ||
+      posix.isAbsolute(name) ||
+      name.split('/').includes('..')
+    )
+  ) {
+    fatal('docker image layer contained an unsafe archive path')
+  }
+  await runStrict(['tar', '-xf', layerTar, '-C', layerRoot], {
+    timeoutMs: 300_000,
+    label: 'verified layer extraction'
+  })
+  mergeVerifiedLayerTree(layerRoot, root, root, fatal)
+}
+
+const filesystemListing = (root) => {
+  const listing = []
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      const path = join(directory, entry.name)
+      const name = relative(root, path).split(sep).join('/')
+      listing.push(entry.isDirectory() ? `${name}/` : name)
+      if (entry.isDirectory()) visit(path)
+    }
+  }
+  visit(root)
+  return listing
 }
 
 // --------------------------------------------------------------------------
@@ -1473,14 +1602,10 @@ export const scanImage = async ({
   fatal,
   problem,
   log,
-  scratchContainerName,
   track = {
-    image: () => undefined,
-    container: () => undefined,
-    containerGone: () => undefined
+    image: () => undefined
   }
 }) => {
-  const imageTarPath = join(temporaryRoot, 'image.tar')
   const savedImageTarPath = join(temporaryRoot, 'saved-image.tar')
   const extractedRoot = join(temporaryRoot, 'image-root')
 
@@ -1542,110 +1667,19 @@ export const scanImage = async ({
     problem
   )
   const savedManifest = archiveEvidence.manifest
+  mkdirSync(extractedRoot, { recursive: false, mode: 0o700 })
   await verifySavedImageLayers(
     savedImageTarPath,
     savedManifest.Layers,
     archiveEvidence.layerDescriptors,
     imageInspect.RootFS.Layers,
-    fatal
+    fatal,
+    { materializeRoot: extractedRoot, runStrict }
   )
-  // ---- 全文件系统取证：不启动容器 ----
-  if (
-    typeof scratchContainerName !== 'string' ||
-    !/^[a-z0-9][a-z0-9_.-]{0,127}$/.test(scratchContainerName)
-  ) {
-    fatal('scratch container name is not a canonical per-run identifier')
-  }
-  const preexistingContainer = await runCommand(
-    ['docker', 'container', 'inspect', scratchContainerName],
-    { timeoutMs: 60_000 }
-  )
-  if (
-    preexistingContainer.status === 0 ||
-    !(
-      preexistingContainer.status === 1 &&
-      isAbsenceMessage(preexistingContainer.stderr, {
-        kind: 'container',
-        name: scratchContainerName
-      })
-    )
-  ) {
-    fatal('per-run scratch container was not proven absent before create')
-  }
-  track.container({
-    state: 'intent',
-    name: scratchContainerName,
-    imageId
-  })
-  const created = await runStrict(
-    [
-      'docker',
-      'create',
-      '--name',
-      scratchContainerName,
-      '--label',
-      `meal-agent.m5.owner=${scratchContainerName}`,
-      imageId
-    ],
-    {
-    timeoutMs: 60_000,
-    label: 'docker create (immutable image)'
-    }
-  )
-  const containerId = parseDockerContainerId(created.stdout, fatal)
-  const containerInspectText = (
-      await runStrict(['docker', 'container', 'inspect', containerId], {
-        timeoutMs: 60_000,
-        label: 'docker container inspect (identity binding)'
-      })
-    ).stdout
-  parseOwnedScratchContainer(
-    containerInspectText,
-    {
-      expectedName: scratchContainerName,
-      expectedImageId: imageId,
-      expectedContainerId: containerId
-    },
-    fatal
-  )
-  track.container({
-    state: 'owned',
-    name: scratchContainerName,
-    id: containerId,
-    imageId
-  })
-  await runStrict(['docker', 'export', containerId, '-o', imageTarPath], {
-    timeoutMs: 300_000,
-    label: 'docker export'
-  })
-  const containerRemoval = await runCommand(['docker', 'rm', containerId], { timeoutMs: 60_000 })
-  if (containerRemoval.status !== 0) {
-    problem('scratch container could not be removed after export')
-  } else {
-    let removalConfirmed = true
-    for (const identifier of [containerId, scratchContainerName]) {
-      const gone = await runCommand(['docker', 'container', 'inspect', identifier], {
-        timeoutMs: 60_000
-      })
-      if (!(
-        gone.status === 1 &&
-        isAbsenceMessage(gone.stderr, { kind: 'container', name: identifier })
-      )) {
-        problem('scratch container was not proven absent after removal')
-        removalConfirmed = false
-        break
-      }
-    }
-    if (removalConfirmed) {
-      track.containerGone(scratchContainerName)
-    }
-  }
-
-  const listing = (
-    await runStrict(['tar', '-tf', imageTarPath], { timeoutMs: 300_000, label: 'tar listing' })
-  ).stdout
-    .split('\n')
-    .filter(Boolean)
+  // The rootfs is materialized exclusively from content-addressed image-save layers.
+  // `docker export` has no self-describing image identity and therefore cannot be an
+  // admissible evidence source, even when a scratch container was inspected before it.
+  const listing = filesystemListing(extractedRoot)
 
   // ---- 结构断言：/app 恰好四项、无 stray 组件、无第二个依赖树 ----
   const appTopLevel = new Set()
@@ -1733,12 +1767,6 @@ export const scanImage = async ({
   }
 
   // ---- 提取 /app 负载：migrations 逐字节、package.json 逐字段、node_modules 逐包 ----
-  mkdirSync(extractedRoot, { recursive: true })
-  await runStrict(
-    ['tar', '-xf', imageTarPath, '-C', extractedRoot, 'app/node_modules', 'app/package.json', 'app/migrations'],
-    { timeoutMs: 300_000, label: 'tar extraction' }
-  )
-
   const repositoryMigrations = readdirSync(migrationsDirectory)
     .filter((name) => name.endsWith('.sql'))
     .sort()

@@ -5,9 +5,9 @@
 //   node infra/docker/check-api-runtime-image.mjs [--keep-failure]
 //
 // 回答的问题是「**将要交付的那份镜像**里到底装了什么」，而不是「源码树声称装了
-// 什么」。因此证据全部取自真实构建产物：本轮唯一 tag 构建 → `docker create` +
-// `docker export` 的全文件系统清单（不启动容器、不执行镜像内代码）→ 从 tar 提取
-// `/app` 负载做逐包、逐文件比对。
+// 什么」。因此证据全部取自真实构建产物：本轮唯一 tag 构建 → immutable image ID →
+// `docker image save` 内容寻址层。扫描器验证 compressed digest、DiffID、history/config
+// 绑定后自行重放 rootfs，再对 `/app` 负载逐包、逐文件比对。
 //
 // 期望值只有一个来源：在宿主上执行与 Dockerfile runtime-closure 阶段**完全相同**
 // 的 `pnpm --filter @meal-agent/api deploy --prod --legacy`，用同一个 walker 走
@@ -24,7 +24,7 @@
 // Docker CLI 缺失、daemon 不可达或任何证据命令非零退出时，一律以「缺少前置工具 /
 // 无法判定」失败退出，不降级成静态检查后宣称通过（验收门禁 #11）。
 //
-// 清理纪律：成功失败都删除本轮 container / image tag / 临时目录；失败现场只有
+// 清理纪律：成功失败都删除本轮 image tag / 临时目录；失败现场只有
 // 显式 `--keep-failure` 才保留（保留物逐项公告）。清理失败本身也是门禁失败。
 import { randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
@@ -39,13 +39,13 @@ import {
   dockerfilePath,
   dockerignorePath,
   parseDockerImageId,
-  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
   buildClaimLabel,
   isAbsenceMessage,
   parseBuildMetadataImageIdentity,
+  parseClaimedBuildImage,
   parseCanonicalDockerImageId,
   parseOwnedBuildImage
 } from './m3b-docker.mjs'
@@ -82,9 +82,9 @@ const imageTag = `meal-agent-api:m5-image-scan-${runId}`
 const cleanupState = {
   temporaryRoot: null,
   temporaryRootIdentity: null,
-  containerClaims: new Map(),
   ownedImageTag: false,
   ownedImageId: null,
+  ownedImageClaimed: false,
   imageIdFile: null,
   imageMetadataFile: null,
   imageClaimToken: randomBytes(16).toString('hex'),
@@ -102,58 +102,10 @@ const cleanup = ({ keepScene = false } = {}) => {
     if (cleanupState.temporaryRoot !== null) {
       process.stderr.write('image-scan:   kept owned temporary directory (path omitted)\n')
     }
-    for (const claim of cleanupState.containerClaims.values()) {
-      process.stderr.write(`image-scan:   kept container ${claim.name}\n`)
-    }
     if (cleanupState.ownedImageTag) {
       process.stderr.write(`image-scan:   kept image tag ${imageTag}\n`)
     }
     return []
-  }
-  for (const claim of [...cleanupState.containerClaims.values()]) {
-    try {
-      const target = claim.id ?? claim.name
-      const current = await runCommand(['docker', 'container', 'inspect', target], {
-        timeoutMs: 60_000
-      })
-      if (current.status === 0) {
-        let owned = null
-        try {
-          owned = parseOwnedScratchContainer(current.stdout, {
-            expectedName: claim.name,
-            expectedImageId: claim.imageId,
-            expectedContainerId: claim.id ?? null
-          }, () => { throw new Error('identity drift') })
-        } catch {
-          cleanupProblems.push('scratch container ownership drifted; foreign container was preserved')
-          continue
-        }
-        const removal = await runCommand(['docker', 'rm', '-f', owned.Id], { timeoutMs: 60_000 })
-        if (removal.status !== 0) {
-          cleanupProblems.push('scratch container removal failed')
-          continue
-        }
-      } else if (!(
-        current.status === 1 &&
-        isAbsenceMessage(current.stderr, { kind: 'container', name: target })
-      )) {
-        cleanupProblems.push('scratch container identity could not be verified')
-        continue
-      }
-      const gone = await runCommand(['docker', 'container', 'inspect', claim.name], {
-        timeoutMs: 60_000
-      })
-      if (!(
-        gone.status === 1 &&
-        isAbsenceMessage(gone.stderr, { kind: 'container', name: claim.name })
-      )) {
-        cleanupProblems.push('scratch container was not proven absent after removal')
-      } else {
-        cleanupState.containerClaims.delete(claim.name)
-      }
-    } catch {
-      cleanupProblems.push('scratch container removal did not complete')
-    }
   }
   if (cleanupState.ownedImageTag) {
     try {
@@ -172,7 +124,9 @@ const cleanup = ({ keepScene = false } = {}) => {
           if (iid !== (metadata.configId ?? metadata.imageId)) {
             throw new Error('build identity mismatch')
           }
-          cleanupState.ownedImageId = metadata.imageId
+          // metadata+iid identify an object but do not prove this run owns it.  The
+          // mutable run tag plus the unguessable image label must still be inspected
+          // before cleanup may acquire deletion authority.
         } catch {
           cleanupProblems.push('built image identity could not be recovered from closed evidence')
         }
@@ -203,6 +157,7 @@ const cleanup = ({ keepScene = false } = {}) => {
             expectedClaimToken: cleanupState.imageClaimToken
           })
           cleanupState.ownedImageId = currentId
+          cleanupState.ownedImageClaimed = true
         } catch {
           cleanupProblems.push('interrupted build ownership claim could not be recovered')
         }
@@ -265,26 +220,33 @@ const cleanup = ({ keepScene = false } = {}) => {
       // 若 tag 在扫描中被重绑，绝不删除外来的新 tag；只清理由本轮记录的 A，
       // 且仅当 A 已无任何 tag 时按 immutable ID 删除。已有其他 tag 表示镜像对象
       // 并非本轮独占，必须保留。
-      if (cleanupState.ownedImageId !== null) {
+      if (cleanupState.ownedImageId !== null && cleanupState.ownedImageClaimed) {
         const owned = await runCommand(
-          ['docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', cleanupState.ownedImageId],
+          ['docker', 'image', 'inspect', cleanupState.ownedImageId],
           { timeoutMs: 60_000 }
         )
         if (owned.status === 0) {
-          let repoTags
+          let claim
           try {
-            repoTags = JSON.parse(owned.stdout.trim())
+            const payload = JSON.parse(owned.stdout)
+            claim = parseClaimedBuildImage(
+              Array.isArray(payload) && payload.length === 1 ? payload[0] : null,
+              {
+                expectedImageId: cleanupState.ownedImageId,
+                expectedClaimToken: cleanupState.imageClaimToken
+              }
+            )
           } catch {
-            cleanupProblems.push('owned image tag set was unreadable')
+            cleanupProblems.push('owned image claim evidence was unreadable')
           }
-          if (repoTags === null || (Array.isArray(repoTags) && repoTags.length === 0)) {
+          if (claim?.repoTags === null || claim?.repoTags?.length === 0) {
             const removal = await runCommand(
               ['docker', 'rmi', cleanupState.ownedImageId],
               { timeoutMs: 120_000 }
             )
             if (removal.status !== 0) cleanupProblems.push('owned dangling image removal failed')
-          } else if (!Array.isArray(repoTags)) {
-            cleanupProblems.push('owned image tag set had an invalid shape')
+          } else if (claim !== undefined) {
+            cleanupProblems.push('owned image acquired another tag and was preserved')
           }
         } else if (
           !(
@@ -298,7 +260,10 @@ const cleanup = ({ keepScene = false } = {}) => {
     } catch {
       cleanupProblems.push('run image tag removal did not complete')
     }
-    if (!cleanupState.ownedImageTag) cleanupState.ownedImageId = null
+    if (!cleanupState.ownedImageTag) {
+      cleanupState.ownedImageId = null
+      cleanupState.ownedImageClaimed = false
+    }
   }
   if (cleanupState.temporaryRoot !== null) {
     try {
@@ -419,6 +384,7 @@ const main = async () => {
     fatal('docker build ownership evidence did not match its claim')
   }
   cleanupState.ownedImageId = builtImageId
+  cleanupState.ownedImageClaimed = true
 
   return scanImage({
     imageTag,
@@ -429,16 +395,9 @@ const main = async () => {
     fatal,
     problem,
     log,
-    scratchContainerName: `meal-agent-m5-image-scan-${runId}`,
     track: {
       image: (id) => {
         cleanupState.ownedImageId = id
-      },
-      container: (claim) => {
-        cleanupState.containerClaims.set(claim.name, claim)
-      },
-      containerGone: (name) => {
-        cleanupState.containerClaims.delete(name)
       }
     }
   })

@@ -864,6 +864,7 @@ for (const name of serviceOrder) {
   }
   if (
     !Array.isArray(service.profiles ?? []) ||
+    !Array.isArray(service.ports ?? []) ||
     !Array.isArray(service.volumes ?? []) ||
     !(service.volumes ?? []).every(mountShapeIsClosed) ||
     !Array.isArray(service.secrets ?? []) ||
@@ -1132,13 +1133,13 @@ for (const name of serviceOrder) {
   if (port.host_ip !== apiHostIp) {
     fail(`${name}: host publish address must be exactly ${apiHostIp}`)
   }
-  if (Number(port.target) !== apiContainerPort) {
+  if (!/^[1-9][0-9]*$/.test(String(port.target)) || Number(port.target) !== apiContainerPort) {
     fail(`${name}: container port must be ${apiContainerPort}`)
   }
   if ((port.protocol ?? 'tcp') !== 'tcp') {
     fail(`${name}: published port must be tcp`)
   }
-  if (!/^[0-9]+$/.test(String(port.published))) {
+  if (!/^[1-9][0-9]*$/.test(String(port.published))) {
     fail(`${name}: published host port must be a single number`)
   }
   if (port.mode !== 'host') {
@@ -1275,10 +1276,18 @@ if (!same(secretNames, expectedSecretNames)) {
 // 只比较路径，绝不读取或输出文件内容。
 const assertSecretFiles = (definitions, directory, label) => {
   for (const [name, expectedFilename] of Object.entries(expectedSecretFiles)) {
-    const file = definitions[name]?.file
+    const definition = definitions[name]
+    if (!hasOnlyKeys(definition, new Set(['file', 'name']))) {
+      fail(`secret ${name}: definition capability shape drifted from the registered resolved-file mode`)
+      continue
+    }
+    const file = definition.file
     if (typeof file !== 'string' || file === '') {
       fail(`secret ${name}: must be backed by a file in the registered source mode`)
       continue
+    }
+    if (definition.name !== `${composeProjectName}_${name}`) {
+      fail(`secret ${name}: resolved identity drifted from the registered project-scoped name`)
     }
     const expectedFile = resolve(directory, expectedFilename)
     if (resolve(file) !== expectedFile) {
@@ -1329,6 +1338,13 @@ assertSecretFiles(
 )
 
 for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
+  if (!hasOnlyKeys(definition, new Set(['file', 'name']))) {
+    fail(`secret ${name}: definition capability shape drifted from the registered resolved-file mode`)
+    continue
+  }
+  if (definition.name !== `${composeProjectName}_${name}`) {
+    fail(`secret ${name}: resolved identity drifted from the registered project-scoped name`)
+  }
   const file = definition.file
   if (typeof file !== 'string' || file === '') {
     continue

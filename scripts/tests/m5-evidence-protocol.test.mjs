@@ -14,7 +14,10 @@ import {
   writeExclusiveEvidenceFile
 } from '../../infra/docker/m5-evidence-protocol.mjs'
 import { parseResolvedComposeDocument } from '../../infra/docker/compose-topology-evidence.mjs'
-import { createProcessGroupLifecycle } from '../../infra/docker/m3b-subprocess.mjs'
+import {
+  createProcessGroupLifecycle,
+  probeProcessGroup
+} from '../../infra/docker/m3b-subprocess.mjs'
 import {
   buildClaimLabel,
   parseBuildMetadataImageIdentity,
@@ -69,14 +72,28 @@ test('pg_restore list evidence requires comments and at least one canonical TOC 
   assert.deepEqual(
     parsePgRestoreListEvidence(
       '; Archive created at 2026-08-16 00:00:00 UTC\n' +
+      ';     TOC Entries: 4\n' +
+      ';     Dump Version: 1.16-0\n' +
+      ';     Format: CUSTOM\n' +
       ';     dbname: meal_agent\n' +
       '1; 2615 2200 SCHEMA - public owner\n'
     ),
-    { comments: 2, entries: 1 }
+    { comments: 5, entries: 1 }
   )
   for (const value of ['', '   ', 'PGDMP', '; comments only\n', 'arbitrary nonempty\n']) {
     assert.throws(() => parsePgRestoreListEvidence(value), EvidenceProtocolError)
   }
+  assert.throws(
+    () =>
+      parsePgRestoreListEvidence(
+        '; Archive created at 2026-08-16 00:00:00 UTC\n' +
+        ';     TOC Entries: 5\n' +
+        ';     Dump Version: 1.16-0\n' +
+        ';     Format: CUSTOM\n' +
+        '1; 2615 2200 SCHEMA - public owner\n'
+      ),
+    EvidenceProtocolError
+  )
 })
 
 test('published file evidence binds bytes, inode, link count and exclusive name', () => {
@@ -172,7 +189,22 @@ test('build ownership binds metadata, immutable ID, one tag and an unguessable c
   }
 })
 
-test('every critical evidence guard remains at its registered production call site', () => {
+test('the production process-group probe distinguishes gone, denied and unknown states', () => {
+  assert.equal(
+    probeProcessGroup(4242, () => { throw Object.assign(new Error('gone'), { code: 'ESRCH' }) }),
+    false
+  )
+  assert.equal(
+    probeProcessGroup(4242, () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }) }),
+    true
+  )
+  assert.throws(
+    () => probeProcessGroup(4242, () => { throw new Error('unknown') }),
+    /unknown/
+  )
+})
+
+test('every critical evidence guard remains mapped to its registered production call site', () => {
   const ids = new Set()
   for (const guard of m5CriticalGuardRegistry) {
     assert.equal(ids.has(guard.id), false, `duplicate guard id ${guard.id}`)

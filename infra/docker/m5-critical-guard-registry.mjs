@@ -1,8 +1,9 @@
-// M5 关键 guard 的不可同步缩水登记表。
+// M5 关键 guard 的生产调用点索引。
 //
-// 每个 needle 都是生产调用点本身，不是测试夹具里的同名说明。scripts 测试按文件
-// 和精确出现次数核对；删除/绕过关键调用不能靠同时改一个总数继续绿。新增 guard
-// 必须新增稳定 ID，而不是复用或重命名历史 ID。
+// 这份表只负责发现调用点/文档的机械漂移，**不是**安全属性或 mutation 判别力的
+// 证明。每项语义必须由同一门禁中的动态反例、纯函数反例或专用 mutation suite
+// 独立看守；只让 needle 数量保持不变不代表实现正确。新增 guard 必须新增稳定 ID，
+// 而不是复用或重命名历史 ID。
 export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'compose.root.closed-v1',
@@ -32,18 +33,18 @@ export const m5CriticalGuardRegistry = Object.freeze([
     id: 'runtime.positive-build-claim-v1',
     file: 'infra/docker/check-api-runtime-image.mjs',
     needle: 'expectedClaimToken: cleanupState.imageClaimToken',
-    occurrences: 3
+    occurrences: 4
   },
   {
     id: 'runtime.mutation-build-claim-v1',
     file: 'infra/docker/check-api-runtime-image-mutations.mjs',
     needle: 'expectedClaimToken: claimToken',
-    occurrences: 3
+    occurrences: 4
   },
   {
-    id: 'runtime.scratch-cleanup-by-id-v1',
-    file: 'infra/docker/check-api-runtime-image.mjs',
-    needle: 'const target = claim.id ?? claim.name',
+    id: 'runtime.content-addressed-rootfs-v1',
+    file: 'infra/docker/api-image-scan.mjs',
+    needle: '{ materializeRoot: extractedRoot, runStrict }',
     occurrences: 1
   },
   {
@@ -56,7 +57,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
     id: 'm4.stack-one-shot-fresh-v1',
     file: 'infra/docker/m4-lifecycle.mjs',
     needle: 'current.State?.StartedAt === baseline.State?.StartedAt',
-    occurrences: 1
+    occurrences: 2
   },
   {
     id: 'm4.graceful-start-binding-v1',
@@ -85,13 +86,13 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'restore.list-before-database-v1',
     file: 'infra/docker/restore-local-test.mjs',
-    needle: "listed = await run(['pg_restore', '--list']",
+    needle: "listed = await run(['pg_restore', '--create', '--list']",
     occurrences: 1
   },
   {
     id: 'process-group.unknown-probe-failure-v1',
     file: 'infra/docker/m3b-subprocess.mjs',
-    needle: "if (error?.code === 'EPERM') return true",
+    needle: 'export const probeProcessGroup = (pgid, kill = process.kill)',
     occurrences: 1
   }
 ])

@@ -197,9 +197,9 @@ const killGroup = (pgid, signal) => {
  * `kill(-pgid, 0)` 只做权限/存在性检查，不投递信号。**只有 ESRCH 才算消失**：
  * EPERM 说明组还在、只是不归我们管，那绝不能当成「已经没了」。
  */
-const groupIsAlive = (pgid) => {
+export const probeProcessGroup = (pgid, kill = process.kill) => {
   try {
-    process.kill(-pgid, 0)
+    kill(-pgid, 0)
     return true
   } catch (error) {
     if (error?.code === 'ESRCH') return false
@@ -223,7 +223,7 @@ const groupIsAlive = (pgid) => {
  * 仍是 OS 级 TOCTOU 边界；不把它写成已被形式化消除。
  */
 export const createProcessGroupLifecycle = ({
-  probeGroup = groupIsAlive,
+  probeGroup = probeProcessGroup,
   signalGroup = killGroup,
   delay = sleep
 } = {}) => {
@@ -473,7 +473,12 @@ export const registerRawSpawnedChild = async (child) => {
   observedProcessGroups.add(child.pid)
   child.once('close', () => {
     processGroupLifecycle.markLeaderClosed(handle)
-    processGroupLifecycle.retireIfGone(handle)
+    try {
+      processGroupLifecycle.retireIfGone(handle)
+    } catch {
+      // Unknown probe failures retain the generation for the bounded final sweep.  An
+      // EventEmitter callback must never leak the primitive exception or retire the group.
+    }
   })
   if (!announceProcessGroupOwnership(handle)) {
     let survivors = [handle]
@@ -578,12 +583,17 @@ export const createCommandRunner = ({
 
     const releaseChild = () => {
       const timerClean = cancelTimer()
+      let primitiveClean = true
       if (childHandle !== null) {
         processGroupLifecycle.markLeaderClosed(childHandle)
         // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
-        processGroupLifecycle.retireIfGone(childHandle)
+        try {
+          processGroupLifecycle.retireIfGone(childHandle)
+        } catch {
+          primitiveClean = false
+        }
       }
-      return timerClean
+      return { timerClean, primitiveClean }
     }
 
     const rejectAfterCleanup = async (reason) => {
@@ -641,21 +651,31 @@ export const createCommandRunner = ({
     child.stderr.on('data', (chunk) => collectBounded(chunk, stderrChunks, 'stderr'))
 
     child.once('error', () => {
-      const timerClean = releaseChild()
+      const { timerClean, primitiveClean } = releaseChild()
       if (ownershipAnnouncementFailed) {
         return
       }
-      claimFailure(timerClean ? 'command failed to start' : 'command timer cleanup failed')
+      claimFailure(
+        !timerClean
+          ? 'command timer cleanup failed'
+          : primitiveClean
+            ? 'command failed to start'
+            : 'command process-group probe failed'
+      )
     })
 
     child.once('close', (code, signal) => {
-      const timerClean = releaseChild()
+      const { timerClean, primitiveClean } = releaseChild()
       // announcement failure 已经把 settlement 所有权交给下面的异步终止分支；
       // 快速 `/usr/bin/true` 的 close 绝不能抢先 resolve status 0。
       if (ownershipAnnouncementFailed) {
         return
       }
       if (settlementClaimed) return
+      if (!primitiveClean) {
+        claimFailure('command process-group probe failed')
+        return
+      }
       if (!timerClean) {
         // close 只证明 leader/stdio 已结束；同组 orphan 仍可能存活。timer-clear
         // primitive 失败也必须走同一个进程组清理出口，不能直接 reject。

@@ -29,13 +29,13 @@ import {
   dockerfilePath,
   dockerignorePath,
   parseDockerImageId,
-  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
   buildClaimLabel,
   isAbsenceMessage,
   parseBuildMetadataImageIdentity,
+  parseClaimedBuildImage,
   parseCanonicalDockerImageId,
   parseOwnedBuildImage
 } from './m3b-docker.mjs'
@@ -235,32 +235,35 @@ const expectedStaticOnlyMutationCount = 2
 const cleanupState = {
   temporaryRoot: null,
   temporaryRootIdentity: null,
-  containerClaims: new Map(),
   builtTags: new Map(),
   imageIdFiles: new Map(),
   buildClaimTokens: new Map(),
   cleanupPromise: null
 }
 const cleanupProblems = []
-const cleanupOwnedDanglingImage = async (tag, ownedImageId) => {
-  if (ownedImageId === null) return
+const cleanupOwnedDanglingImage = async (tag, ownedImageId, claimToken) => {
+  if (ownedImageId === null || claimToken === null) return
   const owned = await runCommand(
-    ['docker', 'image', 'inspect', '--format', '{{json .RepoTags}}', ownedImageId],
+    ['docker', 'image', 'inspect', ownedImageId],
     { timeoutMs: 60_000 }
   )
   if (owned.status === 0) {
-    let repoTags
+    let claim
     try {
-      repoTags = JSON.parse(owned.stdout.trim())
+      const payload = JSON.parse(owned.stdout)
+      claim = parseClaimedBuildImage(
+        Array.isArray(payload) && payload.length === 1 ? payload[0] : null,
+        { expectedImageId: ownedImageId, expectedClaimToken: claimToken }
+      )
     } catch {
-      cleanupProblems.push(`owned image tag set was unreadable (${tag})`)
+      cleanupProblems.push(`owned image claim evidence was unreadable (${tag})`)
       return
     }
-    if (repoTags === null || (Array.isArray(repoTags) && repoTags.length === 0)) {
+    if (claim.repoTags === null || claim.repoTags.length === 0) {
       const removal = await runCommand(['docker', 'rmi', ownedImageId], { timeoutMs: 120_000 })
       if (removal.status !== 0) cleanupProblems.push(`owned dangling image removal failed (${tag})`)
-    } else if (!Array.isArray(repoTags)) {
-      cleanupProblems.push(`owned image tag set had an invalid shape (${tag})`)
+    } else {
+      cleanupProblems.push(`owned image acquired another tag and was preserved (${tag})`)
     }
   } else if (!(
     owned.status === 1 &&
@@ -274,50 +277,6 @@ const cleanup = () => {
     return cleanupState.cleanupPromise
   }
   cleanupState.cleanupPromise = (async () => {
-  for (const claim of [...cleanupState.containerClaims.values()]) {
-    try {
-      const current = await runCommand(['docker', 'container', 'inspect', claim.name], {
-        timeoutMs: 60_000
-      })
-      if (current.status === 0) {
-        let owned
-        try {
-          owned = parseOwnedScratchContainer(current.stdout, {
-            expectedName: claim.name,
-            expectedImageId: claim.imageId,
-            expectedContainerId: claim.id ?? null
-          }, () => { throw new Error('identity drift') })
-        } catch {
-          cleanupProblems.push('scratch container ownership drifted; foreign container was preserved')
-          continue
-        }
-        const removal = await runCommand(['docker', 'rm', '-f', owned.Id], { timeoutMs: 60_000 })
-        if (removal.status !== 0) {
-          cleanupProblems.push('scratch container removal failed')
-          continue
-        }
-      } else if (!(
-        current.status === 1 &&
-        isAbsenceMessage(current.stderr, { kind: 'container', name: claim.name })
-      )) {
-        cleanupProblems.push('scratch container identity could not be verified')
-        continue
-      }
-      const gone = await runCommand(['docker', 'container', 'inspect', claim.name], {
-        timeoutMs: 60_000
-      })
-      if (!(
-        gone.status === 1 &&
-        isAbsenceMessage(gone.stderr, { kind: 'container', name: claim.name })
-      )) {
-        cleanupProblems.push('scratch container was not proven absent after removal')
-      } else {
-        cleanupState.containerClaims.delete(claim.name)
-      }
-    } catch {
-      cleanupProblems.push('scratch container removal did not complete')
-    }
-  }
   for (const [tag, recordedImageId] of cleanupState.builtTags) {
     let ownedImageId = recordedImageId
     const claimToken = cleanupState.buildClaimTokens.get(tag) ?? null
@@ -325,10 +284,7 @@ const cleanup = () => {
       const imageIdFile = cleanupState.imageIdFiles.get(tag)
       if (ownedImageId === null && imageIdFile !== undefined && existsSync(imageIdFile)) {
         try {
-          ownedImageId = parseBuildMetadataImageIdentity(
-            readFileSync(imageIdFile, 'utf8')
-          ).imageId
-          cleanupState.builtTags.set(tag, ownedImageId)
+          parseBuildMetadataImageIdentity(readFileSync(imageIdFile, 'utf8'))
         } catch {
           cleanupProblems.push(`built image identity could not be recovered (${tag})`)
         }
@@ -363,7 +319,7 @@ const cleanup = () => {
         }
         if (ownedImageId === null || currentId !== ownedImageId || claimToken === null) {
           cleanupProblems.push(`image tag ownership drifted; foreign tag was preserved (${tag})`)
-          await cleanupOwnedDanglingImage(tag, ownedImageId)
+          await cleanupOwnedDanglingImage(tag, ownedImageId, claimToken)
           continue
         }
         const owned = await runCommand(
@@ -410,7 +366,7 @@ const cleanup = () => {
       ) {
         cleanupProblems.push(`image tag still present after removal (${tag})`)
       }
-      await cleanupOwnedDanglingImage(tag, ownedImageId)
+      await cleanupOwnedDanglingImage(tag, ownedImageId, claimToken)
     } catch {
       cleanupProblems.push(`image tag removal did not complete (${tag})`)
     }
@@ -485,7 +441,6 @@ const buildAndScan = async ({
   ) {
     fatal('docker build iidfile did not match build metadata')
   }
-  cleanupState.builtTags.set(tag, builtImageId)
   const ownership = await runStrict(['docker', 'image', 'inspect', builtImageId], {
     timeoutMs: 60_000,
     label: `docker image inspect ownership (${caseId})`
@@ -500,6 +455,7 @@ const buildAndScan = async ({
   } catch {
     fatal(`docker build ownership evidence did not match its claim (${caseId})`)
   }
+  cleanupState.builtTags.set(tag, builtImageId)
   const problems = []
   try {
     await scanImage({
@@ -511,15 +467,8 @@ const buildAndScan = async ({
       fatal,
       problem: (message) => problems.push(message),
       log: () => undefined,
-      scratchContainerName: `meal-agent-m5-image-mut-${runId}-${caseId}`,
       track: {
-        image: () => undefined,
-        container: (claim) => {
-          cleanupState.containerClaims.set(claim.name, claim)
-        },
-        containerGone: (name) => {
-          cleanupState.containerClaims.delete(name)
-        }
+        image: () => undefined
       }
     })
   } catch (error) {

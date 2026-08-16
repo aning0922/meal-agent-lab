@@ -1336,17 +1336,15 @@ for (const outOfScope of [
   try {
     const residue = await cleanupSmokeProject(scopeProject, decoyDirectory)
     const reported = residue.some((entry) =>
-      /secrets-directory: .*is not a meal-agent-m3b-secrets-\* directory under the system tmpdir/.test(
-        String(entry)
-      )
+      /^secrets-directory: cleanup stage failed$/.test(String(entry))
     )
     const stillThere = existsSync(decoyDirectory)
     if (!reported) {
-      fail(name, wrongReason('/secrets-directory: not a … directory under the system tmpdir/', residue))
+      fail(name, wrongReason('/secrets-directory: cleanup stage failed/', residue))
     } else if (!stillThere) {
       fail(name, 'the out-of-scope directory disappeared')
     } else {
-      pass(name, '/secrets-directory: not a meal-agent-m3b-secrets-\\* directory/')
+      pass(name, '/secrets-directory: cleanup stage failed/ with no path echo')
     }
   } finally {
     rmSync(decoyDirectory, { recursive: true, force: true })
@@ -1534,10 +1532,10 @@ process.stdout.write('Group E: image isolation negatives\n')
   const residue = await cleanupSmokeProject(project, null, {
     imageTag: 'meal-agent-api:stage09a-local-test'
   })
-  if (residue.some((entry) => /image-tag: refusing to remove .*not a per-run/.test(String(entry)))) {
-    pass(name, '/image-tag: refusing to remove … not a per-run/')
+  if (residue.some((entry) => /^image-tag: cleanup stage failed$/.test(String(entry)))) {
+    pass(name, '/image-tag: cleanup stage failed/ with no tag echo')
   } else {
-    fail(name, wrongReason('/image-tag: refusing to remove … not a per-run/', residue))
+    fail(name, wrongReason('/image-tag: cleanup stage failed/', residue))
   }
 }
 
@@ -1552,17 +1550,17 @@ process.stdout.write('Group F: docker evidence fail-closed negatives\n')
     {
       name: 'a failing docker ps makes the container sweep report residue instead of passing',
       script: 'if [ "$1" = "ps" ]; then echo "boom" >&2; exit 7; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /container-sweep: docker command failed \(7\)/
+      expect: /^container-sweep: cleanup stage failed$/
     },
     {
       name: 'a failing docker volume ls makes the dangling check report residue',
       script: 'if [ "$1" = "volume" ] && [ "$2" = "ls" ]; then echo "boom" >&2; exit 9; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /(volume-sweep|dangling-volumes): docker command failed \(9\)/
+      expect: /^(volume-sweep|dangling-volumes): cleanup stage failed$/
     },
     {
       name: 'a failing docker compose down is reported instead of silently ignored',
       script: 'if [ "$1" = "compose" ]; then echo "boom" >&2; exit 5; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /compose-down: docker command failed \(5\)/
+      expect: /^compose-down: cleanup stage failed$/
     }
   ]
   // `which docker` 的退出码必须检查：读不到真实路径时 shim 会退化成
@@ -1687,7 +1685,7 @@ stageIsolationNegative: {
       secretsIdentity: staleIdentity
     })
     const reportedDrift = residue.some((entry) =>
-      /secrets-directory: ownership drift at the temporary secrets directory/.test(String(entry))
+      /^secrets-directory: cleanup stage failed$/.test(String(entry))
     )
     const survived = existsSync(resolve(secretsDirectory, 'not-ours.txt'))
     const sameInode =
@@ -1697,11 +1695,11 @@ stageIsolationNegative: {
     if (staleIdentity.ino === replacementIdentity.ino) {
       fail(name, 'the precondition failed: the replacement directory reused the same inode')
     } else if (!reportedDrift) {
-      fail(name, wrongReason('/secrets-directory: ownership drift/', residue))
+      fail(name, wrongReason('/secrets-directory: cleanup stage failed/', residue))
     } else if (!survived || !sameInode) {
       fail(name, 'the foreign directory was recursively deleted despite the identity mismatch')
     } else {
-      pass(name, 'ownership drift reported and the foreign directory left untouched')
+      pass(name, 'fixed cleanup failure reported and the foreign directory left untouched')
     }
   } finally {
     rmSync(secretsDirectory, { recursive: true, force: true })

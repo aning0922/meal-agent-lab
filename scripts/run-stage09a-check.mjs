@@ -316,12 +316,6 @@ const processGroupIsAlive = (handle) => {
     if (error?.code === 'ESRCH') {
       return { alive: false, primitiveFailed: false }
     }
-    // macOS 会在已退出组长的数字 PGID 被其他 uid 很快复用时返回 EPERM。
-    // 该代组长的 exit 已由 ChildProcess 事件确认；继续把这个数字当成旧所有权
-    // 反而会对新代产生误杀风险。没有 leader-exit 证据的 EPERM 仍 fail closed。
-    if (error?.code === 'EPERM' && closedOwnedGroupLeaders.has(ownershipKey(handle))) {
-      return { alive: false, primitiveFailed: false }
-    }
     return { alive: true, primitiveFailed: true }
   }
 }
@@ -354,10 +348,6 @@ const signalOwnedGroup = (handle, signal) => {
     return { delivered: true, primitiveFailed: false }
   } catch (error) {
     if (error?.code === 'ESRCH') {
-      retireOwnedProcessGroup(handle)
-      return { delivered: false, primitiveFailed: false }
-    }
-    if (error?.code === 'EPERM' && closedOwnedGroupLeaders.has(ownershipKey(handle))) {
       retireOwnedProcessGroup(handle)
       return { delivered: false, primitiveFailed: false }
     }
@@ -805,7 +795,7 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       closed = true
       cooperativeShutdowns.delete(cooperativeShutdown)
       resolveClosed()
-      purgeGoneProcessGroups()
+      aggregatePrimitiveFailed = purgeGoneProcessGroups() || aggregatePrimitiveFailed
     }
     const timer = nativeSetTimeout(() => {
       if (settled || timedOut) {
@@ -908,15 +898,19 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
         })()
         return
       }
-      purgeGoneProcessGroups()
+      aggregatePrimitiveFailed = purgeGoneProcessGroups() || aggregatePrimitiveFailed
       const unexpectedGroups = [
         ...ownedProcessGroups.values(),
         ...quarantinedProcessGroups.values()
       ]
-      if (unexpectedGroups.length > 0) {
+      if (unexpectedGroups.length > 0 || aggregatePrimitiveFailed) {
         void (async () => {
           await terminateOwnedProcessGroups()
-          finish(`left ${String(unexpectedGroups.length)} descendant process group(s) after exit`)
+          finish(
+            aggregatePrimitiveFailed
+              ? 'process-group ownership probe failed'
+              : `left ${String(unexpectedGroups.length)} descendant process group(s) after exit`
+          )
         })()
         return
       }

@@ -45,8 +45,10 @@ test('BuildKit metadata keeps manifest and config identities distinct and fail c
       'containerimage.descriptor': {
         mediaType: 'application/vnd.oci.image.manifest.v1+json',
         digest: manifest,
-        size: 123
-      }
+        size: 123,
+        platform: { architecture: 'arm64', os: 'linux' }
+      },
+      'image.name': 'docker.io/library/meal-agent-api:m5-fixture'
     })),
     { imageId: manifest, configId: config }
   )
@@ -73,6 +75,26 @@ test('BuildKit metadata keeps manifest and config identities distinct and fail c
         digest: `sha256:${'c'.repeat(64)}`,
         size: 123
       }
+    }),
+    JSON.stringify({
+      'containerimage.digest': manifest,
+      'containerimage.config.digest': config,
+      'containerimage.descriptor': {
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        digest: manifest,
+        size: 123,
+        platform: { architecture: 'arm64', os: 'linux', variant: 'v8' }
+      }
+    }),
+    JSON.stringify({
+      'containerimage.digest': manifest,
+      'containerimage.config.digest': config,
+      'containerimage.descriptor': {
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        digest: manifest,
+        size: 123
+      },
+      'foreign.capability': true
     })
   ]) {
     assert.throws(
@@ -280,7 +302,11 @@ test('a status-zero one-off result is not evidence unless the owned container ac
   const compose = async () => ({ status: 0, signal: null, stdout: '', stderr: '' })
 
   await assert.rejects(
-    composeRunOneOff({ compose, run }, ['fixture']),
+    composeRunOneOff(
+      { compose, run },
+      ['fixture'],
+      { project: 'fixture-project', service: 'fixture-service' }
+    ),
     /one-off success evidence did not identify the owned container/
   )
 })
@@ -378,7 +404,11 @@ test('one-off command failures never expose caller-controlled error text', async
   }
 
   await assert.rejects(
-    composeRunOneOff({ compose, run }, ['fixture']),
+    composeRunOneOff(
+      { compose, run },
+      ['fixture'],
+      { project: 'fixture-project', service: 'fixture-service' }
+    ),
     (error) => {
       assert.equal(error instanceof Error && error.message, 'one-off command execution failed')
       assert.doesNotMatch(error.message, new RegExp(sentinel))

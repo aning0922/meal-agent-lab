@@ -135,6 +135,34 @@ export const parseBuildMetadataImageIdentity = (raw) => {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new DockerEvidenceError('docker build metadata had an invalid shape')
   }
+  const allowedRootKeys = new Set([
+    'buildx.build.provenance',
+    'buildx.build.ref',
+    'buildx.build.warnings',
+    'containerimage.config.digest',
+    'containerimage.descriptor',
+    'containerimage.digest',
+    'image.name'
+  ])
+  if (Object.keys(value).some((key) => !allowedRootKeys.has(key))) {
+    throw new DockerEvidenceError('docker build metadata exposed an unsupported capability')
+  }
+  if (
+    (value['buildx.build.ref'] !== undefined &&
+      (typeof value['buildx.build.ref'] !== 'string' || value['buildx.build.ref'] === '')) ||
+    (value['buildx.build.warnings'] !== undefined &&
+      !Array.isArray(value['buildx.build.warnings'])) ||
+    (value['image.name'] !== undefined &&
+      (typeof value['image.name'] !== 'string' ||
+        value['image.name'] === '' ||
+        /[\r\n]/.test(value['image.name']))) ||
+    (value['buildx.build.provenance'] !== undefined &&
+      (value['buildx.build.provenance'] === null ||
+        typeof value['buildx.build.provenance'] !== 'object' ||
+        Array.isArray(value['buildx.build.provenance'])))
+  ) {
+    throw new DockerEvidenceError('docker build metadata had an invalid optional capability')
+  }
   const descriptor = value['containerimage.descriptor']
   if (descriptor === null || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
     throw new DockerEvidenceError('docker build metadata had an invalid descriptor')
@@ -143,9 +171,20 @@ export const parseBuildMetadataImageIdentity = (raw) => {
   if (parseCanonicalDockerImageId(descriptor.digest) !== imageId) {
     throw new DockerEvidenceError('docker build metadata identities did not agree')
   }
-  const allowedDescriptorKeys = new Set(['mediaType', 'digest', 'size', 'annotations', 'platform'])
+  const allowedDescriptorKeys = new Set(['mediaType', 'digest', 'size', 'platform'])
+  const platform = descriptor.platform
+  const platformIsValid =
+    platform === undefined ||
+    (platform !== null &&
+      typeof platform === 'object' &&
+      !Array.isArray(platform) &&
+      Object.keys(platform).length === 2 &&
+      typeof platform.architecture === 'string' &&
+      /^[a-z0-9_+-]+$/.test(platform.architecture) &&
+      platform.os === 'linux')
   if (
     Object.keys(descriptor).some((key) => !allowedDescriptorKeys.has(key)) ||
+    !platformIsValid ||
     ![
       'application/vnd.docker.distribution.manifest.v2+json',
       'application/vnd.docker.distribution.manifest.list.v2+json',
@@ -176,15 +215,33 @@ export const parseOwnedBuildImage = (
   value,
   { expectedImageId, expectedTag, expectedClaimToken }
 ) => {
+  const claimed = parseClaimedBuildImage(value, {
+    expectedImageId,
+    expectedClaimToken
+  })
+  if (
+    !Array.isArray(claimed.repoTags) ||
+    claimed.repoTags.length !== 1 ||
+    claimed.repoTags[0] !== expectedTag
+  ) {
+    throw new DockerEvidenceError('docker build ownership evidence did not match its claim')
+  }
+  return Object.freeze({ imageId: expectedImageId, imageTag: expectedTag, claimToken: expectedClaimToken })
+}
+
+export const parseClaimedBuildImage = (
+  value,
+  { expectedImageId, expectedClaimToken }
+) => {
   const labels = value?.Config?.Labels
   if (
     value === null ||
     typeof value !== 'object' ||
     Array.isArray(value) ||
     parseCanonicalDockerImageId(value.Id) !== expectedImageId ||
-    !Array.isArray(value.RepoTags) ||
-    value.RepoTags.length !== 1 ||
-    value.RepoTags[0] !== expectedTag ||
+    !(value.RepoTags === null || Array.isArray(value.RepoTags)) ||
+    (Array.isArray(value.RepoTags) &&
+      value.RepoTags.some((tag) => typeof tag !== 'string' || tag === '')) ||
     labels === null ||
     typeof labels !== 'object' ||
     Array.isArray(labels) ||
@@ -192,7 +249,11 @@ export const parseOwnedBuildImage = (
   ) {
     throw new DockerEvidenceError('docker build ownership evidence did not match its claim')
   }
-  return Object.freeze({ imageId: expectedImageId, imageTag: expectedTag, claimToken: expectedClaimToken })
+  return Object.freeze({
+    imageId: expectedImageId,
+    claimToken: expectedClaimToken,
+    repoTags: value.RepoTags
+  })
 }
 
 export const inspectOwnedBuildImage = async (
@@ -491,10 +552,8 @@ const cleanupRunUnsynchronized = async ({
   const stage = async (label, run) => {
     try {
       await run()
-    } catch (error) {
-      residue.push(
-        `${label}: ${error instanceof Error ? error.message : String(error)}`
-      )
+    } catch {
+      residue.push(`${label}: cleanup stage failed`)
     }
   }
 
@@ -787,10 +846,8 @@ export const verifyNoResidue = async ({
       if (remaining.length > 0) {
         problems.push(`${kind}(s) still present: ${remaining.join(', ')}`)
       }
-    } catch (error) {
-      problems.push(
-        `${kind} recheck failed: ${error instanceof Error ? error.message : String(error)}`
-      )
+    } catch {
+      problems.push(`${kind} recheck failed`)
     }
   }
   if (imageTag !== null) {
@@ -798,10 +855,8 @@ export const verifyNoResidue = async ({
       if ((await imageIdOf(imageTag, { env: composeEnvironment })) !== null) {
         problems.push(`image tag ${imageTag} still present`)
       }
-    } catch (error) {
-      problems.push(
-        `image tag recheck failed: ${error instanceof Error ? error.message : String(error)}`
-      )
+    } catch {
+      problems.push('image tag recheck failed')
     }
   }
   if (danglingBaseline !== null) {
@@ -811,10 +866,8 @@ export const verifyNoResidue = async ({
       if (added.length > 0) {
         problems.push(`anonymous dangling volume(s) still present: ${added.join(', ')}`)
       }
-    } catch (error) {
-      problems.push(
-        `dangling volume recheck failed: ${error instanceof Error ? error.message : String(error)}`
-      )
+    } catch {
+      problems.push('dangling volume recheck failed')
     }
   }
   if (secretsDirectory !== null && exists(secretsDirectory)) {

@@ -1013,7 +1013,10 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
       assert.equal(outcome.code, 1)
       assert.equal(outcome.signal, null)
       assert.match(output, new RegExp(`received ${signal}`))
-      assert.match(output, new RegExp(`interrupted by ${signal}`))
+      assert.match(
+        output,
+        new RegExp(`(?:interrupted by ${signal}|signal cleanup primitive failed)`)
+      )
     } finally {
       if (grandchildPid !== null && processIsAlive(grandchildPid)) {
         process.kill(grandchildPid, 'SIGKILL')

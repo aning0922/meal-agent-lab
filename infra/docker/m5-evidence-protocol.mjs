@@ -14,6 +14,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { resolve } from 'node:path'
 
 const sha256Pattern = /^[0-9a-f]{64}$/
 
@@ -51,9 +52,13 @@ export const requireClosedRecord = (
 }
 
 /**
- * `pg_restore --list` 的成功 stdout 是 archive 的 TOC 证据，不是任意非空文本。
+ * `pg_restore --create --list` 的成功 stdout 是 archive 的 TOC 证据，不是任意非空文本。
  * 注释/头信息以 `;` 开头，真实 TOC 行以 dump id + catalog OID 对开头。至少要有
- * 一条 TOC；任意未知非空行、NUL、CR 或超界输出都 fail closed。
+ * 一条 TOC；任意未知非空行、NUL、CR 或超界输出都 fail closed。PostgreSQL custom
+ * archives 的 `TOC Entries` 还包含三条不会出现在 Selected TOC Entries 列表里的
+ * archive-setting entries（ENCODING / STDSTRINGS / SEARCHPATH）。`--create` 使 DATABASE
+ * 与可选 DATABASE PROPERTIES 都进入可见列表，因此完整性关系稳定为
+ * declared = visible + 3，而不会随数据库级设置漂移。
  */
 export const parsePgRestoreListEvidence = (text) => {
   if (
@@ -66,10 +71,21 @@ export const parsePgRestoreListEvidence = (text) => {
   }
   let entries = 0
   let comments = 0
+  let declaredEntries = null
+  let sawArchiveHeader = false
+  let sawCustomFormat = false
+  let sawDumpVersion = false
   for (const line of text.split('\n')) {
     if (line === '') continue
     if (line.startsWith(';')) {
       comments += 1
+      if (/^; Archive created at .+$/.test(line)) sawArchiveHeader = true
+      const tocEntries = /^;\s+TOC Entries: ([1-9][0-9]*)$/.exec(line)
+      if (tocEntries !== null) declaredEntries = Number(tocEntries[1])
+      if (line === ';     Format: CUSTOM') sawCustomFormat = true
+      if (/^;\s+Dump Version: [1-9][0-9]*\.[0-9]+(?:-[0-9]+)?$/.test(line)) {
+        sawDumpVersion = true
+      }
       continue
     }
     if (!/^[1-9][0-9]*; [0-9]+ [0-9]+ .+$/.test(line)) {
@@ -77,7 +93,14 @@ export const parsePgRestoreListEvidence = (text) => {
     }
     entries += 1
   }
-  if (comments === 0 || entries === 0) {
+  if (
+    comments === 0 ||
+    entries === 0 ||
+    !sawArchiveHeader ||
+    !sawCustomFormat ||
+    !sawDumpVersion ||
+    declaredEntries !== entries + 3
+  ) {
     throw new EvidenceProtocolError('archive-list-incomplete')
   }
   return Object.freeze({ comments, entries })
@@ -144,6 +167,31 @@ export const identityStillNamesFile = (identity) => {
   try {
     const stat = lstatSync(identity.path, { bigint: true })
     return stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino
+  } catch {
+    return false
+  }
+}
+
+export const snapshotDirectoryEvidence = (
+  path,
+  { code = 'directory-evidence' } = {}
+) => {
+  try {
+    const absolute = resolve(path)
+    const stat = lstatSync(absolute, { bigint: true })
+    if (!stat.isDirectory()) throw new EvidenceProtocolError(code)
+    return Object.freeze({ path: absolute, dev: stat.dev, ino: stat.ino })
+  } catch (error) {
+    if (error instanceof EvidenceProtocolError) throw error
+    throw new EvidenceProtocolError(code)
+  }
+}
+
+export const directoryEvidenceStillNames = (identity) => {
+  try {
+    const absolute = resolve(identity.path)
+    const stat = lstatSync(absolute, { bigint: true })
+    return stat.isDirectory() && stat.dev === identity.dev && stat.ino === identity.ino
   } catch {
     return false
   }

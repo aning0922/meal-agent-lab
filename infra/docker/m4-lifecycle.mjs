@@ -552,6 +552,8 @@ const inspectOneOff = async (run, entry, environment) => {
   const id = container?.Id
   const name = container?.Name
   const labels = container?.Config?.Labels
+  const image = container?.Image
+  const created = container?.Created
   if (
     typeof id !== 'string' ||
     !/^[0-9a-f]{64}$/.test(id) ||
@@ -559,7 +561,14 @@ const inspectOneOff = async (run, entry, environment) => {
     (entry.id !== undefined && id !== entry.id) ||
     labels === null ||
     typeof labels !== 'object' ||
-    Array.isArray(labels)
+    Array.isArray(labels) ||
+    !/^sha256:[0-9a-f]{64}$/.test(image ?? '') ||
+    typeof created !== 'string' ||
+    created === '' ||
+    !Number.isFinite(Date.parse(created)) ||
+    labels['com.docker.compose.project'] !== entry.project ||
+    labels['com.docker.compose.service'] !== entry.service ||
+    labels['com.docker.compose.oneoff'] !== 'True'
   ) {
     return { state: 'unreadable', id: null }
   }
@@ -616,10 +625,19 @@ const removeOwnedOneOff = async (run, entry, environment) => {
 export const composeRunOneOff = async (
   { compose, run, environment = process.env, warn = null },
   runArgs,
-  { timeoutMs = 120_000, stdin = null, beforeRemove = null } = {}
+  { timeoutMs = 120_000, stdin = null, beforeRemove = null, project, service } = {}
 ) => {
+  if (typeof project !== 'string' || project === '' || typeof service !== 'string' || service === '') {
+    throw new Error('one-off container expected identity was not declared')
+  }
   const name = `m4-oneoff-${randomBytes(12).toString('hex')}`
-  const entry = { name, token: randomBytes(16).toString('hex'), id: undefined }
+  const entry = {
+    name,
+    token: randomBytes(16).toString('hex'),
+    id: undefined,
+    project,
+    service
+  }
   const baseline = await inspectOneOff(run, entry, environment)
   if (baseline.state !== 'absent') {
     throw new Error('one-off container name was not proven absent before create')
@@ -956,34 +974,44 @@ export const createM4Run = ({ kind }) => {
     stack.runService = async (service, timeoutMs) => {
       throwIfInterrupted()
       const name = stack.containerName(service)
+      const baseline = await inspectStackServiceOptional(service)
       const started = await stack.compose(['up', '-d', '--no-deps', service], {
         timeoutMs: 180_000
       })
       if (started.status !== 0) {
         throw new Error(`compose up ${service} failed`)
       }
-      await waitFor(
+      let claimedId = null
+      const healthyContainer = await waitFor(
         `${service} health`,
         async () => {
+          const current = await inspectStackService(service)
+          if (claimedId === null) claimedId = current.Id
+          if (current.Id !== claimedId) {
+            throw new Error(`${service}: container identity changed while collecting health evidence`)
+          }
           if (
-            (await inspectStrict(name, '{{.State.Status}}', { env: stack.composeEnvironment })) ===
-            'exited'
+            baseline !== null &&
+            current.Id === baseline.Id &&
+            current.State?.StartedAt === baseline.State?.StartedAt
           ) {
+            throw new Error(`${service}: compose up did not start a fresh service generation`)
+          }
+          if (current.State.Status === 'exited') {
             throw new Error(
               `${service} exited before becoming healthy; ` +
                 `${await logExcerpt(name, stack.composeEnvironment)}`
             )
           }
-          return (await inspectStrict(name, '{{.State.Health.Status}}', {
-            env: stack.composeEnvironment
-          })) === 'healthy'
-            ? 'healthy'
-            : null
+          return current.State?.Health?.Status === 'healthy' ? current : null
         },
         timeoutMs
       )
       const container = await inspectStackService(service)
       if (
+        container.Id !== healthyContainer.Id ||
+        container.Image !== healthyContainer.Image ||
+        container.State.StartedAt !== healthyContainer.State.StartedAt ||
         container.State.Status !== 'running' ||
         container.State.Running !== true ||
         typeof container.State.StartedAt !== 'string' ||
@@ -1094,7 +1122,7 @@ export const createM4Run = ({ kind }) => {
       const result = await composeRunOneOff(
         { compose: stack.compose, run, environment: stack.composeEnvironment, warn: log },
         args,
-        { timeoutMs }
+        { timeoutMs, project: stack.project, service: 'bootstrap-acl' }
       )
       if (result.status !== 0) {
         throw new Error('admin evidence query failed')
@@ -1112,7 +1140,7 @@ export const createM4Run = ({ kind }) => {
       return composeRunOneOff(
         { compose: stack.compose, run, environment: stack.composeEnvironment, warn: log },
         args,
-        { timeoutMs }
+        { timeoutMs, project: stack.project, service: 'bootstrap-logins' }
       )
     }
     /** needle 探针的统一断言：命令 exit 0 且全部期望 needle 在场。 */

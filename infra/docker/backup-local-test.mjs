@@ -55,8 +55,10 @@ import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 import {
   parsePgRestoreListEvidence,
+  directoryEvidenceStillNames,
   readStableRegularFile,
   sha256Bytes,
+  snapshotDirectoryEvidence,
   verifyPublishedFileEvidence,
   writeExclusiveEvidenceFile
 } from './m5-evidence-protocol.mjs'
@@ -314,6 +316,9 @@ export const performBackup = async (
   const partial = `${name}.partial`
   await assertBackupTargetsIgnored(run, [dumpPath, shaPath])
   mkdirSync(directory, { recursive: true })
+  const outputDirectoryIdentity = snapshotDirectoryEvidence(directory, {
+    code: 'backup-output-directory'
+  })
   if (existsSync(dumpPath) || existsSync(shaPath)) {
     throw new Error('the backup output path already exists')
   }
@@ -333,22 +338,34 @@ export const performBackup = async (
   let completed = false
   let cleanupChain = Promise.resolve()
   let transientCleanupChain = Promise.resolve()
+  let partialDirectoryRetired = false
   const cleanupTransientArtifacts = () => {
     const next = transientCleanupChain.then(async () => {
       const residue = []
       try {
-        const current = lstatSync(partialDirectory, { bigint: true })
-        if (
-          !current.isDirectory() ||
-          current.dev !== partialDirectoryIdentity.dev ||
-          current.ino !== partialDirectoryIdentity.ino
-        ) {
-          residue.push('backup partial directory ownership drifted')
+        if (partialDirectoryRetired) {
+          // An idempotent cleanup call after a proven removal has no new work.
         } else {
-          rmSync(partialDirectory, { recursive: true, force: true })
+          const current = lstatSync(partialDirectory, { bigint: true })
+          if (
+            !current.isDirectory() ||
+            current.dev !== partialDirectoryIdentity.dev ||
+            current.ino !== partialDirectoryIdentity.ino
+          ) {
+            residue.push('backup partial directory ownership drifted')
+          } else {
+            rmSync(partialDirectory, { recursive: true, force: true })
+            partialDirectoryRetired = true
+          }
         }
       } catch {
-        if (existsSync(partialDirectory)) residue.push('backup partial directory cleanup failed')
+        if (!partialDirectoryRetired) {
+          residue.push(
+            existsSync(partialDirectory)
+              ? 'backup partial directory cleanup failed'
+              : 'backup partial directory identity disappeared before cleanup'
+          )
+        }
       }
       try {
         const cleaned = await composeRunOneOff(
@@ -360,7 +377,7 @@ export const performBackup = async (
             '-euc',
             `rm -f /transfer/${partial} /transfer/${name}; test ! -e /transfer/${partial}; test ! -e /transfer/${name}`
           ],
-          { timeoutMs: 120_000 }
+          { timeoutMs: 120_000, project, service: 'backup-transfer-loader' }
         )
         if (cleaned.status !== 0) residue.push('backup transfer artifact cleanup failed')
       } catch {
@@ -422,6 +439,8 @@ export const performBackup = async (
       ['--entrypoint', 'bash', 'backup', '-c', script],
       {
         timeoutMs: 600_000,
+        project,
+        service: 'backup',
         beforeRemove: async ({ id, result }) => {
           const digestMatch =
             result.status === 0 && typeof result.stdout === 'string'
@@ -444,9 +463,20 @@ export const performBackup = async (
           if (sha256OfFile(hostPartial) !== digestMatch[1]) {
             throw new Error('backup handoff bytes differed from the container source')
           }
-          const listed = await run(['pg_restore', '--list', hostPartial], {
+          // Take the one stable snapshot *before* the asynchronous TOC check.  Both
+          // pg_restore and formal publication consume these exact bytes; the mutable
+          // path is never reopened after the await.
+          const source = readStableRegularFile(hostPartial, {
+            code: 'backup-source-evidence'
+          })
+          if (source.identity.sha256 !== digestMatch[1]) {
+            throw new Error('backup handoff bytes differed from the container source')
+          }
+          log('backup evidence: immutable source snapshot acquired')
+          const listed = await run(['pg_restore', '--create', '--list'], {
             timeoutMs: 120_000,
-            cwd: repositoryRoot
+            cwd: repositoryRoot,
+            stdin: source.bytes
           })
           if (listed.status !== 0) {
             throw new Error('the backup archive structure could not be validated')
@@ -456,20 +486,39 @@ export const performBackup = async (
           } catch {
             throw new Error('the backup archive structure could not be validated')
           }
+          log('backup evidence: complete custom-archive TOC validated')
 
-          // list 是异步窗口。返回后重新从 O_NOFOLLOW fd 取得稳定字节，并再次绑定
-          // container source digest；正式发布只消费这一份 Buffer，不再 link staging
-          // inode，也不再按 mutable path 重新读取。
-          const source = readStableRegularFile(hostPartial, {
-            code: 'backup-source-evidence'
-          })
-          if (source.identity.sha256 !== digestMatch[1]) {
-            throw new Error('backup handoff bytes differed from the container source')
+          if (!directoryEvidenceStillNames(outputDirectoryIdentity)) {
+            throw new Error('the backup output directory ownership drifted before publication')
           }
           publishedDumpBytes = source.bytes
+          if (
+            publishedDumpBytes.subarray(0, customFormatMagic.length).toString('latin1') !==
+            customFormatMagic
+          ) {
+            throw new Error('the produced file does not carry the custom-format magic; refusing to checksum it')
+          }
+          const sha256 = sha256Bytes(publishedDumpBytes)
+          publishedSidecarBytes = Buffer.from(`${sha256}  ${name}\n`, 'utf8')
+
+          // Reserve and publish the sidecar first.  A competing sidecar therefore fails
+          // before the sensitive formal dump name is ever created.
+          publishedSidecarIdentity = writeExclusiveEvidenceFile(
+            shaPath,
+            publishedSidecarBytes,
+            { code: 'backup-sidecar-publish' }
+          )
+          if (
+            !directoryEvidenceStillNames(outputDirectoryIdentity) ||
+            !verifyPublishedFileEvidence(publishedSidecarIdentity, publishedSidecarBytes)
+          ) {
+            throw new Error('the backup output directory ownership drifted before publication')
+          }
+          log('backup evidence: checksum sidecar published with no-replace semantics')
           publishedIdentity = writeExclusiveEvidenceFile(dumpPath, publishedDumpBytes, {
             code: 'backup-dump-publish'
           })
+          log('backup evidence: dump published from the validated byte snapshot')
         }
       }
     )
@@ -480,15 +529,10 @@ export const performBackup = async (
     if (publishedDumpBytes === null) {
       throw new Error('the backup handoff did not publish verified bytes')
     }
-    const magic = publishedDumpBytes.subarray(0, customFormatMagic.length).toString('latin1')
-    if (magic !== customFormatMagic) {
-      throw new Error('the produced file does not carry the custom-format magic; refusing to checksum it')
-    }
     const sha256 = sha256Bytes(publishedDumpBytes)
-    publishedSidecarBytes = Buffer.from(`${sha256}  ${name}\n`, 'utf8')
-    publishedSidecarIdentity = writeExclusiveEvidenceFile(shaPath, publishedSidecarBytes, {
-      code: 'backup-sidecar-publish'
-    })
+    if (publishedSidecarBytes === null || publishedSidecarIdentity === null) {
+      throw new Error('the backup handoff did not publish verified checksum evidence')
+    }
 
     // 成功返回前最后一次核对两个正式名字仍指向本轮登记的 inode。hash 计算与
     // sidecar 发布之后的路径替换不得被误记为一次成功备份。

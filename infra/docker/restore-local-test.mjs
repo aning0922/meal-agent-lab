@@ -169,7 +169,11 @@ export const performRestore = async (
   // 容器挂载的是 realpath 解析后的物理目录/文件名：宿主校验与容器读取指向
   // 同一个文件。
   const oneOff = (runArgs, options) =>
-    composeRunOneOff({ compose, run, warn: log }, runArgs, options)
+    composeRunOneOff(
+      { compose, run, warn: log },
+      runArgs,
+      { ...options, project, service: 'restore' }
+    )
   const safeOneOff = (runArgs, options, failureReason) =>
     runRestoreOneOff(oneOff, runArgs, options, failureReason)
 
@@ -181,7 +185,7 @@ export const performRestore = async (
   // pg_restore 从同一 verifiedBytes stdin 读取；不重新打开调用方路径。
   let listed
   try {
-    listed = await run(['pg_restore', '--list'], {
+    listed = await run(['pg_restore', '--create', '--list'], {
       timeoutMs: 120_000,
       stdin: verifiedBytes
     })

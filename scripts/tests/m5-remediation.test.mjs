@@ -337,7 +337,11 @@ test('M4 never removes a same-name container without its ownership label', async
     return { status: 1, stdout: '', stderr: '' }
   }
   await assert.rejects(
-    composeRunOneOff({ compose, run }, ['fixture']),
+    composeRunOneOff(
+      { compose, run },
+      ['fixture'],
+      { project: 'fixture-project', service: 'fixture-service' }
+    ),
     /cleanup could not verify ownership/
   )
   assert.equal(removed, false)
@@ -367,8 +371,15 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
         stdout: JSON.stringify([
           {
             Id: 'b'.repeat(64),
+            Image: `sha256:${'d'.repeat(64)}`,
+            Created: '2026-08-15T01:00:00Z',
             Name: `/${name}`,
-            Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': ownerToken } },
+            Config: { Labels: {
+              'com.meal-agent.m4.oneoff-owner': ownerToken,
+              'com.docker.compose.project': 'fixture-project',
+              'com.docker.compose.service': 'backup-transfer-loader',
+              'com.docker.compose.oneoff': 'True'
+            } },
             State: {
               Status: 'exited',
               Running: false,
@@ -399,6 +410,8 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
     ['--entrypoint', 'bash', 'backup-transfer-loader', '-c', 'cat >/transfer/input.dump'],
     {
       stdin: payload,
+      project: 'fixture-project',
+      service: 'backup-transfer-loader',
       beforeRemove: async (evidence) => {
         handoff = evidence
       }
@@ -434,8 +447,15 @@ test('M4 retains the immutable one-off ID on a nonzero outcome before cleanup', 
         signal: null,
         stdout: JSON.stringify([{
           Id: id,
+          Image: `sha256:${'d'.repeat(64)}`,
+          Created: '2026-08-16T00:59:59Z',
           Name: outcomeReads === 1 ? `/${target}` : '/renamed-after-outcome',
-          Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': ownerToken } },
+          Config: { Labels: {
+            'com.meal-agent.m4.oneoff-owner': ownerToken,
+            'com.docker.compose.project': 'fixture-project',
+            'com.docker.compose.service': 'fixture-service',
+            'com.docker.compose.oneoff': 'True'
+          } },
           State: {
             Status: 'exited',
             Running: false,
@@ -458,7 +478,14 @@ test('M4 retains the immutable one-off ID on a nonzero outcome before cleanup', 
     phase = 'owned'
     return { status: 17, signal: null, stdout: '', stderr: 'untrusted' }
   }
-  await assert.rejects(composeRunOneOff({ compose, run }, ['fixture']), /one-off command failed/)
+  await assert.rejects(
+    composeRunOneOff(
+      { compose, run },
+      ['fixture'],
+      { project: 'fixture-project', service: 'fixture-service' }
+    ),
+    /one-off command failed/
+  )
   assert.equal(removedTarget, id)
   assert.equal(phase, 'removed')
 })
@@ -634,8 +661,15 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
         signal: null,
         stdout: JSON.stringify([{
           Id: entry.id,
+          Image: `sha256:${'d'.repeat(64)}`,
+          Created: '2026-08-15T01:00:00Z',
           Name: `/${entry.name}`,
-          Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': entry.token } },
+          Config: { Labels: {
+            'com.meal-agent.m4.oneoff-owner': entry.token,
+            'com.docker.compose.project': 'meal-agent-fixture',
+            'com.docker.compose.service': entry.service,
+            'com.docker.compose.oneoff': 'True'
+          } },
           State: {
             Status: 'exited',
             Running: false,
@@ -651,12 +685,17 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
       writeFileSync(argv[3], archiveBytes)
       return { status: 0, signal: null, stdout: '', stderr: '' }
     }
-    if (argv[0] === 'pg_restore' && argv[1] === '--list') {
+    if (argv[0] === 'pg_restore' && argv[1] === '--create' && argv[2] === '--list') {
       listed += 1
       return {
         status: 0,
         signal: null,
-        stdout: '; Archive created at fixture\n1; 2615 2200 SCHEMA - public owner\n',
+        stdout:
+          '; Archive created at fixture\n' +
+          ';     TOC Entries: 4\n' +
+          ';     Dump Version: 1.16-0\n' +
+          ';     Format: CUSTOM\n' +
+          '1; 2615 2200 SCHEMA - public owner\n',
         stderr: ''
       }
     }
@@ -674,7 +713,13 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     const label = argv[argv.indexOf('--label') + 1]
     const token = label.split('=')[1]
     const isTransferCleanup = argv.includes('backup-transfer-loader')
-    containers.set(name, { name, id, token, exitCode: isTransferCleanup ? 17 : 0 })
+    containers.set(name, {
+      name,
+      id,
+      token,
+      exitCode: isTransferCleanup ? 17 : 0,
+      service: isTransferCleanup ? 'backup-transfer-loader' : 'backup'
+    })
     return {
       status: isTransferCleanup ? 17 : 0,
       signal: null,
@@ -722,7 +767,7 @@ test('restore rejects a checksum-valid malformed archive before any Compose side
             throw new Error('compose must not run')
           },
           run: async (argv) => {
-            assert.deepEqual(argv, ['pg_restore', '--list'])
+            assert.deepEqual(argv, ['pg_restore', '--create', '--list'])
             return { status: 1, signal: null, stdout: '', stderr: 'untrusted' }
           },
           log: () => undefined
