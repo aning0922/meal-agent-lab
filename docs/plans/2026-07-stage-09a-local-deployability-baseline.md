@@ -4068,7 +4068,39 @@ real**，fresh smoke、八份 Secret identity、lifecycle 与 same-ledger restor
 B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持
 `Proposed`。
 
-#### M5 不可变证据协议最终收口候选（2026-08-16）
+#### M5 候选 `9eca696` 两路 BLOCK 后的证据所有权整改（2026-08-16）
+
+两路独立审计均确认 `9eca696` 仍有证据身份、archive/rootfs、generation settlement 与
+cleanup 所有权缺口。本轮不再按单条形状补丁处理，而是在实现落点 `6bdfd25` 归并：
+
+1. **OCI/rootfs**：保存的 image archive 从验证到 layer replay 持有同一个只读 fd；
+   PAX global/local owner 元数据进入闭集解释，未知会改变文件语义的 PAX 键 fail closed；
+   `/app` 与 runtime entrypoint 必须解析为受控 regular file，symlink 逃逸有独立 built
+   mutation。provenance descriptor/subject 的冲突被拒；本地 BuildKit 的空
+   `builder.id` 只作为引用和字节一致性证据，不写成已认证 builder。
+2. **build/cleanup**：M5 runtime scan 保持无 tag immutable-ID 路径；M3B/M4 为中断恢复
+   在 BuildKit 前登记唯一 per-run tag，但只有 immutable ID + build claim + 精确 tag
+   三者一致才取得清理权。Secret/build/backup 临时目录只删除登记过且 dev/ino 仍一致的
+   精确成员，未知 child 使 `rmdir` 失败；不再递归接管异步窗口后出现的路径。
+3. **generation 与 backup**：one-shot、materializer 和常驻服务以 baseline/StartedAt
+   证明本轮 generation；status 0 与 primitive failure 保持独立结论。backup TOC 要求唯一
+   database create 项、同目标 properties 和 declared/visible 计数一致；close rollback
+   仍以持有 fd 的 dev/ino 决定，不按可变路径删除。
+4. **诚实平台边界**：Docker named volume 没有 CLI 可持有的 immutable object ID，故
+   M3B/M4/M5 Docker 动态门禁限定为本地单操作者串行执行；拥有 daemon 权限的并发主体
+   在 inspect 与按名 `rm` 之间删卷重建同名替身不在本基线内，不能用多一次 inspect
+   冒充原子性。
+5. **判别力与结果**：critical-guard registry 为 **24** 项；脚本测试 **123/123**；
+   topology mutation **45/45**；runtime image **1 baseline + 14 built + 2 static-only**；
+   targeted **69/69**；local-test **75/75**；signal **5 deterministic + 6 real**。同一实现
+   从步骤 1 串行通过 `pnpm stage09a:check` **14/14**，fresh smoke、八份 Secret identity、
+   lifecycle、same-ledger restore 与最终精确清理全部 PASS。
+
+该结果仍只是本地实施候选。下一门禁是两个**全新、用户可见、互相独立、只读**的
+A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI
+无真实 run；ADR-0006 保持 `Proposed`。
+
+#### M5 不可变证据协议最终收口候选（2026-08-16，历史候选）
 
 本轮没有继续为单条审计形状追加旁路判断，而是把已经反复出现的“locator 被当作
 identity、路径被当作字节所有权、leader close 被当作整组退出”归并为一套共享协议：

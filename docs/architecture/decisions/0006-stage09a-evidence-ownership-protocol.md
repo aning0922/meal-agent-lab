@@ -43,6 +43,18 @@ claim/generation；取得 immutable ID 后，后续检查、清理和发布只�
 无 immutable identity、claim、scope 或 provenance 任一项的记录都是不完整证据；
 清理不得从可变 tag/path 重新推导所有权。
 
+这里有两个必须写明的本地平台边界：
+
+- BuildKit 启动前登记一个不可猜的 per-run tag，目的是让信号落在 iidfile/metadata
+  尚未写完的窗口时仍有恢复 locator。tag 本身不是 ownership；只有随后 inspect 同时
+  证明 immutable image ID、build claim 与**唯一且精确**的该 tag，才允许删除。
+- Docker named volume API 没有可供本地 CLI 持有的 immutable object ID，删除只能按
+  name 发起。因此本基线要求同一 Docker daemon 上的 M3B/M4/M5 动态门禁由一个操作者
+  串行执行；另一个拥有 Docker daemon 权限的主体若在最后一次 label/claim inspect 与
+  `docker volume rm` 之间删卷并创建同名替身，属于本地单操作者基线之外。若将这种并发
+  对手纳入威胁模型，必须引入 daemon 侧 lease/插件或提供 immutable volume handle 的
+  平台，不能用更多一次按名 inspect 假装原子化。
+
 ### 3. 正式 artifact 采用验证后发布
 
 备份在私有 staging 中产生。容器源 digest、宿主字节、archive TOC、正式 dump 与
@@ -69,30 +81,49 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 2. 删除或弱化该 guard 后，对应反例因“缺少指定 guard”失败；
 3. earlier guard、未捕获异常或可同步改写的总计数不能冒充判别力。
 
+### 6. 本地操作者与 builder 身份边界
+
+本阶段的目标是可重复的**本地/私有测试部署证据**，不是在不可信同机多租户上建立
+强隔离：
+
+- 运行门禁的同 EUID 进程和同一 Docker daemon 的管理员被视为受信操作者；它们本来
+  就能读本轮 Secret、改写临时目录或删除 daemon 对象。代码不得在异步窗口后递归删除
+  未登记 child，未知 child 会使 `rmdir` 失败；但主动把已登记目录 rename 到任意新名字
+  并隐藏起来的同 EUID 对手不在本基线内。
+- 本地 Docker Engine/BuildKit 的 SLSA statement 实测 `builder.id` 可以是空字符串。
+  本门禁把 provenance 当作 exported descriptor、selected manifest 和 statement subject
+  的**字节/引用一致性证据**；empty subject 只允许由 attestation descriptor reference
+  绑定，非空 subject 必须与该 reference 一致。它不把空 `builder.id` 写成已认证 builder，
+  也不声称证明远端构建者身份。
+- 上述边界只缩窄主动同权限篡改者，不豁免本仓库自身的信号、timeout、旧 generation、
+  status-0 畸形输出、路径替换或 cleanup 失败；这些仍须 fail closed/failure-safe。
+
 ## 后果
 
 - M5 在本 ADR 实施完成并经两个全新独立 A/B 审计 CLEAN 前保持“已实现、待复核，
   未 Accepted”；阶段 09A 保持 In Progress。
 - 共享 parser 与 ownership helper 会增加少量代码，但减少各入口独立解释同一外部
   证据的分叉。
-- 同 EUID、能够在同步系统调用之间任意篡改内存或内核对象的攻击者仍不在 local-test
-  威胁模型内；所有异步等待窗口、路径替换、tag 重绑和已登记资源 rename 必须覆盖。
+- 同 EUID 或具有 Docker daemon 权限的主动并发篡改者不在 local-test 单操作者威胁
+  模型内；本仓库自身产生的所有异步等待窗口、tag/identity 漂移与 cleanup 失败仍须覆盖。
 - 本地 14/14 正向门禁不再单独构成 Accepted 证据；独立反例的判别力属于验收条件。
 
 ## 实施注记
 
-2026-08-16 的当前工作分支候选在已提交实现 `d1e0ef5` 之上继续闭合本 ADR。BuildKit
-构建期不发布可变 tag；provenance descriptor、selected manifest、Config/history 与
-OCI layer replay 绑定同一 immutable identity。layer blob 以持续持有的只读 fd 消费，
-验证 digest/DiffID 后按 whiteout、hardlink 与 PAX 规则形成最终 rootfs，并校验 runtime
-payload owner/mode。Compose 的 14 服务、2 网络、10 volume 绑定 128-bit run claim，
+2026-08-16 的实现落点 `6bdfd25` 继续闭合本 ADR。M5 runtime scan 无 tag 构建并直接
+绑定 immutable ID；M3B/M4 恢复型 build 在 BuildKit 前登记唯一 per-run tag 作为异常
+窗口 locator，只有 immutable ID、build claim 与精确 tag 三者一致才取得清理权。
+provenance descriptor、selected manifest、Config/history 与 OCI layer replay 绑定同一
+immutable identity。layer blob 以持续持有的只读 fd 消费，验证 digest/DiffID 后按
+whiteout、hardlink 与 PAX 规则形成最终 rootfs，并校验 runtime payload owner/mode。
+Compose 的 14 服务、2 网络、10 volume 绑定 128-bit run claim，
 显式 raw Secret name 不得跨 project 共享；service/one-off 后续取证只使用第一次强观察
 取得的 container ID。status 0 与 stdin EPIPE 必须在整组 PGID 到达 ESRCH 后 settle。
 备份的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、uid/gid/mode，
-TOC 按 PostgreSQL 18 的真实 database/declared/visible 文法验证。15 项 registry 仍只负责
+TOC 按 PostgreSQL 18 的真实 database/declared/visible 文法验证。24 项 registry 仍只负责
 生产调用点漂移索引，不代替动态反例和 mutation 判别力。该候选从步骤 1 串行通过
-`pnpm stage09a:check` 14/14；脚本测试 114/114、Compose topology mutation 45/45、
-runtime image mutation 1 baseline + 13 built + 2 static-only、M3B signal 5+6，且 fresh
+`pnpm stage09a:check` 14/14；脚本测试 123/123、Compose topology mutation 45/45、
+runtime image mutation 1 baseline + 14 built + 2 static-only、M3B signal 5+6，且 fresh
 smoke、八份 Secret identity、lifecycle 与 same-ledger restore 均通过。该证据只证明
 本地实现候选；两个全新独立 A/B 审计、M5 Accepted、远端 CI 真实 run 和 09A 总验收
 均未完成。

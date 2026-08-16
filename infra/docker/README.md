@@ -219,7 +219,7 @@ ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：BuildKit 构建期**不发布可变 tag**，metadata 交付的 immutable manifest/index ID 与 iidfile 的 config/index identity 分角色交叉核对，后续 Config/history/save 全部绑定该 ID。文件系统证据不再经过缺少自描述身份的 `docker export`：扫描器验证 `docker image save` 的 OCI index/manifest/config/layer、compressed digest、uncompressed DiffID、history 与 provenance 绑定，再以持续持有的只读 fd 按 whiteout/hardlink/PAX 规则重放同一组内容寻址 layer 得到最终 rootfs。宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 与 dependency payload 精确相等；普通 package 文件、所有 README 与 `.bin` 都比较路径、类型、owner、mode、长度和 SHA-256/symlink target，只跳过明确的 host-specific pnpm metadata，且仅归一化传入的 deploy root。镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族）。`--keep-failure` 只说明存在 owned 临时目录，不输出物理路径 |
-| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **13 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、普通文件 mode 漂移、runtime payload owner 漂移、history-only secret、EXPOSE、secret 形态 ENV、root 用户、非默认 StopSignal 与 provenance 丢失；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；BuildKit metadata 的 manifest identity 与 iidfile 的 config/index identity 分角色交叉核对；两项 static-only 不构建 |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **14 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、普通文件 mode 漂移、runtime payload owner 漂移、入口 symlink 逃出 `/app` 权限边界、history-only secret、EXPOSE、secret 形态 ENV、root 用户、非默认 StopSignal 与 provenance 丢失；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；BuildKit metadata 的 manifest identity 与 iidfile 的 config/index identity 分角色交叉核对；两项 static-only 不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
 期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
@@ -376,7 +376,7 @@ static-only**，signal 保持 **5 deterministic + 6 real**。完整链从步骤 
 identity、lifecycle、same-ledger restore 与 scoped cleanup 均 PASS。下一门禁是两个
 全新独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
-**最新证据闭合修订（2026-08-16，覆盖上段架构候选状态）**：实现落点 `d1e0ef5`
+**历史证据闭合修订（2026-08-16，已由下段当前状态覆盖）**：实现落点 `d1e0ef5`
 不再用 scratch container/`docker export` 取得 runtime rootfs，而是验证并重放
 `docker image save` 的内容寻址 OCI layer；BuildKit、Compose、container、PGID 与
 lifecycle cleanup 全部绑定 immutable identity/claim 和 generation。backup 使用稳定
@@ -388,19 +388,21 @@ dump 发布同一字节。15 项 critical-guard registry 只做生产调用点�
 fresh smoke、八份 Secret identity、lifecycle 与 restore 全部 PASS。下一门禁是两个全新
 独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
-**当前不可变证据协议收口（2026-08-16，覆盖上段候选状态）**：当前工作分支候选把
-BuildKit 构建改为无 tag 发布，并把 provenance descriptor、selected manifest、Config、
-history 与 OCI layer replay 绑定同一 immutable identity；layer 以持有到消费完成的只读
-fd 验证 digest/DiffID，最终 rootfs 重放 whiteout、hardlink 与 PAX 元数据并校验 owner/mode。
+**当前证据所有权整改（2026-08-16，覆盖上段候选状态）**：实现落点 `6bdfd25` 将
+M5 runtime scan 的无 tag immutable-ID 路径，与 M3B/M4 恢复型 build 的唯一 per-run
+tag locator 分开；后者只有在 immutable ID、build claim 与精确 tag 三者一致后才取得
+清理权。provenance descriptor、selected manifest、Config/history 与 OCI layer replay
+绑定同一 immutable identity；layer 以持有到消费完成的只读 fd 验证 digest/DiffID，
+最终 rootfs 重放 whiteout、hardlink 与 PAX 元数据并校验 owner/mode。
 Compose 每轮以 128-bit run claim 同时标记 14 服务、2 网络与 10 volume，跨 project 的
 显式 raw Secret `name:` 由 topology 门禁拒绝；service 与 one-off 后续取证只使用首次强
 观察取得的 container ID。进程 status 0 与 stdin EPIPE 只能在整组 PGID 到达 ESRCH 后
 settle。backup 的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、
 uid/gid/mode，TOC 文法按 PostgreSQL 18 真实输出校验 database 项与 declared/visible
-计数。当前硬计数为脚本测试 **114/114**、topology mutation **45/45**、runtime image
-mutation **1 baseline + 13 built + 2 static-only**、targeted **69/69**、local-test
-**75/75**、signal **5 deterministic + 6 real**。本轮仍须从步骤 1 完整运行
-`pnpm stage09a:check`，并在全绿后交给两个全新独立只读 A/B 审计；M5 未 Accepted、
+计数。当前硬计数为脚本测试 **123/123**、topology mutation **45/45**、runtime image
+mutation **1 baseline + 14 built + 2 static-only**、targeted **69/69**、local-test
+**75/75**、signal **5 deterministic + 6 real**。同一实现已从步骤 1 完整通过
+`pnpm stage09a:check` 14/14；下一门禁是两个全新独立只读 A/B 审计。M5 未 Accepted、
 09A 未 Pass、远端 CI 无真实 run。
 
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
@@ -465,8 +467,9 @@ M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手
   UID/mode 实证、以及「Secret 不进入 Git / 模板 / environment / argv /
   inspect / image history / logs」这条扫描线。
 
-每次 smoke/probe 运行先取得 BuildKit 本轮交付的 immutable image ID，再经临时
-Compose override 直接引用该 ID；构建期不发布可变 tag。三个 API 镜像服务容器的
+每次 smoke/probe 在 BuildKit 前登记唯一 per-run tag 作为异常窗口恢复 locator，随后
+取得本轮 immutable image ID，并经临时 Compose override 直接引用该 ID；只有 ID、
+build claim 与精确 tag 同时一致才取得 cleanup 所有权。三个 API 镜像服务容器的
 `.Image` 必须等于该 ID，cleanup 只删除带本轮 build claim 的精确 immutable image。
 因此并行 worktree/project 不会通过共享 tag 互相覆盖镜像。
 

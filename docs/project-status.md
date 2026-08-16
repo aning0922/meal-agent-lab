@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-**当前 M5 不可变证据协议事实（2026-08-16，覆盖下方历史轮次）**：在已提交实现 `d1e0ef5` 之上，当前工作分支候选进一步取消 BuildKit 可变 tag 发布，把 provenance、Config/history 与持有 fd 的 OCI layer replay 绑定同一 immutable identity；Compose 的服务/网络/卷资源绑定不可猜 run claim，容器取证绑定第一次强观察取得的 ID；status 0 与 stdin EPIPE 只能在整个 PGID 到达 ESRCH 后 settle；backup TOC、sidecar 与正式 dump 绑定同一字节快照、fd/inode、uid/gid/mode。`critical-guard registry` 只索引生产调用点及发现机械漂移，不单独证明安全属性或 mutation 判别力。该候选从步骤 1 串行通过 `pnpm stage09a:check` **14/14**；脚本测试 **114/114**、topology mutation **45/45**、runtime image mutation **1 baseline + 13 built + 2 static-only**、targeted **69/69**、local-test **75/75**、signal **5+6**，八份 Secret identity、fresh smoke、lifecycle 与 restore 均通过。下一门禁是两个全新独立只读 A/B 审计；**M5 仍未 Accepted、09A 未 Pass、远端 CI 无真实 run**。
+**当前 M5 证据所有权事实（2026-08-16，覆盖下方历史轮次）**：候选 `9eca696` 的两路独立审计均为 BLOCK；实现落点 `6bdfd25` 已归并关闭 PAX/rootfs、provenance、archive fd、backup TOC、generation settlement 与精确 cleanup 的共同根因。runtime scan 的无 tag immutable-ID 路径与 M3B/M4 的恢复 tag locator 分开表述；tag 从不充当 ownership。Compose 资源继续绑定 run claim；Docker named volume 的按名删除明确限定于本地单操作者、串行门禁。`critical-guard registry` 只索引生产调用点，不单独证明安全属性。实现从步骤 1 串行通过 `pnpm stage09a:check` **14/14**；脚本测试 **123/123**、topology mutation **45/45**、runtime image mutation **1 baseline + 14 built + 2 static-only**、targeted **69/69**、local-test **75/75**、signal **5+6**，八份 Secret identity、fresh smoke、lifecycle 与 restore 均通过。下一门禁是两个全新独立只读 A/B 审计；**M5 仍未 Accepted、09A 未 Pass、远端 CI 无真实 run**。
 
 阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1、M2A、M2B、M3A、M3B 与 M4 均已 Accepted；M5 当前不可变证据协议候选本地完整门禁 14/14 全绿，等待两个全新 A/B 独立只读审计，**M5 仍未 Accepted**。远端 CI 只登记 workflow 已配置、无真实 run，ADR-0005 已转 `Accepted`，ADR-0006 保持 `Proposed`。**09A 总验收未完成，阶段 09A 仍不得记为 Pass。**详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
@@ -127,7 +127,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
-| audit、runtime image、M4 remediation 与聚合器/CI 脚本单测 | 114/114 |
+| audit、runtime image、M4 remediation 与聚合器/CI 脚本单测 | 123/123 |
 | generated adapter 只读门禁 | 4/4 逐字节一致 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
