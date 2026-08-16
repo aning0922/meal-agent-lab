@@ -24,10 +24,7 @@ import {
   createCommandRunner,
   createProcessGroupLifecycle
 } from '../../infra/docker/m3b-subprocess.mjs'
-import {
-  classifyOwnedImageTag,
-  parseBuildMetadataImageIdentity
-} from '../../infra/docker/m3b-docker.mjs'
+import { parseBuildMetadataImageIdentity } from '../../infra/docker/m3b-docker.mjs'
 import { parseProbeEvidence } from '../../infra/docker/probe-compose-secret-identity.mjs'
 import { interpretPrerequisiteEvidence } from '../stage09a-prerequisite-evidence.mjs'
 
@@ -50,7 +47,16 @@ test('BuildKit metadata keeps manifest and config identities distinct and fail c
       },
       'image.name': 'docker.io/library/meal-agent-api:m5-fixture'
     })),
-    { imageId: manifest, configId: config }
+    {
+      imageId: manifest,
+      configId: config,
+      descriptor: {
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        digest: manifest,
+        size: 123,
+        platform: { architecture: 'arm64', os: 'linux' }
+      }
+    }
   )
   assert.deepEqual(
     parseBuildMetadataImageIdentity(JSON.stringify({
@@ -61,7 +67,16 @@ test('BuildKit metadata keeps manifest and config identities distinct and fail c
         size: 123
       }
     })),
-    { imageId: manifest, configId: null }
+    {
+      imageId: manifest,
+      configId: null,
+      descriptor: {
+        mediaType: 'application/vnd.oci.image.index.v1+json',
+        digest: manifest,
+        size: 123,
+        platform: null
+      }
+    }
   )
   for (const malformed of [
     'not-json-METADATA-SENTINEL',
@@ -297,6 +312,7 @@ test('a status-zero one-off result is not evidence unless the owned container ac
   })
   const run = async (argv) => {
     if (argv[1] === 'container' && argv[2] === 'inspect') return absent(argv[3])
+    if (argv[1] === 'ps') return { status: 0, signal: null, stdout: '', stderr: '' }
     throw new Error('unexpected fixture command')
   }
   const compose = async () => ({ status: 0, signal: null, stdout: '', stderr: '' })
@@ -378,15 +394,6 @@ test('a transient termination primitive failure is retried before lifecycle sett
   assert.equal(killAttempts >= 2, true)
 })
 
-test('per-run image cleanup removes only the immutable identity this run recorded', () => {
-  const imageA = `sha256:${'a'.repeat(64)}`
-  const imageB = `sha256:${'b'.repeat(64)}`
-  assert.equal(classifyOwnedImageTag(null, imageA), 'absent')
-  assert.equal(classifyOwnedImageTag(imageA, null), 'unproven')
-  assert.equal(classifyOwnedImageTag(imageA, imageB), 'drifted')
-  assert.equal(classifyOwnedImageTag(imageA, imageA), 'owned')
-})
-
 test('one-off command failures never expose caller-controlled error text', async () => {
   const sentinel = 'UNTRUSTED-M4-FAILURE-SENTINEL'
   const absent = (name) => ({
@@ -397,6 +404,7 @@ test('one-off command failures never expose caller-controlled error text', async
   })
   const run = async (argv) => {
     if (argv[1] === 'container' && argv[2] === 'inspect') return absent(argv[3])
+    if (argv[1] === 'ps') return { status: 0, signal: null, stdout: '', stderr: '' }
     throw new Error('unexpected fixture command')
   }
   const compose = async () => {

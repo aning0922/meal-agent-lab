@@ -187,7 +187,8 @@ export const performRestore = async (
   try {
     listed = await run(['pg_restore', '--create', '--list'], {
       timeoutMs: 120_000,
-      stdin: verifiedBytes
+      stdin: verifiedBytes,
+      allowSuccessfulStdinEpipe: true
     })
     if (listed.status !== 0) throw new Error(archiveStructureReason)
     parsePgRestoreListEvidence(listed.stdout)
@@ -285,8 +286,20 @@ export const createRestoreCommandRunner = (
   { defaultCwd = composeDirectory, defaultEnv = process.env } = {}
 ) => (
   commandArgs,
-  { env, timeoutMs = 120_000, cwd = defaultCwd, stdin = null } = {}
-) => runner(commandArgs, { env: env ?? defaultEnv, timeoutMs, cwd, stdin })
+  {
+    env,
+    timeoutMs = 120_000,
+    cwd = defaultCwd,
+    stdin = null,
+    allowSuccessfulStdinEpipe = false
+  } = {}
+) => runner(commandArgs, {
+  env: env ?? defaultEnv,
+  timeoutMs,
+  cwd,
+  stdin,
+  allowSuccessfulStdinEpipe
+})
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2)

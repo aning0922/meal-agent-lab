@@ -20,7 +20,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'compose.project-per-secret-probe-v1',
     file: 'infra/docker/check-compose-topology.mjs',
-    needle: 'evidence.name !== composeProjectName',
+    needle: '...Object.values(probe.secrets ?? {}).map((secret) => secret.name)',
     occurrences: 1
   },
   {
@@ -33,13 +33,13 @@ export const m5CriticalGuardRegistry = Object.freeze([
     id: 'runtime.positive-build-claim-v1',
     file: 'infra/docker/check-api-runtime-image.mjs',
     needle: 'expectedClaimToken: cleanupState.imageClaimToken',
-    occurrences: 4
+    occurrences: 2
   },
   {
     id: 'runtime.mutation-build-claim-v1',
     file: 'infra/docker/check-api-runtime-image-mutations.mjs',
     needle: 'expectedClaimToken: claimToken',
-    occurrences: 4
+    occurrences: 1
   },
   {
     id: 'runtime.content-addressed-rootfs-v1',

@@ -56,11 +56,14 @@ export const requireClosedRecord = (
  * 注释/头信息以 `;` 开头，真实 TOC 行以 dump id + catalog OID 对开头。至少要有
  * 一条 TOC；任意未知非空行、NUL、CR 或超界输出都 fail closed。PostgreSQL custom
  * archives 的 `TOC Entries` 还包含三条不会出现在 Selected TOC Entries 列表里的
- * archive-setting entries（ENCODING / STDSTRINGS / SEARCHPATH）。`--create` 使 DATABASE
- * 与可选 DATABASE PROPERTIES 都进入可见列表，因此完整性关系稳定为
- * declared = visible + 3，而不会随数据库级设置漂移。
+ * archive-setting entries。PostgreSQL 18 的 `--create --list` 会物化 DATABASE，
+ * DATABASE PROPERTIES 则可缺席；数据库身份同时由精确 `dbname` header 与唯一
+ * DATABASE capability 行绑定，完整性关系为 declared = visible + 3。
  */
-export const parsePgRestoreListEvidence = (text) => {
+export const parsePgRestoreListEvidence = (
+  text,
+  { expectedDatabase = 'meal_agent' } = {}
+) => {
   if (
     typeof text !== 'string' ||
     text.length === 0 ||
@@ -75,6 +78,12 @@ export const parsePgRestoreListEvidence = (text) => {
   let sawArchiveHeader = false
   let sawCustomFormat = false
   let sawDumpVersion = false
+  let headerDatabase = null
+  let databaseEntries = 0
+  let targetDatabaseEntries = 0
+  let databasePropertyEntries = 0
+  let targetDatabasePropertyEntries = 0
+  const dumpIds = new Set()
   for (const line of text.split('\n')) {
     if (line === '') continue
     if (line.startsWith(';')) {
@@ -86,10 +95,26 @@ export const parsePgRestoreListEvidence = (text) => {
       if (/^;\s+Dump Version: [1-9][0-9]*\.[0-9]+(?:-[0-9]+)?$/.test(line)) {
         sawDumpVersion = true
       }
+      const databaseHeader = /^;\s+dbname: ([A-Za-z_][A-Za-z0-9_]*)$/.exec(line)
+      if (databaseHeader !== null) headerDatabase = databaseHeader[1]
       continue
     }
-    if (!/^[1-9][0-9]*; [0-9]+ [0-9]+ .+$/.test(line)) {
+    const entry = /^([1-9][0-9]*); ([0-9]+) ([0-9]+) (.+)$/.exec(line)
+    if (entry === null || dumpIds.has(entry[1])) {
       throw new EvidenceProtocolError('archive-list-shape')
+    }
+    dumpIds.add(entry[1])
+    if (entry[4].startsWith('DATABASE - ')) {
+      databaseEntries += 1
+      if (entry[4].startsWith(`DATABASE - ${expectedDatabase} `)) {
+        targetDatabaseEntries += 1
+      }
+    }
+    if (entry[4].startsWith('DATABASE PROPERTIES - ')) {
+      databasePropertyEntries += 1
+      if (entry[4].startsWith(`DATABASE PROPERTIES - ${expectedDatabase} `)) {
+        targetDatabasePropertyEntries += 1
+      }
     }
     entries += 1
   }
@@ -99,11 +124,16 @@ export const parsePgRestoreListEvidence = (text) => {
     !sawArchiveHeader ||
     !sawCustomFormat ||
     !sawDumpVersion ||
+    headerDatabase !== expectedDatabase ||
+    databaseEntries !== 1 ||
+    targetDatabaseEntries !== 1 ||
+    databasePropertyEntries > 1 ||
+    targetDatabasePropertyEntries !== databasePropertyEntries ||
     declaredEntries !== entries + 3
   ) {
     throw new EvidenceProtocolError('archive-list-incomplete')
   }
-  return Object.freeze({ comments, entries })
+  return Object.freeze({ comments, entries, database: expectedDatabase })
 }
 
 const sha256OfBytes = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -115,6 +145,9 @@ const statIdentity = (path, stat, sha256) =>
     ino: stat.ino,
     nlink: stat.nlink,
     size: stat.size,
+    uid: stat.uid,
+    gid: stat.gid,
+    mode: stat.mode & 0o7777n,
     sha256
   })
 
@@ -166,7 +199,16 @@ export const readStableRegularFile = (
 export const identityStillNamesFile = (identity) => {
   try {
     const stat = lstatSync(identity.path, { bigint: true })
-    return stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino
+    return (
+      stat.isFile() &&
+      stat.dev === identity.dev &&
+      stat.ino === identity.ino &&
+      stat.nlink === identity.nlink &&
+      stat.size === identity.size &&
+      stat.uid === identity.uid &&
+      stat.gid === identity.gid &&
+      (stat.mode & 0o7777n) === identity.mode
+    )
   } catch {
     return false
   }
@@ -217,6 +259,9 @@ export const verifyPublishedFileEvidence = (identity, expectedBytes) => {
       observed.identity.ino === identity.ino &&
       observed.identity.nlink === 1n &&
       observed.identity.size === BigInt(expectedBytes.length) &&
+      observed.identity.uid === identity.uid &&
+      observed.identity.gid === identity.gid &&
+      observed.identity.mode === identity.mode &&
       observed.identity.sha256 === identity.sha256 &&
       observed.bytes.equals(expectedBytes)
     )
@@ -243,13 +288,24 @@ export const writeExclusiveEvidenceFile = (
       mode
     )
     const opened = fstatSync(fd, { bigint: true })
-    if (!opened.isFile() || opened.nlink !== 1n) {
+    if (
+      !opened.isFile() ||
+      opened.nlink !== 1n ||
+      (opened.mode & 0o7777n) !== BigInt(mode)
+    ) {
       throw new EvidenceProtocolError(code)
     }
     createdIdentity = statIdentity(path, opened, sha256OfBytes(Buffer.alloc(0)))
     writeFileSync(fd, bytes)
     const stat = fstatSync(fd, { bigint: true })
-    if (!stat.isFile() || stat.nlink !== 1n || stat.size !== BigInt(bytes.length)) {
+    if (
+      !stat.isFile() ||
+      stat.nlink !== 1n ||
+      stat.size !== BigInt(bytes.length) ||
+      stat.uid !== opened.uid ||
+      stat.gid !== opened.gid ||
+      (stat.mode & 0o7777n) !== BigInt(mode)
+    ) {
       throw new EvidenceProtocolError(code)
     }
     resultIdentity = statIdentity(path, stat, sha256OfBytes(bytes))

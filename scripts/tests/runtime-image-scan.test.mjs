@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync
@@ -315,6 +316,109 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
   }
 })
 
+test('verified layer replay consumes inherited descriptors rather than a replaceable path', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-layer-custody-'))
+  try {
+    const buildLayer = (name, contents) => {
+      const root = resolve(directory, `${name}-root`)
+      const archive = resolve(directory, `${name}.tar`)
+      mkdirSync(root)
+      mkdirSync(resolve(root, 'app'))
+      writeFileSync(resolve(root, 'app/payload.txt'), contents)
+      const packed = spawnSync(
+        'tar',
+        ['--format=ustar', '--uid', '0', '--gid', '0', '-cf', archive, '-C', root, '.'],
+        { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+      )
+      assert.equal(packed.status, 0, packed.stderr)
+      return archive
+    }
+    const layerA = buildLayer('a', 'VERIFIED-A')
+    const layerB = buildLayer('b', 'UNVERIFIED-B')
+    const layerBytes = readFileSync(layerA)
+    const digest = createHash('sha256').update(layerBytes).digest('hex')
+    const blobDirectory = resolve(directory, 'saved/blobs/sha256')
+    mkdirSync(blobDirectory, { recursive: true })
+    writeFileSync(resolve(blobDirectory, digest), layerBytes)
+    const saved = resolve(directory, 'saved.tar')
+    const packed = spawnSync(
+      'tar',
+      ['--format=ustar', '-cf', saved, '-C', resolve(directory, 'saved'), 'blobs'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
+    assert.equal(packed.status, 0, packed.stderr)
+
+    const strict = createStrictRunner(throwingFatal)
+    let replaced = false
+    const runStrict = async (args, options) => {
+      if (!replaced && args[0] === 'tar' && args[1] === '-tf') {
+        const spool = `${saved}.layers/0.tar`
+        renameSync(spool, `${spool}.aside`)
+        writeFileSync(spool, readFileSync(layerB))
+        replaced = true
+      }
+      return strict(args, options)
+    }
+    const materialized = resolve(directory, 'materialized')
+    mkdirSync(materialized)
+    await verifySavedImageLayers(
+      saved,
+      [`blobs/sha256/${digest}`],
+      [{ digest: `sha256:${digest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar' }],
+      [`sha256:${digest}`],
+      throwingFatal,
+      { materializeRoot: materialized, runStrict }
+    )
+    assert.equal(replaced, true)
+    assert.equal(readFileSync(resolve(materialized, 'app/payload.txt'), 'utf8'), 'VERIFIED-A')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('layer replay rejects a whiteout marker without a basename', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-layer-whiteout-'))
+  try {
+    const root = resolve(directory, 'layer-root')
+    mkdirSync(resolve(root, 'app'), { recursive: true })
+    writeFileSync(resolve(root, 'app/.wh.'), '')
+    const layer = resolve(directory, 'layer.tar')
+    const packedLayer = spawnSync(
+      'tar',
+      ['--format=ustar', '--uid', '0', '--gid', '0', '-cf', layer, '-C', root, '.'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
+    assert.equal(packedLayer.status, 0, packedLayer.stderr)
+    const bytes = readFileSync(layer)
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    const blobDirectory = resolve(directory, 'saved/blobs/sha256')
+    mkdirSync(blobDirectory, { recursive: true })
+    writeFileSync(resolve(blobDirectory, digest), bytes)
+    const saved = resolve(directory, 'saved.tar')
+    const packed = spawnSync(
+      'tar',
+      ['--format=ustar', '-cf', saved, '-C', resolve(directory, 'saved'), 'blobs'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
+    assert.equal(packed.status, 0, packed.stderr)
+    const materialized = resolve(directory, 'materialized')
+    mkdirSync(materialized)
+    await assert.rejects(
+      verifySavedImageLayers(
+        saved,
+        [`blobs/sha256/${digest}`],
+        [{ digest: `sha256:${digest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar' }],
+        [`sha256:${digest}`],
+        throwingFatal,
+        { materializeRoot: materialized, runStrict: createStrictRunner(throwingFatal) }
+      ),
+      /invalid whiteout marker/
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('OCI descriptor media types are exact for each evidence role', () => {
   const digest = `sha256:${'a'.repeat(64)}`
   const valid = (mediaType) => ({ digest, size: 1, mediaType })
@@ -365,7 +469,14 @@ test('SLSA provenance requires the supported predicate envelope', () => {
     predicate: { buildDefinition, runDetails }
   }
   assert.equal(validateSlsaProvenanceStatement(statement, throwingFatal), statement)
+  const untaggedStatement = { ...statement, subject: [] }
+  assert.equal(
+    validateSlsaProvenanceStatement(untaggedStatement, throwingFatal),
+    untaggedStatement
+  )
   for (const mutation of [
+    { ...statement, subject: null },
+    { ...statement, subject: [{}] },
     { ...statement, predicate: undefined },
     { ...statement, predicate: { runDetails } },
     { ...statement, predicate: { buildDefinition } },
@@ -592,10 +703,10 @@ test('scratch-container cleanup ownership is proven by exact identity, image, na
   }
 })
 
-test('the scan resolves a mutable tag once and binds all later evidence to the immutable ID', () => {
+test('the production scan consumes an immutable ID while a test-only locator resolves at most once', () => {
   const source = readFileSync(resolve(import.meta.dirname, '../../infra/docker/api-image-scan.mjs'), 'utf8')
   const scanBody = source.slice(source.indexOf('export const scanImage'))
-  assert.equal((scanBody.match(/imageTag/g) ?? []).length, 2, 'signature plus first tag resolution only')
+  assert.match(scanBody, /imageTag === null\s*\? expectedImageId/)
   assert.match(scanBody, /\['docker', 'image', 'inspect', imageId\]/)
   assert.match(scanBody, /\['docker', 'image', 'save', '-o', savedImageTarPath, imageId\]/)
   assert.match(scanBody, /validateSavedImageArchive\([\s\S]*?imageInspect[\s\S]*?historyRows/)
@@ -614,18 +725,22 @@ test('runtime image entrypoints bind builds and cleanup to immutable ownership e
     'utf8'
   )
 
-  for (const source of [positive, mutations]) {
-    assert.match(source, /--iidfile/)
-    assert.match(source, /parseDockerImageId/)
-    assert.match(source, /expectedImageId:/)
-    assert.match(source, /parseClaimedBuildImage/)
-    assert.match(source, /foreign (?:container|tag) was preserved/)
-    assert.match(source, /cleanupPromise: null/)
-    assert.match(source, /return cleanupState\.cleanupPromise/)
-    assert.match(source, /built image identity could not be recovered/)
-    assert.match(source, /image tag (?:was not proven absent|still present) after (?:cleanup|removal)/)
-  }
-  assert.match(mutations, /builtTags: new Map\(\)/)
+  assert.match(positive, /--iidfile/)
+  assert.match(positive, /parseCanonicalDockerImageId/)
+  assert.match(positive, /expectedImageId: builtImageId/)
+  assert.match(positive, /parseClaimedBuildImage/)
+  assert.doesNotMatch(positive, /'--tag'/)
+  assert.match(positive, /imageTag: null/)
+  assert.match(positive, /cleanupPromise: null/)
+  assert.match(positive, /return cleanupState\.cleanupPromise/)
+  assert.match(positive, /built image identity could not be recovered/)
+
+  assert.match(mutations, /--iidfile/)
+  assert.match(mutations, /expectedImageId:/)
+  assert.match(mutations, /parseClaimedBuildImage/)
+  assert.match(mutations, /builds: new Map\(\)/)
+  assert.match(mutations, /imageTag: null/)
+  assert.doesNotMatch(mutations, /'--tag'/)
 })
 
 test('strict command failures never echo runner-controlled stderr or exception text', async () => {

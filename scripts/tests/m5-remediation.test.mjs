@@ -5,6 +5,7 @@ import {
   existsSync,
   chmodSync,
   linkSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -21,6 +22,7 @@ import {
   assertBackupTargetsIgnored,
   performBackup,
   promoteBackupNoReplace,
+  retirePrivateBackupDirectory,
   writeChecksumSidecarNoReplace
 } from '../../infra/docker/backup-local-test.mjs'
 import { discardOverride, imageIdOf, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
@@ -132,6 +134,37 @@ test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10
       return true
     }
   )
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('runCommand accepts an explicitly allowed successful stdin EPIPE only after cleanup', { timeout: 10_000 }, async () => {
+  const before = new Set(observedDescendantPgids())
+  const result = await runCommand(
+    ['/bin/sh', '-c', 'exec 0<&-; sleep 0.05; exit 0'],
+    {
+      stdin: Buffer.alloc(16 * 1024 * 1024, 0x41),
+      timeoutMs: 60_000,
+      allowSuccessfulStdinEpipe: true
+    }
+  )
+  assert.equal(result.status, 0)
+  const created = observedDescendantPgids().filter((pgid) => !before.has(pgid))
+  assert.equal(created.length, 1)
+  assertProcessGroupGoneAtSettlement(created[0])
+  assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('runCommand status-zero settlement terminates a leader-close descendant first', { timeout: 10_000 }, async () => {
+  const before = new Set(observedDescendantPgids())
+  const result = await runCommand([
+    '/bin/sh',
+    '-c',
+    'trap "" TERM INT HUP; (trap "" TERM INT HUP; sleep 30) </dev/null >/dev/null 2>&1 & exit 0'
+  ])
+  assert.equal(result.status, 0)
+  const created = observedDescendantPgids().filter((pgid) => !before.has(pgid))
+  assert.equal(created.length, 1)
+  assertProcessGroupGoneAtSettlement(created[0])
   assert.deepEqual(unconfirmedProcessGroups(), [])
 })
 
@@ -635,6 +668,37 @@ test('backup promotion never acquires deletion ownership from a replaced publish
   assert.equal(result.ownedAside, 'PGDMP-OWNED')
 })
 
+test('backup private cleanup preserves a pathname replacement after async validation', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-private-retire-'))
+  const partial = resolve(directory, 'fixture.dump.partial')
+  const ownedAside = resolve(tmpdir(), `meal-agent-owned-aside-${process.pid}-${Date.now()}`)
+  try {
+    writeFileSync(partial, 'PGDMP-OWNED', { mode: 0o600 })
+    const directoryStat = lstatSync(directory, { bigint: true })
+    const fileStat = lstatSync(partial, { bigint: true })
+    const directoryIdentity = Object.freeze({
+      path: directory,
+      dev: directoryStat.dev,
+      ino: directoryStat.ino
+    })
+    const fileIdentity = Object.freeze({ path: partial, dev: fileStat.dev, ino: fileStat.ino })
+
+    renameSync(partial, ownedAside)
+    writeFileSync(partial, 'PGDMP-FOREIGN', { mode: 0o600 })
+    const residue = retirePrivateBackupDirectory(directoryIdentity, [fileIdentity])
+
+    assert.deepEqual(residue, [
+      'backup partial file ownership drifted',
+      'backup partial directory cleanup failed'
+    ])
+    assert.equal(readFileSync(partial, 'utf8'), 'PGDMP-FOREIGN')
+    assert.equal(readFileSync(ownedAside, 'utf8'), 'PGDMP-OWNED')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+    rmSync(ownedAside, { force: true })
+  }
+})
+
 test('backup cleanup failure rolls back the formal dump and sidecar before rejection', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-settlement-'))
   const containers = new Map()
@@ -692,10 +756,12 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
         signal: null,
         stdout:
           '; Archive created at fixture\n' +
-          ';     TOC Entries: 4\n' +
+          ';     TOC Entries: 5\n' +
           ';     Dump Version: 1.16-0\n' +
           ';     Format: CUSTOM\n' +
-          '1; 2615 2200 SCHEMA - public owner\n',
+          ';     dbname: meal_agent\n' +
+          '1; 1262 1 DATABASE - meal_agent owner\n' +
+          '2; 0 0 DATABASE PROPERTIES - meal_agent owner\n',
         stderr: ''
       }
     }
@@ -784,13 +850,14 @@ test('restore rejects a checksum-valid malformed archive before any Compose side
 
 test('M4 restarts only the exact existing container without traversing Compose dependencies', async () => {
   const calls = []
+  const containerId = 'a'.repeat(64)
   await startExistingContainer(async (argv, options) => {
     calls.push({ argv, options })
     return { status: 0, signal: null, stdout: 'fixture-postgres-1\n', stderr: '' }
-  }, 'fixture-postgres-1')
+  }, containerId)
   assert.deepEqual(calls, [
     {
-      argv: ['docker', 'start', 'fixture-postgres-1'],
+      argv: ['docker', 'start', containerId],
       options: { timeoutMs: 120_000 }
     }
   ])
@@ -799,7 +866,7 @@ test('M4 restarts only the exact existing container without traversing Compose d
   await assert.rejects(
     startExistingContainer(
       async () => ({ status: 7, signal: null, stdout: '', stderr: sentinel }),
-      'fixture-postgres-1'
+      containerId
     ),
     (error) =>
       error instanceof Error &&
@@ -1069,7 +1136,7 @@ test('temporary compose override cleanup is bound to the inode this run created'
   try {
     const path = resolve(directory, 'override.yaml')
     const original = resolve(directory, 'owned.yaml')
-    writeImageOverride(path, 'meal-agent-api:m3b-fixture')
+    writeImageOverride(path, `sha256:${'a'.repeat(64)}`, 'b'.repeat(32))
     renameSync(path, original)
     writeFileSync(path, 'foreign')
     discardOverride(path)

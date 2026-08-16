@@ -32,6 +32,7 @@ import {
   readSync,
   realpathSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync
 } from 'node:fs'
@@ -56,6 +57,7 @@ import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subp
 import {
   parsePgRestoreListEvidence,
   directoryEvidenceStillNames,
+  identityStillNamesFile,
   readStableRegularFile,
   sha256Bytes,
   snapshotDirectoryEvidence,
@@ -104,6 +106,41 @@ const removeOwnedFile = (identity) => {
   if (!identityMatches(identity)) return false
   unlinkSync(identity.path)
   return true
+}
+
+/**
+ * Retire a private backup directory without ever using recursive deletion after an
+ * asynchronous boundary. Only explicitly captured file inodes may be unlinked; an
+ * unknown or replaced entry keeps the directory non-empty and is reported.
+ */
+export const retirePrivateBackupDirectory = (directoryIdentity, fileIdentities) => {
+  const residue = []
+  try {
+    const current = lstatSync(directoryIdentity.path, { bigint: true })
+    if (
+      !current.isDirectory() ||
+      current.dev !== directoryIdentity.dev ||
+      current.ino !== directoryIdentity.ino
+    ) {
+      return ['backup partial directory ownership drifted']
+    }
+    for (const identity of fileIdentities) {
+      if (identity === null || !existsSync(identity.path)) continue
+      if (!removeOwnedFile(identity)) residue.push('backup partial file ownership drifted')
+    }
+    try {
+      rmdirSync(directoryIdentity.path)
+    } catch {
+      residue.push('backup partial directory cleanup failed')
+    }
+  } catch {
+    residue.push(
+      existsSync(directoryIdentity.path)
+        ? 'backup partial directory cleanup failed'
+        : 'backup partial directory identity disappeared before cleanup'
+    )
+  }
+  return residue
 }
 
 const createPrivateBackupDirectory = (parent) => {
@@ -339,6 +376,7 @@ export const performBackup = async (
   let cleanupChain = Promise.resolve()
   let transientCleanupChain = Promise.resolve()
   let partialDirectoryRetired = false
+  let privatePartialIdentity = null
   const cleanupTransientArtifacts = () => {
     const next = transientCleanupChain.then(async () => {
       const residue = []
@@ -346,17 +384,12 @@ export const performBackup = async (
         if (partialDirectoryRetired) {
           // An idempotent cleanup call after a proven removal has no new work.
         } else {
-          const current = lstatSync(partialDirectory, { bigint: true })
-          if (
-            !current.isDirectory() ||
-            current.dev !== partialDirectoryIdentity.dev ||
-            current.ino !== partialDirectoryIdentity.ino
-          ) {
-            residue.push('backup partial directory ownership drifted')
-          } else {
-            rmSync(partialDirectory, { recursive: true, force: true })
-            partialDirectoryRetired = true
-          }
+          const privateResidue = retirePrivateBackupDirectory(
+            partialDirectoryIdentity,
+            [privatePartialIdentity]
+          )
+          residue.push(...privateResidue)
+          partialDirectoryRetired = privateResidue.length === 0
         }
       } catch {
         if (!partialDirectoryRetired) {
@@ -460,6 +493,10 @@ export const performBackup = async (
           if (copied.status !== 0) {
             throw new Error('backup handoff failed')
           }
+          // No asynchronous boundary exists between docker cp settlement and this
+          // identity capture. Cleanup may unlink only this inode, never whatever the
+          // pathname names after pg_restore has run.
+          privatePartialIdentity = fileIdentity(hostPartial)
           if (sha256OfFile(hostPartial) !== digestMatch[1]) {
             throw new Error('backup handoff bytes differed from the container source')
           }
@@ -469,22 +506,32 @@ export const performBackup = async (
           const source = readStableRegularFile(hostPartial, {
             code: 'backup-source-evidence'
           })
-          if (source.identity.sha256 !== digestMatch[1]) {
+          if (
+            source.identity.dev !== privatePartialIdentity.dev ||
+            source.identity.ino !== privatePartialIdentity.ino ||
+            source.identity.sha256 !== digestMatch[1]
+          ) {
             throw new Error('backup handoff bytes differed from the container source')
           }
           log('backup evidence: immutable source snapshot acquired')
           const listed = await run(['pg_restore', '--create', '--list'], {
             timeoutMs: 120_000,
             cwd: repositoryRoot,
-            stdin: source.bytes
+            stdin: source.bytes,
+            allowSuccessfulStdinEpipe: true
           })
           if (listed.status !== 0) {
             throw new Error('the backup archive structure could not be validated')
           }
+          log('backup evidence: archive-list command completed')
           try {
             parsePgRestoreListEvidence(listed.stdout)
           } catch {
             throw new Error('the backup archive structure could not be validated')
+          }
+          log('backup evidence: archive-list grammar validated')
+          if (!identityStillNamesFile(source.identity)) {
+            throw new Error('the backup source ownership drifted during archive validation')
           }
           log('backup evidence: complete custom-archive TOC validated')
 
@@ -597,9 +644,13 @@ export const performBackup = async (
     }
     throw error
   } finally {
-    const residue = await cleanupArtifacts()
+    // 成功分支已经在最后一次正式制品复核之前完成 transient cleanup。这里不得再
+    // 引入一个新的异步 Docker 边界，否则复核后的正式 inode 又会出现未看守窗口。
+    if (!completed) {
+      const residue = await cleanupArtifacts()
+      if (residue.length > 0) throw new Error('backup artifact cleanup failed')
+    }
     unregisterCleanup()
-    if (residue.length > 0) throw new Error('backup artifact cleanup failed')
   }
 }
 
@@ -618,8 +669,23 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
 
   const scrubber = createSecretScrubber()
   const log = (line) => process.stdout.write(`${scrubber.scrub(line)}\n`)
-  const run = (commandArgs, { env, timeoutMs = 120_000, cwd = composeDirectory } = {}) =>
-    runCommand(commandArgs, { env: env ?? process.env, timeoutMs, cwd })
+  const run = (
+    commandArgs,
+    {
+      env,
+      timeoutMs = 120_000,
+      cwd = composeDirectory,
+      stdin = null,
+      allowSuccessfulStdinEpipe = false
+    } = {}
+  ) =>
+    runCommand(commandArgs, {
+      env: env ?? process.env,
+      timeoutMs,
+      cwd,
+      stdin,
+      allowSuccessfulStdinEpipe
+    })
   const compose = (composeArgs, options = {}) =>
     run(
       [

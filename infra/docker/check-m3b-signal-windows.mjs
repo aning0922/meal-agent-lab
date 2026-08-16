@@ -8,7 +8,7 @@
 //
 //   1. 子进程（含它们自己起的 docker 子进程）全部消失；
 //   2. 本轮 project 的 container / network / volume 一个不剩；
-//   3. 本轮唯一 image tag 已被删除；
+//   3. 本轮 immutable image 已被删除；
 //   4. 临时 Secret 目录已被删除（明文凭据不留在盘上）；
 //   5. 临时 Compose override 已被删除，tracked 文件逐字节未变；
 //   6. 进程按**原信号语义**收场（信号终止，而不是伪装成普通退出码）。
@@ -19,10 +19,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import {
   createProcessGroupLifecycle,
   ownershipAwareSpawnStdio,
+  observedDescendantPgids,
   registerRawSpawnedChild,
-  runCommand,
-  terminateControlledSubtree,
-  unconfirmedProcessGroups
+  runCommand
 } from './m3b-subprocess.mjs'
 import {
   existsSync,
@@ -38,7 +37,7 @@ import { fileURLToPath } from 'node:url'
 
 const moduleDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 
-import { isAbsenceMessage, runImageTagPrefix } from './m3b-docker.mjs'
+import { isAbsenceMessage } from './m3b-docker.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
@@ -145,7 +144,7 @@ const sleep = (milliseconds) =>
 
 /**
  * 把一个 M3B CLI 跑起来，等它的输出命中 `trigger`，发 `signal`，然后收集：
- * 退出语义、project 名、image tag、Secret 目录、残留与后代进程。
+ * 退出语义、project 名、immutable image ID、Secret 目录、残留与后代进程。
  */
 const runAndSignal = async ({
   script,
@@ -166,16 +165,18 @@ const runAndSignal = async ({
   let stderr = ''
   let signalled = false
   let windowConfirmed = waitForProcess === null
-  const scene = { project: null, imageTag: null, secretsDirectory: null }
+  const scene = { project: null, imageId: null, secretsDirectory: null }
 
   const observe = (text) => {
     const project = /(?:smoke project|probe project|negative project): (\S+)/.exec(text)
     if (project !== null) {
       scene.project = project[1]
     }
-    const tag = new RegExp(`(${runImageTagPrefix.replace(':', ':')}[a-z0-9]+)`).exec(text)
-    if (tag !== null) {
-      scene.imageTag = tag[1]
+    const image = /(?:api image built with immutable identity|built immutable image) (sha256:[0-9a-f]{64})/.exec(
+      text
+    )
+    if (image !== null) {
+      scene.imageId = image[1]
     }
     const secrets = /(?:temporary secrets|secrets directory): (\S+)/.exec(text)
     if (secrets !== null) {
@@ -275,41 +276,44 @@ const assertCleanScene = (name, result, { expectSignal }) => {
       }
     }
   }
-  if (scene.imageTag !== null) {
-    // 与 m3b-docker.mjs 的 `imageIdOf` 走**同一个** `isAbsenceMessage`：退出码
+  if (scene.imageId !== null) {
+    // 与 m3b-docker.mjs 的 image absence 读取走**同一个** `isAbsenceMessage`：退出码
     // 必须恰好是 1，且 stderr 整串锚定匹配（不带 `m` 标志）。此前这里用的是无
     // 锚点子串匹配、也不检查退出码是否为 1，于是被信号杀掉的 docker CLI
     // （status === null）或一条关于**别的镜像**的错误都会被读成「本轮 tag 已被
-    // 删除」——而这是唯一一处在信号路径上验证 per-run tag 消失的地方。
+    // 删除」——而这是唯一一处在信号路径上验证 per-run immutable image 消失的地方。
     // 整块也要 try/catch：`docker()` 在 spawn 失败时抛，不接住会让进程带着栈
     // 直接死掉，FAIL 汇总与 5 窗口完整性计数都不会打印。
     try {
-      const image = docker(['image', 'inspect', '--format', '{{.Id}}', scene.imageTag])
+      const image = docker(['image', 'inspect', '--format', '{{.Id}}', scene.imageId])
       if (image.status === 0) {
-        problems.push(`image tag ${scene.imageTag} still exists`)
+        problems.push('the per-run immutable image still exists')
       } else if (
         !(
           image.status === 1 &&
-          isAbsenceMessage(image.stderr, { kind: 'image', name: scene.imageTag })
+          isAbsenceMessage(image.stderr, { kind: 'image', name: scene.imageId })
         )
       ) {
         problems.push(
-          `could not determine whether ${scene.imageTag} still exists ` +
+          'could not determine whether the per-run immutable image still exists ' +
             `(docker image inspect exited ${
               image.status === null ? `on signal ${String(image.signal)}` : String(image.status)
             })`
         )
       }
     } catch (error) {
-      problems.push(`the per-run image tag check could not run: ${String(error)}`)
+      problems.push(`the per-run immutable image check could not run: ${String(error)}`)
     }
   }
   if (scene.secretsDirectory !== null && existsSync(scene.secretsDirectory)) {
     problems.push('the temporary secrets directory still exists')
   }
   // 只查**本轮**的 override（按 run id）：并发的 M3B 运行不该让这里误红。
-  const runId = scene.imageTag === null ? null : scene.imageTag.split(':m3b-')[1]
-  if (runId !== undefined && runId !== null) {
+  const runId =
+    scene.project === null
+      ? null
+      : /^meal-agent-m3b-(?:smoke|probe)-([a-z0-9]+)$/.exec(scene.project)?.[1] ?? null
+  if (runId !== null) {
     const own = readdirSync(composeDirectory).filter(
       (entry) => entry === `.m3b-image-override-${runId}.yaml`
     )
@@ -411,7 +415,7 @@ const assertCleanScene = (name, result, { expectSignal }) => {
   } else {
     pass(
       name,
-      `${expectSignal} honoured; no container/network/volume/image-tag/secret/override residue`
+      `${expectSignal} honoured; no container/network/volume/image/secret/override residue`
     )
   }
 }
@@ -419,17 +423,17 @@ const assertCleanScene = (name, result, { expectSignal }) => {
 process.stdout.write('M3B signal-window negatives\n')
 
 // 窗口 1：**build 阶段**。trigger 必须是「build 确实已经开始」之后才出现的
-// 输出——用 `per-run image tag:` 会让信号大概率落在其后的拓扑门禁子进程期间，
-// 那时 override / image tag / 容器都还不存在，全部残留断言都是空真（这正是
-// 修复前的实测形态）。`host port:` 是 build 之前的最后一条输出，随后就是
-// `compose build`，因此以它为锚点并**确认 build 子进程真的在跑**。
+// 输出——过早的 run-locator 输出会让信号大概率落在其后的拓扑门禁子进程期间，
+// 那时 override / immutable image / 容器都还不存在，全部残留断言都是空真。
+// `host port:` 是 build 之前的最后一条输出，随后就是 BuildKit，因此以它为
+// 锚点并**确认带 iidfile 的 build 子进程真的在跑**。
 assertCleanScene(
   'SIGINT during the smoke build window',
   await runAndSignal({
     script: 'run-local-test-smoke.mjs',
     trigger: /host port: /,
     signal: 'SIGINT',
-    waitForProcess: /docker.*build.*meal-agent-api:m3b-/
+    waitForProcess: /docker.*build.*--iidfile/
   }),
   { expectSignal: 'SIGINT' }
 )
@@ -448,7 +452,7 @@ assertCleanScene(
 // 窗口 0a：**pre-baseline** 窗口——临时 Secret 目录刚建好、`danglingVolumes()`
 // 这次 Docker 查询还没返回。此前 scene 要到更晚才登记，这段窗口内被中断会把
 // 明文 Secret 目录留在盘上。trigger 是 smoke 打出的第一行（project 名），此时
-// override 与 image tag 都还不存在，cleanup 绝不能引用它们。
+// override 与 immutable image 都还不存在，cleanup 绝不能引用它们。
 assertCleanScene(
   'SIGINT in the smoke pre-baseline window',
   await runAndSignal({
@@ -479,8 +483,9 @@ assertCleanScene(
   'SIGINT during the probe run window',
   await runAndSignal({
     script: 'probe-compose-secret-identity.mjs',
-    trigger: /built meal-agent-api:m3b-/,
-    signal: 'SIGINT'
+    trigger: /secret materializer completed with immutable outcome evidence/,
+    signal: 'SIGINT',
+    signalDelayMs: 0
   }),
   { expectSignal: 'SIGINT' }
 )
@@ -503,43 +508,28 @@ assertCleanScene(
 // ---------------------------------------------------------------------------
 //
 // 组长 close **不等于**整组消失：`sh -c 'sleep 30 & exit 0'` 的 leader 立刻退出，
-// 而它 detach 出去的 `sleep` 仍留在同一个 pgid 里。此前 close 处理器直接把 pgid
-// 从受控表里删掉，`terminateControlledSubtree()` 再也不会碰它——孤儿就此存活。
-// 这条反例把那个场景钉死，不用起任何容器。
+// 而它 detach 出去的 `sleep` 仍留在同一个 pgid 里。status 0 settlement 必须先
+// 终止并确认整组到达 ESRCH；旧实现会先把成功交给调用方并留下孤儿。
 const regressionProblems = []
 let orphanPgid = null
 try {
+  const observedBefore = new Set(observedDescendantPgids())
   const result = await runCommand([
     '/bin/sh',
     '-c',
     'sleep 30 </dev/null >/dev/null 2>&1 & exit 0'
   ])
-  orphanPgid = [...String(result.stderr).matchAll(/m3b-descendant-pgid (\d+)/g)]
-    .map((match) => Number(match[1]))
-    .at(-1) ?? null
-  if (orphanPgid === null) {
-    // runCommand 把 pgid 公布在**自己**的 stderr 上，而不是子进程的 stderr。
-    orphanPgid = unconfirmedProcessGroups().at(-1) ?? null
-  }
+  const newlyObserved = observedDescendantPgids().filter((pgid) => !observedBefore.has(pgid))
+  orphanPgid = newlyObserved.at(-1) ?? null
   if (result.status !== 0) {
     regressionProblems.push('the leader did not exit cleanly; the fixture is not measuring what it claims')
   }
   if (orphanPgid === null) {
     regressionProblems.push('no descendant pgid was observed; the fixture would be vacuous')
   } else {
-    // a) 组长已经 close，但整组**仍然存活**——这正是旧实现放过的状态。
-    if (!groupAlive(orphanPgid)) {
-      regressionProblems.push('the detached grandchild did not survive the leader; the fixture is vacuous')
-    }
-    // b) 修复后：terminateControlledSubtree() 必须确认整组消失。
-    const survivors = await terminateControlledSubtree()
-    if (survivors.length > 0) {
-      regressionProblems.push(
-        `${String(survivors.length)} process group(s) were not confirmed gone by terminateControlledSubtree`
-      )
-    }
+    // 修复后：runCommand 返回 status 0 时，整组必须已经确认消失。
     if (groupSurvives(orphanPgid, 5_000)) {
-      regressionProblems.push('the orphaned process group is still alive after termination')
+      regressionProblems.push('status 0 settled before the descendant process group reached ESRCH')
     }
   }
 } catch (error) {
@@ -561,8 +551,7 @@ if (regressionProblems.length > 0) {
   regressionCaught += 1
   pass(
     'deterministic process-group regression',
-    'a detached grandchild outlives its leader, and terminateControlledSubtree confirms the ' +
-      'whole group reaches ESRCH (no Docker involved)'
+    'status 0 settles only after a leader-close descendant group reaches ESRCH (no Docker involved)'
   )
 }
 

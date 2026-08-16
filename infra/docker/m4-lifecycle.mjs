@@ -11,10 +11,9 @@
 //   - 输出边界：本仓自己的证据行按取值打码，外来文本按取值 + 形状打码；
 //   - 子进程自成进程组、有超时，SIGINT/SIGTERM 全程可被处理。
 //
-// 唯一的命名妥协：per-run image tag 仍在 `meal-agent-api:m3b-<run id>` 命名
-// 空间里（`m3b-docker.mjs` 的 cleanup 只肯删这一形状的 tag）。M4 的 run id 带
-// `m4-` 前缀，因此不会与任何 M3B 轮次碰撞，而 cleanup / residue 机器完全复用，
-// 不必修改已被多轮审计钉住的共享库。
+// M4 与 M3B 共用不可猜的 run claim 和 immutable image identity；构建不发布可变
+// tag。M4 的 run id 带 `m4-` 前缀，因此不会与任何 M3B 轮次碰撞，而 cleanup /
+// residue 机器完全复用。
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -37,6 +36,7 @@ import {
   listByProject,
   overridePathFor,
   runImageTagFor,
+  runClaimLabel,
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
@@ -104,8 +104,8 @@ export const assertGracefulStopTransition = (before, after) => {
   return true
 }
 
-export const readContainerRuntimeState = async (name, environment, expected = null) => {
-  const container = await inspectJsonStrict(name, '{{json .}}', { env: environment })
+export const readContainerRuntimeState = async (target, environment, expected = null) => {
+  const container = await inspectJsonStrict(target, '{{json .}}', { env: environment })
   const labels = container?.Config?.Labels
   const evidence = {
     id: container?.Id,
@@ -118,7 +118,7 @@ export const readContainerRuntimeState = async (name, environment, expected = nu
   if (
     typeof evidence.id !== 'string' ||
     !/^[0-9a-f]{64}$/.test(evidence.id) ||
-    evidence.name !== `/${name}` ||
+    evidence.name !== (expected?.name ?? `/${target}`) ||
     typeof evidence.image !== 'string' ||
     !/^sha256:[0-9a-f]{64}$/.test(evidence.image) ||
     typeof evidence.project !== 'string' ||
@@ -526,7 +526,8 @@ export const oneOffIsGone = (removed, name) =>
   (removed.status === 1 && isAbsenceMessage(removed.stderr, { kind: 'container', name }))
 
 const inspectOneOff = async (run, entry, environment) => {
-  const target = entry.id ?? entry.name
+  let target = entry.id ?? entry.name
+  let locatedByClaim = false
   let inspected
   try {
     inspected = await run(['docker', 'container', 'inspect', target], { env: environment })
@@ -537,7 +538,49 @@ const inspectOneOff = async (run, entry, environment) => {
     inspected.status === 1 &&
     isAbsenceMessage(inspected.stderr, { kind: 'container', name: target })
   ) {
-    return { state: 'absent', id: null }
+    if (entry.id !== undefined) {
+      return { state: 'absent', id: null }
+    }
+    if (entry.commandStarted !== true) {
+      return { state: 'absent', id: null }
+    }
+    let located
+    try {
+      located = await run(
+        [
+          'docker',
+          'ps',
+          '-aq',
+          '--filter',
+          `label=${oneOffOwnershipLabel}=${entry.token}`,
+          '--filter',
+          `label=com.docker.compose.project=${entry.project}`,
+          '--filter',
+          `label=com.docker.compose.service=${entry.service}`
+        ],
+        { env: environment }
+      )
+    } catch {
+      return { state: 'unreadable', id: null }
+    }
+    const ids =
+      located.status === 0 && typeof located.stdout === 'string'
+        ? located.stdout.split('\n').filter(Boolean)
+        : []
+    if (located.status !== 0 || ids.some((id) => !/^[0-9a-f]{64}$/.test(id))) {
+      return { state: 'unreadable', id: null }
+    }
+    if (ids.length === 0) return { state: 'absent', id: null }
+    if (ids.length !== 1) return { state: 'unreadable', id: null }
+    target = ids[0]
+    locatedByClaim = true
+    try {
+      inspected = await run(['docker', 'container', 'inspect', target], {
+        env: environment
+      })
+    } catch {
+      return { state: 'unreadable', id: null }
+    }
   }
   if (inspected.status !== 0 || typeof inspected.stdout !== 'string' || inspected.stdout === '') {
     return { state: 'unreadable', id: null }
@@ -557,7 +600,7 @@ const inspectOneOff = async (run, entry, environment) => {
   if (
     typeof id !== 'string' ||
     !/^[0-9a-f]{64}$/.test(id) ||
-    (entry.id === undefined && name !== `/${entry.name}`) ||
+    (entry.id === undefined && !locatedByClaim && name !== `/${entry.name}`) ||
     (entry.id !== undefined && id !== entry.id) ||
     labels === null ||
     typeof labels !== 'object' ||
@@ -636,7 +679,8 @@ export const composeRunOneOff = async (
     token: randomBytes(16).toString('hex'),
     id: undefined,
     project,
-    service
+    service,
+    commandStarted: false
   }
   const baseline = await inspectOneOff(run, entry, environment)
   if (baseline.state !== 'absent') {
@@ -647,6 +691,7 @@ export const composeRunOneOff = async (
   let result
   let composeError = null
   try {
+    entry.commandStarted = true
     result = await compose(
       [
         'run',
@@ -731,8 +776,11 @@ export const throwIfInterrupted = () => {
  * 启动一个已经存在的受控容器，不让 Compose 重新遍历 depends_on。
  * 失败诊断只包含固定类别与退出状态，绝不带 Docker stderr。
  */
-export const startExistingContainer = async (run, containerName) => {
-  const result = await run(['docker', 'start', containerName], { timeoutMs: 120_000 })
+export const startExistingContainer = async (run, containerId) => {
+  if (typeof containerId !== 'string' || !/^[0-9a-f]{64}$/.test(containerId)) {
+    throw new Error('existing container immutable identity was invalid')
+  }
+  const result = await run(['docker', 'start', containerId], { timeoutMs: 120_000 })
   if (result.status !== 0) {
     const outcome =
       result.status === null ? `signal ${String(result.signal ?? 'unknown')}` : String(result.status)
@@ -741,13 +789,14 @@ export const startExistingContainer = async (run, containerName) => {
 }
 
 /**
- * 演练运行上下文：每轮唯一的 run id / image tag / override / 临时 Secret 目录、
+ * 演练运行上下文：每轮唯一的 run id / immutable image claim / override / 临时 Secret 目录、
  * 输出边界与计时器，以及一到两个 project 栈。**必须在第一个 `await` 之前**
  * 创建全部栈并装上 signal handler——mkdtemp 与栈登记都是同步的，信号只会落在
  * 之后的 await 点上，因此不存在「Secret 目录已建、现场未登记」的窗口。
  */
 export const createM4Run = ({ kind }) => {
   const runId = `m4-${kind}-${randomBytes(6).toString('hex')}`
+  const runClaimToken = randomBytes(16).toString('hex')
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
@@ -780,12 +829,25 @@ export const createM4Run = ({ kind }) => {
 
   const run = (
     args,
-    { env, timeoutMs = 120_000, cwd = composeDirectory, stdin = null } = {}
-  ) => runCommand(args, { env: env ?? process.env, timeoutMs, cwd, stdin })
+    {
+      env,
+      timeoutMs = 120_000,
+      cwd = composeDirectory,
+      stdin = null,
+      allowSuccessfulStdinEpipe = false
+    } = {}
+  ) => runCommand(args, {
+    env: env ?? process.env,
+    timeoutMs,
+    cwd,
+    stdin,
+    allowSuccessfulStdinEpipe
+  })
 
   const shared = {
     imageTag: null,
     imageId: null,
+    runClaimToken,
     overridePath,
     overrideCreated: false,
     danglingBaseline: null
@@ -864,14 +926,15 @@ export const createM4Run = ({ kind }) => {
       }
       return port
     }
-    const inspectStackServiceOptional = async (service) => {
+    const inspectStackServiceOptional = async (service, expectedId = null) => {
       const name = stack.containerName(service)
-      const inspected = await run(['docker', 'container', 'inspect', name], {
+      const target = expectedId ?? name
+      const inspected = await run(['docker', 'container', 'inspect', target], {
         env: stack.composeEnvironment
       })
       if (
         inspected.status === 1 &&
-        isAbsenceMessage(inspected.stderr, { kind: 'container', name })
+        isAbsenceMessage(inspected.stderr, { kind: 'container', name: target })
       ) {
         return null
       }
@@ -889,11 +952,15 @@ export const createM4Run = ({ kind }) => {
       if (
         typeof container?.Id !== 'string' ||
         !/^[0-9a-f]{64}$/.test(container.Id) ||
+        (expectedId !== null && container.Id !== expectedId) ||
         container.Name !== `/${name}` ||
         typeof container.Image !== 'string' ||
         !/^sha256:[0-9a-f]{64}$/.test(container.Image) ||
         labels?.['com.docker.compose.project'] !== stack.project ||
         labels?.['com.docker.compose.service'] !== service ||
+        labels?.[runClaimLabel] !== runClaimToken ||
+        (['api', 'migrate', 'bootstrap-schema'].includes(service) &&
+          container.Image !== shared.imageId) ||
         container.State === null ||
         typeof container.State !== 'object' ||
         Array.isArray(container.State)
@@ -902,8 +969,8 @@ export const createM4Run = ({ kind }) => {
       }
       return container
     }
-    const inspectStackService = async (service) => {
-      const container = await inspectStackServiceOptional(service)
+    const inspectStackService = async (service, expectedId = null) => {
+      const container = await inspectStackServiceOptional(service, expectedId)
       if (container === null) throw new Error(`${service}: container evidence was unavailable`)
       return container
     }
@@ -922,7 +989,7 @@ export const createM4Run = ({ kind }) => {
       const container = await waitFor(
         `${service} run`,
         async () => {
-          const current = await inspectStackService(service)
+          const current = await inspectStackService(service, claimedId)
           if (claimedId === null) claimedId = current.Id
           if (current.Id !== claimedId) {
             throw new Error(`${service}: container identity changed while collecting evidence`)
@@ -965,7 +1032,7 @@ export const createM4Run = ({ kind }) => {
       if (outcome.exitCode !== 0) {
         throw new Error(
           `${service} exited ${String(outcome.exitCode)}; ` +
-            `${await logExcerpt(stack.containerName(service), stack.composeEnvironment)}`
+            `${await logExcerpt(outcome.containerId, stack.composeEnvironment)}`
         )
       }
       return outcome
@@ -985,7 +1052,7 @@ export const createM4Run = ({ kind }) => {
       const healthyContainer = await waitFor(
         `${service} health`,
         async () => {
-          const current = await inspectStackService(service)
+          const current = await inspectStackService(service, claimedId)
           if (claimedId === null) claimedId = current.Id
           if (current.Id !== claimedId) {
             throw new Error(`${service}: container identity changed while collecting health evidence`)
@@ -1000,14 +1067,14 @@ export const createM4Run = ({ kind }) => {
           if (current.State.Status === 'exited') {
             throw new Error(
               `${service} exited before becoming healthy; ` +
-                `${await logExcerpt(name, stack.composeEnvironment)}`
+                `${await logExcerpt(current.Id, stack.composeEnvironment)}`
             )
           }
           return current.State?.Health?.Status === 'healthy' ? current : null
         },
         timeoutMs
       )
-      const container = await inspectStackService(service)
+      const container = await inspectStackService(service, claimedId)
       if (
         container.Id !== healthyContainer.Id ||
         container.Image !== healthyContainer.Image ||
@@ -1041,22 +1108,54 @@ export const createM4Run = ({ kind }) => {
      * bootstrap 一次性容器的数量）。
      */
     stack.downKeepingData = async () => {
-      const stopped = await stack.compose(['stop', '--timeout', '30'], { timeoutMs: 300_000 })
-      if (stopped.status !== 0) {
-        throw new Error(`compose stop before down failed with exit ${String(stopped.status)}`)
-      }
       const containers = await listByProject('container', stack.project, {
-        env: stack.composeEnvironment
+        env: stack.composeEnvironment,
+        claimToken: runClaimToken
       })
       if (containers.length > 0) {
+        await dockerStrict(['docker', 'stop', '--time', '30', ...containers], {
+          env: stack.composeEnvironment,
+          timeoutMs: 300_000
+        })
         await dockerStrict(['docker', 'rm', '-v', ...containers], {
           env: stack.composeEnvironment,
           timeoutMs: 120_000
         })
       }
-      const down = await stack.compose(['down'], { timeoutMs: 300_000 })
-      if (down.status !== 0) {
-        throw new Error(`compose down (without volumes) failed with exit ${String(down.status)}`)
+      const networks = await listByProject('network', stack.project, {
+        env: stack.composeEnvironment,
+        claimToken: runClaimToken
+      })
+      if (networks.length > 0) {
+        await dockerStrict(['docker', 'network', 'rm', ...networks], {
+          env: stack.composeEnvironment,
+          timeoutMs: 120_000
+        })
+      }
+      for (const kind of ['container', 'network']) {
+        const sameProject = await listByProject(kind, stack.project, {
+          env: stack.composeEnvironment
+        })
+        if (sameProject.length > 0) {
+          throw new Error(`same-project ${kind} ownership could not be proven during down`)
+        }
+      }
+    }
+    stack.stopClaimedContainers = async (containerIds = null) => {
+      const ids =
+        containerIds ??
+        (await listByProject('container', stack.project, {
+          env: stack.composeEnvironment,
+          claimToken: runClaimToken
+        }))
+      if (ids.some((id) => !/^[0-9a-f]{64}$/.test(id))) {
+        throw new Error('claimed container identity list was invalid')
+      }
+      if (ids.length > 0) {
+        await dockerStrict(['docker', 'stop', '--time', '30', ...ids], {
+          env: stack.composeEnvironment,
+          timeoutMs: 300_000
+        })
       }
     }
     /**
@@ -1068,23 +1167,22 @@ export const createM4Run = ({ kind }) => {
      */
     stack.startService = async (service, timeoutMs) => {
       throwIfInterrupted()
-      const name = stack.containerName(service)
       const baseline = serviceEvidence.get(service)
       if (baseline === undefined) {
         throw new Error(`${service}: cannot restart without a recorded immutable identity`)
       }
-      await startExistingContainer(run, name)
+      await startExistingContainer(run, baseline.id)
       await waitFor(
         `${service} restart health`,
         async () =>
-          (await inspectStrict(name, '{{.State.Health.Status}}', {
+          (await inspectStrict(baseline.id, '{{.State.Health.Status}}', {
             env: stack.composeEnvironment
           })) === 'healthy'
             ? 'healthy'
             : null,
         timeoutMs
       )
-      const restarted = await inspectStackService(service)
+      const restarted = await inspectStackService(service, baseline.id)
       if (
         restarted.Id !== baseline.id ||
         restarted.Image !== baseline.image ||
@@ -1195,18 +1293,18 @@ export const createM4Run = ({ kind }) => {
     log('secret bundle generated and preflighted (synthetic, cross-consistent; output scrubber armed)')
   }
 
-  /** 写唯一 tag 的 override 并构建 API 镜像；返回 immutable image ID。 */
+  /** 构建 API 镜像，再以 immutable ID 生成 Compose override。 */
   const buildImage = async (stack) => {
-    writeImageOverride(overridePath, imageTag)
-    shared.overrideCreated = true
-    shared.imageTag = imageTag
     const builtImageId = await buildApiImage({
       imageTag,
       repositoryRoot,
       env: stack.composeEnvironment
     })
     shared.imageId = builtImageId
-    log(`api image built as ${imageTag} (image id ${builtImageId})`)
+    writeImageOverride(overridePath, builtImageId, runClaimToken)
+    shared.overrideCreated = true
+    shared.imageTag = imageTag
+    log(`api image built with immutable identity ${builtImageId}`)
     return builtImageId
   }
 
@@ -1236,6 +1334,7 @@ export const createM4Run = ({ kind }) => {
             secretsPrefix: temporarySecretsPrefix,
             imageTag: last ? shared.imageTag : null,
             imageId: last ? shared.imageId : null,
+            runClaimToken,
             overridePath: last && shared.overrideCreated ? overridePath : null,
             composeFile,
             composeEnvironment: stacks[index].composeEnvironment,
@@ -1263,6 +1362,8 @@ export const createM4Run = ({ kind }) => {
           ...(await verifyNoResidue({
             project: stacks[index].project,
             imageTag: last ? shared.imageTag : null,
+            imageId: last ? shared.imageId : null,
+            runClaimToken,
             secretsDirectory: first ? secretsDirectory : null,
             overridePath: last && shared.overrideCreated ? overridePath : null,
             danglingBaseline: last ? shared.danglingBaseline : null,
@@ -1366,7 +1467,8 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
       preserved = true
       log(
         `--keep-failure: preserving projects ${stacks.map((stack) => stack.project).join(', ')}, ` +
-          `image tag ${context.imageTag} and secrets directory ${context.secretsDirectory}`
+          `immutable image ${context.shared.imageId ?? 'not-built'} and secrets directory ` +
+          context.secretsDirectory
       )
       log(
         'WARNING: the preserved secrets directory contains real synthetic ' +
@@ -1386,11 +1488,11 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
         residue.push('residue recheck failed')
       }
       if (residue.length > 0) {
-        fail(`cleanup residue: ${residue.join(', ')}`)
+        fail(`cleanup reported ${String(residue.length)} residue problem(s)`)
       } else {
         log(
           'cleanup: containers, networks, named volumes, anonymous dangling volumes, ' +
-            'per-run image tag and temporary secrets all verified absent'
+            'per-run immutable image and temporary secrets all verified absent'
         )
       }
     }

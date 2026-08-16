@@ -6,10 +6,10 @@
 // 只使用 Node 内置模块与 Docker CLI；不依赖全局 pnpm、宿主 node_modules 或
 // 未构建的 dist（API 镜像由 Compose 的 build stanza 现场构建）。每次运行：
 //
-//   - 唯一、不可碰撞的 project name（meal-agent-m3b-smoke-<随机>）**与唯一
-//     image tag**（meal-agent-api:m3b-<同一 run id>，经临时 Compose override
-//     注入，不改 M2B 已 Accepted 的默认拓扑）；build 后读取 immutable image ID
-//     并断言三个 API 镜像服务容器的 `.Image` 全部等于它；
+//   - 唯一、不可碰撞的 project name（meal-agent-m3b-smoke-<随机>）与不可猜
+//     run claim；构建不发布可变 tag，临时 Compose override 只引用 build 返回的
+//     immutable image ID（不改 M2B 已 Accepted 的默认拓扑），并断言三个 API
+//     镜像服务容器的 `.Image` 全部等于它；
 //   - 全新 named volume（project scope 决定真实名称）；
 //   - 临时 synthetic Secret 目录（真实 generator 生成，任何数据库容器启动之前
 //     先过完整预检与 Compose 拓扑静态门禁）；
@@ -46,7 +46,7 @@ import {
   inodeIdentityOf,
   inspectJsonStrict,
   inspectStrict,
-  parseInspectedExitCode,
+  isAbsenceMessage,
   listByProject,
   overridePathFor,
   runImageTagFor,
@@ -223,10 +223,9 @@ const logExcerpt = async (containerName) => {
       `${logs.status === null ? `on signal ${String(logs.signal)}` : String(logs.status)}`
     )
   }
-  const excerpt = (logs.stdout + logs.stderr).split('\n').slice(-15).join('\n')
-  return excerpt.trim() === ''
+  return (logs.stdout + logs.stderr).trim() === ''
     ? 'docker logs succeeded but the container produced no output'
-    : `last log lines:\n${scrub(excerpt)}`
+    : 'docker logs were captured but omitted from the safety-gate diagnostic'
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +295,7 @@ export const cleanupSmokeProject = async (
     composeEnvironment = process.env,
     imageTag = null,
     imageId = null,
+    runClaimToken = null,
     composeArgs = [],
     danglingBaseline = null,
     overridePath = null,
@@ -311,6 +311,7 @@ export const cleanupSmokeProject = async (
     secretsPrefix: temporarySecretsPrefix,
     imageTag,
     imageId,
+    runClaimToken,
     // override 是**正式 cleanup 阶段**（P1-4），排在 compose down 之后并进入
     // residue 复查；未创建时传 null，cleanup 不得引用它。
     overridePath,
@@ -323,6 +324,7 @@ export const cleanupSmokeProject = async (
 
 export const runSmoke = async ({ keepFailure = false } = {}) => {
   const runId = randomBytes(6).toString('hex')
+  const runClaimToken = randomBytes(16).toString('hex')
   const project = `meal-agent-m3b-smoke-${runId}`
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
@@ -340,6 +342,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     secretsDirectory,
     secretsIdentity,
     imageTag: null,
+    runClaimToken,
     imageId: null,
     overridePath: null,
     overrideCreated: false,
@@ -363,10 +366,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   // pre-baseline 窗口的唯一锚点。此前第一行打在 `await danglingVolumes()`
   // 之后，那个窗口在外部看来根本不可达。
   log(`smoke project: ${project}`)
-  log(`per-run image tag: ${imageTag}`)
   log(`temporary secrets: ${secretsDirectory} (synthetic, generated fresh)`)
 
-  // 唯一 tag 的 override 参与**每一次** compose 调用（含 cleanup 的 down）。
+  // 唯一 override 参与**每一次** compose 调用。
   const composeArgs = ['--file', overridePath]
   const compose = (args, options = {}) =>
     run(
@@ -393,6 +395,8 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     secretsDirectory,
     secretsIdentity,
     imageTag: null,
+    imageId: null,
+    runClaimToken,
     overridePath,
     overrideCreated: false,
     composeEnvironment,
@@ -401,63 +405,139 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   }
   smokeState.registerScene?.(scene)
 
+  const serviceEvidence = new Map()
+  const inspectServiceOptional = async (service, expectedId = null) => {
+    const name = containerNameOf(project, service)
+    const target = expectedId ?? name
+    const inspected = await run(['docker', 'container', 'inspect', target], {
+      env: composeEnvironment,
+      timeoutMs: 60_000
+    })
+    if (
+      inspected.status === 1 &&
+      isAbsenceMessage(inspected.stderr, { kind: 'container', name: target })
+    ) {
+      return null
+    }
+    if (inspected.status !== 0 || typeof inspected.stdout !== 'string' || inspected.stdout === '') {
+      throw new Error(`${service}: container evidence was unavailable`)
+    }
+    let payload
+    try {
+      payload = JSON.parse(inspected.stdout)
+    } catch {
+      throw new Error(`${service}: container evidence was malformed`)
+    }
+    const container = Array.isArray(payload) && payload.length === 1 ? payload[0] : null
+    const labels = container?.Config?.Labels
+    if (
+      typeof container?.Id !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(container.Id) ||
+      (expectedId !== null && container.Id !== expectedId) ||
+      container.Name !== `/${name}` ||
+      !/^sha256:[0-9a-f]{64}$/.test(container.Image ?? '') ||
+      labels?.['com.docker.compose.project'] !== project ||
+      labels?.['com.docker.compose.service'] !== service ||
+      labels?.['meal-agent.m3b.run-claim'] !== runClaimToken ||
+      (apiImageServices.includes(service) && container.Image !== builtImageId) ||
+      container.State === null ||
+      typeof container.State !== 'object' ||
+      Array.isArray(container.State)
+    ) {
+      throw new Error(`${service}: container identity evidence was invalid`)
+    }
+    return container
+  }
+
   /** 一次性服务：启动 → 等 exited → 严格读取真实退出码 + StartedAt。 */
   const runOneShot = async (service, timeoutMs) => {
     // 信号在飞时**不再新建容器**：处置可能已经跑完 label sweep，此后创建的
     // 容器无人回收。
     throwIfInterrupted()
-    const name = containerNameOf(project, service)
+    const baseline = await inspectServiceOptional(service)
     const started = await compose(['up', '-d', '--no-deps', service], { timeoutMs: 180_000 })
     if (started.status !== 0) {
-      throw new Error(`compose up ${service} failed: ${scrub(started.stderr.trim())}`)
+      throw new Error(`compose up ${service} failed`)
     }
-    await waitFor(
+    let claimedId = baseline?.Id ?? null
+    const container = await waitFor(
       `${service} run`,
-      async () => ((await inspectStrict(name, '{{.State.Status}}')) === 'exited' ? 'exited' : null),
+      async () => {
+        const current = await inspectServiceOptional(service, claimedId)
+        if (current === null) return null
+        if (claimedId === null) claimedId = current.Id
+        if (current.Id !== claimedId) {
+          throw new Error(`${service}: container identity changed while collecting evidence`)
+        }
+        if (
+          baseline !== null &&
+          (current.Id !== baseline.Id || current.State?.StartedAt === baseline.State?.StartedAt)
+        ) {
+          return null
+        }
+        return current.State?.Status === 'exited' ? current : null
+      },
       timeoutMs,
       1_000
     )
-    // 退出码是整条链最关键的一条证据，因此两层都必须 fail closed：
-    // `inspectStrict` 拒绝「退出 0 但没打印」，`parseInspectedExitCode` 只接受
-    // 规范的非负十进制整数。此前用的是 `Number(text)` + `Number.isInteger`，
-    // 而 `Number('')` 是 0——一次读不到会被记成「这一步退出码为 0」。
-    const exitCodeText = await inspectStrict(name, '{{.State.ExitCode}}')
-    const parsedExitCode = parseInspectedExitCode(exitCodeText)
-    if (!parsedExitCode.ok) {
-      throw new Error(
-        `${service}: refusing to read an exit code that is ${parsedExitCode.reason}`
-      )
+    if (
+      container.State?.Running !== false ||
+      !Number.isSafeInteger(container.State?.ExitCode) ||
+      container.State.ExitCode < 0 ||
+      typeof container.State?.StartedAt !== 'string' ||
+      container.State.StartedAt === '' ||
+      typeof container.State?.FinishedAt !== 'string' ||
+      container.State.FinishedAt === ''
+    ) {
+      throw new Error(`${service}: exited container state evidence was invalid`)
     }
-    return {
+    const evidence = {
       service,
-      exitCode: parsedExitCode.value,
-      startedAt: await inspectStrict(name, '{{.State.StartedAt}}')
+      exitCode: container.State.ExitCode,
+      startedAt: container.State.StartedAt,
+      containerId: container.Id,
+      imageId: container.Image
     }
+    serviceEvidence.set(service, evidence)
+    return evidence
   }
 
   /** 常驻服务：启动 → 等 healthy；容器提前退出时立即失败，不空转到超时。 */
   const runService = async (service, timeoutMs) => {
     throwIfInterrupted()
-    const name = containerNameOf(project, service)
+    const baseline = await inspectServiceOptional(service)
     const started = await compose(['up', '-d', '--no-deps', service], { timeoutMs: 180_000 })
     if (started.status !== 0) {
-      throw new Error(`compose up ${service} failed: ${scrub(started.stderr.trim())}`)
+      throw new Error(`compose up ${service} failed`)
     }
-    await waitFor(
+    let claimedId = baseline?.Id ?? null
+    const container = await waitFor(
       `${service} health`,
       async () => {
-        if ((await inspectStrict(name, '{{.State.Status}}')) === 'exited') {
+        const current = await inspectServiceOptional(service, claimedId)
+        if (current === null) return null
+        if (claimedId === null) claimedId = current.Id
+        if (current.Id !== claimedId) {
+          throw new Error(`${service}: container identity changed while collecting health evidence`)
+        }
+        if (current.State?.Status === 'exited') {
           throw new Error(
-            `${service} exited before becoming healthy; ${await logExcerpt(name)}`
+            `${service} exited before becoming healthy; ${await logExcerpt(current.Id)}`
           )
         }
-        return (await inspectStrict(name, '{{.State.Health.Status}}')) === 'healthy'
-          ? 'healthy'
-          : null
+        return current.State?.Health?.Status === 'healthy' ? current : null
       },
       timeoutMs
     )
-    return { service, exitCode: 0, startedAt: await inspectStrict(name, '{{.State.StartedAt}}') }
+    const evidence = {
+      service,
+      exitCode: 0,
+      startedAt: container.State.StartedAt,
+      containerId: container.Id,
+      imageId: container.Image
+    }
+    serviceEvidence.set(service, evidence)
+    return evidence
   }
 
   /** 证据查询：以 cluster admin 通过一次性 psql 容器执行（凭据走 PGPASSFILE）。 */
@@ -481,7 +561,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     }
     const result = await compose(args, { timeoutMs: 120_000 })
     if (result.status !== 0) {
-      throw new Error(`admin evidence query failed: ${scrub(result.stderr.trim())}`)
+      throw new Error('admin evidence query failed')
     }
     return result.stdout
   }
@@ -498,9 +578,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     generateAndPreflight(secretsDirectory)
     const bundleCheck = checkSecretBundle(secretsDirectory, { scanTemplates: false })
     if (bundleCheck.problems.length > 0) {
-      throw new Error(
-        `the freshly preflighted bundle re-read with problems: ${bundleCheck.problems.join('; ')}`
-      )
+      throw new Error('the freshly preflighted bundle did not satisfy its closed contract')
     }
     bundleBodies = bundleCheck.bodies
     registerScrubValues(buildNeedles(bundleBodies).map((needle) => needle.value))
@@ -511,7 +589,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       cwd: repositoryRoot
     })
     if (gate.status !== 0) {
-      throw new Error(`compose topology gate failed before any container:\n${scrub(gate.stderr)}`)
+      throw new Error('compose topology gate failed before any container')
     }
     log('compose topology static gate PASS (before any container start, default topology)')
 
@@ -521,22 +599,18 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     smokeState.registerScene?.(scene)
     log(`host port: ${String(hostPort)} (free on 127.0.0.1 and ::1)`)
 
-    // 1. 写临时 override 并构建：本轮 image tag 唯一，绝不覆盖别的 worktree/
-    //    project 的镜像。build 后读取 immutable image ID。
-    writeImageOverride(overridePath, imageTag)
+    // 1. 先由 BuildKit 交付 immutable image ID；构建期不发布可变 tag。
+    builtImageId = await buildApiImage({ imageTag, repositoryRoot, env: composeEnvironment })
+    scene.imageId = builtImageId
+    smokeState.registerScene?.(scene)
+    writeImageOverride(overridePath, builtImageId, runClaimToken)
     // override 已经落盘：从这一刻起 cleanup 才可以引用它（compose 调用也才
     // 需要带 `--file <override>`）。
     scene.overrideCreated = true
     scene.imageTag = imageTag
     scene.composeArgs = composeArgs
     smokeState.registerScene?.(scene)
-    builtImageId = await buildApiImage({ imageTag, repositoryRoot, env: composeEnvironment })
-    scene.imageId = builtImageId
-    // signal handler 持有的是 `activeScene` 的物化快照，而不是这个局部对象本身。
-    // immutable identity 一旦取得就必须立即同步过去；否则链路窗口收到信号时，
-    // cleanup 只能看到 tag 却看不到本轮记录的 ID，并会按设计拒绝无所有权删除。
-    smokeState.registerScene?.(scene)
-    log(`api image built as ${imageTag} (image id ${builtImageId})`)
+    log(`api image built with immutable identity ${builtImageId}`)
 
     // 2. 严格顺序执行完整链，独立读取每个一次性容器的退出码。
     chainStarted = true
@@ -554,7 +628,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         if (outcome.exitCode !== 0) {
           throw new Error(
             `${service} exited ${String(outcome.exitCode)}; ` +
-              `${await logExcerpt(containerNameOf(project, service))}`
+              `${await logExcerpt(outcome.containerId)}`
           )
         }
       }
@@ -564,7 +638,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     // 2b. 三个 API 镜像服务的容器 `.Image` 必须逐一等于本轮 build ID。
     let imageBindingProblems = 0
     for (const service of apiImageServices) {
-      const actual = await inspectStrict(containerNameOf(project, service), '{{.Image}}')
+      const actual = serviceEvidence.get(service)?.imageId ?? null
       if (actual !== builtImageId) {
         imageBindingProblems += 1
         fail(
@@ -582,7 +656,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
     // 3. migrate 与 grants 重跑：同一 Compose 入口必须幂等。
     for (const service of ['migrate', 'bootstrap-grants']) {
-      const before = await inspectStrict(containerNameOf(project, service), '{{.State.StartedAt}}')
+      const before = serviceEvidence.get(service)?.startedAt ?? null
       const rerun = await runOneShot(service, 300_000)
       if (rerun.exitCode !== 0) {
         fail(`${service} rerun exited ${String(rerun.exitCode)}; the entry point is not idempotent`)
@@ -622,11 +696,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       .split('\n')
       .filter(Boolean)
     if (JSON.stringify(ledger) !== JSON.stringify(expectedLedger)) {
-      fail(
-        `migration ledger drifted: got [${ledger.map((row) => row.split(':')[0]).join(', ')}], ` +
-          `expected [${expectedLedger.map((row) => row.split(':')[0]).join(', ')}] ` +
-          '(names, hashes and order are all compared)'
-      )
+      fail('migration ledger names, hashes, count, or order drifted')
     } else {
       log(`ledger: exactly ${String(ledger.length)} entries 0000—0004, hashes match disk`)
     }
@@ -647,7 +717,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     }
     const badOwners = ownerRows.filter((row) => !row.endsWith(`=${migrationRole}`))
     if (badOwners.length > 0) {
-      fail(`owners drifted from ${migrationRole}: ${badOwners.join('; ')}`)
+      fail(`one or more registered database objects drifted from ${migrationRole}`)
     } else {
       log(
         `owners: database, 3 schemas, ${String(ownerRows.filter((row) => row.startsWith('relation:')).length)} relations, ` +
@@ -675,10 +745,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       ])
     )
     if (JSON.stringify(actualRls) !== JSON.stringify(expectedRls)) {
-      fail(
-        `row security state drifted: got ${JSON.stringify(actualRls)}, ` +
-          `expected ${JSON.stringify(expectedRls)}`
-      )
+      fail('row security enable/force evidence drifted from the registered table set')
     } else {
       log('row security: enable/force state matches the frozen migrations for all 12 tables')
     }
@@ -699,10 +766,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       'meal_agent_runtime_login=false:false:false:false:false:true'
     ]
     if (JSON.stringify(roleRows) !== JSON.stringify(expectedRoles)) {
-      fail(
-        `role attributes drifted: got ${JSON.stringify(roleRows)}, ` +
-          `expected ${JSON.stringify(expectedRoles)}`
-      )
+      fail('database role attributes drifted from the registered identity matrix')
     } else {
       log('roles: login/NOLOGIN attribute matrix matches the accepted identity model')
     }
@@ -774,9 +838,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       (name) => name !== 'meal_agent_runtime_login' && name !== 'postgres'
     )
     if (unexpectedIdentities.length > 0) {
-      fail(
-        `readiness identity: unexpected database identities are connected: ${unexpectedIdentities.join(', ')}`
-      )
+      fail('readiness identity: one or more unexpected database identities are connected')
     }
     if (activity.includes('meal_agent_runtime_login') && unexpectedIdentities.length === 0) {
       log(
@@ -788,7 +850,10 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     // 5g. 逐服务 secret 可见面：严格 inspect（无默认值）、service 必须是
     // expectedSecretMounts 的**自有键**、Mounts 结构逐项验证、source/target/
     // 只读标志与**集合**全等比较。
-    const containerIds = await listByProject('container', project, { env: composeEnvironment })
+    const containerIds = await listByProject('container', project, {
+      env: composeEnvironment,
+      claimToken: runClaimToken
+    })
     let secretVisibilityProblems = 0
     const failVisibility = (message) => {
       secretVisibilityProblems += 1
@@ -814,11 +879,11 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         { allowEmpty: true }
       )
       if (service === '' || service === '<no value>') {
-        failVisibility(`secret visibility: a project container carries no compose service label (${id})`)
+        failVisibility('secret visibility: a project container carries no compose service label')
         continue
       }
       if (!Object.hasOwn(expectedSecretMounts, service)) {
-        failVisibility(`secret visibility: unknown compose service ${service} in this project`)
+        failVisibility('secret visibility: an unknown compose service is present in this project')
         continue
       }
       observedServices.push(service)
@@ -869,10 +934,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
         .sort((a, b) => a.target.localeCompare(b.target))
       observed.sort((a, b) => a.target.localeCompare(b.target))
       if (JSON.stringify(observed) !== JSON.stringify(expected)) {
-        failVisibility(
-          `secret visibility: ${service} mounts ${JSON.stringify(observed)}, ` +
-            `expected exactly ${JSON.stringify(expected)}`
-        )
+        failVisibility(`secret visibility: ${service} mount evidence drifted from its closed set`)
       }
       // tmpfs 不出现在 .Mounts 里：单独读 HostConfig.Tmpfs，任何挂到
       // /run/secrets 下的 tmpfs 都必须被发现。
@@ -887,10 +949,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       const tmpfsTargets = tmpfs === null ? [] : Object.keys(tmpfs)
       const secretTmpfs = tmpfsTargets.filter((target) => target.startsWith('/run/secrets'))
       if (secretTmpfs.length > 0) {
-        failVisibility(
-          `secret visibility: ${service} mounts a tmpfs under /run/secrets ` +
-            `(${secretTmpfs.join(', ')})`
-        )
+        failVisibility(`secret visibility: ${service} mounts an undeclared tmpfs under /run/secrets`)
       }
     }
     observedServices.sort()
@@ -899,9 +958,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       JSON.stringify(expectedVisibilityServiceLabels)
     ) {
       failVisibility(
-        `secret visibility: compose service labels drifted: got ` +
-          `[${observedServices.join(', ')}], expected ` +
-          `[${expectedVisibilityServiceLabels.join(', ')}]`
+        'secret visibility: compose service label membership drifted from the closed set'
       )
     }
     if (secretVisibilityProblems === 0) {
@@ -933,7 +990,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
       // 被信号打断不是失败：处置拥有 cleanup 与退出语义，这里只留一行说明。
       log(`interrupted by ${terminationSignal() ?? 'a signal'}; the signal handler owns the cleanup`)
     } else {
-      fail(error instanceof Error ? error.message : String(error))
+      fail('local-test smoke evidence collection failed')
     }
     return { project, imageTag, builtImageId, hostPort: null, stepResults }
   } finally {
@@ -947,7 +1004,8 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     } else if (failures.length > 0 && keepFailure && chainStarted) {
       preserved = true
       log(
-        `--keep-failure: preserving project ${project}, image tag ${imageTag} and ` +
+        `--keep-failure: preserving project ${project}, immutable image ` +
+          `${builtImageId ?? 'not-built'} and ` +
           `secrets directory ${secretsDirectory} for inspection`
       )
       log(
@@ -962,12 +1020,13 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
           secretsIdentity,
           imageTag: scene.imageTag,
           imageId: scene.imageId,
+          runClaimToken: scene.runClaimToken,
           composeArgs: scene.overrideCreated ? composeArgs : [],
           overridePath: scene.overrideCreated ? overridePath : null,
           danglingBaseline
         })
       } catch (error) {
-        residue = [`cleanup-error: ${error instanceof Error ? error.message : String(error)}`]
+        residue = ['scoped cleanup raised an internal failure']
       }
       // cleanup 之后**独立复查**六类。
       try {
@@ -975,6 +1034,8 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
           ...(await verifyNoResidue({
             project,
             imageTag: scene.imageTag,
+            imageId: scene.imageId,
+            runClaimToken: scene.runClaimToken,
             secretsDirectory,
             overridePath: scene.overrideCreated ? overridePath : null,
             danglingBaseline,
@@ -983,16 +1044,14 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
           }))
         )
       } catch (error) {
-        residue.push(
-          `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
-        )
+        residue.push('residue recheck raised an internal failure')
       }
       if (residue.length > 0) {
-        fail(`cleanup residue: ${residue.join(', ')}`)
+        fail(`cleanup reported ${String(residue.length)} residue problem(s)`)
       } else {
         log(
           'cleanup: container, network, named volume, anonymous dangling volume, ' +
-            'per-run image tag and temporary secrets all verified absent'
+            'per-run immutable image and temporary secrets all verified absent'
         )
       }
     }
@@ -1045,6 +1104,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     secretsIdentity: null,
     imageTag: null,
     imageId: null,
+    runClaimToken: null,
     overridePath: null,
     overrideCreated: false,
     composeEnvironment: process.env,
@@ -1065,19 +1125,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             secretsIdentity: activeScene.secretsIdentity,
             imageTag: activeScene.imageTag,
             imageId: activeScene.imageId,
+            runClaimToken: activeScene.runClaimToken,
             composeArgs: activeScene.overrideCreated ? activeScene.composeArgs : [],
             overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline
           }))
         )
       } catch (error) {
-        residue.push(`cleanup-error: ${error instanceof Error ? error.message : String(error)}`)
+        residue.push('scoped cleanup raised an internal failure')
       }
       try {
         residue.push(
           ...(await verifyNoResidue({
             project: activeScene.project,
             imageTag: activeScene.imageTag,
+            imageId: activeScene.imageId,
+            runClaimToken: activeScene.runClaimToken,
             secretsDirectory: activeScene.secretsDirectory,
             overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline,
@@ -1086,7 +1149,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           }))
         )
       } catch (error) {
-        residue.push(`residue recheck failed: ${error instanceof Error ? error.message : String(error)}`)
+        residue.push('residue recheck raised an internal failure')
       }
       return residue
     },

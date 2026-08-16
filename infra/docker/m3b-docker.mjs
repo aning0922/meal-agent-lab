@@ -5,14 +5,13 @@
 //   - **所有** docker down/list/inspect/remove/re-list/dangling 查询都检查退出
 //     码，读不到就报错，绝不用 null/`{}`/`[]` 默认值冒充「没有」；
 //   - cleanup 是一个**分阶段收集器**：临时 Secret 目录、compose down、容器、
-//     网络、卷、本轮唯一 image tag 各自成阶段，一个阶段失败不阻断其余，全部
+//     网络、卷、本轮 immutable image 各自成阶段，一个阶段失败不阻断其余，全部
 //     问题聚合成 residue 返回（signal handler 也必须打印它，不得丢弃）；
 //   - cleanup 之后**独立复查** container / network / named volume / 匿名悬挂卷 /
-//     image tag / Secret 目录六类，复查本身同样 fail closed。
+//     immutable image / Secret 目录六类，复查本身同样 fail closed。
 //
-// 每次 smoke/probe 运行使用**唯一 image tag**（`meal-agent-api:m3b-<run id>`），
-// 通过临时 Compose override 注入，因此并行 worktree/project 不会互相覆盖；
-// build 之后读取 immutable image ID 并绑定到三个 API 镜像服务的 `.Image`。
+// 每次 smoke/probe 构建期都不发布可变 tag；BuildKit 交付 immutable image ID 后，
+// 临时 Compose override 直接引用该 ID，因此并行 worktree/project 不会互相覆盖。
 import {
   existsSync,
   lstatSync,
@@ -27,7 +26,7 @@ import { join, resolve } from 'node:path'
 
 import { runCommand } from './m3b-subprocess.mjs'
 
-/** 唯一 image tag 的固定前缀：cleanup 只删这一形状的本轮 tag。 */
+/** 旧命名保留的每轮 locator 前缀；该字符串从不作为 Docker build tag 发布。 */
 export const runImageTagPrefix = 'meal-agent-api:m3b-'
 
 export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
@@ -35,7 +34,37 @@ export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
 const ownedOverrideInodes = new Map()
 const ownedBuildEvidenceDirectories = new Map()
 export const buildClaimLabel = 'meal-agent.m3b.build-claim'
+export const runClaimLabel = 'meal-agent.m3b.run-claim'
 const ownedBuildImageClaims = new Map()
+const composeServiceNames = Object.freeze([
+  'secret-materializer',
+  'postgres',
+  'bootstrap-cluster',
+  'bootstrap-logins',
+  'bootstrap-createdb',
+  'bootstrap-schema',
+  'bootstrap-handoff',
+  'bootstrap-acl',
+  'bootstrap-grants',
+  'backup',
+  'backup-transfer-loader',
+  'restore',
+  'migrate',
+  'api'
+])
+const composeNetworkNames = Object.freeze(['internal', 'edge'])
+const composeVolumeNames = Object.freeze([
+  'postgres-data',
+  'postgres-superuser-secret',
+  'postgres-admin-pgpass-secret',
+  'migration-password-secret',
+  'runtime-password-secret',
+  'backup-password-secret',
+  'admin-url-secret',
+  'migration-url-secret',
+  'runtime-url-secret',
+  'backup-transfer'
+])
 
 const removeOwnedBuildEvidenceDirectory = (directory) => {
   const record = ownedBuildEvidenceDirectories.get(directory)
@@ -53,17 +82,33 @@ const removeOwnedBuildEvidenceDirectory = (directory) => {
   ownedBuildEvidenceDirectories.delete(directory)
 }
 
-/** 唯一 tag 的临时 Compose override（三个 API 镜像服务共用同一个 tag）。 */
-export const writeImageOverride = (path, imageTag) => {
+/** 临时 Compose override：三个 API 服务只引用 BuildKit 交付的 immutable ID。 */
+export const writeImageOverride = (path, imageIdentity, runClaimToken) => {
+  parseCanonicalDockerImageId(imageIdentity)
+  if (typeof runClaimToken !== 'string' || !/^[0-9a-f]{32}$/.test(runClaimToken)) {
+    throw new DockerEvidenceError('run ownership claim was not canonical')
+  }
+  const serviceLines = composeServiceNames.map((name) => {
+    const imageLine = ['api', 'migrate', 'bootstrap-schema'].includes(name)
+      ? `    image: ${imageIdentity}\n`
+      : ''
+    return `  ${name}:\n${imageLine}    labels:\n      ${runClaimLabel}: ${runClaimToken}\n`
+  }).join('')
+  const networkLines = composeNetworkNames
+    .map((name) => `  ${name}:\n    labels:\n      ${runClaimLabel}: ${runClaimToken}\n`)
+    .join('')
+  const volumeLines = composeVolumeNames
+    .map((name) => `  ${name}:\n    labels:\n      ${runClaimLabel}: ${runClaimToken}\n`)
+    .join('')
   writeFileSync(
     path,
-    '# 阶段 09A / M3B：**临时** override，只把三个 API 镜像服务的 image tag 换成\n' +
-      '# 本轮唯一值。默认拓扑（M2B 已 Accepted）因此保持不变，而并行 worktree /\n' +
-      '# project 不会互相覆盖同一个全局 tag。用后即删。\n' +
-      'services:\n' +
-      `  api:\n    image: ${imageTag}\n` +
-      `  migrate:\n    image: ${imageTag}\n` +
-      `  bootstrap-schema:\n    image: ${imageTag}\n`,
+    '# 阶段 09A / M3B：**临时** override，三个 API 镜像服务只引用\n' +
+      '# BuildKit 本轮交付的 immutable image ID。默认拓扑（M2B 已 Accepted）\n' +
+      '# 保持不变，且不存在 tag absence 与 publish 之间的竞态。用后即删。\n' +
+      `# 所有可变 Docker 资源同时持有本轮不可猜 claim；project label 只是 locator。\n` +
+      `services:\n${serviceLines}` +
+      `networks:\n${networkLines}` +
+      `volumes:\n${volumeLines}`,
     { flag: 'wx', mode: 0o600 }
   )
   const identity = inodeIdentityOf(path)
@@ -208,30 +253,23 @@ export const parseBuildMetadataImageIdentity = (raw) => {
   ) {
     throw new DockerEvidenceError('docker build metadata omitted its config identity')
   }
-  return { imageId, configId }
-}
-
-export const parseOwnedBuildImage = (
-  value,
-  { expectedImageId, expectedTag, expectedClaimToken }
-) => {
-  const claimed = parseClaimedBuildImage(value, {
-    expectedImageId,
-    expectedClaimToken
+  return Object.freeze({
+    imageId,
+    configId,
+    descriptor: Object.freeze({
+      mediaType: descriptor.mediaType,
+      digest: imageId,
+      size: descriptor.size,
+      platform: platform === undefined
+        ? null
+        : Object.freeze({ architecture: platform.architecture, os: platform.os })
+    })
   })
-  if (
-    !Array.isArray(claimed.repoTags) ||
-    claimed.repoTags.length !== 1 ||
-    claimed.repoTags[0] !== expectedTag
-  ) {
-    throw new DockerEvidenceError('docker build ownership evidence did not match its claim')
-  }
-  return Object.freeze({ imageId: expectedImageId, imageTag: expectedTag, claimToken: expectedClaimToken })
 }
 
 export const parseClaimedBuildImage = (
   value,
-  { expectedImageId, expectedClaimToken }
+  { expectedImageId, expectedClaimToken, requireUntagged = false }
 ) => {
   const labels = value?.Config?.Labels
   if (
@@ -245,7 +283,8 @@ export const parseClaimedBuildImage = (
     labels === null ||
     typeof labels !== 'object' ||
     Array.isArray(labels) ||
-    labels[buildClaimLabel] !== expectedClaimToken
+    labels[buildClaimLabel] !== expectedClaimToken ||
+    (requireUntagged && Array.isArray(value.RepoTags) && value.RepoTags.length !== 0)
   ) {
     throw new DockerEvidenceError('docker build ownership evidence did not match its claim')
   }
@@ -256,23 +295,13 @@ export const parseClaimedBuildImage = (
   })
 }
 
-export const inspectOwnedBuildImage = async (
-  { imageId, imageTag, claimToken },
+export const inspectClaimedBuildImage = async (
+  { imageId, claimToken },
   { env } = {}
-) => parseOwnedBuildImage(
+) => parseClaimedBuildImage(
   await inspectJsonStrict(imageId, '{{json .}}', { env }),
-  { expectedImageId: imageId, expectedTag: imageTag, expectedClaimToken: claimToken }
+  { expectedImageId: imageId, expectedClaimToken: claimToken, requireUntagged: true }
 )
-
-export const classifyOwnedImageTag = (currentImageId, recordedImageId) => {
-  if (currentImageId === null) {
-    return 'absent'
-  }
-  if (recordedImageId === null) {
-    return 'unproven'
-  }
-  return currentImageId === recordedImageId ? 'owned' : 'drifted'
-}
 
 /** 执行一条 docker 命令并要求退出码为 0；否则抛 DockerEvidenceError。 */
 export const dockerStrict = async (args, { timeoutMs = 120_000, env } = {}) => {
@@ -310,8 +339,7 @@ export const inspectStrict = async (target, format, { env, allowEmpty = false } 
   }
   if (value === '' && !allowEmpty) {
     throw new DockerEvidenceError(
-      `docker inspect ${target} ${format} exited 0 but printed nothing; ` +
-        'an unreadable field must not be read as an empty or zero one'
+      'docker inspect exited 0 but did not provide the required field evidence'
     )
   }
   return value
@@ -381,31 +409,71 @@ export const inspectJsonStrict = async (target, format, { env } = {}) => {
   try {
     return JSON.parse(raw)
   } catch {
-    throw new DockerEvidenceError(
-      `docker inspect ${target} ${format} did not return valid JSON`
-    )
+    throw new DockerEvidenceError('docker inspect did not return valid JSON evidence')
   }
 }
 
 /** 按 project label 列出资源；退出码非 0 即抛。 */
-export const listByProject = async (kind, project, { env } = {}) => {
+export const listByProject = async (kind, project, { env, claimToken = null } = {}) => {
+  if (!['container', 'network', 'volume'].includes(kind)) {
+    throw new DockerEvidenceError('docker resource kind was not registered')
+  }
   const base =
     kind === 'container'
-      ? ['docker', 'ps', '-aq']
+      ? ['docker', 'ps', '--no-trunc', '-aq']
       : kind === 'network'
-        ? ['docker', 'network', 'ls', '-q']
+        ? ['docker', 'network', 'ls', '--no-trunc', '-q']
         : ['docker', 'volume', 'ls', '-q']
+  const filters = ['--filter', `label=com.docker.compose.project=${project}`]
+  if (claimToken !== null) {
+    filters.push('--filter', `label=${runClaimLabel}=${claimToken}`)
+  }
   const result = await dockerStrict(
-    [...base, '--filter', `label=com.docker.compose.project=${project}`],
+    [...base, ...filters],
     { env }
   )
-  return result.stdout.split('\n').filter(Boolean)
+  if (
+    typeof result.stdout !== 'string' ||
+    result.stdout.length > 4 * 1024 * 1024 ||
+    /[\u0000\r]/.test(result.stdout)
+  ) {
+    throw new DockerEvidenceError('docker resource listing had invalid framing')
+  }
+  const framed = result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout
+  if (framed === '') return []
+  const identifiers = framed.split('\n')
+  const pattern = kind === 'volume'
+    ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/
+    : /^[0-9a-f]{64}$/
+  if (
+    identifiers.some((identifier) => !pattern.test(identifier)) ||
+    new Set(identifiers).size !== identifiers.length
+  ) {
+    throw new DockerEvidenceError('docker resource listing had invalid identities')
+  }
+  return identifiers
 }
 
 /** 当前悬挂（无主）匿名卷集合；退出码非 0 即抛。 */
 export const danglingVolumes = async ({ env } = {}) => {
   const result = await dockerStrict(['docker', 'volume', 'ls', '-qf', 'dangling=true'], { env })
-  return new Set(result.stdout.split('\n').filter(Boolean))
+  if (
+    typeof result.stdout !== 'string' ||
+    result.stdout.length > 4 * 1024 * 1024 ||
+    /[\u0000\r]/.test(result.stdout)
+  ) {
+    throw new DockerEvidenceError('docker dangling-volume listing had invalid framing')
+  }
+  const framed = result.stdout.endsWith('\n') ? result.stdout.slice(0, -1) : result.stdout
+  if (framed === '') return new Set()
+  const identifiers = framed.split('\n')
+  if (
+    identifiers.some((identifier) => !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/.test(identifier)) ||
+    new Set(identifiers).size !== identifiers.length
+  ) {
+    throw new DockerEvidenceError('docker dangling-volume listing had invalid identities')
+  }
+  return new Set(identifiers)
 }
 
 /**
@@ -449,10 +517,7 @@ export const imageIdOf = async (tag, { env } = {}) => {
  */
 export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.env }) => {
   if (!imageTag.startsWith(runImageTagPrefix)) {
-    throw new DockerEvidenceError('refusing to build outside the per-run image tag namespace')
-  }
-  if ((await imageIdOf(imageTag, { env })) !== null) {
-    throw new DockerEvidenceError('per-run image tag was not absent before build')
+    throw new DockerEvidenceError('refusing to build outside the per-run locator namespace')
   }
   const directory = mkdtempSync(join(tmpdir(), 'meal-agent-m3b-build-'))
   const metadataFile = resolve(directory, 'built-image.metadata.json')
@@ -477,8 +542,6 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
         `${buildClaimLabel}=${claimToken}`,
         '--file',
         'services/api/Dockerfile',
-        '--tag',
-        imageTag,
         '.'
       ],
       { timeoutMs: 1_800_000, env, cwd: repositoryRoot }
@@ -489,15 +552,11 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
   const { imageId, configId } = parseBuildMetadataImageIdentity(
     readFileSync(metadataFile, 'utf8')
   )
-  if (
-    parseCanonicalDockerImageId(readFileSync(iidfile, 'utf8')) !== (configId ?? imageId)
-  ) {
+  const iid = parseCanonicalDockerImageId(readFileSync(iidfile, 'utf8'))
+  if (iid !== imageId && iid !== configId) {
     throw new DockerEvidenceError('docker build iidfile did not match build metadata')
   }
-  if ((await imageIdOf(imageTag, { env })) !== imageId) {
-    throw new DockerEvidenceError('built image tag was not bound to its metadata identity')
-  }
-  await inspectOwnedBuildImage({ imageId, imageTag, claimToken }, { env })
+  await inspectClaimedBuildImage({ imageId, claimToken }, { env })
   ownedBuildImageClaims.set(imageId, Object.freeze({ imageTag, claimToken }))
   return imageId
 }
@@ -506,9 +565,9 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
  * 分阶段 scoped cleanup。stages 之间互不阻断，全部问题聚合进 residue。
  *
  * 顺序是刻意的：**明文 Secret 目录最先删**（Docker 侧任何失败都不允许把它
- * 留在盘上），随后 compose down，再按 label 逐类兜底，最后删本轮唯一 tag。
+ * 留在盘上），随后按 claim + immutable ID 逐类收敛本轮 Docker 资源。
  *
- * project / secretsDirectory / imageTag 三者都有形状约束，范围外一律拒绝，
+ * project / secretsDirectory / legacy locator 三者都有形状约束，范围外一律拒绝，
  * 且拒绝本身记入 residue 而不是静默跳过。
  */
 let cleanupChain = Promise.resolve()
@@ -538,6 +597,7 @@ const cleanupRunUnsynchronized = async ({
   secretsPrefix,
   imageTag = null,
   imageId = null,
+  runClaimToken = null,
   overridePath = null,
   composeFile,
   composeEnvironment = process.env,
@@ -605,16 +665,15 @@ const cleanupRunUnsynchronized = async ({
           const { imageId: recoveredImageId, configId } = parseBuildMetadataImageIdentity(
             readFileSync(record.metadataFile, 'utf8')
           )
-          if (
-            parseCanonicalDockerImageId(readFileSync(record.iidfile, 'utf8')) !==
-            (configId ?? recoveredImageId)
-          ) {
+          const recoveredIid = parseCanonicalDockerImageId(
+            readFileSync(record.iidfile, 'utf8')
+          )
+          if (recoveredIid !== recoveredImageId && recoveredIid !== configId) {
             throw new DockerEvidenceError('docker build evidence identities did not agree')
           }
-          await inspectOwnedBuildImage(
+          await inspectClaimedBuildImage(
             {
               imageId: recoveredImageId,
-              imageTag: record.imageTag,
               claimToken: record.claimToken
             },
             { env: composeEnvironment }
@@ -622,36 +681,11 @@ const cleanupRunUnsynchronized = async ({
           resolvedImageId = recoveredImageId
           resolvedImageClaimToken = record.claimToken
         } catch {
-          // Docker Desktop can publish the final tag just before the client writes metadata.
-          // The image was pre-claimed with an unguessable label before build started, so this
-          // fallback binds the interrupted result by immutable config evidence rather than by
-          // tag name alone. If no tag was published there is simply no image to clean.
-          const current = await imageIdOf(record.imageTag, { env: composeEnvironment })
-          if (current !== null) {
-            const inspected = await inspectJsonStrict(record.imageTag, '{{json .}}', {
-              env: composeEnvironment
-            })
-            const labels = inspected?.Config?.Labels
-            if (
-              inspected === null ||
-              typeof inspected !== 'object' ||
-              Array.isArray(inspected) ||
-              parseCanonicalDockerImageId(inspected.Id) !== current ||
-              !Array.isArray(inspected.RepoTags) ||
-              inspected.RepoTags.length !== 1 ||
-              inspected.RepoTags[0] !== record.imageTag ||
-              labels === null ||
-              typeof labels !== 'object' ||
-              Array.isArray(labels) ||
-              labels[buildClaimLabel] !== record.claimToken
-            ) {
-              throw new DockerEvidenceError(
-                'interrupted docker build ownership evidence did not match its claim'
-              )
-            }
-            resolvedImageId = current
-            resolvedImageClaimToken = record.claimToken
-          }
+          // metadata/iid 不完整时没有可证明的 immutable identity。tag 从未参与构建，
+          // 因此这里既不会误删同名外部对象，也不会把 tag absence 冒充 image absence。
+          throw new DockerEvidenceError(
+            'interrupted docker build ownership evidence was incomplete'
+          )
         }
       }
       removeOwnedBuildEvidenceDirectory(directory)
@@ -662,61 +696,45 @@ const cleanupRunUnsynchronized = async ({
     // 记成 residue 而不是 throw：裸 throw 会把阶段 1（明文 Secret 目录）已经
     // 收集到的失败一起丢掉，而那正是最不能丢的一条。
     residue.push(
-      `cleanup refused: project name ${JSON.stringify(project)} is outside the ` +
-        'meal-agent-m3b-* smoke scope'
+      'cleanup refused: project name is outside the meal-agent-m3b-* smoke scope'
     )
     return residue
   }
 
-  // 阶段 2：compose down（退出码检查，失败不阻断后面的 label sweep）。
-  // 若 override 已被**上一次** cleanup 的阶段 7 删掉，这里就不能再引用它——
-  // 否则 compose 会以 "no such file" 失败并产出一条假 residue。
-  const effectiveComposeArgs = []
-  for (let index = 0; index < composeArgs.length; index += 1) {
-    const argument = composeArgs[index]
-    if (argument === '--file' && index + 1 < composeArgs.length) {
-      const file = composeArgs[index + 1]
-      if (!existsSync(file)) {
-        index += 1
-        continue
-      }
-    }
-    effectiveComposeArgs.push(argument)
+  // `compose down` 只依赖公开 project label，无法作为 destructive ownership
+  // proof。所有删除因此只经过下面的 project locator + unguessable claim +
+  // immutable ID 扫描；同 project 但无 claim 的外部资源保留并使 cleanup 失败。
+  if (typeof runClaimToken !== 'string' || !/^[0-9a-f]{32}$/.test(runClaimToken)) {
+    residue.push('cleanup refused: a valid run ownership claim is required')
+    return residue
   }
-  await stage('compose-down', async () => {
-    await dockerStrict(
-      [
-        'docker',
-        'compose',
-        '--file',
-        composeFile,
-        ...effectiveComposeArgs,
-        '--profile',
-        'bootstrap',
-        '--project-name',
-        project,
-        'down',
-        '--volumes',
-        '--remove-orphans'
-      ],
-      { timeoutMs: 300_000, env: composeEnvironment }
-    )
-  })
 
   // 阶段 3—5：容器 / 网络 / 卷。每类：列出 → 逐个复核 label → 删除 → 再列一次。
   const sweeps = [
-    { kind: 'container', remove: (ids) => ['docker', 'rm', '-f', '-v', ...ids], inspect: (id) => ['docker', 'inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}', id] },
-    { kind: 'network', remove: (ids) => ['docker', 'network', 'rm', ...ids], inspect: (id) => ['docker', 'network', 'inspect', '--format', '{{index .Labels "com.docker.compose.project"}}', id] },
-    { kind: 'volume', remove: (ids) => ['docker', 'volume', 'rm', '-f', ...ids], inspect: (id) => ['docker', 'volume', 'inspect', '--format', '{{index .Labels "com.docker.compose.project"}}', id] }
+    { kind: 'container', remove: (ids) => ['docker', 'rm', '-f', '-v', ...ids], inspect: (id, label) => ['docker', 'inspect', '--format', `{{index .Config.Labels "${label}"}}`, id] },
+    { kind: 'network', remove: (ids) => ['docker', 'network', 'rm', ...ids], inspect: (id, label) => ['docker', 'network', 'inspect', '--format', `{{index .Labels "${label}"}}`, id] },
+    { kind: 'volume', remove: (ids) => ['docker', 'volume', 'rm', '-f', ...ids], inspect: (id, label) => ['docker', 'volume', 'inspect', '--format', `{{index .Labels "${label}"}}`, id] }
   ]
   for (const sweep of sweeps) {
     await stage(`${sweep.kind}-sweep`, async () => {
-      const identifiers = await listByProject(sweep.kind, project, { env: composeEnvironment })
+      const identifiers = await listByProject(sweep.kind, project, {
+        env: composeEnvironment,
+        claimToken: runClaimToken
+      })
       for (const id of identifiers) {
-        const label = await dockerStrict(sweep.inspect(id), { env: composeEnvironment })
-        if (label.stdout.trim() !== project) {
+        const projectLabel = await dockerStrict(
+          sweep.inspect(id, 'com.docker.compose.project'),
+          { env: composeEnvironment }
+        )
+        const claimLabel = await dockerStrict(sweep.inspect(id, runClaimLabel), {
+          env: composeEnvironment
+        })
+        if (
+          projectLabel.stdout.trim() !== project ||
+          claimLabel.stdout.trim() !== runClaimToken
+        ) {
           throw new DockerEvidenceError(
-            `a listed ${sweep.kind} does not carry the project label ${project}`
+            `a listed ${sweep.kind} does not carry the exact run ownership claim`
           )
         }
       }
@@ -726,58 +744,61 @@ const cleanupRunUnsynchronized = async ({
           env: composeEnvironment
         })
       }
-      const remaining = await listByProject(sweep.kind, project, { env: composeEnvironment })
+      const remaining = await listByProject(sweep.kind, project, {
+        env: composeEnvironment,
+        claimToken: runClaimToken
+      })
       if (remaining.length > 0) {
         throw new DockerEvidenceError(
           `${String(remaining.length)} ${sweep.kind}(s) remain after removal`
         )
       }
+      const unclaimed = await listByProject(sweep.kind, project, { env: composeEnvironment })
+      if (unclaimed.length > 0) {
+        throw new DockerEvidenceError(
+          `${String(unclaimed.length)} same-project ${sweep.kind}(s) lack the run claim and were preserved`
+        )
+      }
     })
   }
 
-  // 阶段 6：本轮唯一 image tag（只删这一个 tag，并复核已消失）。
-  await stage('image-tag', async () => {
-    if (imageTag === null) {
+  // 阶段 6：只按 BuildKit 返回且 claim 复核过的 immutable image ID 删除。
+  // 每轮 tag 不再交给 build，因而不存在 absence→publish 之间覆盖外部 tag 的窗口。
+  await stage('image-identity', async () => {
+    if (resolvedImageId === null) {
       return
     }
-    if (!imageTag.startsWith(runImageTagPrefix)) {
-      throw new DockerEvidenceError(
-        `refusing to remove ${imageTag}: not a per-run ${runImageTagPrefix}* tag`
-      )
-    }
-    const currentImageId = await imageIdOf(imageTag, { env: composeEnvironment })
-    const ownership = classifyOwnedImageTag(currentImageId, resolvedImageId)
-    if (ownership === 'unproven') {
-      throw new DockerEvidenceError(
-        'refusing to remove the per-run image tag without its recorded immutable identity'
-      )
-    }
-    if (ownership === 'drifted') {
-      throw new DockerEvidenceError(
-        'per-run image tag ownership drifted; the foreign tag was preserved'
-      )
-    }
-    if (ownership === 'owned') {
-      if (resolvedImageClaimToken === null) {
-        throw new DockerEvidenceError('recorded image identity has no ownership claim')
-      }
-      await inspectOwnedBuildImage(
-        {
-          imageId: resolvedImageId,
-          imageTag,
-          claimToken: resolvedImageClaimToken
-        },
-        { env: composeEnvironment }
-      )
-      // 绝不把可变 tag 交给删除命令。即使它在上面的 identity 读取之后被并发
-      // 重绑到 B，这里仍只删除本轮记录的 A；末尾 tag 复查会保留 B 并报告 drift。
-      await dockerStrict(['docker', 'image', 'rm', resolvedImageId], {
-        env: composeEnvironment
-      })
+    const before = await runCommand(['docker', 'image', 'inspect', resolvedImageId], {
+      timeoutMs: 60_000,
+      env: composeEnvironment
+    })
+    if (
+      before.status === 1 &&
+      isAbsenceMessage(before.stderr, { kind: 'image', name: resolvedImageId })
+    ) {
       ownedBuildImageClaims.delete(resolvedImageId)
+      return
     }
-    if ((await imageIdOf(imageTag, { env: composeEnvironment })) !== null) {
-      throw new DockerEvidenceError(`${imageTag} still exists after removal`)
+    if (before.status !== 0 || typeof before.stdout !== 'string' || before.stdout.trim() === '') {
+      throw new DockerEvidenceError('owned immutable image identity could not be inspected')
+    }
+    if (resolvedImageClaimToken === null) {
+      throw new DockerEvidenceError('recorded image identity has no ownership claim')
+    }
+    await inspectClaimedBuildImage(
+      { imageId: resolvedImageId, claimToken: resolvedImageClaimToken },
+      { env: composeEnvironment }
+    )
+    await dockerStrict(['docker', 'image', 'rm', resolvedImageId], {
+      env: composeEnvironment
+    })
+    ownedBuildImageClaims.delete(resolvedImageId)
+    const after = await runCommand(['docker', 'image', 'inspect', resolvedImageId], {
+      timeoutMs: 60_000,
+      env: composeEnvironment
+    })
+    if (!(after.status === 1 && isAbsenceMessage(after.stderr, { kind: 'image', name: resolvedImageId }))) {
+      throw new DockerEvidenceError('owned immutable image still exists after removal')
     }
   })
 
@@ -818,7 +839,7 @@ const cleanupRunUnsynchronized = async ({
     const added = [...now].filter((id) => !danglingBaseline.has(id))
     if (added.length > 0) {
       throw new DockerEvidenceError(
-        `${String(added.length)} anonymous dangling volume(s) appeared during this run: ${added.join(', ')}`
+        `${String(added.length)} anonymous dangling volume(s) appeared during this run`
       )
     }
   })
@@ -832,7 +853,8 @@ const cleanupRunUnsynchronized = async ({
  */
 export const verifyNoResidue = async ({
   project,
-  imageTag = null,
+  imageId = null,
+  runClaimToken = null,
   secretsDirectory = null,
   overridePath = null,
   danglingBaseline = null,
@@ -842,21 +864,40 @@ export const verifyNoResidue = async ({
   const problems = []
   for (const kind of ['container', 'network', 'volume']) {
     try {
-      const remaining = await listByProject(kind, project, { env: composeEnvironment })
+      if (typeof runClaimToken !== 'string' || !/^[0-9a-f]{32}$/.test(runClaimToken)) {
+        throw new DockerEvidenceError('run claim unavailable')
+      }
+      const remaining = await listByProject(kind, project, {
+        env: composeEnvironment,
+        claimToken: runClaimToken
+      })
       if (remaining.length > 0) {
-        problems.push(`${kind}(s) still present: ${remaining.join(', ')}`)
+        problems.push(`${String(remaining.length)} claimed ${kind}(s) still present`)
+      }
+      const sameProject = await listByProject(kind, project, { env: composeEnvironment })
+      if (sameProject.length > 0) {
+        problems.push(`${String(sameProject.length)} same-project ${kind}(s) still present`)
       }
     } catch {
       problems.push(`${kind} recheck failed`)
     }
   }
-  if (imageTag !== null) {
+  if (imageId !== null) {
     try {
-      if ((await imageIdOf(imageTag, { env: composeEnvironment })) !== null) {
-        problems.push(`image tag ${imageTag} still present`)
+      const result = await runCommand(['docker', 'image', 'inspect', imageId], {
+        timeoutMs: 60_000,
+        env: composeEnvironment
+      })
+      if (
+        !(
+          result.status === 1 &&
+          isAbsenceMessage(result.stderr, { kind: 'image', name: imageId })
+        )
+      ) {
+        problems.push('owned immutable image still present')
       }
     } catch {
-      problems.push('image tag recheck failed')
+      problems.push('immutable image recheck failed')
     }
   }
   if (danglingBaseline !== null) {
@@ -864,7 +905,7 @@ export const verifyNoResidue = async ({
       const now = await danglingVolumes({ env: composeEnvironment })
       const added = [...now].filter((id) => !danglingBaseline.has(id))
       if (added.length > 0) {
-        problems.push(`anonymous dangling volume(s) still present: ${added.join(', ')}`)
+        problems.push(`${String(added.length)} anonymous dangling volume(s) still present`)
       }
     } catch {
       problems.push('dangling volume recheck failed')

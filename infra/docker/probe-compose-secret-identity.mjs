@@ -39,11 +39,14 @@ import {
   cleanupRun,
   inodeIdentityOf,
   danglingVolumes,
+  inspectJsonStrict,
+  listByProject,
   overridePathFor,
   runImageTagFor,
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
+import { composeRunOneOff } from './m4-lifecycle.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -177,6 +180,7 @@ const activeProbeScene = {
   secretsIdentity: null,
   imageTag: null,
   imageId: null,
+  runClaimToken: null,
   overridePath: null,
   composeEnvironment: process.env,
   composeArgs: [],
@@ -194,6 +198,7 @@ const cleanupProbe = async (scene) =>
     secretsPrefix: probeSecretsPrefix,
     imageTag: scene.imageTag,
     imageId: scene.imageId,
+    runClaimToken: scene.runClaimToken,
     // override 只在**确实创建过**时才交给 cleanup（P1-4）：未创建时引用它会
     // 让 compose down 以 "no such file" 失败并被报成 residue。
     overridePath: scene.overrideCreated === true ? scene.overridePath : null,
@@ -207,6 +212,7 @@ const cleanupProbe = async (scene) =>
 
 const main = async () => {
   const runId = randomBytes(6).toString('hex')
+  const runClaimToken = randomBytes(16).toString('hex')
   const project = `meal-agent-m3b-probe-${runId}`
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
@@ -220,6 +226,7 @@ const main = async () => {
     secretsIdentity,
     imageTag: null,
     imageId: null,
+    runClaimToken,
     overridePath: null,
     overrideCreated: false,
     composeEnvironment: { ...process.env, MEAL_AGENT_SECRETS_DIR: secretsDirectory },
@@ -276,19 +283,18 @@ const main = async () => {
 
     generateAndPreflight(secretsDirectory)
 
-    // 本轮唯一 image tag：经临时 override 注入，绝不覆盖全局 tag，也不会与
-    // 并行 worktree/project 互相覆盖。build 之后读取 immutable image ID。
-    writeImageOverride(overridePath, imageTag)
-    activeProbeScene.overrideCreated = true
-    activeProbeScene.imageTag = imageTag
-    activeProbeScene.composeArgs = composeArgs
+    // BuildKit 构建期不发布可变 tag；取得 immutable ID 后才生成 override。
     const builtImageId = await buildApiImage({
       imageTag,
       repositoryRoot,
       env: composeEnvironment
     })
     activeProbeScene.imageId = builtImageId
-    process.stdout.write(`built ${imageTag} (image id ${builtImageId})\n`)
+    writeImageOverride(overridePath, builtImageId, runClaimToken)
+    activeProbeScene.overrideCreated = true
+    activeProbeScene.imageTag = imageTag
+    activeProbeScene.composeArgs = composeArgs
+    process.stdout.write(`built immutable image ${builtImageId}\n`)
 
     // 先跑真实 materializer；下面的 `run --no-deps` 只能看到已经物化
     // 的单份 volume，绝不直接挂宿主 source secret。
@@ -306,6 +312,29 @@ const main = async () => {
     if (materialized.status !== 0) {
       throw new Error('secret materialization failed before the identity probe')
     }
+    const materializerIds = await listByProject('container', project, {
+      env: composeEnvironment,
+      claimToken: runClaimToken
+    })
+    const materializerMatches = []
+    for (const id of materializerIds) {
+      const container = await inspectJsonStrict(id, '{{json .}}', { env: composeEnvironment })
+      const labels = container?.Config?.Labels
+      if (labels?.['com.docker.compose.service'] === 'secret-materializer') {
+        if (
+          container?.Id !== id ||
+          container?.State?.Status !== 'exited' ||
+          container?.State?.ExitCode !== 0
+        ) {
+          throw new Error('secret materializer immutable outcome evidence was invalid')
+        }
+        materializerMatches.push(id)
+      }
+    }
+    if (materializerMatches.length !== 1) {
+      throw new Error('secret materializer generation evidence was not unique')
+    }
+    process.stdout.write('secret materializer completed with immutable outcome evidence\n')
 
     for (const plan of probePlan) {
       // 信号在飞时**不再新建容器**（成功分支同样要检查——此前只在失败分支里
@@ -314,19 +343,20 @@ const main = async () => {
         break
       }
       const targets = plan.secrets.map((name) => `/run/secrets/${name}/value`)
-      const args =
+      const runArgs =
         plan.runtime === 'bash'
-          ? ['run', '--rm', '--no-deps', '--entrypoint', 'bash', plan.service, '-c', bashProbeScript(targets)]
-          : ['run', '--rm', '--no-deps', '--entrypoint', 'node', plan.service, '-e', nodeProbeScript(targets)]
-      const result = await compose(args, {
-        timeoutMs: 300_000,
-        maxStdoutBytes: maximumProbeEvidenceBytes,
-        maxStderrBytes: 64 * 1024
-      })
-      if (result.status !== 0) {
+          ? ['--entrypoint', 'bash', plan.service, '-c', bashProbeScript(targets)]
+          : ['--entrypoint', 'node', plan.service, '-e', nodeProbeScript(targets)]
+      let result
+      try {
+        result = await composeRunOneOff(
+          { compose, run, environment: composeEnvironment },
+          runArgs,
+          { timeoutMs: 300_000, project, service: plan.service }
+        )
+      } catch {
         failures.push(
-          `${plan.service}: in-container probe failed ` +
-            `(${result.status === null ? 'signal' : `exit ${String(result.status)}`})`
+          `${plan.service}: in-container probe failed`
         )
         // 信号在飞时**立即停止**创建新容器：否则 handler 已经跑完 label
         // sweep，这里再 spawn 出来的容器无人回收。
@@ -398,6 +428,8 @@ const main = async () => {
       const residue = await verifyNoResidue({
           project,
           imageTag: activeProbeScene.imageTag,
+          imageId: activeProbeScene.imageId,
+          runClaimToken: activeProbeScene.runClaimToken,
           secretsDirectory,
           overridePath: activeProbeScene.overrideCreated === true ? overridePath : null,
           danglingBaseline,
@@ -440,14 +472,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       }
       try {
         residue.push(...(await cleanupProbe(activeProbeScene)))
-      } catch (error) {
-        residue.push(`cleanup-error: ${error instanceof Error ? error.message : String(error)}`)
+      } catch {
+        residue.push('probe scoped cleanup raised an internal failure')
       }
       try {
         residue.push(
           ...(await verifyNoResidue({
             project: activeProbeScene.project,
             imageTag: activeProbeScene.imageTag,
+            imageId: activeProbeScene.imageId,
+            runClaimToken: activeProbeScene.runClaimToken,
             secretsDirectory: activeProbeScene.secretsDirectory,
             overridePath:
               activeProbeScene.overrideCreated === true ? activeProbeScene.overridePath : null,
@@ -456,10 +490,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             exists: existsSync
           }))
         )
-      } catch (error) {
-        residue.push(
-          `residue recheck failed: ${error instanceof Error ? error.message : String(error)}`
-        )
+      } catch {
+        residue.push('probe residue recheck raised an internal failure')
       }
       return residue
     },

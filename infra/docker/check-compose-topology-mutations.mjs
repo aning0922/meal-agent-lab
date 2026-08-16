@@ -463,6 +463,17 @@ const mutations = [
     to: '  "TOPOLOGY-SOURCE-SENTINEL": {}\n',
     expect: /declared top-level networks uses a non-canonical declaration/,
     forbidEcho: 'TOPOLOGY-SOURCE-SENTINEL'
+  },
+  {
+    name: 'an explicit raw Secret name is shared across Compose projects',
+    from:
+      '  postgres_superuser_password:\n' +
+      '    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/postgres_superuser_password\n',
+    to:
+      '  postgres_superuser_password:\n' +
+      '    name: meal-agent-local-test_postgres_superuser_password\n' +
+      '    file: ${MEAL_AGENT_SECRETS_DIR:-./secrets}/postgres_superuser_password\n',
+    expect: /a network, volume, or secret is shared across project names/
   }
 ]
 
@@ -546,7 +557,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 44
+const expectedMutationCount = 45
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

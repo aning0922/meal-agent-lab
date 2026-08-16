@@ -766,11 +766,10 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
 }
 
 {
-  // **真实调用链**反例：PATH shim 让 `docker inspect --format {{.State.ExitCode}}`
-  // 退出 0 且不打印任何东西（其余 docker 调用原样透传）。容器真实退出码本来
-  // 就是 0，所以旧实现会把这次读不到读成 exit=0 并**照常通过整条 smoke**；
-  // 新实现必须在第一个一次性服务上失败，且绝不记录任何 `exit=` 行。
-  const name = 'an empty ExitCode payload fails the smoke instead of being recorded as exit=0'
+  // **真实调用链**反例：PATH shim 保留完整 inspect envelope 与 immutable identity，
+  // 但从 State 中删除 ExitCode。新实现必须在第一个一次性服务上 fail closed，且
+  // 绝不记录任何 `exit=` 行。
+  const name = 'a missing ExitCode field fails the smoke instead of being recorded as exit=0'
   const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r4-shim-'))
   try {
     const realDocker = spawnSync('which', ['docker'], { encoding: 'utf8' })
@@ -781,12 +780,13 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
       writeFileSync(
         shimPath,
         '#!/bin/sh\n' +
-          'if [ "$1" = "inspect" ]; then\n' +
-          '  for a in "$@"; do\n' +
-          '    case "$a" in\n' +
-          '      *State.ExitCode*) exit 0 ;;\n' +
-          '    esac\n' +
-          '  done\n' +
+          'if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then\n' +
+          `  ${realDocker.stdout.trim()} "$@" | ${process.execPath} -e '` +
+          'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{' +
+          'const v=JSON.parse(s);for(const x of v){if(x.State)delete x.State.ExitCode}' +
+          'process.stdout.write(JSON.stringify(v))})' +
+          "'\n" +
+          '  exit $?\n' +
           'fi\n' +
           `exec ${realDocker.stdout.trim()} "$@"\n`,
         { mode: 0o700 }
@@ -814,20 +814,20 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
         child.once('close', (code) => resolveOutcome({ code, stdout, stderr }))
       })
       const recordedExit = /chain [a-z-]+: exit=/.test(outcome.stdout)
-      const refused = /exited 0 but printed nothing|refusing to read an exit code/.test(
+      const refused = /local-test smoke evidence collection failed/.test(
         outcome.stdout
       )
       const claimedPass = /local-test smoke PASS/.test(outcome.stdout)
       if (claimedPass) {
-        fail(name, 'NOT CAUGHT — the smoke passed while its exit-code reads returned nothing')
+        fail(name, 'NOT CAUGHT — the smoke passed while its container evidence omitted ExitCode')
       } else if (recordedExit) {
-        fail(name, 'a one-shot exit code was recorded from an empty inspect payload')
+        fail(name, 'a one-shot exit code was recorded from an inspect object without ExitCode')
       } else if (!refused) {
-        fail(name, wrongReason('/exited 0 but printed nothing/', [String(outcome.code)]))
+        fail(name, wrongReason('/local-test smoke evidence collection failed/', [String(outcome.code)]))
       } else if (outcome.code === 0) {
         fail(name, 'the smoke reported failure but still exited 0')
       } else {
-        pass(name, 'the smoke refused the empty payload, recorded no exit code and exited non-zero')
+        pass(name, 'the smoke refused the missing field, recorded no exit code and exited non-zero')
       }
     }
   } finally {

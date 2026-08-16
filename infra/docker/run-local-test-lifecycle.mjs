@@ -11,7 +11,7 @@
 //   - `compose stop` 的 SIGTERM 让 api 容器以 exit 0 优雅退出（真实耗时打印）；
 //   - 强制退出分支的证据在 services/api 的 subprocess 回归里，不在这里。
 //
-// 每轮唯一 project + image tag + 合成 Secret；正常/失败/信号三条路径共用同一
+// 每轮唯一 project + immutable image claim + 合成 Secret；正常/失败/信号三条路径共用同一
 // 套 scoped cleanup 与 residue 复查；输出不含任何 Secret 取值。
 import { fileURLToPath } from 'node:url'
 
@@ -70,53 +70,52 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
 
   // --- 停止并重启：数据仍在 -------------------------------------------------
   await timed('graceful stop (SIGTERM path)', async () => {
-    const apiName = stack.containerName('api')
     const startedApi = stack.getServiceEvidence('api')
     if (startedApi === null) {
       throw new Error('the API service has no recorded immutable start evidence')
     }
     const beforeStop = await readContainerRuntimeState(
-      apiName,
+      startedApi.id,
       stack.composeEnvironment,
       startedApi
     )
     const stopStart = performance.now()
     // 30 秒宽限：留给 shutdown.ts 的 10 秒强制退出分支充分表达自己——若容器
     // 是被 compose 的 SIGKILL 收走的，退出码会是 137 而不是 0/1。
-    const stopped = await stack.compose(['stop', '--timeout', '30', 'api'], {
-      timeoutMs: 120_000
-    })
+    await stack.stopClaimedContainers([startedApi.id])
     const stopMs = Math.round(performance.now() - stopStart)
-    if (stopped.status !== 0) {
-      fail(`compose stop api failed with exit ${String(stopped.status)}`)
-      return
-    }
     const afterStop = await readContainerRuntimeState(
-      apiName,
+      startedApi.id,
       stack.composeEnvironment,
       startedApi
     )
     try {
       assertGracefulStopTransition(beforeStop, afterStop)
-      const shutdownLogs = await run(['docker', 'logs', apiName], {
+      const shutdownLogs = await run(['docker', 'logs', startedApi.id], {
         env: stack.composeEnvironment,
         timeoutMs: 60_000
       })
-      if (
-        shutdownLogs.status !== 0 ||
-        !shutdownLogs.stdout.includes('"event":"shutdown.started"') ||
-        !shutdownLogs.stdout.includes('"signal":"SIGTERM"')
-      ) {
+      let shutdownRecordCount = 0
+      if (shutdownLogs.status === 0) {
+        for (const line of shutdownLogs.stdout.split('\n').filter(Boolean)) {
+          try {
+            const record = JSON.parse(line)
+            if (record?.event === 'shutdown.started' && record?.signal === 'SIGTERM') {
+              shutdownRecordCount += 1
+            }
+          } catch {
+            // A non-JSON line is not shutdown evidence.
+          }
+        }
+      }
+      if (shutdownLogs.status !== 0 || shutdownRecordCount !== 1) {
         throw new Error('the owned API container did not record the SIGTERM shutdown event')
       }
       log(`api stopped gracefully on SIGTERM in ${String(stopMs)}ms (container exit code 0)`)
     } catch {
       fail('api stop did not prove a running-to-exited graceful transition')
     }
-    const rest = await stack.compose(['stop', '--timeout', '30'], { timeoutMs: 300_000 })
-    if (rest.status !== 0) {
-      fail(`compose stop (remaining services) failed with exit ${String(rest.status)}`)
-    }
+    await stack.stopClaimedContainers()
   })
 
   await timed('restart after stop (containers kept)', async () => {
@@ -162,7 +161,7 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
   }
 
   // 销毁（DoD 1 最后一步）由 executeDrill 的统一 cleanup 承担：down --volumes、
-  // label sweep、image tag、临时 Secret，与独立 residue 复查。这里不重复。
+  // label sweep、immutable image、临时 Secret，与独立 residue 复查。这里不重复。
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

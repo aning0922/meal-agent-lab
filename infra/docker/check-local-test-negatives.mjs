@@ -50,12 +50,13 @@ import {
   scanTrackedTemplates,
   secretFilenames
 } from './local-test-secrets-contract.mjs'
-import { cleanupSmokeProject } from './run-local-test-smoke.mjs'
+import { cleanupSmokeProject as cleanupSmokeProjectProduction } from './run-local-test-smoke.mjs'
 import {
   buildApiImage,
   imageIdOf,
   inodeIdentityOf,
   isAbsenceMessage,
+  runClaimLabel,
   runImageTagFor
 } from './m3b-docker.mjs'
 import { createSecretScrubber, wrongReason } from './m3b-safe-output.mjs'
@@ -80,6 +81,20 @@ const failures = []
 /** 本套件用过的 docker project 名，收尾时逐个断言零残留。 */
 const usedNegativeProjects = []
 const usedNegativeCleanupScopes = []
+const negativeRunClaims = new Map()
+const runClaimFor = (project) => {
+  let token = negativeRunClaims.get(project)
+  if (token === undefined) {
+    token = randomBytes(16).toString('hex')
+    negativeRunClaims.set(project, token)
+  }
+  return token
+}
+const cleanupSmokeProject = (project, secretsDirectory = null, options = {}) =>
+  cleanupSmokeProjectProduction(project, secretsDirectory, {
+    runClaimToken: runClaimFor(project),
+    ...options
+  })
 let caught = 0
 const pass = (name, reason) => {
   caught += 1
@@ -106,10 +121,13 @@ installSignalHandlers(async () => {
   const cleanupListing = async (kind, project) => {
     const args =
       kind === 'container'
-        ? ['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`]
+        ? ['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${project}`,
+            '--filter', `label=${runClaimLabel}=${runClaimFor(project)}`]
         : kind === 'network'
-          ? ['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]
-          : ['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`]
+          ? ['docker', 'network', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`,
+              '--filter', `label=${runClaimLabel}=${runClaimFor(project)}`]
+          : ['docker', 'volume', 'ls', '-q', '--filter', `label=com.docker.compose.project=${project}`,
+              '--filter', `label=${runClaimLabel}=${runClaimFor(project)}`]
     const result = await runCommand(args, { timeoutMs: 60_000 })
     if (result.status !== 0) return null
     return result.stdout.split('\n').map((entry) => entry.trim()).filter(Boolean)
@@ -1231,6 +1249,8 @@ if (pinnedImageMatch === null) {
           'create',
           '--label',
           `com.docker.compose.project=${negativeProject}`,
+          '--label',
+          `${runClaimLabel}=${runClaimFor(negativeProject)}`,
           '--name',
           `${negativeProject}-env`,
           '--entrypoint',
@@ -1248,6 +1268,8 @@ if (pinnedImageMatch === null) {
           'create',
           '--label',
           `com.docker.compose.project=${negativeProject}`,
+          '--label',
+          `${runClaimLabel}=${runClaimFor(negativeProject)}`,
           '--name',
           `${negativeProject}-argv`,
           '--entrypoint',
@@ -1289,7 +1311,11 @@ if (pinnedImageMatch === null) {
     // 「这里没有残留」，于是真实容器被留在宿主上而套件照常绿。
     const leftoverResult = await runStrict(
       'suite cleanup',
-      ['docker', 'ps', '-aq', '--filter', `label=com.docker.compose.project=${negativeProject}`],
+      [
+        'docker', 'ps', '-aq',
+        '--filter', `label=com.docker.compose.project=${negativeProject}`,
+        '--filter', `label=${runClaimLabel}=${runClaimFor(negativeProject)}`
+      ],
       'the group C leftover container listing'
     )
     const leftover = leftoverResult === null ? [] : leftoverResult.stdout.split('\n').filter(Boolean)
@@ -1372,6 +1398,8 @@ for (const outOfScope of [
         'create',
         '--label',
         `com.docker.compose.project=${decoyProject}`,
+        '--label',
+        `${runClaimLabel}=${runClaimFor(decoyProject)}`,
         '--name',
         decoyName,
         '--entrypoint',
@@ -1383,6 +1411,8 @@ for (const outOfScope of [
         'create',
         '--label',
         `com.docker.compose.project=${targetProject}`,
+        '--label',
+        `${runClaimLabel}=${runClaimFor(targetProject)}`,
         '--name',
         targetName,
         '--entrypoint',
@@ -1415,14 +1445,13 @@ for (const outOfScope of [
 }
 
 // ---------------------------------------------------------------------------
-// Group E：镜像隔离（唯一 tag + immutable ID）
+// Group E：镜像隔离（无可变 tag + claimed immutable ID）
 // ---------------------------------------------------------------------------
 process.stdout.write('Group E: image isolation negatives\n')
 
 {
-  // 两个 project 交错 build/up：各自的唯一 tag 必须指向**不同**的 image ID，
-  // 且任一方的 build 都不能改写对方 tag 指向的镜像。
-  const name = 'two interleaved projects keep independent per-run image tags'
+  // 两个 project 交错 build：不发布可变 tag，各自持有不同的 claimed immutable ID。
+  const name = 'two interleaved projects keep independent immutable image claims'
   const runIdA = `neg${randomBytes(3).toString('hex')}`
   const runIdB = `neg${randomBytes(3).toString('hex')}`
   const tagA = runImageTagFor(runIdA)
@@ -1453,7 +1482,7 @@ process.stdout.write('Group E: image isolation negatives\n')
   try {
     generateSecretBundle(secretsA)
     generateSecretBundle(secretsB)
-    // 交错顺序：A build → B build → 再读两个 tag 的 image ID。反例必须走与
+    // 交错顺序：A build → B build。反例必须走与
     // smoke 相同的 build ownership protocol；直接 `docker compose build` 造出的
     // 无 claim 镜像已经不是 cleanup 有权删除的测试资产。
     const idA1 = await buildApiImage({
@@ -1466,44 +1495,39 @@ process.stdout.write('Group E: image isolation negatives\n')
       imageTag: tagB,
       repositoryRoot
     })
-    const idA2 = await imageIdOf(tagA)
     recordedImageIdB = idB
     cleanupScopeB.imageId = idB
-    if (idA1 === null || idB === null) {
-      fail(name, 'a per-run tag does not exist after its own build')
-    } else if (idA2 !== idA1) {
-      fail(name, "project B's build changed the image that project A's tag points at")
-    } else if (tagA === tagB) {
-      fail(name, 'the two runs produced the same tag')
+    if (idA1 === idB) {
+      fail(name, 'two independent build claims unexpectedly resolved to one image identity')
     } else {
       pass(
         name,
-        `${tagA} -> ${idA1.slice(0, 19)} stayed put while ${tagB} -> ${idB.slice(0, 19)} was built`
+        `${idA1.slice(0, 19)} and ${idB.slice(0, 19)} remained independently claimed`
       )
     }
 
-    // cleanup 只删自己那一个 tag：删 A 之后 B 必须还在。
-    const cleanupName = 'per-run cleanup removes only its own image tag'
-    const residueA = await cleanupSmokeProject(projectA, secretsA, {
+    // cleanup 只删自己那一个 immutable image：删 A 之后 B 必须还在。
+      const cleanupName = 'per-run cleanup removes only its own immutable image'
+      const residueA = await cleanupSmokeProject(projectA, secretsA, {
       imageTag: tagA,
       imageId: recordedImageIdA
     })
-    const afterA = await imageIdOf(tagA)
-    const survivingB = await imageIdOf(tagB)
+    const afterA = await imageIdOf(idA1)
+    const survivingB = await imageIdOf(idB)
     if (residueA.length > 0) {
       fail(cleanupName, wrongReason('an empty residue list', residueA))
     } else if (afterA !== null) {
-      fail(cleanupName, 'the run tag still exists after cleanup')
+      fail(cleanupName, 'the owned immutable image still exists after cleanup')
     } else if (survivingB === null) {
-      fail(cleanupName, "cleanup removed the other project's tag")
+      fail(cleanupName, "cleanup removed the other project's immutable image")
     } else {
-      pass(cleanupName, "own tag removed, the other project's tag untouched")
+      pass(cleanupName, "own immutable image removed, the other project's image untouched")
     }
   } catch (error) {
     fail(name, `image isolation negative threw: ${error instanceof Error ? error.message : String(error)}`)
   } finally {
     // 无论 A build、B build、identity read 或断言在哪一步失败，两边都进入同一个
-    // failure-safe cleanup。此前 finally 只收 B，B build 失败会把 A tag 留下。
+    // failure-safe cleanup。此前 finally 只收 B，B build 失败会把 A image 留下。
     for (const [label, project, secrets, imageTag, imageId] of [
       ['first', projectA, secretsA, tagA, recordedImageIdA],
       ['second', projectB, secretsB, tagB, recordedImageIdB]
@@ -1525,17 +1549,25 @@ process.stdout.write('Group E: image isolation negatives\n')
 }
 
 {
-  // cleanup 拒绝删除任何非本轮形状的 tag（例如全局共享 tag）。
-  const name = 'cleanup refuses to remove a tag outside the per-run namespace'
+  // cleanup 拒绝删除任何没有本轮 unguessable claim 的 immutable image。
+  const name = 'cleanup refuses to remove an unclaimed immutable image'
   const project = `meal-agent-m3b-neg-tag-${randomBytes(3).toString('hex')}`
   usedNegativeProjects.push(project)
+  const pinned = /image: (docker\.io\/library\/postgres:[^\n]+)/.exec(
+    readFileSync(composeFile, 'utf8')
+  )
+  const foreignImageId = pinned === null ? null : await imageIdOf(pinned[1])
+  if (foreignImageId === null) {
+    fail(name, 'the pinned foreign image identity could not be read')
+  }
   const residue = await cleanupSmokeProject(project, null, {
-    imageTag: 'meal-agent-api:stage09a-local-test'
+    imageTag: runImageTagFor(`neg${randomBytes(3).toString('hex')}`),
+    imageId: foreignImageId
   })
-  if (residue.some((entry) => /^image-tag: cleanup stage failed$/.test(String(entry)))) {
-    pass(name, '/image-tag: cleanup stage failed/ with no tag echo')
+  if (residue.some((entry) => /^image-identity: cleanup stage failed$/.test(String(entry)))) {
+    pass(name, '/image-identity: cleanup stage failed/ with no identity echo')
   } else {
-    fail(name, wrongReason('/image-tag: cleanup stage failed/', residue))
+    fail(name, wrongReason('/image-identity: cleanup stage failed/', residue))
   }
 }
 
@@ -1558,9 +1590,9 @@ process.stdout.write('Group F: docker evidence fail-closed negatives\n')
       expect: /^(volume-sweep|dangling-volumes): cleanup stage failed$/
     },
     {
-      name: 'a failing docker compose down is reported instead of silently ignored',
-      script: 'if [ "$1" = "compose" ]; then echo "boom" >&2; exit 5; fi\nexec /usr/local/bin/docker "$@"\n',
-      expect: /^compose-down: cleanup stage failed$/
+      name: 'a failing docker network ls makes the network sweep report residue',
+      script: 'if [ "$1" = "network" ] && [ "$2" = "ls" ]; then echo "boom" >&2; exit 5; fi\nexec /usr/local/bin/docker "$@"\n',
+      expect: /^network-sweep: cleanup stage failed$/
     }
   ]
   // `which docker` 的退出码必须检查：读不到真实路径时 shim 会退化成
@@ -1598,14 +1630,16 @@ process.stdout.write('Group F: docker evidence fail-closed negatives\n')
 }
 
 stageIsolationNegative: {
-  // 一个阶段失败不阻断其余阶段：compose down 失败时，容器/网络/卷 sweep 仍
-  // 必须执行（本例用一个真实 decoy 容器证明它确实被删掉）。
+  // 一个阶段失败不阻断其余阶段：container listing 失败时，network/volume
+  // sweep 仍必须执行。本例留下一个 claimed 容器，同时建立一个不与它连接的
+  // claimed network；PATH shim 只破坏 `docker ps`，随后 network 必须仍被删除。
   const name = 'a failing stage does not block the remaining cleanup stages'
   const project = `meal-agent-m3b-neg-stage-${randomBytes(3).toString('hex')}`
   usedNegativeProjects.push(project)
   const pinned = /image: (docker\.io\/library\/postgres:[^\n]+)/.exec(readFileSync(composeFile, 'utf8'))
   const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-neg-shim-'))
   const containerName = `${project}-victim`
+  const networkName = `${project}-network`
   try {
     if (pinned === null) {
       // 与上面那个 project 对照块同一条守卫：没有它，正则一旦失配就会在
@@ -1625,40 +1659,61 @@ stageIsolationNegative: {
       'create',
       '--label',
       `com.docker.compose.project=${project}`,
+      '--label',
+      `${runClaimLabel}=${runClaimFor(project)}`,
       '--name',
       containerName,
       '--entrypoint',
       'true',
       pinned[1]
     ])
-    if (created.status !== 0) {
-      fail(name, `docker create failed: ${created.stderr.trim()}`)
+    const createdNetwork = await run([
+      'docker',
+      'network',
+      'create',
+      '--label',
+      `com.docker.compose.project=${project}`,
+      '--label',
+      `${runClaimLabel}=${runClaimFor(project)}`,
+      networkName
+    ])
+    if (created.status !== 0 || createdNetwork.status !== 0) {
+      fail(name, 'docker fixture creation failed')
     } else {
       const shimPath = resolve(shimDirectory, 'docker')
       writeFileSync(
         shimPath,
-        `#!/bin/sh\nif [ "$1" = "compose" ]; then echo "boom" >&2; exit 5; fi\nexec ${realDocker} "$@"\n`,
+        `#!/bin/sh\nif [ "$1" = "ps" ]; then echo "boom" >&2; exit 5; fi\nexec ${realDocker} "$@"\n`,
         { mode: 0o700 }
       )
       const residue = await cleanupSmokeProject(project, null, {
         composeEnvironment: { ...process.env, PATH: `${shimDirectory}:${process.env.PATH ?? ''}` }
       })
-      const downFailed = residue.some((entry) => /compose-down/.test(String(entry)))
-      // 非零退出**不等于**「容器已被删掉」：此前一次 daemon 抖动就能让这条
-      // 反例在 cleanup 完全没删东西的情况下判绿。
+      const containerStageFailed = residue.some((entry) =>
+        /^container-sweep: cleanup stage failed$/.test(String(entry))
+      )
       const victimState = await containerPresence(containerName)
+      const networkListing = await residueListingFor('network', project)
       if (victimState === 'unknown') {
         fail(name, 'the container presence check could not be read; it must not default to absent')
-      } else if (!downFailed) {
-        fail(name, 'the injected compose-down failure was not reported')
-      } else if (victimState !== 'absent') {
-        fail(name, 'the container sweep was skipped after the compose-down failure')
+      } else if (!containerStageFailed) {
+        fail(name, 'the injected container-listing failure was not reported')
+      } else if (victimState !== 'present') {
+        fail(name, 'the failed container stage unexpectedly removed its fixture')
+      } else if (!networkListing.readable || networkListing.ids.length !== 0) {
+        fail(name, 'the network sweep was skipped after the container stage failed')
       } else {
-        pass(name, 'compose-down failure reported AND the container sweep still ran')
+        pass(name, 'container failure reported AND the later network sweep still ran')
       }
     }
   } finally {
     await removeOrReport('stage isolation victim', ['docker', 'rm', '-f', '-v', containerName])
+    const remainingNetworks = await residueListingFor('network', project)
+    if (!remainingNetworks.readable) {
+      fail('suite cleanup', 'stage isolation network residue could not be read')
+    } else if (remainingNetworks.ids.length > 0) {
+      await removeOrReport('stage isolation network', ['docker', 'network', 'rm', networkName])
+    }
     rmSync(shimDirectory, { recursive: true, force: true })
   }
 }
@@ -1848,13 +1903,12 @@ for (const project of usedNegativeProjects) {
     if (!listing.readable) {
       fail(
         'suite residue',
-        `the ${kind} residue listing for ${project} could not be read (${listing.detail}); ` +
-          'an unreadable listing must not be read as zero residue'
+        `the ${kind} residue listing could not be read; it must not be read as zero residue`
       )
       continue
     }
     if (listing.ids.length > 0) {
-      fail('suite residue', `${kind}s left behind under ${project}: ${listing.ids.join(', ')}`)
+      fail('suite residue', `${String(listing.ids.length)} ${kind}(s) were left behind`)
     }
   }
 }

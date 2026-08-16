@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, linkSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, linkSync, rmSync, writeFileSync } from 'node:fs'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,7 +21,7 @@ import {
 import {
   buildClaimLabel,
   parseBuildMetadataImageIdentity,
-  parseOwnedBuildImage
+  parseClaimedBuildImage
 } from '../../infra/docker/m3b-docker.mjs'
 import { m5CriticalGuardRegistry } from '../../infra/docker/m5-critical-guard-registry.mjs'
 
@@ -68,17 +68,19 @@ test('closed records reject unknown capabilities instead of ignoring them', () =
   )
 })
 
-test('pg_restore list evidence requires comments and at least one canonical TOC row', () => {
+test('pg_restore list evidence binds the database header and the complete visible TOC', () => {
   assert.deepEqual(
     parsePgRestoreListEvidence(
       '; Archive created at 2026-08-16 00:00:00 UTC\n' +
-      ';     TOC Entries: 4\n' +
+      ';     TOC Entries: 6\n' +
       ';     Dump Version: 1.16-0\n' +
       ';     Format: CUSTOM\n' +
       ';     dbname: meal_agent\n' +
-      '1; 2615 2200 SCHEMA - public owner\n'
+      '1; 1262 16384 DATABASE - meal_agent owner\n' +
+      '2; 2615 2200 SCHEMA - public owner\n' +
+      '3; 1259 2201 TABLE public fixture owner\n'
     ),
-    { comments: 5, entries: 1 }
+    { comments: 5, entries: 3, database: 'meal_agent' }
   )
   for (const value of ['', '   ', 'PGDMP', '; comments only\n', 'arbitrary nonempty\n']) {
     assert.throws(() => parsePgRestoreListEvidence(value), EvidenceProtocolError)
@@ -87,10 +89,24 @@ test('pg_restore list evidence requires comments and at least one canonical TOC 
     () =>
       parsePgRestoreListEvidence(
         '; Archive created at 2026-08-16 00:00:00 UTC\n' +
+        ';     TOC Entries: 4\n' +
+        ';     Dump Version: 1.16-0\n' +
+        ';     Format: CUSTOM\n' +
+        ';     dbname: meal_agent\n' +
+        '1; 2615 2200 SCHEMA - public owner\n'
+      ),
+    EvidenceProtocolError
+  )
+  assert.throws(
+    () =>
+      parsePgRestoreListEvidence(
+        '; Archive created at 2026-08-16 00:00:00 UTC\n' +
         ';     TOC Entries: 5\n' +
         ';     Dump Version: 1.16-0\n' +
         ';     Format: CUSTOM\n' +
-        '1; 2615 2200 SCHEMA - public owner\n'
+        ';     dbname: other_database\n' +
+        '1; 2615 2200 SCHEMA - public owner\n' +
+        '2; 1259 2201 TABLE public fixture owner\n'
       ),
     EvidenceProtocolError
   )
@@ -109,6 +125,11 @@ test('published file evidence binds bytes, inode, link count and exclusive name'
     linkSync(path, alias)
     assert.equal(verifyPublishedFileEvidence(identity, bytes), false)
     rmSync(alias)
+    const originalMode = identity.mode
+    assert.equal(typeof originalMode, 'bigint')
+    chmodSync(path, 0o644)
+    assert.equal(verifyPublishedFileEvidence(identity, bytes), false)
+    chmodSync(path, Number(originalMode))
     writeFileSync(path, 'drifted bytes')
     assert.equal(verifyPublishedFileEvidence(identity, bytes), false)
   } finally {
@@ -147,7 +168,7 @@ test('an unknown process-group probe error survives later ESRCH settlement', asy
   assert.deepEqual(outcome.survivors, [])
 })
 
-test('build ownership binds metadata, immutable ID, one tag and an unguessable claim', () => {
+test('build ownership binds metadata, immutable ID and an unguessable claim without a tag', () => {
   const imageId = `sha256:${'a'.repeat(64)}`
   assert.deepEqual(
     parseBuildMetadataImageIdentity(JSON.stringify({
@@ -158,18 +179,27 @@ test('build ownership binds metadata, immutable ID, one tag and an unguessable c
         size: 123
       }
     })),
-    { imageId, configId: null }
+    {
+      imageId,
+      configId: null,
+      descriptor: {
+        mediaType: 'application/vnd.oci.image.index.v1+json',
+        digest: imageId,
+        size: 123,
+        platform: null
+      }
+    }
   )
   const image = {
     Id: imageId,
-    RepoTags: ['meal-agent-api:m5-fixture'],
+    RepoTags: null,
     Config: { Labels: { [buildClaimLabel]: 'claim-a' } }
   }
   assert.equal(
-    parseOwnedBuildImage(image, {
+    parseClaimedBuildImage(image, {
       expectedImageId: imageId,
-      expectedTag: 'meal-agent-api:m5-fixture',
-      expectedClaimToken: 'claim-a'
+      expectedClaimToken: 'claim-a',
+      requireUntagged: true
     }).imageId,
     imageId
   )
@@ -179,10 +209,10 @@ test('build ownership binds metadata, immutable ID, one tag and an unguessable c
     { ...image, Config: { Labels: { [buildClaimLabel]: 'claim-b' } } }
   ]) {
     assert.throws(
-      () => parseOwnedBuildImage(mutated, {
+      () => parseClaimedBuildImage(mutated, {
         expectedImageId: imageId,
-        expectedTag: 'meal-agent-api:m5-fixture',
-        expectedClaimToken: 'claim-a'
+        expectedClaimToken: 'claim-a',
+        requireUntagged: true
       }),
       /ownership evidence did not match/
     )

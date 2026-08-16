@@ -26,8 +26,9 @@ Docker、Compose、Git 与 PostgreSQL CLI 的 stdout/stderr 均是不可信输�
 - image metadata、inspect 和 history 绑定 canonical immutable image ID、build claim
   与完整结构；
 - container inspect 绑定 immutable ID、project、service、image、generation 与时间；
-- `pg_restore --create --list` 必须包含规范 TOC（包括 database 与 database properties），
-  而不是任意非空字符串。
+- `pg_restore --create --list` 必须包含规范的目标 database 创建项；database properties
+  若出现只能属于同一目标，且 declared/visible 条目计数必须符合 PostgreSQL 18 的
+  固定头部差值，而不是接受任意非空字符串。
 
 失败诊断只能使用固定错误码、可信 registry 名称和计数；不得回显外部键、路径、
 stdout/stderr 或异常文本。
@@ -80,14 +81,18 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 
 ## 实施注记
 
-2026-08-16 的最新实现落点为 `d1e0ef5`。runtime rootfs 不再通过 scratch container
-与 `docker export` 取得，而是验证 OCI index/manifest/config/layer 的 digest、DiffID、
-history 与 provenance 后按 whiteout 规则重放同一组内容寻址 layer。备份发布使用同一
-内存快照，并先通过 `pg_restore --create --list` 的完整 TOC；容器、Compose、PGID 与
-BuildKit cleanup 同样按 immutable identity/claim 和 generation 收敛。15 项 registry
-只负责生产调用点漂移索引，不代替动态反例和 mutation 判别力。该落点从步骤 1 串行
-通过 `pnpm stage09a:check` 14/14；脚本测试 110/110、Compose topology mutation 44/44、
-runtime image mutation 1 baseline + 12 built + 2 static-only、M3B signal 5+6，且 fresh
+2026-08-16 的当前工作分支候选在已提交实现 `d1e0ef5` 之上继续闭合本 ADR。BuildKit
+构建期不发布可变 tag；provenance descriptor、selected manifest、Config/history 与
+OCI layer replay 绑定同一 immutable identity。layer blob 以持续持有的只读 fd 消费，
+验证 digest/DiffID 后按 whiteout、hardlink 与 PAX 规则形成最终 rootfs，并校验 runtime
+payload owner/mode。Compose 的 14 服务、2 网络、10 volume 绑定 128-bit run claim，
+显式 raw Secret name 不得跨 project 共享；service/one-off 后续取证只使用第一次强观察
+取得的 container ID。status 0 与 stdin EPIPE 必须在整组 PGID 到达 ESRCH 后 settle。
+备份的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、uid/gid/mode，
+TOC 按 PostgreSQL 18 的真实 database/declared/visible 文法验证。15 项 registry 仍只负责
+生产调用点漂移索引，不代替动态反例和 mutation 判别力。该候选从步骤 1 串行通过
+`pnpm stage09a:check` 14/14；脚本测试 114/114、Compose topology mutation 45/45、
+runtime image mutation 1 baseline + 13 built + 2 static-only、M3B signal 5+6，且 fresh
 smoke、八份 Secret identity、lifecycle 与 same-ledger restore 均通过。该证据只证明
 本地实现候选；两个全新独立 A/B 审计、M5 Accepted、远端 CI 真实 run 和 09A 总验收
 均未完成。

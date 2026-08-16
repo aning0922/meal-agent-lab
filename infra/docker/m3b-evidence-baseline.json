@@ -44,7 +44,8 @@
     "the API healthcheck is disabled",
     "an API dependency is made optional",
     "an API dependency gains restart propagation",
-    "a noncanonical top-level declaration never echoes its source line"
+    "a noncanonical top-level declaration never echoes its source line",
+    "an explicit raw Secret name is shared across Compose projects"
   ],
   "runtimeImageMutationIds": [
     "inject-denylisted-package",
@@ -52,6 +53,7 @@
     "inject-denylisted-bin-shim",
     "inject-package-payload",
     "change-package-file-mode",
+    "runtime-payload-owned-by-runtime-user",
     "replace-skipped-readme-with-directory",
     "secret-shaped-image-history",
     "expose-port",

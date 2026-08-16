@@ -1197,7 +1197,9 @@ for (const key of expectedVolumeKeys) {
   }
 }
 
-// 两个不同 project name 必须解析出互不相同的 network 与 volume 真实名称。
+// 两个不同 project name 必须解析出互不相同的 network、volume 与 raw Compose
+// Secret 真实名称。显式 `secrets.*.name` 会把两个 project 绑定到同一宿主对象，
+// 即使默认 project 的单次 resolved config 看起来完全正确也必须拒绝。
 const probeNames = ['meal-agent-m2b-probe-alpha', 'meal-agent-m2b-probe-beta']
 const probes = probeNames.map((project) => {
   const probe = parseResolvedComposeDocument(
@@ -1216,12 +1218,13 @@ for (const [index, probe] of probes.entries()) {
 const probeIdentifiers = probes.map((probe) =>
   [
     ...Object.values(probe.networks ?? {}).map((n) => n.name),
-    ...Object.values(probe.volumes ?? {}).map((v) => v.name)
+    ...Object.values(probe.volumes ?? {}).map((v) => v.name),
+    ...Object.values(probe.secrets ?? {}).map((secret) => secret.name)
   ].sort()
 )
 for (const identifier of probeIdentifiers[0]) {
   if (probeIdentifiers[1].includes(identifier)) {
-    fail('a network or volume is shared across project names')
+    fail('a network, volume, or secret is shared across project names')
   }
 }
 
@@ -1339,11 +1342,11 @@ assertSecretFiles(
 
 for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
   if (!hasOnlyKeys(definition, new Set(['file', 'name']))) {
-    fail(`secret ${name}: definition capability shape drifted from the registered resolved-file mode`)
+    fail('a raw Secret definition capability shape drifted from the registered resolved-file mode')
     continue
   }
   if (definition.name !== `${composeProjectName}_${name}`) {
-    fail(`secret ${name}: resolved identity drifted from the registered project-scoped name`)
+    fail('a raw Secret identity drifted from its registered project-scoped name')
   }
   const file = definition.file
   if (typeof file !== 'string' || file === '') {
@@ -1352,13 +1355,13 @@ for (const [name, definition] of Object.entries(resolved.secrets ?? {})) {
   // 仓库外的 secret 目录是显式支持的分支：它不可能被 Git 跟踪，因此只检查权限。
   if (insideRepository(file)) {
     if (gitTracks(file)) {
-      fail(`secret ${name}: its backing file is tracked by git; secrets must stay untracked`)
+      fail('a raw Secret backing file is tracked by git; secrets must stay untracked')
     }
   }
   if (existsSync(file)) {
     const mode = statSync(file).mode & 0o777
     if ((mode & 0o077) !== 0) {
-      fail(`secret ${name}: its backing file is group/world accessible`)
+      fail('a raw Secret backing file is group/world accessible')
     }
   }
 }

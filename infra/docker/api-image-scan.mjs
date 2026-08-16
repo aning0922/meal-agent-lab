@@ -116,10 +116,13 @@ export const selfLinkName = '@meal-agent/api'
 // --------------------------------------------------------------------------
 export const createStrictRunner =
   (fatal, commandRunner = runCommand) =>
-  async (args, { timeoutMs, cwd = repositoryRoot, label, stdin = null } = {}) => {
+  async (
+    args,
+    { timeoutMs, cwd = repositoryRoot, label, stdin = null, inheritedFds = [] } = {}
+  ) => {
     let outcome
     try {
-      outcome = await commandRunner(args, { timeoutMs, cwd, stdin })
+      outcome = await commandRunner(args, { timeoutMs, cwd, stdin, inheritedFds })
     } catch {
       fatal(`${label ?? args[0]}: command failed to run`)
     }
@@ -348,7 +351,6 @@ export const validateSlsaProvenanceStatement = (statement, fatal) => {
     typeof runDetails.metadata.finishedOn !== 'string' ||
     runDetails.metadata.finishedOn === '' ||
     !Array.isArray(statement.subject) ||
-    statement.subject.length === 0 ||
     statement.subject.some(
       (subject) =>
         !isRecord(subject) ||
@@ -705,6 +707,7 @@ const readArchiveMember = (archivePath, member, fatal) => {
 export const validateSavedImageArchive = (
   archivePath,
   expectedImageEvidence,
+  expectedBuildEvidence,
   historyRows,
   fatal,
   problem
@@ -762,6 +765,26 @@ export const validateSavedImageArchive = (
   const rootDescriptor = indexPayload.manifests[0]
   if (!isRecord(rootDescriptor) || rootDescriptor.digest !== expectedImageEvidence.Id) {
     fatal('docker image save OCI index is not bound to the immutable image ID')
+  }
+  const buildPlatform = expectedBuildEvidence?.descriptor?.platform
+  const buildPlatformMatchesImage =
+    buildPlatform === null ||
+    (buildPlatform?.architecture === expectedImageEvidence.Architecture &&
+      buildPlatform?.os === expectedImageEvidence.Os)
+  const exportedPlatformMatchesBuild =
+    rootDescriptor.platform === undefined ||
+    JSON.stringify(rootDescriptor.platform) === JSON.stringify(buildPlatform)
+  if (
+    expectedBuildEvidence === null ||
+    !isRecord(expectedBuildEvidence) ||
+    !isRecord(expectedBuildEvidence.descriptor) ||
+    rootDescriptor.digest !== expectedBuildEvidence.descriptor.digest ||
+    rootDescriptor.mediaType !== expectedBuildEvidence.descriptor.mediaType ||
+    rootDescriptor.size !== expectedBuildEvidence.descriptor.size ||
+    !buildPlatformMatchesImage ||
+    !exportedPlatformMatchesBuild
+  ) {
+    fatal('docker image save root descriptor did not match BuildKit evidence')
   }
   let selectedManifest = null
   let selectedManifestDescriptor = null
@@ -821,7 +844,9 @@ export const validateSavedImageArchive = (
         platform.architecture === 'unknown' &&
         platform.os === 'unknown'
       if (isAttestation) {
+        const referenceDigest = descriptor.annotations['vnd.docker.reference.digest']
         if (
+          !isImageId(referenceDigest) ||
           manifestPayload.layers.length !== 1 ||
           !isRecord(manifestPayload.layers[0]) ||
           !isRecord(manifestPayload.layers[0].annotations) ||
@@ -830,6 +855,11 @@ export const validateSavedImageArchive = (
         ) {
           fatal('docker image save returned an invalid provenance attestation manifest')
         }
+        // Untagged BuildKit exports legitimately emit an empty in-toto `subject` array;
+        // the attestation-manifest descriptor itself carries the immutable platform
+        // manifest digest. Treat that descriptor annotation as the subject binding,
+        // then require it to equal the selected platform manifest below.
+        attestationSubjects.push(referenceDigest)
       } else if (
         (isRecord(platform) &&
           platform.architecture === expectedImageEvidence.Architecture &&
@@ -856,6 +886,8 @@ export const validateSavedImageArchive = (
   )
   if (
     selectedManifest === null ||
+    (expectedBuildEvidence.configId !== null &&
+      selectedManifest.config.digest !== expectedBuildEvidence.configId) ||
     selectedManifest.config.digest !== `sha256:${manifest.Config.slice('blobs/sha256/'.length)}` ||
     JSON.stringify(selectedManifest.layers.map((layer) => `blobs/sha256/${layer.digest.slice(7)}`)) !==
       JSON.stringify(manifest.Layers)
@@ -898,9 +930,8 @@ const hashArchiveMember = async (archivePath, member, { decompress = false } = {
   return hash.digest('hex')
 }
 
-const validateLayerTarFraming = (path, fatal) => {
-  const fd = openSync(path, 'r')
-  try {
+const validateLayerTarFraming = (fd, fatal) => {
+  {
     const size = fstatSync(fd).size
     let offset = 0
     let zeroBlocks = 0
@@ -944,8 +975,196 @@ const validateLayerTarFraming = (path, fatal) => {
     if (!sawTerminator || offset !== size) {
       fatal('docker image save returned an unterminated or trailing inner layer tar')
     }
-  } finally {
-    closeSync(fd)
+  }
+}
+
+const tarString = (bytes) => {
+  const nul = bytes.indexOf(0)
+  return bytes.subarray(0, nul === -1 ? bytes.length : nul).toString('utf8')
+}
+
+const normalizeLayerMemberName = (name, fatal) => {
+  const stripped = name.replace(/^\.\//, '').replace(/\/$/, '')
+  if (stripped === '') return null
+  if (
+    stripped.includes('\u0000') ||
+    posix.isAbsolute(stripped) ||
+    stripped.split('/').includes('..')
+  ) {
+    fatal('docker image layer contained an unsafe archive path')
+  }
+  return stripped
+}
+
+const readTarPayload = (fd, offset, size, fatal) => {
+  if (!Number.isSafeInteger(size) || size < 0 || size > 16 * 1024 * 1024) {
+    fatal('docker image layer metadata payload exceeded its bound')
+  }
+  const bytes = Buffer.alloc(size)
+  if (size > 0 && readSync(fd, bytes, 0, size, offset) !== size) {
+    fatal('docker image layer metadata payload was truncated')
+  }
+  return bytes
+}
+
+const parsePaxMetadata = (bytes, fatal) => {
+  let cursor = 0
+  let path = null
+  let linkPath = null
+  while (cursor < bytes.length) {
+    const space = bytes.indexOf(0x20, cursor)
+    if (space === -1) fatal('docker image layer PAX metadata was malformed')
+    const lengthText = bytes.subarray(cursor, space).toString('ascii')
+    if (!/^[1-9][0-9]*$/.test(lengthText)) {
+      fatal('docker image layer PAX metadata was malformed')
+    }
+    const length = Number(lengthText)
+    if (!Number.isSafeInteger(length) || cursor + length > bytes.length) {
+      fatal('docker image layer PAX metadata was malformed')
+    }
+    const record = bytes.subarray(space + 1, cursor + length)
+    if (record.at(-1) !== 0x0a) fatal('docker image layer PAX metadata was malformed')
+    const equals = record.indexOf(0x3d)
+    if (equals > 0) {
+      const key = record.subarray(0, equals).toString('utf8')
+      if (key === 'path') path = record.subarray(equals + 1, -1).toString('utf8')
+      if (key === 'linkpath') linkPath = record.subarray(equals + 1, -1).toString('utf8')
+    }
+    cursor += length
+  }
+  return Object.freeze({ path, linkPath })
+}
+
+/**
+ * 解析 inner layer tar 自带的文件系统身份。宿主提取目录的 owner 不能代表镜像内
+ * owner，因此 runtime `/app` 的 uid/gid/mode 必须直接来自内容寻址 tar header。
+ */
+export const parseLayerTarEvidence = (fd, fatal) => {
+  const size = fstatSync(fd).size
+  const entries = []
+  const names = new Set()
+  let offset = 0
+  let pendingPath = null
+  let pendingLinkPath = null
+  while (offset + tarBlockSize <= size) {
+    const header = Buffer.alloc(tarBlockSize)
+    if (readSync(fd, header, 0, header.length, offset) !== header.length) {
+      fatal('docker image save returned a truncated inner layer tar header')
+    }
+    if (header.every((byte) => byte === 0)) break
+    const memberSize = parseTarOctal(header.subarray(124, 136))
+    const mode = parseTarOctal(header.subarray(100, 108))
+    const uid = parseTarOctal(header.subarray(108, 116))
+    const gid = parseTarOctal(header.subarray(116, 124))
+    if (memberSize === null || mode === null || uid === null || gid === null) {
+      fatal('docker image layer identity metadata was malformed')
+    }
+    const type = header[156]
+    const payloadOffset = offset + tarBlockSize
+    if (type === 0x78) {
+      const metadata = parsePaxMetadata(
+        readTarPayload(fd, payloadOffset, memberSize, fatal),
+        fatal
+      )
+      pendingPath = metadata.path
+      pendingLinkPath = metadata.linkPath
+    } else if (type === 0x4c) {
+      pendingPath = tarString(readTarPayload(fd, payloadOffset, memberSize, fatal))
+    } else if (type === 0x4b) {
+      pendingLinkPath = tarString(readTarPayload(fd, payloadOffset, memberSize, fatal))
+    } else if (type !== 0x67) {
+      const prefix = tarString(header.subarray(345, 500))
+      const headerName = tarString(header.subarray(0, 100))
+      const name = normalizeLayerMemberName(
+        pendingPath ?? (prefix === '' ? headerName : `${prefix}/${headerName}`),
+        fatal
+      )
+      pendingPath = null
+      const rawLinkTarget = [0x31, 0x32].includes(type)
+        ? (pendingLinkPath ?? tarString(header.subarray(157, 257)))
+        : null
+      const linkTarget = type === 0x31
+        ? normalizeLayerMemberName(rawLinkTarget, fatal)
+        : rawLinkTarget
+      if (![0x31, 0x32].includes(type) && pendingLinkPath !== null) {
+        fatal('docker image layer link metadata did not describe a link')
+      }
+      pendingLinkPath = null
+      if (name === null) {
+        offset += tarBlockSize + Math.ceil(memberSize / tarBlockSize) * tarBlockSize
+        continue
+      }
+      if (names.has(name)) fatal('docker image layer contained duplicate archive members')
+      names.add(name)
+      const basename = posix.basename(name)
+      if (
+        basename.startsWith('.wh.') &&
+        (basename === '.wh.' || ![0, 0x30].includes(type) || memberSize !== 0)
+      ) {
+        fatal('docker image layer contained an invalid whiteout marker')
+      }
+      if (name === 'app' || name.startsWith('app/')) {
+        if (
+          type === 0x31 &&
+          !(linkTarget === 'app' || linkTarget?.startsWith('app/'))
+        ) {
+          fatal('docker image runtime payload contained an unsafe hardlink')
+        }
+      }
+      entries.push(Object.freeze({ name, type, size: memberSize, mode, uid, gid, linkTarget }))
+    }
+    offset += tarBlockSize + Math.ceil(memberSize / tarBlockSize) * tarBlockSize
+  }
+  if (pendingPath !== null || pendingLinkPath !== null) {
+    fatal('docker image layer metadata had no following member')
+  }
+  return Object.freeze(entries)
+}
+
+const applyLayerIdentityEvidence = (identityByPath, entries, fatal) => {
+  for (const entry of entries) {
+    const basename = posix.basename(entry.name)
+    if (!basename.startsWith('.wh.')) continue
+    const parent = posix.dirname(entry.name)
+    if (basename === '.wh..wh..opq') {
+      const prefix = parent === '.' ? '' : `${parent}/`
+      for (const name of identityByPath.keys()) {
+        if (name.startsWith(prefix) && name !== parent) identityByPath.delete(name)
+      }
+    } else {
+      const target = parent === '.'
+        ? basename.slice('.wh.'.length)
+        : `${parent}/${basename.slice('.wh.'.length)}`
+      for (const name of identityByPath.keys()) {
+        if (name === target || name.startsWith(`${target}/`)) identityByPath.delete(name)
+      }
+    }
+  }
+  for (const entry of entries) {
+    const basename = posix.basename(entry.name)
+    if (basename.startsWith('.wh.')) continue
+    if (entry.type !== 0x35) {
+      for (const name of identityByPath.keys()) {
+        if (name.startsWith(`${entry.name}/`)) identityByPath.delete(name)
+      }
+    }
+    if (entry.type === 0x31) {
+      const target = identityByPath.get(entry.linkTarget)
+      if (target === undefined) {
+        fatal('docker image runtime payload hardlink target was not in the verified layer view')
+      }
+      identityByPath.set(
+        entry.name,
+        Object.freeze({
+          ...target,
+          name: entry.name,
+          type: entry.type,
+          linkTarget: entry.linkTarget
+        })
+      )
+    } else {
+      identityByPath.set(entry.name, entry)
+    }
   }
 }
 
@@ -992,6 +1211,7 @@ const hashAndValidateLayer = async (
     end: member.offset + member.size - 1
   })
   const fd = openSync(outputPath, 'wx', 0o600)
+  const custodyFds = []
   try {
     if (actualCodec === 'gzip') {
       stream = stream.pipe(createGunzip())
@@ -1009,13 +1229,51 @@ const hashAndValidateLayer = async (
         offset += written
       }
     }
-  } catch {
+    const writtenIdentity = fstatSync(fd, { bigint: true })
+    if (
+      !writtenIdentity.isFile() ||
+      writtenIdentity.nlink !== 1n ||
+      (writtenIdentity.mode & 0o7777n) !== 0o600n
+    ) {
+      fatal('docker image save inner layer spool identity was invalid')
+    }
+    for (let index = 0; index < 2; index += 1) {
+      const readFd = openSync(outputPath, 'r')
+      const observed = fstatSync(readFd, { bigint: true })
+      if (
+        !observed.isFile() ||
+        observed.dev !== writtenIdentity.dev ||
+        observed.ino !== writtenIdentity.ino ||
+        observed.nlink !== 1n ||
+        observed.size !== writtenIdentity.size ||
+        observed.uid !== writtenIdentity.uid ||
+        observed.gid !== writtenIdentity.gid ||
+        (observed.mode & 0o7777n) !== 0o600n
+      ) {
+        closeSync(readFd)
+        fatal('docker image save inner layer spool ownership drifted')
+      }
+      custodyFds.push(readFd)
+    }
+    validateLayerTarFraming(custodyFds[0], fatal)
+    const entries = parseLayerTarEvidence(custodyFds[0], fatal)
+    return Object.freeze({
+      diffId: hash.digest('hex'),
+      listingFd: custodyFds[0],
+      extractionFd: custodyFds[1],
+      entries
+    })
+  } catch (error) {
+    for (const custodyFd of custodyFds) {
+      try { closeSync(custodyFd) } catch {}
+    }
+    if (error instanceof Error && error.message.startsWith('docker image ')) {
+      throw error
+    }
     fatal('docker image save returned an unreadable compressed layer')
   } finally {
     closeSync(fd)
   }
-  validateLayerTarFraming(outputPath, fatal)
-  return hash.digest('hex')
 }
 
 export const verifySavedImageLayers = async (
@@ -1034,6 +1292,7 @@ export const verifySavedImageLayers = async (
   }
   const members = indexSavedImageTar(archivePath, fatal)
   const layerWork = `${archivePath}.layers`
+  const identityByPath = new Map()
   mkdirSync(layerWork, { recursive: false, mode: 0o700 })
   try {
     for (let index = 0; index < layerPaths.length; index += 1) {
@@ -1053,25 +1312,51 @@ export const verifySavedImageLayers = async (
         fatal('docker image save returned a layer blob with the wrong digest')
       }
       const diffDigest = expectedDiffIds[index].slice('sha256:'.length)
-      const actualDiff = await hashAndValidateLayer(
+      const layerCustody = await hashAndValidateLayer(
         archivePath,
         member,
         descriptor.mediaType,
         join(layerWork, `${String(index)}.tar`),
         fatal
       )
-      if (actualDiff !== diffDigest) {
+      if (layerCustody.diffId !== diffDigest) {
+        closeSync(layerCustody.listingFd)
+        closeSync(layerCustody.extractionFd)
         fatal('docker image save returned a layer blob with the wrong diff ID')
       }
-      if (materializeRoot !== null) {
-        if (runStrict === null) fatal('docker image rootfs materializer was unavailable')
-        await applyVerifiedLayer(
-          join(layerWork, `${String(index)}.tar`),
-          join(layerWork, `${String(index)}.root`),
-          materializeRoot,
-          runStrict,
-          fatal
+      applyLayerIdentityEvidence(identityByPath, layerCustody.entries, fatal)
+      try {
+        if (materializeRoot !== null) {
+          if (runStrict === null) fatal('docker image rootfs materializer was unavailable')
+          await applyVerifiedLayer(
+            layerCustody,
+            join(layerWork, `${String(index)}.root`),
+            materializeRoot,
+            runStrict,
+            fatal
+          )
+        }
+      } finally {
+        closeSync(layerCustody.listingFd)
+        closeSync(layerCustody.extractionFd)
+      }
+    }
+    if (materializeRoot !== null) {
+      const runtimePayload = [...identityByPath.values()].filter(
+        (entry) => entry.name === 'app' || entry.name.startsWith('app/')
+      )
+      if (runtimePayload.length === 0) {
+        fatal('docker image runtime payload identity evidence was empty')
+      }
+      if (runtimePayload.some((entry) => entry.uid !== 0 || entry.gid !== 0)) {
+        fatal('docker image runtime payload was not root-owned')
+      }
+      if (
+        runtimePayload.some(
+          (entry) => entry.type !== 0x32 && (entry.mode & 0o022) !== 0
         )
+      ) {
+        fatal('docker image runtime payload was group-or-world writable')
       }
     }
   } finally {
@@ -1119,6 +1404,14 @@ const mergeVerifiedLayerTree = (source, target, root, fatal) => {
   for (const entry of entries) {
     if (entry.name === '.wh..wh..opq') continue
     if (entry.name.startsWith('.wh.')) {
+      const marker = lstatSync(join(source, entry.name))
+      if (
+        entry.name === '.wh.' ||
+        !marker.isFile() ||
+        marker.size !== 0
+      ) {
+        fatal('docker image layer contained an invalid whiteout marker')
+      }
       rmSync(join(target, entry.name.slice('.wh.'.length)), {
         recursive: true,
         force: true
@@ -1155,14 +1448,18 @@ const mergeVerifiedLayerTree = (source, target, root, fatal) => {
   }
 }
 
-const applyVerifiedLayer = async (layerTar, layerRoot, root, runStrict, fatal) => {
+const applyVerifiedLayer = async (custody, layerRoot, root, runStrict, fatal) => {
   mkdirSync(layerRoot, { recursive: false, mode: 0o700 })
   const listing = (
-    await runStrict(['tar', '-tf', layerTar], {
+    await runStrict(['tar', '-tf', '/dev/fd/3'], {
       timeoutMs: 300_000,
-      label: 'verified layer listing'
+      label: 'verified layer listing',
+      inheritedFds: [custody.listingFd]
     })
   ).stdout.split('\n').filter(Boolean)
+  if (new Set(listing).size !== listing.length) {
+    fatal('docker image layer contained duplicate archive members')
+  }
   if (
     listing.some((name) =>
       name.includes('\u0000') ||
@@ -1172,9 +1469,10 @@ const applyVerifiedLayer = async (layerTar, layerRoot, root, runStrict, fatal) =
   ) {
     fatal('docker image layer contained an unsafe archive path')
   }
-  await runStrict(['tar', '-xf', layerTar, '-C', layerRoot], {
+  await runStrict(['tar', '-xf', '/dev/fd/3', '-C', layerRoot], {
     timeoutMs: 300_000,
-    label: 'verified layer extraction'
+    label: 'verified layer extraction',
+    inheritedFds: [custody.extractionFd]
   })
   mergeVerifiedLayerTree(layerRoot, root, root, fatal)
 }
@@ -1594,8 +1892,9 @@ export const deriveExpectedClosure = async ({ runStrict, fatal, problem, tempora
 // 中途失败时调用方通过 track.container 拿到残留 id 负责兜底移除。
 // --------------------------------------------------------------------------
 export const scanImage = async ({
-  imageTag,
+  imageTag = null,
   expectedImageId,
+  expectedBuildEvidence,
   expected,
   temporaryRoot,
   runStrict,
@@ -1609,22 +1908,26 @@ export const scanImage = async ({
   const savedImageTarPath = join(temporaryRoot, 'saved-image.tar')
   const extractedRoot = join(temporaryRoot, 'image-root')
 
-  const imageId = parseDockerImageId(
-    (
-      await runStrict(['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag], {
-        timeoutMs: 60_000,
-        label: 'docker image inspect (id)'
-      })
-    ).stdout,
-    fatal
-  )
+  const imageId =
+    imageTag === null
+      ? expectedImageId
+      : parseDockerImageId(
+          (
+            await runStrict(['docker', 'image', 'inspect', '--format', '{{.Id}}', imageTag], {
+              timeoutMs: 60_000,
+              label: 'docker image inspect (id)'
+            })
+          ).stdout,
+          fatal
+        )
   if (imageId !== expectedImageId) {
-    fatal('per-run image tag no longer identifies the image produced by this build')
+    fatal('runtime image locator no longer identifies the immutable build result')
   }
   track.image(imageId)
   log(`image id ${imageId}`)
 
-  // 从这一刻起只使用 immutable ID；tag 只是第一次解析入口，不能继续参与证据收集。
+  // 生产入口从 BuildKit iidfile 直接交付 immutable ID；可选 tag 仅保留给
+  // 纯函数反例证明“locator 只能解析一次”，不参与生产证据链。
   const imageInspect = parseImageInspect(
     (
       await runStrict(['docker', 'image', 'inspect', imageId], {
@@ -1662,6 +1965,7 @@ export const scanImage = async ({
   const archiveEvidence = validateSavedImageArchive(
     savedImageTarPath,
     imageInspect,
+    expectedBuildEvidence,
     historyRows,
     fatal,
     problem

@@ -530,6 +530,8 @@ export const createCommandRunner = ({
       cwd,
       timeoutMs = 120_000,
       stdin = null,
+      allowSuccessfulStdinEpipe = false,
+      inheritedFds = [],
       maxStdoutBytes = 64 * 1024 * 1024,
       maxStderrBytes = 64 * 1024 * 1024
     } = {}
@@ -539,13 +541,20 @@ export const createCommandRunner = ({
     delete childEnvironment[aggregateOwnershipFdName]
     delete childEnvironment[aggregateOwnershipAuthFdName]
     delete childEnvironment[aggregateOwnershipAuthTokenName]
+    if (
+      !Array.isArray(inheritedFds) ||
+      inheritedFds.some((fd) => !Number.isSafeInteger(fd) || fd < 0)
+    ) {
+      rejectPromise(new Error('command inherited descriptor evidence was invalid'))
+      return
+    }
     let child
     try {
       child = spawnProcess(args[0], args.slice(1), {
         cwd,
         env: childEnvironment,
         detached: true,
-        stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe']
+        stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe', ...inheritedFds]
       })
     } catch {
       // spawn 的同步异常发生在任何 PGID 出现之前；Promise executor 不得把
@@ -611,6 +620,27 @@ export const createCommandRunner = ({
           ? `; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
           : ''
       rejectPromise(new Error(`${reason}${suffix}`))
+    }
+
+    const settleAfterLeaderClose = async (result) => {
+      let survivors = childHandle === null ? [] : [childHandle]
+      let terminationFailed = false
+      try {
+        survivors =
+          childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
+      } catch {
+        terminationFailed = true
+      }
+      if (terminationFailed || survivors.length > 0) {
+        rejectPromise(
+          new Error(
+            `command process-group settlement failed; ${String(survivors.length)} ` +
+              'descendant process group(s) were not confirmed gone'
+          )
+        )
+        return
+      }
+      resolvePromise(result)
     }
 
     const claimFailure = (reason) => {
@@ -683,7 +713,7 @@ export const createCommandRunner = ({
         return
       }
       settlementClaimed = true
-      resolvePromise({
+      void settleAfterLeaderClose({
         status: signal !== null ? null : code,
         signal,
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),
@@ -692,16 +722,21 @@ export const createCommandRunner = ({
     })
 
     if (stdin !== null) {
-      child.stdin.once('error', () => {
+      child.stdin.once('error', (error) => {
         if (ownershipAnnouncementFailed) return
+        if (allowSuccessfulStdinEpipe && error?.code === 'EPIPE') {
+          return
+        }
         claimFailure('command stdin failed')
       })
       try {
         child.stdin.end(stdin)
-      } catch {
+      } catch (error) {
         // Socket.end 的同步异常与异步 EPIPE 具有相同的资源语义：先收敛整组，
         // 再以固定原因拒绝，绝不让原始异常越过边界。
-        claimFailure('command stdin failed')
+        if (!(allowSuccessfulStdinEpipe && error?.code === 'EPIPE')) {
+          claimFailure('command stdin failed')
+        }
       }
     }
 
