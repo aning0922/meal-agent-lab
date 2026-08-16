@@ -118,13 +118,54 @@ const mutations = [
       '    driver_opts:\n' +
       '      com.docker.network.bridge.enable_icc: "true"\n' +
       '    internal: true\n',
-    expect: /network internal: capability fields drifted/
+    expect: /a registered network capability shape drifted/
   },
   {
     name: 'the database volume becomes external',
     from: '  postgres-data: {}\n',
     to: '  postgres-data:\n    external: true\n',
-    expect: /volume postgres-data: capability fields drifted/
+    expect: /a registered volume capability shape drifted/
+  },
+  {
+    name: 'an unused top-level config capability is declared',
+    from: '\n# --------------------------------------------------------------------------\n# 网络\n',
+    to:
+      '\nconfigs:\n' +
+      '  foreign-config: {}\n' +
+      '\n# --------------------------------------------------------------------------\n# 网络\n',
+    expect: /top-level capability set drifted from its registered closed schema/
+  },
+  {
+    name: 'a privileged service is hidden behind another profile',
+    from: '\n# --------------------------------------------------------------------------\n# 网络\n',
+    to:
+      '\n  hidden-profile-service:\n' +
+      '    image: docker.io/library/alpine@sha256:' + '0'.repeat(64) + '\n' +
+      '    profiles: [hidden-audit]\n' +
+      '    privileged: true\n' +
+      '\n# --------------------------------------------------------------------------\n# 网络\n',
+    expect: /unexpected service set/
+  },
+  {
+    name: 'security_opt gains an unregistered confinement control',
+    from: '  security_opt:\n    - no-new-privileges:true\n',
+    to:
+      '  security_opt:\n' +
+      '    - no-new-privileges:true\n' +
+      '    - label=disable\n',
+    expect: /security_opt must match the registered fixed set/
+  },
+  {
+    name: 'the API published port switches to ingress mode',
+    from: '        mode: host\n',
+    to: '        mode: ingress\n',
+    expect: /published port mode must be host/
+  },
+  {
+    name: 'the API published port gains an unknown capability field',
+    from: '        mode: host\n',
+    to: '        mode: host\n        app_protocol: http\n',
+    expect: /published port capability shape drifted/
   },
   {
     name: 'the shared log size bound is relaxed',
@@ -505,7 +546,7 @@ try {
 // **变异条数的硬门禁**：此前通过消息里的分母直接取自数组长度，删掉一条变异
 // 照样报 PASS，而文档把「15 项」当事实写着。其余三个套件都用字面量兜底，这里
 // 补齐。
-const expectedMutationCount = 39
+const expectedMutationCount = 44
 if (mutations.length !== expectedMutationCount) {
   failures.push(
     `expected ${String(expectedMutationCount)} mutations, the file defines ${String(mutations.length)}`

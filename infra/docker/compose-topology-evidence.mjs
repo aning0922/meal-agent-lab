@@ -23,6 +23,17 @@ export const parseResolvedComposeDocument = (text) => {
   }
   if (
     !isResolvedServiceRecord(value) ||
+    !sameKeys(value, [
+      'name',
+      'services',
+      'networks',
+      'volumes',
+      'secrets',
+      'x-hardening',
+      'x-api-image',
+      'x-bootstrap-psql',
+      'x-pg-cluster-env'
+    ]) ||
     typeof value.name !== 'string' ||
     value.name.length === 0 ||
     !isResolvedServiceRecord(value.services) ||

@@ -45,6 +45,7 @@ import {
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import { parsePgRestoreListEvidence } from './m5-evidence-protocol.mjs'
 
 const targetDatabase = 'meal_agent'
 const migrationRole = 'meal_agent_migrator'
@@ -62,6 +63,8 @@ export const checksumMismatchReason =
   'restore refused: the backup does not match its sha256 sidecar; pg_restore was not invoked'
 export const dumpMagicReason =
   'restore refused: the file does not carry the pg_dump custom-format magic; pg_restore was not invoked'
+export const archiveStructureReason =
+  'restore refused: the backup archive structure is invalid; the target database was not inspected or created'
 
 const readChecksumSidecar = (sidecarPath) => {
   let fd = null
@@ -171,7 +174,22 @@ export const performRestore = async (
     runRestoreOneOff(oneOff, runArgs, options, failureReason)
 
   log(`restore: deployment=local-test project=${project} database=${targetDatabase} (starting)`)
-    log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
+  log(`restore source sha256: ${sha256} (verified against the sidecar before any restore step)`)
+
+  // archive shape 必须在第一次 Compose/数据库副作用前闭合。只看 PGDMP magic 会让
+  // checksum 正确的垃圾字节先创建目标库，到真正 pg_restore 时才失败。宿主
+  // pg_restore 从同一 verifiedBytes stdin 读取；不重新打开调用方路径。
+  let listed
+  try {
+    listed = await run(['pg_restore', '--list'], {
+      timeoutMs: 120_000,
+      stdin: verifiedBytes
+    })
+    if (listed.status !== 0) throw new Error(archiveStructureReason)
+    parsePgRestoreListEvidence(listed.stdout)
+  } catch {
+    throw new Error(archiveStructureReason)
+  }
 
   // 目标数据库必须不存在：恢复只进全新库。
   const present = await safeOneOff(

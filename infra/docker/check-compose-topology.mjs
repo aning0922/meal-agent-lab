@@ -642,6 +642,28 @@ try {
 // 忽略——`"spare": {}`、`'spare': {}`、`<<: *alias` 都属于合法 YAML，但用
 // 正则扫描无法可靠理解，所以只能拒绝，不能当作「这里没有键」。
 const canonicalBareKey = /^ {2}([a-z0-9][a-z0-9_.-]*):(?:\s|$)/
+const canonicalTopLevelKey = /^([a-z][a-z0-9_.-]*):(?:\s|$)/
+const expectedTopLevelKeys = [
+  'name',
+  'x-hardening',
+  'x-api-image',
+  'x-bootstrap-psql',
+  'x-pg-cluster-env',
+  'services',
+  'networks',
+  'volumes',
+  'secrets'
+].sort()
+const declaredTopLevelKeys = () => {
+  const keys = []
+  for (const line of composeSource.split('\n')) {
+    if (line === '' || line.startsWith(' ') || line.trimStart().startsWith('#')) continue
+    const match = canonicalTopLevelKey.exec(line)
+    if (match === null) return null
+    keys.push(match[1])
+  }
+  return keys.sort()
+}
 const declaredTopLevelSection = (section) => {
   const lines = composeSource.split('\n')
   const start = lines.indexOf(`${section}:`)
@@ -696,6 +718,12 @@ const insideRepository = (path) => {
 // 后续所有基于正则的源码判断都不再可信，因此立即 fail closed，不给
 // `docker compose config` 的 schema 校验抢先给出别的理由的机会。
 const declaredSectionProblems = []
+const sourceTopLevelKeys = declaredTopLevelKeys()
+if (sourceTopLevelKeys === null || !same(sourceTopLevelKeys, expectedTopLevelKeys)) {
+  declaredSectionProblems.push(
+    'the Compose source top-level capability set drifted from its registered closed schema'
+  )
+}
 for (const [section, expectedKeys] of [
   ['networks', expectedNetworkKeys],
   ['volumes', expectedVolumeKeys],
@@ -729,7 +757,9 @@ if (declaredSectionProblems.length > 0) {
 
 let resolved
 resolved = parseResolvedComposeDocument(
-  runCompose(['--profile', bootstrapProfile, 'config', '--format', 'json'])
+  // `*` includes every declared profile. Otherwise a hostile service hidden behind a profile
+  // is absent from the resolved model and can carry arbitrary capabilities without review.
+  runCompose(['--profile', '*', 'config', '--format', 'json'])
 )
 if (resolved === null) {
   abort('compose topology check received invalid resolved configuration evidence')
@@ -1018,13 +1048,8 @@ for (const name of serviceOrder) {
   }
 
   const securityOpt = service.security_opt ?? []
-  if (!securityOpt.includes('no-new-privileges:true')) {
-    fail(`${name}: security_opt must include no-new-privileges:true`)
-  }
-  for (const option of securityOpt) {
-    if (/unconfined/.test(option)) {
-      fail(`${name}: security_opt must not relax confinement`)
-    }
+  if (!same(securityOpt, ['no-new-privileges:true'])) {
+    fail(`${name}: security_opt must match the registered fixed set`)
   }
 
   if (!(service.cap_drop ?? []).includes('ALL')) {
@@ -1097,6 +1122,13 @@ for (const name of serviceOrder) {
     continue
   }
   const [port] = ports
+  if (
+    !isResolvedServiceRecord(port) ||
+    !same(Object.keys(port).sort(), ['host_ip', 'mode', 'protocol', 'published', 'target'])
+  ) {
+    fail(`${name}: published port capability shape drifted from the registered fixed set`)
+    continue
+  }
   if (port.host_ip !== apiHostIp) {
     fail(`${name}: host publish address must be exactly ${apiHostIp}`)
   }
@@ -1108,6 +1140,9 @@ for (const name of serviceOrder) {
   }
   if (!/^[0-9]+$/.test(String(port.published))) {
     fail(`${name}: published host port must be a single number`)
+  }
+  if (port.mode !== 'host') {
+    fail(`${name}: published port mode must be host`)
   }
 }
 
@@ -1124,7 +1159,8 @@ if (!same(Object.keys(resolved.volumes ?? {}).sort(), expectedVolumeKeys)) {
 if (networks.internal?.internal !== true) {
   fail('networks.internal must set internal: true (no gateway, no host port)')
 }
-for (const [key, definition] of Object.entries(networks)) {
+for (const key of expectedNetworkKeys) {
+  const definition = networks[key]
   const expectedDefinition =
     key === 'internal'
       ? {
@@ -1135,22 +1171,25 @@ for (const [key, definition] of Object.entries(networks)) {
         }
       : { name: `${resolved.name}_${key}`, driver: 'bridge', ipam: {} }
   if (!same(definition, expectedDefinition)) {
-    fail(`network ${key}: capability fields drifted from the registered fixed shape`)
+    fail('a registered network capability shape drifted')
   }
 }
-for (const [key, definition] of Object.entries(resolved.volumes ?? {})) {
+for (const key of expectedVolumeKeys) {
+  const definition = resolved.volumes?.[key]
   if (!same(definition, { name: `${resolved.name}_${key}` })) {
-    fail(`volume ${key}: capability fields drifted from the registered fixed shape`)
+    fail('a registered volume capability shape drifted')
   }
 }
 // 网络与卷不得写死全局 name：并行 worktree 必须能靠 project name 互相隔离。
-for (const [key, definition] of Object.entries(networks)) {
+for (const key of expectedNetworkKeys) {
+  const definition = networks[key]
   const expectedName = `${resolved.name}_${key}`
   if (definition.name !== expectedName) {
     fail('network names must be project-scoped')
   }
 }
-for (const [key, definition] of Object.entries(resolved.volumes ?? {})) {
+for (const key of expectedVolumeKeys) {
+  const definition = resolved.volumes?.[key]
   const expectedName = `${resolved.name}_${key}`
   if (definition.name !== expectedName) {
     fail('volume names must be project-scoped')
@@ -1257,6 +1296,9 @@ const resolveSecretsWith = (override) => {
   )
   if (evidence === null) {
     abort('compose topology check received invalid Secret resolution evidence')
+  }
+  if (evidence.name !== composeProjectName) {
+    fail('Secret resolution evidence drifted from the registered project identity')
   }
   return evidence.secrets
 }

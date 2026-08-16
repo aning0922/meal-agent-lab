@@ -71,7 +71,15 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
   // --- 停止并重启：数据仍在 -------------------------------------------------
   await timed('graceful stop (SIGTERM path)', async () => {
     const apiName = stack.containerName('api')
-    const beforeStop = await readContainerRuntimeState(apiName, stack.composeEnvironment)
+    const startedApi = stack.getServiceEvidence('api')
+    if (startedApi === null) {
+      throw new Error('the API service has no recorded immutable start evidence')
+    }
+    const beforeStop = await readContainerRuntimeState(
+      apiName,
+      stack.composeEnvironment,
+      startedApi
+    )
     const stopStart = performance.now()
     // 30 秒宽限：留给 shutdown.ts 的 10 秒强制退出分支充分表达自己——若容器
     // 是被 compose 的 SIGKILL 收走的，退出码会是 137 而不是 0/1。
@@ -83,7 +91,11 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
       fail(`compose stop api failed with exit ${String(stopped.status)}`)
       return
     }
-    const afterStop = await readContainerRuntimeState(apiName, stack.composeEnvironment)
+    const afterStop = await readContainerRuntimeState(
+      apiName,
+      stack.composeEnvironment,
+      startedApi
+    )
     try {
       assertGracefulStopTransition(beforeStop, afterStop)
       const shutdownLogs = await run(['docker', 'logs', apiName], {

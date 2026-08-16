@@ -42,14 +42,22 @@ test('BuildKit metadata keeps manifest and config identities distinct and fail c
     parseBuildMetadataImageIdentity(JSON.stringify({
       'containerimage.digest': manifest,
       'containerimage.config.digest': config,
-      'containerimage.descriptor': { digest: manifest }
+      'containerimage.descriptor': {
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        digest: manifest,
+        size: 123
+      }
     })),
     { imageId: manifest, configId: config }
   )
   assert.deepEqual(
     parseBuildMetadataImageIdentity(JSON.stringify({
       'containerimage.digest': manifest,
-      'containerimage.descriptor': { digest: manifest }
+      'containerimage.descriptor': {
+        mediaType: 'application/vnd.oci.image.index.v1+json',
+        digest: manifest,
+        size: 123
+      }
     })),
     { imageId: manifest, configId: null }
   )
@@ -60,7 +68,11 @@ test('BuildKit metadata keeps manifest and config identities distinct and fail c
     JSON.stringify({
       'containerimage.digest': manifest,
       'containerimage.config.digest': config,
-      'containerimage.descriptor': { digest: `sha256:${'c'.repeat(64)}` }
+      'containerimage.descriptor': {
+        mediaType: 'application/vnd.oci.image.manifest.v1+json',
+        digest: `sha256:${'c'.repeat(64)}`,
+        size: 123
+      }
     })
   ]) {
     assert.throws(
@@ -111,7 +123,11 @@ test('resolved Compose capabilities reject null services and project every neste
     services: {},
     networks: {},
     volumes: {},
-    secrets: {}
+    secrets: {},
+    'x-hardening': {},
+    'x-api-image': {},
+    'x-bootstrap-psql': {},
+    'x-pg-cluster-env': {}
   })
   assert.equal(parseResolvedComposeDocument(document)?.name, 'meal-agent-local-test')
   for (const malformed of [

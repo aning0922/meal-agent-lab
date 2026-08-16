@@ -52,12 +52,11 @@ import {
 } from './local-test-secrets-contract.mjs'
 import { cleanupSmokeProject } from './run-local-test-smoke.mjs'
 import {
+  buildApiImage,
   imageIdOf,
   inodeIdentityOf,
   isAbsenceMessage,
-  overridePathFor,
-  runImageTagFor,
-  writeImageOverride
+  runImageTagFor
 } from './m3b-docker.mjs'
 import { createSecretScrubber, wrongReason } from './m3b-safe-output.mjs'
 import {
@@ -1430,8 +1429,6 @@ process.stdout.write('Group E: image isolation negatives\n')
   const runIdB = `neg${randomBytes(3).toString('hex')}`
   const tagA = runImageTagFor(runIdA)
   const tagB = runImageTagFor(runIdB)
-  const overrideA = overridePathFor(composeDirectory, runIdA)
-  const overrideB = overridePathFor(composeDirectory, runIdB)
   const projectA = `meal-agent-m3b-neg-imga-${randomBytes(3).toString('hex')}`
   const projectB = `meal-agent-m3b-neg-imgb-${randomBytes(3).toString('hex')}`
   usedNegativeProjects.push(projectA, projectB)
@@ -1458,42 +1455,20 @@ process.stdout.write('Group E: image isolation negatives\n')
   try {
     generateSecretBundle(secretsA)
     generateSecretBundle(secretsB)
-    writeImageOverride(overrideA, tagA)
-    writeImageOverride(overrideB, tagB)
-    const buildFor = (project, override, secrets) =>
-      run(
-        [
-          'docker',
-          'compose',
-          '--file',
-          composeFile,
-          '--file',
-          override,
-          '--project-name',
-          project,
-          'build',
-          'api'
-        ],
-        {
-          cwd: composeDirectory,
-          timeoutMs: 1_800_000,
-          env: { ...process.env, MEAL_AGENT_SECRETS_DIR: secrets, MEAL_AGENT_API_HOST_PORT: '3000' }
-        }
-      )
-    // 交错顺序：A build → B build → 再读两个 tag 的 image ID。
-    const builtA = await buildFor(projectA, overrideA, secretsA)
-    if (builtA.status !== 0) {
-      throw new Error('project A build failed')
-    }
-    const idA1 = await imageIdOf(tagA)
+    // 交错顺序：A build → B build → 再读两个 tag 的 image ID。反例必须走与
+    // smoke 相同的 build ownership protocol；直接 `docker compose build` 造出的
+    // 无 claim 镜像已经不是 cleanup 有权删除的测试资产。
+    const idA1 = await buildApiImage({
+      imageTag: tagA,
+      repositoryRoot
+    })
     recordedImageIdA = idA1
     cleanupScopeA.imageId = idA1
-    const builtB = await buildFor(projectB, overrideB, secretsB)
-    if (builtB.status !== 0) {
-      throw new Error('project B build failed')
-    }
+    const idB = await buildApiImage({
+      imageTag: tagB,
+      repositoryRoot
+    })
     const idA2 = await imageIdOf(tagA)
-    const idB = await imageIdOf(tagB)
     recordedImageIdB = idB
     cleanupScopeB.imageId = idB
     if (idA1 === null || idB === null) {
@@ -1544,9 +1519,6 @@ process.stdout.write('Group E: image isolation negatives\n')
           wrongReason(`an empty residue list for the ${label} image project`, residue)
         )
       }
-    }
-    for (const path of [overrideA, overrideB]) {
-      rmSync(path, { force: true })
     }
     for (const directory of [secretsA, secretsB]) {
       rmSync(directory, { recursive: true, force: true })

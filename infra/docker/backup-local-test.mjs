@@ -53,6 +53,13 @@ import {
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import {
+  parsePgRestoreListEvidence,
+  readStableRegularFile,
+  sha256Bytes,
+  verifyPublishedFileEvidence,
+  writeExclusiveEvidenceFile
+} from './m5-evidence-protocol.mjs'
 
 export const defaultBackupsDirectory = resolve(composeDirectory, 'backups')
 const targetDatabase = 'meal_agent'
@@ -320,6 +327,8 @@ export const performBackup = async (
   const hostPartial = resolve(partialDirectory, partial)
   let publishedIdentity = null
   let publishedSidecarIdentity = null
+  let publishedDumpBytes = null
+  let publishedSidecarBytes = null
   const sidecarOwnedIdentities = []
   let completed = false
   let cleanupChain = Promise.resolve()
@@ -439,10 +448,28 @@ export const performBackup = async (
             timeoutMs: 120_000,
             cwd: repositoryRoot
           })
-          if (listed.status !== 0 || typeof listed.stdout !== 'string' || listed.stdout === '') {
+          if (listed.status !== 0) {
             throw new Error('the backup archive structure could not be validated')
           }
-          publishedIdentity = promoteBackupNoReplace(hostPartial, dumpPath)
+          try {
+            parsePgRestoreListEvidence(listed.stdout)
+          } catch {
+            throw new Error('the backup archive structure could not be validated')
+          }
+
+          // list 是异步窗口。返回后重新从 O_NOFOLLOW fd 取得稳定字节，并再次绑定
+          // container source digest；正式发布只消费这一份 Buffer，不再 link staging
+          // inode，也不再按 mutable path 重新读取。
+          const source = readStableRegularFile(hostPartial, {
+            code: 'backup-source-evidence'
+          })
+          if (source.identity.sha256 !== digestMatch[1]) {
+            throw new Error('backup handoff bytes differed from the container source')
+          }
+          publishedDumpBytes = source.bytes
+          publishedIdentity = writeExclusiveEvidenceFile(dumpPath, publishedDumpBytes, {
+            code: 'backup-dump-publish'
+          })
         }
       }
     )
@@ -450,25 +477,26 @@ export const performBackup = async (
       throw new Error('pg_dump failed')
     }
 
-    const magic = readDumpMagic(dumpPath)
+    if (publishedDumpBytes === null) {
+      throw new Error('the backup handoff did not publish verified bytes')
+    }
+    const magic = publishedDumpBytes.subarray(0, customFormatMagic.length).toString('latin1')
     if (magic !== customFormatMagic) {
       throw new Error('the produced file does not carry the custom-format magic; refusing to checksum it')
     }
-    const sha256 = sha256OfFile(dumpPath)
-    publishedSidecarIdentity = writeChecksumSidecarNoReplace(
-      shaPath,
-      `${sha256}  ${name}\n`,
-      sidecarOwnedIdentities
-    )
+    const sha256 = sha256Bytes(publishedDumpBytes)
+    publishedSidecarBytes = Buffer.from(`${sha256}  ${name}\n`, 'utf8')
+    publishedSidecarIdentity = writeExclusiveEvidenceFile(shaPath, publishedSidecarBytes, {
+      code: 'backup-sidecar-publish'
+    })
 
     // 成功返回前最后一次核对两个正式名字仍指向本轮登记的 inode。hash 计算与
     // sidecar 发布之后的路径替换不得被误记为一次成功备份。
     if (
       publishedIdentity === null ||
-      !identityMatches(publishedIdentity) ||
-      sha256OfFile(dumpPath) !== sha256 ||
+      !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes) ||
       publishedSidecarIdentity === null ||
-      !identityMatches(publishedSidecarIdentity)
+      !verifyPublishedFileEvidence(publishedSidecarIdentity, publishedSidecarBytes)
     ) {
       throw new Error('the published backup artifact ownership drifted before completion')
     }
@@ -482,10 +510,9 @@ export const performBackup = async (
     }
     if (
       publishedIdentity === null ||
-      !identityMatches(publishedIdentity) ||
-      sha256OfFile(dumpPath) !== sha256 ||
+      !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes) ||
       publishedSidecarIdentity === null ||
-      !identityMatches(publishedSidecarIdentity)
+      !verifyPublishedFileEvidence(publishedSidecarIdentity, publishedSidecarBytes)
     ) {
       throw new Error('the published backup artifact ownership drifted before completion')
     }

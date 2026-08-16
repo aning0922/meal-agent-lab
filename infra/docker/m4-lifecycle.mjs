@@ -104,7 +104,7 @@ export const assertGracefulStopTransition = (before, after) => {
   return true
 }
 
-export const readContainerRuntimeState = async (name, environment) => {
+export const readContainerRuntimeState = async (name, environment, expected = null) => {
   const container = await inspectJsonStrict(name, '{{json .}}', { env: environment })
   const labels = container?.Config?.Labels
   const evidence = {
@@ -130,6 +130,18 @@ export const readContainerRuntimeState = async (name, environment) => {
     Array.isArray(evidence.state)
   ) {
     throw new Error('container graceful-stop identity evidence was malformed')
+  }
+  if (
+    expected !== null &&
+    (
+      evidence.id !== expected.id ||
+      evidence.image !== expected.image ||
+      evidence.project !== expected.project ||
+      evidence.service !== expected.service ||
+      evidence.name !== expected.name
+    )
+  ) {
+    throw new Error('container graceful-stop identity drifted from the started service')
   }
   return evidence
 }
@@ -637,13 +649,14 @@ export const composeRunOneOff = async (
     const inspected = await inspectOneOff(run, entry, environment)
     if (!oneOffOutcomeIsBound(inspected, result)) {
       composeError = new Error('one-off success evidence did not identify the owned container')
-    } else if (result.status !== 0) {
-      composeError = new Error('one-off command failed')
     } else {
-      // 第一次 exact singleton inspect 一旦确认 owner token，就把 immutable ID
-      // 写回 registry。之后即使并发 rename，cleanup 仍按 ID 找到并删除本轮对象；
-      // 可变 name 只用于创建前的 absent 证明。
+      // outcome 一旦绑定 exact owner token 就立即保留 immutable ID，不能只在 exit 0
+      // 分支登记。非零 one-shot 同样是本轮拥有的对象；抛错前若丢掉 ID，rename 后
+      // cleanup 会按旧 name 看见 absence 并把真实残留误记成已清理。
       entry.id = inspected.id
+      if (result.status !== 0) {
+        composeError = new Error('one-off command failed')
+      }
     }
     if (composeError === null && beforeRemove !== null) {
       try {
@@ -805,6 +818,8 @@ export const createM4Run = ({ kind }) => {
         MEAL_AGENT_API_HOST_PORT: '3000'
       }
     }
+    const serviceEvidence = new Map()
+    stack.getServiceEvidence = (service) => serviceEvidence.get(service) ?? null
     stack.containerName = (service) => `${project}-${service}-1`
     stack.compose = (args, options = {}) =>
       run(
@@ -831,11 +846,17 @@ export const createM4Run = ({ kind }) => {
       }
       return port
     }
-    const inspectStackService = async (service) => {
+    const inspectStackServiceOptional = async (service) => {
       const name = stack.containerName(service)
       const inspected = await run(['docker', 'container', 'inspect', name], {
         env: stack.composeEnvironment
       })
+      if (
+        inspected.status === 1 &&
+        isAbsenceMessage(inspected.stderr, { kind: 'container', name })
+      ) {
+        return null
+      }
       if (inspected.status !== 0 || typeof inspected.stdout !== 'string' || inspected.stdout === '') {
         throw new Error(`${service}: container evidence was unavailable`)
       }
@@ -863,10 +884,16 @@ export const createM4Run = ({ kind }) => {
       }
       return container
     }
+    const inspectStackService = async (service) => {
+      const container = await inspectStackServiceOptional(service)
+      if (container === null) throw new Error(`${service}: container evidence was unavailable`)
+      return container
+    }
     /** 一次性服务：启动 → 等 exited → 严格读取真实退出码。 */
     stack.runOneShot = async (service, timeoutMs) => {
       throwIfInterrupted()
       const name = stack.containerName(service)
+      const baseline = await inspectStackServiceOptional(service)
       const started = await stack.compose(['up', '-d', '--no-deps', service], {
         timeoutMs: 180_000
       })
@@ -881,6 +908,13 @@ export const createM4Run = ({ kind }) => {
           if (claimedId === null) claimedId = current.Id
           if (current.Id !== claimedId) {
             throw new Error(`${service}: container identity changed while collecting evidence`)
+          }
+          if (
+            baseline !== null &&
+            current.Id === baseline.Id &&
+            current.State?.StartedAt === baseline.State?.StartedAt
+          ) {
+            throw new Error(`${service}: compose up did not start a fresh one-shot generation`)
           }
           return current.State.Status === 'exited' ? current : null
         },
@@ -948,7 +982,26 @@ export const createM4Run = ({ kind }) => {
         },
         timeoutMs
       )
-      return { service, exitCode: 0 }
+      const container = await inspectStackService(service)
+      if (
+        container.State.Status !== 'running' ||
+        container.State.Running !== true ||
+        typeof container.State.StartedAt !== 'string' ||
+        container.State.StartedAt === '' ||
+        container.State.StartedAt === zeroDockerTimestamp
+      ) {
+        throw new Error(`${service}: healthy service identity evidence was invalid`)
+      }
+      const evidence = Object.freeze({
+        id: container.Id,
+        name: container.Name,
+        image: container.Image,
+        project: stack.project,
+        service,
+        startedAt: container.State.StartedAt
+      })
+      serviceEvidence.set(service, evidence)
+      return { service, exitCode: 0, evidence }
     }
     /**
      * 「down 但保数据」：graceful stop → 逐个 `docker rm -v`（容器连同**匿名**
@@ -988,6 +1041,10 @@ export const createM4Run = ({ kind }) => {
     stack.startService = async (service, timeoutMs) => {
       throwIfInterrupted()
       const name = stack.containerName(service)
+      const baseline = serviceEvidence.get(service)
+      if (baseline === undefined) {
+        throw new Error(`${service}: cannot restart without a recorded immutable identity`)
+      }
       await startExistingContainer(run, name)
       await waitFor(
         `${service} restart health`,
@@ -999,6 +1056,20 @@ export const createM4Run = ({ kind }) => {
             : null,
         timeoutMs
       )
+      const restarted = await inspectStackService(service)
+      if (
+        restarted.Id !== baseline.id ||
+        restarted.Image !== baseline.image ||
+        restarted.State.Status !== 'running' ||
+        restarted.State.Running !== true ||
+        restarted.State.StartedAt === baseline.startedAt
+      ) {
+        throw new Error(`${service}: restarted service identity did not match its recorded object`)
+      }
+      serviceEvidence.set(service, Object.freeze({
+        ...baseline,
+        startedAt: restarted.State.StartedAt
+      }))
     }
     /**
      * 证据查询：cluster admin 经一次性 psql 容器执行（PGPASSFILE 走 secret）。

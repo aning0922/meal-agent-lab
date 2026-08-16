@@ -202,7 +202,12 @@ const groupIsAlive = (pgid) => {
     process.kill(-pgid, 0)
     return true
   } catch (error) {
-    return error?.code !== 'ESRCH'
+    if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM') return true
+    // 未知 probe 异常既不是“还活着”的证据，也不是“已消失”的证据。把它抛给
+    // lifecycle，后者会继续有界 TERM/KILL settlement，同时把 primitive failure
+    // 保留到最终裁决；不能像旧实现那样静默折成 alive 后最终报 clean。
+    throw error
   }
 }
 
@@ -401,7 +406,15 @@ export const createProcessGroupLifecycle = ({
     let primitiveFailed = false
 
     for (let sweep = 0; sweep < maxSweeps; sweep += 1) {
-      const current = [...active.values()].filter((handle) => !retireIfGone(handle))
+      const current = []
+      for (const handle of active.values()) {
+        try {
+          if (!retireIfGone(handle)) current.push(handle)
+        } catch {
+          primitiveFailed = true
+          current.push(handle)
+        }
+      }
       const pending = current.filter(
         (handle) => !failed.has(generationKey(handle.pgid, handle.generation))
       )

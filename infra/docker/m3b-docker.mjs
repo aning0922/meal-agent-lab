@@ -34,7 +34,8 @@ export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
 
 const ownedOverrideInodes = new Map()
 const ownedBuildEvidenceDirectories = new Map()
-const buildClaimLabel = 'meal-agent.m3b.build-claim'
+export const buildClaimLabel = 'meal-agent.m3b.build-claim'
+const ownedBuildImageClaims = new Map()
 
 const removeOwnedBuildEvidenceDirectory = (directory) => {
   const record = ownedBuildEvidenceDirectories.get(directory)
@@ -142,11 +143,65 @@ export const parseBuildMetadataImageIdentity = (raw) => {
   if (parseCanonicalDockerImageId(descriptor.digest) !== imageId) {
     throw new DockerEvidenceError('docker build metadata identities did not agree')
   }
+  const allowedDescriptorKeys = new Set(['mediaType', 'digest', 'size', 'annotations', 'platform'])
+  if (
+    Object.keys(descriptor).some((key) => !allowedDescriptorKeys.has(key)) ||
+    ![
+      'application/vnd.docker.distribution.manifest.v2+json',
+      'application/vnd.docker.distribution.manifest.list.v2+json',
+      'application/vnd.oci.image.manifest.v1+json',
+      'application/vnd.oci.image.index.v1+json'
+    ].includes(descriptor.mediaType) ||
+    !Number.isSafeInteger(descriptor.size) ||
+    descriptor.size <= 0
+  ) {
+    throw new DockerEvidenceError('docker build metadata descriptor was incomplete')
+  }
   const configId = value['containerimage.config.digest'] === undefined
     ? null
     : parseCanonicalDockerImageId(value['containerimage.config.digest'])
+  if (
+    configId === null &&
+    ![
+      'application/vnd.docker.distribution.manifest.list.v2+json',
+      'application/vnd.oci.image.index.v1+json'
+    ].includes(descriptor.mediaType)
+  ) {
+    throw new DockerEvidenceError('docker build metadata omitted its config identity')
+  }
   return { imageId, configId }
 }
+
+export const parseOwnedBuildImage = (
+  value,
+  { expectedImageId, expectedTag, expectedClaimToken }
+) => {
+  const labels = value?.Config?.Labels
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    parseCanonicalDockerImageId(value.Id) !== expectedImageId ||
+    !Array.isArray(value.RepoTags) ||
+    value.RepoTags.length !== 1 ||
+    value.RepoTags[0] !== expectedTag ||
+    labels === null ||
+    typeof labels !== 'object' ||
+    Array.isArray(labels) ||
+    labels[buildClaimLabel] !== expectedClaimToken
+  ) {
+    throw new DockerEvidenceError('docker build ownership evidence did not match its claim')
+  }
+  return Object.freeze({ imageId: expectedImageId, imageTag: expectedTag, claimToken: expectedClaimToken })
+}
+
+export const inspectOwnedBuildImage = async (
+  { imageId, imageTag, claimToken },
+  { env } = {}
+) => parseOwnedBuildImage(
+  await inspectJsonStrict(imageId, '{{json .}}', { env }),
+  { expectedImageId: imageId, expectedTag: imageTag, expectedClaimToken: claimToken }
+)
 
 export const classifyOwnedImageTag = (currentImageId, recordedImageId) => {
   if (currentImageId === null) {
@@ -381,6 +436,8 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
   if ((await imageIdOf(imageTag, { env })) !== imageId) {
     throw new DockerEvidenceError('built image tag was not bound to its metadata identity')
   }
+  await inspectOwnedBuildImage({ imageId, imageTag, claimToken }, { env })
+  ownedBuildImageClaims.set(imageId, Object.freeze({ imageTag, claimToken }))
   return imageId
 }
 
@@ -429,6 +486,8 @@ const cleanupRunUnsynchronized = async ({
 }) => {
   const residue = []
   let resolvedImageId = imageId
+  let resolvedImageClaimToken =
+    imageId === null ? null : (ownedBuildImageClaims.get(imageId)?.claimToken ?? null)
   const stage = async (label, run) => {
     try {
       await run()
@@ -493,7 +552,16 @@ const cleanupRunUnsynchronized = async ({
           ) {
             throw new DockerEvidenceError('docker build evidence identities did not agree')
           }
+          await inspectOwnedBuildImage(
+            {
+              imageId: recoveredImageId,
+              imageTag: record.imageTag,
+              claimToken: record.claimToken
+            },
+            { env: composeEnvironment }
+          )
           resolvedImageId = recoveredImageId
+          resolvedImageClaimToken = record.claimToken
         } catch {
           // Docker Desktop can publish the final tag just before the client writes metadata.
           // The image was pre-claimed with an unguessable label before build started, so this
@@ -523,6 +591,7 @@ const cleanupRunUnsynchronized = async ({
               )
             }
             resolvedImageId = current
+            resolvedImageClaimToken = record.claimToken
           }
         }
       }
@@ -630,19 +699,23 @@ const cleanupRunUnsynchronized = async ({
       )
     }
     if (ownership === 'owned') {
-      const repoTags = await inspectJsonStrict(resolvedImageId, '{{json .RepoTags}}', {
-        env: composeEnvironment
-      })
-      if (!Array.isArray(repoTags) || repoTags.length !== 1 || repoTags[0] !== imageTag) {
-        throw new DockerEvidenceError(
-          'recorded image identity is not exclusively owned by the per-run tag'
-        )
+      if (resolvedImageClaimToken === null) {
+        throw new DockerEvidenceError('recorded image identity has no ownership claim')
       }
+      await inspectOwnedBuildImage(
+        {
+          imageId: resolvedImageId,
+          imageTag,
+          claimToken: resolvedImageClaimToken
+        },
+        { env: composeEnvironment }
+      )
       // 绝不把可变 tag 交给删除命令。即使它在上面的 identity 读取之后被并发
       // 重绑到 B，这里仍只删除本轮记录的 A；末尾 tag 复查会保留 B 并报告 drift。
       await dockerStrict(['docker', 'image', 'rm', resolvedImageId], {
         env: composeEnvironment
       })
+      ownedBuildImageClaims.delete(resolvedImageId)
     }
     if ((await imageIdOf(imageTag, { env: composeEnvironment })) !== null) {
       throw new DockerEvidenceError(`${imageTag} still exists after removal`)

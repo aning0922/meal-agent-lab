@@ -45,8 +45,10 @@ import {
   startExistingContainer
 } from '../../infra/docker/m4-lifecycle.mjs'
 import {
+  archiveStructureReason,
   checksumSidecarUnparseableReason,
   createRestoreCommandRunner,
+  performRestore,
   runRestoreOneOff,
   verifyBackupChecksum
 } from '../../infra/docker/restore-local-test.mjs'
@@ -410,6 +412,57 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
   assert.equal(state, 'absent')
 })
 
+test('M4 retains the immutable one-off ID on a nonzero outcome before cleanup', async () => {
+  const id = 'c'.repeat(64)
+  let ownerToken = null
+  let phase = 'absent'
+  let outcomeReads = 0
+  let removedTarget = null
+  const absent = (target) => ({
+    status: 1,
+    signal: null,
+    stdout: '',
+    stderr: `Error response from daemon: No such container: ${target}\n`
+  })
+  const run = async (argv) => {
+    if (argv[1] === 'container' && argv[2] === 'inspect') {
+      const target = argv[3]
+      if (phase === 'absent' || phase === 'removed') return absent(target)
+      outcomeReads += 1
+      return {
+        status: 0,
+        signal: null,
+        stdout: JSON.stringify([{
+          Id: id,
+          Name: outcomeReads === 1 ? `/${target}` : '/renamed-after-outcome',
+          Config: { Labels: { 'com.meal-agent.m4.oneoff-owner': ownerToken } },
+          State: {
+            Status: 'exited',
+            Running: false,
+            ExitCode: 17,
+            FinishedAt: '2026-08-16T01:00:00Z'
+          }
+        }]),
+        stderr: ''
+      }
+    }
+    if (argv[1] === 'rm') {
+      removedTarget = argv.at(-1)
+      phase = 'removed'
+      return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    throw new Error('unexpected fixture command')
+  }
+  const compose = async (argv) => {
+    ownerToken = argv[argv.indexOf('--label') + 1].split('=')[1]
+    phase = 'owned'
+    return { status: 17, signal: null, stdout: '', stderr: 'untrusted' }
+  }
+  await assert.rejects(composeRunOneOff({ compose, run }, ['fixture']), /one-off command failed/)
+  assert.equal(removedTarget, id)
+  assert.equal(phase, 'removed')
+})
+
 test('the standalone restore runner forwards the verified dump bytes as stdin', async () => {
   const payload = Buffer.from([0x50, 0x47, 0x44, 0x4d, 0x50, 0x00, 0xff])
   let observed = null
@@ -565,6 +618,10 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     stdout: '',
     stderr: `Error response from daemon: No such container: ${name}\n`
   })
+  const archiveBytes = Buffer.from('PGDMPfixture')
+  const archiveDigest = createHash('sha256').update(archiveBytes).digest('hex')
+  let copied = 0
+  let listed = 0
   const run = async (argv) => {
     if (argv[0] === 'docker' && argv[1] === 'container' && argv[2] === 'inspect') {
       const query = argv[3]
@@ -590,8 +647,18 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
       }
     }
     if (argv[0] === 'docker' && argv[1] === 'cp') {
-      writeFileSync(argv[3], 'PGDMPfixture')
+      copied += 1
+      writeFileSync(argv[3], archiveBytes)
       return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    if (argv[0] === 'pg_restore' && argv[1] === '--list') {
+      listed += 1
+      return {
+        status: 0,
+        signal: null,
+        stdout: '; Archive created at fixture\n1; 2615 2200 SCHEMA - public owner\n',
+        stderr: ''
+      }
     }
     if (argv[0] === 'docker' && argv[1] === 'rm') {
       const query = argv.at(-1)
@@ -611,7 +678,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     return {
       status: isTransferCleanup ? 17 : 0,
       signal: null,
-      stdout: '',
+      stdout: isTransferCleanup ? '' : `${archiveDigest}  /transfer/fixture.dump\n`,
       stderr: isTransferCleanup ? 'UNTRUSTED-TRANSFER-SENTINEL' : ''
     }
   }
@@ -630,7 +697,41 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     )
     assert.equal(existsSync(dumpPath), false)
     assert.equal(existsSync(shaPath), false)
+    assert.equal(copied, 1)
+    assert.equal(listed, 1)
     assert.equal(containers.size, 0)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('restore rejects a checksum-valid malformed archive before any Compose side effect', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-restore-preflight-'))
+  try {
+    const dump = resolve(directory, 'fixture.dump')
+    const bytes = Buffer.from('PGDMP-but-not-a-real-archive')
+    const digest = createHash('sha256').update(bytes).digest('hex')
+    writeFileSync(dump, bytes)
+    writeFileSync(`${dump}.sha256`, `${digest}  fixture.dump\n`)
+    let composeCalls = 0
+    await assert.rejects(
+      performRestore(
+        {
+          compose: async () => {
+            composeCalls += 1
+            throw new Error('compose must not run')
+          },
+          run: async (argv) => {
+            assert.deepEqual(argv, ['pg_restore', '--list'])
+            return { status: 1, signal: null, stdout: '', stderr: 'untrusted' }
+          },
+          log: () => undefined
+        },
+        { project: 'meal-agent-fixture', dumpPath: dump }
+      ),
+      (error) => error instanceof Error && error.message === archiveStructureReason
+    )
+    assert.equal(composeCalls, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
