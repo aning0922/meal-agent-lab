@@ -25,7 +25,14 @@ import {
   retirePrivateBackupDirectory,
   writeChecksumSidecarNoReplace
 } from '../../infra/docker/backup-local-test.mjs'
-import { discardOverride, imageIdOf, writeImageOverride } from '../../infra/docker/m3b-docker.mjs'
+import {
+  discardOverride,
+  imageIdOf,
+  inodeIdentityOf,
+  retireSecretBundleDirectory,
+  snapshotSecretBundleIdentity,
+  writeImageOverride
+} from '../../infra/docker/m3b-docker.mjs'
 import { parseProbeEvidence } from '../../infra/docker/probe-compose-secret-identity.mjs'
 import {
   connectOutcomeForErrorCode,
@@ -119,6 +126,34 @@ test('M4 scoped artifact cleanup is failure-safe across every registered task', 
   assert.deepEqual(calls, ['first', 'second', 'third'])
 })
 
+test('Secret cleanup removes only registered files and refuses an unknown child', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-secret-retire-'))
+  try {
+    const identity = inodeIdentityOf(directory)
+    const filenames = [
+      'postgres_superuser_password',
+      'postgres_admin.pgpass',
+      'meal_agent_migration_password',
+      'meal_agent_runtime_password',
+      'meal_agent_backup_password',
+      'meal_agent_admin_database_url',
+      'meal_agent_migration_database_url',
+      'meal_agent_runtime_database_url'
+    ]
+    for (const filename of filenames) writeFileSync(resolve(directory, filename), 'synthetic')
+    const closed = snapshotSecretBundleIdentity(directory, identity)
+    writeFileSync(resolve(directory, 'foreign-child'), 'must survive')
+    assert.throws(() => retireSecretBundleDirectory(directory, closed))
+    assert.equal(readFileSync(resolve(directory, 'foreign-child'), 'utf8'), 'must survive')
+    assert.deepEqual(
+      filenames.filter((filename) => existsSync(resolve(directory, filename))),
+      []
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('runCommand treats stdin EPIPE as cleanup-before-settlement', { timeout: 10_000 }, async () => {
   const before = new Set(observedDescendantPgids())
   await assert.rejects(
@@ -166,6 +201,23 @@ test('runCommand status-zero settlement terminates a leader-close descendant fir
   assert.equal(created.length, 1)
   assertProcessGroupGoneAtSettlement(created[0])
   assert.deepEqual(unconfirmedProcessGroups(), [])
+})
+
+test('runCommand status-zero settlement preserves a termination primitive failure', async () => {
+  const processGroups = {
+    register: (pgid) => Object.freeze({ pgid, generation: 1 }),
+    markLeaderClosed: () => undefined,
+    retireIfGone: () => false,
+    terminateDetailed: async () => Object.freeze({ survivors: [], primitiveFailed: true })
+  }
+  const run = createCommandRunner({ processGroups })
+  await assert.rejects(
+    run(['/usr/bin/true']),
+    (error) =>
+      error instanceof Error &&
+      error.message ===
+        'command process-group settlement failed; 0 descendant process group(s) were not confirmed gone'
+  )
 })
 
 test('runCommand is not redirected by caller timer primitive replacement', { timeout: 10_000 }, async () => {

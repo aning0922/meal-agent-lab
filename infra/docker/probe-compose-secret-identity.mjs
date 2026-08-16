@@ -43,11 +43,13 @@ import {
   listByProject,
   overridePathFor,
   runImageTagFor,
+  snapshotSecretBundleIdentity,
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
 import { composeRunOneOff } from './m4-lifecycle.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import { requireFreshContainerGeneration } from './m5-evidence-protocol.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
@@ -217,7 +219,7 @@ const main = async () => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), probeSecretsPrefix))
-  const secretsIdentity = inodeIdentityOf(secretsDirectory)
+  let secretsIdentity = inodeIdentityOf(secretsDirectory)
   // **第一个资源刚创建就登记现场**（P1-4）：下面的 `await danglingVolumes()`
   // 是一次真实 Docker 查询，信号可以落在它期间。override 此刻尚未创建。
   Object.assign(activeProbeScene, {
@@ -268,6 +270,32 @@ const main = async () => {
       ],
       { cwd: composeDirectory, env: composeEnvironment, ...options }
     )
+  const materializerGenerations = async () => {
+    const ids = await listByProject('container', project, {
+      env: composeEnvironment,
+      claimToken: runClaimToken
+    })
+    const generations = []
+    for (const id of ids) {
+      const container = await inspectJsonStrict(id, '{{json .}}', { env: composeEnvironment })
+      const labels = container?.Config?.Labels
+      if (labels?.['com.docker.compose.service'] !== 'secret-materializer') continue
+      if (
+        container?.Id !== id ||
+        labels?.['com.docker.compose.project'] !== project ||
+        labels?.['meal-agent.m3b.run-claim'] !== runClaimToken ||
+        typeof container?.State?.StartedAt !== 'string' ||
+        container.State.StartedAt === ''
+      ) {
+        throw new Error('secret materializer identity evidence was invalid')
+      }
+      generations.push({ id, startedAt: container.State.StartedAt, container })
+    }
+    if (generations.length > 1) {
+      throw new Error('secret materializer generation evidence was ambiguous')
+    }
+    return generations
+  }
 
   process.stdout.write(`probe project: ${project}\n`)
   process.stdout.write(`temporary secrets: ${secretsDirectory}\n`)
@@ -282,8 +310,11 @@ const main = async () => {
     activeProbeScene.danglingBaseline = danglingBaseline
 
     generateAndPreflight(secretsDirectory)
+    secretsIdentity = snapshotSecretBundleIdentity(secretsDirectory, secretsIdentity)
+    activeProbeScene.secretsIdentity = secretsIdentity
 
-    // BuildKit 构建期不发布可变 tag；取得 immutable ID 后才生成 override。
+    // BuildKit 前登记 per-run 恢复 tag；取得 immutable ID 后 override 只引用 ID。
+    activeProbeScene.imageTag = imageTag
     const builtImageId = await buildApiImage({
       imageTag,
       repositoryRoot,
@@ -292,12 +323,12 @@ const main = async () => {
     activeProbeScene.imageId = builtImageId
     writeImageOverride(overridePath, builtImageId, runClaimToken)
     activeProbeScene.overrideCreated = true
-    activeProbeScene.imageTag = imageTag
     activeProbeScene.composeArgs = composeArgs
     process.stdout.write(`built immutable image ${builtImageId}\n`)
 
     // 先跑真实 materializer；下面的 `run --no-deps` 只能看到已经物化
     // 的单份 volume，绝不直接挂宿主 source secret。
+    const materializerBaseline = await materializerGenerations()
     const materialized = await compose(
       [
         'up',
@@ -312,27 +343,27 @@ const main = async () => {
     if (materialized.status !== 0) {
       throw new Error('secret materialization failed before the identity probe')
     }
-    const materializerIds = await listByProject('container', project, {
-      env: composeEnvironment,
-      claimToken: runClaimToken
-    })
-    const materializerMatches = []
-    for (const id of materializerIds) {
-      const container = await inspectJsonStrict(id, '{{json .}}', { env: composeEnvironment })
-      const labels = container?.Config?.Labels
-      if (labels?.['com.docker.compose.service'] === 'secret-materializer') {
-        if (
-          container?.Id !== id ||
-          container?.State?.Status !== 'exited' ||
-          container?.State?.ExitCode !== 0
-        ) {
-          throw new Error('secret materializer immutable outcome evidence was invalid')
-        }
-        materializerMatches.push(id)
-      }
-    }
+    const materializerMatches = await materializerGenerations()
     if (materializerMatches.length !== 1) {
       throw new Error('secret materializer generation evidence was not unique')
+    }
+    const materializer = materializerMatches[0]
+    let materializerGenerationInvalid = false
+    try {
+      requireFreshContainerGeneration(
+        materializerBaseline.length === 1 ? materializerBaseline[0].container : null,
+        materializer.container,
+        { code: 'secret-materializer-generation' }
+      )
+    } catch {
+      materializerGenerationInvalid = true
+    }
+    if (
+      materializer.container.State?.Status !== 'exited' ||
+      materializer.container.State?.ExitCode !== 0 ||
+      materializerGenerationInvalid
+    ) {
+      throw new Error('secret materializer immutable outcome evidence was invalid')
     }
     process.stdout.write('secret materializer completed with immutable outcome evidence\n')
 

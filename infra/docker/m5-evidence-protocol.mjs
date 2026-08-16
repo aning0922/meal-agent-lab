@@ -75,9 +75,10 @@ export const parsePgRestoreListEvidence = (
   let entries = 0
   let comments = 0
   let declaredEntries = null
-  let sawArchiveHeader = false
-  let sawCustomFormat = false
-  let sawDumpVersion = false
+  let archiveHeaders = 0
+  let customFormatHeaders = 0
+  let dumpVersionHeaders = 0
+  let databaseHeaders = 0
   let headerDatabase = null
   let databaseEntries = 0
   let targetDatabaseEntries = 0
@@ -88,15 +89,28 @@ export const parsePgRestoreListEvidence = (
     if (line === '') continue
     if (line.startsWith(';')) {
       comments += 1
-      if (/^; Archive created at .+$/.test(line)) sawArchiveHeader = true
+      if (/^; Archive created at .+$/.test(line)) archiveHeaders += 1
       const tocEntries = /^;\s+TOC Entries: ([1-9][0-9]*)$/.exec(line)
-      if (tocEntries !== null) declaredEntries = Number(tocEntries[1])
-      if (line === ';     Format: CUSTOM') sawCustomFormat = true
+      if (tocEntries !== null) {
+        if (declaredEntries !== null) {
+          throw new EvidenceProtocolError('archive-list-shape')
+        }
+        declaredEntries = Number(tocEntries[1])
+      }
+      if (/^;\s+Format: /.test(line)) {
+        if (line !== ';     Format: CUSTOM') {
+          throw new EvidenceProtocolError('archive-list-shape')
+        }
+        customFormatHeaders += 1
+      }
       if (/^;\s+Dump Version: [1-9][0-9]*\.[0-9]+(?:-[0-9]+)?$/.test(line)) {
-        sawDumpVersion = true
+        dumpVersionHeaders += 1
       }
       const databaseHeader = /^;\s+dbname: ([A-Za-z_][A-Za-z0-9_]*)$/.exec(line)
-      if (databaseHeader !== null) headerDatabase = databaseHeader[1]
+      if (databaseHeader !== null) {
+        databaseHeaders += 1
+        headerDatabase = databaseHeader[1]
+      }
       continue
     }
     const entry = /^([1-9][0-9]*); ([0-9]+) ([0-9]+) (.+)$/.exec(line)
@@ -104,15 +118,23 @@ export const parsePgRestoreListEvidence = (
       throw new EvidenceProtocolError('archive-list-shape')
     }
     dumpIds.add(entry[1])
-    if (entry[4].startsWith('DATABASE - ')) {
+    const databaseEntry = /^DATABASE - ([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z_][A-Za-z0-9_]*)$/.exec(entry[4])
+    const databasePropertyEntry = /^DATABASE PROPERTIES - ([A-Za-z_][A-Za-z0-9_]*) ([A-Za-z_][A-Za-z0-9_]*)$/.exec(entry[4])
+    if (entry[4].startsWith('DATABASE - ') && databaseEntry === null) {
+      throw new EvidenceProtocolError('archive-list-shape')
+    }
+    if (entry[4].startsWith('DATABASE PROPERTIES - ') && databasePropertyEntry === null) {
+      throw new EvidenceProtocolError('archive-list-shape')
+    }
+    if (databaseEntry !== null) {
       databaseEntries += 1
-      if (entry[4].startsWith(`DATABASE - ${expectedDatabase} `)) {
+      if (databaseEntry[1] === expectedDatabase) {
         targetDatabaseEntries += 1
       }
     }
-    if (entry[4].startsWith('DATABASE PROPERTIES - ')) {
+    if (databasePropertyEntry !== null) {
       databasePropertyEntries += 1
-      if (entry[4].startsWith(`DATABASE PROPERTIES - ${expectedDatabase} `)) {
+      if (databasePropertyEntry[1] === expectedDatabase) {
         targetDatabasePropertyEntries += 1
       }
     }
@@ -121,9 +143,10 @@ export const parsePgRestoreListEvidence = (
   if (
     comments === 0 ||
     entries === 0 ||
-    !sawArchiveHeader ||
-    !sawCustomFormat ||
-    !sawDumpVersion ||
+    archiveHeaders !== 1 ||
+    customFormatHeaders !== 1 ||
+    dumpVersionHeaders !== 1 ||
+    databaseHeaders !== 1 ||
     headerDatabase !== expectedDatabase ||
     databaseEntries !== 1 ||
     targetDatabaseEntries !== 1 ||
@@ -137,6 +160,7 @@ export const parsePgRestoreListEvidence = (
 }
 
 const sha256OfBytes = (bytes) => createHash('sha256').update(bytes).digest('hex')
+const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
 
 const statIdentity = (path, stat, sha256) =>
   Object.freeze({
@@ -274,7 +298,7 @@ export const verifyPublishedFileEvidence = (identity, expectedBytes) => {
 export const writeExclusiveEvidenceFile = (
   path,
   bytes,
-  { mode = 0o600, code = 'exclusive-publish' } = {}
+  { mode = 0o600, code = 'exclusive-publish', closeFile = closeSync } = {}
 ) => {
   if (!Buffer.isBuffer(bytes)) throw new EvidenceProtocolError(code)
   let fd = null
@@ -314,16 +338,26 @@ export const writeExclusiveEvidenceFile = (
   } finally {
     if (fd !== null) {
       try {
-        closeSync(fd)
+        closeFile(fd)
       } catch {
         failed = true
       }
     }
   }
   if (failed || resultIdentity === null) {
-    if (createdIdentity !== null && identityStillNamesFile(createdIdentity)) {
+    if (createdIdentity !== null) {
       try {
-        unlinkSync(path)
+        const current = lstatSync(path, { bigint: true })
+        // 写入会改变 size/hash，不能拿写前空文件的完整身份做 rollback 判据。
+        // destructive ownership 只来自 O_EXCL 创建时取得的 dev/ino；replacement
+        // 不匹配便保留，同一 inode 则安全收回本轮创建的名字。
+        if (
+          current.isFile() &&
+          current.dev === createdIdentity.dev &&
+          current.ino === createdIdentity.ino
+        ) {
+          unlinkSync(path)
+        }
       } catch {
         // 固定协议错误覆盖底层文本；调用方仍会以正式路径 residue 阻断。
       }
@@ -336,4 +370,57 @@ export const writeExclusiveEvidenceFile = (
 export const sha256Bytes = (bytes) => {
   if (!Buffer.isBuffer(bytes)) throw new EvidenceProtocolError('sha256-input')
   return sha256OfBytes(bytes)
+}
+
+/** A status-0 Compose call is not freshness evidence on its own. */
+export const requireFreshContainerGeneration = (
+  baseline,
+  current,
+  { code = 'container-generation' } = {}
+) => {
+  if (
+    !isRecord(current) ||
+    typeof current.Id !== 'string' ||
+    current.Id === '' ||
+    !isRecord(current.State) ||
+    typeof current.State.StartedAt !== 'string' ||
+    current.State.StartedAt === ''
+  ) {
+    throw new EvidenceProtocolError(code)
+  }
+  if (baseline === null) return current
+  if (
+    !isRecord(baseline) ||
+    typeof baseline.Id !== 'string' ||
+    baseline.Id === '' ||
+    !isRecord(baseline.State) ||
+    typeof baseline.State.StartedAt !== 'string' ||
+    baseline.State.StartedAt === '' ||
+    (baseline.Id === current.Id && baseline.State.StartedAt === current.State.StartedAt)
+  ) {
+    throw new EvidenceProtocolError(code)
+  }
+  return current
+}
+
+export const parseSignalResidueListing = (kind, stdout) => {
+  if (!['container', 'network', 'volume'].includes(kind)) {
+    throw new EvidenceProtocolError('signal-residue-listing')
+  }
+  if (typeof stdout !== 'string' || /[\u0000\r]/.test(stdout)) {
+    throw new EvidenceProtocolError('signal-residue-listing')
+  }
+  const framed = stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout
+  if (framed === '') return []
+  const identifiers = framed.split('\n')
+  const identityPattern = kind === 'volume'
+    ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/
+    : /^[0-9a-f]{64}$/
+  if (
+    identifiers.some((identifier) => !identityPattern.test(identifier)) ||
+    new Set(identifiers).size !== identifiers.length
+  ) {
+    throw new EvidenceProtocolError('signal-residue-listing')
+  }
+  return identifiers
 }

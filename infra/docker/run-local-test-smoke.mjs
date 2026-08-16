@@ -7,8 +7,8 @@
 // 未构建的 dist（API 镜像由 Compose 的 build stanza 现场构建）。每次运行：
 //
 //   - 唯一、不可碰撞的 project name（meal-agent-m3b-smoke-<随机>）与不可猜
-//     run claim；构建不发布可变 tag，临时 Compose override 只引用 build 返回的
-//     immutable image ID（不改 M2B 已 Accepted 的默认拓扑），并断言三个 API
+//     run claim；构建前登记不可猜 per-run 恢复 tag，临时 Compose override 只引用
+//     build 返回的 immutable image ID（不改 M2B 已 Accepted 的默认拓扑），并断言三个 API
 //     镜像服务容器的 `.Image` 全部等于它；
 //   - 全新 named volume（project scope 决定真实名称）；
 //   - 临时 synthetic Secret 目录（真实 generator 生成，任何数据库容器启动之前
@@ -50,9 +50,11 @@ import {
   listByProject,
   overridePathFor,
   runImageTagFor,
+  snapshotSecretBundleIdentity,
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
+import { requireFreshContainerGeneration } from './m5-evidence-protocol.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 
@@ -331,7 +333,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
   // 刚 mkdtemp 出来就取 inode 身份：cleanup 的递归删除必须能证明「删的还是
   // 本轮创建的那个目录」，而不是一个后来占用同名路径的替身。
-  const secretsIdentity = inodeIdentityOf(secretsDirectory)
+  let secretsIdentity = inodeIdentityOf(secretsDirectory)
   // **第一个资源刚创建就登记现场**（P1-4）：下面还有 `await danglingVolumes()`
   // 等 Docker 查询，信号可以落在那里；此前 scene 要到 runSmoke 里才登记，那段
   // 窗口内被中断会把明文 Secret 目录留在盘上。override 此刻**尚未创建**，因此
@@ -510,12 +512,15 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     if (started.status !== 0) {
       throw new Error(`compose up ${service} failed`)
     }
-    let claimedId = baseline?.Id ?? null
+    let claimedId = null
     const container = await waitFor(
       `${service} health`,
       async () => {
         const current = await inspectServiceOptional(service, claimedId)
         if (current === null) return null
+        requireFreshContainerGeneration(baseline, current, {
+          code: 'persistent-service-generation'
+        })
         if (claimedId === null) claimedId = current.Id
         if (current.Id !== claimedId) {
           throw new Error(`${service}: container identity changed while collecting health evidence`)
@@ -576,6 +581,9 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 
     // 0. Secret 生成 + 预检 + 拓扑静态门禁：全部先于任何数据库容器。
     generateAndPreflight(secretsDirectory)
+    secretsIdentity = snapshotSecretBundleIdentity(secretsDirectory, secretsIdentity)
+    scene.secretsIdentity = secretsIdentity
+    smokeState.registerScene?.(scene)
     const bundleCheck = checkSecretBundle(secretsDirectory, { scanTemplates: false })
     if (bundleCheck.problems.length > 0) {
       throw new Error('the freshly preflighted bundle did not satisfy its closed contract')
@@ -599,7 +607,12 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     smokeState.registerScene?.(scene)
     log(`host port: ${String(hostPort)} (free on 127.0.0.1 and ::1)`)
 
-    // 1. 先由 BuildKit 交付 immutable image ID；构建期不发布可变 tag。
+    // 1. BuildKit 前登记 per-run 恢复 tag，成功后只交付 immutable image ID。
+    // The locator must be published to the signal cleanup scene before BuildKit starts.
+    // Otherwise an interrupt before buildApiImage returns makes its private evidence
+    // directory and claimed image unreachable to cleanup and residue verification.
+    scene.imageTag = imageTag
+    smokeState.registerScene?.(scene)
     builtImageId = await buildApiImage({ imageTag, repositoryRoot, env: composeEnvironment })
     scene.imageId = builtImageId
     smokeState.registerScene?.(scene)
@@ -607,7 +620,6 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     // override 已经落盘：从这一刻起 cleanup 才可以引用它（compose 调用也才
     // 需要带 `--file <override>`）。
     scene.overrideCreated = true
-    scene.imageTag = imageTag
     scene.composeArgs = composeArgs
     smokeState.registerScene?.(scene)
     log(`api image built with immutable identity ${builtImageId}`)

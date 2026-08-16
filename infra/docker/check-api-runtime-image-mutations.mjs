@@ -156,6 +156,19 @@ const mutations = [
     expectScan: ['runtime payload was not root-owned']
   },
   {
+    id: 'runtime-entrypoint-escaped-symlink',
+    describe: 'replace the runtime entrypoint with a symlink outside the protected app tree',
+    build: true,
+    mutate: (text) =>
+      anchoredReplace(
+        text,
+        'USER 10001:10001',
+        'RUN rm -f /app/dist/index.js && ln -s ../../runtime/index.js /app/dist/index.js\n\nUSER 10001:10001'
+      ),
+    expectStatic: [],
+    expectScan: ['runtime payload symlink escaped the protected app tree']
+  },
+  {
     id: 'replace-skipped-readme-with-directory',
     describe: 'turn the skipped contracts README path into an opaque directory tree',
     build: true,
@@ -241,7 +254,7 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 13
+const expectedBuiltMutationCount = 14
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {

@@ -1445,12 +1445,12 @@ for (const outOfScope of [
 }
 
 // ---------------------------------------------------------------------------
-// Group E：镜像隔离（无可变 tag + claimed immutable ID）
+// Group E：镜像隔离（per-run 恢复 tag + claimed immutable ID）
 // ---------------------------------------------------------------------------
 process.stdout.write('Group E: image isolation negatives\n')
 
 {
-  // 两个 project 交错 build：不发布可变 tag，各自持有不同的 claimed immutable ID。
+  // 两个 project 交错 build：各用不同恢复 tag，并持有不同的 claimed immutable ID。
   const name = 'two interleaved projects keep independent immutable image claims'
   const runIdA = `neg${randomBytes(3).toString('hex')}`
   const runIdB = `neg${randomBytes(3).toString('hex')}`

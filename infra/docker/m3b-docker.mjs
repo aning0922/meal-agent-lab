@@ -10,14 +10,16 @@
 //   - cleanup 之后**独立复查** container / network / named volume / 匿名悬挂卷 /
 //     immutable image / Secret 目录六类，复查本身同样 fail closed。
 //
-// 每次 smoke/probe 构建期都不发布可变 tag；BuildKit 交付 immutable image ID 后，
-// 临时 Compose override 直接引用该 ID，因此并行 worktree/project 不会互相覆盖。
+// 每次 smoke/probe 在 BuildKit 前登记不可猜 per-run tag，专供中断窗口恢复；
+// BuildKit 交付 immutable image ID 后，临时 Compose override 只引用该 ID。
 import {
   existsSync,
   lstatSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  rmdirSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { randomBytes } from 'node:crypto'
@@ -25,11 +27,14 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runCommand } from './m3b-subprocess.mjs'
+import { secretFiles } from './local-test-secrets-contract.mjs'
 
 /** 旧命名保留的每轮 locator 前缀；该字符串从不作为 Docker build tag 发布。 */
 export const runImageTagPrefix = 'meal-agent-api:m3b-'
 
 export const runImageTagFor = (runId) => `${runImageTagPrefix}${runId}`
+
+const secretBundleFilenames = Object.freeze(secretFiles.map((entry) => entry.filename))
 
 const ownedOverrideInodes = new Map()
 const ownedBuildEvidenceDirectories = new Map()
@@ -78,7 +83,15 @@ const removeOwnedBuildEvidenceDirectory = (directory) => {
   if (observed.dev !== expected.dev || observed.ino !== expected.ino) {
     throw new DockerEvidenceError('build evidence directory ownership drifted')
   }
-  rmSync(directory, { recursive: true, force: false })
+  for (const path of [record.metadataFile, record.iidfile]) {
+    if (!existsSync(path)) continue
+    const file = lstatSync(path, { bigint: true })
+    if (!file.isFile() || file.nlink !== 1n) {
+      throw new DockerEvidenceError('build evidence file ownership drifted')
+    }
+    unlinkSync(path)
+  }
+  rmdirSync(directory)
   ownedBuildEvidenceDirectories.delete(directory)
 }
 
@@ -124,6 +137,58 @@ export const writeImageOverride = (path, imageIdentity, runClaimToken) => {
 export const inodeIdentityOf = (path) => {
   const stats = lstatSync(path, { bigint: true })
   return { dev: stats.dev, ino: stats.ino }
+}
+
+export const snapshotSecretBundleIdentity = (directory, directoryIdentity) => {
+  const observedDirectory = lstatSync(directory, { bigint: true })
+  if (
+    !observedDirectory.isDirectory() ||
+    observedDirectory.dev !== directoryIdentity.dev ||
+    observedDirectory.ino !== directoryIdentity.ino
+  ) {
+    throw new DockerEvidenceError('temporary secrets directory ownership drifted')
+  }
+  const files = Object.create(null)
+  for (const filename of secretBundleFilenames) {
+    const path = resolve(directory, filename)
+    const stat = lstatSync(path, { bigint: true })
+    if (!stat.isFile() || stat.nlink !== 1n) {
+      throw new DockerEvidenceError('temporary secret file identity was invalid')
+    }
+    files[filename] = Object.freeze({ dev: stat.dev, ino: stat.ino })
+  }
+  return Object.freeze({
+    dev: directoryIdentity.dev,
+    ino: directoryIdentity.ino,
+    files: Object.freeze(files)
+  })
+}
+
+export const retireSecretBundleDirectory = (directory, secretsIdentity) => {
+  const observedDirectory = lstatSync(directory, { bigint: true })
+  if (
+    !observedDirectory.isDirectory() ||
+    observedDirectory.dev !== secretsIdentity.dev ||
+    observedDirectory.ino !== secretsIdentity.ino
+  ) {
+    throw new DockerEvidenceError('temporary secrets directory ownership drifted')
+  }
+  for (const filename of secretBundleFilenames) {
+    const path = resolve(directory, filename)
+    if (!existsSync(path)) continue
+    const observed = lstatSync(path, { bigint: true })
+    const expectedFile = secretsIdentity?.files?.[filename]
+    if (
+      !observed.isFile() ||
+      observed.nlink !== 1n ||
+      (expectedFile !== undefined &&
+        (observed.dev !== expectedFile.dev || observed.ino !== expectedFile.ino))
+    ) {
+      throw new DockerEvidenceError('temporary secret file ownership drifted')
+    }
+    unlinkSync(path)
+  }
+  rmdirSync(directory)
 }
 
 export class DockerEvidenceError extends Error {
@@ -269,7 +334,7 @@ export const parseBuildMetadataImageIdentity = (raw) => {
 
 export const parseClaimedBuildImage = (
   value,
-  { expectedImageId, expectedClaimToken, requireUntagged = false }
+  { expectedImageId, expectedClaimToken, requireUntagged = false, expectedTag = null }
 ) => {
   const labels = value?.Config?.Labels
   if (
@@ -284,7 +349,9 @@ export const parseClaimedBuildImage = (
     typeof labels !== 'object' ||
     Array.isArray(labels) ||
     labels[buildClaimLabel] !== expectedClaimToken ||
-    (requireUntagged && Array.isArray(value.RepoTags) && value.RepoTags.length !== 0)
+    (requireUntagged && Array.isArray(value.RepoTags) && value.RepoTags.length !== 0) ||
+    (expectedTag !== null &&
+      JSON.stringify(value.RepoTags) !== JSON.stringify([expectedTag]))
   ) {
     throw new DockerEvidenceError('docker build ownership evidence did not match its claim')
   }
@@ -296,11 +363,15 @@ export const parseClaimedBuildImage = (
 }
 
 export const inspectClaimedBuildImage = async (
-  { imageId, claimToken },
+  { imageId, claimToken, imageTag },
   { env } = {}
 ) => parseClaimedBuildImage(
   await inspectJsonStrict(imageId, '{{json .}}', { env }),
-  { expectedImageId: imageId, expectedClaimToken: claimToken, requireUntagged: true }
+  {
+    expectedImageId: imageId,
+    expectedClaimToken: claimToken,
+    expectedTag: imageTag
+  }
 )
 
 /** 执行一条 docker 命令并要求退出码为 0；否则抛 DockerEvidenceError。 */
@@ -512,8 +583,9 @@ export const imageIdOf = async (tag, { env } = {}) => {
 
 /**
  * 构建三个 API 服务共用的本轮镜像。manifest identity 来自 BuildKit 自己写出的
- * `--metadata-file`，config identity 则与 `--iidfile` 交叉核对；Compose override
- * 只负责运行期引用，不再承担“从可变 tag 反推构建对象”的证据职责。
+ * `--metadata-file`，config identity 则与 `--iidfile` 交叉核对。不可猜的 per-run tag
+ * 在启动 BuildKit 前就交给 cleanup，只作为中断窗口的恢复 locator；成功证据与删除
+ * 所有权仍以 immutable ID + claim + exact singleton tag 三者共同确定。
  */
 export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.env }) => {
   if (!imageTag.startsWith(runImageTagPrefix)) {
@@ -538,6 +610,8 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
         iidfile,
         '--metadata-file',
         metadataFile,
+        '--tag',
+        imageTag,
         '--label',
         `${buildClaimLabel}=${claimToken}`,
         '--file',
@@ -556,7 +630,7 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
   if (iid !== imageId && iid !== configId) {
     throw new DockerEvidenceError('docker build iidfile did not match build metadata')
   }
-  await inspectClaimedBuildImage({ imageId, claimToken }, { env })
+  await inspectClaimedBuildImage({ imageId, claimToken, imageTag }, { env })
   ownedBuildImageClaims.set(imageId, Object.freeze({ imageTag, claimToken }))
   return imageId
 }
@@ -653,14 +727,19 @@ const cleanupRunUnsynchronized = async ({
         )
       }
     }
-    rmSync(realDir, { recursive: true, force: true })
+    // Never recursively delete after an asynchronous boundary. An unknown child keeps
+    // the directory non-empty and turns cleanup red instead of being destroyed.
+    retireSecretBundleDirectory(realDir, secretsIdentity ?? inodeIdentityOf(realDir))
   })
 
   // 阶段 1.5：build iidfile 的独占临时目录。正常路径会在 build 返回时删除；
   // signal/异常路径仍由 scoped cleanup 以 inode 身份逐个收敛。
   await stage('build-evidence', async () => {
     for (const [directory, record] of [...ownedBuildEvidenceDirectories.entries()]) {
-      if (record.imageTag === imageTag && resolvedImageId === null) {
+      if (record.imageTag !== imageTag) {
+        continue
+      }
+      if (resolvedImageId === null) {
         try {
           const { imageId: recoveredImageId, configId } = parseBuildMetadataImageIdentity(
             readFileSync(record.metadataFile, 'utf8')
@@ -674,18 +753,31 @@ const cleanupRunUnsynchronized = async ({
           await inspectClaimedBuildImage(
             {
               imageId: recoveredImageId,
-              claimToken: record.claimToken
+              claimToken: record.claimToken,
+              imageTag: record.imageTag
             },
             { env: composeEnvironment }
           )
           resolvedImageId = recoveredImageId
           resolvedImageClaimToken = record.claimToken
         } catch {
-          // metadata/iid 不完整时没有可证明的 immutable identity。tag 从未参与构建，
-          // 因此这里既不会误删同名外部对象，也不会把 tag absence 冒充 image absence。
-          throw new DockerEvidenceError(
-            'interrupted docker build ownership evidence was incomplete'
+          // metadata/iid 尚不完整时，per-run tag 是唯一恢复 locator；它只允许在随后
+          // inspect 同时证明 immutable ID、claim 与 exact singleton tag 后转成 ownership。
+          const recoveredFromTag = await imageIdOf(record.imageTag, { env: composeEnvironment })
+          if (recoveredFromTag === null) {
+            removeOwnedBuildEvidenceDirectory(directory)
+            continue
+          }
+          await inspectClaimedBuildImage(
+            {
+              imageId: recoveredFromTag,
+              claimToken: record.claimToken,
+              imageTag: record.imageTag
+            },
+            { env: composeEnvironment }
           )
+          resolvedImageId = recoveredFromTag
+          resolvedImageClaimToken = record.claimToken
         }
       }
       removeOwnedBuildEvidenceDirectory(directory)
@@ -762,8 +854,7 @@ const cleanupRunUnsynchronized = async ({
     })
   }
 
-  // 阶段 6：只按 BuildKit 返回且 claim 复核过的 immutable image ID 删除。
-  // 每轮 tag 不再交给 build，因而不存在 absence→publish 之间覆盖外部 tag 的窗口。
+  // 阶段 6：只按 BuildKit 返回/恢复且由 claim + exact tag 复核过的 immutable ID 删除。
   await stage('image-identity', async () => {
     if (resolvedImageId === null) {
       return
@@ -786,7 +877,7 @@ const cleanupRunUnsynchronized = async ({
       throw new DockerEvidenceError('recorded image identity has no ownership claim')
     }
     await inspectClaimedBuildImage(
-      { imageId: resolvedImageId, claimToken: resolvedImageClaimToken },
+      { imageId: resolvedImageId, claimToken: resolvedImageClaimToken, imageTag },
       { env: composeEnvironment }
     )
     await dockerStrict(['docker', 'image', 'rm', resolvedImageId], {
@@ -853,6 +944,7 @@ const cleanupRunUnsynchronized = async ({
  */
 export const verifyNoResidue = async ({
   project,
+  imageTag = null,
   imageId = null,
   runClaimToken = null,
   secretsDirectory = null,
@@ -862,6 +954,12 @@ export const verifyNoResidue = async ({
   exists
 }) => {
   const problems = []
+  if (
+    imageTag !== null &&
+    [...ownedBuildEvidenceDirectories.values()].some((record) => record.imageTag === imageTag)
+  ) {
+    problems.push('interrupted build evidence still registered')
+  }
   for (const kind of ['container', 'network', 'volume']) {
     try {
       if (typeof runClaimToken !== 'string' || !/^[0-9a-f]{32}$/.test(runClaimToken)) {

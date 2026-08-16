@@ -37,6 +37,7 @@ import {
   overridePathFor,
   runImageTagFor,
   runClaimLabel,
+  snapshotSecretBundleIdentity,
   verifyNoResidue,
   writeImageOverride
 } from './m3b-docker.mjs'
@@ -800,7 +801,7 @@ export const createM4Run = ({ kind }) => {
   const imageTag = runImageTagFor(runId)
   const overridePath = overridePathFor(composeDirectory, runId)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), temporarySecretsPrefix))
-  const secretsIdentity = inodeIdentityOf(secretsDirectory)
+  let secretsIdentity = inodeIdentityOf(secretsDirectory)
   const artifactCleanup = createScopedArtifactCleanup()
 
   const transcript = []
@@ -1283,6 +1284,7 @@ export const createM4Run = ({ kind }) => {
   /** Secret 生成 + 预检 + 输出打码武装。任何数据库容器启动之前调用。 */
   const generateSecrets = () => {
     generateAndPreflight(secretsDirectory)
+    secretsIdentity = snapshotSecretBundleIdentity(secretsDirectory, secretsIdentity)
     const bundleCheck = checkSecretBundle(secretsDirectory, { scanTemplates: false })
     if (bundleCheck.problems.length > 0) {
       throw new Error(
@@ -1295,6 +1297,7 @@ export const createM4Run = ({ kind }) => {
 
   /** 构建 API 镜像，再以 immutable ID 生成 Compose override。 */
   const buildImage = async (stack) => {
+    shared.imageTag = imageTag
     const builtImageId = await buildApiImage({
       imageTag,
       repositoryRoot,
@@ -1303,7 +1306,6 @@ export const createM4Run = ({ kind }) => {
     shared.imageId = builtImageId
     writeImageOverride(overridePath, builtImageId, runClaimToken)
     shared.overrideCreated = true
-    shared.imageTag = imageTag
     log(`api image built with immutable identity ${builtImageId}`)
     return builtImageId
   }

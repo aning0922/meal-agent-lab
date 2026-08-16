@@ -48,6 +48,36 @@ export const m5CriticalGuardRegistry = Object.freeze([
     occurrences: 1
   },
   {
+    id: 'runtime.saved-archive-single-fd-v1',
+    file: 'infra/docker/api-image-scan.mjs',
+    needle: 'validateSavedImageArchive(\n      savedImageFd,',
+    occurrences: 1
+  },
+  {
+    id: 'runtime.saved-archive-layer-fd-v1',
+    file: 'infra/docker/api-image-scan.mjs',
+    needle: 'verifySavedImageLayers(\n      savedImageFd,',
+    occurrences: 1
+  },
+  {
+    id: 'runtime.pax-owner-override-v1',
+    file: 'infra/docker/api-image-scan.mjs',
+    needle: 'const effectiveUid = pendingUid ?? globalUid ?? uid',
+    occurrences: 1
+  },
+  {
+    id: 'runtime.app-symlink-boundary-v1',
+    file: 'infra/docker/api-image-scan.mjs',
+    needle: "fatal('docker image runtime payload symlink escaped the protected app tree')",
+    occurrences: 1
+  },
+  {
+    id: 'runtime.provenance-conflict-v1',
+    file: 'infra/docker/api-image-scan.mjs',
+    needle: ': evidence.subjects.includes(evidence.referenceDigest)',
+    occurrences: 1
+  },
+  {
     id: 'm4.oneoff-retain-nonzero-id-v1',
     file: 'infra/docker/m4-lifecycle.mjs',
     needle: 'entry.id = inspected.id',
@@ -69,6 +99,24 @@ export const m5CriticalGuardRegistry = Object.freeze([
     id: 'backup.list-structure-v1',
     file: 'infra/docker/backup-local-test.mjs',
     needle: 'parsePgRestoreListEvidence(listed.stdout)',
+    occurrences: 1
+  },
+  {
+    id: 'backup.exclusive-close-rollback-v1',
+    file: 'infra/docker/m5-evidence-protocol.mjs',
+    needle: 'current.ino === createdIdentity.ino',
+    occurrences: 1
+  },
+  {
+    id: 'compose.persistent-fresh-generation-v1',
+    file: 'infra/docker/run-local-test-smoke.mjs',
+    needle: 'requireFreshContainerGeneration(baseline, current, {',
+    occurrences: 1
+  },
+  {
+    id: 'compose.materializer-fresh-generation-v1',
+    file: 'infra/docker/probe-compose-secret-identity.mjs',
+    needle: 'requireFreshContainerGeneration(',
     occurrences: 1
   },
   {
@@ -94,5 +142,11 @@ export const m5CriticalGuardRegistry = Object.freeze([
     file: 'infra/docker/m3b-subprocess.mjs',
     needle: 'export const probeProcessGroup = (pgid, kill = process.kill)',
     occurrences: 1
+  },
+  {
+    id: 'process-group.status-zero-detailed-settlement-v1',
+    file: 'infra/docker/m3b-subprocess.mjs',
+    needle: 'processGroups.terminateDetailed([childHandle])',
+    occurrences: 2
   }
 ])

@@ -19,12 +19,12 @@
 // DDL、database owner 为 meal_agent_migrator 且全部 owner / SECURITY DEFINER /
 // GRANT / RLS / policy / 角色属性 / membership 与备份前逐字一致、sentinel 五张
 // 表逐行 JSON 一致（两个家庭都在——FORCE RLS 没有截断导出）。
-import { copyFileSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, lstatSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { performBackup } from './backup-local-test.mjs'
+import { performBackup, retirePrivateBackupDirectory } from './backup-local-test.mjs'
 import {
   appRoleDumpRefusalExpectations,
   appRoleDumpRefusalScript,
@@ -105,20 +105,17 @@ const drillBody = async ({
   // --- 备份（演练自己的临时目录；dump 内容是合成数据，不是凭据）-------------
   const backupsDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m4-backup-'))
   const backupDirectoryStat = lstatSync(backupsDirectory, { bigint: true })
+  const backupDirectoryIdentity = Object.freeze({
+    path: backupsDirectory,
+    dev: backupDirectoryStat.dev,
+    ino: backupDirectoryStat.ino
+  })
+  const backupFileIdentities = []
   let backupDirectoryCleanupPromise = null
   const cleanupBackupDirectory = () => {
     backupDirectoryCleanupPromise ??= Promise.resolve().then(() => {
       try {
-        const current = lstatSync(backupsDirectory, { bigint: true })
-        if (
-          !current.isDirectory() ||
-          current.dev !== backupDirectoryStat.dev ||
-          current.ino !== backupDirectoryStat.ino
-        ) {
-          return ['restore drill backup directory ownership drifted']
-        }
-        rmSync(backupsDirectory, { recursive: true, force: true })
-        return []
+        return retirePrivateBackupDirectory(backupDirectoryIdentity, backupFileIdentities)
       } catch {
         return ['restore drill backup directory cleanup failed']
       }
@@ -134,6 +131,7 @@ const drillBody = async ({
       timed,
       run,
       backupsDirectory,
+      backupFileIdentities,
       registerArtifactCleanup
     })
   } finally {
@@ -152,9 +150,17 @@ const restoreRoundTrip = async ({
   timed,
   run,
   backupsDirectory,
+  backupFileIdentities,
   registerArtifactCleanup
 }) => {
   const [stackA, stackB] = stacks
+  const captureBackupFile = (path) => {
+    const stat = lstatSync(path, { bigint: true })
+    if (!stat.isFile() || stat.nlink !== 1n) {
+      throw new Error('restore drill artifact identity was invalid')
+    }
+    backupFileIdentities.push(Object.freeze({ path, dev: stat.dev, ino: stat.ino }))
+  }
   const expectHttp = async (stack, label, path) => {
     const status = await stack.fetchStatus(path)
     if (status !== 200) {
@@ -185,6 +191,8 @@ const restoreRoundTrip = async ({
       { project: stackA.project, outputDirectory: backupsDirectory, fileName: 'restore-drill.dump' }
     )
   })
+  captureBackupFile(backup.dumpPath)
+  captureBackupFile(backup.shaPath)
 
   // --- 栈 B：cluster/logins（角色不在 dump 里）------------------------------
   await timed('stack B cluster bootstrap (roles are not in the dump)', async () => {
@@ -210,22 +218,22 @@ const restoreRoundTrip = async ({
     writeFileSync(`${corruptedPath}.sha256`, `${backup.sha256}  ${basename(corruptedPath)}\n`, {
       mode: 0o600
     })
-    let refusal = null
+    captureBackupFile(corruptedPath)
+    captureBackupFile(`${corruptedPath}.sha256`)
+    let refusedForChecksum = false
     try {
       await performRestore(
         { compose: stackB.compose, run, log },
         { project: stackB.project, dumpPath: corruptedPath }
       )
     } catch (error) {
-      refusal = error instanceof Error ? error.message : String(error)
+      // Compare only against this module's fixed diagnostic. Never retain or
+      // forward a runner-controlled exception value into drill output.
+      refusedForChecksum =
+        error instanceof Error && error.message === checksumMismatchReason
     }
-    if (refusal === null) {
+    if (!refusedForChecksum) {
       fail('the tampered backup was restored instead of being refused')
-    } else if (refusal !== checksumMismatchReason) {
-      fail(
-        'the tampered backup was refused, but not for the checksum reason ' +
-          '(the refusal must happen before pg_restore, not inside it)'
-      )
     } else {
       log('tampered backup refused with the fixed checksum reason, before any restore step')
     }
@@ -309,11 +317,7 @@ const restoreRoundTrip = async ({
       fail(
         `authorization surface drifted across the restore: ` +
           `${String(diff.onlyBefore.length)} line(s) only before, ` +
-          `${String(diff.onlyAfter.length)} line(s) only after; ` +
-          `first differences: ${JSON.stringify({
-            onlyBefore: diff.onlyBefore.slice(0, 5),
-            onlyAfter: diff.onlyAfter.slice(0, 5)
-          })}`
+          `${String(diff.onlyAfter.length)} line(s) only after`
       )
     }
     if (sentinelAfter === sentinelBefore) {

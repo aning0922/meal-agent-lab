@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url'
 const moduleDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 
 import { isAbsenceMessage } from './m3b-docker.mjs'
+import { parseSignalResidueListing } from './m5-evidence-protocol.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const repositoryRoot = resolve(composeDirectory, '..', '..')
@@ -104,7 +105,7 @@ const fail = (name, detail) => {
 const docker = (args) => {
   const result = spawnSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
   if (result.error !== undefined) {
-    throw new Error(`failed to run docker ${args[0] ?? ''}: ${result.error.message}`)
+    throw new Error('docker signal-window evidence command could not start')
   }
   return result
 }
@@ -125,7 +126,7 @@ const listByLabel = (kind, project) => {
       } while checking residue`
     )
   }
-  return result.stdout.split('\n').filter(Boolean)
+  return parseSignalResidueListing(kind, result.stdout)
 }
 
 const processAlive = (pid) => {
@@ -269,10 +270,10 @@ const assertCleanScene = (name, result, { expectSignal }) => {
       try {
         const remaining = listByLabel(kind, scene.project)
         if (remaining.length > 0) {
-          problems.push(`${kind}(s) left: ${remaining.join(', ')}`)
+          problems.push(`${String(remaining.length)} ${kind}(s) left`)
         }
-      } catch (error) {
-        problems.push(String(error))
+      } catch {
+        problems.push(`${kind} residue evidence could not be collected`)
       }
     }
   }
@@ -301,8 +302,8 @@ const assertCleanScene = (name, result, { expectSignal }) => {
             })`
         )
       }
-    } catch (error) {
-      problems.push(`the per-run immutable image check could not run: ${String(error)}`)
+    } catch {
+      problems.push('the per-run immutable image check could not run')
     }
   }
   if (scene.secretsDirectory !== null && existsSync(scene.secretsDirectory)) {
@@ -532,10 +533,8 @@ try {
       regressionProblems.push('status 0 settled before the descendant process group reached ESRCH')
     }
   }
-} catch (error) {
-  regressionProblems.push(
-    `the deterministic fixture threw: ${error instanceof Error ? error.message : String(error)}`
-  )
+} catch {
+  regressionProblems.push('the deterministic fixture raised an internal failure')
 } finally {
   // 按**精确 pgid** 兜底清理，绝不做模糊匹配。
   const cleanupSurvivors = killAndConfirmGroups(orphanPgid === null ? [] : [orphanPgid])
@@ -637,10 +636,8 @@ try {
   if (stubbornPgids.length === 0) {
     timeoutProblems.push('the close-independent fixture announced no pgid and is vacuous')
   }
-} catch (error) {
-  timeoutProblems.push(
-    `the timeout fixture threw: ${error instanceof Error ? error.message : String(error)}`
-  )
+} catch {
+  timeoutProblems.push('the timeout fixture raised an internal failure')
 } finally {
   const cleanupSurvivors = killAndConfirmGroups(timeoutPgids)
   if (cleanupSurvivors.length > 0) {
@@ -745,10 +742,8 @@ try {
   ) {
     generationProblems.push('the new generation did not receive its own TERM/KILL lifecycle')
   }
-} catch (error) {
-  generationProblems.push(
-    `the generation fixture threw: ${error instanceof Error ? error.message : String(error)}`
-  )
+} catch {
+  generationProblems.push('the generation fixture raised an internal failure')
 }
 if (generationProblems.length > 0) {
   fail('process-group generation is not inherited', generationProblems[0])
@@ -919,10 +914,8 @@ try {
   ) {
     mutationProblems.push('the closed final convergence left an observed generation unconfirmed')
   }
-} catch (error) {
-  mutationProblems.push(
-    `the mutation-closed fixture threw: ${error instanceof Error ? error.message : String(error)}`
-  )
+} catch {
+  mutationProblems.push('the mutation-closed fixture raised an internal failure')
 } finally {
   const cleanupSurvivors = killAndConfirmGroups(mutationPgids)
   if (cleanupSurvivors.length > 0) {
@@ -1101,13 +1094,13 @@ for (const handlerCase of handlerCases) {
     }
     if (handlerPgids.length === 0) {
       handlerProblems.push(`${handlerCase.label}: fixture announced no pgid and is vacuous`)
+    } else if (handlerPgids.some((pgid) => groupAlive(pgid))) {
+      handlerProblems.push(
+        `${handlerCase.label}: an announced pgid was still alive when the fixture settled`
+      )
     }
-  } catch (error) {
-    handlerProblems.push(
-      `${handlerCase.label}: fixture threw: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    )
+  } catch {
+    handlerProblems.push(`${handlerCase.label}: fixture raised an internal failure`)
   } finally {
     const cleanupSurvivors = killAndConfirmGroups(handlerPgids)
     if (cleanupSurvivors.length > 0) {

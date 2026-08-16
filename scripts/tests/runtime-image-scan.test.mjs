@@ -3,8 +3,10 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -22,13 +24,16 @@ import {
   createStrictRunner,
   dependencyPayloadOf,
   dockerignorePath,
+  indexSavedImageTar,
   parseContainerInspect,
   parseOwnedScratchContainer,
+  parseLayerTarEvidence,
   parseImageHistory,
   parseImageInspect,
   parseSavedImageConfig,
   parseSavedImageManifest,
   requireBoundProvenance,
+  repositoryRoot,
   validateOciDescriptor,
   validateSlsaProvenanceStatement,
   verifySavedImageLayers,
@@ -39,6 +44,72 @@ import {
 const throwingFatal = (message) => {
   throw new Error(message)
 }
+
+const writeTarOctal = (header, offset, length, value) => {
+  const text = value.toString(8).padStart(length - 1, '0')
+  header.write(text, offset, length - 1, 'ascii')
+  header[offset + length - 1] = 0
+}
+
+const tarHeader = ({ name, mode = 0o644, uid = 0, gid = 0, size = 0, type = '0', link = '' }) => {
+  const header = Buffer.alloc(512)
+  header.write(name, 0, 100, 'utf8')
+  writeTarOctal(header, 100, 8, mode)
+  writeTarOctal(header, 108, 8, uid)
+  writeTarOctal(header, 116, 8, gid)
+  writeTarOctal(header, 124, 12, size)
+  writeTarOctal(header, 136, 12, 0)
+  header.fill(0x20, 148, 156)
+  header.write(type, 156, 1, 'ascii')
+  header.write(link, 157, 100, 'utf8')
+  header.write('ustar\0', 257, 6, 'ascii')
+  header.write('00', 263, 2, 'ascii')
+  writeTarOctal(header, 148, 8, header.reduce((sum, byte) => sum + byte, 0))
+  return header
+}
+
+const paxRecord = (key, value) => {
+  const body = ` ${key}=${value}\n`
+  let length = Buffer.byteLength(body) + 1
+  while (String(length).length + Buffer.byteLength(body) !== length) {
+    length = String(length).length + Buffer.byteLength(body)
+  }
+  return Buffer.from(`${String(length)}${body}`)
+}
+
+const padTarPayload = (bytes) => Buffer.concat([
+  bytes,
+  Buffer.alloc((512 - (bytes.length % 512)) % 512)
+])
+
+test('saved-image archive parsing stays on the inherited descriptor after path replacement', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-saved-image-custody-'))
+  const archive = resolve(directory, 'image.tar')
+  const replacement = resolve(directory, 'replacement.tar')
+  const original = Buffer.concat([
+    tarHeader({ name: 'original', size: 1 }),
+    padTarPayload(Buffer.from('A')),
+    Buffer.alloc(1024)
+  ])
+  const foreign = Buffer.concat([
+    tarHeader({ name: 'foreign', size: 1 }),
+    padTarPayload(Buffer.from('B')),
+    Buffer.alloc(1024)
+  ])
+  writeFileSync(archive, original)
+  writeFileSync(replacement, foreign)
+  const fd = openSync(archive, 'r')
+  try {
+    renameSync(archive, `${archive}.original`)
+    renameSync(replacement, archive)
+    const members = indexSavedImageTar(fd, throwingFatal)
+    assert.equal(members.has('original'), true)
+    assert.equal(members.has('foreign'), false)
+  } finally {
+    closeSync(fd)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test('the checked-in dockerignore keeps every secret exclusion after all negations', () => {
   const problems = []
@@ -322,9 +393,10 @@ test('verified layer replay consumes inherited descriptors rather than a replace
     const buildLayer = (name, contents) => {
       const root = resolve(directory, `${name}-root`)
       const archive = resolve(directory, `${name}.tar`)
-      mkdirSync(root)
-      mkdirSync(resolve(root, 'app'))
+      mkdirSync(resolve(root, 'app/dist/database'), { recursive: true })
       writeFileSync(resolve(root, 'app/payload.txt'), contents)
+      writeFileSync(resolve(root, 'app/dist/index.js'), 'entrypoint')
+      writeFileSync(resolve(root, 'app/dist/database/migrate.js'), 'migration entrypoint')
       const packed = spawnSync(
         'tar',
         ['--format=ustar', '--uid', '0', '--gid', '0', '-cf', archive, '-C', root, '.'],
@@ -419,6 +491,83 @@ test('layer replay rejects a whiteout marker without a basename', async () => {
   }
 })
 
+test('PAX identity overrides and app symlink boundaries are part of rootfs evidence', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-pax-identity-'))
+  try {
+    const pax = Buffer.concat([paxRecord('uid', '10001'), paxRecord('gid', '10002')])
+    const archive = resolve(directory, 'layer.tar')
+    writeFileSync(
+      archive,
+      Buffer.concat([
+        tarHeader({ name: 'PaxHeader', size: pax.length, type: 'x' }),
+        padTarPayload(pax),
+        tarHeader({ name: 'app/dist/index.js', uid: 0, gid: 0, size: 1 }),
+        padTarPayload(Buffer.from('x')),
+        Buffer.alloc(1024)
+      ])
+    )
+    const fd = openSync(archive, 'r')
+    try {
+      const entries = parseLayerTarEvidence(fd, throwingFatal)
+      assert.deepEqual(
+        entries.map(({ name, uid, gid }) => ({ name, uid, gid })),
+        [{ name: 'app/dist/index.js', uid: 10001, gid: 10002 }]
+      )
+    } finally {
+      closeSync(fd)
+    }
+    const paxLayerBytes = readFileSync(archive)
+    const paxDigest = createHash('sha256').update(paxLayerBytes).digest('hex')
+    const savedRoot = resolve(directory, 'saved/blobs/sha256')
+    mkdirSync(savedRoot, { recursive: true })
+    writeFileSync(resolve(savedRoot, paxDigest), paxLayerBytes)
+    const saved = resolve(directory, 'saved.tar')
+    const packed = spawnSync(
+      'tar',
+      ['--format=ustar', '-cf', saved, '-C', resolve(directory, 'saved'), 'blobs'],
+      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    )
+    assert.equal(packed.status, 0, packed.stderr)
+    const materialized = resolve(directory, 'materialized')
+    mkdirSync(materialized)
+    await assert.rejects(
+      verifySavedImageLayers(
+        saved,
+        [`blobs/sha256/${paxDigest}`],
+        [{ digest: `sha256:${paxDigest}`, mediaType: 'application/vnd.oci.image.layer.v1.tar' }],
+        [`sha256:${paxDigest}`],
+        throwingFatal,
+        { materializeRoot: materialized, runStrict: createStrictRunner(throwingFatal) }
+      ),
+      /runtime payload was not root-owned/
+    )
+
+    const escaped = resolve(directory, 'escaped.tar')
+    writeFileSync(
+      escaped,
+      Buffer.concat([
+        tarHeader({
+          name: 'app/dist/index.js',
+          type: '2',
+          link: '../../outside/index.js'
+        }),
+        Buffer.alloc(1024)
+      ])
+    )
+    const escapedFd = openSync(escaped, 'r')
+    try {
+      assert.throws(
+        () => parseLayerTarEvidence(escapedFd, throwingFatal),
+        /symlink escaped the protected app tree/
+      )
+    } finally {
+      closeSync(escapedFd)
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('OCI descriptor media types are exact for each evidence role', () => {
   const digest = `sha256:${'a'.repeat(64)}`
   const valid = (mediaType) => ({ digest, size: 1, mediaType })
@@ -455,7 +604,7 @@ test('SLSA provenance requires the supported predicate envelope', () => {
     resolvedDependencies: []
   }
   const runDetails = {
-    builder: { id: '' },
+    builder: { id: 'https://mobyproject.org/buildkit@v1' },
     metadata: {
       invocationId: 'fixture',
       startedOn: '2026-08-14T00:00:00Z',
@@ -474,6 +623,21 @@ test('SLSA provenance requires the supported predicate envelope', () => {
     validateSlsaProvenanceStatement(untaggedStatement, throwingFatal),
     untaggedStatement
   )
+  // Local Docker Engine / BuildKit emits an empty builder.id for this untagged
+  // local build. It is an unauthenticated metadata field, not the manifest
+  // binding; the attestation descriptor and statement subjects are checked
+  // separately by requireBoundProvenance().
+  const localBuilderStatement = {
+    ...untaggedStatement,
+    predicate: {
+      buildDefinition,
+      runDetails: { ...runDetails, builder: { id: '' } }
+    }
+  }
+  assert.equal(
+    validateSlsaProvenanceStatement(localBuilderStatement, throwingFatal),
+    localBuilderStatement
+  )
   for (const mutation of [
     { ...statement, subject: null },
     { ...statement, subject: [{}] },
@@ -481,7 +645,14 @@ test('SLSA provenance requires the supported predicate envelope', () => {
     { ...statement, predicate: { runDetails } },
     { ...statement, predicate: { buildDefinition } },
     { ...statement, predicate: { buildDefinition: {}, runDetails } },
-    { ...statement, predicate: { buildDefinition, runDetails: {} } }
+    { ...statement, predicate: { buildDefinition, runDetails: {} } },
+    {
+      ...statement,
+      predicate: {
+        buildDefinition,
+        runDetails: { ...runDetails, builder: { id: null } }
+      }
+    }
   ]) {
     assert.throws(
       () => validateSlsaProvenanceStatement(mutation, throwingFatal),
@@ -492,13 +663,40 @@ test('SLSA provenance requires the supported predicate envelope', () => {
 
 test('the selected platform manifest requires at least one bound provenance subject', () => {
   const digest = `sha256:${'b'.repeat(64)}`
-  assert.doesNotThrow(() => requireBoundProvenance([digest], digest, throwingFatal))
+  assert.doesNotThrow(() =>
+    requireBoundProvenance(
+      [{ referenceDigest: digest, subjects: [] }],
+      digest,
+      throwingFatal
+    )
+  )
+  assert.doesNotThrow(() =>
+    requireBoundProvenance(
+      [{ referenceDigest: digest, subjects: [digest] }],
+      digest,
+      throwingFatal
+    )
+  )
   assert.throws(
     () => requireBoundProvenance([], digest, throwingFatal),
     /provenance is missing or not bound/
   )
   assert.throws(
-    () => requireBoundProvenance([`sha256:${'c'.repeat(64)}`], digest, throwingFatal),
+    () =>
+      requireBoundProvenance(
+        [{ referenceDigest: digest, subjects: [`sha256:${'c'.repeat(64)}`] }],
+        digest,
+        throwingFatal
+      ),
+    /provenance is missing or not bound/
+  )
+  assert.throws(
+    () =>
+      requireBoundProvenance(
+        [{ referenceDigest: digest, subjects: [`sha256:${'c'.repeat(64)}`] }],
+        digest,
+        throwingFatal
+      ),
     /provenance is missing or not bound/
   )
 })
@@ -741,6 +939,21 @@ test('runtime image entrypoints bind builds and cleanup to immutable ownership e
   assert.match(mutations, /builds: new Map\(\)/)
   assert.match(mutations, /imageTag: null/)
   assert.doesNotMatch(mutations, /'--tag'/)
+})
+
+test('every build caller publishes its cleanup locator before BuildKit starts', () => {
+  for (const [relativePath, assignment] of [
+    ['infra/docker/run-local-test-smoke.mjs', 'scene.imageTag = imageTag'],
+    ['infra/docker/probe-compose-secret-identity.mjs', 'activeProbeScene.imageTag = imageTag'],
+    ['infra/docker/m4-lifecycle.mjs', 'shared.imageTag = imageTag']
+  ]) {
+    const source = readFileSync(resolve(repositoryRoot, relativePath), 'utf8')
+    const assignmentIndex = source.indexOf(assignment)
+    const buildIndex = source.indexOf('await buildApiImage', assignmentIndex)
+    assert.notEqual(assignmentIndex, -1, `${relativePath} must publish the locator`)
+    assert.notEqual(buildIndex, -1, `${relativePath} must call BuildKit after the locator`)
+    assert.ok(assignmentIndex < buildIndex)
+  }
 })
 
 test('strict command failures never echo runner-controlled stderr or exception text', async () => {

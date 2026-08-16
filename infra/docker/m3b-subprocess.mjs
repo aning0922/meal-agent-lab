@@ -521,7 +521,8 @@ const refuseChildProcessStart = () => {
 export const createCommandRunner = ({
   spawnProcess = spawn,
   clearTimer = nativeClearTimeout,
-  setTimer = nativeSetTimeout
+  setTimer = nativeSetTimeout,
+  processGroups = processGroupLifecycle
 } = {}) =>
   (
     args,
@@ -594,10 +595,10 @@ export const createCommandRunner = ({
       const timerClean = cancelTimer()
       let primitiveClean = true
       if (childHandle !== null) {
-        processGroupLifecycle.markLeaderClosed(childHandle)
+        processGroups.markLeaderClosed(childHandle)
         // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
         try {
-          processGroupLifecycle.retireIfGone(childHandle)
+          processGroups.retireIfGone(childHandle)
         } catch {
           primitiveClean = false
         }
@@ -610,8 +611,13 @@ export const createCommandRunner = ({
       let survivors = childHandle === null ? [] : [childHandle]
       let terminationFailed = false
       try {
-        survivors =
-          childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
+        if (childHandle === null) {
+          survivors = []
+        } else {
+          const outcome = await processGroups.terminateDetailed([childHandle])
+          survivors = outcome.survivors
+          terminationFailed ||= outcome.primitiveFailed
+        }
       } catch {
         terminationFailed = true
       }
@@ -626,8 +632,13 @@ export const createCommandRunner = ({
       let survivors = childHandle === null ? [] : [childHandle]
       let terminationFailed = false
       try {
-        survivors =
-          childHandle === null ? [] : await processGroupLifecycle.terminate([childHandle])
+        if (childHandle === null) {
+          survivors = []
+        } else {
+          const outcome = await processGroups.terminateDetailed([childHandle])
+          survivors = outcome.survivors
+          terminationFailed ||= outcome.primitiveFailed
+        }
       } catch {
         terminationFailed = true
       }
@@ -668,7 +679,7 @@ export const createCommandRunner = ({
     // `timeoutMs: 0` 也不会落进「pid 存在但还没 generation」的窗口。
     let ownershipAnnouncementFailed = false
     if (Number.isSafeInteger(child.pid) && child.pid > 0) {
-      childHandle = processGroupLifecycle.register(child.pid)
+      childHandle = processGroups.register(child.pid)
       observedProcessGroups.add(child.pid)
       // 每个子进程都是 detached，因此**自成进程组**——它们不属于本进程的
       // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒

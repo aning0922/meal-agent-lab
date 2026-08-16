@@ -54,6 +54,7 @@
     "inject-package-payload",
     "change-package-file-mode",
     "runtime-payload-owned-by-runtime-user",
+    "runtime-entrypoint-escaped-symlink",
     "replace-skipped-readme-with-directory",
     "secret-shaped-image-history",
     "expose-port",

@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, linkSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdtempSync,
+  linkSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,7 +16,9 @@ import test from 'node:test'
 import {
   EvidenceProtocolError,
   parsePgRestoreListEvidence,
+  parseSignalResidueListing,
   readStableRegularFile,
+  requireFreshContainerGeneration,
   requireClosedRecord,
   verifyPublishedFileEvidence,
   writeExclusiveEvidenceFile
@@ -97,6 +107,38 @@ test('pg_restore list evidence binds the database header and the complete visibl
       ),
     EvidenceProtocolError
   )
+  for (const conflictingHeader of [
+    ';     TOC Entries: 999\n',
+    ';     Format: TAR\n',
+    ';     Dump Version: 1.15-0\n',
+    ';     dbname: foreign_database\n'
+  ]) {
+    assert.throws(
+      () =>
+        parsePgRestoreListEvidence(
+          '; Archive created at 2026-08-16 00:00:00 UTC\n' +
+          conflictingHeader +
+          ';     TOC Entries: 4\n' +
+          ';     Dump Version: 1.16-0\n' +
+          ';     Format: CUSTOM\n' +
+          ';     dbname: meal_agent\n' +
+          '1; 1262 16384 DATABASE - meal_agent owner\n'
+        ),
+      EvidenceProtocolError
+    )
+  }
+  assert.throws(
+    () =>
+      parsePgRestoreListEvidence(
+        '; Archive created at 2026-08-16 00:00:00 UTC\n' +
+        ';     TOC Entries: 4\n' +
+        ';     Dump Version: 1.16-0\n' +
+        ';     Format: CUSTOM\n' +
+        ';     dbname: meal_agent\n' +
+        '1; 1262 16384 DATABASE - meal_agent foreign_suffix owner\n'
+      ),
+    EvidenceProtocolError
+  )
   assert.throws(
     () =>
       parsePgRestoreListEvidence(
@@ -134,6 +176,55 @@ test('published file evidence binds bytes, inode, link count and exclusive name'
     assert.equal(verifyPublishedFileEvidence(identity, bytes), false)
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a close failure retracts the exact file created by exclusive publication', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-close-'))
+  try {
+    const path = join(directory, 'artifact')
+    assert.throws(
+      () =>
+        writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
+          closeFile: (fd) => {
+            closeSync(fd)
+            throw new Error('hostile close text')
+          }
+        }),
+      EvidenceProtocolError
+    )
+    assert.equal(existsSync(path), false)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Compose success requires a fresh container generation', () => {
+  const old = { Id: 'old', State: { StartedAt: '2026-08-16T00:00:00Z' } }
+  const freshSameId = { Id: 'old', State: { StartedAt: '2026-08-16T00:00:01Z' } }
+  const freshNewId = { Id: 'new', State: { StartedAt: '2026-08-16T00:00:00Z' } }
+  assert.equal(requireFreshContainerGeneration(null, old), old)
+  assert.equal(requireFreshContainerGeneration(old, freshSameId), freshSameId)
+  assert.equal(requireFreshContainerGeneration(old, freshNewId), freshNewId)
+  assert.throws(() => requireFreshContainerGeneration(old, old), EvidenceProtocolError)
+  assert.throws(
+    () => requireFreshContainerGeneration(old, { Id: 'new', State: { StartedAt: '' } }),
+    EvidenceProtocolError
+  )
+})
+
+test('signal residue listings are canonical and never return untrusted labels', () => {
+  const containerId = 'a'.repeat(64)
+  assert.deepEqual(parseSignalResidueListing('container', `${containerId}\n`), [containerId])
+  assert.deepEqual(parseSignalResidueListing('volume', 'fixture_volume\n'), ['fixture_volume'])
+  for (const hostile of ['SHORT-SENTINEL\n', `${containerId}\n${containerId}\n`, 'x\r\n']) {
+    assert.throws(
+      () => parseSignalResidueListing('container', hostile),
+      (error) =>
+        error instanceof EvidenceProtocolError &&
+        error.message === 'evidence protocol rejected: signal-residue-listing' &&
+        !error.message.includes('SENTINEL')
+    )
   }
 })
 
@@ -203,6 +294,26 @@ test('build ownership binds metadata, immutable ID and an unguessable claim with
     }).imageId,
     imageId
   )
+  const tagged = { ...image, RepoTags: ['meal-agent-api:m3b-fixture'] }
+  assert.equal(
+    parseClaimedBuildImage(tagged, {
+      expectedImageId: imageId,
+      expectedClaimToken: 'claim-a',
+      expectedTag: 'meal-agent-api:m3b-fixture'
+    }).imageId,
+    imageId
+  )
+  assert.throws(
+    () => parseClaimedBuildImage(
+      { ...tagged, RepoTags: ['meal-agent-api:m3b-foreign'] },
+      {
+        expectedImageId: imageId,
+        expectedClaimToken: 'claim-a',
+        expectedTag: 'meal-agent-api:m3b-fixture'
+      }
+    ),
+    /ownership evidence did not match/
+  )
   for (const mutated of [
     { ...image, Id: `sha256:${'b'.repeat(64)}` },
     { ...image, RepoTags: ['meal-agent-api:foreign'] },
@@ -240,12 +351,31 @@ test('every critical evidence guard remains mapped to its registered production 
     assert.equal(ids.has(guard.id), false, `duplicate guard id ${guard.id}`)
     ids.add(guard.id)
     const source = readFileSync(new URL(guard.file, repositoryRoot), 'utf8')
-    const occurrences = source.split(guard.needle).length - 1
+    const executableSource = source
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('//'))
+      .join('\n')
+    const occurrences = executableSource.split(guard.needle).length - 1
     assert.equal(
       occurrences,
       guard.occurrences,
       `${guard.id} must occur exactly ${String(guard.occurrences)} time(s)`
     )
   }
-  assert.equal(m5CriticalGuardRegistry.length, 15)
+  assert.equal(m5CriticalGuardRegistry.length, 24)
+})
+
+test('commenting out the backup TOC guard is detected as an inactive mutation', () => {
+  const guard = m5CriticalGuardRegistry.find((entry) => entry.id === 'backup.list-structure-v1')
+  assert.notEqual(guard, undefined)
+  const source = readFileSync(new URL(guard.file, repositoryRoot), 'utf8')
+  const mutant = source.replace(
+    guard.needle,
+    `// ${guard.needle}`
+  )
+  const executableMutant = mutant
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('//'))
+    .join('\n')
+  assert.equal(executableMutant.split(guard.needle).length - 1, 0)
 })
