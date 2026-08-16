@@ -376,6 +376,18 @@ static-only**，signal 保持 **5 deterministic + 6 real**。完整链从步骤 
 identity、lifecycle、same-ledger restore 与 scoped cleanup 均 PASS。下一门禁是两个
 全新独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
+**最新证据闭合修订（2026-08-16，覆盖上段架构候选状态）**：实现落点 `d1e0ef5`
+不再用 scratch container/`docker export` 取得 runtime rootfs，而是验证并重放
+`docker image save` 的内容寻址 OCI layer；BuildKit、Compose、container、PGID 与
+lifecycle cleanup 全部绑定 immutable identity/claim 和 generation。backup 使用稳定
+内存快照，经 `pg_restore --create --list` 完整 TOC 验证后，以 no-replace sidecar 与
+dump 发布同一字节。15 项 critical-guard registry 只做生产调用点漂移索引，不替代
+动态反例与 mutation 判别力。该落点从步骤 1 串行通过 `pnpm stage09a:check` **14/14**，
+脚本测试 **110/110**、topology mutation **44/44**、runtime image mutation **1 baseline
++ 12 built + 2 static-only**、targeted **69/69**、local-test **75/75**、signal **5+6**；
+fresh smoke、八份 Secret identity、lifecycle 与 restore 全部 PASS。下一门禁是两个全新
+独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
 **M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
 `MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
 消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。

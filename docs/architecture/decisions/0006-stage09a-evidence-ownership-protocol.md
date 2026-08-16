@@ -26,7 +26,8 @@ Docker、Compose、Git 与 PostgreSQL CLI 的 stdout/stderr 均是不可信输�
 - image metadata、inspect 和 history 绑定 canonical immutable image ID、build claim
   与完整结构；
 - container inspect 绑定 immutable ID、project、service、image、generation 与时间；
-- `pg_restore --list` 必须包含规范 TOC，而不是任意非空字符串。
+- `pg_restore --create --list` 必须包含规范 TOC（包括 database 与 database properties），
+  而不是任意非空字符串。
 
 失败诊断只能使用固定错误码、可信 registry 名称和计数；不得回显外部键、路径、
 stdout/stderr 或异常文本。
@@ -79,8 +80,13 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 
 ## 实施注记
 
-2026-08-16 的实现落点为 `27e7467`。该落点从步骤 1 串行通过
-`pnpm stage09a:check` 14/14；脚本测试 109/109、Compose topology mutation 44/44、
+2026-08-16 的最新实现落点为 `d1e0ef5`。runtime rootfs 不再通过 scratch container
+与 `docker export` 取得，而是验证 OCI index/manifest/config/layer 的 digest、DiffID、
+history 与 provenance 后按 whiteout 规则重放同一组内容寻址 layer。备份发布使用同一
+内存快照，并先通过 `pg_restore --create --list` 的完整 TOC；容器、Compose、PGID 与
+BuildKit cleanup 同样按 immutable identity/claim 和 generation 收敛。15 项 registry
+只负责生产调用点漂移索引，不代替动态反例和 mutation 判别力。该落点从步骤 1 串行
+通过 `pnpm stage09a:check` 14/14；脚本测试 110/110、Compose topology mutation 44/44、
 runtime image mutation 1 baseline + 12 built + 2 static-only、M3B signal 5+6，且 fresh
 smoke、八份 Secret identity、lifecycle 与 same-ledger restore 均通过。该证据只证明
 本地实现候选；两个全新独立 A/B 审计、M5 Accepted、远端 CI 真实 run 和 09A 总验收

@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-16 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」的有界自动审计循环因同一证据所有权根因连续两轮出现而停止；经重新授权的架构整改落点 `27e7467` 已通过完整 14/14，仍待两个全新 A/B 独立只读审计、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」最新实现落点 `d1e0ef5` 已通过完整 14/14，仍待两个全新 A/B 独立只读审计、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -4039,6 +4039,34 @@ local-test **75/75**、targeted **69/69**、signal **5 deterministic + 6 real**�
 该结果只建立新的本地候选。下一门禁是两个**全新、用户可见、互相独立、只读**的
 A/B 审计（A 禁止 Docker，B 独占 Docker）；两路 CLEAN 后才回到总控 Accepted 裁定。
 M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持 `Proposed`。
+
+#### M5 架构整改后的证据闭合修订（2026-08-16）
+
+经产品负责人授权，后续审计确认的问题按共同根因归并，追加实现落点 `d1e0ef5`，未
+push/merge，未自行标记 Accepted：
+
+1. **runtime image 不再依赖 scratch container**：`docker image save` 的 OCI
+   index/manifest/config/layer 全部校验 media type、digest、DiffID、history 与 provenance，
+   再按 whiteout 规则重放内容寻址 layer 得到 rootfs；Config、history 和文件闭包始终
+   绑定第一次解析出的 immutable image ID。
+2. **外部证据与 cleanup 绑定同一所有权记录**：BuildKit metadata/descriptors、Compose
+   service/Secret、容器 generation、PGID probe 与 lifecycle one-shot 都拒绝不完整或漂移
+   的身份；未知 PGID probe 不再等同 ESRCH，cleanup 完成前调用方不能 settle。
+3. **backup/restore 使用同一份字节证据**：备份在私有 staging 取得稳定 Buffer，先验证
+   `pg_restore --create --list` 的完整 TOC，再以 no-replace sidecar 与 dump 发布同一份
+   已验证字节；目录与正式文件的 inode/owner 在每个异步边界后重新确认。restore 复用
+   相同的 TOC 口径。
+4. **门禁职责写实**：15 项 `critical-guard registry` 只索引生产调用点并发现机械漂移，
+   不再声称自身证明安全属性或 mutation 判别力；这些性质分别由动态反例、专用 mutation
+   与完整 `stage09a:check` 看守。
+
+该落点已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**：脚本测试 **110/110**、
+topology mutation **44/44**、runtime image mutation **1 baseline + 12 built + 2
+static-only**、targeted **69/69**、local-test **75/75**、signal **5 deterministic + 6
+real**，fresh smoke、八份 Secret identity、lifecycle 与 same-ledger restore 全部 PASS。
+下一门禁仍是两个**全新、用户可见、互相独立、只读**的 A/B 审计（A 禁止 Docker，
+B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持
+`Proposed`。
 
 ## 验收门禁
 
