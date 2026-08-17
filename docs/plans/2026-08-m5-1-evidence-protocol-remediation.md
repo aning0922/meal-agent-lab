@@ -1,6 +1,6 @@
 # M5.1 架构级证据协议整改任务书
 
-- 状态：In Progress（未 Accepted）
+- 状态：Implementation complete — pending independent A/B review（未 Accepted）
 - 日期：2026-08-17
 - 基线：`59f8eef27148be4c3ac5d237bcb877df260f62db`
 - 范围：M5 runtime image、正式备份制品、cleanup recovery 与 mutation 证据
@@ -87,8 +87,11 @@ M5.1 不扩大产品、云、微信或公网范围，不改变 M1—M4 已 Accep
 
 ## 当前状态边界
 
-- M5.1：In Progress，未 Accepted；
-- M5：保持 BLOCK / 未 Accepted；
+- 实现提交：`952d3e3`；该提交已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**，
+  包含 runtime image **1 baseline + 17 built + 2 static-only**、scripts tests **134/134**、
+  committed tracked baseline **351**、完整空卷 smoke、Secret identity、生命周期与备份恢复；
+- M5.1：Implementation complete — pending independent A/B review，未 Accepted；
+- M5：未 Accepted；
 - 阶段 09A：In Progress，不得标记 Pass；
 - ADR-0006：Proposed；
 - 远端 GitHub Actions：无真实成功 run；

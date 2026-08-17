@@ -149,5 +149,6 @@ settlement 也统一到共享协议。其后候选 `59f8eef` 的两路独立审�
 locator、runtime UID access、正式文件 durability 与字符串计数式 mutation 证据未闭合，
 旧任务的停止条件已经触发。后续由
 [`2026-08-m5-1-evidence-protocol-remediation.md`](../../plans/2026-08-m5-1-evidence-protocol-remediation.md)
-承接；M5.1 当前 In Progress，M5 仍未 Accepted，阶段 09A 保持 In Progress，远端 CI
-真实 run 与阶段总验收均未完成。
+承接。实现提交 `952d3e3` 已从步骤 1 串行通过本地 `stage09a:check` **14/14**；M5.1
+当前 Implementation complete — pending independent A/B review，M5 仍未 Accepted，
+阶段 09A 保持 In Progress，远端 CI 真实 run 与阶段总验收均未完成。

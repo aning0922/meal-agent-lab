@@ -229,11 +229,13 @@ deps 状态记录，仓库因此在 `pnpm-workspace.yaml` 显式声明
 Docker image/container identity 只接受 canonical immutable 形态；命令失败与 Config
 不一致只输出固定类别，不回显 runner stderr 或镜像内实际值。
 
-**M5.1 当前协议（2026-08-17）**：`59f8eef` 两路独立审计均为 BLOCK。当前实现已
+**M5.1 当前协议（2026-08-17）**：`59f8eef` 两路独立审计均为 BLOCK。实现提交
+`952d3e3` 已
 删除字符串计数式 `m5-critical-guard-registry.mjs`；关键判别力只来自真实 Docker
 mutation 或注入 capability 的行为测试。正式备份文件在成功返回前完成 file fsync 与
 parent-directory fsync；dump 先持久化，sidecar 最后持久化并作为提交标记。上述窄回归
-已通过，最终精确 HEAD 的 `stage09a:check` 14/14 尚未运行，M5.1 仍为 In Progress。
+及本地 `stage09a:check` **14/14** 均已通过。M5.1 为 Implementation complete — pending
+independent A/B review，M5 未 Accepted。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
