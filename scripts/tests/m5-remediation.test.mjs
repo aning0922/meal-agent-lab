@@ -829,7 +829,7 @@ test('backup private cleanup preserves a pathname replacement after async valida
   }
 })
 
-test('backup publishes the dump before its sidecar commit marker and rolls back on failure', async () => {
+test('backup publishes no formal name until transient cleanup has succeeded', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-settlement-'))
   const containers = new Map()
   const id = 'a'.repeat(64)
@@ -953,10 +953,128 @@ test('backup publishes the dump before its sidecar commit marker and rolls back 
     )
     assert.equal(existsSync(dumpPath), false)
     assert.equal(existsSync(shaPath), false)
-    assert.equal(simulatedDumpPublishFailure, true)
-    assert.deepEqual(publishOrder, ['dump'])
+    assert.equal(simulatedDumpPublishFailure, false)
+    assert.deepEqual(publishOrder, [])
     assert.equal(copied, 1)
     assert.equal(listed, 1)
+    assert.equal(containers.size, 0)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup commits dump then sidecar only after transient cleanup is complete', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-commit-order-'))
+  const containers = new Map()
+  let idSequence = 0
+  let transientCleaned = false
+  const publishOrder = []
+  const archiveBytes = Buffer.from('PGDMPfixture')
+  const archiveDigest = createHash('sha256').update(archiveBytes).digest('hex')
+  const absent = (name) => ({
+    status: 1,
+    signal: null,
+    stdout: '',
+    stderr: `Error response from daemon: No such container: ${name}\n`
+  })
+  const run = async (argv) => {
+    if (argv[0] === 'docker' && argv[1] === 'container' && argv[2] === 'inspect') {
+      const query = argv[3]
+      const entry = [...containers.values()].find(
+        (candidate) => candidate.name === query || candidate.id === query
+      )
+      if (entry === undefined) return absent(query)
+      return {
+        status: 0,
+        signal: null,
+        stdout: JSON.stringify([{
+          Id: entry.id,
+          Image: `sha256:${'d'.repeat(64)}`,
+          Created: '2026-08-17T01:00:00Z',
+          Name: `/${entry.name}`,
+          Config: { Labels: {
+            'com.meal-agent.m4.oneoff-owner': entry.token,
+            'com.docker.compose.project': 'meal-agent-fixture',
+            'com.docker.compose.service': entry.service,
+            'com.docker.compose.oneoff': 'True'
+          } },
+          State: {
+            Status: 'exited',
+            Running: false,
+            ExitCode: 0,
+            StartedAt: '2026-08-17T01:00:00Z',
+            FinishedAt: '2026-08-17T01:00:01Z'
+          }
+        }]),
+        stderr: ''
+      }
+    }
+    if (argv[0] === 'docker' && argv[1] === 'cp') {
+      writeFileSync(argv[3], archiveBytes)
+      return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    if (argv[0] === 'pg_restore' && argv[1] === '--create' && argv[2] === '--list') {
+      return {
+        status: 0,
+        signal: null,
+        stdout:
+          '; Archive created at fixture\n' +
+          ';     TOC Entries: 5\n' +
+          ';     Dump Version: 1.16-0\n' +
+          ';     Format: CUSTOM\n' +
+          ';     dbname: meal_agent\n' +
+          '1; 1262 1 DATABASE - meal_agent owner\n' +
+          '2; 0 0 DATABASE PROPERTIES - meal_agent owner\n',
+        stderr: ''
+      }
+    }
+    if (argv[0] === 'docker' && argv[1] === 'rm') {
+      const query = argv.at(-1)
+      for (const [name, entry] of containers) {
+        if (entry.id === query) {
+          if (entry.service === 'backup-transfer-loader') transientCleaned = true
+          containers.delete(name)
+        }
+      }
+      return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    throw new Error(`unexpected fixture command: ${argv.join(' ')}`)
+  }
+  const compose = async (argv) => {
+    const name = argv[argv.indexOf('--name') + 1]
+    const token = argv[argv.indexOf('--label') + 1].split('=')[1]
+    const transfer = argv.includes('backup-transfer-loader')
+    idSequence += 1
+    containers.set(name, {
+      name,
+      id: String(idSequence).padStart(64, transfer ? 'b' : 'a'),
+      token,
+      service: transfer ? 'backup-transfer-loader' : 'backup'
+    })
+    return {
+      status: 0,
+      signal: null,
+      stdout: transfer ? '' : `${archiveDigest}  /transfer/fixture.dump\n`,
+      stderr: ''
+    }
+  }
+  const dumpPath = resolve(directory, 'fixture.dump')
+  const shaPath = `${dumpPath}.sha256`
+  const publishFile = (path, bytes, options) => {
+    assert.equal(transientCleaned, true, 'formal publication must follow transient cleanup')
+    publishOrder.push(path.endsWith('.sha256') ? 'sidecar' : 'dump')
+    return writeExclusiveEvidenceFile(path, bytes, options)
+  }
+  try {
+    const result = await performBackup(
+      { compose, run, log: () => undefined, publishFile },
+      { project: 'meal-agent-fixture', outputDirectory: directory, fileName: 'fixture.dump' }
+    )
+    assert.equal(result.dumpPath, resolve(realpathSync(directory), 'fixture.dump'))
+    assert.equal(result.shaPath, `${result.dumpPath}.sha256`)
+    assert.deepEqual(publishOrder, ['dump', 'sidecar'])
+    assert.equal(existsSync(dumpPath), true)
+    assert.equal(existsSync(shaPath), true)
     assert.equal(containers.size, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })

@@ -471,7 +471,14 @@ export const parseContainerInspect = (stdout, expectedContainerId, expectedImage
 
 export const parseOwnedScratchContainer = (
   stdout,
-  { expectedName, expectedImageId, expectedContainerId = null },
+  {
+    expectedName,
+    expectedImageId,
+    expectedContainerId = null,
+    expectedUser = null,
+    expectedNetworkMode = null,
+    expectedReadonlyRootfs = null
+  },
   fatal
 ) => {
   let payload
@@ -493,7 +500,14 @@ export const parseOwnedScratchContainer = (
     container.Path === '' ||
     !isRecord(container.Config) ||
     !isRecord(container.Config.Labels) ||
-    container.Config.Labels['meal-agent.m5.owner'] !== expectedName
+    container.Config.Labels['meal-agent.m5.owner'] !== expectedName ||
+    (expectedUser !== null && container.Config.User !== expectedUser) ||
+    ((expectedNetworkMode !== null || expectedReadonlyRootfs !== null) &&
+      !isRecord(container.HostConfig)) ||
+    (expectedNetworkMode !== null &&
+      container.HostConfig?.NetworkMode !== expectedNetworkMode) ||
+    (expectedReadonlyRootfs !== null &&
+      container.HostConfig?.ReadonlyRootfs !== expectedReadonlyRootfs)
   ) {
     fatal('scratch container identity did not match this run')
   }
@@ -2249,7 +2263,14 @@ export const scanImage = async ({
         label: 'docker container inspect (immutable runtime binding)'
       })
     ).stdout,
-    { expectedName: scratchName, expectedImageId: imageId, expectedContainerId: containerId },
+    {
+      expectedName: scratchName,
+      expectedImageId: imageId,
+      expectedContainerId: containerId,
+      expectedUser: '0:0',
+      expectedNetworkMode: 'none',
+      expectedReadonlyRootfs: true
+    },
     fatal
   )
   const probe = await runStrict(['docker', 'container', 'start', '--attach', containerId], {
@@ -2298,7 +2319,14 @@ export const scanImage = async ({
         label: 'docker container inspect (pre-cleanup binding)'
       })
     ).stdout,
-    { expectedName: scratchName, expectedImageId: imageId, expectedContainerId: containerId },
+    {
+      expectedName: scratchName,
+      expectedImageId: imageId,
+      expectedContainerId: containerId,
+      expectedUser: '0:0',
+      expectedNetworkMode: 'none',
+      expectedReadonlyRootfs: true
+    },
     fatal
   )
   await runStrict(['docker', 'container', 'rm', '-f', '-v', containerId], {
@@ -2356,7 +2384,10 @@ export const scanImage = async ({
     {
       expectedName: runtimeAccessName,
       expectedImageId: imageId,
-      expectedContainerId: runtimeAccessContainerId
+      expectedContainerId: runtimeAccessContainerId,
+      expectedUser: '10001:10001',
+      expectedNetworkMode: 'none',
+      expectedReadonlyRootfs: true
     },
     fatal
   )
@@ -2380,7 +2411,10 @@ export const scanImage = async ({
     {
       expectedName: runtimeAccessName,
       expectedImageId: imageId,
-      expectedContainerId: runtimeAccessContainerId
+      expectedContainerId: runtimeAccessContainerId,
+      expectedUser: '10001:10001',
+      expectedNetworkMode: 'none',
+      expectedReadonlyRootfs: true
     },
     fatal
   )

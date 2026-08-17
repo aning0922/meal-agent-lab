@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import {
+import fs, {
   chmodSync,
   closeSync,
   existsSync,
@@ -7,7 +7,9 @@ import {
   lstatSync,
   mkdtempSync,
   linkSync,
+  openSync,
   rmSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -17,6 +19,7 @@ import test from 'node:test'
 import {
   EvidenceProtocolError,
   createOwnedTreeJournal,
+  declareOwnedTreeOutput,
   parsePgRestoreListEvidence,
   parseSignalResidueListing,
   readStableRegularFile,
@@ -24,6 +27,7 @@ import {
   requireFreshContainerGeneration,
   requireClosedRecord,
   retireOwnedTree,
+  runWithDeclaredOwnedTreeOutputs,
   verifyPublishedFileEvidence,
   writeExclusiveEvidenceFile
 } from '../../infra/docker/m5-evidence-protocol.mjs'
@@ -48,6 +52,22 @@ const validCompose = () => ({
   'x-api-image': {},
   'x-bootstrap-psql': {},
   'x-pg-cluster-env': {}
+})
+
+const testEvidenceOperations = (overrides = {}) => ({
+  closeFile: closeSync,
+  linkFile: linkSync,
+  syncDirectory: (directory) => {
+    const fd = openSync(directory, 'r')
+    try {
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  },
+  syncFile: fsyncSync,
+  unlinkFile: unlinkSync,
+  ...overrides
 })
 
 test('resolved Compose evidence is a closed root capability schema', () => {
@@ -196,21 +216,46 @@ test('published file evidence binds bytes, inode, link count and exclusive name'
   }
 })
 
-test('exclusive publication synchronizes file data and its parent directory before success', () => {
+test('production publication closes durable staging before atomic promotion and directory sync', (context) => {
   const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-sync-'))
+  const nativeClose = fs.closeSync.bind(fs)
+  const nativeFsync = fs.fsyncSync.bind(fs)
+  const nativeLink = fs.linkSync.bind(fs)
+  const nativeUnlink = fs.unlinkSync.bind(fs)
   try {
     const calls = []
     const path = join(directory, 'artifact')
-    const identity = writeExclusiveEvidenceFile(path, Buffer.from('durable bytes'), {
-      syncFile: (fd) => {
-        calls.push('file')
-        fsyncSync(fd)
-      },
-      syncDirectory: (parent) => {
-        calls.push(`directory:${parent === directory ? 'expected' : 'foreign'}`)
-      }
+    context.mock.method(fs, 'fsyncSync', (fd) => {
+      const stat = fs.fstatSync(fd)
+      if (!stat.isDirectory()) assert.equal(existsSync(path), false)
+      else assert.equal(existsSync(path), true)
+      calls.push(stat.isDirectory() ? 'directory-sync' : 'file-sync')
+      return nativeFsync(fd)
     })
-    assert.deepEqual(calls, ['file', 'directory:expected'])
+    context.mock.method(fs, 'closeSync', (fd) => {
+      const stat = fs.fstatSync(fd)
+      if (!stat.isDirectory()) assert.equal(existsSync(path), false)
+      calls.push(stat.isDirectory() ? 'directory-close' : 'file-close')
+      return nativeClose(fd)
+    })
+    context.mock.method(fs, 'linkSync', (source, destination) => {
+      assert.equal(existsSync(destination), false)
+      calls.push('atomic-promotion')
+      return nativeLink(source, destination)
+    })
+    context.mock.method(fs, 'unlinkSync', (target) => {
+      calls.push(target === path ? 'final-unlink' : 'staging-unlink')
+      return nativeUnlink(target)
+    })
+    const identity = writeExclusiveEvidenceFile(path, Buffer.from('durable bytes'))
+    assert.deepEqual(calls, [
+      'file-sync',
+      'file-close',
+      'atomic-promotion',
+      'staging-unlink',
+      'directory-sync',
+      'directory-close'
+    ])
     assert.equal(verifyPublishedFileEvidence(identity, Buffer.from('durable bytes')), true)
   } finally {
     rmSync(directory, { recursive: true, force: true })
@@ -226,15 +271,17 @@ test('file and parent-directory sync failures retract the exact exclusive name',
       assert.throws(
         () =>
           writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
-            syncFile: failure === 'file'
-              ? () => { throw new Error('untrusted file-sync text') }
-              : fsyncSync,
-            syncDirectory: () => {
-              directoryCalls += 1
-              if (failure === 'directory' && directoryCalls === 1) {
-                throw new Error('untrusted directory-sync text')
+            operations: testEvidenceOperations({
+              syncFile: failure === 'file'
+                ? () => { throw new Error('untrusted file-sync text') }
+                : fsyncSync,
+              syncDirectory: () => {
+                directoryCalls += 1
+                if (failure === 'directory' && directoryCalls === 1) {
+                  throw new Error('untrusted directory-sync text')
+                }
               }
-            }
+            })
           }),
         (error) =>
           error instanceof EvidenceProtocolError &&
@@ -272,6 +319,59 @@ test('owned tree retirement preserves unknown children and inode replacements', 
   }
 })
 
+test('owned tree retirement distinguishes expected in-tree hardlink decrements from drift', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-owned-tree-hardlinks-'))
+  const journal = createOwnedTreeJournal(directory)
+  const first = join(directory, 'first')
+  const second = join(directory, 'second')
+  writeFileSync(first, 'owned')
+  linkSync(first, second)
+  registerOwnedTree(journal, first)
+  registerOwnedTree(journal, second)
+  retireOwnedTree(journal)
+  assert.equal(existsSync(directory), false)
+})
+
+test('predeclared controlled outputs are adopted while unknown siblings stay red', () => {
+  for (const variant of ['declared', 'unknown']) {
+    const directory = mkdtempSync(join(tmpdir(), `m5-owned-output-${variant}-`))
+    try {
+      const journal = createOwnedTreeJournal(directory)
+      const output = join(directory, 'build.iid')
+      declareOwnedTreeOutput(journal, output)
+      writeFileSync(output, 'controlled child output')
+      if (variant === 'unknown') writeFileSync(join(directory, 'foreign'), 'foreign')
+      if (variant === 'declared') {
+        retireOwnedTree(journal)
+        assert.equal(existsSync(directory), false)
+      } else {
+        assert.throws(() => retireOwnedTree(journal), EvidenceProtocolError)
+        assert.equal(existsSync(output), true)
+        assert.equal(existsSync(join(directory, 'foreign')), true)
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
+})
+
+test('a failing external producer cannot bypass registration of its declared outputs', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-owned-output-failure-'))
+  const journal = createOwnedTreeJournal(directory)
+  const iidfile = join(directory, 'build.iid')
+  const metadata = join(directory, 'build.metadata.json')
+  await assert.rejects(
+    runWithDeclaredOwnedTreeOutputs(journal, [iidfile, metadata], async () => {
+      writeFileSync(iidfile, 'sha256:fixture')
+      writeFileSync(metadata, '{}')
+      throw new Error('untrusted producer failure')
+    }),
+    /untrusted producer failure/
+  )
+  retireOwnedTree(journal)
+  assert.equal(existsSync(directory), false)
+})
+
 test('a close failure retracts the exact file created by exclusive publication', () => {
   const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-close-'))
   try {
@@ -279,10 +379,12 @@ test('a close failure retracts the exact file created by exclusive publication',
     assert.throws(
       () =>
         writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
-          closeFile: (fd) => {
-            closeSync(fd)
-            throw new Error('hostile close text')
-          }
+          operations: testEvidenceOperations({
+            closeFile: (fd) => {
+              closeSync(fd)
+              throw new Error('hostile close text')
+            }
+          })
         }),
       EvidenceProtocolError
     )
@@ -292,7 +394,7 @@ test('a close failure retracts the exact file created by exclusive publication',
   }
 })
 
-test('exclusive publication reports the created inode before close and rollback can fail', () => {
+test('exclusive publication reports only a private staging inode before close', () => {
   const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-journal-'))
   try {
     const path = join(directory, 'artifact')
@@ -300,26 +402,29 @@ test('exclusive publication reports the created inode before close and rollback 
     assert.throws(
       () =>
         writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
-          registerCreatedIdentity: (identity) => {
+          registerStagingIdentity: (identity) => {
             journaled = identity
           },
-          closeFile: (fd) => {
-            closeSync(fd)
-            chmodSync(directory, 0o500)
-            throw new Error('hostile close text')
-          }
+          operations: testEvidenceOperations({
+            closeFile: (fd) => {
+              closeSync(fd)
+              chmodSync(directory, 0o500)
+              throw new Error('hostile close text')
+            }
+          })
         }),
       EvidenceProtocolError
     )
     assert.notEqual(journaled, null)
-    assert.equal(journaled.path, path)
+    assert.notEqual(journaled.path, path)
+    assert.equal(existsSync(path), false)
     assert.equal(typeof journaled.dev, 'bigint')
     assert.equal(typeof journaled.ino, 'bigint')
     chmodSync(directory, 0o700)
-    const observed = lstatSync(path, { bigint: true })
+    const observed = lstatSync(journaled.path, { bigint: true })
     assert.equal(observed.dev, journaled.dev)
     assert.equal(observed.ino, journaled.ino)
-    rmSync(path)
+    rmSync(journaled.path)
   } finally {
     chmodSync(directory, 0o700)
     rmSync(directory, { recursive: true, force: true })

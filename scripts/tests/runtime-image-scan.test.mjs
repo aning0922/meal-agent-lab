@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   chmodSync,
@@ -13,6 +13,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1003,14 +1004,21 @@ test('scratch-container cleanup ownership is proven by exact identity, image, na
     Image: imageId,
     Name: `/${name}`,
     Path: 'node',
-    Config: { Labels: { 'meal-agent.m5.owner': name } }
+    Config: {
+      User: '10001:10001',
+      Labels: { 'meal-agent.m5.owner': name }
+    },
+    HostConfig: { NetworkMode: 'none', ReadonlyRootfs: true }
   }]
 
   assert.equal(
     parseOwnedScratchContainer(JSON.stringify(payload), {
       expectedName: name,
       expectedImageId: imageId,
-      expectedContainerId: containerId
+      expectedContainerId: containerId,
+      expectedUser: '10001:10001',
+      expectedNetworkMode: 'none',
+      expectedReadonlyRootfs: true
     }, throwingFatal).Id,
     containerId
   )
@@ -1019,13 +1027,25 @@ test('scratch-container cleanup ownership is proven by exact identity, image, na
     { ...payload[0], Id: 'c'.repeat(64) },
     { ...payload[0], Image: `sha256:${'d'.repeat(64)}` },
     { ...payload[0], Name: '/foreign' },
-    { ...payload[0], Config: { Labels: { 'meal-agent.m5.owner': 'foreign' } } }
+    {
+      ...payload[0],
+      Config: {
+        ...payload[0].Config,
+        Labels: { 'meal-agent.m5.owner': 'foreign' }
+      }
+    },
+    { ...payload[0], Config: { ...payload[0].Config, User: '0:0' } },
+    { ...payload[0], HostConfig: { ...payload[0].HostConfig, NetworkMode: 'bridge' } },
+    { ...payload[0], HostConfig: { ...payload[0].HostConfig, ReadonlyRootfs: false } }
   ]) {
     assert.throws(
       () => parseOwnedScratchContainer(JSON.stringify([mutation]), {
         expectedName: name,
         expectedImageId: imageId,
-        expectedContainerId: containerId
+        expectedContainerId: containerId,
+        expectedUser: '10001:10001',
+        expectedNetworkMode: 'none',
+        expectedReadonlyRootfs: true
       }, throwingFatal),
       /identity did not match/
     )
@@ -1061,8 +1081,10 @@ test('runtime image entrypoints register recovery locators before immutable owne
   assert.match(positive, /parseClaimedBuildImage/)
   assert.match(positive, /'--tag', cleanupState\.imageRecoveryTag/)
   assert.ok(
-    positive.indexOf('imageRecoveryTag:') < positive.indexOf("await runStrict(['docker', 'build'")
+    positive.indexOf('imageRecoveryTag:') <
+      positive.indexOf('await runWithDeclaredOwnedTreeOutputs(')
   )
+  assert.match(positive, /runWithDeclaredOwnedTreeOutputs\([\s\S]*?imageIdFile[\s\S]*?imageMetadataFile/)
   assert.match(positive, /imageTag: null/)
   assert.match(positive, /cleanupPromise: null/)
   assert.match(positive, /return cleanupState\.cleanupPromise/)
@@ -1074,12 +1096,14 @@ test('runtime image entrypoints register recovery locators before immutable owne
   assert.match(mutations, /builds: new Map\(\)/)
   assert.match(mutations, /imageTag: null/)
   assert.match(mutations, /'--tag', recoveryTag/)
+  assert.match(mutations, /runWithDeclaredOwnedTreeOutputs\([\s\S]*?imageIdFile[\s\S]*?metadataFile/)
 })
 
 test('a pre-evidence build failure is recovered by exact tag, claim and immutable id', () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'm5-runtime-recovery-test-'))
   const shimDirectory = resolve(directory, 'bin')
   const statePath = resolve(directory, 'docker-state.json')
+  const buildReachedPath = resolve(directory, 'docker-build-reached')
   mkdirSync(shimDirectory)
   const realPnpm = spawnSync('/bin/sh', ['-c', 'command -v pnpm'], {
     encoding: 'utf8'
@@ -1105,9 +1129,15 @@ test('a pre-evidence build failure is recovered by exact tag, claim and immutabl
       "if (args[0] === 'version') { process.stdout.write('29.6.2\\n'); process.exit(0) }",
       "if (args[0] === 'build') {",
       "  const tag = args[args.indexOf('--tag') + 1]",
+      "  const iidfile = args[args.indexOf('--iidfile') + 1]",
+      "  const metadataFile = args[args.indexOf('--metadata-file') + 1]",
       "  const label = args[args.indexOf('--label') + 1]",
       "  const separator = label.indexOf('=')",
-      "  writeFileSync(statePath, JSON.stringify({ id: `sha256:${'a'.repeat(64)}`, tag, labelKey: label.slice(0, separator), claim: label.slice(separator + 1), tagged: true }))",
+      "  const id = `sha256:${'a'.repeat(64)}`",
+      "  writeFileSync(process.env.M5_BUILD_REACHED, 'yes')",
+      "  writeFileSync(iidfile, `${id}\\n`)",
+      "  writeFileSync(metadataFile, JSON.stringify({ 'containerimage.digest': id, 'containerimage.config.digest': id, 'containerimage.descriptor': { mediaType: 'application/vnd.oci.image.manifest.v1+json', digest: id, size: 1 } }))",
+      "  writeFileSync(statePath, JSON.stringify({ id, tag, labelKey: label.slice(0, separator), claim: label.slice(separator + 1), tagged: true }))",
       "  process.exit(7)",
       "}",
       "if (args[0] === 'image' && args[1] === 'inspect') {",
@@ -1142,7 +1172,8 @@ test('a pre-evidence build failure is recovered by exact tag, claim and immutabl
           ...process.env,
           PATH: `${shimDirectory}:${process.env.PATH}`,
           M5_REAL_PNPM: realPnpm,
-          M5_DOCKER_STATE: statePath
+          M5_DOCKER_STATE: statePath,
+          M5_BUILD_REACHED: buildReachedPath
         },
         encoding: 'utf8',
         timeout: 120_000
@@ -1150,13 +1181,134 @@ test('a pre-evidence build failure is recovered by exact tag, claim and immutabl
     )
     assert.equal(result.status, 1)
     assert.equal(result.signal, null)
+    assert.equal(readFileSync(buildReachedPath, 'utf8'), 'yes')
     assert.equal(existsSync(statePath), false, 'claimed image must be removed by immutable identity')
     const after = readdirSync(tmpdir()).filter(
       (name) => name.startsWith('meal-agent-m5-image-scan-') && !before.has(name)
     )
     assert.deepEqual(after, [])
     assert.match(result.stderr, /API runtime image scan FAIL/)
+    assert.match(result.stderr, /docker build failed \(exit 7\)/)
     assert.doesNotMatch(result.stderr, /docker-state|sha256:[a-f0-9]{64}/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('signals in both recovery-build entrypoints cannot be stolen by ordinary CLI settlement', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'm5-runtime-signal-test-'))
+  const shimDirectory = resolve(directory, 'bin')
+  const statePath = resolve(directory, 'docker-state.json')
+  const buildReachedPath = resolve(directory, 'docker-build-reached')
+  mkdirSync(shimDirectory)
+  const realPnpm = spawnSync('/bin/sh', ['-c', 'command -v pnpm'], {
+    encoding: 'utf8'
+  }).stdout.trim()
+  assert.notEqual(realPnpm, '')
+  writeFileSync(
+    resolve(shimDirectory, 'pnpm'),
+    '#!/bin/sh\n' +
+      'if [ "$1" = "--version" ]; then printf "11.9.0\\n"; exit 0; fi\n' +
+      'exec "$M5_REAL_PNPM" "$@"\n'
+  )
+  chmodSync(resolve(shimDirectory, 'pnpm'), 0o755)
+  writeFileSync(
+    resolve(shimDirectory, 'docker'),
+    [
+      '#!/usr/bin/env node',
+      "import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'",
+      'const args = process.argv.slice(2)',
+      'const statePath = process.env.M5_DOCKER_STATE',
+      "const absent = (name) => { process.stderr.write(`Error response from daemon: No such image: ${name}\\n`); process.exit(1) }",
+      "if (args[0] === 'version') { process.stdout.write('29.6.2\\n'); process.exit(0) }",
+      "if (args[0] === 'build') {",
+      "  const tag = args[args.indexOf('--tag') + 1]",
+      "  writeFileSync(process.env.M5_BUILD_REACHED, 'yes')",
+      "  setInterval(() => {}, 1000)",
+      "  await new Promise(() => {})",
+      '}',
+      "if (args[0] === 'image' && args[1] === 'inspect') {",
+      '  if (!existsSync(statePath)) absent(args[2])',
+      "  const state = JSON.parse(readFileSync(statePath, 'utf8'))",
+      '  if (args[2] !== state.id && !(state.tagged && args[2] === state.tag)) absent(args[2])',
+      "  process.stdout.write(JSON.stringify([{ Id: state.id, RepoTags: state.tagged ? [state.tag] : null, Config: { Labels: { [state.labelKey]: state.claim } } }]))",
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'image' && args[1] === 'rm') {",
+      '  if (!existsSync(statePath)) absent(args[2])',
+      "  const state = JSON.parse(readFileSync(statePath, 'utf8'))",
+      "  if (args[2] === state.tag && state.tagged) { state.tagged = false; writeFileSync(statePath, JSON.stringify(state)); process.exit(0) }",
+      '  if (args[2] === state.id && !state.tagged) { unlinkSync(statePath); process.exit(0) }',
+      '  process.exit(7)',
+      '}',
+      'process.exit(97)',
+      ''
+    ].join('\n')
+  )
+  chmodSync(resolve(shimDirectory, 'docker'), 0o755)
+  try {
+    for (const [entrypoint, temporaryPrefix] of [
+      ['infra/docker/check-api-runtime-image.mjs', 'meal-agent-m5-image-scan-'],
+      ['infra/docker/check-api-runtime-image-mutations.mjs', 'meal-agent-m5-image-mut-']
+    ]) {
+      if (existsSync(buildReachedPath)) unlinkSync(buildReachedPath)
+      const before = new Set(
+        readdirSync(tmpdir()).filter((name) => name.startsWith(temporaryPrefix))
+      )
+      const child = spawn(process.execPath, [resolve(repositoryRoot, entrypoint)], {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          PATH: `${shimDirectory}:${process.env.PATH}`,
+          M5_REAL_PNPM: realPnpm,
+          M5_DOCKER_STATE: statePath,
+          M5_BUILD_REACHED: buildReachedPath
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      child.stderr.on('data', (chunk) => { stderr += chunk })
+      try {
+        const deadline = Date.now() + 60_000
+        while (!existsSync(buildReachedPath) && Date.now() < deadline) {
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+        }
+        assert.equal(
+          existsSync(buildReachedPath),
+          true,
+          `${entrypoint}: the controlled build window must be reached`
+        )
+        child.kill('SIGTERM')
+        let watchdog = null
+        const outcome = await Promise.race([
+          new Promise((resolvePromise) => child.once('close', (code, signal) => {
+            resolvePromise({ code, signal })
+          })),
+          new Promise((_, rejectPromise) => {
+            watchdog = setTimeout(
+              () => rejectPromise(new Error('signal fixture timed out')),
+              60_000
+            )
+          })
+        ]).finally(() => clearTimeout(watchdog))
+        assert.deepEqual(outcome, { code: null, signal: 'SIGTERM' })
+        assert.match(stderr, /SIGTERM: terminating child processes, then running scoped cleanup/)
+        assert.doesNotMatch(stderr, /scoped cleanup left/)
+        assert.equal(existsSync(statePath), false)
+        assert.doesNotMatch(stdout, /API runtime image (?:scan|mutation suite) PASS/)
+        assert.doesNotMatch(stderr, /API runtime image (?:scan|mutation suite) FAIL/)
+        const after = readdirSync(tmpdir()).filter(
+          (name) => name.startsWith(temporaryPrefix) && !before.has(name)
+        )
+        assert.deepEqual(after, [])
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      }
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

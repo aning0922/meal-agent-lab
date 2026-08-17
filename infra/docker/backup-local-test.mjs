@@ -423,7 +423,6 @@ export const performBackup = async (
   let publishedSidecarIdentity = null
   let publishedDumpBytes = null
   let publishedSidecarBytes = null
-  const sidecarOwnedIdentities = []
   const formalOwnedIdentities = []
   let completed = false
   let cleanupChain = Promise.resolve()
@@ -479,7 +478,6 @@ export const performBackup = async (
       const residue = []
       if (!completed) {
         for (const identity of [
-          ...sidecarOwnedIdentities,
           ...formalOwnedIdentities,
           publishedSidecarIdentity,
           publishedIdentity
@@ -589,9 +587,6 @@ export const performBackup = async (
           }
           log('backup evidence: complete custom-archive TOC validated')
 
-          if (!directoryEvidenceStillNames(outputDirectoryIdentity)) {
-            throw new Error('the backup output directory ownership drifted before publication')
-          }
           publishedDumpBytes = source.bytes
           if (
             publishedDumpBytes.subarray(0, customFormatMagic.length).toString('latin1') !==
@@ -601,30 +596,6 @@ export const performBackup = async (
           }
           const sha256 = sha256Bytes(publishedDumpBytes)
           publishedSidecarBytes = Buffer.from(`${sha256}  ${name}\n`, 'utf8')
-
-          // The durable dump is published first.  The fsync-backed sidecar is the
-          // commit marker: observing it means the validated dump name and bytes were
-          // already persisted. Any failure before that point rolls both exact inodes back.
-          publishedIdentity = publishFile(dumpPath, publishedDumpBytes, {
-            code: 'backup-dump-publish',
-            registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
-          })
-          if (
-            !directoryEvidenceStillNames(outputDirectoryIdentity) ||
-            !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes)
-          ) {
-            throw new Error('the backup output directory ownership drifted before publication')
-          }
-          log('backup evidence: dump published and persisted from the validated byte snapshot')
-          publishedSidecarIdentity = publishFile(
-            shaPath,
-            publishedSidecarBytes,
-            {
-              code: 'backup-sidecar-publish',
-              registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
-            }
-          )
-          log('backup evidence: checksum sidecar commit marker published and persisted')
         }
       }
     )
@@ -636,36 +607,52 @@ export const performBackup = async (
       throw new Error('the backup handoff did not publish verified bytes')
     }
     const sha256 = sha256Bytes(publishedDumpBytes)
-    if (publishedSidecarBytes === null || publishedSidecarIdentity === null) {
-      throw new Error('the backup handoff did not publish verified checksum evidence')
+    if (publishedSidecarBytes === null) {
+      throw new Error('the backup handoff did not produce verified checksum evidence')
     }
 
-    // 成功返回前最后一次核对两个正式名字仍指向本轮登记的 inode。hash 计算与
-    // sidecar 发布之后的路径替换不得被误记为一次成功备份。
-    if (
-      publishedIdentity === null ||
-      !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes) ||
-      publishedSidecarIdentity === null ||
-      !verifyPublishedFileEvidence(publishedSidecarIdentity, publishedSidecarBytes)
-    ) {
-      throw new Error('the published backup artifact ownership drifted before completion')
-    }
-
-    // 正式 artifact 的 commit 必须晚于 transfer/private transient cleanup。cleanup
-    // 失败时仍处于未提交态，catch/finally 会删除本轮 dump 与 sidecar；不能返回
-    // failure 却把两份敏感正式制品留在目标路径。
+    // No formal name exists until the one-off container has been removed and
+    // every transfer/private transient artifact is proven gone. A cleanup
+    // failure therefore cannot leave a checksum-valid committed pair.
     const transientResidue = await cleanupTransientArtifacts()
     if (transientResidue.length > 0) {
       throw new Error('backup artifact cleanup failed')
     }
+    if (!directoryEvidenceStillNames(outputDirectoryIdentity)) {
+      throw new Error('the backup output directory ownership drifted before publication')
+    }
+
+    const registerFormalStaging = (identity) => formalOwnedIdentities.push(identity)
+    const registerFormalPublished = (identity) => formalOwnedIdentities.push(identity)
+    publishedIdentity = publishFile(dumpPath, publishedDumpBytes, {
+      code: 'backup-dump-publish',
+      registerStagingIdentity: registerFormalStaging,
+      registerPublishedIdentity: registerFormalPublished
+    })
     if (
       publishedIdentity === null ||
-      !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes) ||
+      !directoryEvidenceStillNames(outputDirectoryIdentity) ||
+      !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes)
+    ) {
+      throw new Error('the backup output directory ownership drifted before publication')
+    }
+    log('backup evidence: dump published and persisted from the validated byte snapshot')
+
+    // The sidecar is the final commit marker. There are no asynchronous or
+    // Docker cleanup boundaries after this atomic, fsync-backed publication.
+    publishedSidecarIdentity = publishFile(shaPath, publishedSidecarBytes, {
+      code: 'backup-sidecar-publish',
+      registerStagingIdentity: registerFormalStaging,
+      registerPublishedIdentity: registerFormalPublished
+    })
+    if (
       publishedSidecarIdentity === null ||
+      !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes) ||
       !verifyPublishedFileEvidence(publishedSidecarIdentity, publishedSidecarBytes)
     ) {
       throw new Error('the published backup artifact ownership drifted before completion')
     }
+    log('backup evidence: checksum sidecar commit marker published and persisted')
     completed = true
     log(`backup complete: deployment=local-test project=${project} database=${targetDatabase}`)
     log(`backup file: ${dumpPath}`)
@@ -676,7 +663,7 @@ export const performBackup = async (
     // ownership drift 作为固定附加失败。partial 目录独立清理，不依赖 handoff
     // callback 是否正常返回。
     let ownershipDrifted = false
-    for (const identity of [...sidecarOwnedIdentities, ...formalOwnedIdentities]) {
+    for (const identity of formalOwnedIdentities) {
       if (!existsSync(identity.path)) continue
       try {
         ownershipDrifted = !removeOwnedFile(identity) || ownershipDrifted

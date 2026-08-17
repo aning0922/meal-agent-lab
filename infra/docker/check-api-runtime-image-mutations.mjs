@@ -39,11 +39,16 @@ import {
   parseClaimedBuildImage,
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
-import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import {
+  installSignalHandlers,
+  runCommand,
+  terminationSignal
+} from './m3b-subprocess.mjs'
 import {
   createOwnedTreeJournal,
   registerOwnedTree,
-  retireOwnedTree
+  retireOwnedTree,
+  runWithDeclaredOwnedTreeOutputs
 } from './m5-evidence-protocol.mjs'
 
 const usage = 'node infra/docker/check-api-runtime-image-mutations.mjs'
@@ -549,13 +554,15 @@ const buildAndScan = async ({
   const buildArgs = viaStdin
     ? ['docker', 'build', ...buildOptions, '--tag', recoveryTag, '--iidfile', imageIdFile, '--metadata-file', metadataFile, '--label', `${buildClaimLabel}=${claimToken}`, '--file', '-', '.']
     : ['docker', 'build', ...buildOptions, '--tag', recoveryTag, '--iidfile', imageIdFile, '--metadata-file', metadataFile, '--label', `${buildClaimLabel}=${claimToken}`, '--file', 'services/api/Dockerfile', '.']
-  await runStrict(buildArgs, {
-    timeoutMs: 900_000,
-    label: `docker build (${caseId})`,
-    stdin: viaStdin ? dockerfileText : null
-  })
-  registerOwnedTree(cleanupState.temporaryJournal, imageIdFile)
-  registerOwnedTree(cleanupState.temporaryJournal, metadataFile)
+  await runWithDeclaredOwnedTreeOutputs(
+    cleanupState.temporaryJournal,
+    [imageIdFile, metadataFile],
+    () => runStrict(buildArgs, {
+      timeoutMs: 900_000,
+      label: `docker build (${caseId})`,
+      stdin: viaStdin ? dockerfileText : null
+    })
+  )
   const buildEvidence = parseBuildMetadataImageIdentity(
     readFileSync(metadataFile, 'utf8')
   )
@@ -745,12 +752,16 @@ try {
   }
 }
 
-await cleanup()
-for (const message of cleanupProblems) {
-  failures.push(`cleanup: ${message}`)
+if (terminationSignal() === null) {
+  await cleanup()
+  for (const message of cleanupProblems) {
+    failures.push(`cleanup: ${message}`)
+  }
 }
 
-if (fatalMessage !== null || failures.length > 0) {
+if (terminationSignal() !== null) {
+  // The shared handler owns cleanup and same-signal settlement.
+} else if (fatalMessage !== null || failures.length > 0) {
   process.stderr.write('API runtime image mutation suite FAIL\n')
   if (fatalMessage !== null) {
     process.stderr.write(`  - ${fatalMessage}\n`)
@@ -763,7 +774,9 @@ if (fatalMessage !== null || failures.length > 0) {
 
 const builtMutations = mutations.filter((mutation) => mutation.build).length
 const staticOnlyMutations = mutations.length - builtMutations + 1
-process.stdout.write(
-  `API runtime image mutation suite PASS (1 baseline + ${String(builtMutations)} built ` +
-    `+ ${String(staticOnlyMutations)} static-only mutations, all caught with the specified reasons)\n`
-)
+if (terminationSignal() === null) {
+  process.stdout.write(
+    `API runtime image mutation suite PASS (1 baseline + ${String(builtMutations)} built ` +
+      `+ ${String(staticOnlyMutations)} static-only mutations, all caught with the specified reasons)\n`
+  )
+}

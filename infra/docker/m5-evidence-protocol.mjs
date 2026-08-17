@@ -3,11 +3,10 @@
 // 这个模块刻意不运行 Docker/Compose/PostgreSQL，也不接收日志函数。调用方只能
 // 得到结构化证据或固定错误码，不能把外部 stdout/stderr、路径、键名或异常文本
 // 重新拼进诊断。所有副作用必须发生在证据解析成功之后。
-import {
+import fs, {
   closeSync,
   constants,
   fstatSync,
-  fsyncSync,
   lstatSync,
   openSync,
   readFileSync,
@@ -16,8 +15,8 @@ import {
   unlinkSync,
   writeFileSync
 } from 'node:fs'
-import { createHash } from 'node:crypto'
-import { dirname, relative, resolve, sep } from 'node:path'
+import { createHash, randomBytes } from 'node:crypto'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 
 const sha256Pattern = /^[0-9a-f]{64}$/
 
@@ -50,13 +49,12 @@ export const createOwnedTreeJournal = (root) => {
   return {
     root: absoluteRoot,
     rootIdentity: Object.freeze({ dev: stat.dev, ino: stat.ino }),
-    entries: new Map()
+    entries: new Map(),
+    declaredOutputs: new Map()
   }
 }
 
-/** Register a controlled output immediately after its creating operation settles. */
-export const registerOwnedTree = (journal, target) => {
-  assertJournalRoot(journal)
+const ownedTreeKey = (journal, target) => {
   const absoluteTarget = resolve(target)
   const relativeTarget = relative(journal.root, absoluteTarget)
   if (
@@ -66,12 +64,95 @@ export const registerOwnedTree = (journal, target) => {
   ) {
     throw new EvidenceProtocolError('owned-tree-scope')
   }
+  return { absoluteTarget, relativeTarget }
+}
+
+/**
+ * Declare one exact output pathname before an external producer starts. The
+ * journal may adopt only a regular, single-link file at this exact name after
+ * the controlled producer group has settled. Unknown siblings still fail.
+ */
+export const declareOwnedTreeOutput = (journal, target) => {
+  assertJournalRoot(journal)
+  const { absoluteTarget, relativeTarget } = ownedTreeKey(journal, target)
+  if (journal.entries.has(relativeTarget) || journal.declaredOutputs.has(relativeTarget)) {
+    throw new EvidenceProtocolError('owned-tree-output-duplicate')
+  }
+  try {
+    lstatSync(absoluteTarget)
+    throw new EvidenceProtocolError('owned-tree-output-exists')
+  } catch (error) {
+    if (error instanceof EvidenceProtocolError) throw error
+    if (error?.code !== 'ENOENT') throw new EvidenceProtocolError('owned-tree-output-state')
+  }
+  const parent = dirname(absoluteTarget)
+  if (parent !== journal.root) {
+    const parentKey = relative(journal.root, parent)
+    const registeredParent = journal.entries.get(parentKey)
+    if (registeredParent?.type !== 'directory') {
+      throw new EvidenceProtocolError('owned-tree-output-parent')
+    }
+  }
+  journal.declaredOutputs.set(relativeTarget, Object.freeze({
+    path: absoluteTarget,
+    type: 'file'
+  }))
+}
+
+/**
+ * Run one external producer whose exact output names are known before fork.
+ * Outputs are captured in finally so a nonzero producer cannot bypass the
+ * ownership journal. Signal cleanup may adopt the same declarations first.
+ */
+export const runWithDeclaredOwnedTreeOutputs = async (journal, targets, operation) => {
+  if (!Array.isArray(targets) || targets.length === 0 || typeof operation !== 'function') {
+    throw new EvidenceProtocolError('owned-tree-output-operation')
+  }
+  for (const target of targets) declareOwnedTreeOutput(journal, target)
+  try {
+    return await operation()
+  } finally {
+    for (const target of targets) {
+      if (fs.existsSync(target)) registerOwnedTree(journal, target)
+    }
+  }
+}
+
+const adoptDeclaredOutput = (journal, key, stat) => {
+  const declaration = journal.declaredOutputs.get(key)
+  if (
+    declaration === undefined ||
+    declaration.type !== 'file' ||
+    !stat.isFile() ||
+    stat.nlink !== 1n
+  ) {
+    throw new EvidenceProtocolError('owned-tree-entry-drift')
+  }
+  const entry = Object.freeze({
+    path: declaration.path,
+    dev: stat.dev,
+    ino: stat.ino,
+    nlink: stat.nlink,
+    type: 'file'
+  })
+  journal.entries.set(key, entry)
+  journal.declaredOutputs.delete(key)
+  return entry
+}
+
+/** Register a controlled output immediately after its creating operation settles. */
+export const registerOwnedTree = (journal, target) => {
+  assertJournalRoot(journal)
+  const { absoluteTarget } = ownedTreeKey(journal, target)
   const visit = (path) => {
     const stat = lstatSync(path, { bigint: true })
     const type = treeEntryType(stat)
     if (type === null) throw new EvidenceProtocolError('owned-tree-entry-type')
     const key = relative(journal.root, path)
-    const previous = journal.entries.get(key)
+    let previous = journal.entries.get(key)
+    if (previous === undefined && journal.declaredOutputs.has(key)) {
+      previous = adoptDeclaredOutput(journal, key, stat)
+    }
     if (
       previous !== undefined &&
       (previous.dev !== stat.dev || previous.ino !== stat.ino || previous.type !== type)
@@ -103,7 +184,9 @@ export const retireOwnedTree = (journal) => {
     const stat = lstatSync(path, { bigint: true })
     const type = treeEntryType(stat)
     const key = relative(journal.root, path)
-    const expected = journal.entries.get(key)
+    const expected = journal.entries.get(key) ?? (
+      journal.declaredOutputs.has(key) ? adoptDeclaredOutput(journal, key, stat) : undefined
+    )
     if (
       type === null ||
       expected === undefined ||
@@ -121,9 +204,26 @@ export const retireOwnedTree = (journal) => {
   }
   for (const name of readdirSync(journal.root).sort()) visit(resolve(journal.root, name))
   observedEntries.sort((left, right) => right.key.split(sep).length - left.key.split(sep).length)
+  const removedLinksByInode = new Map()
   for (const entry of observedEntries) {
+    const current = lstatSync(entry.path, { bigint: true })
+    const expected = journal.entries.get(entry.key)
+    const inodeKey = expected === undefined ? null : `${String(expected.dev)}:${String(expected.ino)}`
+    const removedLinks = inodeKey === null ? 0n : (removedLinksByInode.get(inodeKey) ?? 0n)
+    if (
+      expected === undefined ||
+      current.dev !== expected.dev ||
+      current.ino !== expected.ino ||
+      treeEntryType(current) !== expected.type ||
+      (expected.type !== 'directory' && current.nlink !== expected.nlink - removedLinks)
+    ) {
+      throw new EvidenceProtocolError('owned-tree-entry-drift')
+    }
     if (entry.type === 'directory') rmdirSync(entry.path)
-    else unlinkSync(entry.path)
+    else {
+      unlinkSync(entry.path)
+      removedLinksByInode.set(inodeKey, removedLinks + 1n)
+    }
   }
   rmdirSync(journal.root)
 }
@@ -412,15 +512,15 @@ const syncDirectoryEntry = (directory) => {
   let fd = null
   let failed = false
   try {
-    fd = openSync(directory, constants.O_RDONLY)
-    if (!fstatSync(fd).isDirectory()) failed = true
-    else fsyncSync(fd)
+    fd = fs.openSync(directory, constants.O_RDONLY)
+    if (!fs.fstatSync(fd).isDirectory()) failed = true
+    else fs.fsyncSync(fd)
   } catch {
     failed = true
   } finally {
     if (fd !== null) {
       try {
-        closeSync(fd)
+        fs.closeSync(fd)
       } catch {
         failed = true
       }
@@ -429,9 +529,35 @@ const syncDirectoryEntry = (directory) => {
   if (failed) throw new EvidenceProtocolError('directory-sync')
 }
 
+const productionEvidenceOperations = Object.freeze({
+  closeFile: (fd) => fs.closeSync(fd),
+  linkFile: (source, destination) => fs.linkSync(source, destination),
+  syncDirectory: (directory) => syncDirectoryEntry(directory),
+  syncFile: (fd) => fs.fsyncSync(fd),
+  unlinkFile: (path) => fs.unlinkSync(path)
+})
+
+const removeExactInode = (path, identity, operations) => {
+  try {
+    const current = lstatSync(path, { bigint: true })
+    if (
+      current.isFile() &&
+      current.dev === identity.dev &&
+      current.ino === identity.ino
+    ) {
+      operations.unlinkFile(path)
+      return true
+    }
+  } catch {
+    // The caller reports the fixed protocol error and independently checks residue.
+  }
+  return false
+}
+
 /**
- * O_EXCL + O_NOFOLLOW 的正式文件发布。只有字节、inode、file fsync、close 与
- * parent-directory fsync 全部完成才返回；失败不覆盖既有名字。
+ * 同目录 staging + file fsync + close + link(2) no-replace promotion + parent
+ * directory fsync 的正式文件发布。正式名字在完整字节已关闭前不可见；失败不覆盖
+ * 既有名字，且只回收本轮取得的精确 inode。
  */
 export const writeExclusiveEvidenceFile = (
   path,
@@ -439,20 +565,40 @@ export const writeExclusiveEvidenceFile = (
   {
     mode = 0o600,
     code = 'exclusive-publish',
-    closeFile = closeSync,
-    syncFile = fsyncSync,
-    syncDirectory = syncDirectoryEntry,
-    registerCreatedIdentity = null
+    operations = productionEvidenceOperations,
+    registerStagingIdentity = null,
+    registerPublishedIdentity = null,
+    // Backward-compatible alias. It now means the published final inode, never
+    // the still-open staging name.
+    registerCreatedIdentity = registerPublishedIdentity
   } = {}
 ) => {
   if (!Buffer.isBuffer(bytes)) throw new EvidenceProtocolError(code)
+  if (
+    operations === null ||
+    typeof operations !== 'object' ||
+    typeof operations.closeFile !== 'function' ||
+    typeof operations.linkFile !== 'function' ||
+    typeof operations.syncDirectory !== 'function' ||
+    typeof operations.syncFile !== 'function' ||
+    typeof operations.unlinkFile !== 'function'
+  ) {
+    throw new EvidenceProtocolError(code)
+  }
+  const parent = dirname(path)
+  const stagingPath = join(
+    parent,
+    `.${basename(path)}.meal-agent-${randomBytes(16).toString('hex')}.tmp`
+  )
   let fd = null
-  let createdIdentity = null
+  let stagingIdentity = null
+  let publishedIdentity = null
+  let finalNameClaimed = false
   let resultIdentity = null
   let failed = false
   try {
     fd = openSync(
-      path,
+      stagingPath,
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
       mode
     )
@@ -464,11 +610,8 @@ export const writeExclusiveEvidenceFile = (
     ) {
       throw new EvidenceProtocolError(code)
     }
-    createdIdentity = statIdentity(path, opened, sha256OfBytes(Buffer.alloc(0)))
-    // Ownership is acquired at O_EXCL creation, not after write/close succeeds.
-    // The caller must be able to retry exact-inode cleanup when close and the
-    // helper's first rollback attempt both fail.
-    registerCreatedIdentity?.(createdIdentity)
+    stagingIdentity = statIdentity(stagingPath, opened, sha256OfBytes(Buffer.alloc(0)))
+    registerStagingIdentity?.(stagingIdentity)
     writeFileSync(fd, bytes)
     const stat = fstatSync(fd, { bigint: true })
     if (
@@ -481,14 +624,14 @@ export const writeExclusiveEvidenceFile = (
     ) {
       throw new EvidenceProtocolError(code)
     }
-    syncFile(fd)
+    operations.syncFile(fd)
     resultIdentity = statIdentity(path, stat, sha256OfBytes(bytes))
   } catch (error) {
     failed = true
   } finally {
     if (fd !== null) {
       try {
-        closeFile(fd)
+        operations.closeFile(fd)
       } catch {
         failed = true
       }
@@ -496,34 +639,53 @@ export const writeExclusiveEvidenceFile = (
   }
   if (!failed && resultIdentity !== null) {
     try {
-      syncDirectory(dirname(path))
+      operations.linkFile(stagingPath, path)
+      finalNameClaimed = true
+      const staged = lstatSync(stagingPath, { bigint: true })
+      const published = lstatSync(path, { bigint: true })
+      if (
+        !staged.isFile() ||
+        !published.isFile() ||
+        staged.dev !== published.dev ||
+        staged.ino !== published.ino ||
+        staged.nlink !== 2n ||
+        published.nlink !== 2n
+      ) {
+        throw new EvidenceProtocolError(code)
+      }
+      publishedIdentity = statIdentity(path, published, sha256OfBytes(bytes))
+      registerCreatedIdentity?.(publishedIdentity)
+      operations.unlinkFile(stagingPath)
+      const solePublished = lstatSync(path, { bigint: true })
+      if (
+        !solePublished.isFile() ||
+        solePublished.dev !== publishedIdentity.dev ||
+        solePublished.ino !== publishedIdentity.ino ||
+        solePublished.nlink !== 1n
+      ) {
+        throw new EvidenceProtocolError(code)
+      }
+      resultIdentity = statIdentity(path, solePublished, sha256OfBytes(bytes))
+      operations.syncDirectory(parent)
     } catch {
       failed = true
     }
   }
   if (failed || resultIdentity === null) {
-    if (createdIdentity !== null) {
+    let removed = false
+    if (publishedIdentity !== null) {
+      removed = removeExactInode(path, publishedIdentity, operations) || removed
+    } else if (finalNameClaimed && stagingIdentity !== null) {
+      removed = removeExactInode(path, stagingIdentity, operations) || removed
+    }
+    if (stagingIdentity !== null) {
+      removed = removeExactInode(stagingPath, stagingIdentity, operations) || removed
+    }
+    if (removed) {
       try {
-        const current = lstatSync(path, { bigint: true })
-        // 写入会改变 size/hash，不能拿写前空文件的完整身份做 rollback 判据。
-        // destructive ownership 只来自 O_EXCL 创建时取得的 dev/ino；replacement
-        // 不匹配便保留，同一 inode 则安全收回本轮创建的名字。
-        if (
-          current.isFile() &&
-          current.dev === createdIdentity.dev &&
-          current.ino === createdIdentity.ino
-        ) {
-          unlinkSync(path)
-          try {
-            // Persist the rollback of the O_EXCL-created name. A failure here
-            // remains represented by the same fixed protocol error.
-            syncDirectory(dirname(path))
-          } catch {
-            // The publication is already failed; callers also verify residue.
-          }
-        }
+        operations.syncDirectory(parent)
       } catch {
-        // 固定协议错误覆盖底层文本；调用方仍会以正式路径 residue 阻断。
+        // Publication already failed; callers also verify exact-path residue.
       }
     }
     throw new EvidenceProtocolError(code)

@@ -48,11 +48,16 @@ import {
   parseClaimedBuildImage,
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
-import { installSignalHandlers, runCommand } from './m3b-subprocess.mjs'
+import {
+  installSignalHandlers,
+  runCommand,
+  terminationSignal
+} from './m3b-subprocess.mjs'
 import {
   createOwnedTreeJournal,
   registerOwnedTree,
-  retireOwnedTree
+  retireOwnedTree,
+  runWithDeclaredOwnedTreeOutputs
 } from './m5-evidence-protocol.mjs'
 
 const usage = 'node infra/docker/check-api-runtime-image.mjs [--keep-failure]'
@@ -400,12 +405,14 @@ const main = async () => {
   // The locator is recorded before the subprocess starts, closing the window
   // before iidfile/metadata exist. It still needs immutable ID + claim proof.
   cleanupState.imageBuildStarted = true
-  await runStrict(['docker', 'build', '--tag', cleanupState.imageRecoveryTag, '--iidfile', imageIdFile, '--metadata-file', imageMetadataFile, '--label', `${buildClaimLabel}=${cleanupState.imageClaimToken}`, '--file', 'services/api/Dockerfile', '.'], {
-    timeoutMs: 900_000,
-    label: 'docker build'
-  })
-  registerOwnedTree(cleanupState.temporaryJournal, imageIdFile)
-  registerOwnedTree(cleanupState.temporaryJournal, imageMetadataFile)
+  await runWithDeclaredOwnedTreeOutputs(
+    cleanupState.temporaryJournal,
+    [imageIdFile, imageMetadataFile],
+    () => runStrict(['docker', 'build', '--tag', cleanupState.imageRecoveryTag, '--iidfile', imageIdFile, '--metadata-file', imageMetadataFile, '--label', `${buildClaimLabel}=${cleanupState.imageClaimToken}`, '--file', 'services/api/Dockerfile', '.'], {
+      timeoutMs: 900_000,
+      label: 'docker build'
+    })
+  )
   const metadata = parseBuildMetadataImageIdentity(readFileSync(imageMetadataFile, 'utf8'))
   const iid = parseCanonicalDockerImageId(readFileSync(imageIdFile, 'utf8'))
   if (iid !== metadata.imageId && iid !== metadata.configId) {
@@ -465,12 +472,18 @@ try {
 }
 
 const failed = fatalMessage !== null || problems.length > 0
-await cleanup({ keepScene: failed && keepFailure })
-for (const message of cleanupProblems) {
-  problems.push(`cleanup: ${message}`)
+if (terminationSignal() === null) {
+  await cleanup({ keepScene: failed && keepFailure })
+  for (const message of cleanupProblems) {
+    problems.push(`cleanup: ${message}`)
+  }
 }
 
-if (fatalMessage !== null || problems.length > 0) {
+if (terminationSignal() !== null) {
+  // The shared signal handler owns final diagnostics, the last subtree sweep,
+  // scoped cleanup and same-signal rethrow. Never steal that settlement with
+  // an ordinary exit code after runStrict rejects.
+} else if (fatalMessage !== null || problems.length > 0) {
   process.stderr.write('API runtime image scan FAIL\n')
   if (fatalMessage !== null) {
     process.stderr.write(`  - ${fatalMessage}\n`)
@@ -481,8 +494,10 @@ if (fatalMessage !== null || problems.length > 0) {
   process.exit(1)
 }
 
-process.stdout.write(
-  `API runtime image scan PASS (${String(summary.packageCount)} packages, ` +
-    `${String(summary.linkCount)} top-level links, ${String(summary.migrationCount)} migrations, ` +
-    `image ${summary.imageId})\n`
-)
+if (terminationSignal() === null) {
+  process.stdout.write(
+    `API runtime image scan PASS (${String(summary.packageCount)} packages, ` +
+      `${String(summary.linkCount)} top-level links, ${String(summary.migrationCount)} migrations, ` +
+      `image ${summary.imageId})\n`
+  )
+}
