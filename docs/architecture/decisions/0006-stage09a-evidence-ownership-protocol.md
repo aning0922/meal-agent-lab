@@ -138,7 +138,7 @@ OCI/materializer 语义、分叉的 ownership/generation、cleanup 旁路、back
 
 因此 M5 转入“架构收缩与收敛”，实施细节以
 [`2026-08-m5-architecture-convergence.md`](../../plans/2026-08-m5-architecture-convergence.md)
-为准。该收敛实现已于 2026-08-17 完成，并从第 1 步重新通过本地
+为准。该收敛实现已于 2026-08-17 落在 `eec3e0d`，并从第 1 步重新通过本地
 `pnpm stage09a:check` 14/14：生产 runtime image 只接受 immutable image ID → claimed
 scratch container → Docker daemon export 这一份最终文件系统事实源；build evidence、
 Secret、镜像与多栈 cleanup 使用显式 owner claim；service/one-shot generation 与进程

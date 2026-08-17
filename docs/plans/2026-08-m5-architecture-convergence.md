@@ -3,6 +3,7 @@
 - 状态：Implemented — pending independent A/B review（未 Accepted）
 - 日期：2026-08-17
 - 基线：`ea9a6fd0b20dc1b4bcd6ea0e023d6225df895255`
+- 实现落点：`eec3e0d`（本地完整门禁 14/14；待独立 A/B 审计）
 - 范围：阶段 09A M5 的 runtime image、外部证据、资源所有权、备份恢复与 mutation 门禁
 
 ## 为什么停止逐条补洞
