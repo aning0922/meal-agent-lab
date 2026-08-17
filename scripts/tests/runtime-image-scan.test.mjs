@@ -4,10 +4,12 @@ import { createHash } from 'node:crypto'
 import {
   chmodSync,
   closeSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -1043,7 +1045,7 @@ test('the production scan consumes an immutable ID while a test-only locator res
   assert.doesNotMatch(scanBody, /verifySavedImageLayers\(/)
 })
 
-test('runtime image entrypoints bind builds and cleanup to immutable ownership evidence', () => {
+test('runtime image entrypoints register recovery locators before immutable ownership evidence', () => {
   const positive = readFileSync(
     resolve(import.meta.dirname, '../../infra/docker/check-api-runtime-image.mjs'),
     'utf8'
@@ -1057,7 +1059,10 @@ test('runtime image entrypoints bind builds and cleanup to immutable ownership e
   assert.match(positive, /parseCanonicalDockerImageId/)
   assert.match(positive, /expectedImageId: builtImageId/)
   assert.match(positive, /parseClaimedBuildImage/)
-  assert.doesNotMatch(positive, /'--tag'/)
+  assert.match(positive, /'--tag', cleanupState\.imageRecoveryTag/)
+  assert.ok(
+    positive.indexOf('imageRecoveryTag:') < positive.indexOf("await runStrict(['docker', 'build'")
+  )
   assert.match(positive, /imageTag: null/)
   assert.match(positive, /cleanupPromise: null/)
   assert.match(positive, /return cleanupState\.cleanupPromise/)
@@ -1068,7 +1073,93 @@ test('runtime image entrypoints bind builds and cleanup to immutable ownership e
   assert.match(mutations, /parseClaimedBuildImage/)
   assert.match(mutations, /builds: new Map\(\)/)
   assert.match(mutations, /imageTag: null/)
-  assert.doesNotMatch(mutations, /'--tag'/)
+  assert.match(mutations, /'--tag', recoveryTag/)
+})
+
+test('a pre-evidence build failure is recovered by exact tag, claim and immutable id', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'm5-runtime-recovery-test-'))
+  const shimDirectory = resolve(directory, 'bin')
+  const statePath = resolve(directory, 'docker-state.json')
+  mkdirSync(shimDirectory)
+  const realPnpm = spawnSync('/bin/sh', ['-c', 'command -v pnpm'], {
+    encoding: 'utf8'
+  }).stdout.trim()
+  assert.notEqual(realPnpm, '')
+  const pnpmShim = resolve(shimDirectory, 'pnpm')
+  writeFileSync(
+    pnpmShim,
+    '#!/bin/sh\n' +
+      'if [ "$1" = "--version" ]; then printf "11.9.0\\n"; exit 0; fi\n' +
+      'exec "$M5_REAL_PNPM" "$@"\n'
+  )
+  chmodSync(pnpmShim, 0o755)
+  const dockerShim = resolve(shimDirectory, 'docker')
+  writeFileSync(
+    dockerShim,
+    [
+      '#!/usr/bin/env node',
+      "import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'",
+      "const args = process.argv.slice(2)",
+      "const statePath = process.env.M5_DOCKER_STATE",
+      "const absent = (name) => { process.stderr.write(`Error response from daemon: No such image: ${name}\\n`); process.exit(1) }",
+      "if (args[0] === 'version') { process.stdout.write('29.6.2\\n'); process.exit(0) }",
+      "if (args[0] === 'build') {",
+      "  const tag = args[args.indexOf('--tag') + 1]",
+      "  const label = args[args.indexOf('--label') + 1]",
+      "  const separator = label.indexOf('=')",
+      "  writeFileSync(statePath, JSON.stringify({ id: `sha256:${'a'.repeat(64)}`, tag, labelKey: label.slice(0, separator), claim: label.slice(separator + 1), tagged: true }))",
+      "  process.exit(7)",
+      "}",
+      "if (args[0] === 'image' && args[1] === 'inspect') {",
+      "  if (!existsSync(statePath)) absent(args[2])",
+      "  const state = JSON.parse(readFileSync(statePath, 'utf8'))",
+      "  if (args[2] !== state.id && !(state.tagged && args[2] === state.tag)) absent(args[2])",
+      "  process.stdout.write(JSON.stringify([{ Id: state.id, RepoTags: state.tagged ? [state.tag] : null, Config: { Labels: { [state.labelKey]: state.claim } } }]))",
+      "  process.exit(0)",
+      "}",
+      "if (args[0] === 'image' && args[1] === 'rm') {",
+      "  if (!existsSync(statePath)) absent(args[2])",
+      "  const state = JSON.parse(readFileSync(statePath, 'utf8'))",
+      "  if (args[2] === state.tag && state.tagged) { state.tagged = false; writeFileSync(statePath, JSON.stringify(state)); process.exit(0) }",
+      "  if (args[2] === state.id && !state.tagged) { unlinkSync(statePath); process.exit(0) }",
+      "  process.exit(7)",
+      "}",
+      "process.exit(97)",
+      ''
+    ].join('\n')
+  )
+  chmodSync(dockerShim, 0o755)
+  const before = new Set(
+    readdirSync(tmpdir()).filter((name) => name.startsWith('meal-agent-m5-image-scan-'))
+  )
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(repositoryRoot, 'infra/docker/check-api-runtime-image.mjs')],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          PATH: `${shimDirectory}:${process.env.PATH}`,
+          M5_REAL_PNPM: realPnpm,
+          M5_DOCKER_STATE: statePath
+        },
+        encoding: 'utf8',
+        timeout: 120_000
+      }
+    )
+    assert.equal(result.status, 1)
+    assert.equal(result.signal, null)
+    assert.equal(existsSync(statePath), false, 'claimed image must be removed by immutable identity')
+    const after = readdirSync(tmpdir()).filter(
+      (name) => name.startsWith('meal-agent-m5-image-scan-') && !before.has(name)
+    )
+    assert.deepEqual(after, [])
+    assert.match(result.stderr, /API runtime image scan FAIL/)
+    assert.doesNotMatch(result.stderr, /docker-state|sha256:[a-f0-9]{64}/)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('every build caller publishes its cleanup locator before BuildKit starts', () => {

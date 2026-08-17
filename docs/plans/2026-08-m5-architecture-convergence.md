@@ -1,6 +1,6 @@
 # M5 架构收缩与收敛任务书
 
-- 状态：Implemented — pending independent A/B review（未 Accepted）
+- 状态：BLOCK（`59f8eef` 两路独立审计确认架构协议未闭合；后续见 M5.1）
 - 日期：2026-08-17
 - 基线：`ea9a6fd0b20dc1b4bcd6ea0e023d6225df895255`
 - 实现落点：`eec3e0d`（本地完整门禁 14/14；待独立 A/B 审计）
@@ -102,6 +102,14 @@ daemon** 下的私有测试部署。它仍必须处理：
 - ADR-0006：Proposed；
 - 远端 GitHub Actions：无真实成功 run，不能写 CI Pass；
 - 未推送、未合并、未创建新的 PR。
+
+## 后续裁定（2026-08-17）
+
+本任务的停止条件已触发：`59f8eef` 的两路独立审计确认真实 runtime UID 可访问性、
+构建前 recovery locator、正式文件 fsync，以及 mutation 行为证据仍未闭合；其中字符串/
+计数式 critical-guard registry 正是本任务明示不得再次出现的同源根因。因此本任务不再
+追加 Round 补丁，状态改为 **BLOCK**；后续有界处置由
+[M5.1 架构级证据协议整改](2026-08-m5-1-evidence-protocol-remediation.md)承接。
 
 ## 实施结果（2026-08-17）
 

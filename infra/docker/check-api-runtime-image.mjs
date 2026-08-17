@@ -5,9 +5,9 @@
 //   node infra/docker/check-api-runtime-image.mjs [--keep-failure]
 //
 // 回答的问题是「**将要交付的那份镜像**里到底装了什么」，而不是「源码树声称装了
-// 什么」。因此证据全部取自真实构建产物：untagged claimed build → immutable image ID →
-// `docker image save` 内容寻址层。扫描器验证 compressed digest、DiffID、history/config
-// 绑定后自行重放 rootfs，再对 `/app` 负载逐包、逐文件比对。
+// 什么」。因此证据全部取自真实构建产物：pre-registered recovery locator → immutable
+// image ID + owner claim → Docker-daemon materialized rootfs。recovery tag 只用于在
+// iidfile/metadata 尚未落盘时找回对象，从不单独赋予所有权。
 //
 // 期望值只有一个来源：在宿主上执行与 Dockerfile runtime-closure 阶段**完全相同**
 // 的 `pnpm --filter @meal-agent/api deploy --prod --legacy`，用同一个 walker 走
@@ -80,6 +80,7 @@ const log = (message) => {
 
 const runStrict = createStrictRunner(fatal)
 
+const imageClaimToken = randomBytes(16).toString('hex')
 const cleanupState = {
   temporaryRoot: null,
   temporaryRootIdentity: null,
@@ -88,7 +89,8 @@ const cleanupState = {
   ownedImageId: null,
   imageIdFile: null,
   imageMetadataFile: null,
-  imageClaimToken: randomBytes(16).toString('hex'),
+  imageClaimToken,
+  imageRecoveryTag: `meal-agent-api:m5-recovery-${imageClaimToken}`,
   scratchContainer: null,
   cleanupPromise: null
 }
@@ -172,22 +174,97 @@ const cleanup = ({ keepScene = false } = {}) => {
           cleanupProblems.push('built image identity could not be recovered from closed evidence')
         }
       }
-      if (
-        cleanupState.ownedImageId === null &&
-        !cleanupProblems.includes('built image identity could not be recovered from closed evidence')
-      ) {
-        cleanupProblems.push('built image identity could not be recovered from closed evidence')
+      // The recovery locator exists before docker build forks. It is not ownership:
+      // recovery succeeds only when one canonical immutable ID also carries the
+      // unguessable claim and exactly this single tag.
+      const tagged = await runCommand(
+        ['docker', 'image', 'inspect', cleanupState.imageRecoveryTag],
+        { timeoutMs: 60_000 }
+      )
+      if (tagged.status === 0) {
+        try {
+          const payload = JSON.parse(tagged.stdout)
+          const candidate = Array.isArray(payload) && payload.length === 1 ? payload[0] : null
+          const recoveredId = parseCanonicalDockerImageId(candidate?.Id)
+          parseClaimedBuildImage(candidate, {
+            expectedImageId: recoveredId,
+            expectedClaimToken: cleanupState.imageClaimToken,
+            expectedTag: cleanupState.imageRecoveryTag
+          })
+          if (
+            cleanupState.ownedImageId !== null &&
+            cleanupState.ownedImageId !== recoveredId
+          ) {
+            throw new Error('recovery identity mismatch')
+          }
+          cleanupState.ownedImageId = recoveredId
+        } catch {
+          cleanupProblems.push('recovery tag did not identify the claimed build image')
+        }
+      } else if (!(
+        tagged.status === 1 &&
+        isAbsenceMessage(tagged.stderr, {
+          kind: 'image',
+          name: cleanupState.imageRecoveryTag
+        })
+      )) {
+        cleanupProblems.push('recovery tag identity could not be verified')
       }
+
       if (cleanupState.ownedImageId !== null) {
         const owned = await runCommand(
           ['docker', 'image', 'inspect', cleanupState.ownedImageId],
           { timeoutMs: 60_000 }
         )
+        let mayRemove = false
         if (owned.status === 0) {
-          let claim
           try {
             const payload = JSON.parse(owned.stdout)
-            claim = parseClaimedBuildImage(
+            parseClaimedBuildImage(
+              Array.isArray(payload) && payload.length === 1 ? payload[0] : null,
+              {
+                expectedImageId: cleanupState.ownedImageId,
+                expectedClaimToken: cleanupState.imageClaimToken,
+                expectedTag: cleanupState.imageRecoveryTag
+              }
+            )
+            mayRemove = true
+          } catch {
+            cleanupProblems.push('owned image claim evidence was unreadable')
+          }
+        } else if (!(
+          owned.status === 1 &&
+          isAbsenceMessage(owned.stderr, { kind: 'image', name: cleanupState.ownedImageId })
+        )) {
+          cleanupProblems.push('owned image identity could not be verified')
+        }
+        if (mayRemove) {
+          const untag = await runCommand(
+            ['docker', 'image', 'rm', cleanupState.imageRecoveryTag],
+            { timeoutMs: 120_000 }
+          )
+          if (untag.status !== 0) cleanupProblems.push('owned recovery tag removal failed')
+        }
+
+        const tagGone = await runCommand(
+          ['docker', 'image', 'inspect', cleanupState.imageRecoveryTag],
+          { timeoutMs: 60_000 }
+        )
+        if (!(tagGone.status === 1 && isAbsenceMessage(tagGone.stderr, {
+          kind: 'image',
+          name: cleanupState.imageRecoveryTag
+        }))) {
+          cleanupProblems.push('owned recovery tag was not proven absent after cleanup')
+        }
+
+        const remaining = await runCommand(
+          ['docker', 'image', 'inspect', cleanupState.ownedImageId],
+          { timeoutMs: 60_000 }
+        )
+        if (remaining.status === 0) {
+          try {
+            const payload = JSON.parse(remaining.stdout)
+            parseClaimedBuildImage(
               Array.isArray(payload) && payload.length === 1 ? payload[0] : null,
               {
                 expectedImageId: cleanupState.ownedImageId,
@@ -195,39 +272,31 @@ const cleanup = ({ keepScene = false } = {}) => {
                 requireUntagged: true
               }
             )
-          } catch {
-            cleanupProblems.push('owned image claim evidence was unreadable')
-          }
-          if (claim?.repoTags === null || claim?.repoTags?.length === 0) {
             const removal = await runCommand(
-              ['docker', 'rmi', cleanupState.ownedImageId],
+              ['docker', 'image', 'rm', cleanupState.ownedImageId],
               { timeoutMs: 120_000 }
             )
             if (removal.status !== 0) cleanupProblems.push('owned immutable image removal failed')
-          } else if (claim !== undefined) {
-            cleanupProblems.push('owned image acquired another tag and was preserved')
+          } catch {
+            cleanupProblems.push('untagged image claim evidence was unreadable')
           }
-        } else if (
-          !(
-            owned.status === 1 &&
-            isAbsenceMessage(owned.stderr, { kind: 'image', name: cleanupState.ownedImageId })
-          )
-        ) {
-          cleanupProblems.push('owned image identity could not be verified')
+        } else if (!(
+          remaining.status === 1 &&
+          isAbsenceMessage(remaining.stderr, {
+            kind: 'image',
+            name: cleanupState.ownedImageId
+          })
+        )) {
+          cleanupProblems.push('owned immutable image identity could not be verified')
         }
         const gone = await runCommand(
           ['docker', 'image', 'inspect', cleanupState.ownedImageId],
           { timeoutMs: 60_000 }
         )
-        if (
-          !(
-            gone.status === 1 &&
-            isAbsenceMessage(gone.stderr, {
-              kind: 'image',
-              name: cleanupState.ownedImageId
-            })
-          )
-        ) {
+        if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
+          kind: 'image',
+          name: cleanupState.ownedImageId
+        }))) {
           cleanupProblems.push('owned immutable image was not proven absent after cleanup')
         }
       }
@@ -238,10 +307,6 @@ const cleanup = ({ keepScene = false } = {}) => {
     cleanupState.ownedImageId = null
   }
   if (cleanupState.temporaryRoot !== null) {
-    if (cleanupProblems.includes('built image identity could not be recovered from closed evidence')) {
-      cleanupProblems.push('temporary build evidence was preserved for manual recovery')
-      return [...cleanupProblems]
-    }
     try {
       const observed = lstatSync(cleanupState.temporaryRoot, { bigint: true })
       if (
@@ -327,15 +392,15 @@ const main = async () => {
   })
   registerOwnedTree(cleanupState.temporaryJournal, expected.deployDirectory)
 
-  log('building an untagged claimed runtime image')
+  log('building a claimed runtime image with a pre-registered recovery locator')
   const imageIdFile = join(cleanupState.temporaryRoot, 'built-image.id')
   const imageMetadataFile = join(cleanupState.temporaryRoot, 'built-image.metadata.json')
   cleanupState.imageIdFile = imageIdFile
   cleanupState.imageMetadataFile = imageMetadataFile
-  // 构建期不发布 tag；metadata/iidfile 一旦可读，cleanup 就可以按 immutable
-  // ID + unguessable claim 恢复所有权。
+  // The locator is recorded before the subprocess starts, closing the window
+  // before iidfile/metadata exist. It still needs immutable ID + claim proof.
   cleanupState.imageBuildStarted = true
-  await runStrict(['docker', 'build', '--iidfile', imageIdFile, '--metadata-file', imageMetadataFile, '--label', `${buildClaimLabel}=${cleanupState.imageClaimToken}`, '--file', 'services/api/Dockerfile', '.'], {
+  await runStrict(['docker', 'build', '--tag', cleanupState.imageRecoveryTag, '--iidfile', imageIdFile, '--metadata-file', imageMetadataFile, '--label', `${buildClaimLabel}=${cleanupState.imageClaimToken}`, '--file', 'services/api/Dockerfile', '.'], {
     timeoutMs: 900_000,
     label: 'docker build'
   })
@@ -356,7 +421,7 @@ const main = async () => {
     parseClaimedBuildImage(Array.isArray(payload) && payload.length === 1 ? payload[0] : null, {
       expectedImageId: builtImageId,
       expectedClaimToken: cleanupState.imageClaimToken,
-      requireUntagged: true
+      expectedTag: cleanupState.imageRecoveryTag
     })
   } catch {
     fatal('docker build ownership evidence did not match its claim')

@@ -3,13 +3,13 @@ import {
   chmodSync,
   closeSync,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdtempSync,
   linkSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
-import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -37,9 +37,6 @@ import {
   parseBuildMetadataImageIdentity,
   parseClaimedBuildImage
 } from '../../infra/docker/m3b-docker.mjs'
-import { m5CriticalGuardRegistry } from '../../infra/docker/m5-critical-guard-registry.mjs'
-
-const repositoryRoot = new URL('../../', import.meta.url)
 
 const validCompose = () => ({
   name: 'meal-agent-local-test',
@@ -196,6 +193,59 @@ test('published file evidence binds bytes, inode, link count and exclusive name'
     assert.equal(verifyPublishedFileEvidence(identity, bytes), false)
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('exclusive publication synchronizes file data and its parent directory before success', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-evidence-sync-'))
+  try {
+    const calls = []
+    const path = join(directory, 'artifact')
+    const identity = writeExclusiveEvidenceFile(path, Buffer.from('durable bytes'), {
+      syncFile: (fd) => {
+        calls.push('file')
+        fsyncSync(fd)
+      },
+      syncDirectory: (parent) => {
+        calls.push(`directory:${parent === directory ? 'expected' : 'foreign'}`)
+      }
+    })
+    assert.deepEqual(calls, ['file', 'directory:expected'])
+    assert.equal(verifyPublishedFileEvidence(identity, Buffer.from('durable bytes')), true)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('file and parent-directory sync failures retract the exact exclusive name', () => {
+  for (const failure of ['file', 'directory']) {
+    const directory = mkdtempSync(join(tmpdir(), `m5-evidence-${failure}-sync-`))
+    try {
+      const path = join(directory, 'artifact')
+      let directoryCalls = 0
+      assert.throws(
+        () =>
+          writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
+            syncFile: failure === 'file'
+              ? () => { throw new Error('untrusted file-sync text') }
+              : fsyncSync,
+            syncDirectory: () => {
+              directoryCalls += 1
+              if (failure === 'directory' && directoryCalls === 1) {
+                throw new Error('untrusted directory-sync text')
+              }
+            }
+          }),
+        (error) =>
+          error instanceof EvidenceProtocolError &&
+          error.message === 'evidence protocol rejected: exclusive-publish' &&
+          !error.message.includes('untrusted')
+      )
+      assert.equal(existsSync(path), false)
+      assert.equal(directoryCalls, failure === 'directory' ? 2 : 1)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   }
 })
 
@@ -451,39 +501,4 @@ test('a process group that reaches ESRCH before signal delivery is clean settlem
   assert.deepEqual(outcome.survivors, [])
   assert.equal(outcome.primitiveFailed, false)
   assert.equal(signals, 0)
-})
-
-test('every critical evidence guard remains mapped to its registered production call site', () => {
-  const ids = new Set()
-  for (const guard of m5CriticalGuardRegistry) {
-    assert.equal(ids.has(guard.id), false, `duplicate guard id ${guard.id}`)
-    ids.add(guard.id)
-    const source = readFileSync(new URL(guard.file, repositoryRoot), 'utf8')
-    const executableSource = source
-      .split('\n')
-      .filter((line) => !line.trimStart().startsWith('//'))
-      .join('\n')
-    const occurrences = executableSource.split(guard.needle).length - 1
-    assert.equal(
-      occurrences,
-      guard.occurrences,
-      `${guard.id} must occur exactly ${String(guard.occurrences)} time(s)`
-    )
-  }
-  assert.equal(m5CriticalGuardRegistry.length, 24)
-})
-
-test('commenting out the backup TOC guard is detected as an inactive mutation', () => {
-  const guard = m5CriticalGuardRegistry.find((entry) => entry.id === 'backup.list-structure-v1')
-  assert.notEqual(guard, undefined)
-  const source = readFileSync(new URL(guard.file, repositoryRoot), 'utf8')
-  const mutant = source.replace(
-    guard.needle,
-    `// ${guard.needle}`
-  )
-  const executableMutant = mutant
-    .split('\n')
-    .filter((line) => !line.trimStart().startsWith('//'))
-    .join('\n')
-  assert.equal(executableMutant.split(guard.needle).length - 1, 0)
 })

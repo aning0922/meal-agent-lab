@@ -7,6 +7,7 @@ import {
   closeSync,
   constants,
   fstatSync,
+  fsyncSync,
   lstatSync,
   openSync,
   readFileSync,
@@ -16,7 +17,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { relative, resolve, sep } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 
 const sha256Pattern = /^[0-9a-f]{64}$/
 
@@ -407,7 +408,31 @@ export const verifyPublishedFileEvidence = (identity, expectedBytes) => {
   }
 }
 
-/** O_EXCL + O_NOFOLLOW 的正式文件发布；失败不覆盖既有名字。 */
+const syncDirectoryEntry = (directory) => {
+  let fd = null
+  let failed = false
+  try {
+    fd = openSync(directory, constants.O_RDONLY)
+    if (!fstatSync(fd).isDirectory()) failed = true
+    else fsyncSync(fd)
+  } catch {
+    failed = true
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        failed = true
+      }
+    }
+  }
+  if (failed) throw new EvidenceProtocolError('directory-sync')
+}
+
+/**
+ * O_EXCL + O_NOFOLLOW 的正式文件发布。只有字节、inode、file fsync、close 与
+ * parent-directory fsync 全部完成才返回；失败不覆盖既有名字。
+ */
 export const writeExclusiveEvidenceFile = (
   path,
   bytes,
@@ -415,6 +440,8 @@ export const writeExclusiveEvidenceFile = (
     mode = 0o600,
     code = 'exclusive-publish',
     closeFile = closeSync,
+    syncFile = fsyncSync,
+    syncDirectory = syncDirectoryEntry,
     registerCreatedIdentity = null
   } = {}
 ) => {
@@ -454,6 +481,7 @@ export const writeExclusiveEvidenceFile = (
     ) {
       throw new EvidenceProtocolError(code)
     }
+    syncFile(fd)
     resultIdentity = statIdentity(path, stat, sha256OfBytes(bytes))
   } catch (error) {
     failed = true
@@ -464,6 +492,13 @@ export const writeExclusiveEvidenceFile = (
       } catch {
         failed = true
       }
+    }
+  }
+  if (!failed && resultIdentity !== null) {
+    try {
+      syncDirectory(dirname(path))
+    } catch {
+      failed = true
     }
   }
   if (failed || resultIdentity === null) {
@@ -479,6 +514,13 @@ export const writeExclusiveEvidenceFile = (
           current.ino === createdIdentity.ino
         ) {
           unlinkSync(path)
+          try {
+            // Persist the rollback of the O_EXCL-created name. A failure here
+            // remains represented by the same fixed protocol error.
+            syncDirectory(dirname(path))
+          } catch {
+            // The publication is already failed; callers also verify residue.
+          }
         }
       } catch {
         // 固定协议错误覆盖底层文本；调用方仍会以正式路径 residue 阻断。

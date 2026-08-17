@@ -54,6 +54,8 @@
     "inject-package-payload",
     "change-package-file-mode",
     "runtime-payload-owned-by-runtime-user",
+    "runtime-entrypoint-unreadable-by-runtime-user",
+    "runtime-dist-untraversable-by-runtime-user",
     "runtime-entrypoint-escaped-symlink",
     "runtime-entrypoint-same-tree-symlink",
     "replace-skipped-readme-with-directory",
@@ -85,5 +87,5 @@
     "零看守族缺 whyUnguarded",
     "零看守族 id 与受测族冲突"
   ],
-  "trackedFileCount": 350
+  "trackedFileCount": 351
 }

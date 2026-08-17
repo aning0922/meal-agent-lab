@@ -2103,6 +2103,22 @@ const runtimeProbeScript = [
   "printf 'M5_RUNTIME_PROBE_OK\\n'"
 ].join('\n')
 
+const runtimeAccessProbeScript = [
+  'for directory in /app /app/dist /app/dist/database; do',
+  '  if [ ! -d "$directory" ] || [ ! -x "$directory" ]; then',
+  "    printf 'M5_RUNTIME_ACCESS_FAIL\\n'",
+  '    exit 0',
+  '  fi',
+  'done',
+  'for entry in /app/dist/index.js /app/dist/database/migrate.js; do',
+  '  if [ ! -f "$entry" ] || [ -L "$entry" ] || [ ! -r "$entry" ]; then',
+  "    printf 'M5_RUNTIME_ACCESS_FAIL\\n'",
+  '    exit 0',
+  '  fi',
+  'done',
+  "printf 'M5_RUNTIME_ACCESS_OK\\n'"
+].join('\n')
+
 export const scanImage = async ({
   imageTag = null,
   expectedImageId,
@@ -2297,6 +2313,93 @@ export const scanImage = async ({
     !isAbsenceMessage(gone.stderr, { kind: 'container', name: containerId })
   ) {
     fatal('owned runtime probe container was not proven absent')
+  }
+  track.container?.(null)
+
+  // Root ownership and runtime readability are deliberately separate
+  // capabilities. A root probe cannot prove that the configured runtime UID
+  // can traverse /app or read the two fixed JavaScript entrypoints.
+  const runtimeAccessName = `meal-agent-m5-access-${randomBytes(8).toString('hex')}`
+  const runtimeAccessRecord = {
+    name: runtimeAccessName,
+    id: null,
+    expectedImageId: imageId
+  }
+  track.container?.(runtimeAccessRecord)
+  const runtimeAccessContainerId = parseDockerContainerId(
+    (
+      await runStrict(
+        [
+          'docker', 'container', 'create',
+          '--name', runtimeAccessName,
+          '--label', `meal-agent.m5.owner=${runtimeAccessName}`,
+          '--network', 'none',
+          '--read-only',
+          '--user', '10001:10001',
+          imageId,
+          '/bin/sh', '-c', runtimeAccessProbeScript
+        ],
+        { timeoutMs: 60_000, label: 'docker container create (runtime uid access probe)' }
+      )
+    ).stdout,
+    fatal
+  )
+  runtimeAccessRecord.id = runtimeAccessContainerId
+  track.container?.(runtimeAccessRecord)
+  parseOwnedScratchContainer(
+    (
+      await runStrict(['docker', 'container', 'inspect', runtimeAccessContainerId], {
+        timeoutMs: 60_000,
+        label: 'docker container inspect (runtime uid access binding)'
+      })
+    ).stdout,
+    {
+      expectedName: runtimeAccessName,
+      expectedImageId: imageId,
+      expectedContainerId: runtimeAccessContainerId
+    },
+    fatal
+  )
+  const runtimeAccessProbe = await runStrict(
+    ['docker', 'container', 'start', '--attach', runtimeAccessContainerId],
+    { timeoutMs: 60_000, label: 'docker container start (runtime uid access probe)' }
+  )
+  if (runtimeAccessProbe.stdout === 'M5_RUNTIME_ACCESS_FAIL\n') {
+    fatal('docker image runtime uid could not traverse or read the fixed entrypoints')
+  }
+  if (runtimeAccessProbe.stdout !== 'M5_RUNTIME_ACCESS_OK\n') {
+    fatal('runtime uid access probe returned invalid success evidence')
+  }
+  parseOwnedScratchContainer(
+    (
+      await runStrict(['docker', 'container', 'inspect', runtimeAccessContainerId], {
+        timeoutMs: 60_000,
+        label: 'docker container inspect (runtime uid pre-cleanup binding)'
+      })
+    ).stdout,
+    {
+      expectedName: runtimeAccessName,
+      expectedImageId: imageId,
+      expectedContainerId: runtimeAccessContainerId
+    },
+    fatal
+  )
+  await runStrict(['docker', 'container', 'rm', '-f', '-v', runtimeAccessContainerId], {
+    timeoutMs: 120_000,
+    label: 'docker container rm (owned runtime uid access probe)'
+  })
+  const runtimeAccessGone = await runCommand(
+    ['docker', 'container', 'inspect', runtimeAccessContainerId],
+    { timeoutMs: 60_000 }
+  )
+  if (
+    runtimeAccessGone.status !== 1 ||
+    !isAbsenceMessage(runtimeAccessGone.stderr, {
+      kind: 'container',
+      name: runtimeAccessContainerId
+    })
+  ) {
+    fatal('owned runtime uid access probe container was not proven absent')
   }
   track.container?.(null)
 

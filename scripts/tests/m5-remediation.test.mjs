@@ -829,7 +829,7 @@ test('backup private cleanup preserves a pathname replacement after async valida
   }
 })
 
-test('backup cleanup failure rolls back the formal dump and sidecar before rejection', async () => {
+test('backup publishes the dump before its sidecar commit marker and rolls back on failure', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-settlement-'))
   const containers = new Map()
   const id = 'a'.repeat(64)
@@ -844,6 +844,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
   let copied = 0
   let listed = 0
   let simulatedDumpPublishFailure = false
+  const publishOrder = []
   const run = async (argv) => {
     if (argv[0] === 'docker' && argv[1] === 'container' && argv[2] === 'inspect') {
       const query = argv[3]
@@ -928,6 +929,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
   const dumpPath = resolve(directory, 'fixture.dump')
   const shaPath = `${dumpPath}.sha256`
   const publishFile = (path, bytes, options) => {
+    publishOrder.push(path.endsWith('.sha256') ? 'sidecar' : 'dump')
     if (!path.endsWith('/fixture.dump')) return writeExclusiveEvidenceFile(path, bytes, options)
     writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 })
     const identity = readStableRegularFile(path, { code: 'fixture-publish' }).identity
@@ -952,6 +954,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
     assert.equal(existsSync(dumpPath), false)
     assert.equal(existsSync(shaPath), false)
     assert.equal(simulatedDumpPublishFailure, true)
+    assert.deepEqual(publishOrder, ['dump'])
     assert.equal(copied, 1)
     assert.equal(listed, 1)
     assert.equal(containers.size, 0)

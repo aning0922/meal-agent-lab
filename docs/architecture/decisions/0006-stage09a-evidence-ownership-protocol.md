@@ -59,9 +59,10 @@ claim/generation；取得 immutable ID 后，后续检查、清理和发布只�
 ### 3. 正式 artifact 采用验证后发布
 
 备份在私有 staging 中产生。容器源 digest、宿主字节、archive TOC、正式 dump 与
-sidecar 必须绑定同一 Buffer/digest。正式路径使用 `O_EXCL|O_NOFOLLOW` 创建，成功前
-最后复核 dev/ino、`nlink=1`、size、digest 和 sidecar 字节。任一 cleanup 或复核失败
-都不能返回成功。
+sidecar 必须绑定同一 Buffer/digest。正式路径使用 `O_EXCL|O_NOFOLLOW` 创建；同一 fd
+完成写入、复核与 file fsync，close 后再 fsync 父目录。dump 先持久化，sidecar 最后
+持久化并作为 commit marker；成功前最后复核 dev/ino、`nlink=1`、size、digest 和
+sidecar 字节。任一 sync、cleanup 或复核失败都不能返回成功。
 
 恢复必须在第一次数据库查询/创建之前，对已经 checksum 绑定的同一 Buffer 完成
 archive TOC 预检。坏 archive 不得创建目标数据库；恢复阶段继续使用同一 Buffer，
@@ -76,7 +77,8 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 
 ### 5. mutation 证据与生产 guard 同源
 
-每个关键 guard 有稳定 ID、最小反例和期望固定理由。测试必须证明：
+字符串 needle、调用点计数和文档登记不构成 mutation 证据。每个关键 guard 必须有
+可执行最小反例和期望固定理由。测试必须证明：
 
 1. 正常实现命中指定 guard；
 2. 删除或弱化该 guard 后，对应反例因“缺少指定 guard”失败；
@@ -106,10 +108,11 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 自行 replay OCI/PAX/whiteout/hardlink 形成第二份 materializer 语义。
 
 Config、history、provenance、scratch container 与导出必须绑定同一个 immutable image
-ID；container inspect 还必须证明 claim 与 `.Image`。owner/mode 和固定入口由容器内只读
-probe 验证，daemon 导出的最终文件树用于内容、link、migration、依赖闭包与 Secret
-containment 比对。该决定不宣称可以验证不可信 builder 或 daemon；若扩大威胁模型，必须
-另立阶段。
+ID；container inspect 还必须证明 claim 与 `.Image`。root probe 只证明 owner/mode 与固定
+入口类型；另一个明确以 runtime UID/GID 运行的 read-only/no-network probe 必须证明目录
+可遍历、固定入口可读。daemon 导出的最终文件树用于内容、link、migration、依赖闭包与
+Secret containment 比对。该决定不宣称可以验证不可信 builder 或 daemon；若扩大威胁
+模型，必须另立阶段。
 
 ### 8. destructive cleanup 与正式路径不得有旁路
 
@@ -142,5 +145,9 @@ OCI/materializer 语义、分叉的 ownership/generation、cleanup 旁路、back
 `pnpm stage09a:check` 14/14：生产 runtime image 只接受 immutable image ID → claimed
 scratch container → Docker daemon export 这一份最终文件系统事实源；build evidence、
 Secret、镜像与多栈 cleanup 使用显式 owner claim；service/one-shot generation 与进程
-settlement 也统一到共享协议。M5 当前为 Implemented — pending independent A/B review、
-仍未 Accepted；阶段 09A 保持 In Progress，远端 CI 真实 run 与阶段总验收均未完成。
+settlement 也统一到共享协议。其后候选 `59f8eef` 的两路独立审计再次确认 recovery
+locator、runtime UID access、正式文件 durability 与字符串计数式 mutation 证据未闭合，
+旧任务的停止条件已经触发。后续由
+[`2026-08-m5-1-evidence-protocol-remediation.md`](../../plans/2026-08-m5-1-evidence-protocol-remediation.md)
+承接；M5.1 当前 In Progress，M5 仍未 Accepted，阶段 09A 保持 In Progress，远端 CI
+真实 run 与阶段总验收均未完成。

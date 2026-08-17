@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-16 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」当前不可变证据协议候选已通过完整 14/14，仍待两个全新 A/B 独立只读审计、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 日期：2026-07-26（2026-08-17 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5 当前 BLOCK，M5.1 架构级证据协议整改 In Progress、未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -4098,6 +4098,26 @@ cleanup 所有权缺口。本轮不再按单条形状补丁处理，而是在实
 
 该结果仍只是本地实施候选。下一门禁是两个**全新、用户可见、互相独立、只读**的
 A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI
+无真实 run；ADR-0006 保持 `Proposed`。
+
+#### M5.1 架构级证据协议整改（2026-08-17，In Progress）
+
+候选 `59f8eef` 的两路独立审计均为 BLOCK，并触发上一个架构收敛任务的停止条件。
+本轮不再编号为 Round；完整决策、停止条件与审计报告哈希见
+[`2026-08-m5-1-evidence-protocol-remediation.md`](2026-08-m5-1-evidence-protocol-remediation.md)。
+
+当前实现把 recovery tag 在 BuildKit fork 前登记，随后仍要求 immutable ID、不可猜
+claim 与唯一精确 tag 三者一致才取得 cleanup 权；root owner/mode 与
+`10001:10001` traverse/read 分成两个真实 container probe。runtime mutation 已增加入口
+`0600` 与目录 `0700` 两个真实 built 反例，当前为 **1 baseline + 17 built + 2
+static-only**。正式备份发布要求 file fsync 与 parent-directory fsync，先持久化 dump，
+最后以 sidecar 作为 commit marker；两个 sync capability 都有可观察调用与失败回滚反例。
+字符串/计数式 critical-guard registry 及其两条假 mutation 测试已删除，关键 guard 只
+接受行为测试或真实变异证据。committed tracked baseline 同步为 351。
+
+窄回归当前为 scripts tests **134/134**、runtime image mutation **1+17+2**；最终精确
+HEAD 的 `pnpm stage09a:check` 14/14、文档链接与零残留尚未执行，因此不得写成实现完成，
+也不得创建新 A/B 审计。M5.1 仍为 In Progress，M5 未 Accepted、09A 未 Pass、远端 CI
 无真实 run；ADR-0006 保持 `Proposed`。
 
 #### M5 不可变证据协议最终收口候选（2026-08-16，历史候选）

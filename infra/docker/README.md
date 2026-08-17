@@ -218,8 +218,8 @@ ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不
 
 | 命令 | 作用 |
 | --- | --- |
-| `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：BuildKit 构建期**不发布可变 tag**，metadata 交付的 immutable manifest/index ID 与 iidfile 的 config/index identity 分角色交叉核对，后续 Config/history/save 全部绑定该 ID。文件系统证据不再经过缺少自描述身份的 `docker export`：扫描器验证 `docker image save` 的 OCI index/manifest/config/layer、compressed digest、uncompressed DiffID、history 与 provenance 绑定，再以持续持有的只读 fd 按 whiteout/hardlink/PAX 规则重放同一组内容寻址 layer 得到最终 rootfs。宿主用与 Dockerfile runtime-closure **完全相同**的 `pnpm deploy --prod --legacy` 派生期望闭包，同一个 walker 走两棵树，`.pnpm` store key / 顶层链接 / name@version 与 dependency payload 精确相等；普通 package 文件、所有 README 与 `.bin` 都比较路径、类型、owner、mode、长度和 SHA-256/symlink target，只跳过明确的 host-specific pnpm metadata，且仅归一化传入的 deploy root。镜像 Config（User/Entrypoint/Cmd/Env/ExposedPorts/Volumes/Healthcheck）逐项固定；`/app` 顶层恰好四项、migrations 与仓库逐字节一致、无构建阶段残留、无第二个依赖树、无包管理器；再叠一层**显名 denylist**（Taro、Swiper、webpack-dev-server 等客户端/构建工具族）。`--keep-failure` 只说明存在 owned 临时目录，不输出物理路径 |
-| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的变异反例套件**：先跑正向 baseline，再执行硬钉的 **15 个 built + 2 个 static-only** 变异。built 变异覆盖 denylist 包、构建阶段残留、`.bin/webpack`、既有 package payload 植入、被跳过 README 路径替换为目录、普通文件 mode 漂移、runtime payload owner 漂移、入口 symlink 逃出 `/app` 权限边界、入口在 `/app` 同树内变成 symlink、history-only secret、EXPOSE、secret 形态 ENV、root 用户、非默认 StopSignal 与 provenance 丢失；static-only 覆盖浮动基础镜像与在密钥排除之后追加宽泛 `.dockerignore` negation。每项都必须**以指定理由**被拒——只失败不够。Dockerfile 变异经 `docker build --file -`（stdin）构建，**不改写任何 tracked 文件**；BuildKit metadata 的 manifest identity 与 iidfile 的 config/index identity 分角色交叉核对；两项 static-only 不构建 |
+| `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：BuildKit fork 前登记唯一 recovery tag；tag 只是 locator，只有 inspect 同时证明 canonical immutable image ID、不可猜 build claim 与唯一精确 tag 才产生 cleanup 权。metadata 与 iidfile 分角色交叉核对，后续 Config/history/save、两个 claimed scratch container 与 export 全部绑定 immutable ID。root 容器证明 `/app` root-owned 且不可写并导出 Docker daemon materialize 的最终 rootfs；第二个容器以真实 `10001:10001` + read-only + network-none 运行，证明 `/app`/`dist` 可遍历、两个固定入口可读。宿主用同一 `pnpm deploy --prod --legacy` 派生期望闭包并逐 payload 比对；Config、`/app` 结构、migrations、denylist 与 Secret containment 均 fail closed。`--keep-failure` 只说明保留 owned scene，不输出物理路径 |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的真实变异反例套件**：1 个正向 baseline + **17 个 built + 2 个 static-only**。在原有 payload、`.bin`、symlink、history、Config、provenance 等反例外，新增入口 `0600` 与 `/app/dist` `0700` 两个真实构建，必须由 `10001:10001` access probe 以指定理由拒绝。每个 build 同样在 fork 前登记 per-case recovery tag，cleanup 仍只接受 immutable ID + claim + exact tag。Dockerfile 变异经 stdin 构建，不改写 tracked 文件；static-only 两项不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
 期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
@@ -228,6 +228,12 @@ deps 状态记录，仓库因此在 `pnpm-workspace.yaml` 显式声明
 `pnpm install --frozen-lockfile`，门禁仓库不允许隐式 install）。
 Docker image/container identity 只接受 canonical immutable 形态；命令失败与 Config
 不一致只输出固定类别，不回显 runner stderr 或镜像内实际值。
+
+**M5.1 当前协议（2026-08-17）**：`59f8eef` 两路独立审计均为 BLOCK。当前实现已
+删除字符串计数式 `m5-critical-guard-registry.mjs`；关键判别力只来自真实 Docker
+mutation 或注入 capability 的行为测试。正式备份文件在成功返回前完成 file fsync 与
+parent-directory fsync；dump 先持久化，sidecar 最后持久化并作为提交标记。上述窄回归
+已通过，最终精确 HEAD 的 `stage09a:check` 14/14 尚未运行，M5.1 仍为 In Progress。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接

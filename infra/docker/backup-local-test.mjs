@@ -602,8 +602,20 @@ export const performBackup = async (
           const sha256 = sha256Bytes(publishedDumpBytes)
           publishedSidecarBytes = Buffer.from(`${sha256}  ${name}\n`, 'utf8')
 
-          // Reserve and publish the sidecar first.  A competing sidecar therefore fails
-          // before the sensitive formal dump name is ever created.
+          // The durable dump is published first.  The fsync-backed sidecar is the
+          // commit marker: observing it means the validated dump name and bytes were
+          // already persisted. Any failure before that point rolls both exact inodes back.
+          publishedIdentity = publishFile(dumpPath, publishedDumpBytes, {
+            code: 'backup-dump-publish',
+            registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
+          })
+          if (
+            !directoryEvidenceStillNames(outputDirectoryIdentity) ||
+            !verifyPublishedFileEvidence(publishedIdentity, publishedDumpBytes)
+          ) {
+            throw new Error('the backup output directory ownership drifted before publication')
+          }
+          log('backup evidence: dump published and persisted from the validated byte snapshot')
           publishedSidecarIdentity = publishFile(
             shaPath,
             publishedSidecarBytes,
@@ -612,18 +624,7 @@ export const performBackup = async (
               registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
             }
           )
-          if (
-            !directoryEvidenceStillNames(outputDirectoryIdentity) ||
-            !verifyPublishedFileEvidence(publishedSidecarIdentity, publishedSidecarBytes)
-          ) {
-            throw new Error('the backup output directory ownership drifted before publication')
-          }
-          log('backup evidence: checksum sidecar published with no-replace semantics')
-          publishedIdentity = publishFile(dumpPath, publishedDumpBytes, {
-            code: 'backup-dump-publish',
-            registerCreatedIdentity: (identity) => formalOwnedIdentities.push(identity)
-          })
-          log('backup evidence: dump published from the validated byte snapshot')
+          log('backup evidence: checksum sidecar commit marker published and persisted')
         }
       }
     )
