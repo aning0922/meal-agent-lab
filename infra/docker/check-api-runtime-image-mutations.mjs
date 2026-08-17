@@ -29,6 +29,7 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
+  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
@@ -171,7 +172,7 @@ const mutations = [
         'RUN rm -f /app/dist/index.js && ln -s ../../runtime/index.js /app/dist/index.js\n\nUSER 10001:10001'
       ),
     expectStatic: [],
-    expectScan: ['runtime payload symlink escaped the protected app tree']
+    expectScan: ['runtime entrypoint was not a verified regular file']
   },
   {
     id: 'runtime-entrypoint-same-tree-symlink',
@@ -291,6 +292,46 @@ const cleanup = () => {
   for (const [caseId, record] of cleanupState.builds) {
     let ownedImageId = record.imageId
     try {
+      if (record.scratchContainer !== null) {
+        const scratch = record.scratchContainer
+        const locator = scratch.id ?? scratch.name
+        const inspected = await runCommand(['docker', 'container', 'inspect', locator], {
+          timeoutMs: 60_000
+        })
+        if (inspected.status === 0) {
+          const owned = parseOwnedScratchContainer(
+            inspected.stdout,
+            {
+              expectedName: scratch.name,
+              expectedImageId: scratch.expectedImageId,
+              expectedContainerId: scratch.id
+            },
+            () => { throw new Error('scratch identity') }
+          )
+          const removal = await runCommand(
+            ['docker', 'container', 'rm', '-f', '-v', owned.Id],
+            { timeoutMs: 120_000 }
+          )
+          if (removal.status !== 0) {
+            cleanupProblems.push(`owned runtime probe removal failed (${caseId})`)
+          }
+        } else if (!(
+          inspected.status === 1 &&
+          isAbsenceMessage(inspected.stderr, { kind: 'container', name: locator })
+        )) {
+          cleanupProblems.push(`owned runtime probe identity could not be verified (${caseId})`)
+        }
+        const gone = await runCommand(['docker', 'container', 'inspect', locator], {
+          timeoutMs: 60_000
+        })
+        if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
+          kind: 'container',
+          name: locator
+        }))) {
+          cleanupProblems.push(`owned runtime probe was not proven absent (${caseId})`)
+        }
+        record.scratchContainer = null
+      }
       if (
         ownedImageId === null &&
         existsSync(record.metadataFile) &&
@@ -411,7 +452,13 @@ const buildAndScan = async ({
   const imageIdFile = join(caseDirectory, 'built-image.id')
   const metadataFile = join(caseDirectory, 'built-image.metadata.json')
   const claimToken = randomBytes(16).toString('hex')
-  const record = { metadataFile, iidfile: imageIdFile, claimToken, imageId: null }
+  const record = {
+    metadataFile,
+    iidfile: imageIdFile,
+    claimToken,
+    imageId: null,
+    scratchContainer: null
+  }
   cleanupState.builds.set(caseId, record)
   const buildArgs = viaStdin
     ? ['docker', 'build', ...buildOptions, '--iidfile', imageIdFile, '--metadata-file', metadataFile, '--label', `${buildClaimLabel}=${claimToken}`, '--file', '-', '.']
@@ -466,7 +513,10 @@ const buildAndScan = async ({
       log: () => undefined,
       track: {
         image: () => undefined,
-        path: (path) => registerOwnedTree(cleanupState.temporaryJournal, path)
+        path: (path) => registerOwnedTree(cleanupState.temporaryJournal, path),
+        container: (scratch) => {
+          record.scratchContainer = scratch
+        }
       }
     })
   } catch (error) {

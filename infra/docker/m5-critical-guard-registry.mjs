@@ -42,9 +42,9 @@ export const m5CriticalGuardRegistry = Object.freeze([
     occurrences: 1
   },
   {
-    id: 'runtime.content-addressed-rootfs-v1',
+    id: 'runtime.daemon-rootfs-v1',
     file: 'infra/docker/api-image-scan.mjs',
-    needle: '{ materializeRoot: extractedRoot, runStrict }',
+    needle: "label: 'docker container export (daemon materialized rootfs)'",
     occurrences: 1
   },
   {
@@ -54,21 +54,21 @@ export const m5CriticalGuardRegistry = Object.freeze([
     occurrences: 1
   },
   {
-    id: 'runtime.saved-archive-layer-fd-v1',
+    id: 'runtime.scratch-identity-v1',
     file: 'infra/docker/api-image-scan.mjs',
-    needle: 'verifySavedImageLayers(\n        savedImageFd,',
+    needle: "label: 'docker container inspect (immutable runtime binding)'",
     occurrences: 1
   },
   {
-    id: 'runtime.pax-owner-override-v1',
+    id: 'runtime.owner-entry-probe-v1',
     file: 'infra/docker/api-image-scan.mjs',
-    needle: 'const effectiveUid = pendingUid ?? globalUid ?? uid',
+    needle: "fatal('runtime owner and entry probe returned invalid success evidence')",
     occurrences: 1
   },
   {
-    id: 'runtime.app-symlink-boundary-v1',
+    id: 'runtime.export-identity-v1',
     file: 'infra/docker/api-image-scan.mjs',
-    needle: "fatal('docker image runtime payload symlink escaped the protected app tree')",
+    needle: 'requireOwnedOutputFile(exportedRootfsTarPath, rootfsIdentity, fatal)',
     occurrences: 1
   },
   {
@@ -140,7 +140,7 @@ export const m5CriticalGuardRegistry = Object.freeze([
   {
     id: 'process-group.unknown-probe-failure-v1',
     file: 'infra/docker/m3b-subprocess.mjs',
-    needle: 'export const probeProcessGroup = (pgid, kill = process.kill)',
+    needle: 'export const probeProcessGroup = (pgid, kill = nativeProcessKill)',
     occurrences: 1
   },
   {

@@ -21,6 +21,7 @@ import { fstatSync, readSync, writeSync } from 'node:fs'
 // 就保存原始引用；这不是为了让测试通过，而是确保清理路径使用自己的受控原语。
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
+const nativeProcessKill = process.kill.bind(process)
 
 const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
 const aggregateOwnershipAuthFdName = 'MEAL_AGENT_STAGE09A_PGID_AUTH_FD'
@@ -181,7 +182,7 @@ const sleep = (milliseconds) =>
 
 const killGroup = (pgid, signal) => {
   try {
-    process.kill(-pgid, signal)
+    nativeProcessKill(-pgid, signal)
     return true
   } catch (error) {
     // ESRCH is positive settlement evidence, not a failed termination
@@ -198,7 +199,7 @@ const killGroup = (pgid, signal) => {
  * `kill(-pgid, 0)` 只做权限/存在性检查，不投递信号。**只有 ESRCH 才算消失**：
  * EPERM 说明组还在、只是不归我们管，那绝不能当成「已经没了」。
  */
-export const probeProcessGroup = (pgid, kill = process.kill) => {
+export const probeProcessGroup = (pgid, kill = nativeProcessKill) => {
   try {
     kill(-pgid, 0)
     return true
@@ -537,6 +538,7 @@ export const createCommandRunner = ({
       stdin = null,
       allowSuccessfulStdinEpipe = false,
       inheritedFds = [],
+      stdoutFd = null,
       maxStdoutBytes = 64 * 1024 * 1024,
       maxStderrBytes = 64 * 1024 * 1024
     } = {}
@@ -548,7 +550,8 @@ export const createCommandRunner = ({
     delete childEnvironment[aggregateOwnershipAuthTokenName]
     if (
       !Array.isArray(inheritedFds) ||
-      inheritedFds.some((fd) => !Number.isSafeInteger(fd) || fd < 0)
+      inheritedFds.some((fd) => !Number.isSafeInteger(fd) || fd < 0) ||
+      (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 0))
     ) {
       rejectPromise(new Error('command inherited descriptor evidence was invalid'))
       return
@@ -559,7 +562,12 @@ export const createCommandRunner = ({
         cwd,
         env: childEnvironment,
         detached: true,
-        stdio: [stdin === null ? 'ignore' : 'pipe', 'pipe', 'pipe', ...inheritedFds]
+        stdio: [
+          stdin === null ? 'ignore' : 'pipe',
+          stdoutFd === null ? 'pipe' : stdoutFd,
+          'pipe',
+          ...inheritedFds
+        ]
       })
     } catch {
       // spawn 的同步异常发生在任何 PGID 出现之前；Promise executor 不得把
@@ -692,7 +700,7 @@ export const createCommandRunner = ({
       ownershipAnnouncementFailed = !announceProcessGroupOwnership(childHandle)
     }
 
-    child.stdout.on('data', (chunk) => collectBounded(chunk, stdoutChunks, 'stdout'))
+    child.stdout?.on('data', (chunk) => collectBounded(chunk, stdoutChunks, 'stdout'))
     child.stderr.on('data', (chunk) => collectBounded(chunk, stderrChunks, 'stderr'))
 
     child.once('error', () => {

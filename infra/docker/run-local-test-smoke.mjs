@@ -314,6 +314,7 @@ export const cleanupSmokeProject = async (
     imageTag,
     imageId,
     runClaimToken,
+    buildEvidenceClaimToken: runClaimToken,
     // override 是**正式 cleanup 阶段**（P1-4），排在 compose down 之后并进入
     // residue 复查；未创建时传 null，cleanup 不得引用它。
     overridePath,
@@ -610,7 +611,12 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     // directory and claimed image unreachable to cleanup and residue verification.
     scene.imageTag = imageTag
     smokeState.registerScene?.(scene)
-    builtImageId = await buildApiImage({ imageTag, repositoryRoot, env: composeEnvironment })
+    builtImageId = await buildApiImage({
+      imageTag,
+      repositoryRoot,
+      runClaimToken,
+      env: composeEnvironment
+    })
     scene.imageId = builtImageId
     smokeState.registerScene?.(scene)
     writeImageOverride(overridePath, builtImageId, runClaimToken)
@@ -1045,6 +1051,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
             imageTag: scene.imageTag,
             imageId: scene.imageId,
             runClaimToken: scene.runClaimToken,
+            buildEvidenceClaimToken: scene.runClaimToken,
             secretsDirectory,
             overridePath: scene.overrideCreated ? overridePath : null,
             danglingBaseline,
@@ -1135,6 +1142,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             imageTag: activeScene.imageTag,
             imageId: activeScene.imageId,
             runClaimToken: activeScene.runClaimToken,
+            buildEvidenceClaimToken: activeScene.runClaimToken,
             composeArgs: activeScene.overrideCreated ? activeScene.composeArgs : [],
             overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline

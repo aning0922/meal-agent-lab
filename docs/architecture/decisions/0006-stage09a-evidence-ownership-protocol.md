@@ -26,9 +26,10 @@ Docker、Compose、Git 与 PostgreSQL CLI 的 stdout/stderr 均是不可信输�
 - image metadata、inspect 和 history 绑定 canonical immutable image ID、build claim
   与完整结构；
 - container inspect 绑定 immutable ID、project、service、image、generation 与时间；
-- `pg_restore --create --list` 必须包含规范的目标 database 创建项；database properties
-  若出现只能属于同一目标，且 declared/visible 条目计数必须符合 PostgreSQL 18 的
-  固定头部差值，而不是接受任意非空字符串。
+- `pg_restore --create --list` 的有界预检必须包含规范的目标 database 创建项；database
+  properties 若出现只能属于同一目标，且 declared/visible 条目计数必须符合 PostgreSQL
+  18 的固定头部差值。其余 object description 由固定 PostgreSQL 18 自己解析，本 helper
+  不宣称是通用 archive verifier。
 
 失败诊断只能使用固定错误码、可信 registry 名称和计数；不得回显外部键、路径、
 stdout/stderr 或异常文本。
@@ -98,6 +99,26 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 - 上述边界只缩窄主动同权限篡改者，不豁免本仓库自身的信号、timeout、旧 generation、
   status-0 畸形输出、路径替换或 cleanup 失败；这些仍须 fail closed/failure-safe。
 
+### 7. Runtime 文件系统证据采用 daemon materialization
+
+在本 ADR 的本地单操作者、受信 Docker daemon 边界内，runtime image 的最终文件系统只
+接受一个事实源：由 canonical immutable image ID 创建的受控 scratch container。M5 不再
+自行 replay OCI/PAX/whiteout/hardlink 形成第二份 materializer 语义。
+
+Config、history、provenance、scratch container 与导出必须绑定同一个 immutable image
+ID；container inspect 还必须证明 claim 与 `.Image`。owner/mode 和固定入口由容器内只读
+probe 验证，daemon 导出的最终文件树用于内容、link、migration、依赖闭包与 Secret
+containment 比对。该决定不宣称可以验证不可信 builder 或 daemon；若扩大威胁模型，必须
+另立阶段。
+
+### 8. destructive cleanup 与正式路径不得有旁路
+
+文件、目录、container、image、volume 与 PGID 都必须经共享所有权账本登记、校验和退休；
+递归删除、按名字删除或从当前路径重新推导所有权不能作为旁路。backup 输出目录必须在
+动作前存在并以目录 identity 绑定，不再接受 missing-tail 后由 `mkdir -p` 创建。service 与
+one-shot generation 统一调用同一个 validator；mutation 必须真实执行生产 guard，而不是
+只检查文本 needle 或同步计数。
+
 ## 后果
 
 - M5 在本 ADR 实施完成并经两个全新独立 A/B 审计 CLEAN 前保持“已实现、待复核，
@@ -110,21 +131,16 @@ failure，必须保留到最终 settlement。one-shot 和常驻服务都在启�
 
 ## 实施注记
 
-2026-08-16 的候选 `c28cf35` 经两路独立审计判定 BLOCK；后续只追加 `1d30f18`、
-`23e6e23` 与 `83ad2c0` 继续闭合本 ADR。M5 runtime scan 无 tag 构建并直接
-绑定 immutable ID；M3B/M4 恢复型 build 在 BuildKit 前登记唯一 per-run tag 作为异常
-窗口 locator，只有 immutable ID、build claim 与精确 tag 三者一致才取得清理权。
-provenance descriptor、selected manifest、Config/history 与 OCI layer replay 绑定同一
-immutable identity。layer blob 以持续持有的只读 fd 消费，验证 digest/DiffID 后按
-whiteout、hardlink 与 PAX 规则形成最终 rootfs，并校验 runtime payload owner/mode。
-Compose 的 14 服务、2 网络、10 volume 绑定 128-bit run claim，
-显式 raw Secret name 不得跨 project 共享；service/one-off 后续取证只使用第一次强观察
-取得的 container ID。status 0 与 stdin EPIPE 必须在整组 PGID 到达 ESRCH 后 settle。
-备份的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、uid/gid/mode，
-TOC 按 PostgreSQL 18 的真实 database/declared/visible 文法验证。24 项 registry 仍只负责
-生产调用点漂移索引，不代替动态反例和 mutation 判别力。该候选从步骤 1 串行通过
-`pnpm stage09a:check` 14/14；脚本测试 131/131、Compose topology mutation 45/45、
-runtime image mutation 1 baseline + 15 built + 2 static-only、M3B signal 5+6，且 fresh
-smoke、八份 Secret identity、lifecycle 与 same-ledger restore 均通过。该证据只证明
-本地实现候选；两个全新独立 A/B 审计、M5 Accepted、远端 CI 真实 run 和 09A 总验收
-均未完成。
+截至 2026-08-17，候选 `ea9a6fd` 的最近四轮两路审计仍反复确认相同根因族：双重
+OCI/materializer 语义、分叉的 ownership/generation、cleanup 旁路、backup/TOC 开放文法
+与文本式 mutation 证明。最近一轮正式链在第 10 步因 build-evidence residue 停止，只完成
+10/14；两路审计均为 BLOCK。此前各轮 14/14 是历史正向证据，不能覆盖这些反例。
+
+因此 M5 转入“架构收缩与收敛”，实施细节以
+[`2026-08-m5-architecture-convergence.md`](../../plans/2026-08-m5-architecture-convergence.md)
+为准。该收敛实现已于 2026-08-17 完成，并从第 1 步重新通过本地
+`pnpm stage09a:check` 14/14：生产 runtime image 只接受 immutable image ID → claimed
+scratch container → Docker daemon export 这一份最终文件系统事实源；build evidence、
+Secret、镜像与多栈 cleanup 使用显式 owner claim；service/one-shot generation 与进程
+settlement 也统一到共享协议。M5 当前为 Implemented — pending independent A/B review、
+仍未 Accepted；阶段 09A 保持 In Progress，远端 CI 真实 run 与阶段总验收均未完成。

@@ -158,7 +158,7 @@ const createPrivateBackupDirectory = (parent) => {
       try {
         const current = lstatSync(path, { bigint: true })
         if (current.dev === identity.dev && current.ino === identity.ino) {
-          rmSync(path, { recursive: true, force: true })
+          rmdirSync(path)
         }
       } catch {
         // 固定 setup 失败覆盖底层文本；路径残留由调用方/信号 scope 继续阻断。
@@ -294,22 +294,20 @@ export const assertBackupTargetsIgnored = async (run, paths) => {
   const evidence = []
   for (const target of paths) {
     const absoluteTarget = resolve(target)
-    const missingTail = []
-    let existingAncestor = absoluteTarget
-    while (!existsSync(existingAncestor)) {
-      missingTail.unshift(basename(existingAncestor))
-      const parent = resolve(existingAncestor, '..')
-      if (parent === existingAncestor) {
-        throw new Error('cannot resolve the physical backup target boundary')
-      }
-      existingAncestor = parent
+    const requestedParent = dirname(absoluteTarget)
+    if (!existsSync(requestedParent)) {
+      throw new Error('the backup output directory must exist before backup starts')
     }
-    const physicalAncestor = realpathSync(existingAncestor)
-    const ancestorStat = lstatSync(physicalAncestor, { bigint: true })
-    if (!ancestorStat.isDirectory()) {
+    const requestedParentStat = lstatSync(requestedParent, { bigint: true })
+    if (!requestedParentStat.isDirectory() || requestedParentStat.isSymbolicLink()) {
       throw new Error('cannot resolve the physical backup target boundary')
     }
-    const physicalTarget = resolve(physicalAncestor, ...missingTail)
+    const physicalAncestor = realpathSync(requestedParent)
+    const ancestorStat = lstatSync(physicalAncestor, { bigint: true })
+    if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink()) {
+      throw new Error('cannot resolve the physical backup target boundary')
+    }
+    const physicalTarget = resolve(physicalAncestor, basename(absoluteTarget))
     const relativePath = relative(physicalRepositoryRoot, physicalTarget)
     if (
       relativePath === '..' ||
@@ -407,7 +405,6 @@ export const performBackup = async (
   if (dirname(shaPath) !== directory) {
     throw new Error('the backup output path ownership drifted during ignore validation')
   }
-  mkdirSync(directory, { recursive: true })
   const outputDirectoryIdentity = snapshotDirectoryEvidence(directory, {
     code: 'backup-output-directory'
   })

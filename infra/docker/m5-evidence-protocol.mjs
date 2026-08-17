@@ -153,11 +153,13 @@ export const requireClosedRecord = (
 }
 
 /**
- * `pg_restore --create --list` 的成功 stdout 是 archive 的 TOC 证据，不是任意非空文本。
+ * `pg_restore --create --list` 的成功 stdout 是 archive 的**有界预检**，不是任意非空文本，
+ * 也不是一份通用 PostgreSQL archive verifier。
  * 注释/头信息以 `;` 开头，真实 TOC 行以 dump id + catalog OID 对开头。至少要有
  * 一条 TOC；任意未知非空行、NUL、CR 或超界输出都 fail closed。PostgreSQL custom
  * archives 的 `TOC Entries` 还包含三条不会出现在 Selected TOC Entries 列表里的
- * archive-setting entries。PostgreSQL 18 的 `--create --list` 会物化 DATABASE，
+ * archive-setting entries。其余 TOC description 仍由固定版本的 PostgreSQL 18 自己解析；
+ * 本 helper 不冒充可以枚举所有 object type。PostgreSQL 18 的 `--create --list` 会物化 DATABASE，
  * DATABASE PROPERTIES 则可缺席；数据库身份同时由精确 `dbname` header 与唯一
  * DATABASE capability 行绑定，完整性关系为 declared = visible + 3。
  */

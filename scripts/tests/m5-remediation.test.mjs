@@ -8,6 +8,8 @@ import {
   lstatSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
+  closeSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -250,6 +252,27 @@ test('runCommand status-zero settlement terminates a leader-close descendant fir
   assert.deepEqual(unconfirmedProcessGroups(), [])
 })
 
+test('runCommand binds binary stdout to a caller-held descriptor', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-stdout-fd-'))
+  const output = resolve(directory, 'evidence.bin')
+  const fd = openSync(output, 'wx', 0o600)
+  try {
+    const outcome = await runCommand(
+      ['/bin/sh', '-c', "printf 'A\\000B'"],
+      { stdoutFd: fd, timeoutMs: 5_000 }
+    )
+    assert.equal(outcome.status, 0)
+    assert.equal(outcome.stdout, '')
+  } finally {
+    closeSync(fd)
+  }
+  try {
+    assert.deepEqual(readFileSync(output), Buffer.from([0x41, 0x00, 0x42]))
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('runCommand status-zero settlement preserves a termination primitive failure', async () => {
   const processGroups = {
     register: (pgid) => Object.freeze({ pgid, generation: 1 }),
@@ -267,13 +290,18 @@ test('runCommand status-zero settlement preserves a termination primitive failur
   )
 })
 
-test('runCommand is not redirected by caller timer primitive replacement', { timeout: 10_000 }, async () => {
+test('runCommand is not redirected by caller timer or group-signal primitive replacement', { timeout: 10_000 }, async () => {
   const originalSetTimeout = globalThis.setTimeout
   const originalClearTimeout = globalThis.clearTimeout
-  const sentinel = 'CALLER-TIMER-PRIMITIVE-SENTINEL'
+  const originalKill = process.kill
+  const sentinel = 'CALLER-CLEANUP-PRIMITIVE-SENTINEL'
   try {
     globalThis.setTimeout = () => { throw new Error(sentinel) }
     globalThis.clearTimeout = () => { throw new Error(sentinel) }
+    process.kill = (pid, signal) => {
+      if (pid < 0 && signal !== 0) throw new Error(sentinel)
+      return originalKill.call(process, pid, signal)
+    }
     const result = await runCommand(['/bin/sh', '-c', 'sleep 0.05; exit 0'], {
       timeoutMs: 5_000
     })
@@ -282,6 +310,7 @@ test('runCommand is not redirected by caller timer primitive replacement', { tim
   } finally {
     globalThis.setTimeout = originalSetTimeout
     globalThis.clearTimeout = originalClearTimeout
+    process.kill = originalKill
   }
   assert.deepEqual(unconfirmedProcessGroups(), [])
 })
@@ -516,6 +545,7 @@ test('M4 one-off handoff preserves binary stdin and disables TTY framing', async
               Status: 'exited',
               Running: false,
               ExitCode: 0,
+              StartedAt: '2026-08-15T01:00:00Z',
               FinishedAt: '2026-08-15T01:00:01Z'
             }
           }
@@ -592,6 +622,7 @@ test('M4 retains the immutable one-off ID on a nonzero outcome before cleanup', 
             Status: 'exited',
             Running: false,
             ExitCode: 17,
+            StartedAt: '2026-08-16T00:59:59Z',
             FinishedAt: '2026-08-16T01:00:00Z'
           }
         }]),
@@ -838,6 +869,7 @@ test('backup cleanup failure rolls back the formal dump and sidecar before rejec
             Status: 'exited',
             Running: false,
             ExitCode: entry.exitCode,
+            StartedAt: '2026-08-15T01:00:00Z',
             FinishedAt: '2026-08-15T01:00:01Z'
           }
         }]),
@@ -1051,7 +1083,17 @@ test('the Secret identity CLI reports Docker failures with fixed diagnostics', (
   try {
     writeFileSync(
       docker,
-      `#!/bin/sh\ncase " $* " in\n  *" compose "*" build api "*) printf '%s\\n' '${sentinel}' >&2; exit 7 ;;\nesac\nexit 0\n`
+      `#!/bin/sh\n` +
+        `if [ "$1" = "build" ]; then\n` +
+        `  printf '%s\\n' '${sentinel}' >&2\n` +
+        `  exit 7\n` +
+        `fi\n` +
+        `if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then\n` +
+        `  for last do :; done\n` +
+        `  printf 'Error response from daemon: No such image: %s\\n' "$last" >&2\n` +
+        `  exit 1\n` +
+        `fi\n` +
+        `exit 0\n`
     )
     chmodSync(docker, 0o700)
     const outcome = spawnSync(
@@ -1167,7 +1209,7 @@ test('restore handoff bytes are the exact snapshot that passed checksum verifica
   }
 })
 
-test('backup target containment follows a symlink alias to its physical repository path', async () => {
+test('backup target containment rejects a symlink output directory before Git evidence', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-alias-'))
   try {
     const alias = resolve(directory, 'alias')
@@ -1178,31 +1220,46 @@ test('backup target containment follows a symlink alias to its physical reposito
         calls.push({ argv, options })
         return { status: 1, stdout: '', stderr: '' }
       }, [resolve(alias, 'audit.dump')]),
-      /inside the repository but not git-ignored/
+      /cannot resolve the physical backup target boundary/
     )
-    assert.equal(calls.length, 1)
-    assert.deepEqual(calls[0].argv.slice(0, 3), ['git', '--no-replace-objects', 'check-ignore'])
-    assert.match(calls[0].argv.at(-1), /services\/api\/audit\.dump$/)
+    assert.equal(calls.length, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })
 
-test('backup ignore evidence returns the checked physical path across an await-time alias swap', async () => {
+test('backup target containment rejects a missing output directory before Git evidence', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-missing-'))
+  try {
+    let calls = 0
+    await assert.rejects(
+      assertBackupTargetsIgnored(async () => {
+        calls += 1
+        return { status: 0, stdout: '', stderr: '' }
+      }, [resolve(directory, 'missing', 'audit.dump')]),
+      /output directory must exist/
+    )
+    assert.equal(calls, 0)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup ignore evidence never crosses an await-time output-directory alias', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-alias-swap-'))
   try {
     const alias = resolve(directory, 'alias')
     const ignored = resolve(repositoryRoot, 'infra/docker/backups')
     symlinkSync(ignored, alias)
-    const [evidence] = await assertBackupTargetsIgnored(async (argv) => {
-      assert.match(argv.at(-1), /infra\/docker\/backups\/audit\.dump$/)
-      unlinkSync(alias)
-      symlinkSync(resolve(repositoryRoot, 'services/api'), alias)
-      return { status: 0, stdout: '', stderr: '' }
-    }, [resolve(alias, 'audit.dump')])
-    assert.equal(evidence.path, resolve(ignored, 'audit.dump'))
-    assert.equal(resolve(alias, 'audit.dump'), resolve(directory, 'alias/audit.dump'))
-    assert.notEqual(evidence.path, resolve(realpathSync(alias), 'audit.dump'))
+    let calls = 0
+    await assert.rejects(
+      assertBackupTargetsIgnored(async () => {
+        calls += 1
+        return { status: 0, stdout: '', stderr: '' }
+      }, [resolve(alias, 'audit.dump')]),
+      /cannot resolve the physical backup target boundary/
+    )
+    assert.equal(calls, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

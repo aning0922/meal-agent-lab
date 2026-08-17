@@ -38,6 +38,7 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
+  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
@@ -88,6 +89,7 @@ const cleanupState = {
   imageIdFile: null,
   imageMetadataFile: null,
   imageClaimToken: randomBytes(16).toString('hex'),
+  scratchContainer: null,
   cleanupPromise: null
 }
 
@@ -106,6 +108,47 @@ const cleanup = ({ keepScene = false } = {}) => {
       process.stderr.write('image-scan:   kept claimed immutable image evidence\n')
     }
     return []
+  }
+  if (cleanupState.scratchContainer !== null) {
+    const record = cleanupState.scratchContainer
+    try {
+      const locator = record.id ?? record.name
+      const inspected = await runCommand(['docker', 'container', 'inspect', locator], {
+        timeoutMs: 60_000
+      })
+      if (inspected.status === 0) {
+        const owned = parseOwnedScratchContainer(
+          inspected.stdout,
+          {
+            expectedName: record.name,
+            expectedImageId: record.expectedImageId,
+            expectedContainerId: record.id
+          },
+          () => { throw new Error('scratch identity') }
+        )
+        const removal = await runCommand(['docker', 'container', 'rm', '-f', '-v', owned.Id], {
+          timeoutMs: 120_000
+        })
+        if (removal.status !== 0) cleanupProblems.push('owned runtime probe removal failed')
+      } else if (!(
+        inspected.status === 1 &&
+        isAbsenceMessage(inspected.stderr, { kind: 'container', name: locator })
+      )) {
+        cleanupProblems.push('owned runtime probe identity could not be verified')
+      }
+      const gone = await runCommand(['docker', 'container', 'inspect', locator], {
+        timeoutMs: 60_000
+      })
+      if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
+        kind: 'container',
+        name: locator
+      }))) {
+        cleanupProblems.push('owned runtime probe was not proven absent after cleanup')
+      }
+    } catch {
+      cleanupProblems.push('owned runtime probe cleanup did not complete')
+    }
+    cleanupState.scratchContainer = null
   }
   if (cleanupState.imageBuildStarted) {
     try {
@@ -336,6 +379,9 @@ const main = async () => {
       },
       path: (path) => {
         registerOwnedTree(cleanupState.temporaryJournal, path)
+      },
+      container: (record) => {
+        cleanupState.scratchContainer = record
       }
     }
   })

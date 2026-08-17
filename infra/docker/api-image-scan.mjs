@@ -26,7 +26,7 @@ import {
   symlinkSync,
   createReadStream
 } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createGunzip, createZstdDecompress } from 'node:zlib'
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -120,11 +120,24 @@ export const createStrictRunner =
   (fatal, commandRunner = runCommand) =>
   async (
     args,
-    { timeoutMs, cwd = repositoryRoot, label, stdin = null, inheritedFds = [] } = {}
+    {
+      timeoutMs,
+      cwd = repositoryRoot,
+      label,
+      stdin = null,
+      inheritedFds = [],
+      stdoutFd = null
+    } = {}
   ) => {
     let outcome
     try {
-      outcome = await commandRunner(args, { timeoutMs, cwd, stdin, inheritedFds })
+      outcome = await commandRunner(args, {
+        timeoutMs,
+        cwd,
+        stdin,
+        inheritedFds,
+        stdoutFd
+      })
     } catch {
       fatal(`${label ?? args[0]}: command failed to run`)
     }
@@ -2040,6 +2053,56 @@ export const deriveExpectedClosure = async ({ runStrict, fatal, problem, tempora
 // 对一个**已构建**的镜像 tag 做完整扫描。container 的创建与移除都在这里完成；
 // 中途失败时调用方通过 track.container 拿到残留 id 负责兜底移除。
 // --------------------------------------------------------------------------
+const createOwnedOutputFile = (path, track, fatal) => {
+  let fd
+  try {
+    fd = openSync(path, 'wx', 0o600)
+  } catch {
+    fatal('runtime image evidence output could not be created exclusively')
+  }
+  track.path?.(path)
+  const stat = lstatSync(path, { bigint: true })
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n) {
+    fatal('runtime image evidence output did not have a private file identity')
+  }
+  return Object.freeze({ fd, dev: stat.dev, ino: stat.ino })
+}
+
+const requireOwnedOutputFile = (path, identity, fatal) => {
+  let stat
+  try {
+    stat = lstatSync(path, { bigint: true })
+  } catch {
+    fatal('runtime image evidence output disappeared')
+  }
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.nlink !== 1n ||
+    stat.dev !== identity.dev ||
+    stat.ino !== identity.ino ||
+    stat.size <= 0n
+  ) {
+    fatal('runtime image evidence output identity drifted')
+  }
+}
+
+const runtimeProbeScript = [
+  'if [ ! -d /app ] || [ ! -f /app/dist/index.js ] || [ -L /app/dist/index.js ] || [ ! -f /app/dist/database/migrate.js ] || [ -L /app/dist/database/migrate.js ]; then',
+  "  printf 'M5_RUNTIME_ENTRY_FAIL\\n'",
+  '  exit 0',
+  'fi',
+  'if ! bad="$(find /app -xdev \\( \\( -type f -o -type d \\) -a \\( ! -user 0 -o ! -group 0 -o -perm /022 \\) \\) -print -quit)"; then',
+  "  printf 'M5_RUNTIME_PROBE_FAIL\\n'",
+  '  exit 0',
+  'fi',
+  'if [ -n "$bad" ]; then',
+  "  printf 'M5_RUNTIME_OWNER_MODE_FAIL\\n'",
+  '  exit 0',
+  'fi',
+  "printf 'M5_RUNTIME_PROBE_OK\\n'"
+].join('\n')
+
 export const scanImage = async ({
   imageTag = null,
   expectedImageId,
@@ -2055,6 +2118,7 @@ export const scanImage = async ({
   }
 }) => {
   const savedImageTarPath = join(temporaryRoot, 'saved-image.tar')
+  const exportedRootfsTarPath = join(temporaryRoot, 'exported-rootfs.tar')
   const extractedRoot = join(temporaryRoot, 'image-root')
 
   const imageId =
@@ -2107,11 +2171,17 @@ export const scanImage = async ({
     fatal,
     problem
   )
-  await runStrict(['docker', 'image', 'save', '-o', savedImageTarPath, imageId], {
-    timeoutMs: 300_000,
-    label: 'docker image save (content-addressed history evidence)'
-  })
-  track.path?.(savedImageTarPath)
+  const savedImageIdentity = createOwnedOutputFile(savedImageTarPath, track, fatal)
+  try {
+    await runStrict(['docker', 'image', 'save', imageId], {
+      timeoutMs: 300_000,
+      label: 'docker image save (content-addressed history evidence)',
+      stdoutFd: savedImageIdentity.fd
+    })
+  } finally {
+    closeSync(savedImageIdentity.fd)
+  }
+  requireOwnedOutputFile(savedImageTarPath, savedImageIdentity, fatal)
   const savedImageFd = openSync(savedImageTarPath, 'r')
   try {
     const savedImageStat = fstatSync(savedImageFd, { bigint: true })
@@ -2126,26 +2196,111 @@ export const scanImage = async ({
       fatal,
       problem
     )
-    const savedManifest = archiveEvidence.manifest
-    mkdirSync(extractedRoot, { recursive: false, mode: 0o700 })
-    try {
-      await verifySavedImageLayers(
-        savedImageFd,
-        savedManifest.Layers,
-        archiveEvidence.layerDescriptors,
-        imageInspect.RootFS.Layers,
-        fatal,
-        { materializeRoot: extractedRoot, runStrict }
-      )
-    } finally {
-      if (existsSync(extractedRoot)) track.path?.(extractedRoot)
-    }
+    // archiveEvidence 只负责把 Config/history/provenance 与 immutable ID 绑定。
+    // 最终 rootfs 不再由这里自行 replay OCI layers。
+    void archiveEvidence
   } finally {
     closeSync(savedImageFd)
   }
-  // The rootfs is materialized exclusively from content-addressed image-save layers.
-  // `docker export` has no self-describing image identity and therefore cannot be an
-  // admissible evidence source, even when a scratch container was inspected before it.
+
+  const scratchName = `meal-agent-m5-scan-${randomBytes(8).toString('hex')}`
+  const scratchRecord = { name: scratchName, id: null, expectedImageId: imageId }
+  track.container?.(scratchRecord)
+  const containerId = parseDockerContainerId(
+    (
+      await runStrict(
+        [
+          'docker', 'container', 'create',
+          '--name', scratchName,
+          '--label', `meal-agent.m5.owner=${scratchName}`,
+          '--network', 'none',
+          '--read-only',
+          '--user', '0:0',
+          imageId,
+          '/bin/sh', '-c', runtimeProbeScript
+        ],
+        { timeoutMs: 60_000, label: 'docker container create (immutable runtime probe)' }
+      )
+    ).stdout,
+    fatal
+  )
+  scratchRecord.id = containerId
+  track.container?.(scratchRecord)
+  parseOwnedScratchContainer(
+    (
+      await runStrict(['docker', 'container', 'inspect', containerId], {
+        timeoutMs: 60_000,
+        label: 'docker container inspect (immutable runtime binding)'
+      })
+    ).stdout,
+    { expectedName: scratchName, expectedImageId: imageId, expectedContainerId: containerId },
+    fatal
+  )
+  const probe = await runStrict(['docker', 'container', 'start', '--attach', containerId], {
+    timeoutMs: 60_000,
+    label: 'docker container start (runtime owner and entry probe)'
+  })
+  if (probe.stdout === 'M5_RUNTIME_ENTRY_FAIL\n') {
+    fatal('docker image runtime entrypoint was not a verified regular file')
+  }
+  if (probe.stdout === 'M5_RUNTIME_OWNER_MODE_FAIL\n') {
+    fatal('docker image runtime payload was not root-owned or was writable')
+  }
+  if (probe.stdout !== 'M5_RUNTIME_PROBE_OK\n') {
+    fatal('runtime owner and entry probe returned invalid success evidence')
+  }
+
+  const rootfsIdentity = createOwnedOutputFile(exportedRootfsTarPath, track, fatal)
+  try {
+    await runStrict(['docker', 'container', 'export', containerId], {
+      timeoutMs: 300_000,
+      label: 'docker container export (daemon materialized rootfs)',
+      stdoutFd: rootfsIdentity.fd
+    })
+  } finally {
+    closeSync(rootfsIdentity.fd)
+  }
+  requireOwnedOutputFile(exportedRootfsTarPath, rootfsIdentity, fatal)
+  mkdirSync(extractedRoot, { recursive: false, mode: 0o700 })
+  track.path?.(extractedRoot)
+  try {
+    await runStrict(['tar', '-xf', exportedRootfsTarPath, '-C', extractedRoot], {
+      timeoutMs: 300_000,
+      label: 'tar extract (daemon materialized rootfs)'
+    })
+  } finally {
+    // runCommand 只有在该进程组到达 ESRCH 后才 settle。无论成功、signal 还是
+    // timeout，此处都在 destructive cleanup 前把 trusted tar 已物化的完整/部分树
+    // 收进同一 ownership journal；cleanup 不再有递归删除旁路。
+    if (existsSync(extractedRoot)) track.path?.(extractedRoot)
+  }
+
+  parseOwnedScratchContainer(
+    (
+      await runStrict(['docker', 'container', 'inspect', containerId], {
+        timeoutMs: 60_000,
+        label: 'docker container inspect (pre-cleanup binding)'
+      })
+    ).stdout,
+    { expectedName: scratchName, expectedImageId: imageId, expectedContainerId: containerId },
+    fatal
+  )
+  await runStrict(['docker', 'container', 'rm', '-f', '-v', containerId], {
+    timeoutMs: 120_000,
+    label: 'docker container rm (owned runtime probe)'
+  })
+  const gone = await runCommand(['docker', 'container', 'inspect', containerId], {
+    timeoutMs: 60_000
+  })
+  if (
+    gone.status !== 1 ||
+    !isAbsenceMessage(gone.stderr, { kind: 'container', name: containerId })
+  ) {
+    fatal('owned runtime probe container was not proven absent')
+  }
+  track.container?.(null)
+
+  // Docker daemon 对 immutable ID 的最终 materialization 是唯一 rootfs 事实源。
   const listing = filesystemListing(extractedRoot)
 
   // ---- 结构断言：/app 恰好四项、无 stray 组件、无第二个依赖树 ----

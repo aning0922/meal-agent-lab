@@ -16,3 +16,4 @@
 - [阶段 08：家庭成员与硬约束原始实施记录](2026-07-stage-08-members-and-constraints.md)
 - [阶段 08：审计整改与架构收口实施记录](2026-07-stage-08-audit-closeout.md)
 - [阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)
+- [阶段 09A M5：架构收缩与收敛任务书](2026-08-m5-architecture-convergence.md)

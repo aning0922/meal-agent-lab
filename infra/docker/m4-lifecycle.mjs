@@ -624,20 +624,30 @@ const inspectOneOff = async (run, entry, environment) => {
 
 const oneOffOutcomeIsBound = (inspected, result) => {
   const state = inspected.container?.State
-  return (
-    inspected.state === 'owned' &&
-    state !== null &&
-    typeof state === 'object' &&
-    !Array.isArray(state) &&
-    state.Status === 'exited' &&
-    state.Running === false &&
-    Number.isSafeInteger(state.ExitCode) &&
-    state.ExitCode >= 0 &&
-    state.ExitCode === result?.status &&
-    typeof state.FinishedAt === 'string' &&
-    state.FinishedAt !== '' &&
-    state.FinishedAt !== '0001-01-01T00:00:00Z'
-  )
+  if (
+    inspected.state !== 'owned' ||
+    state === null ||
+    typeof state !== 'object' ||
+    Array.isArray(state) ||
+    state.Status !== 'exited' ||
+    state.Running !== false ||
+    !Number.isSafeInteger(state.ExitCode) ||
+    state.ExitCode < 0 ||
+    state.ExitCode !== result?.status ||
+    typeof state.FinishedAt !== 'string' ||
+    state.FinishedAt === '' ||
+    state.FinishedAt === '0001-01-01T00:00:00Z'
+  ) {
+    return false
+  }
+  try {
+    requireFreshContainerGeneration(null, inspected.container, {
+      code: 'one-off-container-generation'
+    })
+    return state.StartedAt !== '0001-01-01T00:00:00Z'
+  } catch {
+    return false
+  }
 }
 
 const removeOwnedOneOff = async (run, entry, environment) => {
@@ -1302,6 +1312,7 @@ export const createM4Run = ({ kind }) => {
     const builtImageId = await buildApiImage({
       imageTag,
       repositoryRoot,
+      runClaimToken,
       env: stack.composeEnvironment
     })
     shared.imageId = builtImageId
@@ -1338,6 +1349,7 @@ export const createM4Run = ({ kind }) => {
             imageTag: last ? shared.imageTag : null,
             imageId: last ? shared.imageId : null,
             runClaimToken,
+            buildEvidenceClaimToken: last ? runClaimToken : null,
             overridePath: last && shared.overrideCreated ? overridePath : null,
             composeFile,
             composeEnvironment: stacks[index].composeEnvironment,
@@ -1367,6 +1379,7 @@ export const createM4Run = ({ kind }) => {
             imageTag: last ? shared.imageTag : null,
             imageId: last ? shared.imageId : null,
             runClaimToken,
+            buildEvidenceClaimToken: last ? runClaimToken : null,
             secretsDirectory: first ? secretsDirectory : null,
             overridePath: last && shared.overrideCreated ? overridePath : null,
             danglingBaseline: last ? shared.danglingBaseline : null,

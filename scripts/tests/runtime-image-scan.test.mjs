@@ -125,14 +125,14 @@ const assertSavedArchiveDescriptorDataflow = (source) => {
     if (
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
-      ['validateSavedImageArchive', 'verifySavedImageLayers'].includes(node.expression.text)
+      node.expression.text === 'validateSavedImageArchive'
     ) {
       consumerArguments.push(node.arguments[0])
     }
     ts.forEachChild(node, visit)
   }
   visit(scanBody)
-  assert.equal(consumerArguments.length, 2)
+  assert.equal(consumerArguments.length, 1)
   assert.equal(consumerArguments.every((argument) => ts.isIdentifier(argument)), true)
   const names = consumerArguments.map((argument) => argument.text)
   assert.equal(new Set(names).size, 1)
@@ -168,15 +168,14 @@ test('saved-image archive parsing stays on the inherited descriptor after path r
   }
 })
 
-test('the archive validator and layer replay consume the same opened descriptor', () => {
+test('the archive validator consumes the held descriptor and production does not replay layers', () => {
   const source = readFileSync(resolve(repositoryRoot, 'infra/docker/api-image-scan.mjs'), 'utf8')
   assert.doesNotThrow(() => assertSavedArchiveDescriptorDataflow(source))
-  const mutant = source.replace(
-    'verifySavedImageLayers(\n        savedImageFd,',
-    'verifySavedImageLayers(\n        savedImageTarPath,'
-  )
+  const mutant = source.replace('validateSavedImageArchive(\n      savedImageFd,', 'validateSavedImageArchive(\n      savedImageTarPath,')
   assert.notEqual(mutant, source)
   assert.throws(() => assertSavedArchiveDescriptorDataflow(mutant))
+  const productionBody = source.slice(source.indexOf('export const scanImage'))
+  assert.doesNotMatch(productionBody, /verifySavedImageLayers\(/)
 })
 
 test('the checked-in dockerignore keeps every secret exclusion after all negations', () => {
@@ -1036,11 +1035,12 @@ test('the production scan consumes an immutable ID while a test-only locator res
   const scanBody = source.slice(source.indexOf('export const scanImage'))
   assert.match(scanBody, /imageTag === null\s*\? expectedImageId/)
   assert.match(scanBody, /\['docker', 'image', 'inspect', imageId\]/)
-  assert.match(scanBody, /\['docker', 'image', 'save', '-o', savedImageTarPath, imageId\]/)
+  assert.match(scanBody, /\['docker', 'image', 'save', imageId\][\s\S]*?stdoutFd: savedImageIdentity\.fd/)
   assert.match(scanBody, /validateSavedImageArchive\([\s\S]*?imageInspect[\s\S]*?historyRows/)
-  assert.match(scanBody, /verifySavedImageLayers\([\s\S]*?materializeRoot: extractedRoot/)
-  assert.doesNotMatch(scanBody, /'docker',\s*'export'/)
-  assert.doesNotMatch(scanBody, /'docker',\s*'create'/)
+  assert.match(scanBody, /'docker', 'container', 'create'[\s\S]*?imageId/)
+  assert.match(scanBody, /parseOwnedScratchContainer\([\s\S]*?expectedImageId: imageId/)
+  assert.match(scanBody, /\['docker', 'container', 'export', containerId\][\s\S]*?stdoutFd: rootfsIdentity\.fd/)
+  assert.doesNotMatch(scanBody, /verifySavedImageLayers\(/)
 })
 
 test('runtime image entrypoints bind builds and cleanup to immutable ownership evidence', () => {

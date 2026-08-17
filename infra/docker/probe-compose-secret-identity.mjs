@@ -201,6 +201,7 @@ const cleanupProbe = async (scene) =>
     imageTag: scene.imageTag,
     imageId: scene.imageId,
     runClaimToken: scene.runClaimToken,
+    buildEvidenceClaimToken: scene.runClaimToken,
     // override 只在**确实创建过**时才交给 cleanup（P1-4）：未创建时引用它会
     // 让 compose down 以 "no such file" 失败并被报成 residue。
     overridePath: scene.overrideCreated === true ? scene.overridePath : null,
@@ -318,6 +319,7 @@ const main = async () => {
     const builtImageId = await buildApiImage({
       imageTag,
       repositoryRoot,
+      runClaimToken,
       env: composeEnvironment
     })
     activeProbeScene.imageId = builtImageId
@@ -461,6 +463,7 @@ const main = async () => {
           imageTag: activeProbeScene.imageTag,
           imageId: activeProbeScene.imageId,
           runClaimToken: activeProbeScene.runClaimToken,
+          buildEvidenceClaimToken: activeProbeScene.runClaimToken,
           secretsDirectory,
           overridePath: activeProbeScene.overrideCreated === true ? overridePath : null,
           danglingBaseline,
@@ -513,6 +516,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             imageTag: activeProbeScene.imageTag,
             imageId: activeProbeScene.imageId,
             runClaimToken: activeProbeScene.runClaimToken,
+            buildEvidenceClaimToken: activeProbeScene.runClaimToken,
             secretsDirectory: activeProbeScene.secretsDirectory,
             overridePath:
               activeProbeScene.overrideCreated === true ? activeProbeScene.overridePath : null,

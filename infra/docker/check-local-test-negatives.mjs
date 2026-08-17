@@ -91,11 +91,17 @@ const runClaimFor = (project) => {
   }
   return token
 }
-const cleanupSmokeProject = (project, secretsDirectory = null, options = {}) =>
-  cleanupSmokeProjectProduction(project, secretsDirectory, {
-    runClaimToken: runClaimFor(project),
+const cleanupSmokeProject = (project, secretsDirectory = null, options = {}) => {
+  const runClaimToken = runClaimFor(project)
+  return cleanupSmokeProjectProduction(project, secretsDirectory, {
+    runClaimToken,
+    // `buildApiImage()` 在拿到 immutable image ID 之前就用同一个 claim 登记
+    // build evidence。失败/信号窗口可能因此只有目录而还没有 imageId；cleanup
+    // 必须显式带回这份删除授权，不能依赖后面的 image-identity 阶段顺带收走。
+    buildEvidenceClaimToken: runClaimToken,
     ...options
   })
+}
 let caught = 0
 const pass = (name, reason) => {
   caught += 1
@@ -1500,13 +1506,15 @@ process.stdout.write('Group E: image isolation negatives\n')
     // 无 claim 镜像已经不是 cleanup 有权删除的测试资产。
     const idA1 = await buildApiImage({
       imageTag: tagA,
-      repositoryRoot
+      repositoryRoot,
+      runClaimToken: runClaimFor(projectA)
     })
     recordedImageIdA = idA1
     cleanupScopeA.imageId = idA1
     const idB = await buildApiImage({
       imageTag: tagB,
-      repositoryRoot
+      repositoryRoot,
+      runClaimToken: runClaimFor(projectB)
     })
     recordedImageIdB = idB
     cleanupScopeB.imageId = idB
@@ -1561,7 +1569,12 @@ process.stdout.write('Group E: image isolation negatives\n')
       }
     }
     for (const directory of [secretsA, secretsB]) {
-      rmSync(directory, { recursive: true, force: true })
+      if (existsSync(directory)) {
+        fail(
+          'suite cleanup',
+          'an owned Secret directory remained after the registered cleanup path'
+        )
+      }
     }
   }
 }

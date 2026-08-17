@@ -713,9 +713,17 @@ export const imageIdOf = async (tag, { env } = {}) => {
  * 在启动 BuildKit 前就交给 cleanup，只作为中断窗口的恢复 locator；成功证据与删除
  * 所有权仍以 immutable ID + claim + exact singleton tag 三者共同确定。
  */
-export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.env }) => {
+export const buildApiImage = async ({
+  imageTag,
+  repositoryRoot,
+  runClaimToken,
+  env = process.env
+}) => {
   if (!imageTag.startsWith(runImageTagPrefix)) {
     throw new DockerEvidenceError('refusing to build outside the per-run locator namespace')
+  }
+  if (typeof runClaimToken !== 'string' || !/^[0-9a-f]{32}$/.test(runClaimToken)) {
+    throw new DockerEvidenceError('build evidence owner claim was not canonical')
   }
   const directory = mkdtempSync(join(tmpdir(), 'meal-agent-m3b-build-'))
   const metadataFile = resolve(directory, 'built-image.metadata.json')
@@ -724,6 +732,7 @@ export const buildApiImage = async ({ imageTag, repositoryRoot, env = process.en
   const fileIdentities = new Map()
   const evidenceRecord = Object.freeze({
     identity: inodeIdentityOf(directory),
+    runClaimToken,
     imageTag,
     metadataFile,
     iidfile,
@@ -806,6 +815,7 @@ const cleanupRunUnsynchronized = async ({
   imageTag = null,
   imageId = null,
   runClaimToken = null,
+  buildEvidenceClaimToken = null,
   overridePath = null,
   composeFile,
   composeEnvironment = process.env,
@@ -815,8 +825,9 @@ const cleanupRunUnsynchronized = async ({
 }) => {
   const residue = []
   let resolvedImageId = imageId
-  let resolvedImageClaimToken =
-    imageId === null ? null : (ownedBuildImageClaims.get(imageId)?.claimToken ?? null)
+  const recordedImageClaim = imageId === null ? null : (ownedBuildImageClaims.get(imageId) ?? null)
+  let resolvedImageClaimToken = recordedImageClaim?.claimToken ?? null
+  let resolvedImageTag = recordedImageClaim?.imageTag ?? imageTag
   const stage = async (label, run) => {
     try {
       await run()
@@ -870,7 +881,10 @@ const cleanupRunUnsynchronized = async ({
   // signal/异常路径仍由 scoped cleanup 以 inode 身份逐个收敛。
   await stage('build-evidence', async () => {
     for (const [directory, record] of [...ownedBuildEvidenceDirectories.entries()]) {
-      if (record.imageTag !== imageTag) {
+      if (
+        buildEvidenceClaimToken === null ||
+        record.runClaimToken !== buildEvidenceClaimToken
+      ) {
         continue
       }
       if (resolvedImageId === null) {
@@ -895,7 +909,12 @@ const cleanupRunUnsynchronized = async ({
           )
           resolvedImageId = recoveredImageId
           resolvedImageClaimToken = record.claimToken
+          resolvedImageTag = record.imageTag
           record.recovery.imageId = recoveredImageId
+          ownedBuildImageClaims.set(
+            recoveredImageId,
+            Object.freeze({ imageTag: record.imageTag, claimToken: record.claimToken })
+          )
         } catch {
           // metadata/iid 尚不完整时，per-run tag 是唯一恢复 locator；它只允许在随后
           // inspect 同时证明 immutable ID、claim 与 exact singleton tag 后转成 ownership。
@@ -922,7 +941,12 @@ const cleanupRunUnsynchronized = async ({
           )
           resolvedImageId = recoveredFromTag
           resolvedImageClaimToken = record.claimToken
+          resolvedImageTag = record.imageTag
           record.recovery.imageId = recoveredFromTag
+          ownedBuildImageClaims.set(
+            recoveredFromTag,
+            Object.freeze({ imageTag: record.imageTag, claimToken: record.claimToken })
+          )
         }
       }
     }
@@ -1025,14 +1049,20 @@ const cleanupRunUnsynchronized = async ({
     if (resolvedImageClaimToken === null) {
       throw new DockerEvidenceError('recorded image identity has no ownership claim')
     }
+    if (imageTag !== null && imageTag !== resolvedImageTag) {
+      throw new DockerEvidenceError('recorded image locator does not match the cleanup request')
+    }
     await inspectClaimedBuildImage(
-      { imageId: resolvedImageId, claimToken: resolvedImageClaimToken, imageTag },
+      {
+        imageId: resolvedImageId,
+        claimToken: resolvedImageClaimToken,
+        imageTag: resolvedImageTag
+      },
       { env: composeEnvironment }
     )
     await dockerStrict(['docker', 'image', 'rm', resolvedImageId], {
       env: composeEnvironment
     })
-    ownedBuildImageClaims.delete(resolvedImageId)
     const after = await runCommand(['docker', 'image', 'inspect', resolvedImageId], {
       timeoutMs: 60_000,
       env: composeEnvironment
@@ -1040,6 +1070,7 @@ const cleanupRunUnsynchronized = async ({
     if (!(after.status === 1 && isAbsenceMessage(after.stderr, { kind: 'image', name: resolvedImageId }))) {
       throw new DockerEvidenceError('owned immutable image still exists after removal')
     }
+    ownedBuildImageClaims.delete(resolvedImageId)
     for (const [directory, record] of [...ownedBuildEvidenceDirectories.entries()]) {
       if (record.recovery.imageId === resolvedImageId) {
         removeOwnedBuildEvidenceDirectory(directory)
@@ -1101,6 +1132,7 @@ export const verifyNoResidue = async ({
   imageTag = null,
   imageId = null,
   runClaimToken = null,
+  buildEvidenceClaimToken = null,
   secretsDirectory = null,
   overridePath = null,
   danglingBaseline = null,
@@ -1109,8 +1141,10 @@ export const verifyNoResidue = async ({
 }) => {
   const problems = []
   if (
-    imageTag !== null &&
-    [...ownedBuildEvidenceDirectories.values()].some((record) => record.imageTag === imageTag)
+    typeof buildEvidenceClaimToken === 'string' &&
+    [...ownedBuildEvidenceDirectories.values()].some(
+      (record) => record.runClaimToken === buildEvidenceClaimToken
+    )
   ) {
     problems.push('interrupted build evidence still registered')
   }

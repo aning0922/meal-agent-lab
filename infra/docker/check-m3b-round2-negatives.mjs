@@ -48,10 +48,12 @@ import { randomBytes } from 'node:crypto'
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -771,6 +773,10 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
   // 绝不记录任何 `exit=` 行。
   const name = 'a missing ExitCode field fails the smoke instead of being recorded as exit=0'
   const shimDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-r4-shim-'))
+  const buildEvidenceBaseline = new Set(
+    readdirSync(tmpdir()).filter((entry) => entry.startsWith('meal-agent-m3b-build-'))
+  )
+  let buildEvidenceResidue = []
   try {
     const realDocker = spawnSync('which', ['docker'], { encoding: 'utf8' })
     if (realDocker.error !== undefined || realDocker.status !== 0) {
@@ -813,12 +819,22 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
         })
         child.once('close', (code) => resolveOutcome({ code, stdout, stderr }))
       })
+      buildEvidenceResidue = readdirSync(tmpdir()).filter(
+        (entry) =>
+          entry.startsWith('meal-agent-m3b-build-') && !buildEvidenceBaseline.has(entry)
+      )
       const recordedExit = /chain [a-z-]+: exit=/.test(outcome.stdout)
       const refused = /local-test smoke evidence collection failed/.test(
         outcome.stdout
       )
       const claimedPass = /local-test smoke PASS/.test(outcome.stdout)
-      if (claimedPass) {
+      if (buildEvidenceResidue.length > 0) {
+        fail(
+          name,
+          `${String(buildEvidenceResidue.length)} owned build-evidence director` +
+            `${buildEvidenceResidue.length === 1 ? 'y' : 'ies'} remained after child settlement`
+        )
+      } else if (claimedPass) {
         fail(name, 'NOT CAUGHT — the smoke passed while its container evidence omitted ExitCode')
       } else if (recordedExit) {
         fail(name, 'a one-shot exit code was recorded from an inspect object without ExitCode')
@@ -832,6 +848,21 @@ process.stdout.write('R4-1: one-shot ExitCode is read fail closed\n')
     }
   } finally {
     rmSync(shimDirectory, { recursive: true, force: true })
+    for (const entry of buildEvidenceResidue) {
+      const path = resolve(tmpdir(), entry)
+      try {
+        const observed = lstatSync(path)
+        if (!observed.isDirectory() || readdirSync(path).length !== 0) {
+          fail('suite cleanup', 'an unowned or non-empty build-evidence path was preserved')
+          continue
+        }
+        rmdirSync(path)
+      } catch {
+        if (existsSync(path)) {
+          fail('suite cleanup', 'an empty build-evidence directory could not be removed')
+        }
+      }
+    }
   }
 }
 
@@ -4183,39 +4214,40 @@ process.stdout.write('P1-5: repository-wide git index containment\n')
 process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 
 {
-  // child 在约 100ms 就关闭；等待超过 1 秒后**不得**出现对它 PGID 的
-  // SIGKILL——否则那个 PGID 可能已经被别的进程组复用。
+  // 这里使用 lifecycle 自己公开的原语 seam，而不是事后 monkeypatch
+  // `process.kill`。生产模块在加载时冻结原生 signal capability；旧测试的
+  // monkeypatch 因而已经观察不到真实投递，会让前置事实结构性空掉。
+  // TERM 后下一次 probe 模拟 child/整组已经退出；此代必须立即退休，等待超过
+  // grace 后也不得再收到 SIGKILL，否则那个 PGID 可能已被复用。
   const name = 'no SIGKILL is sent to a pgid whose child already closed'
+  const { createProcessGroupLifecycle } = await import('./m3b-subprocess.mjs')
   const observed = []
-  const originalKill = process.kill.bind(process)
-  process.kill = (pid, signal) => {
-    observed.push({ pid, signal })
-    return originalKill(pid, signal)
-  }
-  try {
-    const { runCommand, terminateControlledSubtree } = await import('./m3b-subprocess.mjs')
-    const started = runCommand(['sh', '-c', 'sleep 0.1'], { timeoutMs: 30_000 })
-    await new Promise((resolveWait) => setTimeout(resolveWait, 30))
-    // 在 child 仍存活时要求终止：TERM 应当发出，KILL 的升级则必须在 child
-    // 关闭后被取消。
-    const terminated = terminateControlledSubtree({ graceMs: 1_500 })
-    await started.catch(() => undefined)
-    await terminated
-    await new Promise((resolveWait) => setTimeout(resolveWait, 300))
-    const kills = observed.filter((entry) => entry.signal === 'SIGKILL')
-    const terms = observed.filter((entry) => entry.signal === 'SIGTERM')
-    if (terms.length === 0) {
-      fail(name, 'the pre-condition failed: no SIGTERM was sent at all')
-    } else if (kills.length > 0) {
-      fail(
-        name,
-        `a SIGKILL was sent to a closed child's pgid (${JSON.stringify(kills)})`
-      )
-    } else {
-      pass(name, 'TERM sent, escalation cancelled once the child closed')
+  let alive = true
+  const lifecycle = createProcessGroupLifecycle({
+    probeGroup: () => alive,
+    signalGroup: (pgid, signal) => {
+      observed.push({ pgid, signal })
+      return true
+    },
+    delay: async () => {
+      alive = false
     }
-  } finally {
-    process.kill = originalKill
+  })
+  const handle = lifecycle.register(42_424)
+  const outcome = await lifecycle.terminateDetailed([handle], {
+    graceMs: 1_500,
+    killWaitMs: 3_000
+  })
+  const kills = observed.filter((entry) => entry.signal === 'SIGKILL')
+  const terms = observed.filter((entry) => entry.signal === 'SIGTERM')
+  if (terms.length !== 1) {
+    fail(name, `the pre-condition failed: expected one SIGTERM, got ${String(terms.length)}`)
+  } else if (kills.length > 0) {
+    fail(name, `a SIGKILL was sent to a retired generation (${String(kills.length)})`)
+  } else if (outcome.survivors.length > 0 || lifecycle.unconfirmed().length > 0) {
+    fail(name, 'the retired generation remained in the ownership registry')
+  } else {
+    pass(name, 'TERM sent, ESRCH retirement prevented later SIGKILL')
   }
 }
 

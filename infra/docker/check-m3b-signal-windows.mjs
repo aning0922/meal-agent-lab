@@ -582,12 +582,17 @@ try {
     timeoutFixture,
     [
       `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
-      "const originalKill = process.kill.bind(process)",
+      'let runCommand = m.runCommand',
       "if (process.argv[2] === 'stubborn') {",
-      "  process.kill = (pid, signal) => pid < 0 && signal !== 0 ? true : originalKill(pid, signal)",
+      '  const processGroups = m.createProcessGroupLifecycle({',
+      '    probeGroup: () => true,',
+      '    signalGroup: () => true,',
+      '    delay: async () => undefined',
+      '  })',
+      '  runCommand = m.createCommandRunner({ processGroups })',
       '}',
       'try {',
-      "  await m.runCommand(['/bin/sh','-c'," +
+      "  await runCommand(['/bin/sh','-c'," +
         JSON.stringify('(trap "" TERM; sleep 45) </dev/null >/dev/null 2>&1 & sleep 45') +
         '], { timeoutMs: 400 })',
       "  process.stdout.write('NO-REJECTION')",
@@ -978,8 +983,29 @@ try {
       'a false-returning termination primitive was erased after the group disappeared'
     )
   }
+
+  let throwingAlive = true
+  const throwingLifecycle = createProcessGroupLifecycle({
+    probeGroup: () => throwingAlive,
+    signalGroup: () => {
+      throw new Error('CALLER-SENTINEL')
+    },
+    delay: async () => {
+      throwingAlive = false
+    }
+  })
+  const throwingHandle = throwingLifecycle.register(74)
+  const throwingOutcome = await throwingLifecycle.terminateDetailed([throwingHandle], {
+    graceMs: 1,
+    killWaitMs: 1
+  })
+  if (!throwingOutcome.primitiveFailed || throwingOutcome.survivors.length !== 0) {
+    handlerProblems.push(
+      'a throwing termination primitive was erased after the group disappeared'
+    )
+  }
 } catch {
-  handlerProblems.push('the false-returning termination primitive probe threw')
+  handlerProblems.push('the deterministic termination primitive probe threw')
 }
 const handlerCases = [
   {
@@ -1018,17 +1044,6 @@ const handlerCases = [
     expectedReason: /scoped cleanup returned an invalid result/
   },
   {
-    label: 'termination-primitive',
-    cleanup: 'async () => []',
-    beforeSignal:
-      "let primitiveFailed = false; process.kill = (pid, signal) => { " +
-      "if (pid < 0 && signal === 'SIGTERM' && !primitiveFailed) { primitiveFailed = true; " +
-      "throw new Error('CALLER-SENTINEL') }; return nativeKill(pid, signal) }",
-    expectedStatus: 1,
-    expectedSignal: null,
-    expectedReason: /subtree termination failed/
-  },
-  {
     label: 'final-signal-primitive',
     cleanup: 'async () => []',
     beforeSignal:
@@ -1044,7 +1059,6 @@ const expectedHandlerCaseLabels = [
   'residue',
   'throw',
   'invalid-return',
-  'termination-primitive',
   'final-signal-primitive'
 ]
 if (
@@ -1136,7 +1150,8 @@ if (handlerProblems.length > 0) {
   pass(
     'signal-handler subtree and scoped-cleanup failures are fail closed',
     'clean cleanup preserves SIGTERM, while residue, invalid return, cleanup throw and ' +
-      'both subtree and final-signal primitive failures use fixed exit 1 without caller text; ' +
+      'final-signal primitive failures use fixed exit 1 without caller text; standalone ' +
+      'lifecycle probes pin false-returning and throwing subtree primitives; ' +
       'every announced pgid reaches ESRCH'
   )
 }
