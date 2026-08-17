@@ -1,6 +1,6 @@
 # M5.2 发布与收场协议整改任务书
 
-- 状态：In progress（未 Accepted）
+- 状态：Implementation complete — pending independent A/B review（未 Accepted）
 - 日期：2026-08-17
 - 基线：`152400077504d184c74b81445b32f6b8b2e95104`
 - 范围：BuildKit 输出账本、正式备份发布、sidecar commit marker、runtime probe capability 与信号收场
@@ -91,3 +91,26 @@ M5.2 只允许一个实现候选。若后续独立审计仍确认以下任一同
   精确零残留复核。
 - 门禁全绿后才可创建两个全新的用户可见只读审计会话；M5 仍未 Accepted，09A 仍为
   In Progress，ADR-0006 仍为 Proposed，远端 CI 无真实 run。
+
+## 实施落点与本地证据（2026-08-17）
+
+- 实现提交：`afe8deb`；M3B committed evidence baseline 同步：`38c72d9`（tracked
+  文件数 `351 → 352`，对应本任务书新增文件）。两者均为 append-only 本地提交，未推送、
+  未合并、未创建 PR。
+- production helper 的回归直接观察真实 `fsync` / `close` / `link` / `unlink` 次序、
+  正式名字在 close 前不可见、父目录 fsync，以及 failure rollback；另覆盖 in-tree hardlink
+  删除后 `nlink` 的预期递减，避免把自身清理误判为外部 drift。
+- build 失败夹具会真实写出 iidfile + metadata 后非零退出；正向与 mutation 两个入口都在
+  recovery build 窗口接收真实 `SIGTERM`，最终由共享 handler 收敛，无普通 PASS/FAIL
+  抢先、无 build evidence residue。
+- backup 行为测试固定 `transient cleanup → dump → sidecar`，cleanup 失败时两个正式名字
+  都不可见；sidecar 发布后不再运行可能失败的 async/Docker cleanup。
+- 固定 Node.js `v24.18.0` 下，scripts tests `139/139`，runtime image 正向扫描 PASS，
+  mutation `1 baseline + 17 built + 2 static-only` 全部按指定理由拒绝，restore drill PASS。
+- 实现 HEAD `38c72d9` 已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**；随后精确检查
+  M3B/M4/M5 容器、网络、卷、镜像标签、临时目录、override、相关进程与 Git 工作树，
+  均为零残留/clean。
+
+该证据只支持“实现完成、等待独立审计”。两个全新的用户可见只读 A/B 审计均给出
+CLEAN 之前，不得把 M5 标为 Accepted；远端 GitHub Actions 尚无真实 run，09A 仍为
+In Progress，ADR-0006 仍为 Proposed。

@@ -152,3 +152,15 @@ locator、runtime UID access、正式文件 durability 与字符串计数式 mut
 承接。实现提交 `952d3e3` 已从步骤 1 串行通过本地 `stage09a:check` **14/14**；M5.1
 当前 Implementation complete — pending independent A/B review，M5 仍未 Accepted，
 阶段 09A 保持 In Progress，远端 CI 真实 run 与阶段总验收均未完成。
+
+M5.1 的后续独立审计又确认：producer 在非零退出前写出的 iidfile/metadata、正式文件名
+的可见时点、sidecar 之前尚未完成的清理，以及 recovery build 的 signal settlement，仍未
+被同一个原子协议约束。该整改由
+[`2026-08-m5-2-publication-settlement-remediation.md`](../../plans/2026-08-m5-2-publication-settlement-remediation.md)
+承接。实现提交 `afe8deb` 与基线同步提交 `38c72d9` 将输出声明前移到 fork 之前；正式
+artifact 经同目录 staging 的 write/fstat/fsync/close 后 no-replace promotion 并 fsync
+父目录；backup sidecar 只在 transient cleanup 和 dump 发布之后提交；runtime image
+入口的 recovery-build 信号由共享 handler 完成 cleanup 与同信号重投。实现 HEAD 已从
+步骤 1 串行通过本地 `stage09a:check` **14/14**，scripts tests **139/139**，最终 scoped
+资源零残留。M5.2 当前仍只是 Implementation complete — pending independent A/B review；
+M5 未 Accepted，阶段 09A 保持 In Progress，远端 CI 真实 run 与阶段总验收均未完成。

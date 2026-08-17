@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-17 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.1 Implementation complete — pending independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.2 Implementation complete — pending independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（架构级证据所有权整改候选待全新 A/B 独立审计，未 Accepted）
+### M5 实施记录（M5.2 发布与收场协议整改候选待全新 A/B 独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -4121,6 +4121,36 @@ static-only**。正式备份发布要求 file fsync 与 parent-directory fsync�
 生命周期、备份恢复与各 scoped resource 均收口。M5.1 当前 Implementation complete —
 pending independent A/B review，M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；
 ADR-0006 保持 `Proposed`。
+
+#### M5.2 发布与收场协议整改（2026-08-17，Implementation complete — pending independent A/B review）
+
+M5.1 的独立审计确认四项仍属于同一个 publication/settlement 根因：BuildKit 非零退出前
+可写出未登记 iidfile/metadata；正式路径在持久化 close 之前可见；backup sidecar 发布时
+仍有会失败的 transient cleanup；recovery build 信号可被入口普通终态抢先。完整任务书与
+停止条件见
+[`2026-08-m5-2-publication-settlement-remediation.md`](2026-08-m5-2-publication-settlement-remediation.md)。
+
+本轮只追加实现提交 `afe8deb` 与 M3B committed evidence baseline 同步提交 `38c72d9`：
+
+1. 外部 producer 在 fork 前预声明精确输出；cleanup journal 只收养这些预声明且实际出现的
+   regular、`nlink=1` inode，未知 sibling 与 pathname replacement 仍报 residue/drift；
+2. 正式文件经隐藏的同目录 staging 完成 write/fstat/fsync/close，再 hardlink no-replace
+   promotion、验证双链接、移除 staging、验证最终 `nlink=1` 并 fsync 父目录；任一阶段失败
+   只按已登记 inode rollback；
+3. backup 在全部 transient cleanup 成功后才发布 dump，sidecar 是最后一个提交标记；其后
+   不再运行可能失败的 async/Docker cleanup；
+4. runtime scratch inspect 补齐 User、NetworkMode 与 ReadonlyRootfs capability；正向与
+   mutation 入口的 recovery build 信号都由共享 handler 完成最终 PGID sweep、scoped
+   cleanup 和同信号重投；
+5. 行为测试直接观察 production `fsync`/`close`/promotion 次序、正式名字可见时点、build
+   非零输出接管、cleanup→dump→sidecar，以及两个真实 entrypoint 的 signal settlement。
+
+固定 Node.js `v24.18.0` 下，scripts tests **139/139**，runtime image mutation
+**1 baseline + 17 built + 2 static-only**；实现 HEAD `38c72d9` 已从步骤 1 串行通过
+`pnpm stage09a:check` **14/14**，fresh smoke、八份 Secret identity、lifecycle、same-ledger
+restore 与最终精确清理全部 PASS，tracked baseline 为 **352**。下一门禁仍是两个**全新、
+用户可见、互相独立、只读**的 A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未
+Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持 `Proposed`。
 
 #### M5 不可变证据协议最终收口候选（2026-08-16，历史候选）
 
