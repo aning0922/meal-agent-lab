@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-17 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.2 Implementation complete — pending independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.3 Implementation complete — pending local full-gate verification，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（M5.2 发布与收场协议整改候选待全新 A/B 独立审计，未 Accepted）
+### M5 实施记录（M5.3 原子副作用与 cleanup settlement 候选待本地全门禁及全新 A/B 独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -4151,6 +4151,32 @@ M5.1 的独立审计确认四项仍属于同一个 publication/settlement 根因
 restore 与最终精确清理全部 PASS，tracked baseline 为 **352**。下一门禁仍是两个**全新、
 用户可见、互相独立、只读**的 A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未
 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持 `Proposed`。
+
+#### M5.3 原子副作用与 cleanup settlement 收敛（2026-08-19，Implementation complete — pending local full-gate verification）
+
+M5.2 候选 `429b248` 的独立审计结果为 **A=BLOCK、B=CLEAN**。A 的五项 P1 与 B 的
+14/14 正向证据可同时成立：缺陷位于 side effect 已经发生、primitive 随后失败，或普通
+cleanup 已进入执行、随后收到信号的窗口。完整任务书与停止条件见
+[`2026-08-m5-3-atomic-settlement-convergence.md`](2026-08-m5-3-atomic-settlement-convergence.md)。
+
+本轮只追加实现提交 `c69b977`：
+
+1. hardlink promotion 无论成功或抛错都重新 `lstat` 最终名；只有最终名与 staging 的
+   `dev/ino` 精确相等才取得 rollback ownership，外部名字/替换 inode 保留并报 drift；
+2. backup private partial 在 `docker cp` 之前进入 owned-tree journal；producer settle 后只
+   收养预声明路径上的 regular、`nlink=1` inode，非零和 SIGINT/SIGTERM/SIGHUP 均回滚；
+3. `createSignalSafeCleanup` 为 cleanup 建立独立、memoized 的进程组 lifecycle；普通退出
+   已进入 cleanup 时收到信号，handler 等待同一 Promise，而不会由 workload sweep 杀死
+   cleanup 子命令；
+4. recovery 只在最终 tag + owner claim + immutable image ID 结算后形成 failure；错误或
+   截断 iid/metadata 不会在 exact fallback 已安全删除对象后永久 latch residue；
+5. publication `nlink`、pre-fork declaration 与 scratch user/network/read-only capability
+   均由从生产源码构造的 mutant 加最小 oracle 验证，删除 guard 必须转红。
+
+固定 Node.js `v24.18.0` 下，scripts tests **148/148**。本地完整 14 步链、docs links、
+diff check 与最终零残留将在创建两个**全新、用户可见、互相独立、只读**的 A/B 审计
+会话之前从头串行运行。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006
+保持 `Proposed`。
 
 #### M5 不可变证据协议最终收口候选（2026-08-16，历史候选）
 

@@ -229,16 +229,15 @@ deps 状态记录，仓库因此在 `pnpm-workspace.yaml` 显式声明
 Docker image/container identity 只接受 canonical immutable 形态；命令失败与 Config
 不一致只输出固定类别，不回显 runner stderr 或镜像内实际值。
 
-**M5.2 当前协议（2026-08-17）**：M5.1 审计确认的 publication/settlement 同源缺口由
-实现提交 `afe8deb` 与基线同步提交 `38c72d9` 收口。BuildKit 在 fork 前预声明 iidfile 与
-metadata；cleanup 只接管实际出现且 identity 与声明相符的 inode。正式 evidence 使用隐藏
-同目录 staging，write/fstat/fsync/close 后才 no-replace promotion 并 fsync 父目录。
-backup 先完成 transient cleanup，再发布 dump，最后发布 sidecar 作为 commit marker。
-正向与 mutation 两个 runtime-image 入口的 recovery build 信号都交给共享 handler 做
-scoped cleanup 与同信号重投。scripts tests **139/139**、runtime mutation
-**1 baseline + 17 built + 2 static-only** 与本地 `stage09a:check` **14/14** 均已通过，
-最终资源零残留。M5.2 为 Implementation complete — pending independent A/B review，
-M5 未 Accepted。
+**M5.3 当前协议（2026-08-19）**：M5.2 候选 `429b248` 的独立审计为 A=BLOCK、B=CLEAN；
+实现提交 `c69b977` 继续把 after-effect publication、非零/信号 producer partial、普通 cleanup
+进行中收到信号与 recovery 最终结算收敛为同一 ownership/settlement 协议。发布 helper 在
+primitive settle 后按 exact `dev/ino` 取得 rollback ownership；backup partial 在 `docker cp`
+之前进入 owned-tree journal；cleanup 使用独立且 memoized 的进程组 lifecycle；pre-evidence
+recovery 只接受 exact tag + claim + immutable ID。三项 guard deletion 由生产源码 mutation
+直接验证。固定 Node.js v24.18.0 的 scripts tests **148/148**；完整 14 步链与零残留正在
+创建全新 A/B 会话前重跑。M5.3 为 Implementation complete — pending local full-gate
+verification，M5 未 Accepted。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接

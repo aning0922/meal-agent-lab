@@ -59,10 +59,14 @@ claim/generation；取得 immutable ID 后，后续检查、清理和发布只�
 ### 3. 正式 artifact 采用验证后发布
 
 备份在私有 staging 中产生。容器源 digest、宿主字节、archive TOC、正式 dump 与
-sidecar 必须绑定同一 Buffer/digest。正式路径使用 `O_EXCL|O_NOFOLLOW` 创建；同一 fd
-完成写入、复核与 file fsync，close 后再 fsync 父目录。dump 先持久化，sidecar 最后
-持久化并作为 commit marker；成功前最后复核 dev/ino、`nlink=1`、size、digest 和
-sidecar 字节。任一 sync、cleanup 或复核失败都不能返回成功。
+sidecar 必须绑定同一 Buffer/digest。正式 artifact 先在**同目录隐藏 staging 名**上以
+`O_EXCL|O_NOFOLLOW` 创建，并在同一 fd 完成写入、复核、file fsync 与 close；随后以
+`link(2)` no-replace promotion 产生正式名，验证 staging 与正式名为同一 dev/ino 且
+`nlink 1→2`，移除 staging 后再验证正式名 `nlink=1` 并 fsync 父目录。`link`/`unlink`
+primitive 无论如何返回都必须重新观察目录项：只有与 fork 前登记 staging inode 精确
+相同的名字才取得 rollback ownership；替换 inode 和外部 hardlink 保留并固定失败。
+dump 先持久化，sidecar 最后持久化并作为 commit marker；成功前最后复核 dev/ino、
+`nlink=1`、size、digest 和 sidecar 字节。任一 sync、cleanup 或复核失败都不能返回成功。
 
 恢复必须在第一次数据库查询/创建之前，对已经 checksum 绑定的同一 Buffer 完成
 archive TOC 预检。坏 archive 不得创建目标数据库；恢复阶段继续使用同一 Buffer，
@@ -164,3 +168,15 @@ artifact 经同目录 staging 的 write/fstat/fsync/close 后 no-replace promoti
 步骤 1 串行通过本地 `stage09a:check` **14/14**，scripts tests **139/139**，最终 scoped
 资源零残留。M5.2 当前仍只是 Implementation complete — pending independent A/B review；
 M5 未 Accepted，阶段 09A 保持 In Progress，远端 CI 真实 run 与阶段总验收均未完成。
+
+M5.2 候选 `429b248` 的后续独立审计结果为 A=BLOCK、B=CLEAN。动态正常路径 14/14
+与零残留成立，但 A 的 after-effect/producer/cleanup-race 反例确认：正式 hardlink 与
+backup partial 的 ownership 仍取得过晚，普通 cleanup 会被 signal sweep 杀死，且
+恢复源的早期失败会在 exact fallback 成功后永久 latch residue。M5.3 由
+[`2026-08-m5-3-atomic-settlement-convergence.md`](../../plans/2026-08-m5-3-atomic-settlement-convergence.md)
+承接，实施提交 `c69b977`：publication 在所有 link settlement 后按 staging inode 重新
+取得回滚权；backup partial 在 `docker cp` 前声明；runtime cleanup 使用独立、memoized
+进程组 lifecycle；pre-evidence recovery 只接受 exact tag + claim + immutable ID 的最终
+结算；production guard mutants 直接从生产源码构造。固定 Node.js `v24.18.0` 的 scripts
+tests 为 **148/148**。M5.3 当前仍只是 Implementation complete — pending independent
+A/B review；M5 未 Accepted、阶段 09A 未 Pass、远端 CI 无真实 run。

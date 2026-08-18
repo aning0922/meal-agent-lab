@@ -18,3 +18,5 @@
 - [阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)
 - [阶段 09A M5：架构收缩与收敛任务书](2026-08-m5-architecture-convergence.md)
 - [阶段 09A M5.1：架构级证据协议整改任务书](2026-08-m5-1-evidence-protocol-remediation.md)
+- [阶段 09A M5.2：发布与收场协议整改任务书](2026-08-m5-2-publication-settlement-remediation.md)
+- [阶段 09A M5.3：原子副作用与 cleanup settlement 收敛](2026-08-m5-3-atomic-settlement-convergence.md)
