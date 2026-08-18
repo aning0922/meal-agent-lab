@@ -55,10 +55,14 @@ import {
 import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 import {
+  createOwnedTreeJournal,
+  declareOwnedTreeOutput,
   parsePgRestoreListEvidence,
   directoryEvidenceStillNames,
   identityStillNamesFile,
   readStableRegularFile,
+  registerOwnedTree,
+  retireOwnedTree,
   sha256Bytes,
   snapshotDirectoryEvidence,
   verifyPublishedFileEvidence,
@@ -417,8 +421,13 @@ export const performBackup = async (
   // 不能承担发布边界。
   const privateDirectory = createPrivateBackupDirectory(directory)
   const partialDirectory = privateDirectory.path
-  const partialDirectoryIdentity = privateDirectory.identity
   const hostPartial = resolve(partialDirectory, partial)
+  const privatePartialJournal = createOwnedTreeJournal(partialDirectory)
+  // docker cp may create bytes before it reports nonzero/signal/transport
+  // settlement. Declare the exact name before the producer starts; cleanup may
+  // then adopt only a regular single-link inode at this path, never an unknown
+  // sibling or a replacement.
+  declareOwnedTreeOutput(privatePartialJournal, hostPartial)
   let publishedIdentity = null
   let publishedSidecarIdentity = null
   let publishedDumpBytes = null
@@ -436,12 +445,16 @@ export const performBackup = async (
         if (partialDirectoryRetired) {
           // An idempotent cleanup call after a proven removal has no new work.
         } else {
-          const privateResidue = retirePrivateBackupDirectory(
-            partialDirectoryIdentity,
-            [privatePartialIdentity]
-          )
-          residue.push(...privateResidue)
-          partialDirectoryRetired = privateResidue.length === 0
+          try {
+            retireOwnedTree(privatePartialJournal)
+            partialDirectoryRetired = true
+          } catch {
+            residue.push(
+              existsSync(partialDirectory)
+                ? 'backup partial directory cleanup failed'
+                : 'backup partial directory identity disappeared before cleanup'
+            )
+          }
         }
       } catch {
         if (!partialDirectoryRetired) {
@@ -539,9 +552,18 @@ export const performBackup = async (
           if (digestMatch === null) {
             throw new Error('backup source digest evidence failed')
           }
-          const copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
-            timeoutMs: 300_000
-          })
+          let copied = null
+          try {
+            copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
+              timeoutMs: 300_000
+            })
+          } finally {
+            // Producer settlement, including nonzero or signal, cannot bypass
+            // adoption of its predeclared output. If signal cleanup adopted and
+            // removed it first, this throws into the already-failing operation
+            // rather than reacquiring a pathname.
+            if (existsSync(hostPartial)) registerOwnedTree(privatePartialJournal, hostPartial)
+          }
           if (copied.status !== 0) {
             throw new Error('backup handoff failed')
           }

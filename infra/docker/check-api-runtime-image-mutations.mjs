@@ -40,6 +40,7 @@ import {
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
 import {
+  createSignalSafeCleanup,
   installSignalHandlers,
   runCommand,
   terminationSignal
@@ -311,22 +312,18 @@ const cleanupState = {
   temporaryRoot: null,
   temporaryRootIdentity: null,
   temporaryJournal: null,
-  builds: new Map(),
-  cleanupPromise: null
+  builds: new Map()
 }
 const cleanupProblems = []
-const cleanup = () => {
-  if (cleanupState.cleanupPromise !== null) {
-    return cleanupState.cleanupPromise
-  }
-  cleanupState.cleanupPromise = (async () => {
+const cleanup = createSignalSafeCleanup(async (cleanupRunCommand) => {
   for (const [caseId, record] of cleanupState.builds) {
     let ownedImageId = record.imageId
+    let recoverySourceFailed = false
     try {
       if (record.scratchContainer !== null) {
         const scratch = record.scratchContainer
         const locator = scratch.id ?? scratch.name
-        const inspected = await runCommand(['docker', 'container', 'inspect', locator], {
+        const inspected = await cleanupRunCommand(['docker', 'container', 'inspect', locator], {
           timeoutMs: 60_000
         })
         if (inspected.status === 0) {
@@ -335,11 +332,14 @@ const cleanup = () => {
             {
               expectedName: scratch.name,
               expectedImageId: scratch.expectedImageId,
-              expectedContainerId: scratch.id
+              expectedContainerId: scratch.id,
+              expectedUser: scratch.expectedUser,
+              expectedNetworkMode: scratch.expectedNetworkMode,
+              expectedReadonlyRootfs: scratch.expectedReadonlyRootfs
             },
             () => { throw new Error('scratch identity') }
           )
-          const removal = await runCommand(
+          const removal = await cleanupRunCommand(
             ['docker', 'container', 'rm', '-f', '-v', owned.Id],
             { timeoutMs: 120_000 }
           )
@@ -352,7 +352,7 @@ const cleanup = () => {
         )) {
           cleanupProblems.push(`owned runtime probe identity could not be verified (${caseId})`)
         }
-        const gone = await runCommand(['docker', 'container', 'inspect', locator], {
+        const gone = await cleanupRunCommand(['docker', 'container', 'inspect', locator], {
           timeoutMs: 60_000
         })
         if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
@@ -363,26 +363,7 @@ const cleanup = () => {
         }
         record.scratchContainer = null
       }
-      if (
-        ownedImageId === null &&
-        existsSync(record.metadataFile) &&
-        existsSync(record.iidfile)
-      ) {
-        try {
-          const evidence = parseBuildMetadataImageIdentity(
-            readFileSync(record.metadataFile, 'utf8')
-          )
-          const localId = evidence.imageId
-          const iid = parseCanonicalDockerImageId(readFileSync(record.iidfile, 'utf8'))
-          if (iid !== localId && iid !== evidence.configId) {
-            throw new Error('identity mismatch')
-          }
-          ownedImageId = localId
-        } catch {
-          cleanupProblems.push(`built image identity could not be recovered (${caseId})`)
-        }
-      }
-      const tagged = await runCommand(['docker', 'image', 'inspect', record.recoveryTag], {
+      const tagged = await cleanupRunCommand(['docker', 'image', 'inspect', record.recoveryTag], {
         timeoutMs: 60_000
       })
       if (tagged.status === 0) {
@@ -400,17 +381,22 @@ const cleanup = () => {
           }
           ownedImageId = recoveredId
         } catch {
-          cleanupProblems.push(`recovery tag did not identify the claimed image (${caseId})`)
+          recoverySourceFailed = true
         }
       } else if (!(
         tagged.status === 1 &&
         isAbsenceMessage(tagged.stderr, { kind: 'image', name: record.recoveryTag })
       )) {
-        cleanupProblems.push(`recovery tag identity could not be verified (${caseId})`)
+        recoverySourceFailed = true
       }
-      if (ownedImageId === null) continue
+      if (ownedImageId === null) {
+        if (recoverySourceFailed) {
+          cleanupProblems.push(`built image identity could not be recovered (${caseId})`)
+        }
+        continue
+      }
 
-      const owned = await runCommand(['docker', 'image', 'inspect', ownedImageId], {
+      const owned = await cleanupRunCommand(['docker', 'image', 'inspect', ownedImageId], {
         timeoutMs: 60_000
       })
       let mayRemove = false
@@ -436,14 +422,14 @@ const cleanup = () => {
         cleanupProblems.push(`immutable image identity could not be verified (${caseId})`)
       }
       if (mayRemove) {
-        const untag = await runCommand(['docker', 'image', 'rm', record.recoveryTag], {
+        const untag = await cleanupRunCommand(['docker', 'image', 'rm', record.recoveryTag], {
           timeoutMs: 120_000
         })
         if (untag.status !== 0) {
           cleanupProblems.push(`recovery tag removal failed (${caseId})`)
         }
       }
-      const tagGone = await runCommand(['docker', 'image', 'inspect', record.recoveryTag], {
+      const tagGone = await cleanupRunCommand(['docker', 'image', 'inspect', record.recoveryTag], {
         timeoutMs: 60_000
       })
       if (!(tagGone.status === 1 && isAbsenceMessage(tagGone.stderr, {
@@ -452,7 +438,7 @@ const cleanup = () => {
       }))) {
         cleanupProblems.push(`recovery tag still present after removal (${caseId})`)
       }
-      const remaining = await runCommand(['docker', 'image', 'inspect', ownedImageId], {
+      const remaining = await cleanupRunCommand(['docker', 'image', 'inspect', ownedImageId], {
         timeoutMs: 60_000
       })
       if (remaining.status === 0) {
@@ -466,7 +452,7 @@ const cleanup = () => {
               requireUntagged: true
             }
           )
-          const removal = await runCommand(['docker', 'image', 'rm', ownedImageId], {
+          const removal = await cleanupRunCommand(['docker', 'image', 'rm', ownedImageId], {
             timeoutMs: 120_000
           })
           if (removal.status !== 0) {
@@ -481,7 +467,7 @@ const cleanup = () => {
       )) {
         cleanupProblems.push(`immutable image identity could not be verified (${caseId})`)
       }
-      const gone = await runCommand(['docker', 'image', 'inspect', ownedImageId], {
+      const gone = await cleanupRunCommand(['docker', 'image', 'inspect', ownedImageId], {
         timeoutMs: 60_000
       })
       if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
@@ -521,9 +507,7 @@ const cleanup = () => {
     cleanupState.temporaryJournal = null
   }
   return [...cleanupProblems]
-  })()
-  return cleanupState.cleanupPromise
-}
+})
 
 installSignalHandlers(() => cleanup(), { label: 'api runtime image mutation cleanup' })
 
@@ -543,8 +527,6 @@ const buildAndScan = async ({
   const claimToken = randomBytes(16).toString('hex')
   const recoveryTag = `meal-agent-api:m5-mut-${runId}-${caseId}`
   const record = {
-    metadataFile,
-    iidfile: imageIdFile,
     claimToken,
     recoveryTag,
     imageId: null,

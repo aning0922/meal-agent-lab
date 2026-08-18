@@ -31,6 +31,7 @@ import {
   indexSavedImageTar,
   parseContainerInspect,
   parseOwnedScratchContainer,
+  scratchCapabilityExpectation,
   parseLayerTarEvidence,
   parseImageHistory,
   parseImageInspect,
@@ -455,6 +456,7 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+
 })
 
 test('verified layer replay consumes inherited descriptors rather than a replaceable path', async () => {
@@ -1050,6 +1052,43 @@ test('scratch-container cleanup ownership is proven by exact identity, image, na
       /identity did not match/
     )
   }
+  for (const missingCapability of [
+    { expectedUser: undefined },
+    { expectedNetworkMode: undefined },
+    { expectedReadonlyRootfs: undefined }
+  ]) {
+    assert.throws(
+      () => parseOwnedScratchContainer(JSON.stringify(payload), {
+        expectedName: name,
+        expectedImageId: imageId,
+        expectedContainerId: containerId,
+        expectedUser: '10001:10001',
+        expectedNetworkMode: 'none',
+        expectedReadonlyRootfs: true,
+        ...missingCapability
+      }, throwingFatal),
+      /identity did not match/
+    )
+  }
+})
+
+test('production scratch capability expectations are closed and non-optional', () => {
+  assert.deepEqual(
+    scratchCapabilityExpectation({
+      name: 'fixture',
+      imageId: `sha256:${'a'.repeat(64)}`,
+      containerId: 'b'.repeat(64),
+      user: '10001:10001'
+    }),
+    {
+      expectedName: 'fixture',
+      expectedImageId: `sha256:${'a'.repeat(64)}`,
+      expectedContainerId: 'b'.repeat(64),
+      expectedUser: '10001:10001',
+      expectedNetworkMode: 'none',
+      expectedReadonlyRootfs: true
+    }
+  )
 })
 
 test('the production scan consumes an immutable ID while a test-only locator resolves at most once', () => {
@@ -1060,7 +1099,7 @@ test('the production scan consumes an immutable ID while a test-only locator res
   assert.match(scanBody, /\['docker', 'image', 'save', imageId\][\s\S]*?stdoutFd: savedImageIdentity\.fd/)
   assert.match(scanBody, /validateSavedImageArchive\([\s\S]*?imageInspect[\s\S]*?historyRows/)
   assert.match(scanBody, /'docker', 'container', 'create'[\s\S]*?imageId/)
-  assert.match(scanBody, /parseOwnedScratchContainer\([\s\S]*?expectedImageId: imageId/)
+  assert.match(scanBody, /parseOwnedScratchContainer\([\s\S]*?scratchCapabilityExpectation\(/)
   assert.match(scanBody, /\['docker', 'container', 'export', containerId\][\s\S]*?stdoutFd: rootfsIdentity\.fd/)
   assert.doesNotMatch(scanBody, /verifySavedImageLayers\(/)
 })
@@ -1086,9 +1125,8 @@ test('runtime image entrypoints register recovery locators before immutable owne
   )
   assert.match(positive, /runWithDeclaredOwnedTreeOutputs\([\s\S]*?imageIdFile[\s\S]*?imageMetadataFile/)
   assert.match(positive, /imageTag: null/)
-  assert.match(positive, /cleanupPromise: null/)
-  assert.match(positive, /return cleanupState\.cleanupPromise/)
-  assert.match(positive, /built image identity could not be recovered/)
+  assert.match(positive, /createSignalSafeCleanup\(async/)
+  assert.match(positive, /built image identity could not be recovered from safe evidence/)
 
   assert.match(mutations, /--iidfile/)
   assert.match(mutations, /expectedImageId:/)
@@ -1097,6 +1135,7 @@ test('runtime image entrypoints register recovery locators before immutable owne
   assert.match(mutations, /imageTag: null/)
   assert.match(mutations, /'--tag', recoveryTag/)
   assert.match(mutations, /runWithDeclaredOwnedTreeOutputs\([\s\S]*?imageIdFile[\s\S]*?metadataFile/)
+  assert.match(mutations, /createSignalSafeCleanup\(async/)
 })
 
 test('a pre-evidence build failure is recovered by exact tag, claim and immutable id', () => {
@@ -1223,7 +1262,15 @@ test('signals in both recovery-build entrypoints cannot be stolen by ordinary CL
       "if (args[0] === 'version') { process.stdout.write('29.6.2\\n'); process.exit(0) }",
       "if (args[0] === 'build') {",
       "  const tag = args[args.indexOf('--tag') + 1]",
+      "  const iidfile = args[args.indexOf('--iidfile') + 1]",
+      "  const metadataFile = args[args.indexOf('--metadata-file') + 1]",
+      "  const label = args[args.indexOf('--label') + 1]",
+      "  const separator = label.indexOf('=')",
+      "  const id = `sha256:${'a'.repeat(64)}`",
       "  writeFileSync(process.env.M5_BUILD_REACHED, 'yes')",
+      "  writeFileSync(iidfile, `${id}\n`)",
+      "  writeFileSync(metadataFile, '{')",
+      "  writeFileSync(statePath, JSON.stringify({ id, tag, labelKey: label.slice(0, separator), claim: label.slice(separator + 1), tagged: true }))",
       "  setInterval(() => {}, 1000)",
       "  await new Promise(() => {})",
       '}',
@@ -1250,8 +1297,9 @@ test('signals in both recovery-build entrypoints cannot be stolen by ordinary CL
     for (const [entrypoint, temporaryPrefix] of [
       ['infra/docker/check-api-runtime-image.mjs', 'meal-agent-m5-image-scan-'],
       ['infra/docker/check-api-runtime-image-mutations.mjs', 'meal-agent-m5-image-mut-']
-    ]) {
+    ]) for (const requestedSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       if (existsSync(buildReachedPath)) unlinkSync(buildReachedPath)
+      if (existsSync(statePath)) unlinkSync(statePath)
       const before = new Set(
         readdirSync(tmpdir()).filter((name) => name.startsWith(temporaryPrefix))
       )
@@ -1282,7 +1330,7 @@ test('signals in both recovery-build entrypoints cannot be stolen by ordinary CL
           true,
           `${entrypoint}: the controlled build window must be reached`
         )
-        child.kill('SIGTERM')
+        child.kill(requestedSignal)
         let watchdog = null
         const outcome = await Promise.race([
           new Promise((resolvePromise) => child.once('close', (code, signal) => {
@@ -1295,8 +1343,11 @@ test('signals in both recovery-build entrypoints cannot be stolen by ordinary CL
             )
           })
         ]).finally(() => clearTimeout(watchdog))
-        assert.deepEqual(outcome, { code: null, signal: 'SIGTERM' })
-        assert.match(stderr, /SIGTERM: terminating child processes, then running scoped cleanup/)
+        assert.deepEqual(outcome, { code: null, signal: requestedSignal })
+        assert.match(
+          stderr,
+          new RegExp(`${requestedSignal}: terminating child processes, then running scoped cleanup`)
+        )
         assert.doesNotMatch(stderr, /scoped cleanup left/)
         assert.equal(existsSync(statePath), false)
         assert.doesNotMatch(stdout, /API runtime image (?:scan|mutation suite) PASS/)
@@ -1305,6 +1356,128 @@ test('signals in both recovery-build entrypoints cannot be stolen by ordinary CL
           (name) => name.startsWith(temporaryPrefix) && !before.has(name)
         )
         assert.deepEqual(after, [])
+      } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('signals arriving during ordinary cleanup share one signal-safe cleanup settlement', async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'm5-runtime-cleanup-race-'))
+  const shimDirectory = resolve(directory, 'bin')
+  const statePath = resolve(directory, 'docker-state.json')
+  const cleanupReachedPath = resolve(directory, 'cleanup-reached')
+  mkdirSync(shimDirectory)
+  const realPnpm = spawnSync('/bin/sh', ['-c', 'command -v pnpm'], {
+    encoding: 'utf8'
+  }).stdout.trim()
+  assert.notEqual(realPnpm, '')
+  writeFileSync(
+    resolve(shimDirectory, 'pnpm'),
+    '#!/bin/sh\n' +
+      'if [ "$1" = "--version" ]; then printf "11.9.0\\n"; exit 0; fi\n' +
+      'exec "$M5_REAL_PNPM" "$@"\n'
+  )
+  chmodSync(resolve(shimDirectory, 'pnpm'), 0o755)
+  writeFileSync(
+    resolve(shimDirectory, 'docker'),
+    [
+      '#!/usr/bin/env node',
+      "import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'",
+      'const args = process.argv.slice(2)',
+      'const statePath = process.env.M5_DOCKER_STATE',
+      "const absent = (name) => { process.stderr.write(`Error response from daemon: No such image: ${name}\\n`); process.exit(1) }",
+      "if (args[0] === 'version') { process.stdout.write('29.6.2\\n'); process.exit(0) }",
+      "if (args[0] === 'build') {",
+      "  const tag = args[args.indexOf('--tag') + 1]",
+      "  const iidfile = args[args.indexOf('--iidfile') + 1]",
+      "  const metadataFile = args[args.indexOf('--metadata-file') + 1]",
+      "  const label = args[args.indexOf('--label') + 1]",
+      "  const separator = label.indexOf('=')",
+      "  const id = `sha256:${'a'.repeat(64)}`",
+      "  writeFileSync(iidfile, `${id}\\n`)",
+      "  writeFileSync(metadataFile, '{')",
+      "  writeFileSync(statePath, JSON.stringify({ id, tag, labelKey: label.slice(0, separator), claim: label.slice(separator + 1), tagged: true }))",
+      '  process.exit(7)',
+      '}',
+      "if (args[0] === 'image' && args[1] === 'inspect') {",
+      '  if (!existsSync(statePath)) absent(args[2])',
+      "  if (!existsSync(process.env.M5_CLEANUP_REACHED)) { writeFileSync(process.env.M5_CLEANUP_REACHED, 'yes'); await new Promise((resolve) => setTimeout(resolve, 500)) }",
+      "  const state = JSON.parse(readFileSync(statePath, 'utf8'))",
+      '  if (args[2] !== state.id && !(state.tagged && args[2] === state.tag)) absent(args[2])',
+      "  process.stdout.write(JSON.stringify([{ Id: state.id, RepoTags: state.tagged ? [state.tag] : null, Config: { Labels: { [state.labelKey]: state.claim } } }]))",
+      '  process.exit(0)',
+      '}',
+      "if (args[0] === 'image' && args[1] === 'rm') {",
+      '  if (!existsSync(statePath)) absent(args[2])',
+      "  const state = JSON.parse(readFileSync(statePath, 'utf8'))",
+      "  if (args[2] === state.tag && state.tagged) { state.tagged = false; writeFileSync(statePath, JSON.stringify(state)); process.exit(0) }",
+      '  if (args[2] === state.id && !state.tagged) { unlinkSync(statePath); process.exit(0) }',
+      '  process.exit(7)',
+      '}',
+      'process.exit(97)',
+      ''
+    ].join('\n')
+  )
+  chmodSync(resolve(shimDirectory, 'docker'), 0o755)
+  try {
+    for (const [entrypoint, temporaryPrefix] of [
+      ['infra/docker/check-api-runtime-image.mjs', 'meal-agent-m5-image-scan-'],
+      ['infra/docker/check-api-runtime-image-mutations.mjs', 'meal-agent-m5-image-mut-']
+    ]) for (const requestedSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      rmSync(statePath, { force: true })
+      rmSync(cleanupReachedPath, { force: true })
+      const before = new Set(
+        readdirSync(tmpdir()).filter((name) => name.startsWith(temporaryPrefix))
+      )
+      const child = spawn(process.execPath, [resolve(repositoryRoot, entrypoint)], {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          PATH: `${shimDirectory}:${process.env.PATH}`,
+          M5_REAL_PNPM: realPnpm,
+          M5_DOCKER_STATE: statePath,
+          M5_CLEANUP_REACHED: cleanupReachedPath
+        },
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      child.stdout.on('data', (chunk) => { stdout += chunk })
+      child.stderr.on('data', (chunk) => { stderr += chunk })
+      try {
+        const deadline = Date.now() + 60_000
+        while (!existsSync(cleanupReachedPath) && Date.now() < deadline) {
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 25))
+        }
+        assert.equal(existsSync(cleanupReachedPath), true)
+        child.kill(requestedSignal)
+        const outcome = await new Promise((resolvePromise, rejectPromise) => {
+          const watchdog = setTimeout(
+            () => rejectPromise(new Error('cleanup-race fixture timed out')),
+            60_000
+          )
+          child.once('close', (code, signal) => {
+            clearTimeout(watchdog)
+            resolvePromise({ code, signal })
+          })
+        })
+        assert.deepEqual(outcome, { code: null, signal: requestedSignal })
+        assert.match(stderr, new RegExp(`${requestedSignal}: terminating child processes`))
+        assert.doesNotMatch(stderr, /scoped cleanup left|cleanup failed/)
+        assert.equal(existsSync(statePath), false)
+        assert.doesNotMatch(stdout, /API runtime image (?:scan|mutation suite) PASS/)
+        assert.deepEqual(
+          readdirSync(tmpdir()).filter(
+            (name) => name.startsWith(temporaryPrefix) && !before.has(name)
+          ),
+          []
+        )
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
       }

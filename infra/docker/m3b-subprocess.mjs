@@ -780,6 +780,30 @@ export const createCommandRunner = ({
     }
     })
 
+/**
+ * Create one memoized scoped-cleanup settlement with a lifecycle registry that
+ * is deliberately separate from ordinary workload groups. If a signal arrives
+ * after ordinary completion has already started cleanup, the handler's first
+ * workload sweep cannot kill cleanup's own inspect/rm command and then await the
+ * same failed Promise. Cleanup commands still announce their PGIDs and each
+ * command settles TERM/KILL/ESRCH before the shared Promise resolves.
+ */
+export const createSignalSafeCleanup = (operation) => {
+  if (typeof operation !== 'function') {
+    throw new TypeError('signal-safe cleanup requires an operation')
+  }
+  const cleanupRunner = createCommandRunner({
+    processGroups: createProcessGroupLifecycle()
+  })
+  let cleanupPromise = null
+  return (options) => {
+    if (cleanupPromise === null) {
+      cleanupPromise = Promise.resolve().then(() => operation(cleanupRunner, options))
+    }
+    return cleanupPromise
+  }
+}
+
 const runCommandUnchecked = createCommandRunner()
 
 export const runCommand = (args, options = {}) =>

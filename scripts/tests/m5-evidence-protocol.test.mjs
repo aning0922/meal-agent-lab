@@ -8,6 +8,8 @@ import fs, {
   mkdtempSync,
   linkSync,
   openSync,
+  readdirSync,
+  readFileSync,
   rmSync,
   unlinkSync,
   writeFileSync
@@ -296,6 +298,44 @@ test('file and parent-directory sync failures retract the exact exclusive name',
   }
 })
 
+test('link after-effect failure reacquires and retracts only the exact staging inode', () => {
+  for (const variant of ['owned-after-effect', 'foreign-existing-name']) {
+    const directory = mkdtempSync(join(tmpdir(), `m5-evidence-link-settlement-${variant}-`))
+    try {
+      const path = join(directory, 'artifact')
+      const foreign = join(directory, 'foreign')
+      if (variant === 'foreign-existing-name') writeFileSync(path, 'foreign bytes')
+      assert.throws(
+        () =>
+          writeExclusiveEvidenceFile(path, Buffer.from('published bytes'), {
+            operations: testEvidenceOperations({
+              linkFile: (source, destination) => {
+                if (variant === 'owned-after-effect') linkSync(source, destination)
+                throw new Error('untrusted link settlement text')
+              }
+            })
+          }),
+        (error) =>
+          error instanceof EvidenceProtocolError &&
+          error.message === 'evidence protocol rejected: exclusive-publish' &&
+          !error.message.includes('untrusted')
+      )
+      if (variant === 'owned-after-effect') {
+        assert.equal(existsSync(path), false)
+      } else {
+        assert.equal(readFileSync(path, 'utf8'), 'foreign bytes')
+      }
+      assert.deepEqual(
+        readdirSync(directory).filter((name) => name.includes('.meal-agent-')),
+        []
+      )
+      assert.equal(existsSync(foreign), false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
+})
+
 test('owned tree retirement preserves unknown children and inode replacements', () => {
   for (const variant of ['unknown', 'replacement']) {
     const directory = mkdtempSync(join(tmpdir(), `m5-owned-tree-${variant}-`))
@@ -369,6 +409,21 @@ test('a failing external producer cannot bypass registration of its declared out
     /untrusted producer failure/
   )
   retireOwnedTree(journal)
+  assert.equal(existsSync(directory), false)
+})
+
+test('signal-style cleanup can adopt a declared output before its producer settles', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-owned-output-inflight-cleanup-'))
+  const journal = createOwnedTreeJournal(directory)
+  const output = join(directory, 'build.iid')
+  await runWithDeclaredOwnedTreeOutputs(journal, [output], async () => {
+    writeFileSync(output, 'producer bytes before settlement')
+    // This models the signal handler entering cleanup while the external
+    // producer has created its output but has not settled. The declaration,
+    // not the operation's finally block, is what gives cleanup exact ownership.
+    retireOwnedTree(journal)
+    assert.equal(existsSync(directory), false)
+  })
   assert.equal(existsSync(directory), false)
 })
 

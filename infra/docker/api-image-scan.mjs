@@ -475,9 +475,9 @@ export const parseOwnedScratchContainer = (
     expectedName,
     expectedImageId,
     expectedContainerId = null,
-    expectedUser = null,
-    expectedNetworkMode = null,
-    expectedReadonlyRootfs = null
+    expectedUser,
+    expectedNetworkMode,
+    expectedReadonlyRootfs
   },
   fatal
 ) => {
@@ -489,6 +489,10 @@ export const parseOwnedScratchContainer = (
   }
   const container = payload?.[0]
   if (
+    typeof expectedUser !== 'string' ||
+    expectedUser === '' ||
+    expectedNetworkMode !== 'none' ||
+    expectedReadonlyRootfs !== true ||
     !Array.isArray(payload) ||
     payload.length !== 1 ||
     !isRecord(container) ||
@@ -501,18 +505,34 @@ export const parseOwnedScratchContainer = (
     !isRecord(container.Config) ||
     !isRecord(container.Config.Labels) ||
     container.Config.Labels['meal-agent.m5.owner'] !== expectedName ||
-    (expectedUser !== null && container.Config.User !== expectedUser) ||
-    ((expectedNetworkMode !== null || expectedReadonlyRootfs !== null) &&
-      !isRecord(container.HostConfig)) ||
-    (expectedNetworkMode !== null &&
-      container.HostConfig?.NetworkMode !== expectedNetworkMode) ||
-    (expectedReadonlyRootfs !== null &&
-      container.HostConfig?.ReadonlyRootfs !== expectedReadonlyRootfs)
+    container.Config.User !== expectedUser ||
+    !isRecord(container.HostConfig) ||
+    container.HostConfig.NetworkMode !== expectedNetworkMode ||
+    container.HostConfig.ReadonlyRootfs !== expectedReadonlyRootfs
   ) {
     fatal('scratch container identity did not match this run')
   }
   return container
 }
+
+/**
+ * The four production inspect boundaries share one closed capability
+ * constructor. A caller cannot accidentally omit user/network/read-only and
+ * silently turn those checks into optional parser branches.
+ */
+export const scratchCapabilityExpectation = ({
+  name,
+  imageId,
+  containerId,
+  user
+}) => Object.freeze({
+  expectedName: name,
+  expectedImageId: imageId,
+  expectedContainerId: containerId,
+  expectedUser: user,
+  expectedNetworkMode: 'none',
+  expectedReadonlyRootfs: true
+})
 
 export const parseImageHistory = (stdout, expectedImageId, minimumRows, fatal, problem) => {
   const text = String(stdout ?? '')
@@ -2234,7 +2254,14 @@ export const scanImage = async ({
   }
 
   const scratchName = `meal-agent-m5-scan-${randomBytes(8).toString('hex')}`
-  const scratchRecord = { name: scratchName, id: null, expectedImageId: imageId }
+  const scratchRecord = {
+    name: scratchName,
+    id: null,
+    expectedImageId: imageId,
+    expectedUser: '0:0',
+    expectedNetworkMode: 'none',
+    expectedReadonlyRootfs: true
+  }
   track.container?.(scratchRecord)
   const containerId = parseDockerContainerId(
     (
@@ -2263,14 +2290,12 @@ export const scanImage = async ({
         label: 'docker container inspect (immutable runtime binding)'
       })
     ).stdout,
-    {
-      expectedName: scratchName,
-      expectedImageId: imageId,
-      expectedContainerId: containerId,
-      expectedUser: '0:0',
-      expectedNetworkMode: 'none',
-      expectedReadonlyRootfs: true
-    },
+    scratchCapabilityExpectation({
+      name: scratchName,
+      imageId,
+      containerId,
+      user: '0:0'
+    }),
     fatal
   )
   const probe = await runStrict(['docker', 'container', 'start', '--attach', containerId], {
@@ -2319,14 +2344,12 @@ export const scanImage = async ({
         label: 'docker container inspect (pre-cleanup binding)'
       })
     ).stdout,
-    {
-      expectedName: scratchName,
-      expectedImageId: imageId,
-      expectedContainerId: containerId,
-      expectedUser: '0:0',
-      expectedNetworkMode: 'none',
-      expectedReadonlyRootfs: true
-    },
+    scratchCapabilityExpectation({
+      name: scratchName,
+      imageId,
+      containerId,
+      user: '0:0'
+    }),
     fatal
   )
   await runStrict(['docker', 'container', 'rm', '-f', '-v', containerId], {
@@ -2351,7 +2374,10 @@ export const scanImage = async ({
   const runtimeAccessRecord = {
     name: runtimeAccessName,
     id: null,
-    expectedImageId: imageId
+    expectedImageId: imageId,
+    expectedUser: '10001:10001',
+    expectedNetworkMode: 'none',
+    expectedReadonlyRootfs: true
   }
   track.container?.(runtimeAccessRecord)
   const runtimeAccessContainerId = parseDockerContainerId(
@@ -2381,14 +2407,12 @@ export const scanImage = async ({
         label: 'docker container inspect (runtime uid access binding)'
       })
     ).stdout,
-    {
-      expectedName: runtimeAccessName,
-      expectedImageId: imageId,
-      expectedContainerId: runtimeAccessContainerId,
-      expectedUser: '10001:10001',
-      expectedNetworkMode: 'none',
-      expectedReadonlyRootfs: true
-    },
+    scratchCapabilityExpectation({
+      name: runtimeAccessName,
+      imageId,
+      containerId: runtimeAccessContainerId,
+      user: '10001:10001'
+    }),
     fatal
   )
   const runtimeAccessProbe = await runStrict(
@@ -2408,14 +2432,12 @@ export const scanImage = async ({
         label: 'docker container inspect (runtime uid pre-cleanup binding)'
       })
     ).stdout,
-    {
-      expectedName: runtimeAccessName,
-      expectedImageId: imageId,
-      expectedContainerId: runtimeAccessContainerId,
-      expectedUser: '10001:10001',
-      expectedNetworkMode: 'none',
-      expectedReadonlyRootfs: true
-    },
+    scratchCapabilityExpectation({
+      name: runtimeAccessName,
+      imageId,
+      containerId: runtimeAccessContainerId,
+      user: '10001:10001'
+    }),
     fatal
   )
   await runStrict(['docker', 'container', 'rm', '-f', '-v', runtimeAccessContainerId], {

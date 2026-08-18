@@ -639,8 +639,32 @@ export const writeExclusiveEvidenceFile = (
   }
   if (!failed && resultIdentity !== null) {
     try {
-      operations.linkFile(stagingPath, path)
-      finalNameClaimed = true
+      try {
+        operations.linkFile(stagingPath, path)
+      } finally {
+        // link(2) 的 wrapper 可能在目录项已经创建之后才抛错。返回值不是
+        // ownership 证据；无论 primitive 如何 settle，都立即按 fork 前已经
+        // 登记的 staging inode 重新观察正式名字。只有 exact dev/ino 匹配时
+        // 才取得回滚权，EEXIST 指向的外部 inode 永远不会被收养或删除。
+        let candidate = null
+        try {
+          candidate = lstatSync(path, { bigint: true })
+        } catch {
+          // The outer fixed protocol error covers an absent or unreadable name.
+        }
+        if (
+          candidate?.isFile() &&
+          stagingIdentity !== null &&
+          candidate.dev === stagingIdentity.dev &&
+          candidate.ino === stagingIdentity.ino
+        ) {
+          finalNameClaimed = true
+          publishedIdentity = statIdentity(path, candidate, sha256OfBytes(bytes))
+          // A caller journal failure is part of publication failure; never
+          // swallow it as though ownership had been reported successfully.
+          registerCreatedIdentity?.(publishedIdentity)
+        }
+      }
       const staged = lstatSync(stagingPath, { bigint: true })
       const published = lstatSync(path, { bigint: true })
       if (
@@ -654,7 +678,11 @@ export const writeExclusiveEvidenceFile = (
         throw new EvidenceProtocolError(code)
       }
       publishedIdentity = statIdentity(path, published, sha256OfBytes(bytes))
-      registerCreatedIdentity?.(publishedIdentity)
+      if (!finalNameClaimed) {
+        // This is defensive: the finally block above must have acquired the
+        // exact inode before this point. Keep the invariant executable.
+        throw new EvidenceProtocolError(code)
+      }
       operations.unlinkFile(stagingPath)
       const solePublished = lstatSync(path, { bigint: true })
       if (

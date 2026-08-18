@@ -49,6 +49,7 @@ import {
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
 import {
+  createSignalSafeCleanup,
   installSignalHandlers,
   runCommand,
   terminationSignal
@@ -92,20 +93,16 @@ const cleanupState = {
   temporaryJournal: null,
   imageBuildStarted: false,
   ownedImageId: null,
-  imageIdFile: null,
-  imageMetadataFile: null,
   imageClaimToken,
   imageRecoveryTag: `meal-agent-api:m5-recovery-${imageClaimToken}`,
-  scratchContainer: null,
-  cleanupPromise: null
+  scratchContainer: null
 }
 
 const cleanupProblems = []
-const cleanup = ({ keepScene = false } = {}) => {
-  if (cleanupState.cleanupPromise !== null) {
-    return cleanupState.cleanupPromise
-  }
-  cleanupState.cleanupPromise = (async () => {
+const cleanup = createSignalSafeCleanup(async (
+  cleanupRunCommand,
+  { keepScene = false } = {}
+) => {
   if (keepScene) {
     process.stderr.write('image-scan: --keep-failure set; keeping the failure scene:\n')
     if (cleanupState.temporaryRoot !== null) {
@@ -120,7 +117,7 @@ const cleanup = ({ keepScene = false } = {}) => {
     const record = cleanupState.scratchContainer
     try {
       const locator = record.id ?? record.name
-      const inspected = await runCommand(['docker', 'container', 'inspect', locator], {
+      const inspected = await cleanupRunCommand(['docker', 'container', 'inspect', locator], {
         timeoutMs: 60_000
       })
       if (inspected.status === 0) {
@@ -129,11 +126,14 @@ const cleanup = ({ keepScene = false } = {}) => {
           {
             expectedName: record.name,
             expectedImageId: record.expectedImageId,
-            expectedContainerId: record.id
+            expectedContainerId: record.id,
+            expectedUser: record.expectedUser,
+            expectedNetworkMode: record.expectedNetworkMode,
+            expectedReadonlyRootfs: record.expectedReadonlyRootfs
           },
           () => { throw new Error('scratch identity') }
         )
-        const removal = await runCommand(['docker', 'container', 'rm', '-f', '-v', owned.Id], {
+        const removal = await cleanupRunCommand(['docker', 'container', 'rm', '-f', '-v', owned.Id], {
           timeoutMs: 120_000
         })
         if (removal.status !== 0) cleanupProblems.push('owned runtime probe removal failed')
@@ -143,7 +143,7 @@ const cleanup = ({ keepScene = false } = {}) => {
       )) {
         cleanupProblems.push('owned runtime probe identity could not be verified')
       }
-      const gone = await runCommand(['docker', 'container', 'inspect', locator], {
+      const gone = await cleanupRunCommand(['docker', 'container', 'inspect', locator], {
         timeoutMs: 60_000
       })
       if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
@@ -159,30 +159,11 @@ const cleanup = ({ keepScene = false } = {}) => {
   }
   if (cleanupState.imageBuildStarted) {
     try {
-      if (
-        cleanupState.ownedImageId === null &&
-        cleanupState.imageIdFile !== null &&
-        cleanupState.imageMetadataFile !== null &&
-        existsSync(cleanupState.imageIdFile) &&
-        existsSync(cleanupState.imageMetadataFile)
-      ) {
-        try {
-          const metadata = parseBuildMetadataImageIdentity(
-            readFileSync(cleanupState.imageMetadataFile, 'utf8')
-          )
-          const iid = parseCanonicalDockerImageId(readFileSync(cleanupState.imageIdFile, 'utf8'))
-          if (iid !== metadata.imageId && iid !== metadata.configId) {
-            throw new Error('build identity mismatch')
-          }
-          cleanupState.ownedImageId = metadata.imageId
-        } catch {
-          cleanupProblems.push('built image identity could not be recovered from closed evidence')
-        }
-      }
+      let recoverySourceFailed = false
       // The recovery locator exists before docker build forks. It is not ownership:
       // recovery succeeds only when one canonical immutable ID also carries the
       // unguessable claim and exactly this single tag.
-      const tagged = await runCommand(
+      const tagged = await cleanupRunCommand(
         ['docker', 'image', 'inspect', cleanupState.imageRecoveryTag],
         { timeoutMs: 60_000 }
       )
@@ -204,7 +185,7 @@ const cleanup = ({ keepScene = false } = {}) => {
           }
           cleanupState.ownedImageId = recoveredId
         } catch {
-          cleanupProblems.push('recovery tag did not identify the claimed build image')
+          recoverySourceFailed = true
         }
       } else if (!(
         tagged.status === 1 &&
@@ -213,11 +194,11 @@ const cleanup = ({ keepScene = false } = {}) => {
           name: cleanupState.imageRecoveryTag
         })
       )) {
-        cleanupProblems.push('recovery tag identity could not be verified')
+        recoverySourceFailed = true
       }
 
       if (cleanupState.ownedImageId !== null) {
-        const owned = await runCommand(
+        const owned = await cleanupRunCommand(
           ['docker', 'image', 'inspect', cleanupState.ownedImageId],
           { timeoutMs: 60_000 }
         )
@@ -244,14 +225,14 @@ const cleanup = ({ keepScene = false } = {}) => {
           cleanupProblems.push('owned image identity could not be verified')
         }
         if (mayRemove) {
-          const untag = await runCommand(
+          const untag = await cleanupRunCommand(
             ['docker', 'image', 'rm', cleanupState.imageRecoveryTag],
             { timeoutMs: 120_000 }
           )
           if (untag.status !== 0) cleanupProblems.push('owned recovery tag removal failed')
         }
 
-        const tagGone = await runCommand(
+        const tagGone = await cleanupRunCommand(
           ['docker', 'image', 'inspect', cleanupState.imageRecoveryTag],
           { timeoutMs: 60_000 }
         )
@@ -262,7 +243,7 @@ const cleanup = ({ keepScene = false } = {}) => {
           cleanupProblems.push('owned recovery tag was not proven absent after cleanup')
         }
 
-        const remaining = await runCommand(
+        const remaining = await cleanupRunCommand(
           ['docker', 'image', 'inspect', cleanupState.ownedImageId],
           { timeoutMs: 60_000 }
         )
@@ -277,7 +258,7 @@ const cleanup = ({ keepScene = false } = {}) => {
                 requireUntagged: true
               }
             )
-            const removal = await runCommand(
+            const removal = await cleanupRunCommand(
               ['docker', 'image', 'rm', cleanupState.ownedImageId],
               { timeoutMs: 120_000 }
             )
@@ -294,7 +275,7 @@ const cleanup = ({ keepScene = false } = {}) => {
         )) {
           cleanupProblems.push('owned immutable image identity could not be verified')
         }
-        const gone = await runCommand(
+        const gone = await cleanupRunCommand(
           ['docker', 'image', 'inspect', cleanupState.ownedImageId],
           { timeoutMs: 60_000 }
         )
@@ -304,6 +285,8 @@ const cleanup = ({ keepScene = false } = {}) => {
         }))) {
           cleanupProblems.push('owned immutable image was not proven absent after cleanup')
         }
+      } else if (recoverySourceFailed) {
+        cleanupProblems.push('built image identity could not be recovered from safe evidence')
       }
     } catch {
       cleanupProblems.push('immutable image cleanup did not complete')
@@ -337,9 +320,7 @@ const cleanup = ({ keepScene = false } = {}) => {
     cleanupState.temporaryJournal = null
   }
   return [...cleanupProblems]
-  })()
-  return cleanupState.cleanupPromise
-}
+})
 
 installSignalHandlers(() => cleanup(), { label: 'api runtime image scan cleanup' })
 
@@ -400,8 +381,6 @@ const main = async () => {
   log('building a claimed runtime image with a pre-registered recovery locator')
   const imageIdFile = join(cleanupState.temporaryRoot, 'built-image.id')
   const imageMetadataFile = join(cleanupState.temporaryRoot, 'built-image.metadata.json')
-  cleanupState.imageIdFile = imageIdFile
-  cleanupState.imageMetadataFile = imageMetadataFile
   // The locator is recorded before the subprocess starts, closing the window
   // before iidfile/metadata exist. It still needs immutable ID + claim proof.
   cleanupState.imageBuildStarted = true

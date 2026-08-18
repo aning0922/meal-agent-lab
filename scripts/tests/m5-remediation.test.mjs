@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   closeSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -960,6 +961,108 @@ test('backup publishes no formal name until transient cleanup has succeeded', as
     assert.equal(containers.size, 0)
   } finally {
     rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('backup adopts and removes partial bytes for every failing docker cp settlement', async () => {
+  for (const cpSettlement of [
+    { status: 17, signal: null },
+    { status: null, signal: 'SIGINT' },
+    { status: null, signal: 'SIGTERM' },
+    { status: null, signal: 'SIGHUP' }
+  ]) {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-backup-cp-partial-'))
+  const containers = new Map()
+  let sequence = 0
+  const archiveBytes = Buffer.from('PGDMP-partial-sensitive-backup-bytes')
+  const archiveDigest = createHash('sha256').update(archiveBytes).digest('hex')
+  const absent = (name) => ({
+    status: 1,
+    signal: null,
+    stdout: '',
+    stderr: `Error response from daemon: No such container: ${name}\n`
+  })
+  const run = async (argv) => {
+    if (argv[0] === 'docker' && argv[1] === 'container' && argv[2] === 'inspect') {
+      const query = argv[3]
+      const entry = [...containers.values()].find(
+        (candidate) => candidate.name === query || candidate.id === query
+      )
+      if (entry === undefined) return absent(query)
+      return {
+        status: 0,
+        signal: null,
+        stdout: JSON.stringify([{
+          Id: entry.id,
+          Image: `sha256:${'d'.repeat(64)}`,
+          Created: '2026-08-19T01:00:00Z',
+          Name: `/${entry.name}`,
+          Config: { Labels: {
+            'com.meal-agent.m4.oneoff-owner': entry.token,
+            'com.docker.compose.project': 'meal-agent-fixture',
+            'com.docker.compose.service': entry.service,
+            'com.docker.compose.oneoff': 'True'
+          } },
+          State: {
+            Status: 'exited', Running: false, ExitCode: 0,
+            StartedAt: '2026-08-19T01:00:00Z', FinishedAt: '2026-08-19T01:00:01Z'
+          }
+        }]),
+        stderr: ''
+      }
+    }
+    if (argv[0] === 'docker' && argv[1] === 'cp') {
+      writeFileSync(argv[3], archiveBytes, { mode: 0o600 })
+      return { ...cpSettlement, stdout: '', stderr: 'CP-UNTRUSTED-SENTINEL' }
+    }
+    if (argv[0] === 'docker' && argv[1] === 'rm') {
+      const id = argv.at(-1)
+      for (const [name, entry] of containers) {
+        if (entry.id === id) containers.delete(name)
+      }
+      return { status: 0, signal: null, stdout: '', stderr: '' }
+    }
+    throw new Error(`unexpected fixture command: ${argv.join(' ')}`)
+  }
+  const compose = async (argv) => {
+    const name = argv[argv.indexOf('--name') + 1]
+    const token = argv[argv.indexOf('--label') + 1].split('=')[1]
+    const transfer = argv.includes('backup-transfer-loader')
+    sequence += 1
+    containers.set(name, {
+      name,
+      id: String(sequence).padStart(64, transfer ? 'b' : 'a'),
+      token,
+      service: transfer ? 'backup-transfer-loader' : 'backup'
+    })
+    return {
+      status: 0,
+      signal: null,
+      stdout: transfer ? '' : `${archiveDigest}  /transfer/fixture.dump\n`,
+      stderr: ''
+    }
+  }
+  try {
+    await assert.rejects(
+      performBackup(
+        { compose, run, log: () => undefined },
+        { project: 'meal-agent-fixture', outputDirectory: directory, fileName: 'fixture.dump' }
+      ),
+      (error) =>
+        error instanceof Error &&
+        error.message === 'one-off container handoff failed' &&
+        !error.message.includes('SENTINEL')
+    )
+    assert.equal(existsSync(resolve(directory, 'fixture.dump')), false)
+    assert.equal(existsSync(resolve(directory, 'fixture.dump.sha256')), false)
+    assert.deepEqual(
+      readdirSync(directory).filter((name) => name.startsWith('.meal-agent-backup-')),
+      []
+    )
+    assert.equal(containers.size, 0)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
   }
 })
 
