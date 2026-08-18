@@ -235,9 +235,9 @@ Docker image/container identity 只接受 canonical immutable 形态；命令失
 primitive settle 后按 exact `dev/ino` 取得 rollback ownership；backup partial 在 `docker cp`
 之前进入 owned-tree journal；cleanup 使用独立且 memoized 的进程组 lifecycle；pre-evidence
 recovery 只接受 exact tag + claim + immutable ID。三项 guard deletion 由生产源码 mutation
-直接验证。固定 Node.js v24.18.0 的 scripts tests **148/148**；完整 14 步链与零残留正在
-创建全新 A/B 会话前重跑。M5.3 为 Implementation complete — pending local full-gate
-verification，M5 未 Accepted。
+直接验证。固定 Node.js v24.18.0 的 scripts tests **148/148**；含 committed-evidence 基线
+与文档的候选已从步骤 1 串行通过完整 14 步链、docs links 67/276 与最终零残留复核。
+M5.3 为 Implementation complete — pending independent A/B review，M5 未 Accepted。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接

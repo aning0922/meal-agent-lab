@@ -1,7 +1,7 @@
 # M5.3 原子副作用与 cleanup settlement 收敛
 
 - 日期：2026-08-19
-- 状态：Implementation complete — pending local full-gate verification
+- 状态：Implementation complete — pending independent A/B review
 - 基线候选：`429b248`
 - 实现提交：`c69b977`
 - 范围：阶段 09A / M5；不扩大产品、云资源、真实微信或发布范围
@@ -74,9 +74,21 @@ parser 退回可选字段都会使门禁变红。source needle 和旧 helper 不
 - mutation：pre-fork declaration、publication link count 与 scratch capability 三组均使用
   生产源码生成的 mutant。
 
-固定 Node.js `v24.18.0` 的脚本回归为 **148/148**。完整 14 步 Docker/Compose 门禁、
-文档链接、diff check 与零残留结果记录在本文件后续验收段；只有全部通过后才允许创建
-两个全新、用户可见、独立 worktree 的 A/B 审计会话。
+固定 Node.js `v24.18.0` 的脚本回归为 **148/148**。
+
+## 本地验收
+
+- `pnpm stage09a:check`：从步骤 1 串行 **14/14 PASS**；
+- runtime image mutation：**1 baseline + 17 built + 2 static-only**；
+- M3B signal：**5/5 deterministic + 6/6 real windows**；
+- fresh smoke、八份 Secret identity、lifecycle、same-ledger restore：全部 PASS；
+- committed-evidence baseline：**354 tracked files**，登记完整性 PASS；
+- `pnpm docs:links:check`：**67 files / 276 links**；
+- `git diff --check`：clean；
+- scoped container/network/volume/image tag/temp directory/override/相关进程：零残留。
+
+以上仅是本地候选门禁证据；下一门禁仍是两个全新、用户可见、独立 worktree 的 A/B
+只读审计会话。
 
 ## 边界与状态
 
