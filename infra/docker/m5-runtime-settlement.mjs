@@ -1,4 +1,3 @@
-import { parseOwnedScratchContainer } from './api-image-scan.mjs'
 import {
   buildClaimLabel,
   isAbsenceMessage,
@@ -188,7 +187,14 @@ const observeContainer = async (run, locator) => {
 }
 
 /** Settle one scratch container by immutable ID and then recheck its mutable name. */
-export const settleOwnedScratchContainer = async (run, record) => {
+export const settleOwnedScratchContainer = async (
+  run,
+  record,
+  { parseOwnedScratchContainer }
+) => {
+  if (typeof parseOwnedScratchContainer !== 'function') {
+    throw new TypeError('scratch container parser is required')
+  }
   const problems = []
   const locator = record.id ?? record.name
   const initial = await observeContainer(run, locator)

@@ -49,17 +49,34 @@ test.after(() => {
   assert.deepEqual([...executedGuardIds].sort(), [...registeredGuardIds].sort())
 })
 
+test('every declared production consumer is a live, exact registry dependency', () => {
+  let declaredConsumers = 0
+  for (const guard of m5ProductionGuards) {
+    for (const consumer of guard.consumers ?? []) {
+      declaredConsumers += 1
+      const source = readFileSync(resolve(repositoryRoot, consumer.path), 'utf8')
+      const actualCount = source.split(consumer.anchor).length - 1
+      assert.equal(
+        actualCount,
+        consumer.count,
+        `[${guard.id}] production consumer drifted: ${consumer.path}`
+      )
+    }
+  }
+  assert.equal(declaredConsumers, 8)
+})
+
 guardTest('backup-pre-fork-declaration', 'the live backup guard is killed by an in-flight cleanup oracle', async () => {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'm5-live-backup-declaration-mutant-'))
   const copiedDockerDirectory = join(temporaryRoot, 'infra/docker')
   cpSync(resolve(repositoryRoot, 'infra/docker'), copiedDockerDirectory, { recursive: true })
   const initialized = spawnSync('git', ['init', '-q'], { cwd: temporaryRoot, encoding: 'utf8' })
   assert.equal(initialized.status, 0, initialized.stderr)
-  const protocolPath = join(copiedDockerDirectory, 'm5-evidence-protocol.mjs')
-  writeFileSync(protocolPath, replaceExactly(
-    readFileSync(protocolPath, 'utf8'),
-    'for (const target of targets) declareOwnedTreeOutput(journal, target)',
-    'for (const target of targets) void target'
+  const backupPath = join(copiedDockerDirectory, 'backup-local-test.mjs')
+  writeFileSync(backupPath, replaceExactly(
+    readFileSync(backupPath, 'utf8'),
+    'runWithDeclaredOwnedTreeOutputs(journal, [target], operation)',
+    'operation()'
   ))
   const implementation = await importFresh(
     join(copiedDockerDirectory, 'backup-local-test.mjs'),
@@ -253,14 +270,14 @@ guardTest('cleanup-signal-delivery-barrier', 'the guard is killed by an ordinary
   writeFileSync(modulePath, mutant)
   const moduleUrl = pathToFileURL(modulePath).href
   const fixture = [
-    `import { createSignalSafeCleanup, installSignalHandlers, terminationSignalAfterCleanupSettlement } from ${JSON.stringify(moduleUrl)}`,
+    `import { createSignalSafeCleanup, installSignalHandlers, settleCliExitCode } from ${JSON.stringify(moduleUrl)}`,
     'const cleanup = createSignalSafeCleanup(async () => {',
     "  process.kill(process.pid, 'SIGTERM')",
     '  return []',
     '})',
     "installSignalHandlers(() => cleanup(), { label: 'pending signal mutant cleanup' })",
     'await cleanup()',
-    'const signal = await terminationSignalAfterCleanupSettlement()',
+    'const signal = await settleCliExitCode(42)',
     'if (signal === null) process.exit(42)',
     'await new Promise(() => {})'
   ].join('\n')
@@ -274,6 +291,19 @@ guardTest('cleanup-signal-delivery-barrier', 'the guard is killed by an ordinary
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+guardTest('aggregate-final-signal-delivery', 'the aggregate result stays behind the production signal settlement', () => {
+  const source = readFileSync(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'), 'utf8')
+  const consumer = 'const finalExitCode = await settleAggregateProcess(ordinaryExitCode)'
+  const mutant = replaceExactly(
+    source,
+    consumer,
+    'const finalExitCode = ordinaryExitCode'
+  )
+  assert.equal(mutant.includes(consumer), false)
+  assert.match(source, /await nativeImmediateTurn\(\)[\s\S]*await nativeImmediateTurn\(\)/)
+  assert.match(source, /nativeKill\(process\.pid, signal\)/)
 })
 
 guardTest('runtime-image-claim', 'the guards are killed by a wrong-claim removal oracle', async () => {
@@ -392,6 +422,58 @@ guardTest('scratch-capability', 'fields are production data, not optional call-s
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true })
   }
+})
+
+guardTest('runtime-scratch-final-settlement', 'the live runtime consumer retires only after final identity settlement', async () => {
+  const implementation = await importFresh(
+    resolve(repositoryRoot, 'infra/docker/api-image-scan.mjs'),
+    'runtime-scratch-final-settlement'
+  )
+  const imageId = `sha256:${'a'.repeat(64)}`
+  const record = {
+    name: 'meal-agent-m5-scan-fixture',
+    id: 'b'.repeat(64),
+    expectedImageId: imageId,
+    expectedUser: '10001:10001',
+    expectedNetworkMode: 'none',
+    expectedReadonlyRootfs: true
+  }
+  let present = true
+  let foreign = false
+  let retired = false
+  const inspect = () => JSON.stringify([{
+    Id: foreign ? 'd'.repeat(64) : record.id,
+    Image: imageId,
+    Name: `/${record.name}`,
+    Path: 'node',
+    Config: {
+      User: record.expectedUser,
+      Labels: { 'meal-agent.m5.owner': foreign ? 'foreign' : record.name }
+    },
+    HostConfig: { NetworkMode: 'none', ReadonlyRootfs: true }
+  }])
+  const run = async (argv) => {
+    if (argv[2] === 'rm') {
+      foreign = true
+      return { status: 17, signal: null, stdout: '', stderr: 'UNTRUSTED' }
+    }
+    if (argv[2] === 'inspect') {
+      if (!present) return { status: 1, signal: null, stdout: '', stderr: 'No such container' }
+      return { status: 0, signal: null, stdout: inspect(), stderr: '' }
+    }
+    throw new Error('unexpected runtime settlement fixture command')
+  }
+  const fatal = (message) => { throw new Error(message) }
+  await assert.rejects(
+    implementation.settleTrackedRuntimeProbe({
+      run,
+      record,
+      fatal,
+      retire: () => { retired = true }
+    }),
+    /owned runtime probe immutable identity was not proven absent/
+  )
+  assert.equal(retired, false)
 })
 
 test('mutation fixtures leave no production evidence names behind', () => {

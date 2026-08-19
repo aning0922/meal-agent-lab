@@ -29,6 +29,7 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
+  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
@@ -324,7 +325,8 @@ const cleanup = createSignalSafeCleanup(async (cleanupRunCommand) => {
       if (record.scratchContainer !== null) {
         cleanupProblems.push(...(await settleOwnedScratchContainer(
           cleanupRunCommand,
-          record.scratchContainer
+          record.scratchContainer,
+          { parseOwnedScratchContainer }
         )).map((message) => `${message} (${caseId})`))
         record.scratchContainer = null
       }

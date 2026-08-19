@@ -205,6 +205,7 @@ const nativeKill = process.kill.bind(process)
 const nativeNow = Date.now.bind(Date)
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
+const nativeSetImmediate = globalThis.setImmediate.bind(globalThis)
 const cooperativeShutdownBudgetMs = 310_000
 
 const safeDiagnostic = (message) => safeWrite(2, message)
@@ -471,22 +472,84 @@ const settleInterruptedRuns = (cleanup) => {
   }
 }
 
-for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(signal, () => {
-    if (interruptedBy !== null) {
-      return
+const handledSignals = Object.freeze(['SIGINT', 'SIGTERM', 'SIGHUP'])
+const aggregateSignalHandler = (signal) => {
+  if (interruptedBy !== null) {
+    return
+  }
+  interruptedBy = signal
+  if (!safeDiagnostic(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)) {
+    aggregatePrimitiveFailed = true
+  }
+  void convergeAfterSignal()
+    .then(settleInterruptedRuns)
+    .catch(() => settleInterruptedRuns({
+      ok: false,
+      survivorCount: ownedProcessGroups.size + quarantinedProcessGroups.size
+    }))
+}
+for (const signal of handledSignals) {
+  process.on(signal, aggregateSignalHandler)
+}
+
+const removeAggregateSignalHandlers = () => {
+  for (const signal of handledSignals) {
+    process.removeListener(signal, aggregateSignalHandler)
+  }
+}
+
+const nativeImmediateTurn = () =>
+  new Promise((resolveImmediate, rejectImmediate) => {
+    try {
+      nativeSetImmediate(resolveImmediate)
+    } catch {
+      rejectImmediate(new Error('aggregate signal delivery primitive failed'))
     }
-    interruptedBy = signal
-    if (!safeDiagnostic(`\nstage09a:check: received ${signal}; terminating the controlled process subtree\n`)) {
-      aggregatePrimitiveFailed = true
-    }
-    void convergeAfterSignal()
-      .then(settleInterruptedRuns)
-      .catch(() => settleInterruptedRuns({
-        ok: false,
-        survivorCount: ownedProcessGroups.size + quarantinedProcessGroups.size
-      }))
   })
+
+/**
+ * Publish the aggregate result only after pending signals have had two native
+ * event-loop turns to reach the handler. A signal winner is rethrown only after
+ * scoped cleanup and every owned/quarantined PGID reach final settlement.
+ */
+const settleAggregateProcess = async (ordinaryExitCode) => {
+  const normalizedExitCode = ordinaryExitCode === 0 ? 0 : 1
+  try {
+    await nativeImmediateTurn()
+    await nativeImmediateTurn()
+  } catch {
+    aggregatePrimitiveFailed = true
+  }
+
+  if (interruptedBy === null) {
+    removeAggregateSignalHandlers()
+    if (aggregatePrimitiveFailed) {
+      await terminateOwnedProcessGroups()
+      return 1
+    }
+    return normalizedExitCode
+  }
+
+  let cleanup
+  try {
+    cleanup = await convergeAfterSignal()
+  } catch {
+    cleanup = { ok: false, survivorCount: ownedProcessGroups.size + quarantinedProcessGroups.size }
+  }
+  const finalCleanup = await terminateOwnedProcessGroups()
+  const signal = interruptedBy
+  removeAggregateSignalHandlers()
+  if (!cleanup.ok || !finalCleanup.ok || finalCleanup.survivors.length > 0 || aggregatePrimitiveFailed) {
+    safeDiagnostic('stage09a:check FAIL — signal cleanup did not reach final settlement\n')
+    return 1
+  }
+  try {
+    nativeKill(process.pid, signal)
+    return null
+  } catch {
+    safeDiagnostic('stage09a:check FAIL — final signal rethrow failed\n')
+    return 1
+  }
 }
 
 const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 1024 }) =>
@@ -701,6 +764,7 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       resolveLeaderExited = resolveExit
     })
     let ownershipDrainTimer = null
+    let lifecyclePrimitiveFailed = false
     child.once('exit', () => {
       if (controllerHandle !== null) {
         closedOwnedGroupLeaders.add(ownershipKey(controllerHandle))
@@ -708,16 +772,24 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       resolveLeaderExited()
       // leader exit 后给内核 pipe 一个很短的 drain 窗口。即使 buffer 为空，
       // 未登记后代仍可能继承 fd 3 并永远不产生 EOF；旧实现会因此等不到 close。
-      ownershipDrainTimer = nativeSetTimeout(() => {
-        if (ownershipStreamEnded || activeScopedCleanups.size > 0) return
-        if (ownershipBuffer.length > 0) {
-          quarantineRecognizableLineage(ownershipBuffer, { frameComplete: false })
-          ownershipBuffer = ''
-        }
+      try {
+        ownershipDrainTimer = nativeSetTimeout(() => {
+          if (ownershipStreamEnded || activeScopedCleanups.size > 0) return
+          if (ownershipBuffer.length > 0) {
+            quarantineRecognizableLineage(ownershipBuffer, { frameComplete: false })
+            ownershipBuffer = ''
+          }
+          ownershipProtocolFailed = true
+          ownershipStream?.destroy()
+          void terminateOwnedProcessGroups()
+        }, interruptedBy === null ? 500 : 2_500)
+      } catch {
+        aggregatePrimitiveFailed = true
+        lifecyclePrimitiveFailed = true
         ownershipProtocolFailed = true
         ownershipStream?.destroy()
         void terminateOwnedProcessGroups()
-      }, interruptedBy === null ? 500 : 2_500)
+      }
     })
     const cooperativeShutdown = async (signal) => {
       if (!closed) {
@@ -770,8 +842,40 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
         resolvePromise(result)
       }
     }
+    const settleLifecyclePrimitiveFailure = () => {
+      void (async () => {
+        const cleanup = await terminateOwnedProcessGroups()
+        settle({
+          ok: false,
+          code: null,
+          signal: null,
+          stdout: '',
+          detail:
+            cleanup.ok && cleanup.survivors.length === 0
+              ? 'aggregate lifecycle primitive failed'
+              : 'aggregate lifecycle primitive failed; descendant cleanup was not confirmed'
+        })
+      })()
+    }
+    let timer = null
+    const clearTimer = (value) => {
+      if (value === null) return true
+      try {
+        nativeClearTimeout(value)
+        return true
+      } catch {
+        aggregatePrimitiveFailed = true
+        lifecyclePrimitiveFailed = true
+        try {
+          value?.unref?.()
+        } catch {
+          // The fixed lifecycle-failure path below owns the final result.
+        }
+        return false
+      }
+    }
     const interruptionWaiter = (cleanup) => {
-      nativeClearTimeout(timer)
+      clearTimer(timer)
       if (!cleanup.ok) {
         child.stdout?.destroy()
         child.stderr?.destroy()
@@ -797,31 +901,39 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       resolveClosed()
       aggregatePrimitiveFailed = purgeGoneProcessGroups() || aggregatePrimitiveFailed
     }
-    const timer = nativeSetTimeout(() => {
-      if (settled || timedOut) {
-        return
-      }
-      timedOut = true
-      void (async () => {
-        try {
-          await cooperativeShutdown('SIGTERM')
-          const cleanup = await terminateOwnedProcessGroups()
-          const survivors = cleanup.survivors
-          settle({
-            ok: false,
-            code: null,
-            signal: null,
-            stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-            detail:
-              !cleanup.ok || survivors.length > 0
-                ? `timed out; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
-                : 'timed out'
-          })
-        } catch {
-          settle({ ok: false, code: null, signal: null, stdout: '', detail: 'timed out; cleanup failed' })
+    let timerStartFailed = false
+    try {
+      timer = nativeSetTimeout(() => {
+        if (settled || timedOut) {
+          return
         }
-      })()
-    }, timeoutMs)
+        timedOut = true
+        void (async () => {
+          try {
+            await cooperativeShutdown('SIGTERM')
+            const cleanup = await terminateOwnedProcessGroups()
+            const survivors = cleanup.survivors
+            settle({
+              ok: false,
+              code: null,
+              signal: null,
+              stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+              detail:
+                !cleanup.ok || survivors.length > 0
+                  ? `timed out; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
+                  : 'timed out'
+            })
+          } catch {
+            settle({ ok: false, code: null, signal: null, stdout: '', detail: 'timed out; cleanup failed' })
+          }
+        })()
+      }, timeoutMs)
+    } catch {
+      timerStartFailed = true
+      aggregatePrimitiveFailed = true
+      lifecyclePrimitiveFailed = true
+      ownershipProtocolFailed = true
+    }
     interruptionWaiters.add(interruptionWaiter)
     if (interruptedBy !== null) {
       void convergeAfterSignal().then(interruptionWaiter).catch(() =>
@@ -833,11 +945,15 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
     }
 
     child.once('error', (error) => {
-      nativeClearTimeout(timer)
-      if (ownershipDrainTimer !== null) nativeClearTimeout(ownershipDrainTimer)
+      clearTimer(timer)
+      clearTimer(ownershipDrainTimer)
       resolveLeaderExited()
       release()
       if (settled || timedOut) {
+        return
+      }
+      if (lifecyclePrimitiveFailed) {
+        settleLifecyclePrimitiveFailure()
         return
       }
       if (interruptedBy !== null) {
@@ -861,8 +977,8 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       })
     })
     child.once('close', (code, signal) => {
-      nativeClearTimeout(timer)
-      if (ownershipDrainTimer !== null) nativeClearTimeout(ownershipDrainTimer)
+      clearTimer(timer)
+      clearTimer(ownershipDrainTimer)
       release()
       if (settled || timedOut) {
         return
@@ -877,6 +993,10 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
             detail ??
             (signal !== null ? `killed by ${signal}` : code === 0 ? 'PASS' : `exit ${String(code)}`)
         })
+      if (lifecyclePrimitiveFailed) {
+        settleLifecyclePrimitiveFailure()
+        return
+      }
       if (interruptedBy !== null) {
         void convergeAfterSignal().then((cleanup) => {
           finish(cleanup.ok ? `interrupted by ${interruptedBy}` : 'signal cleanup failed')
@@ -916,6 +1036,9 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       }
       finish(null)
     })
+    if (timerStartFailed) {
+      settleLifecyclePrimitiveFailure()
+    }
   })
 
 const probe = async (argv, label) => {
@@ -1039,14 +1162,15 @@ const main = async () => {
     writeControlled(2,
       `stage09a:check FAIL at step ${failedStep.step.id} (${failedStep.result.detail}); later steps were not run\n`
     )
-    return failedStep.result.exitCode === 0 ? 1 : failedStep.result.exitCode
+    return 1
   }
   writeControlled(1, `stage09a:check PASS (${String(steps.length)}/${String(steps.length)} steps)\n`)
   return 0
 }
 
+let ordinaryExitCode = 1
 try {
-  process.exitCode = await main()
+  ordinaryExitCode = await main()
 } catch {
   const cleanup = await terminateOwnedProcessGroups()
   safeDiagnostic(
@@ -1054,5 +1178,9 @@ try {
       ? 'stage09a:check FAIL — aggregate control failed\n'
       : 'stage09a:check FAIL — aggregate control failed and descendant cleanup was not confirmed\n'
   )
-  process.exitCode = 1
+  ordinaryExitCode = 1
+}
+const finalExitCode = await settleAggregateProcess(ordinaryExitCode)
+if (finalExitCode !== null) {
+  process.exitCode = finalExitCode
 }

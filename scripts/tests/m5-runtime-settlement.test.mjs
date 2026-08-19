@@ -5,6 +5,10 @@ import {
   settleClaimedRuntimeImage,
   settleOwnedScratchContainer
 } from '../../infra/docker/m5-runtime-settlement.mjs'
+import {
+  parseOwnedScratchContainer,
+  settleTrackedRuntimeProbe
+} from '../../infra/docker/api-image-scan.mjs'
 import { buildClaimLabel } from '../../infra/docker/m3b-docker.mjs'
 
 const imageId = (character) => `sha256:${character.repeat(64)}`
@@ -148,7 +152,9 @@ test('destructive nonzero results are superseded by proven final absence', async
     tagRemovalStatus: 17,
     containerRemovalStatus: 17
   })
-  assert.deepEqual(await settleOwnedScratchContainer(daemon.run, daemon.record), [])
+  assert.deepEqual(await settleOwnedScratchContainer(daemon.run, daemon.record, {
+    parseOwnedScratchContainer
+  }), [])
   assert.deepEqual(await settleClaimedRuntimeImage(daemon.run, {
     recoveryTag: daemon.tag,
     claimToken: daemon.claim,
@@ -174,7 +180,9 @@ test('post-removal locator rebinding preserves the foreign object and fails fixe
     rebindContainerAfterRemoval: true
   })
   assert.deepEqual(
-    await settleOwnedScratchContainer(daemon.run, daemon.record),
+    await settleOwnedScratchContainer(daemon.run, daemon.record, {
+      parseOwnedScratchContainer
+    }),
     ['owned runtime probe name changed or remained after cleanup']
   )
   assert.equal(daemon.containers.has(daemon.foreignContainerId), true)
@@ -187,6 +195,33 @@ test('post-removal locator rebinding preserves the foreign object and fails fixe
     ['owned recovery locator changed or remained after cleanup']
   )
   assert.equal(daemon.images.get(daemon.foreignImage).tags.includes(daemon.tag), true)
+})
+
+test('the live scan settlement retires tracking only after final id and name absence', async () => {
+  const clean = runtimeDaemon({ containerRemovalStatus: 17 })
+  let cleanRetired = 0
+  await settleTrackedRuntimeProbe({
+    run: clean.run,
+    record: clean.record,
+    fatal: (message) => { throw new Error(message) },
+    retire: () => { cleanRetired += 1 }
+  })
+  assert.equal(cleanRetired, 1)
+  assert.equal(clean.containers.size, 0)
+
+  const rebound = runtimeDaemon({ rebindContainerAfterRemoval: true })
+  let reboundRetired = 0
+  await assert.rejects(
+    settleTrackedRuntimeProbe({
+      run: rebound.run,
+      record: rebound.record,
+      fatal: (message) => { throw new Error(message) },
+      retire: () => { reboundRetired += 1 }
+    }),
+    /owned runtime probe name changed or remained after cleanup/
+  )
+  assert.equal(reboundRetired, 0)
+  assert.equal(rebound.containers.has(rebound.foreignContainerId), true)
 })
 
 test('a foreign tag set on a current-run image is preserved and reported', async () => {

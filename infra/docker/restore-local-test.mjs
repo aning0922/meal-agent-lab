@@ -44,7 +44,12 @@ import {
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
-import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import {
+  installSignalHandlers,
+  runCommand,
+  settleCliExitCode,
+  terminationSignal
+} from './m3b-subprocess.mjs'
 import { parsePgRestoreListEvidence } from './m5-evidence-protocol.mjs'
 
 const targetDatabase = 'meal_agent'
@@ -356,9 +361,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const item of await removeLingeringOneOffs(run)) {
       process.stderr.write(`${scrubber.scrubUntrusted(item)}\n`)
     }
-    if (terminationSignal() === null) {
-      process.exit(code)
-    }
+    await settleCliExitCode(code)
   }
 
   try {

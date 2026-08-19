@@ -38,6 +38,7 @@ import {
   parseCanonicalDockerContainerId,
   parseCanonicalDockerImageId
 } from './m3b-docker.mjs'
+import { settleOwnedScratchContainer } from './m5-runtime-settlement.mjs'
 
 const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 export const repositoryRoot = resolve(composeDirectory, '..', '..')
@@ -2352,20 +2353,12 @@ export const scanImage = async ({
     }),
     fatal
   )
-  await runStrict(['docker', 'container', 'rm', '-f', '-v', containerId], {
-    timeoutMs: 120_000,
-    label: 'docker container rm (owned runtime probe)'
+  await settleTrackedRuntimeProbe({
+    run: runCommand,
+    record: scratchRecord,
+    fatal,
+    retire: () => track.container?.(null)
   })
-  const gone = await runCommand(['docker', 'container', 'inspect', containerId], {
-    timeoutMs: 60_000
-  })
-  if (
-    gone.status !== 1 ||
-    !isAbsenceMessage(gone.stderr, { kind: 'container', name: containerId })
-  ) {
-    fatal('owned runtime probe container was not proven absent')
-  }
-  track.container?.(null)
 
   // Root ownership and runtime readability are deliberately separate
   // capabilities. A root probe cannot prove that the configured runtime UID
@@ -2440,24 +2433,12 @@ export const scanImage = async ({
     }),
     fatal
   )
-  await runStrict(['docker', 'container', 'rm', '-f', '-v', runtimeAccessContainerId], {
-    timeoutMs: 120_000,
-    label: 'docker container rm (owned runtime uid access probe)'
+  await settleTrackedRuntimeProbe({
+    run: runCommand,
+    record: runtimeAccessRecord,
+    fatal,
+    retire: () => track.container?.(null)
   })
-  const runtimeAccessGone = await runCommand(
-    ['docker', 'container', 'inspect', runtimeAccessContainerId],
-    { timeoutMs: 60_000 }
-  )
-  if (
-    runtimeAccessGone.status !== 1 ||
-    !isAbsenceMessage(runtimeAccessGone.stderr, {
-      kind: 'container',
-      name: runtimeAccessContainerId
-    })
-  ) {
-    fatal('owned runtime uid access probe container was not proven absent')
-  }
-  track.container?.(null)
 
   // Docker daemon 对 immutable ID 的最终 materialization 是唯一 rootfs 事实源。
   const listing = filesystemListing(extractedRoot)
@@ -2663,4 +2644,27 @@ export const scanImage = async ({
     migrationCount: imageMigrations.length,
     imageId
   }
+}
+
+/**
+ * Production scan callsites settle scratch containers from final immutable-ID
+ * and mutable-name observations. The tracking record is retired only after the
+ * shared protocol proves both locators absent; command status never substitutes
+ * for the final daemon facts.
+ */
+export const settleTrackedRuntimeProbe = async ({ run, record, fatal, retire }) => {
+  let problems
+  try {
+    problems = await settleOwnedScratchContainer(run, record, {
+      parseOwnedScratchContainer
+    })
+  } catch {
+    fatal('owned runtime probe cleanup did not complete')
+  }
+  if (!Array.isArray(problems) || problems.length > 0) {
+    fatal(Array.isArray(problems) && problems.length > 0
+      ? problems[0]
+      : 'owned runtime probe cleanup returned invalid evidence')
+  }
+  retire()
 }

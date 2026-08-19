@@ -819,6 +819,23 @@ export const terminationSignalAfterCleanupSettlement = async () => {
   return pendingSignal
 }
 
+/**
+ * Finalize an ordinary CLI without racing an already-delivered signal. Signal
+ * handlers retain ownership of scoped cleanup and same-signal rethrow; the
+ * ordinary path only publishes an exit code after two native event-loop turns
+ * prove that no pending signal winner exists.
+ */
+export const settleCliExitCode = async (exitCode) => {
+  if (!Number.isSafeInteger(exitCode) || exitCode < 0 || exitCode > 255) {
+    throw new TypeError('CLI exit code must be an integer from 0 through 255')
+  }
+  const signal = await terminationSignalAfterCleanupSettlement()
+  if (signal === null) {
+    process.exitCode = exitCode
+  }
+  return signal
+}
+
 const runCommandUnchecked = createCommandRunner()
 
 export const runCommand = (args, options = {}) =>

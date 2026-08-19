@@ -53,7 +53,12 @@ import {
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
-import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import {
+  installSignalHandlers,
+  runCommand,
+  settleCliExitCode,
+  terminationSignal
+} from './m3b-subprocess.mjs'
 import {
   createOwnedTreeJournal,
   parsePgRestoreListEvidence,
@@ -372,6 +377,10 @@ const backupTargetEvidenceStillNamesAncestor = (evidence) => {
  * project，演练用每轮唯一 project + override）。返回 dump 与 sidecar 的路径
  * 及 SHA-256。
  */
+/** Production handoff boundary: declare the exact output before docker cp forks. */
+export const runBackupCopyWithDeclaredOutput = (journal, target, operation) =>
+  runWithDeclaredOwnedTreeOutputs(journal, [target], operation)
+
 export const performBackup = async (
   {
     compose,
@@ -552,9 +561,9 @@ export const performBackup = async (
             throw new Error('backup source digest evidence failed')
           }
           let copied = null
-          copied = await runWithDeclaredOwnedTreeOutputs(
+          copied = await runBackupCopyWithDeclaredOutput(
             privatePartialJournal,
-            [hostPartial],
+            hostPartial,
             () => run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
               timeoutMs: 300_000
             })
@@ -784,9 +793,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const item of await removeLingeringOneOffs(run)) {
       process.stderr.write(`${scrubber.scrubUntrusted(item)}\n`)
     }
-    if (terminationSignal() === null) {
-      process.exit(code)
-    }
+    await settleCliExitCode(code)
   }
 
   try {

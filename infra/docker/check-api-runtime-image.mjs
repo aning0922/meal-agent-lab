@@ -38,6 +38,7 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
+  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
@@ -120,7 +121,8 @@ const cleanup = createSignalSafeCleanup(async (
     try {
       cleanupProblems.push(...await settleOwnedScratchContainer(
         cleanupRunCommand,
-        cleanupState.scratchContainer
+        cleanupState.scratchContainer,
+        { parseOwnedScratchContainer }
       ))
     } catch {
       cleanupProblems.push('owned runtime probe cleanup did not complete')

@@ -381,6 +381,10 @@ if [ "\${STAGE09A_FIXTURE_MODE:-}" = preflight ]; then
   : > "\${STAGE09A_FIXTURE_DIR}/step-started"
   exit 9
 fi
+if [ "\${STAGE09A_FIXTURE_MODE:-}" = ordinary-failure ]; then
+  : > "\${STAGE09A_FIXTURE_DIR}/step-started"
+  exit 73
+fi
 if [ "\${STAGE09A_FIXTURE_MODE:-}" = nested-cleanup ]; then
   exec "\${STAGE09A_FIXTURE_NODE}" "\${STAGE09A_FIXTURE_DIR}/nested-parent.mjs"
 fi
@@ -466,8 +470,8 @@ test('the aggregate waits for nested scoped cleanup and every announced process 
     gate.child.kill('SIGTERM')
     const outcome = await waitForClose(gate.child, 7_000)
     const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
-    assert.equal(outcome.code, 1)
-    assert.equal(outcome.signal, null)
+    assert.equal(outcome.code, null)
+    assert.equal(outcome.signal, 'SIGTERM')
     assert.equal(
       existsSync(resolve(fixture.directory, 'nested-cleanup-complete')),
       true,
@@ -499,8 +503,8 @@ test('the aggregate waits beyond the fallback window for shared cleanup acknowle
     )
     gate.child.kill('SIGHUP')
     const outcome = await waitForClose(gate.child, 9_000)
-    assert.equal(outcome.code, 1)
-    assert.equal(outcome.signal, null)
+    assert.equal(outcome.code, null)
+    assert.equal(outcome.signal, 'SIGHUP')
     assert.equal(existsSync(resolve(fixture.directory, 'shared-cleanup-started')), true)
     assert.equal(existsSync(resolve(fixture.directory, 'shared-cleanup-complete')), true)
   } finally {
@@ -682,8 +686,8 @@ test('a completed cleanup frame cannot hide a later fd3 holder', { timeout: 12_0
     gate.child.kill('SIGTERM')
     const outcome = await waitForClose(gate.child, 7_000)
     const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
-    assert.equal(outcome.code, 1)
-    assert.equal(outcome.signal, null)
+    assert.equal(outcome.code, null)
+    assert.equal(outcome.signal, 'SIGTERM')
     assert.match(output, /ownership channel failed|interrupted by SIGTERM/)
     await waitFor(() => !processIsAlive(holderPid), 1_500, 'post-cleanup holder ESRCH')
   } finally {
@@ -873,8 +877,8 @@ test('a signal during prerequisite probes prevents every gate step from starting
     const outcome = await waitForClose(gate.child, 6_000)
     const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
 
-    assert.equal(outcome.code, 1)
-    assert.equal(outcome.signal, null)
+    assert.equal(outcome.code, null)
+    assert.equal(outcome.signal, 'SIGTERM')
     assert.equal(existsSync(resolve(fixture.directory, 'step-started')), false)
     assert.match(output, /interrupted by SIGTERM during prerequisite checks; no checks were run/)
     assert.doesNotMatch(output, /stage09a:check step 1\/14/)
@@ -903,8 +907,8 @@ test('a signal waits for the active step process group to reach ESRCH', { timeou
     await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'descendant ESRCH')
     const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
 
-    assert.equal(outcome.code, 1)
-    assert.equal(outcome.signal, null)
+    assert.equal(outcome.code, null)
+    assert.equal(outcome.signal, 'SIGTERM')
     assert.match(output, /received SIGTERM; terminating the controlled process subtree/)
     assert.match(output, /FAIL at step stage08-check \(interrupted by SIGTERM\)/)
   } finally {
@@ -983,8 +987,8 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
       gate.child.kill(signal)
       const outcome = await waitForClose(gate.child, 6_000)
       const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
-      assert.equal(outcome.code, 1)
-      assert.equal(outcome.signal, null)
+      assert.equal(outcome.code, null, output)
+      assert.equal(outcome.signal, signal, output)
       assert.equal(existsSync(resolve(fixture.directory, 'step-started')), false)
       assert.match(output, new RegExp(`interrupted by ${signal} during prerequisite checks`))
       await waitFor(() => !processIsAlive(probePid), 1_000, 'prerequisite group ESRCH')
@@ -1010,8 +1014,13 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
       const outcome = await waitForClose(gate.child, 7_000)
       await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'descendant ESRCH')
       const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
-      assert.equal(outcome.code, 1)
-      assert.equal(outcome.signal, null)
+      if (/signal cleanup primitive failed/.test(output)) {
+        assert.equal(outcome.code, 1, output)
+        assert.equal(outcome.signal, null, output)
+      } else {
+        assert.equal(outcome.code, null, output)
+        assert.equal(outcome.signal, signal, output)
+      }
       assert.match(output, new RegExp(`received ${signal}`))
       assert.match(
         output,
@@ -1028,3 +1037,150 @@ for (const signal of ['SIGINT', 'SIGHUP']) {
     }
   })
 }
+
+test('ordinary child failures are normalized to exit 1', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'ordinary-failure')
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.match(output, /FAIL at step stage08-check \(exit 73\)/)
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  test(`a ${signal} delivered after the aggregate result is rethrown after settlement`, { timeout: 12_000 }, async () => {
+    const fixture = createFixture()
+    const mutatedEntrypoint = resolve(fixture.directory, `settlement-${signal}.mjs`)
+    const originalSource = readFileSync(entrypoint, 'utf8')
+    const mutatedSource = originalSource
+      .replace(
+        "from './stage09a-prerequisite-evidence.mjs'",
+        `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+      )
+      .replace(
+        "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
+        `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
+      )
+      .replace(
+        'const finalExitCode = await settleAggregateProcess(ordinaryExitCode)',
+        `process.kill(process.pid, ${JSON.stringify(signal)})\nconst finalExitCode = await settleAggregateProcess(ordinaryExitCode)`
+      )
+    assert.notEqual(mutatedSource, originalSource)
+    writeFileSync(mutatedEntrypoint, mutatedSource)
+    let gate = null
+    try {
+      gate = spawnGate(fixture, 'ordinary-failure', mutatedEntrypoint)
+      const outcome = await waitForClose(gate.child, 7_000)
+      const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+      assert.equal(outcome.code, null)
+      assert.equal(outcome.signal, signal)
+      assert.match(output, /FAIL at step stage08-check \(exit 73\)/)
+      assert.match(output, new RegExp(`received ${signal}`))
+    } finally {
+      if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+      rmSync(fixture.directory, { recursive: true, force: true })
+    }
+  })
+}
+
+test('a step timer creation exception settles only after the owned group reaches ESRCH', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  const mutatedEntrypoint = resolve(fixture.directory, 'timer-create-failure-stage09a.mjs')
+  const sentinel = 'TIMER-CREATE-PRIMITIVE-SENTINEL'
+  const originalSource = readFileSync(entrypoint, 'utf8')
+  const mutatedSource = originalSource
+    .replace(
+      "from './stage09a-prerequisite-evidence.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+    )
+    .replace(
+      "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
+      `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
+    )
+    .replace(
+      'const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)',
+      `const capturedSetTimeout = globalThis.setTimeout.bind(globalThis)
+const nativeSetTimeout = (callback, milliseconds, ...args) => {
+  if (milliseconds === 2_400_000) {
+    const exists = process.getBuiltinModule('node:fs').existsSync
+    const marker = process.env.STAGE09A_FIXTURE_DIR + '/grandchild-pid'
+    const deadline = Date.now() + 3_000
+    while (!exists(marker) && Date.now() < deadline) {}
+    throw new Error(${JSON.stringify(sentinel)})
+  }
+  return capturedSetTimeout(callback, milliseconds, ...args)
+}`
+    )
+  assert.notEqual(mutatedSource, originalSource)
+  writeFileSync(mutatedEntrypoint, mutatedSource)
+  let gate = null
+  let grandchildPid = null
+  try {
+    gate = spawnGate(fixture, 'descendant', mutatedEntrypoint)
+    const pidFile = resolve(fixture.directory, 'grandchild-pid')
+    await waitFor(() => existsSync(pidFile), 4_000, 'timer-create descendant')
+    grandchildPid = Number(readFileSync(pidFile, 'utf8').trim())
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.match(output, /aggregate lifecycle primitive failed/)
+    assert.doesNotMatch(output, new RegExp(sentinel))
+    await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'timer-create ESRCH')
+  } finally {
+    if (grandchildPid !== null && processIsAlive(grandchildPid)) process.kill(grandchildPid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('a step timer clear exception is fixed-output and cleanup-before-settlement', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  const mutatedEntrypoint = resolve(fixture.directory, 'timer-clear-failure-stage09a.mjs')
+  const sentinel = 'TIMER-CLEAR-PRIMITIVE-SENTINEL'
+  const originalSource = readFileSync(entrypoint, 'utf8')
+  const mutatedSource = originalSource
+    .replace(
+      "from './stage09a-prerequisite-evidence.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+    )
+    .replace(
+      "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
+      `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
+    )
+    .replace(
+      'const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)',
+      `const capturedClearTimeout = globalThis.clearTimeout.bind(globalThis)
+let clearFailureInjected = false
+const nativeClearTimeout = (timer) => {
+  const exists = process.getBuiltinModule('node:fs').existsSync
+  if (!clearFailureInjected && exists(process.env.STAGE09A_FIXTURE_DIR + '/step-started')) {
+    clearFailureInjected = true
+    throw new Error(${JSON.stringify(sentinel)})
+  }
+  return capturedClearTimeout(timer)
+}`
+    )
+  assert.notEqual(mutatedSource, originalSource)
+  writeFileSync(mutatedEntrypoint, mutatedSource)
+  let gate = null
+  try {
+    gate = spawnGate(fixture, 'ordinary-failure', mutatedEntrypoint)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.match(output, /process-group ownership probe failed|aggregate lifecycle primitive failed/)
+    assert.doesNotMatch(output, new RegExp(sentinel))
+  } finally {
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})

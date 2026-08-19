@@ -42,7 +42,12 @@ import {
   writeImageOverride
 } from './m3b-docker.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
-import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
+import {
+  installSignalHandlers,
+  runCommand,
+  settleCliExitCode,
+  terminationSignal
+} from './m3b-subprocess.mjs'
 import { requireFreshContainerGeneration } from './m5-evidence-protocol.mjs'
 
 export const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
@@ -1533,9 +1538,7 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
     }
   }
 
-  if (terminationSignal() === null) {
-    process.exit(failures.length > 0 ? 1 : 0)
-  }
+  await settleCliExitCode(failures.length > 0 ? 1 : 0)
 }
 
 /** 演练入口共用的 argv 解析：只认 --keep-failure。 */
