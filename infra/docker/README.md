@@ -239,6 +239,17 @@ recovery 只接受 exact tag + claim + immutable ID。三项 guard deletion 由�
 与文档的候选已从步骤 1 串行通过完整 14 步链、docs links 67/276 与最终零残留复核。
 M5.3 为 Implementation complete — pending independent A/B review，M5 未 Accepted。
 
+**M5.4 当前协议（2026-08-19，覆盖上段 M5.3 当前状态）**：M5.3 候选 `6552384` 的
+两路独立审计均为 BLOCK。两个 runtime-image 入口现在共享最终状态 settlement：destructive
+command 状态不再永久锁存，只有最终 immutable ID、mutable tag、build claim 与 scratch
+container 的事实决定成功；tag/container 被 foreign object 重绑时保留外部对象并失败；
+tagless claimed image 可由唯一 claim 恢复 immutable ID 后结算。scoped cleanup 后连续让出
+原生事件循环 turn，再读取 signal winner，避免 pending signal 被同步退出抢先。backup 的
+真实 `docker cp` 调用点进入 pre-fork owned-tree protocol；六项 critical guard 由机器 registry
+与活调用点 mutant 逐项证明。固定 Node.js v24.18.0 的 scripts tests **157/157**；runtime
+image 正向门禁和 **1 baseline + 17 built + 2 static-only** mutation 均已通过。完整 14 步链
+正在从步骤 1 收尾；M5.4 仍为 pending independent A/B review，M5 未 Accepted。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

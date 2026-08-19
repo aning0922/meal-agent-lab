@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-17 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.3 Implementation complete — pending independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.4 Implementation complete — pending full local gate and independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（M5.3 原子副作用与 cleanup settlement 候选待全新 A/B 独立审计，未 Accepted）
+### M5 实施记录（M5.4 最终状态、信号交付与生产 guard 候选待完整门禁及全新 A/B 独立审计，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -3425,7 +3425,9 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
   设计与登记见 [`infra/docker/README.md`](../../infra/docker/README.md) 的 M5
   一节：期望闭包由与 Dockerfile runtime-closure **完全相同**的
   `pnpm deploy --prod --legacy` 在宿主派生（lockfile 逐字节只读断言），证据取自
-  真实构建产物的 `docker export` 全文件系统（不启动容器、不执行镜像内代码），
+  真实构建产物由 immutable image ID 创建两个受控 scratch container：root 视图负责
+  `docker export` 最终文件系统，runtime 视图以 `10001:10001`、read-only、network-none
+  验证固定路径可遍历与入口可读；两者均不启动镜像配置的应用命令，
   同一个 walker 走两棵树精确比对 store key / 顶层链接 / name@version；显名
   denylist（Taro、Swiper、webpack-dev-server 等族）判定面是包清单 ∪ 全镜像
   `node_modules/<name>` 路径段，与闭包比对互相独立；镜像 Config、`/app` 结构、
@@ -4181,6 +4183,34 @@ image mutation 为 **1 baseline + 17 built + 2 static-only**、signal 为 **5 de
 容器、网络、卷、镜像标签、临时目录、override 与相关进程零残留。下一门禁是两个**全新、
 用户可见、互相独立、只读**的 A/B 审计会话（A 禁止 Docker，B 独占 Docker）。M5 未
 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持 `Proposed`。
+
+#### M5.4 最终状态、信号交付与生产 guard 收敛（2026-08-19，Implementation complete — pending full local gate and independent A/B review）
+
+M5.3 候选 `6552384` 的两个全新独立审计均为 BLOCK。正常 14 步链可以全绿，但审计
+反例证明 destructive command status 仍会遮蔽最终对象事实、cleanup 后 pending signal
+会被同步退出抢先、production guard mutation 会命中相似 helper 而不是活调用点。完整
+任务书与停止条件见
+[`2026-08-m5-4-final-state-signal-guard-convergence.md`](2026-08-m5-4-final-state-signal-guard-convergence.md)。
+
+实现提交 `ec14771` 归并三项根因：
+
+1. 两个 runtime-image 入口共享 `m5-runtime-settlement.mjs`。image/tag/container 的
+   cleanup 只看最后一次 canonical immutable-ID、claim 与 name 观察；destructive command
+   非零但最终 absent 可以收口，删除后 foreign rebind 则保留外部对象并固定失败；
+2. iid/metadata 尚不可用且 recovery tag 已 absent 时，按不可猜 build claim 恢复唯一
+   immutable image ID；零个表示无 claimed image，多个或 foreign tag set 固定失败；
+3. scoped cleanup 后连续让出两个原生 event-loop turn，再读取 signal winner；普通失败
+   只设置 `process.exitCode`，不再用同步 `process.exit` 抢先结束 pending signal；
+4. 正式 backup 的 `docker cp` producer 由 `runWithDeclaredOwnedTreeOutputs` 包裹，private
+   partial 在 fork 前进入同一 inode journal；
+5. 六项 critical guard 进入机器 registry，测试直接变异复制后的生产模块/调用点并执行
+   最小 oracle；缺项、重复、wrong callsite 或 earlier-guard crash 均不能冒充判别力。
+
+固定 Node.js `v24.18.0` 的 scripts tests 为 **157/157**；runtime image 正向门禁通过，
+mutation 为 **1 baseline + 17 built + 2 static-only**。完整 `stage09a:check` 仍必须在文档与
+committed-evidence baseline 提交后从步骤 1 串行重跑；该结果出来前不登记 14/14。其后
+还须两个全新、用户可见、独立 worktree 的只读 A/B 审计（A 禁止 Docker，B 独占
+Docker）。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run；ADR-0006 保持 `Proposed`。
 
 #### M5 不可变证据协议最终收口候选（2026-08-16，历史候选）
 

@@ -20,3 +20,4 @@
 - [阶段 09A M5.1：架构级证据协议整改任务书](2026-08-m5-1-evidence-protocol-remediation.md)
 - [阶段 09A M5.2：发布与收场协议整改任务书](2026-08-m5-2-publication-settlement-remediation.md)
 - [阶段 09A M5.3：原子副作用与 cleanup settlement 收敛](2026-08-m5-3-atomic-settlement-convergence.md)
+- [阶段 09A M5.4：最终状态、信号交付与生产 guard 收敛](2026-08-m5-4-final-state-signal-guard-convergence.md)
