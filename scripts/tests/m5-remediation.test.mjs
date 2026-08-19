@@ -46,6 +46,7 @@ import {
   requireNonLoopbackIsolationEvidence
 } from '../../infra/docker/local-test-containment.mjs'
 import {
+  createSignalSafeCleanup,
   createCommandRunner,
   observedDescendantPgids,
   runCommand,
@@ -112,6 +113,49 @@ const runIsolatedNode = (source, timeout = 12_000) => {
   assert.equal(outcome.status, 0, outcome.stderr)
   return JSON.parse(outcome.stdout)
 }
+
+test('signal-safe cleanup returns one memoized settlement to every caller', async () => {
+  let calls = 0
+  let release = null
+  const cleanup = createSignalSafeCleanup(async () => {
+    calls += 1
+    await new Promise((resolveRelease) => { release = resolveRelease })
+    return []
+  })
+  const first = cleanup()
+  const second = cleanup()
+  assert.equal(first, second)
+  assert.equal(calls, 0)
+  await new Promise((resolveImmediate) => setImmediate(resolveImmediate))
+  assert.equal(calls, 1)
+  release()
+  assert.deepEqual(await first, [])
+  assert.deepEqual(await second, [])
+})
+
+test('cleanup settlement yields until an already-delivered signal owns process exit', () => {
+  const moduleUrl = new URL('../../infra/docker/m3b-subprocess.mjs', import.meta.url).href
+  const source = [
+    `import { createSignalSafeCleanup, installSignalHandlers, terminationSignalAfterCleanupSettlement } from ${JSON.stringify(moduleUrl)}`,
+    'const cleanup = createSignalSafeCleanup(async () => {',
+    "  process.kill(process.pid, 'SIGTERM')",
+    '  return []',
+    '})',
+    "installSignalHandlers(() => cleanup(), { label: 'pending signal fixture cleanup' })",
+    'await cleanup()',
+    'const signal = await terminationSignalAfterCleanupSettlement()',
+    'if (signal === null) process.exit(42)',
+    'await new Promise(() => {})'
+  ].join('\n')
+  const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    timeout: 8_000
+  })
+  assert.equal(outcome.status, null, outcome.stderr)
+  assert.equal(outcome.signal, 'SIGTERM')
+  assert.match(outcome.stderr, /SIGTERM: terminating child processes/)
+})
 
 test('M4 scoped artifact cleanup is failure-safe across every registered task', async () => {
   const cleanup = createScopedArtifactCleanup()

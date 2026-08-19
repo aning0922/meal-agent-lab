@@ -29,12 +29,10 @@ import {
   deriveExpectedClosure,
   dockerfilePath,
   dockerignorePath,
-  parseOwnedScratchContainer,
   scanImage
 } from './api-image-scan.mjs'
 import {
   buildClaimLabel,
-  isAbsenceMessage,
   parseBuildMetadataImageIdentity,
   parseClaimedBuildImage,
   parseCanonicalDockerImageId
@@ -43,7 +41,8 @@ import {
   createSignalSafeCleanup,
   installSignalHandlers,
   runCommand,
-  terminationSignal
+  terminationSignal,
+  terminationSignalAfterCleanupSettlement
 } from './m3b-subprocess.mjs'
 import {
   createOwnedTreeJournal,
@@ -51,6 +50,10 @@ import {
   retireOwnedTree,
   runWithDeclaredOwnedTreeOutputs
 } from './m5-evidence-protocol.mjs'
+import {
+  settleClaimedRuntimeImage,
+  settleOwnedScratchContainer
+} from './m5-runtime-settlement.mjs'
 
 const usage = 'node infra/docker/check-api-runtime-image-mutations.mjs'
 if (process.argv.length > 2) {
@@ -317,165 +320,19 @@ const cleanupState = {
 const cleanupProblems = []
 const cleanup = createSignalSafeCleanup(async (cleanupRunCommand) => {
   for (const [caseId, record] of cleanupState.builds) {
-    let ownedImageId = record.imageId
-    let recoverySourceFailed = false
     try {
       if (record.scratchContainer !== null) {
-        const scratch = record.scratchContainer
-        const locator = scratch.id ?? scratch.name
-        const inspected = await cleanupRunCommand(['docker', 'container', 'inspect', locator], {
-          timeoutMs: 60_000
-        })
-        if (inspected.status === 0) {
-          const owned = parseOwnedScratchContainer(
-            inspected.stdout,
-            {
-              expectedName: scratch.name,
-              expectedImageId: scratch.expectedImageId,
-              expectedContainerId: scratch.id,
-              expectedUser: scratch.expectedUser,
-              expectedNetworkMode: scratch.expectedNetworkMode,
-              expectedReadonlyRootfs: scratch.expectedReadonlyRootfs
-            },
-            () => { throw new Error('scratch identity') }
-          )
-          const removal = await cleanupRunCommand(
-            ['docker', 'container', 'rm', '-f', '-v', owned.Id],
-            { timeoutMs: 120_000 }
-          )
-          if (removal.status !== 0) {
-            cleanupProblems.push(`owned runtime probe removal failed (${caseId})`)
-          }
-        } else if (!(
-          inspected.status === 1 &&
-          isAbsenceMessage(inspected.stderr, { kind: 'container', name: locator })
-        )) {
-          cleanupProblems.push(`owned runtime probe identity could not be verified (${caseId})`)
-        }
-        const gone = await cleanupRunCommand(['docker', 'container', 'inspect', locator], {
-          timeoutMs: 60_000
-        })
-        if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
-          kind: 'container',
-          name: locator
-        }))) {
-          cleanupProblems.push(`owned runtime probe was not proven absent (${caseId})`)
-        }
+        cleanupProblems.push(...(await settleOwnedScratchContainer(
+          cleanupRunCommand,
+          record.scratchContainer
+        )).map((message) => `${message} (${caseId})`))
         record.scratchContainer = null
       }
-      const tagged = await cleanupRunCommand(['docker', 'image', 'inspect', record.recoveryTag], {
-        timeoutMs: 60_000
-      })
-      if (tagged.status === 0) {
-        try {
-          const payload = JSON.parse(tagged.stdout)
-          const candidate = Array.isArray(payload) && payload.length === 1 ? payload[0] : null
-          const recoveredId = parseCanonicalDockerImageId(candidate?.Id)
-          parseClaimedBuildImage(candidate, {
-            expectedImageId: recoveredId,
-            expectedClaimToken: record.claimToken,
-            expectedTag: record.recoveryTag
-          })
-          if (ownedImageId !== null && ownedImageId !== recoveredId) {
-            throw new Error('identity mismatch')
-          }
-          ownedImageId = recoveredId
-        } catch {
-          recoverySourceFailed = true
-        }
-      } else if (!(
-        tagged.status === 1 &&
-        isAbsenceMessage(tagged.stderr, { kind: 'image', name: record.recoveryTag })
-      )) {
-        recoverySourceFailed = true
-      }
-      if (ownedImageId === null) {
-        if (recoverySourceFailed) {
-          cleanupProblems.push(`built image identity could not be recovered (${caseId})`)
-        }
-        continue
-      }
-
-      const owned = await cleanupRunCommand(['docker', 'image', 'inspect', ownedImageId], {
-        timeoutMs: 60_000
-      })
-      let mayRemove = false
-      if (owned.status === 0) {
-        try {
-          const payload = JSON.parse(owned.stdout)
-          parseClaimedBuildImage(
-            Array.isArray(payload) && payload.length === 1 ? payload[0] : null,
-            {
-              expectedImageId: ownedImageId,
-              expectedClaimToken: record.claimToken,
-              expectedTag: record.recoveryTag
-            }
-          )
-          mayRemove = true
-        } catch {
-          cleanupProblems.push(`owned image claim evidence was unreadable (${caseId})`)
-        }
-      } else if (!(
-        owned.status === 1 &&
-        isAbsenceMessage(owned.stderr, { kind: 'image', name: ownedImageId })
-      )) {
-        cleanupProblems.push(`immutable image identity could not be verified (${caseId})`)
-      }
-      if (mayRemove) {
-        const untag = await cleanupRunCommand(['docker', 'image', 'rm', record.recoveryTag], {
-          timeoutMs: 120_000
-        })
-        if (untag.status !== 0) {
-          cleanupProblems.push(`recovery tag removal failed (${caseId})`)
-        }
-      }
-      const tagGone = await cleanupRunCommand(['docker', 'image', 'inspect', record.recoveryTag], {
-        timeoutMs: 60_000
-      })
-      if (!(tagGone.status === 1 && isAbsenceMessage(tagGone.stderr, {
-        kind: 'image',
-        name: record.recoveryTag
-      }))) {
-        cleanupProblems.push(`recovery tag still present after removal (${caseId})`)
-      }
-      const remaining = await cleanupRunCommand(['docker', 'image', 'inspect', ownedImageId], {
-        timeoutMs: 60_000
-      })
-      if (remaining.status === 0) {
-        try {
-          const payload = JSON.parse(remaining.stdout)
-          parseClaimedBuildImage(
-            Array.isArray(payload) && payload.length === 1 ? payload[0] : null,
-            {
-              expectedImageId: ownedImageId,
-              expectedClaimToken: record.claimToken,
-              requireUntagged: true
-            }
-          )
-          const removal = await cleanupRunCommand(['docker', 'image', 'rm', ownedImageId], {
-            timeoutMs: 120_000
-          })
-          if (removal.status !== 0) {
-            cleanupProblems.push(`immutable image removal failed (${caseId})`)
-          }
-        } catch {
-          cleanupProblems.push(`untagged image claim evidence was unreadable (${caseId})`)
-        }
-      } else if (!(
-        remaining.status === 1 &&
-        isAbsenceMessage(remaining.stderr, { kind: 'image', name: ownedImageId })
-      )) {
-        cleanupProblems.push(`immutable image identity could not be verified (${caseId})`)
-      }
-      const gone = await cleanupRunCommand(['docker', 'image', 'inspect', ownedImageId], {
-        timeoutMs: 60_000
-      })
-      if (!(gone.status === 1 && isAbsenceMessage(gone.stderr, {
-        kind: 'image',
-        name: ownedImageId
-      }))) {
-        cleanupProblems.push(`immutable image still present after removal (${caseId})`)
-      }
+      cleanupProblems.push(...(await settleClaimedRuntimeImage(cleanupRunCommand, {
+        recoveryTag: record.recoveryTag,
+        claimToken: record.claimToken,
+        ownedImageId: record.imageId
+      })).map((message) => `${message} (${caseId})`))
     } catch {
       cleanupProblems.push(`immutable image cleanup did not complete (${caseId})`)
     }
@@ -734,14 +591,16 @@ try {
   }
 }
 
-if (terminationSignal() === null) {
+let settledSignal = terminationSignal()
+if (settledSignal === null) {
   await cleanup()
   for (const message of cleanupProblems) {
     failures.push(`cleanup: ${message}`)
   }
+  settledSignal = await terminationSignalAfterCleanupSettlement()
 }
 
-if (terminationSignal() !== null) {
+if (settledSignal !== null) {
   // The shared handler owns cleanup and same-signal settlement.
 } else if (fatalMessage !== null || failures.length > 0) {
   process.stderr.write('API runtime image mutation suite FAIL\n')
@@ -751,12 +610,12 @@ if (terminationSignal() !== null) {
   for (const message of failures) {
     process.stderr.write(`  - ${message}\n`)
   }
-  process.exit(1)
+  process.exitCode = 1
 }
 
 const builtMutations = mutations.filter((mutation) => mutation.build).length
 const staticOnlyMutations = mutations.length - builtMutations + 1
-if (terminationSignal() === null) {
+if (settledSignal === null && process.exitCode !== 1) {
   process.stdout.write(
     `API runtime image mutation suite PASS (1 baseline + ${String(builtMutations)} built ` +
       `+ ${String(staticOnlyMutations)} static-only mutations, all caught with the specified reasons)\n`

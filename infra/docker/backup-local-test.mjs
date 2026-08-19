@@ -56,13 +56,13 @@ import { createSecretScrubber } from './m3b-safe-output.mjs'
 import { installSignalHandlers, runCommand, terminationSignal } from './m3b-subprocess.mjs'
 import {
   createOwnedTreeJournal,
-  declareOwnedTreeOutput,
   parsePgRestoreListEvidence,
   directoryEvidenceStillNames,
   identityStillNamesFile,
   readStableRegularFile,
   registerOwnedTree,
   retireOwnedTree,
+  runWithDeclaredOwnedTreeOutputs,
   sha256Bytes,
   snapshotDirectoryEvidence,
   verifyPublishedFileEvidence,
@@ -427,7 +427,6 @@ export const performBackup = async (
   // settlement. Declare the exact name before the producer starts; cleanup may
   // then adopt only a regular single-link inode at this path, never an unknown
   // sibling or a replacement.
-  declareOwnedTreeOutput(privatePartialJournal, hostPartial)
   let publishedIdentity = null
   let publishedSidecarIdentity = null
   let publishedDumpBytes = null
@@ -553,17 +552,13 @@ export const performBackup = async (
             throw new Error('backup source digest evidence failed')
           }
           let copied = null
-          try {
-            copied = await run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
+          copied = await runWithDeclaredOwnedTreeOutputs(
+            privatePartialJournal,
+            [hostPartial],
+            () => run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
               timeoutMs: 300_000
             })
-          } finally {
-            // Producer settlement, including nonzero or signal, cannot bypass
-            // adoption of its predeclared output. If signal cleanup adopted and
-            // removed it first, this throws into the already-failing operation
-            // rather than reacquiring a pathname.
-            if (existsSync(hostPartial)) registerOwnedTree(privatePartialJournal, hostPartial)
-          }
+          )
           if (copied.status !== 0) {
             throw new Error('backup handoff failed')
           }

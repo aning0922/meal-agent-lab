@@ -1126,7 +1126,7 @@ test('runtime image entrypoints register recovery locators before immutable owne
   assert.match(positive, /runWithDeclaredOwnedTreeOutputs\([\s\S]*?imageIdFile[\s\S]*?imageMetadataFile/)
   assert.match(positive, /imageTag: null/)
   assert.match(positive, /createSignalSafeCleanup\(async/)
-  assert.match(positive, /built image identity could not be recovered from safe evidence/)
+  assert.match(positive, /settleClaimedRuntimeImage\(cleanupRunCommand/)
 
   assert.match(mutations, /--iidfile/)
   assert.match(mutations, /expectedImageId:/)
@@ -1136,6 +1136,7 @@ test('runtime image entrypoints register recovery locators before immutable owne
   assert.match(mutations, /'--tag', recoveryTag/)
   assert.match(mutations, /runWithDeclaredOwnedTreeOutputs\([\s\S]*?imageIdFile[\s\S]*?metadataFile/)
   assert.match(mutations, /createSignalSafeCleanup\(async/)
+  assert.match(mutations, /settleClaimedRuntimeImage\(cleanupRunCommand/)
 })
 
 test('a pre-evidence build failure is recovered by exact tag, claim and immutable id', () => {

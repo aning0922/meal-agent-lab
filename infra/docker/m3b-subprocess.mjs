@@ -21,6 +21,7 @@ import { fstatSync, readSync, writeSync } from 'node:fs'
 // 就保存原始引用；这不是为了让测试通过，而是确保清理路径使用自己的受控原语。
 const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
 const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
+const nativeSetImmediate = globalThis.setImmediate.bind(globalThis)
 const nativeProcessKill = process.kill.bind(process)
 
 const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
@@ -802,6 +803,20 @@ export const createSignalSafeCleanup = (operation) => {
     }
     return cleanupPromise
   }
+}
+
+/**
+ * Hand ordinary CLI settlement back to the event loop before choosing an exit
+ * code. An OS signal can already be pending while its JS handler has not yet
+ * run; synchronously calling process.exit immediately after cleanup would hide
+ * that signal. Two explicit turns let the installed signal watcher publish its
+ * winner and join the memoized cleanup settlement. Callers must use the
+ * returned value and natural process.exitCode settlement, never process.exit.
+ */
+export const terminationSignalAfterCleanupSettlement = async () => {
+  await new Promise((resolveImmediate) => nativeSetImmediate(resolveImmediate))
+  await new Promise((resolveImmediate) => nativeSetImmediate(resolveImmediate))
+  return pendingSignal
 }
 
 const runCommandUnchecked = createCommandRunner()
