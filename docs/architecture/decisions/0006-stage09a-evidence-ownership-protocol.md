@@ -4,6 +4,12 @@
 - 日期：2026-08-16
 - 范围：阶段 09A M5 的 Docker/Compose、进程组、生命周期、备份与恢复门禁
 
+实施注记（2026-08-19，M5.5）：destructive cleanup 的 command status 不再作为最终
+对象事实；runtime scratch container 同时按 immutable ID 与 mutable name 重新观察后才
+退休。聚合器与生产 CLI 在 cleanup 后经过 signal delivery barrier 再发布普通退出；
+production guard registry 的消费者 path/anchor/count 已成为机器门禁。实现候选
+`5b3f9b3` 本地 14/14 全绿，仍待独立 A/B 审计；本 ADR 保持 Proposed。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

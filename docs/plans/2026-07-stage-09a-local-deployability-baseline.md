@@ -4283,6 +4283,19 @@ subject、archive fd、evidence cleanup、backup artifact/TOC 与 generation set
 A/B 审计（A 禁止 Docker，B 独占 Docker）。M5 未 Accepted、09A 未 Pass、远端 CI
 无真实 run；ADR-0006 保持 `Proposed`。
 
+#### M5.5 最终结算与活生产消费者 guard 收敛（2026-08-19）
+
+M5.4 候选 `a084723` 的 A/B 双审计均为 BLOCK。总控将 runtime scratch cleanup 的
+direct-rm 分叉合并为 immutable-ID + mutable-name 最终状态结算；将聚合器与四个生产
+CLI 的普通退出放到 signal delivery barrier 后；并让 production guard registry 的
+consumer path/anchor/count 成为实际门禁输入。实现提交 `5b3f9b3` 已通过固定 Node.js
+v24.18.0 的 scripts tests 167/167 与从步骤 1 串行执行的 `stage09a:check` 14/14。
+
+完整边界、反例和下一门禁见
+[M5.5 任务书](2026-08-m5-5-final-settlement-and-live-consumer-guards.md)。当前只形成
+Implementation complete 候选，等待两个全新独立 A/B 会话；M5 未 Accepted、09A 未
+Pass、远端 CI 无真实 run。
+
 ## 验收门禁
 
 | # | 必须满足 |

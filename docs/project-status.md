@@ -4,6 +4,8 @@
 
 ## 当前结论
 
+**当前 M5.5 最终结算与活生产消费者 guard 收敛事实（2026-08-19，覆盖下方历史轮次）**：M5.4 候选 `a084723` 的两个全新独立审计均为 **BLOCK**。总控已按 [M5.5 任务书](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)关闭三项共同根因：runtime scratch cleanup 以 immutable ID + mutable name 的最终状态裁决；聚合器和四个 M3B/M4 CLI 只在 signal delivery barrier 后发布普通退出；production guard registry 机械绑定真实生产消费者。实现提交 `5b3f9b3` 已通过 scripts tests **167/167**、runtime image 正向/变异门禁与从步骤 1 开始的完整 `stage09a:check` **14/14**。**M5.5 当前 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+
 **当前 M5.4 最终状态、信号交付与生产 guard 收敛事实（2026-08-19，覆盖下方历史轮次）**：M5.3 候选 `6552384` 的两个全新独立审计均为 **BLOCK**。共同根因不是正常路径不能运行，而是 destructive command status 会遮蔽最终对象事实、cleanup 后已投递但尚待 JS 分发的信号会被同步退出抢先，以及 mutation 没有删除真实生产调用点的 guard。总控已按 [M5.4 任务书](plans/2026-08-m5-4-final-state-signal-guard-convergence.md)完成单写者实现：两个 runtime-image 入口共享 immutable-ID/tag/claim/container 最终结算；cleanup 后经原生事件循环 turn 再决定信号语义；正式 backup producer 由 pre-fork owned-tree protocol 包裹；六项生产 guard 由机器 registry 和活调用点 mutant 逐项证明。实现提交 `ec14771` 已通过固定 Node.js `v24.18.0` 的 scripts tests **157/157**、runtime image 正向门禁及 **1 baseline + 17 built + 2 static-only** 变异套件；同一候选已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**。第一次完整运行曾在 Stage08 的 audit 输出所有权通道失败；独立 audit 立即通过，第二次完整重跑也未复现，因此本记录保留它供审计判断。**M5.4 当前 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1、M2A、M2B、M3A、M3B 与 M4 均已 Accepted；M5.4 已实现并从步骤 1 通过完整本地门禁，当前等待全新 A/B 独立审计，M5 未 Accepted。远端 CI 只登记 workflow 已配置、无真实 run，ADR-0005 已转 `Accepted`，ADR-0006 保持 `Proposed`。**09A 总验收未完成，阶段 09A 仍不得记为 Pass。**详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
@@ -153,7 +155,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **M5.4 Implementation complete — pending independent A/B review，未 Accepted**。实现提交 `ec14771` 已通过 scripts tests 157/157、runtime-image 正向/变异门禁与完整 `stage09a:check` 14/14；首次完整运行的一次未复现 ownership-channel 失败保留供审计复核。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.4 任务书与 ADR-0006 |
+| M5 门禁、CI 与文档 | **M5.5 Implementation complete — pending independent A/B review，未 Accepted**。实现提交 `5b3f9b3` 已通过 scripts tests 167/167、runtime-image 正向/变异门禁与完整 `stage09a:check` 14/14。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.5 任务书与 ADR-0006 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族
