@@ -192,5 +192,7 @@ claim 在 pre-evidence 路径恢复唯一 immutable ID；cleanup 后经原生 ev
 signal winner；正式 backup producer 直接进入 pre-fork owned-tree protocol；六个 critical
 guard 由机器 registry 与活调用点 mutant 逐项证明。固定 Node.js `v24.18.0` 的 scripts
 tests 为 **157/157**，runtime image 正向门禁与 **1 baseline + 17 built + 2 static-only**
-mutation 已通过。完整 14 步链与独立 A/B 审计尚待本候选收尾；M5 未 Accepted、阶段
+mutation 已通过；同一候选也已从步骤 1 串行通过完整 `stage09a:check` **14/14**。第一次
+完整运行的一次 Stage08 audit ownership-channel 失败未在独立 audit 或第二次完整重跑
+复现，仍交由独立审计判断。A/B 审计尚待本候选收尾；M5 未 Accepted、阶段
 09A 未 Pass、远端 CI 无真实 run。

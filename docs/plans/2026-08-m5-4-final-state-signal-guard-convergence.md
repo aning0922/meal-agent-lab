@@ -81,8 +81,18 @@ helper 或未捕获异常冒充命中。
 - 六个 production guard：正常实现命中，删除真正 guard 后以该 guard 的指定理由转红。
 
 固定 Node.js `v24.18.0` 下，scripts tests **157/157**；runtime image 正向门禁通过，
-runtime image mutation 为 **1 baseline + 17 built + 2 static-only**。完整 14 步链、docs
-links 与最终资源清理由本候选的收尾门禁登记，不由上述窄门禁替代。
+runtime image mutation 为 **1 baseline + 17 built + 2 static-only**。同一候选随后从步骤 1
+串行通过完整 `pnpm stage09a:check` **14/14**。第一次完整运行在 Stage08 的 production
+audit 输出所有权通道失败；独立 `pnpm audit:prod:check` 随即以 **157/157** 通过，第二次
+从步骤 1 的完整重跑也未复现。该失败不从证据中删除，交由独立 A/B 审计判断。
+
+独立资源复核确认第二次完整链的容器、网络、卷、per-run image tag、override 与相关进程
+均为零。复核同时发现第一次失败运行留下一个本轮 `meal-agent-m5-image-mut-*` 临时目录；
+总控按精确路径将它移入废纸篓，随后重新运行 scripts tests **157/157**，没有再产生 mutation
+临时目录。另有一份凌晨 1 点已经存在的 `meal-agent-m5-image-scan-*` 目录与两份旧审计目录，
+它们不属于本次运行且未被擅自删除。因此这里声称的是**本轮成功候选的 scoped residue 为
+零**，不是整个宿主所有同前缀历史目录为零。`pnpm docs:links:check` 为 **68 files /
+281 links**，`git diff --check` 通过。
 
 ## 边界与状态
 

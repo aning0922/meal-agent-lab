@@ -247,8 +247,10 @@ tagless claimed image 可由唯一 claim 恢复 immutable ID 后结算。scoped 
 原生事件循环 turn，再读取 signal winner，避免 pending signal 被同步退出抢先。backup 的
 真实 `docker cp` 调用点进入 pre-fork owned-tree protocol；六项 critical guard 由机器 registry
 与活调用点 mutant 逐项证明。固定 Node.js v24.18.0 的 scripts tests **157/157**；runtime
-image 正向门禁和 **1 baseline + 17 built + 2 static-only** mutation 均已通过。完整 14 步链
-正在从步骤 1 收尾；M5.4 仍为 pending independent A/B review，M5 未 Accepted。
+image 正向门禁和 **1 baseline + 17 built + 2 static-only** mutation 均已通过。同一候选已
+从步骤 1 串行通过完整 `stage09a:check` **14/14**；第一次运行的 Stage08 audit ownership
+channel 失败在独立 audit 与第二次完整重跑中均未复现，保留给独立审计复核。M5.4 仍为
+pending independent A/B review，M5 未 Accepted。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
