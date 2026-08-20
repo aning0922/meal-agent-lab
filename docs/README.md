@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.6 结构化退出与生产消费者收敛（2026-08-20，覆盖下方历史轮次）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)承接 M5.5 候选 `72b75db` 的 A/B 双 BLOCK。runtime scratch cleanup 会把 name inspect 学到的 immutable ID 带入最终复查；五个生产 CLI 共用顶层 `runSignalSettledCli`，usage/失败/成功都不再直接 `process.exit()`；event-loop primitive 异常只给固定失败；production consumer registry 改由 TypeScript checker 按真实声明节点和直接 AST 位置判定，`if (false)` 与局部同名冒充均转红。实现提交 `b2780aa` 已通过 scripts tests **173/173**；最终 committed baseline 与完整 14 步门禁正在收口。**M5.6 当前 In Progress；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.6 结构化退出与生产消费者收敛（2026-08-20，覆盖下方历史轮次）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)承接 M5.5 候选 `72b75db` 的 A/B 双 BLOCK。runtime scratch cleanup 会把 name inspect 学到的 immutable ID 带入最终复查；五个生产 CLI 共用顶层 `runSignalSettledCli`，usage/失败/成功都不再直接 `process.exit()`；event-loop primitive 异常只给固定失败；production consumer registry 改由 TypeScript checker 按真实声明节点和直接 AST 位置判定，`if (false)` 与局部同名冒充均转红。实现提交 `b2780aa` 已通过 scripts tests **173/173**；证据候选 `2e2af96` 已从步骤 1 串行通过完整门禁 **14/14**。**M5.6 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 **历史 M5.5（2026-08-19，已被 M5.6 覆盖）**：[M5.5 任务书](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)的实现提交 `5b3f9b3` 曾通过 scripts tests 167/167；最终文档候选 `72b75db` 的 A/B 审计均为 BLOCK，且其 committed tracked-file baseline 不匹配，所以不能沿用当时的 14/14 作为最终候选证据。
 

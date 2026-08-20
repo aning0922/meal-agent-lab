@@ -10,7 +10,8 @@ usage 与失败出口由一个顶层 `runSignalSettledCli` 包住，event-loop p
 固定结论。production guard registry 不再用 path/anchor/count 证明消费者存在，而由
 TypeScript checker 按真实声明节点、函数/main-guard 作用域与直接 AST 位置判定；把调用
 原样移入 `if (false)` 或以局部同名函数冒充都会转红。实现提交 `b2780aa` 已通过
-scripts tests 173/173；最终 committed baseline 与完整 14 步证据仍在收口。本 ADR
+scripts tests 173/173；证据候选 `2e2af96` 已从步骤 1 串行通过完整 14 步门禁。
+M5.6 当前仅为 Implementation complete — pending independent A/B review；本 ADR
 保持 Proposed。
 
 ## 背景

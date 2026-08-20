@@ -3,7 +3,7 @@
 - 日期：2026-08-20
 - 实施分支：`claude/stage-09a-m5-gates`
 - 输入候选：`72b75db00434176667983d247202580849f0f6e5`
-- 状态：In Progress；M5 未 Accepted；阶段 09A 未 Pass
+- 状态：Implementation complete — pending independent A/B review；M5 未 Accepted；阶段 09A 未 Pass
 - 写入纪律：总控单 writer；本轮只追加本地提交，不推送、不合并、不创建 PR
 
 ## 一、为什么进入架构级整改
@@ -101,3 +101,16 @@ committed baseline。不得修改 contracts、API/client 业务实现、数据�
 本轮完成只可写：**M5.6 Implementation complete — pending independent A/B
 review**。只有两个全新独立只读审计都 CLEAN，且总控另行裁定后，才可考虑 M5
 Accepted；阶段 09A Pass、push/merge、远端 CI 仍是后续独立授权与证据。
+
+## 七、实现与候选证据
+
+- 结构实现提交：`b2780aa`；committed evidence baseline 与文档起点：`2e2af96`。
+- 固定 Node.js `v24.18.0` 的 scripts tests：**173/173**。
+- `2e2af96` 从步骤 1 串行执行 `pnpm stage09a:check`：**14/14**；总耗时
+  936 秒。包含 45/45 Compose 变异、runtime image 1 baseline + 17 built +
+  2 static-only mutations、75/75 local-test、69/69 targeted、5+6 signal、fresh
+  smoke、八份 Secret identity、生命周期与备份恢复。
+- committed tracked-file baseline：360；Markdown links：70 files / 288 links。
+- 本节发布的最终状态仍只是 **Implementation complete — pending independent A/B
+  review**；本地门禁不等于两个独立审计 CLEAN，不等于远端 CI PASS，也不授权
+  push/merge/PR 或 M5 Accepted。
