@@ -30,7 +30,9 @@ const runtimeDaemon = ({
   tagRemovalStatus = 0,
   rebindTagAfterImageRemoval = false,
   containerRemovalStatus = 0,
-  rebindContainerAfterRemoval = false
+  rebindContainerAfterRemoval = false,
+  retainContainerByImmutableIdAfterNameDisappears = false,
+  recordStartsWithoutId = false
 } = {}) => {
   const images = new Map([[image, { claim, tags: [...initialTags] }]])
   const foreignImage = imageId('f')
@@ -112,7 +114,11 @@ const runtimeDaemon = ({
       const locator = argv.at(-1)
       const found = findContainer(locator)
       if (found === null) return absent('container', locator)
-      containers.delete(found.id)
+      if (retainContainerByImmutableIdAfterNameDisappears) {
+        found.name = 'renamed-outside-the-owned-locator'
+      } else {
+        containers.delete(found.id)
+      }
       if (rebindContainerAfterRemoval) {
         containers.set(foreignContainerId, {
           id: foreignContainerId,
@@ -132,7 +138,7 @@ const runtimeDaemon = ({
     containers,
     record: {
       name: containerName,
-      id: ownedContainerId,
+      id: recordStartsWithoutId ? null : ownedContainerId,
       expectedImageId: image,
       expectedUser: '10001:10001',
       expectedNetworkMode: 'none',
@@ -222,6 +228,20 @@ test('the live scan settlement retires tracking only after final id and name abs
   )
   assert.equal(reboundRetired, 0)
   assert.equal(rebound.containers.has(rebound.foreignContainerId), true)
+})
+
+test('a scratch record that starts without an id still proves the learned immutable id absent', async () => {
+  const daemon = runtimeDaemon({
+    recordStartsWithoutId: true,
+    retainContainerByImmutableIdAfterNameDisappears: true
+  })
+  assert.deepEqual(
+    await settleOwnedScratchContainer(daemon.run, daemon.record, {
+      parseOwnedScratchContainer
+    }),
+    ['owned runtime probe immutable identity was not proven absent']
+  )
+  assert.equal(daemon.containers.size, 1, 'the counterexample must leave the learned immutable id present')
 })
 
 test('a foreign tag set on a current-run image is preserved and reported', async () => {

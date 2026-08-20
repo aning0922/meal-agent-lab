@@ -157,6 +157,60 @@ test('cleanup settlement yields until an already-delivered signal owns process e
   assert.match(outcome.stderr, /SIGTERM: terminating child processes/)
 })
 
+test('a signal-settlement scheduling primitive failure is fixed, bounded and non-leaking', () => {
+  const sourcePath = resolve(repositoryRoot, 'infra/docker/m3b-subprocess.mjs')
+  const source = readFileSync(sourcePath, 'utf8')
+  const needle = "const nativeSetImmediate = globalThis.setImmediate.bind(globalThis)"
+  assert.equal(source.split(needle).length - 1, 1)
+  const directory = mkdtempSync(resolve(tmpdir(), 'm5-cli-settlement-primitive-'))
+  const modulePath = resolve(directory, 'm3b-subprocess.mjs')
+  writeFileSync(
+    modulePath,
+    source.replace(
+      needle,
+      "const nativeSetImmediate = () => { throw new Error('SETTLEMENT-PRIMITIVE-SENTINEL') }"
+    )
+  )
+  try {
+    const fixture = [
+      `import { runSignalSettledCli } from ${JSON.stringify(new URL(`file://${modulePath}`).href)}`,
+      'await runSignalSettledCli(async () => 0)'
+    ].join('\n')
+    const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', fixture], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      timeout: 4_000
+    })
+    assert.equal(outcome.status, 1, outcome.stderr)
+    assert.equal(outcome.signal, null)
+    assert.equal(outcome.stdout, '')
+    assert.equal(outcome.stderr, 'CLI signal settlement primitive failed\n')
+    assert.doesNotMatch(outcome.stderr, /SENTINEL|Error:|at /)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('every protected CLI usage failure settles naturally through the shared exit boundary', () => {
+  for (const path of [
+    'infra/docker/backup-local-test.mjs',
+    'infra/docker/restore-local-test.mjs',
+    'infra/docker/run-local-test-smoke.mjs',
+    'infra/docker/run-local-test-lifecycle.mjs',
+    'infra/docker/run-local-test-restore-drill.mjs',
+    'scripts/run-stage09a-check.mjs'
+  ]) {
+    const outcome = spawnSync(process.execPath, [resolve(repositoryRoot, path), '--invalid'], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      timeout: 4_000
+    })
+    assert.equal(outcome.status, 2, `${path}: ${outcome.stderr}`)
+    assert.equal(outcome.signal, null)
+    assert.doesNotMatch(outcome.stderr, /CLI operation failed|Error:|at /)
+  }
+})
+
 test('M4 scoped artifact cleanup is failure-safe across every registered task', async () => {
   const cleanup = createScopedArtifactCleanup()
   const calls = []

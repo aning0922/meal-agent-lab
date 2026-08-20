@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os'
 import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { runSignalSettledCli } from './m3b-subprocess.mjs'
+
 import { performBackup, retirePrivateBackupDirectory } from './backup-local-test.mjs'
 import {
   appRoleDumpRefusalExpectations,
@@ -335,12 +337,17 @@ const restoreRoundTrip = async ({
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { keepFailure } = parseDrillArguments('run-local-test-restore-drill.mjs [--keep-failure]')
-  await executeDrill({
-    kind: 'restore',
-    title: 'local-test backup/restore drill',
-    stackSuffixes: ['restore-a', 'restore-b'],
-    keepFailure,
-    body: drillBody
+  await runSignalSettledCli(async () => {
+    const { keepFailure, valid } = parseDrillArguments(
+      'run-local-test-restore-drill.mjs [--keep-failure]'
+    )
+    if (!valid) return 2
+    return executeDrill({
+      kind: 'restore',
+      title: 'local-test backup/restore drill',
+      stackSuffixes: ['restore-a', 'restore-b'],
+      keepFailure,
+      body: drillBody
+    })
   })
 }

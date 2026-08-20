@@ -59,7 +59,7 @@ import { createSecretScrubber } from './m3b-safe-output.mjs'
 import {
   installSignalHandlers,
   runCommand,
-  settleCliExitCode,
+  runSignalSettledCli,
   terminationSignal
 } from './m3b-subprocess.mjs'
 
@@ -1109,17 +1109,18 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2)
-  const keepFailure = args.includes('--keep-failure')
-  const unknown = args.filter((arg) => arg !== '--keep-failure')
-  if (unknown.length > 0) {
-    process.stderr.write('usage: run-local-test-smoke.mjs [--keep-failure]\n')
-    process.exit(2)
-  }
+  await runSignalSettledCli(async () => {
+    const args = process.argv.slice(2)
+    const keepFailure = args.includes('--keep-failure')
+    const unknown = args.filter((arg) => arg !== '--keep-failure')
+    if (unknown.length > 0) {
+      process.stderr.write('usage: run-local-test-smoke.mjs [--keep-failure]\n')
+      return 2
+    }
 
   // 信号：终止受控子树 → 与正常/失败路径**同一套** scoped cleanup → 复查
   // residue（必被打印）→ 按原信号语义退出。
-  const activeScene = {
+    const activeScene = {
     project: null,
     secretsDirectory: null,
     secretsIdentity: null,
@@ -1131,17 +1132,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     composeEnvironment: process.env,
     composeArgs: [],
     danglingBaseline: null
-  }
-  smokeState.registerScene = (partial) => Object.assign(activeScene, partial)
-  installSignalHandlers(
-    async () => {
-      const residue = []
-      if (activeScene.project === null) {
-        return residue
-      }
-      try {
-        residue.push(
-          ...(await cleanupSmokeProject(activeScene.project, activeScene.secretsDirectory, {
+    }
+    smokeState.registerScene = (partial) => Object.assign(activeScene, partial)
+    installSignalHandlers(
+      async () => {
+        const residue = []
+        if (activeScene.project === null) {
+          return residue
+        }
+        try {
+          residue.push(
+            ...(await cleanupSmokeProject(activeScene.project, activeScene.secretsDirectory, {
             composeEnvironment: activeScene.composeEnvironment,
             secretsIdentity: activeScene.secretsIdentity,
             imageTag: activeScene.imageTag,
@@ -1151,14 +1152,14 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             composeArgs: activeScene.overrideCreated ? activeScene.composeArgs : [],
             overridePath: activeScene.overrideCreated ? activeScene.overridePath : null,
             danglingBaseline: activeScene.danglingBaseline
-          }))
-        )
-      } catch (error) {
-        residue.push('scoped cleanup raised an internal failure')
-      }
-      try {
-        residue.push(
-          ...(await verifyNoResidue({
+            }))
+          )
+        } catch {
+          residue.push('scoped cleanup raised an internal failure')
+        }
+        try {
+          residue.push(
+            ...(await verifyNoResidue({
             project: activeScene.project,
             imageTag: activeScene.imageTag,
             imageId: activeScene.imageId,
@@ -1168,17 +1169,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
             danglingBaseline: activeScene.danglingBaseline,
             composeEnvironment: activeScene.composeEnvironment,
             exists: existsSync
-          }))
-        )
-      } catch (error) {
-        residue.push('residue recheck raised an internal failure')
-      }
-      return residue
-    },
-    { label: 'smoke scoped cleanup' }
-  )
+            }))
+          )
+        } catch {
+          residue.push('residue recheck raised an internal failure')
+        }
+        return residue
+      },
+      { label: 'smoke scoped cleanup' }
+    )
 
-  await runSmoke({ keepFailure })
-  // 信号在飞时不自己退出：处置会跑完 scoped cleanup 再按原信号语义收场。
-  await settleCliExitCode(failures.length > 0 ? 1 : 0)
+    await runSmoke({ keepFailure })
+    return failures.length > 0 ? 1 : 0
+  })
 }

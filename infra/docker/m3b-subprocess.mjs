@@ -813,10 +813,34 @@ export const createSignalSafeCleanup = (operation) => {
  * winner and join the memoized cleanup settlement. Callers must use the
  * returned value and natural process.exitCode settlement, never process.exit.
  */
+export const createCleanupSettlementBarrier = ({
+  scheduleImmediate = nativeSetImmediate
+} = {}) => async () => {
+  for (let turn = 0; turn < 2; turn += 1) {
+    const delivered = await new Promise((resolveTurn) => {
+      try {
+        scheduleImmediate(() => resolveTurn(true))
+      } catch {
+        resolveTurn(false)
+      }
+    })
+    if (!delivered) {
+      return Object.freeze({ ok: false, signal: null })
+    }
+  }
+  return Object.freeze({ ok: true, signal: pendingSignal })
+}
+
+const cleanupSettlementBarrier = createCleanupSettlementBarrier()
+let cliSettlementPrimitiveFailed = false
+
 export const terminationSignalAfterCleanupSettlement = async () => {
-  await new Promise((resolveImmediate) => nativeSetImmediate(resolveImmediate))
-  await new Promise((resolveImmediate) => nativeSetImmediate(resolveImmediate))
-  return pendingSignal
+  const outcome = await cleanupSettlementBarrier()
+  if (!outcome.ok) {
+    cliSettlementPrimitiveFailed = true
+    writeDiagnostic('CLI signal settlement primitive failed\n')
+  }
+  return outcome.signal
 }
 
 /**
@@ -831,9 +855,32 @@ export const settleCliExitCode = async (exitCode) => {
   }
   const signal = await terminationSignalAfterCleanupSettlement()
   if (signal === null) {
-    process.exitCode = exitCode
+    process.exitCode = cliSettlementPrimitiveFailed ? 1 : exitCode
   }
   return signal
+}
+
+/**
+ * One ordinary production CLI boundary. The operation may decide only an exit
+ * code; it cannot publish that code ahead of a delivered signal. Unknown
+ * operation failures and invalid results collapse to fixed local diagnostics.
+ */
+export const runSignalSettledCli = async (operation) => {
+  let exitCode = 1
+  try {
+    if (typeof operation !== 'function') {
+      throw new TypeError('CLI operation is required')
+    }
+    const candidate = await operation()
+    if (!Number.isSafeInteger(candidate) || candidate < 0 || candidate > 255) {
+      throw new TypeError('CLI operation returned an invalid exit code')
+    }
+    exitCode = candidate
+  } catch {
+    writeDiagnostic('CLI operation failed\n')
+    exitCode = 1
+  }
+  return settleCliExitCode(exitCode)
 }
 
 const runCommandUnchecked = createCommandRunner()

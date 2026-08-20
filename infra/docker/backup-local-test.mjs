@@ -56,7 +56,7 @@ import { createSecretScrubber } from './m3b-safe-output.mjs'
 import {
   installSignalHandlers,
   runCommand,
-  settleCliExitCode,
+  runSignalSettledCli,
   terminationSignal
 } from './m3b-subprocess.mjs'
 import {
@@ -727,87 +727,84 @@ export const performBackup = async (
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2)
-  let outputDirectory = defaultBackupsDirectory
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === '--output-dir' && index + 1 < args.length) {
-      outputDirectory = resolve(args[index + 1])
-      index += 1
-    } else {
-      process.stderr.write('usage: backup-local-test.mjs [--output-dir <dir>]\n')
-      process.exit(2)
+  await runSignalSettledCli(async () => {
+    const args = process.argv.slice(2)
+    let outputDirectory = defaultBackupsDirectory
+    for (let index = 0; index < args.length; index += 1) {
+      if (args[index] === '--output-dir' && index + 1 < args.length) {
+        outputDirectory = resolve(args[index + 1])
+        index += 1
+      } else {
+        process.stderr.write('usage: backup-local-test.mjs [--output-dir <dir>]\n')
+        return 2
+      }
     }
-  }
 
-  const scrubber = createSecretScrubber()
-  const log = (line) => process.stdout.write(`${scrubber.scrub(line)}\n`)
-  const run = (
-    commandArgs,
-    {
-      env,
-      timeoutMs = 120_000,
-      cwd = composeDirectory,
-      stdin = null,
-      allowSuccessfulStdinEpipe = false
-    } = {}
-  ) =>
-    runCommand(commandArgs, {
-      env: env ?? process.env,
-      timeoutMs,
-      cwd,
-      stdin,
-      allowSuccessfulStdinEpipe
-    })
-  const compose = (composeArgs, options = {}) =>
-    run(
-      [
-        'docker',
-        'compose',
-        '--file',
-        composeFile,
-        '--profile',
-        'bootstrap',
-        '--project-name',
-        defaultProjectName,
-        ...composeArgs
-      ],
-      options
-    )
-  const artifactCleanup = createScopedArtifactCleanup()
-  // 信号 cleanup 必须收掉 daemon 侧仍在跑的一次性容器：被「取消」的 pg_dump
-  // 若继续跑完，宿主上会多出一份无人知晓的导出（容器内还有 pgpass 副本）。
-  installSignalHandlers(async () => [
-    ...(await removeLingeringOneOffs(run)),
-    ...(await artifactCleanup.run())
-  ], { label: 'backup cleanup' })
+    const scrubber = createSecretScrubber()
+    const log = (line) => process.stdout.write(`${scrubber.scrub(line)}\n`)
+    const run = (
+      commandArgs,
+      {
+        env,
+        timeoutMs = 120_000,
+        cwd = composeDirectory,
+        stdin = null,
+        allowSuccessfulStdinEpipe = false
+      } = {}
+    ) =>
+      runCommand(commandArgs, {
+        env: env ?? process.env,
+        timeoutMs,
+        cwd,
+        stdin,
+        allowSuccessfulStdinEpipe
+      })
+    const compose = (composeArgs, options = {}) =>
+      run(
+        [
+          'docker',
+          'compose',
+          '--file',
+          composeFile,
+          '--profile',
+          'bootstrap',
+          '--project-name',
+          defaultProjectName,
+          ...composeArgs
+        ],
+        options
+      )
+    const artifactCleanup = createScopedArtifactCleanup()
+    // 信号 cleanup 必须收掉 daemon 侧仍在跑的一次性容器：被「取消」的 pg_dump
+    // 若继续跑完，宿主上会多出一份无人知晓的导出（容器内还有 pgpass 副本）。
+    installSignalHandlers(async () => [
+      ...(await removeLingeringOneOffs(run)),
+      ...(await artifactCleanup.run())
+    ], { label: 'backup cleanup' })
 
-  // 信号在飞时主流程不得自己 process.exit（m3b-subprocess 的让位契约，与演练
-  // executeDrill 同形）：普通退出码会抢在 handler 的 lingering sweep 与重投
-  // 信号之前收场，被「取消」的 pg_dump 就在 daemon 侧继续跑完。无信号时 exit
-  // 前补一次同样的清扫，兑现 composeRunOneOff「留待 sweep」的警告——失败路径
-  // 也不把一次性容器留在 daemon 侧；残留只打印，不改变退出码。
-  const exitAfterSweepUnlessSignalled = async (code) => {
-    if (terminationSignal() !== null) {
-      return
+    const finishAfterSweepUnlessSignalled = async (code) => {
+      if (terminationSignal() !== null) {
+        return code
+      }
+      for (const item of await removeLingeringOneOffs(run)) {
+        process.stderr.write(`${scrubber.scrubUntrusted(item)}\n`)
+      }
+      return code
     }
-    for (const item of await removeLingeringOneOffs(run)) {
-      process.stderr.write(`${scrubber.scrubUntrusted(item)}\n`)
-    }
-    await settleCliExitCode(code)
-  }
 
-  try {
-    await performBackup(
-      { compose, run, log, registerCleanup: artifactCleanup.register },
-      { project: defaultProjectName, outputDirectory }
-    )
-    await exitAfterSweepUnlessSignalled(0)
-  } catch (error) {
-    if (terminationSignal() !== null) {
-      log(`interrupted by ${terminationSignal()}; the signal handler owns the cleanup`)
-    } else {
-      process.stderr.write('backup operation failed\n')
-      await exitAfterSweepUnlessSignalled(1)
+    try {
+      await performBackup(
+        { compose, run, log, registerCleanup: artifactCleanup.register },
+        { project: defaultProjectName, outputDirectory }
+      )
+      return finishAfterSweepUnlessSignalled(0)
+    } catch {
+      if (terminationSignal() !== null) {
+        log(`interrupted by ${terminationSignal()}; the signal handler owns the cleanup`)
+      } else {
+        process.stderr.write('backup operation failed\n')
+      }
+      return finishAfterSweepUnlessSignalled(1)
     }
-  }
+  })
 }

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import {
   closeSync,
@@ -23,6 +24,148 @@ import test from 'node:test'
 import { m5ProductionGuards } from '../../infra/docker/m5-production-guard-registry.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
+const requireFromApiWorkspace = createRequire(resolve(repositoryRoot, 'services/api/package.json'))
+const ts = requireFromApiWorkspace('typescript')
+
+const nearestStatement = (node) => {
+  let current = node
+  while (current !== undefined && !ts.isStatement(current)) current = current.parent
+  return current
+}
+
+const nearestFunction = (node) => {
+  let current = node.parent
+  while (current !== undefined && !ts.isFunctionLike(current)) current = current.parent
+  return current
+}
+
+const functionName = (node) => {
+  if (node === undefined) return null
+  if (node.name !== undefined && ts.isIdentifier(node.name)) return node.name.text
+  if (ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name)) {
+    return node.parent.name.text
+  }
+  return null
+}
+
+const placementMatches = (call, placement, sourceFile) => {
+  const statement = nearestStatement(call)
+  if (statement === undefined) return false
+  if (placement.kind === 'source-direct') {
+    return statement.parent === sourceFile
+  }
+  if (placement.kind === 'main-guard-direct') {
+    const block = statement.parent
+    return (
+      ts.isBlock(block) &&
+      ts.isIfStatement(block.parent) &&
+      block.parent.thenStatement === block &&
+      block.parent.parent === sourceFile
+    )
+  }
+  const owner = nearestFunction(call)
+  if (owner === undefined || owner.body === undefined || statement.parent !== owner.body) {
+    return false
+  }
+  if (placement.kind === 'nearest-function-direct') return true
+  return placement.kind === 'named-function-direct' && functionName(owner) === placement.name
+}
+
+const topLevelSymbol = (checker, sourceFile, name) => {
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === name
+    ) {
+      return checker.getSymbolAtLocation(statement.name)
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.name.text === name) {
+          return checker.getSymbolAtLocation(declaration.name)
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+const resolvedSymbol = (checker, node) => {
+  const symbol = checker.getSymbolAtLocation(node)
+  return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+    ? checker.getAliasedSymbol(symbol)
+    : symbol
+}
+
+const consumerCalls = (consumer, overrides = new Map()) => {
+  const consumerAbsolute = resolve(repositoryRoot, consumer.path)
+  const targetAbsolute = resolve(repositoryRoot, consumer.callee.path)
+  const options = {
+    allowJs: true,
+    checkJs: false,
+    noEmit: true,
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext
+  }
+  const host = ts.createCompilerHost(options, true)
+  const originalGetSourceFile = host.getSourceFile.bind(host)
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+    const relativeName = fileName.startsWith(`${repositoryRoot}/`)
+      ? fileName.slice(repositoryRoot.length + 1)
+      : null
+    const override = relativeName === null ? undefined : overrides.get(relativeName)
+    return override === undefined
+      ? originalGetSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+      : ts.createSourceFile(fileName, override, languageVersion, true, ts.ScriptKind.JS)
+  }
+  const program = ts.createProgram({
+    rootNames: [...new Set([consumerAbsolute, targetAbsolute])],
+    options,
+    host
+  })
+  const checker = program.getTypeChecker()
+  const sourceFile = program.getSourceFile(consumerAbsolute)
+  const targetFile = program.getSourceFile(targetAbsolute)
+  assert.notEqual(sourceFile, undefined, `consumer source was not parsed: ${consumer.path}`)
+  assert.notEqual(targetFile, undefined, `guard declaration source was not parsed: ${consumer.callee.path}`)
+  const targetSymbol = topLevelSymbol(checker, targetFile, consumer.callee.name)
+  assert.notEqual(
+    targetSymbol,
+    undefined,
+    `guard declaration disappeared: ${consumer.callee.path}#${consumer.callee.name}`
+  )
+  const calls = []
+  const visit = (node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      if (resolvedSymbol(checker, node.expression) === targetSymbol) {
+        calls.push(Object.freeze({
+          call: node,
+          statement: nearestStatement(node),
+          placementValid: placementMatches(node, consumer.placement, sourceFile),
+          sourceFile
+        }))
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return calls
+}
+
+const productionConsumerProblems = (overrides = new Map()) => {
+  const problems = []
+  for (const guard of m5ProductionGuards) {
+    for (const consumer of guard.consumers ?? []) {
+      const calls = consumerCalls(consumer, overrides)
+      const valid = calls.filter(({ placementValid }) => placementValid)
+      if (calls.length !== consumer.count || valid.length !== consumer.count) {
+        problems.push(`[${guard.id}] production consumer is not directly reachable: ${consumer.path}`)
+      }
+    }
+  }
+  return problems
+}
 
 const replaceExactly = (source, needle, replacement) => {
   const first = source.indexOf(needle)
@@ -49,21 +192,68 @@ test.after(() => {
   assert.deepEqual([...executedGuardIds].sort(), [...registeredGuardIds].sort())
 })
 
-test('every declared production consumer is a live, exact registry dependency', () => {
-  let declaredConsumers = 0
+test('every declared production consumer resolves to its declaration and direct AST position', () => {
+  assert.deepEqual(productionConsumerProblems(), [])
+  assert.equal(
+    m5ProductionGuards.flatMap(({ consumers = [] }) => consumers).length,
+    9
+  )
+})
+
+test('moving any registered consumer unchanged into if(false) is rejected', () => {
   for (const guard of m5ProductionGuards) {
     for (const consumer of guard.consumers ?? []) {
-      declaredConsumers += 1
       const source = readFileSync(resolve(repositoryRoot, consumer.path), 'utf8')
-      const actualCount = source.split(consumer.anchor).length - 1
+      const [target] = consumerCalls(consumer).filter(({ placementValid }) => placementValid)
+      assert.notEqual(target, undefined, `[${guard.id}] no live consumer was found`)
+      const start = target.statement.getStart(target.sourceFile)
+      const end = target.statement.getEnd()
+      const mutant =
+        source.slice(0, start) +
+        `if (false) {\n${source.slice(start, end)}\n}` +
+        source.slice(end)
+      const problems = productionConsumerProblems(new Map([[consumer.path, mutant]]))
       assert.equal(
-        actualCount,
-        consumer.count,
-        `[${guard.id}] production consumer drifted: ${consumer.path}`
+        problems.some((problem) => problem.startsWith(`[${guard.id}]`)),
+        true,
+        `[${guard.id}] a dead production consumer satisfied the registry`
       )
     }
   }
-  assert.equal(declaredConsumers, 8)
+})
+
+test('a same-name local function cannot impersonate the imported settlement capability', () => {
+  const consumer = m5ProductionGuards
+    .find(({ id }) => id === 'cleanup-signal-delivery-barrier')
+    .consumers.find(({ path }) => path === 'infra/docker/backup-local-test.mjs')
+  const source = readFileSync(resolve(repositoryRoot, consumer.path), 'utf8')
+  const [target] = consumerCalls(consumer).filter(({ placementValid }) => placementValid)
+  assert.notEqual(target, undefined)
+  const start = target.statement.getStart(target.sourceFile)
+  const mutant =
+    source.slice(0, start) +
+    'const runSignalSettledCli = async (operation) => operation()\n  ' +
+    source.slice(start)
+  const problems = productionConsumerProblems(new Map([[consumer.path, mutant]]))
+  assert.equal(
+    problems.some((problem) => problem.startsWith('[cleanup-signal-delivery-barrier]')),
+    true
+  )
+})
+
+test('protected production entrypoints never bypass final settlement with process.exit', () => {
+  for (const path of [
+    'infra/docker/backup-local-test.mjs',
+    'infra/docker/restore-local-test.mjs',
+    'infra/docker/run-local-test-smoke.mjs',
+    'infra/docker/m4-lifecycle.mjs',
+    'infra/docker/run-local-test-lifecycle.mjs',
+    'infra/docker/run-local-test-restore-drill.mjs',
+    'scripts/run-stage09a-check.mjs'
+  ]) {
+    const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+    assert.doesNotMatch(source, /\bprocess\.exit\s*\(/, `${path} bypasses final settlement`)
+  }
 })
 
 guardTest('backup-pre-fork-declaration', 'the live backup guard is killed by an in-flight cleanup oracle', async () => {
@@ -260,10 +450,8 @@ guardTest('cleanup-signal-delivery-barrier', 'the guard is killed by an ordinary
   const source = readFileSync(sourcePath, 'utf8')
   const mutant = replaceExactly(
     source,
-    `await new Promise((resolveImmediate) => nativeSetImmediate(resolveImmediate))
-  await new Promise((resolveImmediate) => nativeSetImmediate(resolveImmediate))
-  return pendingSignal`,
-    'return pendingSignal'
+    'const cleanupSettlementBarrier = createCleanupSettlementBarrier()',
+    'const cleanupSettlementBarrier = async () => Object.freeze({ ok: true, signal: pendingSignal })'
   )
   const directory = mkdtempSync(join(tmpdir(), 'm5-pending-signal-mutant-'))
   const modulePath = join(directory, 'm3b-subprocess.mjs')

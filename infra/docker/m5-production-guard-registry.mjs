@@ -10,7 +10,11 @@ export const m5ProductionGuards = Object.freeze([
     consumers: Object.freeze([
       Object.freeze({
         path: 'infra/docker/backup-local-test.mjs',
-        anchor: 'copied = await runBackupCopyWithDeclaredOutput(',
+        callee: Object.freeze({
+          path: 'infra/docker/backup-local-test.mjs',
+          name: 'runBackupCopyWithDeclaredOutput'
+        }),
+        placement: Object.freeze({ kind: 'nearest-function-direct' }),
         count: 1
       })
     ])
@@ -25,14 +29,23 @@ export const m5ProductionGuards = Object.freeze([
   }),
   Object.freeze({
     id: 'cleanup-signal-delivery-barrier',
-    source: 'infra/docker/m3b-subprocess.mjs#settleCliExitCode',
+    source: 'infra/docker/m3b-subprocess.mjs#runSignalSettledCli',
     consumers: Object.freeze([
       ...[
         'infra/docker/backup-local-test.mjs',
         'infra/docker/restore-local-test.mjs',
-        'infra/docker/m4-lifecycle.mjs',
-        'infra/docker/run-local-test-smoke.mjs'
-      ].map((path) => Object.freeze({ path, anchor: 'await settleCliExitCode(', count: 1 }))
+        'infra/docker/run-local-test-smoke.mjs',
+        'infra/docker/run-local-test-lifecycle.mjs',
+        'infra/docker/run-local-test-restore-drill.mjs'
+      ].map((path) => Object.freeze({
+        path,
+        callee: Object.freeze({
+          path: 'infra/docker/m3b-subprocess.mjs',
+          name: 'runSignalSettledCli'
+        }),
+        placement: Object.freeze({ kind: 'main-guard-direct' }),
+        count: 1
+      }))
     ])
   }),
   Object.freeze({
@@ -41,7 +54,11 @@ export const m5ProductionGuards = Object.freeze([
     consumers: Object.freeze([
       Object.freeze({
         path: 'scripts/run-stage09a-check.mjs',
-        anchor: 'const finalExitCode = await settleAggregateProcess(ordinaryExitCode)',
+        callee: Object.freeze({
+          path: 'scripts/run-stage09a-check.mjs',
+          name: 'settleAggregateProcess'
+        }),
+        placement: Object.freeze({ kind: 'source-direct' }),
         count: 1
       })
     ])
@@ -56,8 +73,12 @@ export const m5ProductionGuards = Object.freeze([
     consumers: Object.freeze([
       Object.freeze({
         path: 'infra/docker/api-image-scan.mjs',
-        anchor: 'await settleTrackedRuntimeProbe({',
-        count: 2
+        callee: Object.freeze({
+          path: 'infra/docker/api-image-scan.mjs',
+          name: 'scratchCapabilityExpectation'
+        }),
+        placement: Object.freeze({ kind: 'named-function-direct', name: 'scanImage' }),
+        count: 4
       })
     ])
   }),
@@ -67,7 +88,11 @@ export const m5ProductionGuards = Object.freeze([
     consumers: Object.freeze([
       Object.freeze({
         path: 'infra/docker/api-image-scan.mjs',
-        anchor: 'await settleTrackedRuntimeProbe({',
+        callee: Object.freeze({
+          path: 'infra/docker/api-image-scan.mjs',
+          name: 'settleTrackedRuntimeProbe'
+        }),
+        placement: Object.freeze({ kind: 'named-function-direct', name: 'scanImage' }),
         count: 2
       })
     ])

@@ -93,9 +93,9 @@ const createOwnershipCapability = () => {
 
 const cliArguments = process.argv.slice(2)
 const keepFailure = cliArguments.includes('--keep-failure')
-if (cliArguments.some((argument) => argument !== '--keep-failure')) {
+const usageInvalid = cliArguments.some((argument) => argument !== '--keep-failure')
+if (usageInvalid) {
   safeWrite(2, `usage: ${usage}\n`)
-  process.exit(2)
 }
 
 // argv 是固定字符串；`--keep-failure` 只透传给声明支持它的入口。
@@ -513,7 +513,10 @@ const nativeImmediateTurn = () =>
  * scoped cleanup and every owned/quarantined PGID reach final settlement.
  */
 const settleAggregateProcess = async (ordinaryExitCode) => {
-  const normalizedExitCode = ordinaryExitCode === 0 ? 0 : 1
+  const normalizedExitCode =
+    Number.isSafeInteger(ordinaryExitCode) && ordinaryExitCode >= 0 && ordinaryExitCode <= 255
+      ? ordinaryExitCode
+      : 1
   try {
     await nativeImmediateTurn()
     await nativeImmediateTurn()
@@ -1096,6 +1099,9 @@ const printSummary = () => {
 }
 
 const main = async () => {
+  if (usageInvalid) {
+    return 2
+  }
   // ---- 前置工具 ----
   const probes = []
   for (const [argv, label] of [

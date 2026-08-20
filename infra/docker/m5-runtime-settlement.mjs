@@ -196,6 +196,10 @@ export const settleOwnedScratchContainer = async (
     throw new TypeError('scratch container parser is required')
   }
   const problems = []
+  // The record is deliberately registered before `docker create` returns, so
+  // its immutable id may initially be null. Once the trusted name inspection
+  // proves an owned object, retain that learned id through final settlement.
+  let immutableId = record.id
   const locator = record.id ?? record.name
   const initial = await observeContainer(run, locator)
   if (initial.kind === 'present') {
@@ -212,6 +216,7 @@ export const settleOwnedScratchContainer = async (
         },
         () => { throw new Error('scratch identity') }
       )
+      immutableId = owned.Id
       await run(['docker', 'container', 'rm', '-f', '-v', owned.Id], {
         timeoutMs: 120_000
       })
@@ -222,8 +227,8 @@ export const settleOwnedScratchContainer = async (
     problems.push('owned runtime probe identity could not be verified')
   }
 
-  if (record.id !== null) {
-    const finalId = await observeContainer(run, record.id)
+  if (immutableId !== null) {
+    const finalId = await observeContainer(run, immutableId)
     if (finalId.kind !== 'absent') {
       problems.push('owned runtime probe immutable identity was not proven absent')
     }

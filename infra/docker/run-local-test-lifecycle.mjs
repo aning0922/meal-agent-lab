@@ -15,6 +15,8 @@
 // 套 scoped cleanup 与 residue 复查；输出不含任何 Secret 取值。
 import { fileURLToPath } from 'node:url'
 
+import { runSignalSettledCli } from './m3b-subprocess.mjs'
+
 import {
   authorizedReadExpectations,
   authorizedReadScript,
@@ -165,12 +167,17 @@ const drillBody = async ({ stacks, log, fail, timed, buildImage, run }) => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { keepFailure } = parseDrillArguments('run-local-test-lifecycle.mjs [--keep-failure]')
-  await executeDrill({
-    kind: 'lifecycle',
-    title: 'local-test lifecycle drill',
-    stackSuffixes: ['lifecycle'],
-    keepFailure,
-    body: drillBody
+  await runSignalSettledCli(async () => {
+    const { keepFailure, valid } = parseDrillArguments(
+      'run-local-test-lifecycle.mjs [--keep-failure]'
+    )
+    if (!valid) return 2
+    return executeDrill({
+      kind: 'lifecycle',
+      title: 'local-test lifecycle drill',
+      stackSuffixes: ['lifecycle'],
+      keepFailure,
+      body: drillBody
+    })
   })
 }

@@ -45,7 +45,6 @@ import { createSecretScrubber } from './m3b-safe-output.mjs'
 import {
   installSignalHandlers,
   runCommand,
-  settleCliExitCode,
   terminationSignal
 } from './m3b-subprocess.mjs'
 import { requireFreshContainerGeneration } from './m5-evidence-protocol.mjs'
@@ -1538,7 +1537,7 @@ export const executeDrill = async ({ kind, title, stackSuffixes, keepFailure = f
     }
   }
 
-  await settleCliExitCode(failures.length > 0 ? 1 : 0)
+  return failures.length > 0 ? 1 : 0
 }
 
 /** 演练入口共用的 argv 解析：只认 --keep-failure。 */
@@ -1548,7 +1547,7 @@ export const parseDrillArguments = (usage) => {
   const unknown = args.filter((argument) => argument !== '--keep-failure')
   if (unknown.length > 0) {
     process.stderr.write(`usage: ${usage}\n`)
-    process.exit(2)
+    return { keepFailure: false, valid: false }
   }
-  return { keepFailure }
+  return { keepFailure, valid: true }
 }
