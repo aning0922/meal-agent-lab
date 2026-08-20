@@ -6,7 +6,7 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted；M3B 验收落点为 `cf43452`，M4 验收落点为 `f671c51`。M5.6 候选 `d90a81e` 的审计 A 为 **BLOCK**，审计 B 因平台 cybersecurity `systemError` 未形成有效结论；[M5.7 审计协议与最终 settlement 收敛](docs/plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)已把真实 main guard/直接 await、精确 consumer 与 protected-entrypoint registry、`process.exit` 能力和两-turn/signal settlement 变成结构门禁，并新增固定 Node、单次 14 步、零 retry、结构化报告的 `pnpm stage09a:audit-b`。固定 Node.js `v24.18.0` 的 scripts tests 为 **183/183**；本地单次结构化证据已从步骤 1 串行通过 **14/14**。**M5.7 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 总验收未完成，阶段不得记为 Pass。**GitHub Actions 只登记 workflow 已配置，**尚无真实远端 run**。[ADR-0005](docs/architecture/decisions/0005-local-private-deployment-baseline.md) 已凭既有真实容器证据转 `Accepted`，不等于 M5 或 09A 已通过；[ADR-0006](docs/architecture/decisions/0006-stage09a-evidence-ownership-protocol.md) 保持 `Proposed`。当前不购买服务器，不接真实微信配置，也不开放公网。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted；M3B 验收落点为 `cf43452`，M4 验收落点为 `f671c51`。M5.7 候选 `174ff45` 的独立审计 A 为有效 **BLOCK**；审计 B 因派工错误传入绝对 report path，在 14 步门禁启动前按协议拒绝，归类为无效审计而非候选缺陷。[M5.8 声明身份与动态审计证据闭合](docs/plans/2026-08-m5-8-declaration-and-audit-evidence-closure.md)已把 main guard、精确 owner、生产入口反向发现与 `node:process` 退出能力改为 declaration-identity 门禁，并让 `stage09a:audit-b` 强制绑定 expected/pre/post HEAD、运行时调用计数和 wrapper 全生命周期 INT/TERM/HUP。固定 Node.js `v24.18.0` 的 scripts tests 为 **191/191**。**M5.8 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 总验收未完成，阶段不得记为 Pass。**GitHub Actions 只登记 workflow 已配置，**尚无真实远端 run**。[ADR-0005](docs/architecture/decisions/0005-local-private-deployment-baseline.md) 已凭既有真实容器证据转 `Accepted`，不等于 M5 或 09A 已通过；[ADR-0006](docs/architecture/decisions/0006-stage09a-evidence-ownership-protocol.md) 保持 `Proposed`。当前不购买服务器，不接真实微信配置，也不开放公网。
 
 当前纵切覆盖：
 
@@ -29,7 +29,7 @@ FAM-003 已完成。FAM-004 的登记、确认、隐私和页面范围已实现�
 corepack enable
 pnpm install --frozen-lockfile
 pnpm stage09a:check
-pnpm stage09a:audit-b -- --report m5-<candidate>-b.json
+pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<candidate>-b.json
 ```
 
 `stage09a:check` 是阶段 09A 的聚合门禁：先跑完整的 `pnpm stage08:check`（环境检查、迁移、contracts、API 单元/HTTP/PostgreSQL/OpenAPI、客户端页面单测、weapp 构建、双用户 E2E、依赖审计策略、Markdown 本地链接检查），再串联 Dockerfile/Compose 静态检查、API runtime image 构建与依赖扫描、全部 M3B 容器门禁、空 volume 全链 smoke、生命周期与备份/恢复演练（需要运行中的 Docker Engine + Compose v2；缺失时明确失败为缺少前置工具）。各命令的单独用法见 [`infra/docker/README.md`](infra/docker/README.md)。只关心 workspace 语义时可单独跑 `pnpm stage08:check`。依赖审计的限时 local/weapp-only 例外见 [`security/audit-exceptions.json`](security/audit-exceptions.json)（到期 2026-11-08，复核记录见 ADR-0004）；例外期间 H5、外部测试、体验版和发布均被阻断。

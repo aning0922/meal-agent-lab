@@ -196,7 +196,7 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 ```bash
 pnpm stage09a:check                    # stage08 → 静态检查 → 镜像扫描 → 9 条 M3B 门禁 → 两条 M4 演练
 pnpm stage09a:check -- --keep-failure  # 失败时保留支持该开关的门禁现场（显式 opt-in）
-pnpm stage09a:audit-b -- --report m5-<candidate>-b.json  # 固定 Node、单次完整链、零 retry 的动态审计证据
+pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<candidate>-b.json  # 固定候选、单次完整链、零 retry 的动态审计证据
 ```
 
 它**只做串联**，不实现新检查：按计划文档 M5 的链路顺序执行 `pnpm stage08:check`、
@@ -259,6 +259,14 @@ pending independent A/B review，M5 未 Accepted。
 真实聚合链，不重试，随后把可信 step id、exit/signal、候选 SHA 与固定原因 exclusive
 写入 `.local/audit-reports/`。审计 B 不再自由重跑整链或编写 custom security probe；
 平台直接中断且没有报告时该会话无效，而不是把半截输出解读为候选 BLOCK/CLEAN。
+
+**M5.8 declaration/evidence 协议（2026-08-20，覆盖上一段调用形状）**：动态 B 必须
+额外提供 `--expected-head <40-hex-sha>`；报告分别记录运行前后 HEAD/clean 与真实
+invocation/retry，并从 preflight 前到报告 publication 后持有 INT/TERM/HUP。production
+guard 不再用测试中的第二份手抄名单证明完整性：consumer 按目标 declaration identity
+从 canonical tracked 生产模块反向发现，CLI 入口再与根 `stage09a:*` scripts 交叉核对；
+main guard、精确 owner chain 和 `node:process` exit import 同样由 AST/symbol 门禁判定。
+绝对 `--report` 路径继续被拒绝；它不是合法的审计调用方式。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接

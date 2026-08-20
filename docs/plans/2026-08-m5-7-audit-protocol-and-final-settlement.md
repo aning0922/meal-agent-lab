@@ -41,7 +41,7 @@ M5.6 审计 A 给出 BLOCK；动态审计 B 在平台侧触发 cybersecurity `sy
 ## 三、动态审计 B 的唯一入口
 
 ```bash
-pnpm stage09a:audit-b -- --report m5-<candidate>-b.json
+pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<candidate>-b.json
 ```
 
 协议固定为：

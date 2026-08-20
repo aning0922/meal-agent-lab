@@ -14,6 +14,17 @@ registry 均钉住精确集合；main guard/直接 await 按 AST 结构判定；
 结构化证据已从步骤 1 串行通过 14/14。M5.7 当前仅为 Implementation complete —
 pending independent A/B review；本 ADR 保持 Proposed。
 
+实施注记（2026-08-20，M5.8，覆盖上一段当前状态）：M5.7 候选 `174ff45` 的独立审计
+A 确认 main guard/owner/registry/exit capability 与 Audit-B 调用会计、SHA 绑定和 signal
+lifecycle 共七项 P1；审计 B 因任务书错误传入绝对 report path，在 gate 前按 basename
+协议拒绝，归类为无效派工而非候选缺陷。M5.8 改以 TypeScript declaration identity 与
+canonical tracked 生产引用反向发现 consumer/entrypoint；Audit-B 强制携带 expected HEAD，
+记录 pre/post HEAD/clean 和真实 invocation/retry，并从 preflight 前到 exclusive publication
+后的 checkpoint 全程持有 INT/TERM/HUP。正确入口为
+`pnpm stage09a:audit-b -- --expected-head <40-hex-sha> --report m5-<candidate>-b.json`。
+M5.8 当前为 Implementation complete — pending independent A/B review；M5 未 Accepted，
+本 ADR 仍为 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

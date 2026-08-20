@@ -109,8 +109,9 @@ export const m5ProductionGuards = Object.freeze([
 ])
 
 // 这些生产 CLI 必须保留自然 exitCode / 同名 signal settlement；任何一处重新
-// 获得 `process.exit` 能力都会绕过 cleanup-before-settlement。名单本身是提交数据，
-// mutation suite 另以精确集合断言防止“新入口忘记登记”。
+// 获得 `process.exit` 能力都会绕过 cleanup-before-settlement。名单本身是提交数据；
+// mutation suite 另从目标声明的生产引用与 `stage09a:*` package scripts 反向发现入口，
+// 再与本表核对，防止“新入口和测试期望同时忘记登记”。
 export const m5ProtectedEntrypoints = Object.freeze([
   'infra/docker/backup-local-test.mjs',
   'infra/docker/restore-local-test.mjs',
