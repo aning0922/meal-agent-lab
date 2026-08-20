@@ -1,8 +1,12 @@
 # 项目状态
 
-最后更新：2026-08-19
+最后更新：2026-08-20
 
 ## 当前结论
+
+**当前 M5.7 审计协议与最终 settlement 收敛事实（2026-08-20，覆盖本文所有旧 M5 “当前”段落）**：M5.6 候选 `d90a81e` 的审计 A 为 **BLOCK**，审计 B 因平台 cybersecurity `systemError` 未形成有效 CLEAN/BLOCK 报告。总控已按 [M5.7 任务书](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)把真实 main guard/直接 await、精确 consumer 与 protected-entrypoint registry、`process.exit` 能力、两次 event-loop turn 和 signal handler settlement 收敛为结构门禁，并新增与聚合器共用唯一 14 步清单的 `pnpm stage09a:audit-b`：固定 Node、单次完整链、零 retry、exclusive JSON 报告。固定 Node.js `v24.18.0` 的 scripts tests 为 **182/182**；完整候选门禁尚待提交后运行。**M5.7 Implementation complete — pending deterministic full gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+
+> 下方 M5.6 及更早的“当前”字样均是当轮历史记录；状态判定只以上段 M5.7 为准。
 
 **当前 M5.6 结构化退出与生产消费者收敛事实（2026-08-20，覆盖下方历史轮次）**：M5.5 候选 `72b75db` 的两个全新独立审计均为 **BLOCK**。总控已按 [M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)把 runtime `id:null` 学到的 immutable ID 纳入最终复查；五个生产 CLI 由顶层 `runSignalSettledCli` 包住全部普通出口；event-loop primitive 失败固定为 exit 1 且不回显异常；consumer registry 用 TypeScript checker 核对真实声明节点与直接 AST 位置，`if (false)` 和局部同名冒充均转红。实现提交 `b2780aa` 已通过 scripts tests **173/173**；证据候选 `2e2af96` 已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**。**M5.6 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
@@ -129,11 +133,11 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
-| audit、runtime image、M4 remediation 与聚合器/CI 脚本单测 | 173/173（M5.6 实现窄门禁） |
+| audit、runtime image、M4 remediation、聚合器/审计协议/CI 脚本单测 | 182/182（M5.7 实现窄门禁） |
 | generated adapter 只读门禁 | 4/4 逐字节一致 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
-| Markdown links | 70 files / 288 local links PASS |
+| Markdown links | 70 files / 295 local links PASS |
 | Compose 拓扑静态门禁 | PASS（14 服务 / 8 host Secret source / 10 named volume / 2 网络） |
 | Compose 拓扑变异反向测试 | 当前 45/45 以指定理由捕获，0 漏网；历史 15/15、39/39、44/44 仅代表更早拓扑 |
 
@@ -155,7 +159,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **M5.6 Implementation complete — pending independent A/B review，未 Accepted**。实现提交 `b2780aa` 已通过 scripts tests 173/173；证据候选 `2e2af96` 已通过完整 14 步门禁。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.6 任务书与 ADR-0006 |
+| M5 门禁、CI 与文档 | **M5.7 Implementation complete — pending deterministic full gate and independent A/B review，未 Accepted**。scripts tests 182/182；新增单次、零 retry 的 `stage09a:audit-b`，完整候选门禁尚待提交后运行。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.7 任务书与 ADR-0006 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族

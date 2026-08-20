@@ -21,3 +21,6 @@
 - [阶段 09A M5.2：发布与收场协议整改任务书](2026-08-m5-2-publication-settlement-remediation.md)
 - [阶段 09A M5.3：原子副作用与 cleanup settlement 收敛](2026-08-m5-3-atomic-settlement-convergence.md)
 - [阶段 09A M5.4：最终状态、信号交付与生产 guard 收敛](2026-08-m5-4-final-state-signal-guard-convergence.md)
+- [阶段 09A M5.5：最终结算与活生产消费者 guard 收敛](2026-08-m5-5-final-settlement-and-live-consumer-guards.md)
+- [阶段 09A M5.6：结构化退出与生产消费者收敛](2026-08-m5-6-structural-exit-and-consumer-convergence.md)
+- [阶段 09A M5.7：审计协议与最终 settlement 收敛](2026-08-m5-7-audit-protocol-and-final-settlement.md)

@@ -2,7 +2,9 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.6 结构化退出与生产消费者收敛（2026-08-20，覆盖下方历史轮次）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)承接 M5.5 候选 `72b75db` 的 A/B 双 BLOCK。runtime scratch cleanup 会把 name inspect 学到的 immutable ID 带入最终复查；五个生产 CLI 共用顶层 `runSignalSettledCli`，usage/失败/成功都不再直接 `process.exit()`；event-loop primitive 异常只给固定失败；production consumer registry 改由 TypeScript checker 按真实声明节点和直接 AST 位置判定，`if (false)` 与局部同名冒充均转红。实现提交 `b2780aa` 已通过 scripts tests **173/173**；证据候选 `2e2af96` 已从步骤 1 串行通过完整门禁 **14/14**。**M5.6 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.7 审计协议与最终 settlement 收敛（2026-08-20，覆盖下方历史轮次）**：[M5.7 任务书](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)承接 M5.6 候选 `d90a81e` 的 A=BLOCK 与 B=平台无效。真实 main guard/直接 await、精确 consumer/protected-entrypoint registry、`process.exit` 能力、两次 event-loop turn 与 signal handler settlement 均改为结构门禁；新增 `stage09a-gate-registry.mjs` 和 `pnpm stage09a:audit-b`，让动态 B 固定 Node、只启动一次真实 14 步聚合链、零 retry，并只发布闭集 JSON 报告。固定 Node.js `v24.18.0` 的 scripts tests 为 **182/182**；完整候选门禁尚待提交后运行。**M5.7 Implementation complete — pending deterministic full gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+
+**历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
 **历史 M5.5（2026-08-19，已被 M5.6 覆盖）**：[M5.5 任务书](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)的实现提交 `5b3f9b3` 曾通过 scripts tests 167/167；最终文档候选 `72b75db` 的 A/B 审计均为 BLOCK，且其 committed tracked-file baseline 不匹配，所以不能沿用当时的 14/14 作为最终候选证据。
 
@@ -70,6 +72,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [阶段 09A M5.4 最终状态、信号交付与生产 guard 收敛](plans/2026-08-m5-4-final-state-signal-guard-convergence.md)
 - [阶段 09A M5.5 最终结算与活生产消费者 guard 收敛](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)
 - [阶段 09A M5.6 结构化退出与生产消费者收敛](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)
+- [阶段 09A M5.7 审计协议与最终 settlement 收敛](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)
 - [计划索引](plans/README.md)
 - [微信开发者工具走查证据](evidence/stage-08-gui/README.md)
 - [依赖例外产物扫描证据](evidence/stage-08-audit/weapp-advisory-scan.json)

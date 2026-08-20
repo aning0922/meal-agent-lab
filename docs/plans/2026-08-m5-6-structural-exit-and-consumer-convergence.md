@@ -114,3 +114,13 @@ Accepted；阶段 09A Pass、push/merge、远端 CI 仍是后续独立授权与�
 - 本节发布的最终状态仍只是 **Implementation complete — pending independent A/B
   review**；本地门禁不等于两个独立审计 CLEAN，不等于远端 CI PASS，也不授权
   push/merge/PR 或 M5 Accepted。
+
+## 八、后续审计结论（历史收口）
+
+最终候选 `d90a81e` 的独立审计 A 为 **BLOCK**：初版结构 checker 可被 dead
+expression、假 main guard、重复 consumer path 与 `process.exit` alias 绕过；two-turn
+协议缺少第二 turn 的专属 mutation，aggregate 专属 mutant 也没有真正送入 checker。
+独立审计 B 因平台 cybersecurity `systemError` 未形成有效 CLEAN/BLOCK 报告，不能被
+记作通过或候选缺陷。后续处置与当前状态已移交
+[M5.7 任务书](2026-08-m5-7-audit-protocol-and-final-settlement.md)；本文件上方状态仅为
+M5.6 当时记录，不再代表当前候选。

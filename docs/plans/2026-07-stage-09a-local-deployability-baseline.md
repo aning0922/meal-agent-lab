@@ -4331,6 +4331,21 @@ baseline 已按最终计划文件集合更新为 360；证据候选 `2e2af96` �
 Implementation complete — pending independent A/B review；M5 未 Accepted、09A 未
 Pass、远端 CI 无真实 run。
 
+#### M5.7 审计协议与最终 settlement 收敛（2026-08-20，待最终 committed gate）
+
+M5.6 候选 `d90a81e` 的独立审计 A 为 BLOCK：main guard/直接 await 证明可由 dead
+expression 冒充，consumer registry 可重复路径，`process.exit` alias 能绕过文本门禁，
+two-turn 协议也缺第二 turn 专属 mutant。独立审计 B 因平台 cybersecurity `systemError`
+没有形成有效报告，不能写 CLEAN 或 BLOCK。
+
+[M5.7 任务书](2026-08-m5-7-audit-protocol-and-final-settlement.md)据此把 guard 判据改为
+精确 AST/声明集合，给 protected entrypoints 建立唯一 registry，并让 delivered signal 的
+handler settlement 在 scoped cleanup 与同名信号重投前始终拥有调用方。动态 B 新增唯一
+入口 `pnpm stage09a:audit-b -- --report m5-<candidate>-b.json`：与聚合器共用 14 步事实
+源、固定 Node、单次完整链、零 retry，只发布闭集结构化报告。scripts tests 为 182/182；
+完整候选门禁将在本轮提交后从步骤 1 串行运行。M5 未 Accepted、09A 未 Pass、远端 CI
+无真实 run；未取得有效报告前不得启动新一轮独立 A/B 审计。
+
 ## 验收门禁
 
 | # | 必须满足 |

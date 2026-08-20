@@ -41,6 +41,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { interpretPrerequisiteEvidence } from './stage09a-prerequisite-evidence.mjs'
+import { stage09aSteps } from './stage09a-gate-registry.mjs'
 
 const safeWrite = (fd, message) => {
   const bytes = Buffer.from(message, 'utf8')
@@ -99,96 +100,7 @@ if (usageInvalid) {
 }
 
 // argv 是固定字符串；`--keep-failure` 只透传给声明支持它的入口。
-const steps = [
-  {
-    id: 'stage08-check',
-    title: 'stage08 全量门禁（workspace 语义不因容器化改变）',
-    argv: ['pnpm', 'stage08:check'],
-    timeoutMs: 2_400_000
-  },
-  {
-    id: 'compose-topology',
-    title: 'Compose 解析后拓扑静态门禁',
-    argv: ['node', 'infra/docker/check-compose-topology.mjs'],
-    timeoutMs: 900_000
-  },
-  {
-    id: 'compose-topology-mutations',
-    title: 'Compose 拓扑门禁的变异反例',
-    argv: ['node', 'infra/docker/check-compose-topology-mutations.mjs'],
-    timeoutMs: 900_000
-  },
-  {
-    id: 'api-runtime-image',
-    title: 'API runtime image 构建 + 依赖/组件扫描',
-    argv: ['node', 'infra/docker/check-api-runtime-image.mjs'],
-    timeoutMs: 1_800_000,
-    forwardsKeepFailure: true
-  },
-  {
-    id: 'api-runtime-image-mutations',
-    title: '镜像扫描门禁的变异反例',
-    argv: ['node', 'infra/docker/check-api-runtime-image-mutations.mjs'],
-    timeoutMs: 2_700_000
-  },
-  {
-    id: 'local-test-negatives',
-    title: 'Secret 生成/预检/模板扫描反例面',
-    argv: ['node', 'infra/docker/check-local-test-negatives.mjs'],
-    timeoutMs: 1_800_000
-  },
-  {
-    id: 'm3b-template-surface-sweep',
-    title: 'tracked 模板绝对面普查',
-    argv: ['node', 'infra/docker/check-m3b-template-surface-sweep.mjs'],
-    timeoutMs: 900_000
-  },
-  {
-    id: 'm3b-round2-negatives',
-    title: 'M3B targeted negative suite',
-    argv: ['node', 'infra/docker/check-m3b-round2-negatives.mjs'],
-    timeoutMs: 2_700_000
-  },
-  {
-    id: 'm3b-registry-integrity',
-    title: '登记完整性（文档计数 ↔ 已提交数据）',
-    argv: ['node', 'infra/docker/check-m3b-registry-integrity.mjs'],
-    timeoutMs: 900_000
-  },
-  {
-    id: 'm3b-signal-windows',
-    title: '进程组回归 + 真实信号窗口取证',
-    argv: ['node', 'infra/docker/check-m3b-signal-windows.mjs'],
-    timeoutMs: 1_800_000
-  },
-  {
-    id: 'local-test-smoke',
-    title: '空 volume 完整链 smoke（含 containment 扫描与隔离）',
-    argv: ['node', 'infra/docker/run-local-test-smoke.mjs'],
-    timeoutMs: 2_700_000,
-    forwardsKeepFailure: true
-  },
-  {
-    id: 'compose-secret-identity',
-    title: 'Compose Secret 容器内 UID/mode 证据',
-    argv: ['node', 'infra/docker/probe-compose-secret-identity.mjs'],
-    timeoutMs: 1_800_000
-  },
-  {
-    id: 'lifecycle-drill',
-    title: '生命周期演练（空库初始化、health/readiness、持久化重启）',
-    argv: ['node', 'infra/docker/run-local-test-lifecycle.mjs'],
-    timeoutMs: 2_700_000,
-    forwardsKeepFailure: true
-  },
-  {
-    id: 'restore-drill',
-    title: '备份/恢复演练(备份、篡改反例、单事务恢复、授权面一致)',
-    argv: ['node', 'infra/docker/run-local-test-restore-drill.mjs'],
-    timeoutMs: 2_700_000,
-    forwardsKeepFailure: true
-  }
-]
+const steps = stage09aSteps
 
 const results = []
 let interruptedBy = null

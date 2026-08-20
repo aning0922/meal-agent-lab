@@ -21,7 +21,10 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 
-import { m5ProductionGuards } from '../../infra/docker/m5-production-guard-registry.mjs'
+import {
+  m5ProductionGuards,
+  m5ProtectedEntrypoints
+} from '../../infra/docker/m5-production-guard-registry.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 const requireFromApiWorkspace = createRequire(resolve(repositoryRoot, 'services/api/package.json'))
@@ -52,15 +55,31 @@ const placementMatches = (call, placement, sourceFile) => {
   const statement = nearestStatement(call)
   if (statement === undefined) return false
   if (placement.kind === 'source-direct') {
-    return statement.parent === sourceFile
+    if (!ts.isVariableStatement(statement) || statement.parent !== sourceFile) return false
+    const declarations = statement.declarationList.declarations
+    return (
+      declarations.length === 1 &&
+      ts.isIdentifier(declarations[0].name) &&
+      declarations[0].name.text === placement.binding &&
+      ts.isAwaitExpression(declarations[0].initializer) &&
+      declarations[0].initializer.expression === call
+    )
   }
   if (placement.kind === 'main-guard-direct') {
     const block = statement.parent
     return (
+      ts.isExpressionStatement(statement) &&
+      ts.isAwaitExpression(statement.expression) &&
+      statement.expression.expression === call &&
       ts.isBlock(block) &&
       ts.isIfStatement(block.parent) &&
       block.parent.thenStatement === block &&
-      block.parent.parent === sourceFile
+      block.parent.elseStatement === undefined &&
+      block.parent.parent === sourceFile &&
+      block.parent.expression
+        .getText(sourceFile)
+        .replace(/\s+/g, ' ') ===
+        'process.argv[1] === fileURLToPath(import.meta.url)'
     )
   }
   const owner = nearestFunction(call)
@@ -167,6 +186,136 @@ const productionConsumerProblems = (overrides = new Map()) => {
   return problems
 }
 
+const consumerSignature = (guardId, consumer) => [
+  guardId,
+  consumer.path,
+  `${consumer.callee.path}#${consumer.callee.name}`,
+  consumer.placement.kind,
+  consumer.placement.name ?? '',
+  consumer.placement.binding ?? '',
+  String(consumer.count)
+].join('|')
+
+const expectedConsumerSignatures = Object.freeze([
+  'aggregate-final-signal-delivery|scripts/run-stage09a-check.mjs|scripts/run-stage09a-check.mjs#settleAggregateProcess|source-direct||finalExitCode|1',
+  'backup-pre-fork-declaration|infra/docker/backup-local-test.mjs|infra/docker/backup-local-test.mjs#runBackupCopyWithDeclaredOutput|nearest-function-direct|||1',
+  'cleanup-signal-delivery-barrier|infra/docker/backup-local-test.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
+  'cleanup-signal-delivery-barrier|infra/docker/restore-local-test.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
+  'cleanup-signal-delivery-barrier|infra/docker/run-local-test-lifecycle.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
+  'cleanup-signal-delivery-barrier|infra/docker/run-local-test-restore-drill.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
+  'cleanup-signal-delivery-barrier|infra/docker/run-local-test-smoke.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
+  'runtime-scratch-final-settlement|infra/docker/api-image-scan.mjs|infra/docker/api-image-scan.mjs#settleTrackedRuntimeProbe|named-function-direct|scanImage||2',
+  'scratch-capability|infra/docker/api-image-scan.mjs|infra/docker/api-image-scan.mjs#scratchCapabilityExpectation|named-function-direct|scanImage||4'
+].sort())
+
+const productionConsumerRegistryProblems = (registry = m5ProductionGuards) => {
+  const signatures = registry
+    .flatMap((guard) => (guard.consumers ?? []).map((consumer) =>
+      consumerSignature(guard.id, consumer)))
+    .sort()
+  return signatures.length === new Set(signatures).size &&
+      JSON.stringify(signatures) === JSON.stringify(expectedConsumerSignatures)
+    ? []
+    : ['production consumer registry did not match the exact required consumer set']
+}
+
+const expectedProtectedEntrypoints = Object.freeze([
+  'infra/docker/backup-local-test.mjs',
+  'infra/docker/restore-local-test.mjs',
+  'infra/docker/run-local-test-smoke.mjs',
+  'infra/docker/m4-lifecycle.mjs',
+  'infra/docker/run-local-test-lifecycle.mjs',
+  'infra/docker/run-local-test-restore-drill.mjs',
+  'scripts/run-stage09a-check.mjs',
+  'scripts/run-stage09a-audit-b.mjs'
+])
+
+const protectedExitCapabilityProblems = (overrides = new Map()) => {
+  const rootNames = m5ProtectedEntrypoints.map((path) => resolve(repositoryRoot, path))
+  const options = {
+    allowJs: true,
+    checkJs: false,
+    noEmit: true,
+    target: ts.ScriptTarget.ESNext,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext
+  }
+  const host = ts.createCompilerHost(options, true)
+  const originalGetSourceFile = host.getSourceFile.bind(host)
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) => {
+    const relativeName = fileName.startsWith(`${repositoryRoot}/`)
+      ? fileName.slice(repositoryRoot.length + 1)
+      : null
+    const override = relativeName === null ? undefined : overrides.get(relativeName)
+    return override === undefined
+      ? originalGetSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
+      : ts.createSourceFile(fileName, override, languageVersion, true, ts.ScriptKind.JS)
+  }
+  const program = ts.createProgram({ rootNames, options, host })
+  const problems = []
+  for (const path of m5ProtectedEntrypoints) {
+    const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
+    const processAliases = new Set(['process'])
+    let changed = true
+    while (changed) {
+      changed = false
+      const collectAliases = (node) => {
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer !== undefined &&
+          ts.isIdentifier(node.initializer) &&
+          processAliases.has(node.initializer.text) &&
+          !processAliases.has(node.name.text)
+        ) {
+          processAliases.add(node.name.text)
+          changed = true
+        }
+        ts.forEachChild(node, collectAliases)
+      }
+      collectAliases(sourceFile)
+    }
+    const isProcessAlias = (node) =>
+      ts.isIdentifier(node) && processAliases.has(node.text)
+    const isExitMember = (node) =>
+      (ts.isPropertyAccessExpression(node) &&
+        isProcessAlias(node.expression) &&
+        node.name.text === 'exit') ||
+      (ts.isElementAccessExpression(node) &&
+        isProcessAlias(node.expression) &&
+        ts.isStringLiteralLike(node.argumentExpression) &&
+        node.argumentExpression.text === 'exit')
+    const visit = (node) => {
+      if (isExitMember(node)) {
+        problems.push(`${path}: process.exit capability escaped the shared settlement boundary`)
+      }
+      if (
+        ts.isBindingElement(node) &&
+        (node.propertyName?.getText(sourceFile) ?? node.name.getText(sourceFile)) === 'exit'
+      ) {
+        const declaration = node.parent.parent
+        const initializer = ts.isVariableDeclaration(declaration) ? declaration.initializer : undefined
+        if (initializer !== undefined && isProcessAlias(initializer)) {
+          problems.push(`${path}: process.exit capability escaped through destructuring`)
+        }
+      }
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.getText(sourceFile) === 'Reflect.get' &&
+        node.arguments.length >= 2 &&
+        isProcessAlias(node.arguments[0]) &&
+        ts.isStringLiteralLike(node.arguments[1]) &&
+        node.arguments[1].text === 'exit'
+      ) {
+        problems.push(`${path}: process.exit capability escaped through reflection`)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(sourceFile)
+  }
+  return problems
+}
+
 const replaceExactly = (source, needle, replacement) => {
   const first = source.indexOf(needle)
   assert.notEqual(first, -1, `production mutation anchor disappeared: ${needle}`)
@@ -193,11 +342,10 @@ test.after(() => {
 })
 
 test('every declared production consumer resolves to its declaration and direct AST position', () => {
+  assert.deepEqual(productionConsumerRegistryProblems(), [])
+  assert.deepEqual([...m5ProtectedEntrypoints], [...expectedProtectedEntrypoints])
   assert.deepEqual(productionConsumerProblems(), [])
-  assert.equal(
-    m5ProductionGuards.flatMap(({ consumers = [] }) => consumers).length,
-    9
-  )
+  assert.deepEqual(protectedExitCapabilityProblems(), [])
 })
 
 test('moving any registered consumer unchanged into if(false) is rejected', () => {
@@ -241,18 +389,70 @@ test('a same-name local function cannot impersonate the imported settlement capa
   )
 })
 
-test('protected production entrypoints never bypass final settlement with process.exit', () => {
-  for (const path of [
-    'infra/docker/backup-local-test.mjs',
-    'infra/docker/restore-local-test.mjs',
-    'infra/docker/run-local-test-smoke.mjs',
-    'infra/docker/m4-lifecycle.mjs',
-    'infra/docker/run-local-test-lifecycle.mjs',
-    'infra/docker/run-local-test-restore-drill.mjs',
-    'scripts/run-stage09a-check.mjs'
-  ]) {
+test('main guards require the exact condition and a direct top-level await', () => {
+  const consumer = m5ProductionGuards
+    .find(({ id }) => id === 'cleanup-signal-delivery-barrier')
+    .consumers.find(({ path }) => path === 'infra/docker/backup-local-test.mjs')
+  const path = consumer.path
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutations = [
+    source.replace(
+      'process.argv[1] === fileURLToPath(import.meta.url)',
+      "process.argv.includes('--invalid')"
+    ),
+    source.replace(
+      'await runSignalSettledCli(async () => {',
+      'false && await runSignalSettledCli(async () => {'
+    ),
+    source.replace(
+      'await runSignalSettledCli(async () => {',
+      'runSignalSettledCli(async () => {'
+    ),
+    source.replace(
+      'await runSignalSettledCli(async () => {',
+      'await runSignalSettledCli(async () => {'
+    ).replace(
+      '\n  })\n}',
+      '\n  }).catch(() => undefined)\n}'
+    )
+  ]
+  for (const mutant of mutations) {
+    const problems = productionConsumerProblems(new Map([[path, mutant]]))
+    assert.equal(
+      problems.some((problem) => problem.startsWith('[cleanup-signal-delivery-barrier]')),
+      true
+    )
+  }
+})
+
+test('the production registry requires every exact consumer path once', () => {
+  const mutant = m5ProductionGuards.map((guard) => {
+    if (guard.id !== 'cleanup-signal-delivery-barrier') return guard
+    const consumers = guard.consumers.map((consumer) =>
+      consumer.path === 'infra/docker/restore-local-test.mjs'
+        ? Object.freeze({ ...consumer, path: 'infra/docker/backup-local-test.mjs' })
+        : consumer)
+    return Object.freeze({ ...guard, consumers: Object.freeze(consumers) })
+  })
+  assert.deepEqual(productionConsumerRegistryProblems(mutant), [
+    'production consumer registry did not match the exact required consumer set'
+  ])
+})
+
+test('protected production entrypoints cannot obtain the process.exit capability', () => {
+  for (const path of m5ProtectedEntrypoints) {
     const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
-    assert.doesNotMatch(source, /\bprocess\.exit\s*\(/, `${path} bypasses final settlement`)
+    for (const addition of [
+      'const exitNow = process.exit\n',
+      "const exitNow = process['exit']\n",
+      'const { exit: exitNow } = process\n',
+      "const exitNow = Reflect.get(process, 'exit')\n"
+    ]) {
+      const problems = protectedExitCapabilityProblems(
+        new Map([[path, `${source}\n${addition}`]])
+      )
+      assert.equal(problems.some((problem) => problem.startsWith(`${path}:`)), true)
+    }
   }
 })
 
@@ -476,6 +676,32 @@ guardTest('cleanup-signal-delivery-barrier', 'the guard is killed by an ordinary
     })
     assert.equal(outcome.status, 42, outcome.stderr)
     assert.equal(outcome.signal, null)
+
+    const oneTurn = replaceExactly(source, 'turn < 2', 'turn < 1')
+    writeFileSync(modulePath, oneTurn)
+    const oneTurnFixture = [
+      `import { createCleanupSettlementBarrier } from ${JSON.stringify(`${moduleUrl}?one-turn`)}`,
+      'let calls = 0',
+      'const barrier = createCleanupSettlementBarrier({',
+      '  scheduleImmediate(callback) {',
+      '    calls += 1',
+      "    if (calls === 2) throw new Error('SECOND-TURN-SENTINEL')",
+      '    callback()',
+      '  }',
+      '})',
+      'const outcome = await barrier()',
+      'process.stdout.write(JSON.stringify({ calls, outcome }))'
+    ].join('\n')
+    const oneTurnOutcome = spawnSync(
+      process.execPath,
+      ['--input-type=module', '--eval', oneTurnFixture],
+      { encoding: 'utf8', timeout: 4_000 }
+    )
+    assert.equal(oneTurnOutcome.status, 0, oneTurnOutcome.stderr)
+    assert.deepEqual(JSON.parse(oneTurnOutcome.stdout), {
+      calls: 1,
+      outcome: { ok: true, signal: null }
+    })
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
@@ -489,9 +715,13 @@ guardTest('aggregate-final-signal-delivery', 'the aggregate result stays behind 
     consumer,
     'const finalExitCode = ordinaryExitCode'
   )
-  assert.equal(mutant.includes(consumer), false)
-  assert.match(source, /await nativeImmediateTurn\(\)[\s\S]*await nativeImmediateTurn\(\)/)
-  assert.match(source, /nativeKill\(process\.pid, signal\)/)
+  const problems = productionConsumerProblems(new Map([
+    ['scripts/run-stage09a-check.mjs', mutant]
+  ]))
+  assert.equal(
+    problems.some((problem) => problem.startsWith('[aggregate-final-signal-delivery]')),
+    true
+  )
 })
 
 guardTest('runtime-image-claim', 'the guards are killed by a wrong-claim removal oracle', async () => {

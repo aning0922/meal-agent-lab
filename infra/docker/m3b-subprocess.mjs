@@ -167,6 +167,7 @@ const generationKey = (pgid, generation) => `${String(pgid)}:${String(generation
  * 信号语义被吞掉）。
  */
 let pendingSignal = null
+let pendingSignalSettlement = null
 export const terminationSignal = () => pendingSignal
 
 /**
@@ -840,6 +841,22 @@ export const terminationSignalAfterCleanupSettlement = async () => {
     cliSettlementPrimitiveFailed = true
     writeDiagnostic('CLI signal settlement primitive failed\n')
   }
+  if (outcome.signal !== null) {
+    const settlement = pendingSignalSettlement
+    if (settlement === null) {
+      cliSettlementPrimitiveFailed = true
+      writeDiagnostic('CLI signal settlement state was unavailable\n')
+      return null
+    }
+    // A delivered signal owns the process from this point onward.  The signal
+    // handler either exits 1 after a fixed failure or rethrows the same signal;
+    // the ordinary CLI caller must never regain control while scoped cleanup is
+    // still running.
+    await settlement
+    cliSettlementPrimitiveFailed = true
+    writeDiagnostic('CLI signal settlement returned unexpectedly\n')
+    return null
+  }
   return outcome.signal
 }
 
@@ -921,7 +938,10 @@ export const unconfirmedProcessGroups = () =>
  *
  * 第二个同名/异名信号在清理期间只登记不重入。
  */
-export const installSignalHandlers = (cleanup, _options = {}) => {
+export const installSignalHandlers = (
+  cleanup,
+  { rethrowSignal = nativeProcessKill } = {}
+) => {
   let terminating = false
   const handler = (signal) => {
     if (terminating) {
@@ -933,7 +953,7 @@ export const installSignalHandlers = (cleanup, _options = {}) => {
     let diagnosticFailed = !writeDiagnostic(
       `\n${signal}: terminating child processes, then running scoped cleanup\n`
     )
-    void (async () => {
+    pendingSignalSettlement = (async () => {
       let survivors = []
       let terminationFailed = false
       let cleanupFailed = false
@@ -1068,14 +1088,22 @@ export const installSignalHandlers = (cleanup, _options = {}) => {
       }
       // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。
       try {
-        process.kill(process.pid, signal)
+        rethrowSignal(process.pid, signal)
+        // A successful self-signal is the terminal publication.  Keeping the
+        // shared settlement pending prevents ordinary callers from observing a
+        // return between cleanup completion and OS signal delivery.
+        await new Promise(() => {})
       } catch {
         // 最终 self-signal 也是一条会失败的 termination primitive。不得让它的
         // Error/stack（可能含调用方文字）逃到 Node 默认异常输出。
         writeDiagnostic('final signal rethrow failed\n')
         process.exit(1)
       }
-    })()
+    })().catch(() => {
+      writeDiagnostic('signal settlement failed\n')
+      process.exit(1)
+    })
+    void pendingSignalSettlement
   }
   for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(handledSignal, handler)

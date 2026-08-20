@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
 
+import { stage09aStepIds } from '../stage09a-gate-registry.mjs'
+
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 const entrypoint = resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs')
 const subprocessModule = resolve(repositoryRoot, 'infra/docker/m3b-subprocess.mjs')
@@ -765,8 +767,8 @@ test('oversized prerequisite evidence fails closed before any gate starts', { ti
 
 test('the aggregate registry keeps the exact accepted gate order', () => {
   const source = readFileSync(entrypoint, 'utf8')
-  const actualStepIds = [...source.matchAll(/^    id: '([^']+)',$/gm)].map((match) => match[1])
-  assert.deepEqual(actualStepIds, expectedStepIds)
+  assert.match(source, /import \{ stage09aSteps \} from '\.\/stage09a-gate-registry\.mjs'/)
+  assert.deepEqual([...stage09aStepIds], expectedStepIds)
 })
 
 test('every host detached spawn in the formal chain has an explicit ownership boundary', () => {
@@ -933,6 +935,10 @@ test('a termination primitive exception is fixed-output, bounded, and does not s
       `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
     )
     .replace(
+      "from './stage09a-gate-registry.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-gate-registry.mjs'))}`
+    )
+    .replace(
       "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
       `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
     )
@@ -1065,6 +1071,10 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
         `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
       )
       .replace(
+        "from './stage09a-gate-registry.mjs'",
+        `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-gate-registry.mjs'))}`
+      )
+      .replace(
         "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
         `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
       )
@@ -1099,6 +1109,10 @@ test('a step timer creation exception settles only after the owned group reaches
     .replace(
       "from './stage09a-prerequisite-evidence.mjs'",
       `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+    )
+    .replace(
+      "from './stage09a-gate-registry.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-gate-registry.mjs'))}`
     )
     .replace(
       "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
@@ -1150,6 +1164,10 @@ test('a step timer clear exception is fixed-output and cleanup-before-settlement
     .replace(
       "from './stage09a-prerequisite-evidence.mjs'",
       `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+    )
+    .replace(
+      "from './stage09a-gate-registry.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-gate-registry.mjs'))}`
     )
     .replace(
       "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",

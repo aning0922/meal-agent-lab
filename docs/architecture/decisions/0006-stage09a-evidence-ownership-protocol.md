@@ -4,15 +4,15 @@
 - 日期：2026-08-16
 - 范围：阶段 09A M5 的 Docker/Compose、进程组、生命周期、备份与恢复门禁
 
-实施注记（2026-08-20，M5.6）：runtime scratch 记录即使以 `id:null` 开始，也会把
-可信 name inspect 学到的 immutable ID 带入最终 absence 复查；五个生产 CLI 的普通、
-usage 与失败出口由一个顶层 `runSignalSettledCli` 包住，event-loop primitive 失败只给
-固定结论。production guard registry 不再用 path/anchor/count 证明消费者存在，而由
-TypeScript checker 按真实声明节点、函数/main-guard 作用域与直接 AST 位置判定；把调用
-原样移入 `if (false)` 或以局部同名函数冒充都会转红。实现提交 `b2780aa` 已通过
-scripts tests 173/173；证据候选 `2e2af96` 已从步骤 1 串行通过完整 14 步门禁。
-M5.6 当前仅为 Implementation complete — pending independent A/B review；本 ADR
-保持 Proposed。
+实施注记（2026-08-20，M5.7）：M5.6 候选的审计 A 证明初版 production guard 仍可由
+dead expression、假 main guard、重复 registry path 与 `process.exit` alias 绕过；审计 B
+因平台 cybersecurity `systemError` 无有效报告。当前 consumer 与 protected-entrypoint
+registry 均钉住精确集合；main guard/直接 await 按 AST 结构判定；两次 event-loop turn
+和 delivered-signal settlement 有独立 mutation oracle。`stage09a-gate-registry.mjs` 成为
+真实聚合器与动态审计报告的唯一 14 步事实源；`pnpm stage09a:audit-b` 固定 Node、单次
+完整链、零 retry，并只 exclusive 发布闭集 JSON。scripts tests 为 182/182；完整候选
+门禁尚待提交后运行。M5.7 当前仅为 Implementation complete — pending deterministic
+full gate and independent A/B review；本 ADR 保持 Proposed。
 
 ## 背景
 

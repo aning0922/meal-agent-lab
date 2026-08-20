@@ -1046,9 +1046,9 @@ const handlerCases = [
   {
     label: 'final-signal-primitive',
     cleanup: 'async () => []',
-    beforeSignal:
-      "process.kill = (pid, signal) => { if (pid === process.pid && signal === 'SIGTERM') " +
-      "{ throw new Error('CALLER-SENTINEL') }; return nativeKill(pid, signal) }",
+    beforeSignal: '',
+    handlerOptions:
+      "{ label: 'fixture cleanup', rethrowSignal: () => { throw new Error('CALLER-SENTINEL') } }",
     expectedStatus: 1,
     expectedSignal: null,
     expectedReason: /final signal rethrow failed/
@@ -1080,7 +1080,7 @@ for (const handlerCase of handlerCases) {
         `const m = await import(${JSON.stringify(resolve(moduleDirectory, 'm3b-subprocess.mjs'))})`,
         'const nativeTimer = globalThis.setTimeout',
         'const nativeKill = process.kill.bind(process)',
-        `m.installSignalHandlers(${handlerCase.cleanup}, { label: 'fixture cleanup' })`,
+        `m.installSignalHandlers(${handlerCase.cleanup}, ${handlerCase.handlerOptions ?? "{ label: 'fixture cleanup' }"})`,
         "void m.runCommand(['/bin/sh','-c','trap \"\" TERM; sleep 45'], { timeoutMs: 60000 })",
         'nativeTimer(() => {',
         `  ${handlerCase.beforeSignal}`,

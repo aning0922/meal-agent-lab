@@ -46,6 +46,7 @@ import {
   requireNonLoopbackIsolationEvidence
 } from '../../infra/docker/local-test-containment.mjs'
 import {
+  createCleanupSettlementBarrier,
   createSignalSafeCleanup,
   createCommandRunner,
   observedDescendantPgids,
@@ -131,6 +132,49 @@ test('signal-safe cleanup returns one memoized settlement to every caller', asyn
   release()
   assert.deepEqual(await first, [])
   assert.deepEqual(await second, [])
+})
+
+test('both cleanup-settlement turns are mandatory and second-turn failure is fixed', async () => {
+  let calls = 0
+  const barrier = createCleanupSettlementBarrier({
+    scheduleImmediate(callback) {
+      calls += 1
+      if (calls === 2) throw new Error('SECOND-TURN-SENTINEL')
+      callback()
+    }
+  })
+  assert.deepEqual(await barrier(), { ok: false, signal: null })
+  assert.equal(calls, 2)
+})
+
+test('a delivered signal never returns control before its shared cleanup settles', () => {
+  const moduleUrl = new URL('../../infra/docker/m3b-subprocess.mjs', import.meta.url).href
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+    const source = [
+      `import { installSignalHandlers, runSignalSettledCli } from ${JSON.stringify(moduleUrl)}`,
+      "const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))",
+      "installSignalHandlers(async () => {",
+      '  await delay(120)',
+      "  process.stdout.write('CLEANUP-DONE\\n')",
+      '  return []',
+      "}, { label: 'shared settlement fixture' })",
+      'setTimeout(() => process.kill(process.pid, ' + JSON.stringify(signal) + '), 5)',
+      'await runSignalSettledCli(async () => {',
+      '  await delay(20)',
+      '  return 0',
+      '})',
+      "process.stdout.write('RETURNED-BEFORE-CLEANUP\\n')"
+    ].join('\n')
+    const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      timeout: 4_000
+    })
+    assert.equal(outcome.status, null, `${signal}: ${outcome.stderr}`)
+    assert.equal(outcome.signal, signal)
+    assert.match(outcome.stdout, /CLEANUP-DONE/)
+    assert.doesNotMatch(outcome.stdout, /RETURNED-BEFORE-CLEANUP/)
+  }
 })
 
 test('cleanup settlement yields until an already-delivered signal owns process exit', () => {

@@ -196,6 +196,7 @@ M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成
 ```bash
 pnpm stage09a:check                    # stage08 → 静态检查 → 镜像扫描 → 9 条 M3B 门禁 → 两条 M4 演练
 pnpm stage09a:check -- --keep-failure  # 失败时保留支持该开关的门禁现场（显式 opt-in）
+pnpm stage09a:audit-b -- --report m5-<candidate>-b.json  # 固定 Node、单次完整链、零 retry 的动态审计证据
 ```
 
 它**只做串联**，不实现新检查：按计划文档 M5 的链路顺序执行 `pnpm stage08:check`、
@@ -251,6 +252,13 @@ image 正向门禁和 **1 baseline + 17 built + 2 static-only** mutation 均已�
 从步骤 1 串行通过完整 `stage09a:check` **14/14**；第一次运行的 Stage08 audit ownership
 channel 失败在独立 audit 与第二次完整重跑中均未复现，保留给独立审计复核。M5.4 仍为
 pending independent A/B review，M5 未 Accepted。
+
+**M5.7 动态审计协议（2026-08-20，覆盖上段审计执行方式）**：`stage09a:check` 与
+`stage09a:audit-b` 共用 `scripts/stage09a-gate-registry.mjs` 的唯一 14 步清单。后者不
+增加检查，也不作 Accepted 裁定；它只在精确 `.node-version` 与干净工作树上启动一次
+真实聚合链，不重试，随后把可信 step id、exit/signal、候选 SHA 与固定原因 exclusive
+写入 `.local/audit-reports/`。审计 B 不再自由重跑整链或编写 custom security probe；
+平台直接中断且没有报告时该会话无效，而不是把半截输出解读为候选 BLOCK/CLEAN。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
