@@ -143,39 +143,68 @@ export const createStage09aTranscriptRecorder = () => {
 }
 
 export const createStage09aAuditBReport = ({
-  candidateHead,
+  expectedCandidateHead,
+  candidateHeadBefore,
+  candidateHeadAfter,
   requiredNodeVersion,
   actualNodeVersion,
-  worktreeClean,
+  worktreeCleanBefore,
+  worktreeCleanAfter,
+  invocationCount,
+  retries,
+  requestedSignal,
   gate
 }) => {
   const inputValid =
-    canonicalSha.test(candidateHead) &&
+    canonicalSha.test(expectedCandidateHead) &&
+    (candidateHeadBefore === null || canonicalSha.test(candidateHeadBefore)) &&
+    (candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)) &&
     /^24\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(requiredNodeVersion) &&
     /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(actualNodeVersion) &&
-    typeof worktreeClean === 'boolean' &&
+    typeof worktreeCleanBefore === 'boolean' &&
+    typeof worktreeCleanAfter === 'boolean' &&
+    Number.isSafeInteger(invocationCount) && invocationCount >= 0 && invocationCount <= 1 &&
+    Number.isSafeInteger(retries) && retries === Math.max(0, invocationCount - 1) &&
+    (requestedSignal === null || handledSignals.has(requestedSignal)) &&
     gate !== null && typeof gate === 'object'
   if (!inputValid) {
     throw new TypeError('audit B report input was invalid')
   }
-  const environmentOk = actualNodeVersion === requiredNodeVersion && worktreeClean
+  const worktreeClean = worktreeCleanBefore && worktreeCleanAfter
+  const environmentOk =
+    actualNodeVersion === requiredNodeVersion &&
+    candidateHeadBefore === expectedCandidateHead &&
+    candidateHeadAfter === expectedCandidateHead &&
+    worktreeClean &&
+    invocationCount === 1 &&
+    retries === 0 &&
+    requestedSignal === null
   const passed = environmentOk && gate.status === 'pass'
+  let reason = gate.reason
+  if (actualNodeVersion !== requiredNodeVersion) reason = 'node-version-mismatch'
+  else if (candidateHeadBefore !== expectedCandidateHead) reason = 'candidate-head-mismatch'
+  else if (!worktreeCleanBefore) reason = 'worktree-not-clean'
+  else if (candidateHeadAfter !== expectedCandidateHead || !worktreeCleanAfter) {
+    reason = 'repository-state-drift'
+  } else if (requestedSignal !== null) reason = 'audit-signaled'
+  else if (invocationCount !== 1 || retries !== 0) reason = 'invocation-count-invalid'
   return Object.freeze({
     schemaVersion: 1,
     evidenceKind: 'stage09a-audit-b-single-run',
-    candidateHead,
+    candidateHead: expectedCandidateHead,
+    candidateHeadBefore,
+    candidateHeadAfter,
     requiredNodeVersion,
     actualNodeVersion,
     worktreeClean,
-    invocationCount: 1,
-    retries: 0,
+    worktreeCleanBefore,
+    worktreeCleanAfter,
+    invocationCount,
+    retries,
+    requestedSignal,
     aggregateStepCount: stage09aStepIds.length,
     status: passed ? 'pass' : 'fail',
-    reason: environmentOk
-      ? gate.reason
-      : actualNodeVersion !== requiredNodeVersion
-        ? 'node-version-mismatch'
-        : 'worktree-not-clean',
+    reason,
     gate: Object.freeze({
       exitCode: gate.exitCode,
       signal: gate.signal,

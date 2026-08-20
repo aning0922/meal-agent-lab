@@ -14,7 +14,10 @@ export const m5ProductionGuards = Object.freeze([
           path: 'infra/docker/backup-local-test.mjs',
           name: 'runBackupCopyWithDeclaredOutput'
         }),
-        placement: Object.freeze({ kind: 'nearest-function-direct' }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['beforeRemove', 'performBackup'])
+        }),
         count: 1
       })
     ])
@@ -77,7 +80,10 @@ export const m5ProductionGuards = Object.freeze([
           path: 'infra/docker/api-image-scan.mjs',
           name: 'scratchCapabilityExpectation'
         }),
-        placement: Object.freeze({ kind: 'named-function-direct', name: 'scanImage' }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['scanImage'])
+        }),
         count: 4
       })
     ])
@@ -92,7 +98,10 @@ export const m5ProductionGuards = Object.freeze([
           path: 'infra/docker/api-image-scan.mjs',
           name: 'settleTrackedRuntimeProbe'
         }),
-        placement: Object.freeze({ kind: 'named-function-direct', name: 'scanImage' }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['scanImage'])
+        }),
         count: 2
       })
     ])
@@ -106,9 +115,13 @@ export const m5ProtectedEntrypoints = Object.freeze([
   'infra/docker/backup-local-test.mjs',
   'infra/docker/restore-local-test.mjs',
   'infra/docker/run-local-test-smoke.mjs',
-  'infra/docker/m4-lifecycle.mjs',
   'infra/docker/run-local-test-lifecycle.mjs',
   'infra/docker/run-local-test-restore-drill.mjs',
   'scripts/run-stage09a-check.mjs',
   'scripts/run-stage09a-audit-b.mjs'
+])
+
+// 共享库不是 CLI entrypoint，但同样不得取得能绕过调用方 settlement 的退出能力。
+export const m5ProtectedModules = Object.freeze([
+  'infra/docker/m4-lifecycle.mjs'
 ])

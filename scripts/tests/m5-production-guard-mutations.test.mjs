@@ -23,7 +23,8 @@ import test from 'node:test'
 
 import {
   m5ProductionGuards,
-  m5ProtectedEntrypoints
+  m5ProtectedEntrypoints,
+  m5ProtectedModules
 } from '../../infra/docker/m5-production-guard-registry.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
@@ -48,10 +49,85 @@ const functionName = (node) => {
   if (ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name)) {
     return node.parent.name.text
   }
+  if (ts.isPropertyAssignment(node.parent) && node.parent.initializer === node) {
+    const name = node.parent.name
+    return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : null
+  }
   return null
 }
 
-const placementMatches = (call, placement, sourceFile) => {
+const functionPath = (node) => {
+  const path = []
+  let current = node.parent
+  while (current !== undefined) {
+    if (ts.isFunctionLike(current)) {
+      const name = functionName(current)
+      if (name !== null) path.push(name)
+    }
+    current = current.parent
+  }
+  return path
+}
+
+const importedDeclarationSymbol = (checker, sourceFile, moduleName, exportName) => {
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== moduleName ||
+      statement.importClause?.namedBindings === undefined ||
+      !ts.isNamedImports(statement.importClause.namedBindings)
+    ) continue
+    for (const element of statement.importClause.namedBindings.elements) {
+      if ((element.propertyName?.text ?? element.name.text) !== exportName) continue
+      return resolvedSymbol(checker, element.name)
+    }
+  }
+  return undefined
+}
+
+const isCanonicalProcessIdentifier = (checker, sourceFile, node) => {
+  if (!ts.isIdentifier(node) || node.text !== 'process') return false
+  const symbol = resolvedSymbol(checker, node)
+  return symbol?.declarations?.some((declaration) => {
+    const declarationFile = declaration.getSourceFile()
+    return declarationFile !== sourceFile && /[/\\]@types[/\\]node[/\\]globals\.d\.ts$/.test(declarationFile.fileName)
+  }) === true
+}
+
+const isImportMetaUrl = (node) =>
+  ts.isPropertyAccessExpression(node) &&
+  node.name.text === 'url' &&
+  ts.isMetaProperty(node.expression) &&
+  node.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+  node.expression.name.text === 'meta'
+
+const mainGuardMatches = (expression, checker, sourceFile) => {
+  if (
+    !ts.isBinaryExpression(expression) ||
+    expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    !ts.isElementAccessExpression(expression.left) ||
+    !ts.isNumericLiteral(expression.left.argumentExpression) ||
+    expression.left.argumentExpression.text !== '1' ||
+    !ts.isPropertyAccessExpression(expression.left.expression) ||
+    expression.left.expression.name.text !== 'argv' ||
+    !isCanonicalProcessIdentifier(checker, sourceFile, expression.left.expression.expression) ||
+    !ts.isCallExpression(expression.right) ||
+    expression.right.arguments.length !== 1 ||
+    !isImportMetaUrl(expression.right.arguments[0]) ||
+    !ts.isIdentifier(expression.right.expression)
+  ) return false
+  const canonicalFileUrlToPath = importedDeclarationSymbol(
+    checker,
+    sourceFile,
+    'node:url',
+    'fileURLToPath'
+  )
+  return canonicalFileUrlToPath !== undefined &&
+    resolvedSymbol(checker, expression.right.expression) === canonicalFileUrlToPath
+}
+
+const placementMatches = (call, placement, sourceFile, checker) => {
   const statement = nearestStatement(call)
   if (statement === undefined) return false
   if (placement.kind === 'source-direct') {
@@ -76,18 +152,15 @@ const placementMatches = (call, placement, sourceFile) => {
       block.parent.thenStatement === block &&
       block.parent.elseStatement === undefined &&
       block.parent.parent === sourceFile &&
-      block.parent.expression
-        .getText(sourceFile)
-        .replace(/\s+/g, ' ') ===
-        'process.argv[1] === fileURLToPath(import.meta.url)'
+      mainGuardMatches(block.parent.expression, checker, sourceFile)
     )
   }
   const owner = nearestFunction(call)
   if (owner === undefined || owner.body === undefined || statement.parent !== owner.body) {
     return false
   }
-  if (placement.kind === 'nearest-function-direct') return true
-  return placement.kind === 'named-function-direct' && functionName(owner) === placement.name
+  return placement.kind === 'function-path-direct' &&
+    JSON.stringify(functionPath(call)) === JSON.stringify(placement.path)
 }
 
 const topLevelSymbol = (checker, sourceFile, name) => {
@@ -125,7 +198,9 @@ const consumerCalls = (consumer, overrides = new Map()) => {
     noEmit: true,
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    types: ['node'],
+    typeRoots: [resolve(repositoryRoot, 'services/api/node_modules/@types')]
   }
   const host = ts.createCompilerHost(options, true)
   const originalGetSourceFile = host.getSourceFile.bind(host)
@@ -161,7 +236,7 @@ const consumerCalls = (consumer, overrides = new Map()) => {
         calls.push(Object.freeze({
           call: node,
           statement: nearestStatement(node),
-          placementValid: placementMatches(node, consumer.placement, sourceFile),
+          placementValid: placementMatches(node, consumer.placement, sourceFile, checker),
           sourceFile
         }))
       }
@@ -183,6 +258,7 @@ const productionConsumerProblems = (overrides = new Map()) => {
       }
     }
   }
+  problems.push(...productionConsumerRegistryProblems(m5ProductionGuards, overrides))
   return problems
 }
 
@@ -191,54 +267,33 @@ const consumerSignature = (guardId, consumer) => [
   consumer.path,
   `${consumer.callee.path}#${consumer.callee.name}`,
   consumer.placement.kind,
-  consumer.placement.name ?? '',
+  (consumer.placement.path ?? []).join('>'),
   consumer.placement.binding ?? '',
   String(consumer.count)
 ].join('|')
 
-const expectedConsumerSignatures = Object.freeze([
-  'aggregate-final-signal-delivery|scripts/run-stage09a-check.mjs|scripts/run-stage09a-check.mjs#settleAggregateProcess|source-direct||finalExitCode|1',
-  'backup-pre-fork-declaration|infra/docker/backup-local-test.mjs|infra/docker/backup-local-test.mjs#runBackupCopyWithDeclaredOutput|nearest-function-direct|||1',
-  'cleanup-signal-delivery-barrier|infra/docker/backup-local-test.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
-  'cleanup-signal-delivery-barrier|infra/docker/restore-local-test.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
-  'cleanup-signal-delivery-barrier|infra/docker/run-local-test-lifecycle.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
-  'cleanup-signal-delivery-barrier|infra/docker/run-local-test-restore-drill.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
-  'cleanup-signal-delivery-barrier|infra/docker/run-local-test-smoke.mjs|infra/docker/m3b-subprocess.mjs#runSignalSettledCli|main-guard-direct|||1',
-  'runtime-scratch-final-settlement|infra/docker/api-image-scan.mjs|infra/docker/api-image-scan.mjs#settleTrackedRuntimeProbe|named-function-direct|scanImage||2',
-  'scratch-capability|infra/docker/api-image-scan.mjs|infra/docker/api-image-scan.mjs#scratchCapabilityExpectation|named-function-direct|scanImage||4'
-].sort())
-
-const productionConsumerRegistryProblems = (registry = m5ProductionGuards) => {
-  const signatures = registry
-    .flatMap((guard) => (guard.consumers ?? []).map((consumer) =>
-      consumerSignature(guard.id, consumer)))
-    .sort()
-  return signatures.length === new Set(signatures).size &&
-      JSON.stringify(signatures) === JSON.stringify(expectedConsumerSignatures)
-    ? []
-    : ['production consumer registry did not match the exact required consumer set']
+const trackedProductionModulePaths = () => {
+  const listed = spawnSync('git', ['ls-files', '-z', '--', 'infra/docker/*.mjs', 'scripts/*.mjs'], {
+    cwd: repositoryRoot,
+    encoding: 'buffer',
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024
+  })
+  assert.equal(listed.status, 0, 'tracked production module set could not be read')
+  return listed.stdout.toString('utf8').split('\0').filter((path) =>
+    /^(?:infra\/docker|scripts)\/[^/]+\.mjs$/.test(path)).sort()
 }
 
-const expectedProtectedEntrypoints = Object.freeze([
-  'infra/docker/backup-local-test.mjs',
-  'infra/docker/restore-local-test.mjs',
-  'infra/docker/run-local-test-smoke.mjs',
-  'infra/docker/m4-lifecycle.mjs',
-  'infra/docker/run-local-test-lifecycle.mjs',
-  'infra/docker/run-local-test-restore-drill.mjs',
-  'scripts/run-stage09a-check.mjs',
-  'scripts/run-stage09a-audit-b.mjs'
-])
-
-const protectedExitCapabilityProblems = (overrides = new Map()) => {
-  const rootNames = m5ProtectedEntrypoints.map((path) => resolve(repositoryRoot, path))
+const compilerProgram = (paths, overrides = new Map()) => {
   const options = {
     allowJs: true,
     checkJs: false,
     noEmit: true,
     target: ts.ScriptTarget.ESNext,
     module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    types: ['node'],
+    typeRoots: [resolve(repositoryRoot, 'services/api/node_modules/@types')]
   }
   const host = ts.createCompilerHost(options, true)
   const originalGetSourceFile = host.getSourceFile.bind(host)
@@ -251,11 +306,145 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
       ? originalGetSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile)
       : ts.createSourceFile(fileName, override, languageVersion, true, ts.ScriptKind.JS)
   }
-  const program = ts.createProgram({ rootNames, options, host })
-  const problems = []
-  for (const path of m5ProtectedEntrypoints) {
+  return ts.createProgram({
+    rootNames: [...new Set(paths.map((path) => resolve(repositoryRoot, path)))],
+    options,
+    host
+  })
+}
+
+const discoveredTargetCalls = (callee, overrides = new Map()) => {
+  const candidates = [...new Set([
+    ...trackedProductionModulePaths(),
+    ...overrides.keys(),
+    callee.path
+  ])].sort()
+  const program = compilerProgram(candidates, overrides)
+  const checker = program.getTypeChecker()
+  const targetFile = program.getSourceFile(resolve(repositoryRoot, callee.path))
+  assert.notEqual(targetFile, undefined, `guard declaration source was not parsed: ${callee.path}`)
+  const targetSymbol = topLevelSymbol(checker, targetFile, callee.name)
+  assert.notEqual(targetSymbol, undefined, `guard declaration disappeared: ${callee.path}#${callee.name}`)
+  const calls = []
+  for (const path of candidates) {
     const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
-    const processAliases = new Set(['process'])
+    if (sourceFile === undefined) continue
+    const visit = (node) => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        resolvedSymbol(checker, node.expression) === targetSymbol
+      ) {
+        calls.push(Object.freeze({ path, node, sourceFile, checker }))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(sourceFile)
+  }
+  return calls
+}
+
+const productionConsumerRegistryProblems = (
+  registry = m5ProductionGuards,
+  overrides = new Map()
+) => {
+  const problems = []
+  const consumers = registry.flatMap((guard) =>
+    (guard.consumers ?? []).map((consumer) => ({ guard, consumer })))
+  const signatures = consumers.map(({ guard, consumer }) =>
+    consumerSignature(guard.id, consumer))
+  if (signatures.length !== new Set(signatures).size) {
+    problems.push('production consumer registry contained duplicate declarations')
+  }
+  const targets = new Map()
+  for (const { consumer } of consumers) {
+    const key = `${consumer.callee.path}#${consumer.callee.name}`
+    if (!targets.has(key)) targets.set(key, consumer.callee)
+  }
+  for (const [targetKey, callee] of targets) {
+    const registeredCounts = new Map()
+    for (const { consumer } of consumers) {
+      if (`${consumer.callee.path}#${consumer.callee.name}` !== targetKey) continue
+      registeredCounts.set(consumer.path, (registeredCounts.get(consumer.path) ?? 0) + consumer.count)
+    }
+    const discoveredCounts = new Map()
+    for (const { path } of discoveredTargetCalls(callee, overrides)) {
+      discoveredCounts.set(path, (discoveredCounts.get(path) ?? 0) + 1)
+    }
+    if (
+      JSON.stringify([...registeredCounts].sort()) !==
+      JSON.stringify([...discoveredCounts].sort())
+    ) {
+      problems.push(
+        `production consumer registry drifted from declaration identity: ${targetKey}` +
+        ` registered=${JSON.stringify([...registeredCounts].sort())}` +
+        ` discovered=${JSON.stringify([...discoveredCounts].sort())}`
+      )
+    }
+  }
+  return problems
+}
+
+const discoveredProtectedEntrypoints = (overrides = new Map()) => {
+  const entrypoints = new Set(discoveredTargetCalls({
+    path: 'infra/docker/m3b-subprocess.mjs',
+    name: 'runSignalSettledCli'
+  }, overrides).map(({ path }) => path))
+  const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'))
+  for (const [name, command] of Object.entries(packageJson.scripts ?? {})) {
+    if (!name.startsWith('stage09a:')) continue
+    const match = /^node ([a-z0-9_./-]+\.mjs)$/.exec(command)
+    assert.notEqual(match, null, `stage09a production entrypoint command was not canonical: ${name}`)
+    entrypoints.add(match[1])
+  }
+  return [...entrypoints].sort()
+}
+
+const protectedEntrypointRegistryProblems = (overrides = new Map()) =>
+  JSON.stringify([...m5ProtectedEntrypoints].sort()) ===
+    JSON.stringify(discoveredProtectedEntrypoints(overrides))
+    ? []
+    : ['protected entrypoint registry drifted from production reachability']
+
+const protectedExitCapabilityProblems = (overrides = new Map()) => {
+  const paths = [...new Set([
+    ...discoveredProtectedEntrypoints(overrides),
+    ...m5ProtectedModules,
+    ...overrides.keys()
+  ])].sort()
+  const program = compilerProgram(paths, overrides)
+  const checker = program.getTypeChecker()
+  const problems = []
+  for (const path of paths) {
+    const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
+    if (sourceFile === undefined) continue
+    const processAliases = new Set()
+    const namedExitImports = []
+    const seed = (node) => {
+      if (isCanonicalProcessIdentifier(checker, sourceFile, node)) {
+        processAliases.add(checker.getSymbolAtLocation(node))
+      }
+      if (
+        ts.isImportDeclaration(node) &&
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === 'node:process'
+      ) {
+        const clause = node.importClause
+        if (clause?.name !== undefined) processAliases.add(checker.getSymbolAtLocation(clause.name))
+        if (clause?.namedBindings !== undefined && ts.isNamespaceImport(clause.namedBindings)) {
+          processAliases.add(checker.getSymbolAtLocation(clause.namedBindings.name))
+        }
+        if (clause?.namedBindings !== undefined && ts.isNamedImports(clause.namedBindings)) {
+          for (const element of clause.namedBindings.elements) {
+            if ((element.propertyName?.text ?? element.name.text) === 'exit') {
+              namedExitImports.push(element)
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, seed)
+    }
+    seed(sourceFile)
     let changed = true
     while (changed) {
       changed = false
@@ -265,10 +454,10 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
           ts.isIdentifier(node.name) &&
           node.initializer !== undefined &&
           ts.isIdentifier(node.initializer) &&
-          processAliases.has(node.initializer.text) &&
-          !processAliases.has(node.name.text)
+          processAliases.has(checker.getSymbolAtLocation(node.initializer)) &&
+          !processAliases.has(checker.getSymbolAtLocation(node.name))
         ) {
-          processAliases.add(node.name.text)
+          processAliases.add(checker.getSymbolAtLocation(node.name))
           changed = true
         }
         ts.forEachChild(node, collectAliases)
@@ -276,7 +465,7 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
       collectAliases(sourceFile)
     }
     const isProcessAlias = (node) =>
-      ts.isIdentifier(node) && processAliases.has(node.text)
+      ts.isIdentifier(node) && processAliases.has(checker.getSymbolAtLocation(node))
     const isExitMember = (node) =>
       (ts.isPropertyAccessExpression(node) &&
         isProcessAlias(node.expression) &&
@@ -311,8 +500,12 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
       }
       ts.forEachChild(node, visit)
     }
+    for (const element of namedExitImports) {
+      problems.push(`${path}: process.exit capability escaped through node:process import`)
+    }
     visit(sourceFile)
   }
+  problems.push(...protectedEntrypointRegistryProblems(overrides))
   return problems
 }
 
@@ -343,7 +536,7 @@ test.after(() => {
 
 test('every declared production consumer resolves to its declaration and direct AST position', () => {
   assert.deepEqual(productionConsumerRegistryProblems(), [])
-  assert.deepEqual([...m5ProtectedEntrypoints], [...expectedProtectedEntrypoints])
+  assert.deepEqual(protectedEntrypointRegistryProblems(), [])
   assert.deepEqual(productionConsumerProblems(), [])
   assert.deepEqual(protectedExitCapabilityProblems(), [])
 })
@@ -425,6 +618,64 @@ test('main guards require the exact condition and a direct top-level await', () 
   }
 })
 
+test('main guards bind fileURLToPath to the node:url declaration identity', () => {
+  const path = 'infra/docker/backup-local-test.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = source.replace(
+    "import { fileURLToPath } from 'node:url'",
+    [
+      "import { fileURLToPath as realFileURLToPath } from 'node:url'",
+      "function fileURLToPath() { return '/never-the-entrypoint' }"
+    ].join('\n')
+  )
+  assert.notEqual(mutant, source)
+  assert.equal(
+    productionConsumerProblems(new Map([[path, mutant]]))
+      .some((problem) => problem.startsWith('[cleanup-signal-delivery-barrier]')),
+    true
+  )
+})
+
+test('a registered consumer belongs to its exact production owner chain', () => {
+  const guard = m5ProductionGuards.find(({ id }) => id === 'backup-pre-fork-declaration')
+  const [consumer] = guard.consumers
+  const source = readFileSync(resolve(repositoryRoot, consumer.path), 'utf8')
+  const [target] = consumerCalls(consumer).filter(({ placementValid }) => placementValid)
+  assert.notEqual(target, undefined)
+  const start = target.statement.getStart(target.sourceFile)
+  const end = target.statement.getEnd()
+  const mutant = [
+    source.slice(0, start),
+    'async function wrongProductionOwner() {\n',
+    source.slice(start, end),
+    '\n}',
+    source.slice(end)
+  ].join('')
+  assert.equal(
+    productionConsumerProblems(new Map([[consumer.path, mutant]]))
+      .some((problem) => problem.startsWith('[backup-pre-fork-declaration]')),
+    true
+  )
+})
+
+test('an unregistered runSignalSettledCli entrypoint cannot stay outside both registries', () => {
+  const path = 'infra/docker/new-protected-entrypoint.mjs'
+  const source = [
+    "import { exit as exitNow } from 'node:process'",
+    "import { runSignalSettledCli } from './m3b-subprocess.mjs'",
+    'await runSignalSettledCli(async () => 0)',
+    'exitNow(7)',
+    ''
+  ].join('\n')
+  const overrides = new Map([[path, source]])
+  assert.equal(productionConsumerProblems(overrides).length > 0, true)
+  assert.equal(
+    protectedExitCapabilityProblems(overrides)
+      .some((problem) => problem.startsWith(`${path}:`)),
+    true
+  )
+})
+
 test('the production registry requires every exact consumer path once', () => {
   const mutant = m5ProductionGuards.map((guard) => {
     if (guard.id !== 'cleanup-signal-delivery-barrier') return guard
@@ -434,9 +685,11 @@ test('the production registry requires every exact consumer path once', () => {
         : consumer)
     return Object.freeze({ ...guard, consumers: Object.freeze(consumers) })
   })
-  assert.deepEqual(productionConsumerRegistryProblems(mutant), [
-    'production consumer registry did not match the exact required consumer set'
-  ])
+  assert.equal(
+    productionConsumerRegistryProblems(mutant).some((problem) =>
+      problem.startsWith('production consumer registry drifted from declaration identity:')),
+    true
+  )
 })
 
 test('protected production entrypoints cannot obtain the process.exit capability', () => {
@@ -446,12 +699,17 @@ test('protected production entrypoints cannot obtain the process.exit capability
       'const exitNow = process.exit\n',
       "const exitNow = process['exit']\n",
       'const { exit: exitNow } = process\n',
-      "const exitNow = Reflect.get(process, 'exit')\n"
+      "const exitNow = Reflect.get(process, 'exit')\n",
+      "import { exit as exitNow } from 'node:process'\n"
     ]) {
       const problems = protectedExitCapabilityProblems(
         new Map([[path, `${source}\n${addition}`]])
       )
-      assert.equal(problems.some((problem) => problem.startsWith(`${path}:`)), true)
+      assert.equal(
+        problems.some((problem) => problem.startsWith(`${path}:`)),
+        true,
+        `${path} did not reject ${addition.trim()}`
+      )
     }
   }
 })
