@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.7 审计协议与最终 settlement 收敛（2026-08-20，覆盖下方历史轮次）**：[M5.7 任务书](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)承接 M5.6 候选 `d90a81e` 的 A=BLOCK 与 B=平台无效。真实 main guard/直接 await、精确 consumer/protected-entrypoint registry、`process.exit` 能力、两次 event-loop turn 与 signal handler settlement 均改为结构门禁；新增 `stage09a-gate-registry.mjs` 和 `pnpm stage09a:audit-b`，让动态 B 固定 Node、只启动一次真实 14 步聚合链、零 retry，并只发布闭集 JSON 报告。固定 Node.js `v24.18.0` 的 scripts tests 为 **183/183**；完整候选门禁尚待提交后运行。**M5.7 Implementation complete — pending deterministic full gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.7 审计协议与最终 settlement 收敛（2026-08-20，覆盖下方历史轮次）**：[M5.7 任务书](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)承接 M5.6 候选 `d90a81e` 的 A=BLOCK 与 B=平台无效。真实 main guard/直接 await、精确 consumer/protected-entrypoint registry、`process.exit` 能力、两次 event-loop turn 与 signal handler settlement 均改为结构门禁；新增 `stage09a-gate-registry.mjs` 和 `pnpm stage09a:audit-b`，让动态 B 固定 Node、只启动一次真实 14 步聚合链、零 retry，并只发布闭集 JSON 报告。固定 Node.js `v24.18.0` 的 scripts tests 为 **183/183**；本地单次结构化证据已从步骤 1 串行通过 **14/14**。**M5.7 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 

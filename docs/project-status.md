@@ -4,7 +4,7 @@
 
 ## 当前结论
 
-**当前 M5.7 审计协议与最终 settlement 收敛事实（2026-08-20，覆盖本文所有旧 M5 “当前”段落）**：M5.6 候选 `d90a81e` 的审计 A 为 **BLOCK**，审计 B 因平台 cybersecurity `systemError` 未形成有效 CLEAN/BLOCK 报告。总控已按 [M5.7 任务书](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)把真实 main guard/直接 await、精确 consumer 与 protected-entrypoint registry、`process.exit` 能力、两次 event-loop turn 和 signal handler settlement 收敛为结构门禁，并新增与聚合器共用唯一 14 步清单的 `pnpm stage09a:audit-b`：固定 Node、单次完整链、零 retry、exclusive JSON 报告。固定 Node.js `v24.18.0` 的 scripts tests 为 **183/183**；完整候选门禁尚待提交后运行。**M5.7 Implementation complete — pending deterministic full gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.7 审计协议与最终 settlement 收敛事实（2026-08-20，覆盖本文所有旧 M5 “当前”段落）**：M5.6 候选 `d90a81e` 的审计 A 为 **BLOCK**，审计 B 因平台 cybersecurity `systemError` 未形成有效 CLEAN/BLOCK 报告。总控已按 [M5.7 任务书](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)把真实 main guard/直接 await、精确 consumer 与 protected-entrypoint registry、`process.exit` 能力、两次 event-loop turn 和 signal handler settlement 收敛为结构门禁，并新增与聚合器共用唯一 14 步清单的 `pnpm stage09a:audit-b`：固定 Node、单次完整链、零 retry、exclusive JSON 报告。固定 Node.js `v24.18.0` 的 scripts tests 为 **183/183**；本地单次结构化证据已从步骤 1 串行通过 **14/14**。**M5.7 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 > 下方 M5.6 及更早的“当前”字样均是当轮历史记录；状态判定只以上段 M5.7 为准。
 
@@ -159,7 +159,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **M5.7 Implementation complete — pending deterministic full gate and independent A/B review，未 Accepted**。scripts tests 183/183；新增单次、零 retry 的 `stage09a:audit-b`，完整候选门禁尚待提交后运行。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.7 任务书与 ADR-0006 |
+| M5 门禁、CI 与文档 | **M5.7 Implementation complete — pending independent A/B review，未 Accepted**。scripts tests 183/183；单次、零 retry 的 `stage09a:audit-b` 已从步骤 1 串行通过 14/14，并明确 `remoteCiVerified=false`。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.7 任务书与 ADR-0006 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族
@@ -802,7 +802,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted（各验收落点见上表）；**M5.6 Implementation complete — pending independent A/B review，M5 未 Accepted；实现提交 `b2780aa` 已通过 scripts tests 173/173，证据候选 `2e2af96` 已通过完整 14 步门禁**。GitHub Actions 复用同一命令（无真实远端 run，只登记已配置）、依赖例外保持 9 条并修复新披露的 nanoid 公告（到期 2026-11-08，见 ADR-0004）。本轮受控修改了 M3B/M4/M5 基础设施，不能声称冻结面零改动。ADR-0005 已凭既有真实容器证据转 `Accepted`；ADR-0006 保持 `Proposed`；09A 总验收未完成，阶段 09A 未标记完成。PR #1 保持 Draft。
+- 阶段 09A 状态：**In Progress**。M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted（各验收落点见上表）；**M5.7 Implementation complete — pending independent A/B review，M5 未 Accepted；scripts tests 183/183，本地单次结构化门禁已通过完整 14/14**。GitHub Actions 复用同一命令（无真实远端 run，只登记已配置）、依赖例外保持 9 条并修复新披露的 nanoid 公告（到期 2026-11-08，见 ADR-0004）。本轮受控修改了 M3B/M4/M5 基础设施，不能声称冻结面零改动。ADR-0005 已凭既有真实容器证据转 `Accepted`；ADR-0006 保持 `Proposed`；09A 总验收未完成，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（已于 2026-08-11 Accepted）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，69 cases）、`check-m3b-signal-windows.mjs`（M3B Accepted 时为 5 个确定性进程组回归 + 5 个真实信号窗口；当前 M5 第七轮门禁为 5 + 6）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
@@ -995,4 +995,4 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M1—M4 已 Accepted；**M5.6 Implementation complete — pending independent A/B review，M5 未 Accepted；GitHub Actions workflow 已配置但无真实 run**；09A 总验收未完成。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M1—M4 已 Accepted；**M5.7 Implementation complete — pending independent A/B review，M5 未 Accepted；GitHub Actions workflow 已配置但无真实 run**；09A 总验收未完成。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。

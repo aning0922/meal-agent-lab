@@ -10,9 +10,9 @@ dead expression、假 main guard、重复 registry path 与 `process.exit` alias
 registry 均钉住精确集合；main guard/直接 await 按 AST 结构判定；两次 event-loop turn
 和 delivered-signal settlement 有独立 mutation oracle。`stage09a-gate-registry.mjs` 成为
 真实聚合器与动态审计报告的唯一 14 步事实源；`pnpm stage09a:audit-b` 固定 Node、单次
-完整链、零 retry，并只 exclusive 发布闭集 JSON。scripts tests 为 183/183；完整候选
-门禁尚待提交后运行。M5.7 当前仅为 Implementation complete — pending deterministic
-full gate and independent A/B review；本 ADR 保持 Proposed。
+完整链、零 retry，并只 exclusive 发布闭集 JSON。scripts tests 为 183/183；本地单次
+结构化证据已从步骤 1 串行通过 14/14。M5.7 当前仅为 Implementation complete —
+pending independent A/B review；本 ADR 保持 Proposed。
 
 ## 背景
 

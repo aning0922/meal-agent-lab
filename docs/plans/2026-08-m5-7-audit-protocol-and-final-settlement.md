@@ -3,7 +3,7 @@
 - 日期：2026-08-20
 - 实施分支：`claude/stage-09a-m5-gates`
 - 输入候选：`d90a81eb95045800bba71fa3a0cde89d916c3b97`
-- 状态：Implementation complete — pending deterministic full gate and independent A/B review；M5 未 Accepted；阶段 09A 未 Pass
+- 状态：Implementation complete — pending independent A/B review；本地单次结构化门禁 14/14 PASS；M5 未 Accepted；阶段 09A 未 Pass
 - 写入纪律：总控单 writer；只追加本地提交，不推送、不合并、不创建 PR
 
 ## 一、为什么不是继续补审计提示词
@@ -72,9 +72,9 @@ probe。它只核对候选、运行上面一条命令一次、读取结构化报
 - audit-B transcript 缺 step、乱序、重复 final PASS、零退出但不完整、超长 framing；
 - Node mismatch、dirty worktree、非可信失败文本与一次调用/零 retry 报告形状。
 
-固定 Node.js `v24.18.0` 的 scripts tests 当前为 **183/183**。完整 14 步门禁与最终候选
-报告必须在提交后从步骤 1 串行执行；未取得该报告前，本轮状态仍是待门禁，不能启动
-独立 A/B 审计。
+固定 Node.js `v24.18.0` 的 scripts tests 当前为 **183/183**。本地单次结构化报告已从
+步骤 1 串行通过完整 **14/14**，其 `invocationCount=1`、`retries=0`、
+`remoteCiVerified=false`；M5 仍须独立 A/B 审计与总控裁定。
 
 ## 五、范围、状态与下一步
 
