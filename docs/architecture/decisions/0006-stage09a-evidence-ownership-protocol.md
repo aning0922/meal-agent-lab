@@ -4,11 +4,14 @@
 - 日期：2026-08-16
 - 范围：阶段 09A M5 的 Docker/Compose、进程组、生命周期、备份与恢复门禁
 
-实施注记（2026-08-19，M5.5）：destructive cleanup 的 command status 不再作为最终
-对象事实；runtime scratch container 同时按 immutable ID 与 mutable name 重新观察后才
-退休。聚合器与生产 CLI 在 cleanup 后经过 signal delivery barrier 再发布普通退出；
-production guard registry 的消费者 path/anchor/count 已成为机器门禁。实现候选
-`5b3f9b3` 本地 14/14 全绿，仍待独立 A/B 审计；本 ADR 保持 Proposed。
+实施注记（2026-08-20，M5.6）：runtime scratch 记录即使以 `id:null` 开始，也会把
+可信 name inspect 学到的 immutable ID 带入最终 absence 复查；五个生产 CLI 的普通、
+usage 与失败出口由一个顶层 `runSignalSettledCli` 包住，event-loop primitive 失败只给
+固定结论。production guard registry 不再用 path/anchor/count 证明消费者存在，而由
+TypeScript checker 按真实声明节点、函数/main-guard 作用域与直接 AST 位置判定；把调用
+原样移入 `if (false)` 或以局部同名函数冒充都会转红。实现提交 `b2780aa` 已通过
+scripts tests 173/173；最终 committed baseline 与完整 14 步证据仍在收口。本 ADR
+保持 Proposed。
 
 ## 背景
 

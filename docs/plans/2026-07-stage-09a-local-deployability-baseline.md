@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
-- 日期：2026-07-26（2026-08-19 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.4 Implementation complete — pending independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 日期：2026-07-26（2026-08-20 更新实施状态）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.6 In Progress，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（M5.4 最终状态、信号交付与生产 guard 候选待全新 A/B 独立审计，未 Accepted）
+### M5 实施记录（M5.6 结构化退出与生产消费者收敛中，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -4295,6 +4295,38 @@ v24.18.0 的 scripts tests 167/167 与从步骤 1 串行执行的 `stage09a:chec
 [M5.5 任务书](2026-08-m5-5-final-settlement-and-live-consumer-guards.md)。当前只形成
 Implementation complete 候选，等待两个全新独立 A/B 会话；M5 未 Accepted、09A 未
 Pass、远端 CI 无真实 run。
+
+M5.5 最终候选 `72b75db` 的后续审计结论实际为 **A=BLOCK、B=BLOCK**：A 确认
+`id:null` 恢复分支遗忘学到的 immutable ID、event-loop primitive 异常泄漏、usage
+直接退出与文本式 consumer registry；B 另确认 committed tracked-file baseline
+358/359 漂移，最终候选的完整链实际为 8 PASS / 1 FAIL / 5 SKIP。因此上段 14/14
+仅是更早实现树的历史证据，不能作为 `72b75db` 或当前候选的验收证据。
+
+#### M5.6 结构化退出与生产消费者收敛（2026-08-20，In Progress）
+
+[M5.6 任务书](2026-08-m5-6-structural-exit-and-consumer-convergence.md)把上述缺陷
+归并为“最终裁决不是唯一出口”和“registry 只证明文本存在”两个架构根因。实现提交
+`b2780aa` 交付：
+
+- runtime scratch 以 name inspect 恢复出可信对象时，把 `owned.Id` 升格为本次
+  settlement 的 immutable identity；最终同时观察该 ID 与 mutable name，二者都可信
+  absent 才允许 tracking 退休；
+- `m3b-subprocess.mjs` 新增 `runSignalSettledCli`，backup、restore、smoke、lifecycle
+  与 restore drill 的 main guard 都以一个直接顶层 await 调用它；usage/普通失败/成功
+  只返回 exit code，不再直接 `process.exit()`；
+- cleanup 后两次 event-loop turn 的 scheduling primitive 失败被折成固定
+  `CLI signal settlement primitive failed` 与 exit 1，不回显异常或 stack；
+- production guard registry 以真实 callee 声明文件/名称、consumer 文件、作用域与
+  直接 AST 位置登记。测试使用 TypeScript checker 比较声明节点身份；把任一调用原样
+  移入 `if (false)`，或在 main guard 中以局部同名函数冒充 imported capability，都会
+  按对应 guard ID 转红；动态 producer/runtime/cleanup oracle 仍保留；
+- protected entrypoints 另有全量反例，禁止 `process.exit()` 旁路；六个真实 usage
+  入口逐个证明自然 exit 2；runtime `id:null` 与 primitive sentinel 各有独立回归。
+
+固定 Node.js `v24.18.0` 的 scripts tests 当前为 **173/173**。committed tracked-file
+baseline 已按最终计划文件集合更新为 360；完整 `stage09a:check` 尚待同一 committed
+候选从步骤 1 串行复跑，因此本节仍为 In Progress，不提前写 14/14 或
+Implementation complete。M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
 ## 验收门禁
 
