@@ -8,10 +8,20 @@ import {
   createStage09aTranscriptRecorder,
   serializeStage09aAuditBReport
 } from '../stage09a-audit-b.mjs'
+import { parseStage09aAuditBArguments } from '../run-stage09a-audit-b.mjs'
 import { stage09aStepIds } from '../stage09a-gate-registry.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 const candidateHead = 'a'.repeat(40)
+
+test('audit B accepts the argv shape produced by pnpm 11', () => {
+  assert.deepEqual(
+    parseStage09aAuditBArguments(['--', '--report', 'm5-candidate-b.json']),
+    { reportName: 'm5-candidate-b.json' }
+  )
+  assert.deepEqual(parseStage09aAuditBArguments([]), { reportName: null })
+  assert.equal(parseStage09aAuditBArguments(['--', '--report', '../escape.json']), null)
+})
 
 const successfulTranscript = () => [
   ...stage09aStepIds.flatMap((id, index) => [

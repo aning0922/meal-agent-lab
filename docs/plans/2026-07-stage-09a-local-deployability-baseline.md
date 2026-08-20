@@ -4342,7 +4342,7 @@ two-turn 协议也缺第二 turn 专属 mutant。独立审计 B 因平台 cybers
 精确 AST/声明集合，给 protected entrypoints 建立唯一 registry，并让 delivered signal 的
 handler settlement 在 scoped cleanup 与同名信号重投前始终拥有调用方。动态 B 新增唯一
 入口 `pnpm stage09a:audit-b -- --report m5-<candidate>-b.json`：与聚合器共用 14 步事实
-源、固定 Node、单次完整链、零 retry，只发布闭集结构化报告。scripts tests 为 182/182；
+源、固定 Node、单次完整链、零 retry，只发布闭集结构化报告。scripts tests 为 183/183；
 完整候选门禁将在本轮提交后从步骤 1 串行运行。M5 未 Accepted、09A 未 Pass、远端 CI
 无真实 run；未取得有效报告前不得启动新一轮独立 A/B 审计。
 

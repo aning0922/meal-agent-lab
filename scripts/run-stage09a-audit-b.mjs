@@ -39,10 +39,15 @@ const nativeWrite = (fd, value) => {
 const fixedDiagnostic = (message) => nativeWrite(2, `stage09a:audit-b FAIL — ${message}\n`)
 const reportNamePattern = /^m5-[a-z0-9][a-z0-9.-]{0,79}-b\.json$/
 
-const parseArguments = (argv) => {
-  if (argv.length === 0) return { reportName: null }
-  if (argv.length === 2 && argv[0] === '--report' && reportNamePattern.test(argv[1])) {
-    return { reportName: argv[1] }
+export const parseStage09aAuditBArguments = (argv) => {
+  const normalized = argv[0] === '--' ? argv.slice(1) : argv
+  if (normalized.length === 0) return { reportName: null }
+  if (
+    normalized.length === 2 &&
+    normalized[0] === '--report' &&
+    reportNamePattern.test(normalized[1])
+  ) {
+    return { reportName: normalized[1] }
   }
   return null
 }
@@ -138,7 +143,7 @@ const runAggregateOnce = () => new Promise((resolveRun) => {
 })
 
 export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
-  const parsed = parseArguments(argv)
+  const parsed = parseStage09aAuditBArguments(argv)
   if (parsed === null) {
     fixedDiagnostic('usage: pnpm stage09a:audit-b [-- --report m5-<label>-b.json]')
     return 1

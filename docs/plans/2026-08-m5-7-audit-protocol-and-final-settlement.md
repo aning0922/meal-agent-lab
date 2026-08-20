@@ -72,7 +72,7 @@ probe。它只核对候选、运行上面一条命令一次、读取结构化报
 - audit-B transcript 缺 step、乱序、重复 final PASS、零退出但不完整、超长 framing；
 - Node mismatch、dirty worktree、非可信失败文本与一次调用/零 retry 报告形状。
 
-固定 Node.js `v24.18.0` 的 scripts tests 当前为 **182/182**。完整 14 步门禁与最终候选
+固定 Node.js `v24.18.0` 的 scripts tests 当前为 **183/183**。完整 14 步门禁与最终候选
 报告必须在提交后从步骤 1 串行执行；未取得该报告前，本轮状态仍是待门禁，不能启动
 独立 A/B 审计。
 
