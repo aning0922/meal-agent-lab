@@ -64,6 +64,7 @@
     "secret-shaped-env",
     "root-user",
     "wrong-stop-signal",
+    "deferred-onbuild-instruction",
     "missing-provenance",
     "unpinned-base"
   ],

@@ -25,6 +25,18 @@ canonical tracked 生产引用反向发现 consumer/entrypoint；Audit-B 强制�
 M5.8 当前为 Implementation complete — pending independent A/B review；M5 未 Accepted，
 本 ADR 仍为 `Proposed`。
 
+实施注记（2026-08-20，M5.9，覆盖上一段当前状态）：M5.8 候选 `e986b28` 的两路
+独立审计均为 BLOCK。旧实现让人类 CLI、Audit-B child aggregate 与 stdout transcript
+parser 分别持有一部分执行事实，静态 guard 又以有限 AST 形状猜测完整命令面。M5.9
+改为一个进程内 `runStage09aCheck()` 结构化核心：Audit-B 直接调用一次，不 spawn 第二个
+aggregate、不解析 stdout；报告 gate schema 闭合并记录模块实测 invocation/retry。exclusive
+publication 是终端证据提交点，发布后无 await、子进程、PGID 或报告改写。生产命令面由
+显式评审 manifest 定义并与 `stage09a:*` scripts 交叉核对；canonical Git before/after
+保持 fail closed。同 EUID 的可信源码作者与运行时并发改写不在本地敌手模型内。固定
+Node.js `v24.18.0` 的 scripts tests 为 188/188，同一工作树已从步骤 1 串行通过完整
+`stage09a:check` 14/14。M5.9 当前为 Implementation complete — pending independent
+A/B review；M5 未 Accepted，本 ADR 仍为 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

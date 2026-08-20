@@ -69,4 +69,4 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 本地 `stage08:check` 覆盖 contracts、API unit/HTTP、PostgreSQL migration/RLS/concurrency、客户端页面测试、双用户 E2E、OpenAPI、weapp build、依赖例外和文档链接。开发者工具 GUI 证据见[阶段 08 走查记录](../evidence/stage-08-gui/README.md)。
 
-依赖审计当前有一个截至 2026-08-08 的 local/weapp-only 例外；官方 HTTPS relay 不跟随 redirect，并分别限制原始和解压响应流为 16 MiB。H5、外部测试、体验版和发布被阻断。真实微信、合法域名、真机、云平台、原生三端和远端 CI 均没有本轮 Pass 证据，详见[项目状态](../project-status.md)。
+依赖审计当前有一个截至 2026-11-08 的 local/weapp-only 例外；官方 HTTPS relay 不跟随 redirect，并分别限制原始和解压响应流为 16 MiB。H5、外部测试、体验版和发布被阻断。真实微信、合法域名、真机、云平台、原生三端和远端 CI 均没有本轮 Pass 证据，详见[项目状态](../project-status.md)。

@@ -282,6 +282,14 @@ const mutations = [
     expectScan: ['image config: StopSignal must be absent so Docker uses SIGTERM']
   },
   {
+    id: 'deferred-onbuild-instruction',
+    describe: 'leave a deferred build instruction in the runtime image config',
+    build: true,
+    mutate: (text) => `${text}\nONBUILD RUN printf mutation > /tmp/m5-onbuild\n`,
+    expectStatic: ['ONBUILD instructions are not allowed in the runtime image'],
+    expectScan: ['image config: OnBuild must be absent']
+  },
+  {
     id: 'missing-provenance',
     describe: 'build an otherwise valid image with provenance explicitly disabled',
     build: true,
@@ -309,7 +317,7 @@ const mutations = [
   }
 ]
 
-const expectedBuiltMutationCount = 17
+const expectedBuiltMutationCount = 18
 const expectedStaticOnlyMutationCount = 2
 
 const cleanupState = {

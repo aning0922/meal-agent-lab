@@ -24,4 +24,5 @@
 - [阶段 09A M5.5：最终结算与活生产消费者 guard 收敛](2026-08-m5-5-final-settlement-and-live-consumer-guards.md)
 - [阶段 09A M5.6：结构化退出与生产消费者收敛](2026-08-m5-6-structural-exit-and-consumer-convergence.md)
 - [阶段 09A M5.7：审计协议与最终 settlement 收敛](2026-08-m5-7-audit-protocol-and-final-settlement.md)
-- [阶段 09A M5.8：声明身份与动态审计证据闭合](2026-08-m5-8-declaration-and-audit-evidence-closure.md)
+- [阶段 09A M5.9：结构化阶段门禁核心与显式命令面整改](2026-08-m5-9-structured-stage-gate-core.md)
+- [阶段 09A M5.8：声明身份与动态审计证据闭合（历史）](2026-08-m5-8-declaration-and-audit-evidence-closure.md)

@@ -92,12 +92,10 @@ const createOwnershipCapability = () => {
   }
 }
 
-const cliArguments = process.argv.slice(2)
-const keepFailure = cliArguments.includes('--keep-failure')
-const usageInvalid = cliArguments.some((argument) => argument !== '--keep-failure')
-if (usageInvalid) {
-  safeWrite(2, `usage: ${usage}\n`)
-}
+let keepFailure = false
+let usageInvalid = false
+let aggregateRunStarted = false
+let aggregateInvocationCount = 0
 
 // argv 是固定字符串；`--keep-failure` 只透传给声明支持它的入口。
 const steps = stage09aSteps
@@ -400,8 +398,10 @@ const aggregateSignalHandler = (signal) => {
       survivorCount: ownedProcessGroups.size + quarantinedProcessGroups.size
     }))
 }
-for (const signal of handledSignals) {
-  process.on(signal, aggregateSignalHandler)
+const installAggregateSignalHandlers = () => {
+  for (const signal of handledSignals) {
+    process.on(signal, aggregateSignalHandler)
+  }
 }
 
 const removeAggregateSignalHandlers = () => {
@@ -440,9 +440,9 @@ const settleAggregateProcess = async (ordinaryExitCode) => {
     removeAggregateSignalHandlers()
     if (aggregatePrimitiveFailed) {
       await terminateOwnedProcessGroups()
-      return 1
+      return Object.freeze({ exitCode: 1, requestedSignal: null })
     }
-    return normalizedExitCode
+    return Object.freeze({ exitCode: normalizedExitCode, requestedSignal: null })
   }
 
   let cleanup
@@ -456,15 +456,9 @@ const settleAggregateProcess = async (ordinaryExitCode) => {
   removeAggregateSignalHandlers()
   if (!cleanup.ok || !finalCleanup.ok || finalCleanup.survivors.length > 0 || aggregatePrimitiveFailed) {
     safeDiagnostic('stage09a:check FAIL — signal cleanup did not reach final settlement\n')
-    return 1
+    return Object.freeze({ exitCode: 1, requestedSignal: null })
   }
-  try {
-    nativeKill(process.pid, signal)
-    return null
-  } catch {
-    safeDiagnostic('stage09a:check FAIL — final signal rethrow failed\n')
-    return 1
-  }
+  return Object.freeze({ exitCode: null, requestedSignal: signal })
 }
 
 const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 1024 }) =>
@@ -1086,19 +1080,87 @@ const main = async () => {
   return 0
 }
 
-let ordinaryExitCode = 1
-try {
-  ordinaryExitCode = await main()
-} catch {
-  const cleanup = await terminateOwnedProcessGroups()
-  safeDiagnostic(
-    cleanup.ok
-      ? 'stage09a:check FAIL — aggregate control failed\n'
-      : 'stage09a:check FAIL — aggregate control failed and descendant cleanup was not confirmed\n'
-  )
-  ordinaryExitCode = 1
+const stage09aGateResult = ({ exitCode, requestedSignal }) => {
+  const completedSteps = results
+    .map((result, index) => result.ok ? steps[index].id : null)
+    .filter((id) => id !== null)
+  const failedResultIndex = results.findIndex((result) => !result.ok)
+  const complete =
+    exitCode === 0 &&
+    requestedSignal === null &&
+    completedSteps.length === steps.length
+  return Object.freeze({
+    status: complete ? 'pass' : 'fail',
+    reason: complete
+      ? 'complete'
+      : requestedSignal !== null
+        ? 'gate-signaled'
+        : 'gate-failed',
+    exitCode,
+    signal: requestedSignal,
+    completedSteps: Object.freeze(completedSteps),
+    failedStep: failedResultIndex === -1 ? null : steps[failedResultIndex].id
+  })
 }
-const finalExitCode = await settleAggregateProcess(ordinaryExitCode)
-if (finalExitCode !== null) {
-  process.exitCode = finalExitCode
+
+/**
+ * Run the complete Stage 09A plan exactly once in this process. This is the
+ * only machine-result producer used by both the human CLI and Audit-B; stdout
+ * is presentation, never evidence input.
+ */
+export const runStage09aCheck = async (argv = []) => {
+  aggregateInvocationCount += 1
+  if (aggregateRunStarted) {
+    return Object.freeze({
+      gate: Object.freeze({
+        status: 'fail',
+        reason: 'gate-failed',
+        exitCode: 1,
+        signal: null,
+        completedSteps: Object.freeze([]),
+        failedStep: null
+      }),
+      requestedSignal: null
+    })
+  }
+  aggregateRunStarted = true
+  keepFailure = argv.includes('--keep-failure')
+  usageInvalid = argv.some((argument) => argument !== '--keep-failure')
+  if (usageInvalid) safeWrite(2, `usage: ${usage}\n`)
+  installAggregateSignalHandlers()
+
+  let ordinaryExitCode = 1
+  try {
+    ordinaryExitCode = await main()
+  } catch {
+    const cleanup = await terminateOwnedProcessGroups()
+    safeDiagnostic(
+      cleanup.ok
+        ? 'stage09a:check FAIL — aggregate control failed\n'
+        : 'stage09a:check FAIL — aggregate control failed and descendant cleanup was not confirmed\n'
+    )
+    ordinaryExitCode = 1
+  }
+  const settlement = await settleAggregateProcess(ordinaryExitCode)
+  return Object.freeze({
+    gate: stage09aGateResult(settlement),
+    requestedSignal: settlement.requestedSignal
+  })
+}
+
+export const stage09aInvocationSnapshot = () => aggregateInvocationCount
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const outcome = await runStage09aCheck(process.argv.slice(2))
+  if (outcome.requestedSignal === null) {
+    process.exitCode = outcome.gate.exitCode ?? 1
+  } else {
+    try {
+      nativeKill(process.pid, outcome.requestedSignal)
+      await new Promise(() => {})
+    } catch {
+      safeDiagnostic('stage09a:check FAIL — final signal rethrow failed\n')
+      process.exitCode = 1
+    }
+  }
 }

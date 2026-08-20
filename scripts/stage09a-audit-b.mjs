@@ -2,145 +2,73 @@ import { stage09aStepIds } from './stage09a-gate-registry.mjs'
 
 const canonicalSha = /^[0-9a-f]{40}$/
 const handledSignals = new Set(['SIGINT', 'SIGTERM', 'SIGHUP'])
+const gateReasons = new Set(['complete', 'gate-failed', 'gate-signaled'])
+const gateKeys = Object.freeze([
+  'completedSteps',
+  'exitCode',
+  'failedStep',
+  'reason',
+  'signal',
+  'status'
+])
 
-export const createStage09aTranscriptRecorder = () => {
-  let buffer = ''
-  let errorBuffer = ''
-  let discardingErrorLine = false
-  let framingInvalid = false
-  let finalPassCount = 0
-  let failedStep = null
-  const started = []
-  const passed = []
+const exactKeys = (value, keys) =>
+  value !== null &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort())
 
-  const consumeLine = (line) => {
-    const start = /^stage09a:check step ([1-9][0-9]*)\/([1-9][0-9]*): ([a-z0-9-]+) — /.exec(line)
-    if (start !== null) {
-      const index = Number(start[1]) - 1
-      if (
-        Number(start[2]) !== stage09aStepIds.length ||
-        index !== started.length ||
-        stage09aStepIds[index] !== start[3]
-      ) {
-        framingInvalid = true
-      } else {
-        started.push(start[3])
-      }
-      return
-    }
-    const pass = /^stage09a:check step ([1-9][0-9]*)\/([1-9][0-9]*) PASS \((?:0|[1-9][0-9]*)s\)$/.exec(line)
-    if (pass !== null) {
-      const index = Number(pass[1]) - 1
-      if (
-        Number(pass[2]) !== stage09aStepIds.length ||
-        index !== passed.length ||
-        started[index] !== stage09aStepIds[index]
-      ) {
-        framingInvalid = true
-      } else {
-        passed.push(stage09aStepIds[index])
-      }
-      return
-    }
-    if (line === `stage09a:check PASS (${String(stage09aStepIds.length)}/${String(stage09aStepIds.length)} steps)`) {
-      finalPassCount += 1
-    }
+const completedPrefixIsValid = (completedSteps) =>
+  Array.isArray(completedSteps) &&
+  completedSteps.length <= stage09aStepIds.length &&
+  completedSteps.every((id, index) => id === stage09aStepIds[index])
+
+export const validateStage09aGateResult = (gate) => {
+  if (!exactKeys(gate, gateKeys)) return false
+  if (gate.status !== 'pass' && gate.status !== 'fail') return false
+  if (!gateReasons.has(gate.reason)) return false
+  if (
+    gate.exitCode !== null &&
+    (!Number.isSafeInteger(gate.exitCode) || gate.exitCode < 0 || gate.exitCode > 255)
+  ) return false
+  if (gate.signal !== null && !handledSignals.has(gate.signal)) return false
+  if (!completedPrefixIsValid(gate.completedSteps)) return false
+  if (gate.failedStep !== null && !stage09aStepIds.includes(gate.failedStep)) return false
+
+  if (gate.status === 'pass') {
+    return (
+      gate.reason === 'complete' &&
+      gate.exitCode === 0 &&
+      gate.signal === null &&
+      gate.completedSteps.length === stage09aStepIds.length &&
+      gate.failedStep === null
+    )
   }
-
-  const consumeErrorLine = (line) => {
-    const failure = /^stage09a:check FAIL at step ([a-z0-9-]+) \(/.exec(line)
-    if (failure === null) return
-    if (!stage09aStepIds.includes(failure[1]) || failedStep !== null) {
-      framingInvalid = true
-    } else {
-      failedStep = failure[1]
-    }
+  if (gate.reason === 'gate-signaled') {
+    return gate.exitCode === null && handledSignals.has(gate.signal)
   }
-
-  return Object.freeze({
-    accept(chunk) {
-      if (!Buffer.isBuffer(chunk) && typeof chunk !== 'string') {
-        framingInvalid = true
-        return
-      }
-      buffer += chunk.toString('utf8')
-      if (Buffer.byteLength(buffer) > 65_536) {
-        framingInvalid = true
-        buffer = ''
-        return
-      }
-      while (true) {
-        const newline = buffer.indexOf('\n')
-        if (newline === -1) break
-        const line = buffer.slice(0, newline)
-        buffer = buffer.slice(newline + 1)
-        if (line.includes('\r')) framingInvalid = true
-        consumeLine(line)
-      }
-    },
-    acceptError(chunk) {
-      if (!Buffer.isBuffer(chunk) && typeof chunk !== 'string') {
-        framingInvalid = true
-        return
-      }
-      errorBuffer += chunk.toString('utf8')
-      while (true) {
-        const newline = errorBuffer.indexOf('\n')
-        if (newline === -1) break
-        const line = errorBuffer.slice(0, newline)
-        errorBuffer = errorBuffer.slice(newline + 1)
-        if (discardingErrorLine) {
-          discardingErrorLine = false
-          continue
-        }
-        if (line.includes('\r')) framingInvalid = true
-        consumeErrorLine(line)
-      }
-      if (Buffer.byteLength(errorBuffer) > 65_536) {
-        errorBuffer = ''
-        discardingErrorLine = true
-      }
-    },
-    finish({ code, signal, timedOut = false, spawnFailed = false }) {
-      if (buffer.length > 0) {
-        if (buffer.includes('\r')) framingInvalid = true
-        consumeLine(buffer)
-        buffer = ''
-      }
-      if (!discardingErrorLine && errorBuffer.length > 0) {
-        if (errorBuffer.includes('\r')) framingInvalid = true
-        consumeErrorLine(errorBuffer)
-      }
-      errorBuffer = ''
-      discardingErrorLine = false
-      const canonicalSignal = handledSignals.has(signal) ? signal : null
-      const complete =
-        code === 0 &&
-        signal === null &&
-        !timedOut &&
-        !spawnFailed &&
-        !framingInvalid &&
-        started.length === stage09aStepIds.length &&
-        passed.length === stage09aStepIds.length &&
-        finalPassCount === 1 &&
-        failedStep === null
-      let reason = 'gate-failed'
-      if (complete) reason = 'complete'
-      else if (spawnFailed) reason = 'gate-spawn-failed'
-      else if (timedOut) reason = 'gate-timeout'
-      else if (signal !== null) reason = 'gate-signaled'
-      else if (framingInvalid || code === 0) reason = 'gate-output-invalid'
-      return Object.freeze({
-        status: complete ? 'pass' : 'fail',
-        reason,
-        exitCode: Number.isSafeInteger(code) && code >= 0 && code <= 255 ? code : null,
-        signal: canonicalSignal,
-        completedSteps: Object.freeze([...passed]),
-        failedStep
-      })
-    }
-  })
+  if (gate.reason !== 'gate-failed' || gate.signal !== null || gate.exitCode === 0) {
+    return false
+  }
+  if (gate.failedStep === null) return true
+  return gate.failedStep === stage09aStepIds[gate.completedSteps.length]
 }
+
+const fixedInvalidGate = Object.freeze({
+  exitCode: null,
+  signal: null,
+  completedSteps: Object.freeze([]),
+  failedStep: null
+})
+
+const sanitizedGate = (gate) => validateStage09aGateResult(gate)
+  ? Object.freeze({
+      exitCode: gate.exitCode,
+      signal: gate.signal,
+      completedSteps: Object.freeze([...gate.completedSteps]),
+      failedStep: gate.failedStep
+    })
+  : fixedInvalidGate
 
 export const createStage09aAuditBReport = ({
   expectedCandidateHead,
@@ -151,11 +79,11 @@ export const createStage09aAuditBReport = ({
   worktreeCleanBefore,
   worktreeCleanAfter,
   invocationCount,
-  retries,
+  retryCount,
   requestedSignal,
   gate
 }) => {
-  const inputValid =
+  const scalarInputValid =
     canonicalSha.test(expectedCandidateHead) &&
     (candidateHeadBefore === null || canonicalSha.test(candidateHeadBefore)) &&
     (candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)) &&
@@ -163,54 +91,56 @@ export const createStage09aAuditBReport = ({
     /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(actualNodeVersion) &&
     typeof worktreeCleanBefore === 'boolean' &&
     typeof worktreeCleanAfter === 'boolean' &&
-    Number.isSafeInteger(invocationCount) && invocationCount >= 0 && invocationCount <= 1 &&
-    Number.isSafeInteger(retries) && retries === Math.max(0, invocationCount - 1) &&
-    (requestedSignal === null || handledSignals.has(requestedSignal)) &&
-    gate !== null && typeof gate === 'object'
-  if (!inputValid) {
-    throw new TypeError('audit B report input was invalid')
-  }
-  const worktreeClean = worktreeCleanBefore && worktreeCleanAfter
+    Number.isSafeInteger(invocationCount) && invocationCount >= 0 &&
+    Number.isSafeInteger(retryCount) && retryCount >= 0 &&
+    (requestedSignal === null || handledSignals.has(requestedSignal))
+  const gateValid = validateStage09aGateResult(gate)
+  const worktreeClean = worktreeCleanBefore === true && worktreeCleanAfter === true
   const environmentOk =
+    scalarInputValid &&
     actualNodeVersion === requiredNodeVersion &&
     candidateHeadBefore === expectedCandidateHead &&
     candidateHeadAfter === expectedCandidateHead &&
     worktreeClean &&
     invocationCount === 1 &&
-    retries === 0 &&
+    retryCount === 0 &&
     requestedSignal === null
-  const passed = environmentOk && gate.status === 'pass'
-  let reason = gate.reason
-  if (actualNodeVersion !== requiredNodeVersion) reason = 'node-version-mismatch'
+
+  let reason = gateValid ? gate.reason : 'gate-output-invalid'
+  if (!scalarInputValid) reason = 'report-input-invalid'
+  else if (actualNodeVersion !== requiredNodeVersion) reason = 'node-version-mismatch'
   else if (candidateHeadBefore !== expectedCandidateHead) reason = 'candidate-head-mismatch'
   else if (!worktreeCleanBefore) reason = 'worktree-not-clean'
   else if (candidateHeadAfter !== expectedCandidateHead || !worktreeCleanAfter) {
     reason = 'repository-state-drift'
   } else if (requestedSignal !== null) reason = 'audit-signaled'
-  else if (invocationCount !== 1 || retries !== 0) reason = 'invocation-count-invalid'
+  else if (invocationCount !== 1 || retryCount !== 0) reason = 'invocation-count-invalid'
+
   return Object.freeze({
-    schemaVersion: 1,
+    schemaVersion: 2,
     evidenceKind: 'stage09a-audit-b-single-run',
-    candidateHead: expectedCandidateHead,
-    candidateHeadBefore,
-    candidateHeadAfter,
-    requiredNodeVersion,
-    actualNodeVersion,
+    candidateHead: canonicalSha.test(expectedCandidateHead) ? expectedCandidateHead : null,
+    candidateHeadBefore:
+      candidateHeadBefore === null || canonicalSha.test(candidateHeadBefore)
+        ? candidateHeadBefore
+        : null,
+    candidateHeadAfter:
+      candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)
+        ? candidateHeadAfter
+        : null,
+    requiredNodeVersion:
+      typeof requiredNodeVersion === 'string' ? requiredNodeVersion : null,
+    actualNodeVersion: typeof actualNodeVersion === 'string' ? actualNodeVersion : null,
     worktreeClean,
-    worktreeCleanBefore,
-    worktreeCleanAfter,
-    invocationCount,
-    retries,
-    requestedSignal,
+    worktreeCleanBefore: worktreeCleanBefore === true,
+    worktreeCleanAfter: worktreeCleanAfter === true,
+    invocationCount: Number.isSafeInteger(invocationCount) ? invocationCount : null,
+    retryCount: Number.isSafeInteger(retryCount) ? retryCount : null,
+    requestedSignal: handledSignals.has(requestedSignal) ? requestedSignal : null,
     aggregateStepCount: stage09aStepIds.length,
-    status: passed ? 'pass' : 'fail',
+    status: environmentOk && gateValid && gate.status === 'pass' ? 'pass' : 'fail',
     reason,
-    gate: Object.freeze({
-      exitCode: gate.exitCode,
-      signal: gate.signal,
-      completedSteps: Object.freeze([...gate.completedSteps]),
-      failedStep: gate.failedStep
-    }),
+    gate: sanitizedGate(gate),
     remoteCiVerified: false,
     verdict: 'evidence-only-not-acceptance'
   })

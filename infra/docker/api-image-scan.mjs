@@ -183,6 +183,9 @@ export const checkDockerfileText = (text, problem) => {
     if (/^STOPSIGNAL\b/i.test(line)) {
       problem('Dockerfile: STOPSIGNAL must be absent so Docker uses SIGTERM')
     }
+    if (/^ONBUILD\b/i.test(line)) {
+      problem('Dockerfile: ONBUILD instructions are not allowed in the runtime image')
+    }
     if (/^COPY\b/i.test(line) && /apps\/|packages\/ui/.test(line)) {
       problem('Dockerfile: COPY must not reference client workspaces')
     }
@@ -296,7 +299,8 @@ export const checkImageConfig = (imageConfig, problem, fatal) => {
   for (const [field, value] of [
     ['ExposedPorts', imageConfig.ExposedPorts],
     ['Volumes', imageConfig.Volumes],
-    ['Healthcheck', imageConfig.Healthcheck]
+    ['Healthcheck', imageConfig.Healthcheck],
+    ['OnBuild', imageConfig.OnBuild]
   ]) {
     if (value !== null && value !== undefined) {
       problem(`image config: ${field} must be absent`)

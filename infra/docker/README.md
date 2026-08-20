@@ -220,7 +220,7 @@ ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不
 | 命令 | 作用 |
 | --- | --- |
 | `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：BuildKit fork 前登记唯一 recovery tag；tag 只是 locator，只有 inspect 同时证明 canonical immutable image ID、不可猜 build claim 与唯一精确 tag 才产生 cleanup 权。metadata 与 iidfile 分角色交叉核对，后续 Config/history/save、两个 claimed scratch container 与 export 全部绑定 immutable ID。root 容器证明 `/app` root-owned 且不可写并导出 Docker daemon materialize 的最终 rootfs；第二个容器以真实 `10001:10001` + read-only + network-none 运行，证明 `/app`/`dist` 可遍历、两个固定入口可读。宿主用同一 `pnpm deploy --prod --legacy` 派生期望闭包并逐 payload 比对；Config、`/app` 结构、migrations、denylist 与 Secret containment 均 fail closed。`--keep-failure` 只说明保留 owned scene，不输出物理路径 |
-| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的真实变异反例套件**：1 个正向 baseline + **17 个 built + 2 个 static-only**。在原有 payload、`.bin`、symlink、history、Config、provenance 等反例外，新增入口 `0600` 与 `/app/dist` `0700` 两个真实构建，必须由 `10001:10001` access probe 以指定理由拒绝。每个 build 同样在 fork 前登记 per-case recovery tag，cleanup 仍只接受 immutable ID + claim + exact tag。Dockerfile 变异经 stdin 构建，不改写 tracked 文件；static-only 两项不构建 |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的真实变异反例套件**：1 个正向 baseline + **18 个 built + 2 个 static-only**。在原有 payload、`.bin`、symlink、history、Config、provenance、入口 `0600` 与 `/app/dist` `0700` 反例外，新增真实 `ONBUILD` 构建，必须同时由 Dockerfile 静态边界与 image Config `OnBuild` 缺席判据拒绝。每个 build 同样在 fork 前登记 per-case recovery tag，cleanup 仍只接受 immutable ID + claim + exact tag。Dockerfile 变异经 stdin 构建，不改写 tracked 文件；static-only 两项不构建 |
 
 共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
 期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
@@ -267,6 +267,14 @@ guard 不再用测试中的第二份手抄名单证明完整性：consumer 按�
 从 canonical tracked 生产模块反向发现，CLI 入口再与根 `stage09a:*` scripts 交叉核对；
 main guard、精确 owner chain 和 `node:process` exit import 同样由 AST/symbol 门禁判定。
 绝对 `--report` 路径继续被拒绝；它不是合法的审计调用方式。
+
+**M5.9 structured-core 协议（2026-08-20，覆盖 M5.8 wrapper/transcript 模型）**：
+`stage09a:check` 的唯一机器结果由进程内 `runStage09aCheck()` 返回；人类 stdout 只作展示。
+`stage09a:audit-b` 不再 spawn 第二个 aggregate、不解析 transcript、不复制进程组 owner，
+而是直接调用同一核心一次，并把实际调用计数与闭合 14-step gate schema 写入报告。exclusive
+发布是终端证据提交点；发布后无 await、子进程、PGID 或报告改写。生产 CLI 的审查范围由
+显式 `m5CliEntrypoints` manifest 与 `stage09a:*` scripts 交叉核对；同 EUID 的可信源码作者
+与运行期并发仓库改写不在本地敌手模型内，运行前后 canonical HEAD/clean 仍必须一致。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接

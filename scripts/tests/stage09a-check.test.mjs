@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
@@ -440,7 +441,7 @@ exit 98
 const spawnGate = ({ directory, bin }, mode, gateEntrypoint = entrypoint) => {
   const stdout = []
   const stderr = []
-  const child = spawn(process.execPath, [gateEntrypoint], {
+  const child = spawn(process.execPath, [realpathSync(gateEntrypoint)], {
     cwd: repositoryRoot,
     // 测试 runner 自己属于正式 stage08 链；不能再派生一个聚合器不可见的
     // detached 根。被测聚合器会为它自己的 step controller 建组并负责收敛。
@@ -961,7 +962,12 @@ const nativeKill = (pid, signal) => {
   try {
     gate = spawnGate(fixture, 'descendant', mutatedEntrypoint)
     const pidFile = resolve(fixture.directory, 'grandchild-pid')
-    await waitFor(() => existsSync(pidFile), 3_000, 'primitive-failure descendant')
+    try {
+      await waitFor(() => existsSync(pidFile), 3_000, 'primitive-failure descendant')
+    } catch (error) {
+      const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+      throw new Error(`${error.message}; child output: ${output}`)
+    }
     grandchildPid = Number(readFileSync(pidFile, 'utf8').trim())
     assert.equal(processIsAlive(grandchildPid), true)
     gate.child.kill('SIGTERM')
@@ -1079,8 +1085,8 @@ for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
         `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
       )
       .replace(
-        'const finalExitCode = await settleAggregateProcess(ordinaryExitCode)',
-        `process.kill(process.pid, ${JSON.stringify(signal)})\nconst finalExitCode = await settleAggregateProcess(ordinaryExitCode)`
+        'const settlement = await settleAggregateProcess(ordinaryExitCode)',
+        `process.kill(process.pid, ${JSON.stringify(signal)})\n  const settlement = await settleAggregateProcess(ordinaryExitCode)`
       )
     assert.notEqual(mutatedSource, originalSource)
     writeFileSync(mutatedEntrypoint, mutatedSource)

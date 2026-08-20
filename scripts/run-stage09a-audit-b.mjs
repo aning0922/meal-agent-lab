@@ -1,30 +1,29 @@
 #!/usr/bin/env node
-// M5 动态审计的唯一执行入口：固定 Node、单次完整链、零重试、结构化报告。
-// 它不作 CLEAN/Accepted 裁定；审计 B 只读检查源码并消费本命令的一份报告。
+// M5 动态审计的唯一执行入口。它与人类 CLI 直接复用同一个结构化聚合核心，
+// 不 spawn 第二个 aggregate、不解析人类 stdout，也不复制进程组所有权。
 
-import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { writeExclusiveEvidenceFile } from '../infra/docker/m5-evidence-protocol.mjs'
 import {
-  identityStillNamesFile,
-  writeExclusiveEvidenceFile
-} from '../infra/docker/m5-evidence-protocol.mjs'
-import { ambientGitRepositoryViewOverrides } from '../infra/docker/local-test-secrets-contract.mjs'
+  assertCanonicalGitRepositoryView,
+  canonicalGitArguments
+} from '../infra/docker/local-test-secrets-contract.mjs'
+import {
+  runStage09aCheck,
+  stage09aInvocationSnapshot
+} from './run-stage09a-check.mjs'
 import {
   createStage09aAuditBReport,
-  createStage09aTranscriptRecorder,
   serializeStage09aAuditBReport
 } from './stage09a-audit-b.mjs'
 
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const reportDirectory = resolve(repositoryRoot, '.local/audit-reports')
-const aggregateEntrypoint = resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs')
 const nativeKill = process.kill.bind(process)
-const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
-const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
-const nativeSetImmediate = globalThis.setImmediate.bind(globalThis)
 const nativeWrite = (fd, value) => {
   try {
     const bytes = Buffer.isBuffer(value) ? value : Buffer.from(String(value), 'utf8')
@@ -65,218 +64,86 @@ export const parseStage09aAuditBArguments = (argv) => {
 }
 
 const readRepositoryState = () => {
-  const head = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+  try {
+    assertCanonicalGitRepositoryView(repositoryRoot, process.env)
+  } catch {
+    return { candidateHead: null, worktreeClean: false }
+  }
+  const head = spawnSync('git', canonicalGitArguments(['rev-parse', '--verify', 'HEAD']), {
     cwd: repositoryRoot,
     encoding: 'utf8',
     timeout: 10_000,
     maxBuffer: 64 * 1024
   })
-  const status = spawnSync('git', ['status', '--short'], {
+  const status = spawnSync('git', canonicalGitArguments(['status', '--short']), {
     cwd: repositoryRoot,
     encoding: 'utf8',
     timeout: 10_000,
     maxBuffer: 1024 * 1024
   })
-  const candidateHead = head.status === 0 && /^[0-9a-f]{40}\n?$/.test(head.stdout)
-    ? head.stdout.trim()
-    : null
+  const candidateHead =
+    head.status === 0 && /^[0-9a-f]{40}\n?$/.test(head.stdout)
+      ? head.stdout.trim()
+      : null
   const worktreeClean = status.status === 0 && status.stdout === ''
   return { candidateHead, worktreeClean }
 }
 
-const eventLoopTurn = () => new Promise((resolveTurn) => nativeSetImmediate(resolveTurn))
-
-export const createStage09aAuditBSignalController = ({
-  processObject = process,
-  deliverToChild = (child, signal) => child.kill(signal),
-  forceChildExit = (child) => nativeKill(child.pid, 'SIGKILL')
-} = {}) => {
-  let installed = false
-  let child = null
-  let requestedSignal = null
-  let deliveryFailed = false
-  const handlers = new Map()
-  const deliver = () => {
-    if (child === null || requestedSignal === null) return
-    try {
-      if (deliverToChild(child, requestedSignal) !== true) deliveryFailed = true
-    } catch {
-      deliveryFailed = true
-    }
-    if (deliveryFailed) {
-      try { forceChildExit(child) } catch {}
-    }
-  }
-  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-    handlers.set(signal, () => {
-      if (requestedSignal !== null) return
-      requestedSignal = signal
-      deliver()
-    })
-  }
-  return Object.freeze({
-    install() {
-      if (installed) return
-      installed = true
-      for (const [signal, handler] of handlers) processObject.on(signal, handler)
-    },
-    attach(nextChild) {
-      child = nextChild
-      deliver()
-    },
-    detach(expectedChild) {
-      if (child === expectedChild) child = null
-    },
-    remove() {
-      if (!installed) return
-      for (const [signal, handler] of handlers) processObject.removeListener(signal, handler)
-      installed = false
-    },
-    async checkpoint() {
-      await eventLoopTurn()
-      await eventLoopTurn()
-    },
-    snapshot() {
-      return Object.freeze({ requestedSignal, deliveryFailed })
-    }
-  })
-}
-
-const runAggregateOnce = (signalController) => new Promise((resolveRun) => {
-  const recorder = createStage09aTranscriptRecorder()
-  let child = null
-  let closed = false
-  let timedOut = false
-  let spawnFailed = false
-  let timeoutTimer = null
-  let killTimer = null
-  const finish = (code, signal) => {
-    if (closed) return
-    closed = true
-    if (timeoutTimer !== null) nativeClearTimeout(timeoutTimer)
-    if (killTimer !== null) nativeClearTimeout(killTimer)
-    signalController.detach(child)
-    resolveRun({
-      gate: recorder.finish({ code, signal, timedOut, spawnFailed })
-    })
-  }
-  try {
-    child = spawn(process.execPath, [aggregateEntrypoint], {
-      cwd: repositoryRoot,
-      env: process.env,
-      stdio: ['inherit', 'pipe', 'pipe']
-    })
-  } catch {
-    spawnFailed = true
-    finish(null, null)
-    return
-  }
-  child.stdout.on('data', (chunk) => {
-    recorder.accept(chunk)
-    nativeWrite(1, chunk)
-  })
-  child.stderr.on('data', (chunk) => {
-    recorder.acceptError(chunk)
-    nativeWrite(2, chunk)
-  })
-  child.once('error', () => {
-    spawnFailed = true
-  })
-  child.once('close', finish)
-  signalController.attach(child)
-  // 宽于 14 个子门禁各自上限的审计外层硬界；只启动一次聚合链，不做 retry。
-  timeoutTimer = nativeSetTimeout(() => {
-    timedOut = true
-    try { child.kill('SIGTERM') } catch {}
-    killTimer = nativeSetTimeout(() => {
-      try { child.kill('SIGKILL') } catch {}
-    }, 330_000)
-  }, 21_600_000)
+const gateNotStarted = Object.freeze({
+  status: 'fail',
+  reason: 'gate-failed',
+  exitCode: 1,
+  signal: null,
+  completedSteps: Object.freeze([]),
+  failedStep: null
 })
 
 export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
-  const signalController = createStage09aAuditBSignalController()
-  signalController.install()
-  let publishedIdentity = null
-  let reportPath = null
-  let reportPublished = false
-  const removePublishedReport = () => {
-    if (
-      publishedIdentity !== null &&
-      identityStillNamesFile(publishedIdentity)
-    ) {
-      try {
-        unlinkSync(publishedIdentity.path)
-        return true
-      } catch {}
-    }
-    return false
-  }
-  const settle = async (exitCode) => {
-    await signalController.checkpoint()
-    const { requestedSignal, deliveryFailed } = signalController.snapshot()
-    signalController.remove()
-    if (requestedSignal === null) return deliveryFailed ? 1 : exitCode
-    if (deliveryFailed) return 1
-    try {
-      nativeKill(process.pid, requestedSignal)
-      await new Promise(() => {})
-    } catch {
-      fixedDiagnostic('final signal rethrow failed')
-      return 1
-    }
-  }
   const parsed = parseStage09aAuditBArguments(argv)
   if (parsed === null) {
     fixedDiagnostic(
       'usage: pnpm stage09a:audit-b -- --expected-head <40-hex-sha>' +
       ' [--report m5-<label>-b.json]'
     )
-    return settle(1)
+    return Object.freeze({ exitCode: 1, requestedSignal: null })
   }
-  let requiredNodeVersion
+
+  let requiredNodeVersion = null
   try {
     requiredNodeVersion = readFileSync(resolve(repositoryRoot, '.node-version'), 'utf8').trim()
   } catch {
     fixedDiagnostic('required Node version could not be read')
-    return settle(1)
-  }
-  if (ambientGitRepositoryViewOverrides(process.env).length > 0) {
-    fixedDiagnostic('ambient Git repository view override is not permitted')
-    return settle(1)
-  }
-  const repositoryBefore = readRepositoryState()
-  if (
-    repositoryBefore.candidateHead === null ||
-    repositoryBefore.candidateHead !== parsed.expectedCandidateHead
-  ) {
-    fixedDiagnostic('candidate HEAD did not match the expected immutable commit')
-    return settle(1)
   }
   const reportName = parsed.reportName ??
     `m5-${parsed.expectedCandidateHead.slice(0, 12)}-b.json`
-  reportPath = resolve(reportDirectory, reportName)
+  const reportPath = resolve(reportDirectory, reportName)
   if (existsSync(reportPath)) {
     fixedDiagnostic('the single-run report already exists')
-    return settle(1)
+    return Object.freeze({ exitCode: 1, requestedSignal: null })
   }
-  await signalController.checkpoint()
-  let invocationCount = 0
-  let gate = Object.freeze({
-    status: 'fail', reason: 'gate-not-started', exitCode: null, signal: null,
-    completedSteps: Object.freeze([]), failedStep: null
-  })
-  if (
+
+  const repositoryBefore = readRepositoryState()
+  const invocationCountBefore = stage09aInvocationSnapshot()
+  let gate = gateNotStarted
+  let requestedSignal = null
+  const canRun =
+    requiredNodeVersion !== null &&
     process.versions.node === requiredNodeVersion &&
-    repositoryBefore.worktreeClean &&
-    signalController.snapshot().requestedSignal === null
-  ) {
-    invocationCount += 1
-    ;({ gate } = await runAggregateOnce(signalController))
+    repositoryBefore.candidateHead === parsed.expectedCandidateHead &&
+    repositoryBefore.worktreeClean
+  if (canRun) {
+    try {
+      const outcome = await runStage09aCheck([])
+      gate = outcome.gate
+      requestedSignal = outcome.requestedSignal
+    } catch {
+      gate = gateNotStarted
+    }
   }
-  await signalController.checkpoint()
+  const invocationCount = stage09aInvocationSnapshot() - invocationCountBefore
   const repositoryAfter = readRepositoryState()
-  const makeReport = () => createStage09aAuditBReport({
+  const retryCount = Math.max(0, invocationCount - 1)
+  const report = createStage09aAuditBReport({
     expectedCandidateHead: parsed.expectedCandidateHead,
     candidateHeadBefore: repositoryBefore.candidateHead,
     candidateHeadAfter: repositoryAfter.candidateHead,
@@ -285,45 +152,36 @@ export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
     worktreeCleanBefore: repositoryBefore.worktreeClean,
     worktreeCleanAfter: repositoryAfter.worktreeClean,
     invocationCount,
-    retries: Math.max(0, invocationCount - 1),
-    requestedSignal: signalController.snapshot().requestedSignal,
+    retryCount,
+    requestedSignal,
     gate
   })
-  let report = makeReport()
+
   try {
     mkdirSync(reportDirectory, { recursive: true, mode: 0o700 })
-    publishedIdentity = writeExclusiveEvidenceFile(
-      reportPath,
-      serializeStage09aAuditBReport(report)
-    )
-    reportPublished = true
+    writeExclusiveEvidenceFile(reportPath, serializeStage09aAuditBReport(report))
   } catch {
     fixedDiagnostic('the structured report could not be published')
-    return settle(1)
-  }
-  await signalController.checkpoint()
-  if (report.status === 'pass' && signalController.snapshot().requestedSignal !== null) {
-    if (!removePublishedReport()) {
-      fixedDiagnostic('the interrupted report could not be retired')
-      return settle(1)
-    }
-    reportPublished = false
-    report = makeReport()
-    try {
-      publishedIdentity = writeExclusiveEvidenceFile(
-        reportPath,
-        serializeStage09aAuditBReport(report)
-      )
-      reportPublished = true
-    } catch {
-      fixedDiagnostic('the interrupted report could not be published')
-      return settle(1)
-    }
+    return Object.freeze({ exitCode: 1, requestedSignal: null })
   }
   nativeWrite(1, `stage09a:audit-b report: .local/audit-reports/${reportName}\n`)
-  return settle(reportPublished && report.status === 'pass' ? 0 : 1)
+  return Object.freeze({
+    exitCode: report.status === 'pass' ? 0 : 1,
+    requestedSignal
+  })
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  process.exitCode = await runStage09aAuditB()
+  const outcome = await runStage09aAuditB()
+  if (outcome.requestedSignal === null) {
+    process.exitCode = outcome.exitCode
+  } else {
+    try {
+      nativeKill(process.pid, outcome.requestedSignal)
+      await new Promise(() => {})
+    } catch {
+      fixedDiagnostic('final signal rethrow failed')
+      process.exitCode = 1
+    }
+  }
 }

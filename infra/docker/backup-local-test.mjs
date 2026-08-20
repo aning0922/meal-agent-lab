@@ -378,9 +378,6 @@ const backupTargetEvidenceStillNamesAncestor = (evidence) => {
  * 及 SHA-256。
  */
 /** Production handoff boundary: declare the exact output before docker cp forks. */
-export const runBackupCopyWithDeclaredOutput = (journal, target, operation) =>
-  runWithDeclaredOwnedTreeOutputs(journal, [target], operation)
-
 export const performBackup = async (
   {
     compose,
@@ -561,9 +558,9 @@ export const performBackup = async (
             throw new Error('backup source digest evidence failed')
           }
           let copied = null
-          copied = await runBackupCopyWithDeclaredOutput(
+          copied = await runWithDeclaredOwnedTreeOutputs(
             privatePartialJournal,
-            hostPartial,
+            [hostPartial],
             () => run(['docker', 'cp', `${id}:/transfer/${name}`, hostPartial], {
               timeoutMs: 300_000
             })

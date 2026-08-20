@@ -5,22 +5,8 @@
  */
 export const m5ProductionGuards = Object.freeze([
   Object.freeze({
-    id: 'backup-pre-fork-declaration',
-    source: 'infra/docker/backup-local-test.mjs#runBackupCopyWithDeclaredOutput',
-    consumers: Object.freeze([
-      Object.freeze({
-        path: 'infra/docker/backup-local-test.mjs',
-        callee: Object.freeze({
-          path: 'infra/docker/backup-local-test.mjs',
-          name: 'runBackupCopyWithDeclaredOutput'
-        }),
-        placement: Object.freeze({
-          kind: 'function-path-direct',
-          path: Object.freeze(['beforeRemove', 'performBackup'])
-        }),
-        count: 1
-      })
-    ])
+    id: 'backup-pre-fork-runtime',
+    source: 'infra/docker/backup-local-test.mjs#performBackup'
   }),
   Object.freeze({
     id: 'publication-link-count',
@@ -32,39 +18,11 @@ export const m5ProductionGuards = Object.freeze([
   }),
   Object.freeze({
     id: 'cleanup-signal-delivery-barrier',
-    source: 'infra/docker/m3b-subprocess.mjs#runSignalSettledCli',
-    consumers: Object.freeze([
-      ...[
-        'infra/docker/backup-local-test.mjs',
-        'infra/docker/restore-local-test.mjs',
-        'infra/docker/run-local-test-smoke.mjs',
-        'infra/docker/run-local-test-lifecycle.mjs',
-        'infra/docker/run-local-test-restore-drill.mjs'
-      ].map((path) => Object.freeze({
-        path,
-        callee: Object.freeze({
-          path: 'infra/docker/m3b-subprocess.mjs',
-          name: 'runSignalSettledCli'
-        }),
-        placement: Object.freeze({ kind: 'main-guard-direct' }),
-        count: 1
-      }))
-    ])
+    source: 'infra/docker/m3b-subprocess.mjs#runSignalSettledCli'
   }),
   Object.freeze({
-    id: 'aggregate-final-signal-delivery',
-    source: 'scripts/run-stage09a-check.mjs#settleAggregateProcess',
-    consumers: Object.freeze([
-      Object.freeze({
-        path: 'scripts/run-stage09a-check.mjs',
-        callee: Object.freeze({
-          path: 'scripts/run-stage09a-check.mjs',
-          name: 'settleAggregateProcess'
-        }),
-        placement: Object.freeze({ kind: 'source-direct', binding: 'finalExitCode' }),
-        count: 1
-      })
-    ])
+    id: 'structured-stage09a-core',
+    source: 'scripts/run-stage09a-check.mjs#runStage09aCheck'
   }),
   Object.freeze({
     id: 'runtime-image-claim',
@@ -112,15 +70,27 @@ export const m5ProductionGuards = Object.freeze([
 // 获得 `process.exit` 能力都会绕过 cleanup-before-settlement。名单本身是提交数据；
 // mutation suite 另从目标声明的生产引用与 `stage09a:*` package scripts 反向发现入口，
 // 再与本表核对，防止“新入口和测试期望同时忘记登记”。
-export const m5ProtectedEntrypoints = Object.freeze([
-  'infra/docker/backup-local-test.mjs',
-  'infra/docker/restore-local-test.mjs',
-  'infra/docker/run-local-test-smoke.mjs',
-  'infra/docker/run-local-test-lifecycle.mjs',
-  'infra/docker/run-local-test-restore-drill.mjs',
-  'scripts/run-stage09a-check.mjs',
-  'scripts/run-stage09a-audit-b.mjs'
+export const m5CliEntrypoints = Object.freeze([
+  ...[
+    'infra/docker/backup-local-test.mjs',
+    'infra/docker/restore-local-test.mjs',
+    'infra/docker/run-local-test-smoke.mjs',
+    'infra/docker/run-local-test-lifecycle.mjs',
+    'infra/docker/run-local-test-restore-drill.mjs'
+  ].map((path) => Object.freeze({ path, settlement: 'signal-settled-cli' })),
+  Object.freeze({
+    path: 'scripts/run-stage09a-check.mjs',
+    settlement: 'structured-stage09a-core'
+  }),
+  Object.freeze({
+    path: 'scripts/run-stage09a-audit-b.mjs',
+    settlement: 'structured-stage09a-audit'
+  })
 ])
+
+export const m5ProtectedEntrypoints = Object.freeze(
+  m5CliEntrypoints.map(({ path }) => path)
+)
 
 // 共享库不是 CLI entrypoint，但同样不得取得能绕过调用方 settlement 的退出能力。
 export const m5ProtectedModules = Object.freeze([
