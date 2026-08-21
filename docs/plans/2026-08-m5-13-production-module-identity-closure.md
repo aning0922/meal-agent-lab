@@ -3,7 +3,8 @@
 - 日期：2026-08-21
 - 实施基线：`22b30eab074eea3d9d6ee0810f3c5e405fff0111`
 - 代码与回归落点：`fe0cd1002a3ec365c134c95566d27e0de71c8812`
-- 状态：Implementation complete — narrow gates PASS, committed-candidate full gate pending；M5 未 Accepted；阶段 09A 未 Pass
+- 提交态门禁落点：`36265e643a8da90b77f5965afb8f37fedd02389c`
+- 状态：Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；阶段 09A 未 Pass
 - 范围：M5 production module surface 的 `ImportExpression` 参数文法、模块身份闭包与 `node:process` 能力重获
 
 ## 1. 审计输入与总控裁定
@@ -70,8 +71,15 @@ import，必须先登记精确消费者、模块身份协议与反例，再修�
 
 ## 5. 状态纪律
 
-代码与窄门禁完成不等于最终候选证据。本轮文档提交后必须从步骤 1 串行重跑
-`pnpm stage09a:check` 14/14、Markdown links、`git diff --check` 与 scoped 零残留；只有该
-提交态全链通过后才能把状态改为 committed-candidate gate PASS。随后仍需两个全新、独立、
-用户可见的 A/B 审计任务；任一路确认 P0/P1 都继续 BLOCK。不得自行标记 M5 Accepted、
-09A Pass 或远端 CI PASS，不 push、不 merge、不创建 PR。
+代码与窄门禁完成不等于最终候选证据。第一次提交态全链在第 9/14 步按设计 fail closed：
+新增本任务书使 tracked-file baseline 从 370 变为 371，而登记表仍钉在旧值；后五步均正确
+跳过，没有把该次运行记作通过。机械同步 committed baseline 并追加 `36265e6` 后，固定
+Node.js `v24.18.0` 从步骤 1 串行执行 `pnpm stage09a:check`，最终 **14/14 PASS**：scripts
+tests 211/211、Compose mutations 45/45、runtime image 1 baseline + 18 built + 2 static-only、
+local-test 75/75、targeted 69/69、signal 5 deterministic + 6 real、fresh smoke、八份 Secret
+identity、lifecycle 与 restore 均通过；Markdown links 为 77 files / 314 links。本轮 scoped
+container/network/volume/image tag/override/process 均为 0；两个更早轮次遗留的仓库外审计
+临时目录不属于本轮，保持未动。
+
+随后仍需两个全新、独立、用户可见的 A/B 审计任务；任一路确认 P0/P1 都继续 BLOCK。
+不得自行标记 M5 Accepted、09A Pass 或远端 CI PASS，不 push、不 merge、不创建 PR。

@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.13 production module identity 闭包整改（2026-08-21，覆盖下方历史轮次）**：M5.12 候选 `22b30ea` 的 A/B 都被平台 safeguard 以 `systemError` 终止，均无正式最终报告；但两路独立任务在终止前分别用 Node.js `v24.18.0` 复现同一个双参数 dynamic import P1，因此总控将候选判为 BLOCK。总控按 [M5.13 任务书](plans/2026-08-m5-13-production-module-identity-closure.md)把 `ImportExpression` 收成单一 1—2 参数解析入口；production scripts/infra 不再允许 dynamic import，静态 import/re-export 也拒绝 query/hash/percent/file/data 等第二模块身份。production guard 为 **31/31**，全部 scripts tests 为 **211/211**。**M5.13 Implementation complete — narrow gates PASS, committed-candidate full gate pending；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**完整门禁只承认对应最终提交产生后的实测。
+**当前 M5.13 production module identity 闭包整改（2026-08-21，覆盖下方历史轮次）**：M5.12 候选 `22b30ea` 的 A/B 都被平台 safeguard 以 `systemError` 终止，均无正式最终报告；但两路独立任务在终止前分别用 Node.js `v24.18.0` 复现同一个双参数 dynamic import P1，因此总控将候选判为 BLOCK。总控按 [M5.13 任务书](plans/2026-08-m5-13-production-module-identity-closure.md)把 `ImportExpression` 收成单一 1—2 参数解析入口；production scripts/infra 不再允许 dynamic import，静态 import/re-export 也拒绝 query/hash/percent/file/data 等第二模块身份。production guard 为 **31/31**，全部 scripts tests 为 **211/211**；提交态候选 `36265e6` 已从步骤 1 串行通过 `stage09a:check` **14/14**，Markdown links 为 **77 files / 314 links**，本轮 scoped 资源零残留。**M5.13 Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 

@@ -79,8 +79,11 @@ worktree 与 Node.js `v24.18.0` 复现了双参数 dynamic import 绕过，总�
 完全禁止 dynamic import，静态 import/re-export 只接受普通 relative、bare-package 与
 `node:` specifier。两条 capability guard 共同消费唯一的 1—2 参数 ImportExpression
 parser，import options 仍完整遍历。代码与回归落点 `fe0cd10`；scripts tests 211/211、
-production guard 31/31。当前只记录 narrow gates PASS；提交态完整 14/14 尚待文档候选
-产生后从步骤 1 重跑。M5 未 Accepted，本 ADR 仍为 `Proposed`。
+production guard 31/31。提交态候选 `36265e6` 已从步骤 1 串行通过 `stage09a:check`
+14/14，Markdown links 77/314，本轮 scoped 资源零残留；第一次运行在 tracked-file baseline
+370→371 漂移处 fail closed 并跳过后五步，机械同步后才取得上述完整证据。M5.13 当前为
+Implementation complete — committed-candidate gate PASS, pending independent A/B review；
+M5 未 Accepted，本 ADR 仍为 `Proposed`。
 
 ## 背景
 

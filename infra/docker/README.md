@@ -312,6 +312,9 @@ dynamic import；唯一 ImportExpression parser 接受 Node 24 的 1—2 参数�
 bare-package 与 `node:` specifier；query/hash/percent/file/data、绝对路径、backslash 与
 空白/format 字符固定拒绝且不回显说明符。双参数 protected module、双参数
 `node:process`、import options capability 与五类第二模块身份均有独立 mutation 回归。
+提交态候选 `36265e6` 已从步骤 1 串行通过 `pnpm stage09a:check` 14/14；scripts tests
+211/211、Markdown links 77/314，fresh smoke、八份 Secret identity、lifecycle、restore 与
+本轮 scoped cleanup 全绿。下一门禁为两个全新独立 A/B 审计；M5 未 Accepted。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
