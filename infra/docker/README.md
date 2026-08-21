@@ -316,6 +316,16 @@ bare-package 与 `node:` specifier；query/hash/percent/file/data、绝对路径
 211/211、Markdown links 77/314，fresh smoke、八份 Secret identity、lifecycle、restore 与
 本轮 scoped cleanup 全绿。下一门禁为两个全新独立 A/B 审计；M5 未 Accepted。
 
+**M5.14 synchronous-module-loader 协议（2026-08-21，覆盖 M5.13 的 import-only
+闭包）**：production surface 没有合法同步 loader consumer，因此按 TypeScript 声明身份
+拒绝 Node module namespace、`createRequire` 与 `process.getBuiltinModule`，不再追踪载入
+后的 alias/holder/reflection；同名本地声明保持允许。static/dynamic/re-export identity 文法
+的 empty、query、fragment、percent、backslash、White_Space、Cf、absolute path 与
+non-`node:` scheme 九条规则各有独立 mutation witness。代码落点 `2ab43dc`；production
+guard 34/34、全部 scripts tests 214/214。当前 committed-candidate 完整 14 步门禁仍待
+新增任务书后的 baseline 机械同步与从头实测；M5 未 Accepted、09A 未 Pass、远端 CI 无
+真实 run。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

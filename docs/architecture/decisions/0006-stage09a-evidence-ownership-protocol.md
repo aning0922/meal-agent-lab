@@ -85,6 +85,16 @@ production guard 31/31。提交态候选 `36265e6` 已从步骤 1 串行通过 `
 Implementation complete — committed-candidate gate PASS, pending independent A/B review；
 M5 未 Accepted，本 ADR 仍为 `Proposed`。
 
+实施注记（2026-08-21，M5.14，覆盖上一段当前状态）：M5.13 候选 `e78c5b7` 的
+审计 A 确认 `createRequire()`/`process.getBuiltinModule` 在 import 闭包之外重建同步
+module-loader 根能力，并确认 identity grammar 的部分生产分支删除后 mutation 回归仍绿；
+审计 B 因独立 worktree 缺依赖而为 INVALID，不能作为 CLEAN。M5.14 不再跟踪 loader
+产物的数据流，改为在 production acquisition root 按 TypeScript 的 Node 声明身份拒绝
+module namespace、`createRequire` 与 `getBuiltinModule`；本地同名声明保持允许。九条
+identity rule 各有独立 mutation witness。代码与回归落点 `2ab43dc`，scripts tests
+214/214、production guard 34/34。当前为 Implementation complete — narrow gate PASS,
+committed-candidate gate pending；M5 未 Accepted，本 ADR 保持 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过
