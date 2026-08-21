@@ -137,7 +137,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | generated adapter 只读门禁 | 4/4 逐字节一致 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
-| Markdown links | 75 files / 311 local links（M5.12 staged candidate 反馈；最终 PASS 只认提交后实测） |
+| Markdown links | 76 files / 311 local links（M5.12 committed candidate 实测） |
 | Compose 拓扑静态门禁 | PASS（14 服务 / 8 host Secret source / 10 named volume / 2 网络） |
 | Compose 拓扑变异反向测试 | 当前 45/45 以指定理由捕获，0 漏网；历史 15/15、39/39、44/44 仅代表更早拓扑 |
 

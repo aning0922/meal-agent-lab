@@ -70,7 +70,7 @@ dynamic import、非静态 specifier、递归 production surface 与四类 proce
 - Audit-B/schema/receipt：16/16；
 - production guard mutation：28/28；
 - scripts tests：208/208；
-- Markdown links：75 files / 311 local links（staged feedback）；
+- Markdown links：76 files / 311 local links（任务书进入 Git 后的 committed candidate 实测）；
 - `node --check` 与 `git diff --check`：通过。
 
 完整 `pnpm stage09a:check`、Markdown links、最终提交态 Git clean 与零残留只承认最终文档
