@@ -276,6 +276,15 @@ main guard、精确 owner chain 和 `node:process` exit import 同样由 AST/sym
 显式 `m5CliEntrypoints` manifest 与 `stage09a:*` scripts 交叉核对；同 EUID 的可信源码作者
 与运行期并发仓库改写不在本地敌手模型内，运行前后 canonical HEAD/clean 仍必须一致。
 
+**M5.10 opaque-receipt/consumer-closure 协议（2026-08-21，覆盖 M5.9 的字段接线）**：
+Audit-B 不再读取 `outcome.gate` 或 invocation snapshot；`runStage09aCheckForAudit()` 在
+共享核心模块内部签发 opaque receipt，report schema v3 只经 receipt projector 取得同一次
+gate/signal/调用会计。`runWithDeclaredOwnedTreeOutputs`、`runSignalSettledCli`、核心、
+receipt/projector/report builder 的实际生产消费者按 TypeScript declaration identity 与
+registry 精确闭合；新增调用点必须显式评审。失败报告、发布通知和 Markdown/Git 失败只
+输出固定类别，不回显 scalar、report basename、stderr 或异常文本。完整 14 步证据只接受
+最终候选提交后的单次串行运行；提交前工作树 PASS 不能作为候选证据。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

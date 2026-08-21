@@ -37,6 +37,16 @@ Node.js `v24.18.0` 的 scripts tests 为 188/188，同一工作树已从步骤 1
 `stage09a:check` 14/14。M5.9 当前为 Implementation complete — pending independent
 A/B review；M5 未 Accepted，本 ADR 仍为 `Proposed`。
 
+实施注记（2026-08-21，M5.10，覆盖上一段当前状态）：M5.9 候选 `36987d8` 的审计 A
+为有效 BLOCK，审计 B 因平台 safeguard 中断且无最终报告，只记 INVALID。M5.10 不再
+让 Audit-B 重新组装 gate 与调用会计：共享核心以模块私有 ledger 签发 opaque receipt，
+报告只经 receipt projector 消费同一次结果；关键声明的全部 tracked 生产消费者按
+declaration identity 反向闭合。backup mutation 直接删除真实 pre-fork 调用点并要求固定
+失败理由；schema v3 拒绝矛盾 settlement，非法 scalar、报告 basename/path 和 Git stderr
+不再回显。scripts tests 为 196/196。完整门禁只承认最终候选提交后的实测；M5.10 当前为
+Implementation complete — pending independent A/B review，M5 未 Accepted，本 ADR 仍为
+`Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

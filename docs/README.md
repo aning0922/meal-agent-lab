@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.9 结构化阶段门禁核心与显式命令面整改（2026-08-20，覆盖下方历史轮次）**：M5.8 候选 `e986b28` 的两路独立审计均为 BLOCK。总控按 [M5.9 任务书](plans/2026-08-m5-9-structured-stage-gate-core.md)删除 Audit-B 的 child aggregate/transcript parser，让人类 CLI 与动态审计直接复用同一个进程内 14 步结构化核心；报告只接受闭合 gate schema 与真实 invocation/retry；命令面由显式评审 manifest 定义，canonical Git before/after 继续保留。固定 Node.js `v24.18.0` 的 scripts tests 为 **188/188**，同一工作树已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**。**M5.9 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.10 receipt/能力面/安全诊断闭合（2026-08-21，覆盖下方历史轮次）**：M5.9 候选 `36987d8` 的审计 A 为有效 BLOCK（7 P1、1 P2），审计 B 因平台 safeguard 中断且没有最终报告，只记 INVALID。总控按 [M5.10 任务书](plans/2026-08-m5-10-receipt-and-capability-closure.md)让共享核心签发 opaque receipt，Audit-B 不再接触可替换 gate/计数字段；关键声明的所有生产消费者按 declaration identity 反向闭合；backup oracle 直接删除真实 pre-fork 调用点；非法 scalar、报告 basename/path 与 Git stderr 改为固定安全诊断。固定 Node.js `v24.18.0` 的 scripts tests 为 **196/196**。**M5.10 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**最终完整门禁只承认候选提交产生后的实测。
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
@@ -75,6 +75,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [阶段 09A M5.7 审计协议与最终 settlement 收敛](plans/2026-08-m5-7-audit-protocol-and-final-settlement.md)
 - [阶段 09A M5.8 声明身份与动态审计证据闭合](plans/2026-08-m5-8-declaration-and-audit-evidence-closure.md)
 - [阶段 09A M5.9 结构化阶段门禁核心与显式命令面整改](plans/2026-08-m5-9-structured-stage-gate-core.md)
+- [阶段 09A M5.10 运行 receipt、能力面与安全诊断闭合](plans/2026-08-m5-10-receipt-and-capability-closure.md)
 - [计划索引](plans/README.md)
 - [微信开发者工具走查证据](evidence/stage-08-gui/README.md)
 - [依赖例外产物扫描证据](evidence/stage-08-audit/weapp-advisory-scan.json)

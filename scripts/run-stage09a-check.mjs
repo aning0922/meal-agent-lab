@@ -96,6 +96,7 @@ let keepFailure = false
 let usageInvalid = false
 let aggregateRunStarted = false
 let aggregateInvocationCount = 0
+const auditRunReceipts = new WeakMap()
 
 // argv 是固定字符串；`--keep-failure` 只透传给声明支持它的入口。
 const steps = stage09aSteps
@@ -1148,7 +1149,30 @@ export const runStage09aCheck = async (argv = []) => {
   })
 }
 
-export const stage09aInvocationSnapshot = () => aggregateInvocationCount
+/**
+ * Audit-B receives an opaque receipt, never the mutable wiring fields that
+ * make up the gate result.  The receipt is issued in this module immediately
+ * around the one real core invocation, so a consumer cannot substitute a
+ * forged gate or hard-code invocation/retry accounting.
+ */
+export const runStage09aCheckForAudit = async (argv = []) => {
+  const invocationCountBefore = aggregateInvocationCount
+  const outcome = await runStage09aCheck(argv)
+  const invocationCount = aggregateInvocationCount - invocationCountBefore
+  const receipt = Object.freeze({})
+  auditRunReceipts.set(receipt, Object.freeze({
+    gate: outcome.gate,
+    requestedSignal: outcome.requestedSignal,
+    invocationCount,
+    retryCount: Math.max(0, invocationCount - 1)
+  }))
+  return receipt
+}
+
+export const readStage09aAuditRunReceipt = (receipt) =>
+  receipt !== null && typeof receipt === 'object'
+    ? (auditRunReceipts.get(receipt) ?? null)
+    : null
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const outcome = await runStage09aCheck(process.argv.slice(2))

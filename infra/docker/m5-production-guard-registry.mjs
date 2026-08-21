@@ -6,7 +6,45 @@
 export const m5ProductionGuards = Object.freeze([
   Object.freeze({
     id: 'backup-pre-fork-runtime',
-    source: 'infra/docker/backup-local-test.mjs#performBackup'
+    source: 'infra/docker/m5-evidence-protocol.mjs#runWithDeclaredOwnedTreeOutputs',
+    consumers: Object.freeze([
+      Object.freeze({
+        path: 'infra/docker/backup-local-test.mjs',
+        callee: Object.freeze({
+          path: 'infra/docker/m5-evidence-protocol.mjs',
+          name: 'runWithDeclaredOwnedTreeOutputs'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['beforeRemove', 'performBackup'])
+        }),
+        count: 1
+      }),
+      Object.freeze({
+        path: 'infra/docker/check-api-runtime-image.mjs',
+        callee: Object.freeze({
+          path: 'infra/docker/m5-evidence-protocol.mjs',
+          name: 'runWithDeclaredOwnedTreeOutputs'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['main'])
+        }),
+        count: 1
+      }),
+      Object.freeze({
+        path: 'infra/docker/check-api-runtime-image-mutations.mjs',
+        callee: Object.freeze({
+          path: 'infra/docker/m5-evidence-protocol.mjs',
+          name: 'runWithDeclaredOwnedTreeOutputs'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['buildAndScan'])
+        }),
+        count: 1
+      })
+    ])
   }),
   Object.freeze({
     id: 'publication-link-count',
@@ -18,11 +56,123 @@ export const m5ProductionGuards = Object.freeze([
   }),
   Object.freeze({
     id: 'cleanup-signal-delivery-barrier',
-    source: 'infra/docker/m3b-subprocess.mjs#runSignalSettledCli'
+    source: 'infra/docker/m3b-subprocess.mjs#runSignalSettledCli',
+    consumers: Object.freeze([
+      ...[
+        'infra/docker/backup-local-test.mjs',
+        'infra/docker/restore-local-test.mjs',
+        'infra/docker/run-local-test-smoke.mjs',
+        'infra/docker/run-local-test-lifecycle.mjs',
+        'infra/docker/run-local-test-restore-drill.mjs'
+      ].map((path) => Object.freeze({
+        path,
+        callee: Object.freeze({
+          path: 'infra/docker/m3b-subprocess.mjs',
+          name: 'runSignalSettledCli'
+        }),
+        placement: Object.freeze({ kind: 'main-guard-direct' }),
+        count: 1
+      }))
+    ])
   }),
   Object.freeze({
     id: 'structured-stage09a-core',
-    source: 'scripts/run-stage09a-check.mjs#runStage09aCheck'
+    source: 'scripts/run-stage09a-check.mjs#runStage09aCheck',
+    consumers: Object.freeze([
+      Object.freeze({
+        path: 'scripts/run-stage09a-check.mjs',
+        callee: Object.freeze({
+          path: 'scripts/run-stage09a-check.mjs',
+          name: 'runStage09aCheck'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['runStage09aCheckForAudit'])
+        }),
+        count: 1
+      }),
+      Object.freeze({
+        path: 'scripts/run-stage09a-check.mjs',
+        callee: Object.freeze({
+          path: 'scripts/run-stage09a-check.mjs',
+          name: 'runStage09aCheck'
+        }),
+        placement: Object.freeze({ kind: 'main-guard-binding', binding: 'outcome' }),
+        count: 1
+      })
+    ])
+  }),
+  Object.freeze({
+    id: 'structured-stage09a-audit-receipt',
+    source: 'scripts/run-stage09a-check.mjs#runStage09aCheckForAudit',
+    consumers: Object.freeze([
+      Object.freeze({
+        path: 'scripts/run-stage09a-audit-b.mjs',
+        callee: Object.freeze({
+          path: 'scripts/run-stage09a-check.mjs',
+          name: 'runStage09aCheckForAudit'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-awaited',
+          path: Object.freeze(['runStage09aAuditB'])
+        }),
+        count: 1
+      })
+    ])
+  }),
+  Object.freeze({
+    id: 'structured-stage09a-report-receipt',
+    source: 'scripts/stage09a-audit-b.mjs#createStage09aAuditBReportFromReceipt',
+    consumers: Object.freeze([
+      Object.freeze({
+        path: 'scripts/run-stage09a-audit-b.mjs',
+        callee: Object.freeze({
+          path: 'scripts/stage09a-audit-b.mjs',
+          name: 'createStage09aAuditBReportFromReceipt'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['runStage09aAuditB'])
+        }),
+        count: 1
+      })
+    ])
+  }),
+  Object.freeze({
+    id: 'structured-stage09a-receipt-projector',
+    source: 'scripts/run-stage09a-check.mjs#readStage09aAuditRunReceipt',
+    consumers: Object.freeze([
+      Object.freeze({
+        path: 'scripts/stage09a-audit-b.mjs',
+        callee: Object.freeze({
+          path: 'scripts/run-stage09a-check.mjs',
+          name: 'readStage09aAuditRunReceipt'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['createStage09aAuditBReportFromReceipt'])
+        }),
+        count: 1
+      })
+    ])
+  }),
+  Object.freeze({
+    id: 'structured-stage09a-report-builder',
+    source: 'scripts/stage09a-audit-b.mjs#createStage09aAuditBReport',
+    consumers: Object.freeze([
+      Object.freeze({
+        path: 'scripts/stage09a-audit-b.mjs',
+        callee: Object.freeze({
+          path: 'scripts/stage09a-audit-b.mjs',
+          name: 'createStage09aAuditBReport'
+        }),
+        placement: Object.freeze({
+          kind: 'function-path-direct',
+          path: Object.freeze(['createStage09aAuditBReportFromReceipt'])
+        }),
+        count: 1
+      })
+    ])
   }),
   Object.freeze({
     id: 'runtime-image-claim',

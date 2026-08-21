@@ -10,17 +10,11 @@ const listed = spawnSync('git', ['ls-files', '-z', '--', '*.md'], {
   maxBuffer: 16 * 1024 * 1024
 })
 if (listed.error !== undefined) {
-  process.stderr.write(
-    `markdown link check failed to start git: ${listed.error.message}\n`
-  )
+  process.stderr.write('markdown link check failed to start git\n')
   process.exit(1)
 }
 if (listed.status !== 0) {
-  process.stderr.write(
-    `markdown link check git subprocess failed ` +
-      `(exit=${String(listed.status)}, signal=${listed.signal ?? 'none'}): ` +
-      `${listed.stderr.trim() || '(no stderr)'}\n`
-  )
+  process.stderr.write('markdown link check git subprocess failed\n')
   process.exit(1)
 }
 
@@ -63,7 +57,7 @@ for (const file of files) {
 }
 
 if (failures.length > 0) {
-  process.stderr.write(`${failures.join('\n')}\n`)
+  process.stderr.write(`Markdown local link check FAIL (${failures.length} issue(s))\n`)
   process.exit(1)
 }
 process.stdout.write(

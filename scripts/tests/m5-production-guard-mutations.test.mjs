@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { createHash } from 'node:crypto'
 import {
+  chmodSync,
   closeSync,
   constants,
   cpSync,
@@ -27,6 +28,11 @@ import {
   m5ProtectedEntrypoints,
   m5ProtectedModules
 } from '../../infra/docker/m5-production-guard-registry.mjs'
+import {
+  createOwnedTreeJournal,
+  retireOwnedTree,
+  runWithDeclaredOwnedTreeOutputs
+} from '../../infra/docker/m5-evidence-protocol.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
 const requireFromApiWorkspace = createRequire(resolve(repositoryRoot, 'services/api/package.json'))
@@ -142,6 +148,14 @@ const placementMatches = (call, placement, sourceFile, checker) => {
       declarations[0].initializer.expression === call
     )
   }
+  if (placement.kind === 'source-direct-await') {
+    return (
+      ts.isExpressionStatement(statement) &&
+      ts.isAwaitExpression(statement.expression) &&
+      statement.expression.expression === call &&
+      statement.parent === sourceFile
+    )
+  }
   if (placement.kind === 'main-guard-direct') {
     const block = statement.parent
     return (
@@ -156,10 +170,47 @@ const placementMatches = (call, placement, sourceFile, checker) => {
       mainGuardMatches(block.parent.expression, checker, sourceFile)
     )
   }
+  if (placement.kind === 'main-guard-binding') {
+    const block = statement.parent
+    if (
+      !ts.isVariableStatement(statement) ||
+      !ts.isBlock(block) ||
+      !ts.isIfStatement(block.parent) ||
+      block.parent.thenStatement !== block ||
+      block.parent.elseStatement !== undefined ||
+      block.parent.parent !== sourceFile ||
+      !mainGuardMatches(block.parent.expression, checker, sourceFile)
+    ) return false
+    const declarations = statement.declarationList.declarations
+    return (
+      declarations.length === 1 &&
+      ts.isIdentifier(declarations[0].name) &&
+      declarations[0].name.text === placement.binding &&
+      ts.isAwaitExpression(declarations[0].initializer) &&
+      declarations[0].initializer.expression === call
+    )
+  }
   const owner = nearestFunction(call)
-  if (owner === undefined || owner.body === undefined || statement.parent !== owner.body) {
+  if (owner === undefined || owner.body === undefined) {
     return false
   }
+  if (placement.kind === 'function-path-awaited') {
+    let current = call.parent
+    let staticallyDead = false
+    while (current !== undefined && current !== owner) {
+      if (
+        ts.isIfStatement(current) &&
+        current.expression.kind === ts.SyntaxKind.FalseKeyword
+      ) staticallyDead = true
+      current = current.parent
+    }
+    return (
+      !staticallyDead &&
+      ts.isAwaitExpression(call.parent) &&
+      JSON.stringify(functionPath(call)) === JSON.stringify(placement.path)
+    )
+  }
+  if (statement.parent !== owner.body) return false
   return placement.kind === 'function-path-direct' &&
     JSON.stringify(functionPath(call)) === JSON.stringify(placement.path)
 }
@@ -254,7 +305,7 @@ const productionConsumerProblems = (overrides = new Map()) => {
     for (const consumer of guard.consumers ?? []) {
       const calls = consumerCalls(consumer, overrides)
       const valid = calls.filter(({ placementValid }) => placementValid)
-      if (calls.length !== consumer.count || valid.length !== consumer.count) {
+      if (valid.length !== consumer.count) {
         problems.push(`[${guard.id}] production consumer is not directly reachable: ${consumer.path}`)
       }
     }
@@ -402,7 +453,10 @@ const declaredProtectedEntrypointProblems = (overrides = new Map()) => {
   for (const [name, command] of Object.entries(packageJson.scripts ?? {})) {
     if (!name.startsWith('stage09a:')) continue
     const match = /^node ([a-z0-9_./-]+\.mjs)$/.exec(command)
-    assert.notEqual(match, null, `stage09a production entrypoint command was not canonical: ${name}`)
+    if (match === null) {
+      problems.push(`stage09a package script command was not canonical: ${name}`)
+      continue
+    }
     if (!manifestPaths.includes(match[1])) {
       problems.push(`stage09a package script was absent from the M5 CLI manifest: ${name}`)
     }
@@ -426,16 +480,26 @@ const declaredProtectedEntrypointProblems = (overrides = new Map()) => {
       ) {
         problems.push(`${path}: signal-settled CLI boundary was not unique`)
       }
-    } else if (settlement === 'structured-stage09a-core') {
-      if ((source.match(/await runStage09aCheck\(/g) ?? []).length !== 1) {
-        problems.push(`${path}: structured Stage09A core boundary was not unique`)
+    } else if (
+      settlement === 'structured-stage09a-core' ||
+      settlement === 'structured-stage09a-audit'
+    ) {
+      const consumer = {
+        path,
+        callee: {
+          path,
+          name: settlement === 'structured-stage09a-core'
+            ? 'runStage09aCheck'
+            : 'runStage09aAuditB'
+        },
+        placement: { kind: 'main-guard-binding', binding: 'outcome' },
+        count: 1
       }
-    } else if (settlement === 'structured-stage09a-audit') {
+      const calls = consumerCalls(consumer, overrides)
       if (
-        (source.match(/await runStage09aAuditB\(/g) ?? []).length !== 1 ||
-        (source.match(/await runStage09aCheck\(/g) ?? []).length !== 1
+        calls.filter(({ placementValid }) => placementValid).length !== 1
       ) {
-        problems.push(`${path}: structured Audit-B boundary was not unique`)
+        problems.push(`${path}: structured CLI boundary was not unique`)
       }
     } else {
       problems.push(`${path}: M5 CLI manifest used an unknown settlement kind`)
@@ -698,7 +762,7 @@ test('main guards bind fileURLToPath to the node:url declaration identity', () =
   )
 })
 
-test('the manifest is the complete reviewed command surface, not arbitrary tracked code', () => {
+test('new declaration-identity consumers cannot hide outside the reviewed command surface', () => {
   const path = 'infra/docker/new-protected-entrypoint.mjs'
   const source = [
     "import { exit as exitNow } from 'node:process'",
@@ -708,9 +772,29 @@ test('the manifest is the complete reviewed command surface, not arbitrary track
     ''
   ].join('\n')
   const overrides = new Map([[path, source]])
-  assert.deepEqual(declaredProtectedEntrypointProblems(overrides), [])
-  assert.deepEqual(protectedExitCapabilityProblems(overrides), [])
+  assert.equal(
+    productionConsumerRegistryProblems(m5ProductionGuards, overrides)
+      .some((problem) => problem.includes('runSignalSettledCli')),
+    true
+  )
   assert.equal(m5ProtectedEntrypoints.includes(path), false)
+})
+
+test('the real Stage09A execution graph cannot gain an undeclared settlement consumer', () => {
+  const path = 'infra/docker/check-local-test-negatives.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = [
+    source,
+    "import { runSignalSettledCli as auditSettlement } from './m3b-subprocess.mjs'",
+    'await auditSettlement(async () => 0)',
+    ''
+  ].join('\n')
+  const overrides = new Map([[path, mutant]])
+  assert.equal(
+    productionConsumerRegistryProblems(m5ProductionGuards, overrides)
+      .some((problem) => problem.includes('runSignalSettledCli')),
+    true
+  )
 })
 
 test('the production registry requires every exact consumer path once', () => {
@@ -752,18 +836,87 @@ test('protected production entrypoints cannot obtain the process.exit capability
   }
 })
 
+test('the Markdown gate never reflects Git stderr or spawn errors', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'm5-markdown-git-failure-'))
+  const gitPath = join(directory, 'git')
+  const sentinel = 'RAW-GIT-STDERR-SENTINEL'
+  try {
+    writeFileSync(gitPath, `#!/bin/sh\nprintf '%s\\n' '${sentinel}' >&2\nexit 77\n`)
+    chmodSync(gitPath, 0o700)
+    const rejected = spawnSync(
+      process.execPath,
+      ['scripts/check-markdown-links.mjs'],
+      {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: directory }
+      }
+    )
+    assert.equal(rejected.status, 1)
+    assert.equal(rejected.stderr, 'markdown link check git subprocess failed\n')
+    assert.doesNotMatch(rejected.stderr, new RegExp(sentinel))
+
+    unlinkSync(gitPath)
+    const missing = spawnSync(
+      process.execPath,
+      ['scripts/check-markdown-links.mjs'],
+      {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: directory }
+      }
+    )
+    assert.equal(missing.status, 1)
+    assert.equal(missing.stderr, 'markdown link check failed to start git\n')
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 guardTest('backup-pre-fork-runtime', 'the live backup guard is killed by an in-flight cleanup oracle', async () => {
+  const positiveRoot = mkdtempSync(join(tmpdir(), 'm5-live-backup-positive-'))
+  const positiveOutput = join(positiveRoot, 'fixture.dump.partial')
+  const positiveJournal = createOwnedTreeJournal(positiveRoot)
+  let positiveResidue = null
+  try {
+    const positiveResult = await runWithDeclaredOwnedTreeOutputs(
+      positiveJournal,
+      [positiveOutput],
+      async () => {
+        writeFileSync(positiveOutput, 'controlled bytes', { mode: 0o600 })
+        try {
+          retireOwnedTree(positiveJournal)
+          positiveResidue = []
+        } catch {
+          positiveResidue = ['backup partial directory cleanup failed']
+        }
+        return { status: 17 }
+      }
+    )
+    assert.equal(positiveResult.status, 17)
+    assert.deepEqual(positiveResidue, [])
+  } finally {
+    rmSync(positiveRoot, { recursive: true, force: true })
+  }
+
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'm5-live-backup-declaration-mutant-'))
   const copiedDockerDirectory = join(temporaryRoot, 'infra/docker')
   cpSync(resolve(repositoryRoot, 'infra/docker'), copiedDockerDirectory, { recursive: true })
   const initialized = spawnSync('git', ['init', '-q'], { cwd: temporaryRoot, encoding: 'utf8' })
   assert.equal(initialized.status, 0, initialized.stderr)
   const backupPath = join(copiedDockerDirectory, 'backup-local-test.mjs')
-  const evidencePath = join(copiedDockerDirectory, 'm5-evidence-protocol.mjs')
-  writeFileSync(evidencePath, replaceExactly(
-    readFileSync(evidencePath, 'utf8'),
-    'for (const target of targets) declareOwnedTreeOutput(journal, target)',
-    'void targets'
+  writeFileSync(backupPath, replaceExactly(
+    readFileSync(backupPath, 'utf8'),
+    `copied = await runWithDeclaredOwnedTreeOutputs(
+            privatePartialJournal,
+            [hostPartial],
+            () => run(['docker', 'cp', \`${'${id}'}:/transfer/${'${name}'}\`, hostPartial], {
+              timeoutMs: 300_000
+            })
+          )`,
+    `copied = await run(['docker', 'cp', \`${'${id}'}:/transfer/${'${name}'}\`, hostPartial], {
+            timeoutMs: 300_000
+          })`
   ))
   const implementation = await importFresh(
     join(copiedDockerDirectory, 'backup-local-test.mjs'),
@@ -861,7 +1014,7 @@ guardTest('backup-pre-fork-runtime', 'the live backup guard is killed by an in-f
           fileName: 'fixture.dump'
         }
       ),
-      /one-off container handoff failed|backup artifact cleanup failed/
+      /backup artifact cleanup failed/
     )
     assert.deepEqual(inFlightResidue, ['backup partial directory cleanup failed'])
   } finally {
@@ -1005,16 +1158,76 @@ guardTest('cleanup-signal-delivery-barrier', 'the guard is killed by an ordinary
 })
 
 guardTest('structured-stage09a-core', 'Audit-B cannot bypass the single structured execution core', () => {
+  const path = 'scripts/run-stage09a-check.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = replaceExactly(
+    source,
+    'const outcome = await runStage09aCheck(argv)',
+    "const outcome = { gate: null, requestedSignal: null }"
+  )
+  const problems = productionConsumerProblems(new Map([[path, mutant]]))
+  assert.equal(
+    problems.some((problem) => problem.startsWith('[structured-stage09a-core]')),
+    true
+  )
+})
+
+guardTest('structured-stage09a-audit-receipt', 'Audit-B cannot substitute a forged core receipt', () => {
   const path = 'scripts/run-stage09a-audit-b.mjs'
   const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
   const mutant = replaceExactly(
     source,
-    'const outcome = await runStage09aCheck([])',
-    "const outcome = { gate: gateNotStarted, requestedSignal: null }"
+    'runReceipt = await runStage09aCheckForAudit([])',
+    'runReceipt = Object.freeze({})'
   )
-  const problems = declaredProtectedEntrypointProblems(new Map([[path, mutant]]))
+  const problems = productionConsumerProblems(new Map([[path, mutant]]))
   assert.equal(
-    problems.some((problem) => problem.startsWith(`${path}:`)),
+    problems.some((problem) => problem.startsWith('[structured-stage09a-audit-receipt]')),
+    true
+  )
+})
+
+guardTest('structured-stage09a-report-receipt', 'the report cannot bypass receipt projection', () => {
+  const path = 'scripts/run-stage09a-audit-b.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = replaceExactly(
+    source,
+    'const report = createStage09aAuditBReportFromReceipt({',
+    'const report = createStage09aAuditBReport({'
+  )
+  const problems = productionConsumerProblems(new Map([[path, mutant]]))
+  assert.equal(
+    problems.some((problem) => problem.startsWith('[structured-stage09a-report-receipt]')),
+    true
+  )
+})
+
+guardTest('structured-stage09a-receipt-projector', 'the receipt projector cannot be bypassed', () => {
+  const path = 'scripts/stage09a-audit-b.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = replaceExactly(
+    source,
+    'const evidence = readStage09aAuditRunReceipt(runReceipt)',
+    'const evidence = null'
+  )
+  const problems = productionConsumerProblems(new Map([[path, mutant]]))
+  assert.equal(
+    problems.some((problem) => problem.startsWith('[structured-stage09a-receipt-projector]')),
+    true
+  )
+})
+
+guardTest('structured-stage09a-report-builder', 'the receipt wrapper is the only report builder consumer', () => {
+  const path = 'scripts/stage09a-audit-b.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = replaceExactly(
+    source,
+    'return createStage09aAuditBReport({',
+    'return Object.freeze({'
+  )
+  const problems = productionConsumerProblems(new Map([[path, mutant]]))
+  assert.equal(
+    problems.some((problem) => problem.startsWith('[structured-stage09a-report-builder]')),
     true
   )
 })

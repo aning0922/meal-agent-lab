@@ -1,6 +1,9 @@
 import { stage09aStepIds } from './stage09a-gate-registry.mjs'
+import { readStage09aAuditRunReceipt } from './run-stage09a-check.mjs'
 
 const canonicalSha = /^[0-9a-f]{40}$/
+const requiredNodeVersionPattern = /^24\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/
+const actualNodeVersionPattern = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/
 const handledSignals = new Set(['SIGINT', 'SIGTERM', 'SIGHUP'])
 const gateReasons = new Set(['complete', 'gate-failed', 'gate-signaled'])
 const gateKeys = Object.freeze([
@@ -45,9 +48,16 @@ export const validateStage09aGateResult = (gate) => {
     )
   }
   if (gate.reason === 'gate-signaled') {
-    return gate.exitCode === null && handledSignals.has(gate.signal)
+    if (gate.exitCode !== null || !handledSignals.has(gate.signal)) return false
+    return gate.failedStep === null ||
+      gate.failedStep === stage09aStepIds[gate.completedSteps.length]
   }
-  if (gate.reason !== 'gate-failed' || gate.signal !== null || gate.exitCode === 0) {
+  if (
+    gate.reason !== 'gate-failed' ||
+    gate.signal !== null ||
+    gate.exitCode === null ||
+    gate.exitCode === 0
+  ) {
     return false
   }
   if (gate.failedStep === null) return true
@@ -81,20 +91,30 @@ export const createStage09aAuditBReport = ({
   invocationCount,
   retryCount,
   requestedSignal,
-  gate
+  gate,
+  runEvidenceValid = true
 }) => {
-  const scalarInputValid =
+  const requiredNodeVersionValid =
+    typeof requiredNodeVersion === 'string' &&
+    requiredNodeVersionPattern.test(requiredNodeVersion)
+  const actualNodeVersionValid =
+    typeof actualNodeVersion === 'string' &&
+    actualNodeVersionPattern.test(actualNodeVersion)
+  const environmentScalarValid =
     canonicalSha.test(expectedCandidateHead) &&
     (candidateHeadBefore === null || canonicalSha.test(candidateHeadBefore)) &&
     (candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)) &&
-    /^24\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(requiredNodeVersion) &&
-    /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/.test(actualNodeVersion) &&
+    requiredNodeVersionValid &&
+    actualNodeVersionValid &&
     typeof worktreeCleanBefore === 'boolean' &&
-    typeof worktreeCleanAfter === 'boolean' &&
+    typeof worktreeCleanAfter === 'boolean'
+  const accountingShapeValid =
     Number.isSafeInteger(invocationCount) && invocationCount >= 0 &&
     Number.isSafeInteger(retryCount) && retryCount >= 0 &&
     (requestedSignal === null || handledSignals.has(requestedSignal))
-  const gateValid = validateStage09aGateResult(gate)
+  const scalarInputValid =
+    environmentScalarValid && accountingShapeValid && runEvidenceValid === true
+  const gateValid = validateStage09aGateResult(gate) && gate.signal === requestedSignal
   const worktreeClean = worktreeCleanBefore === true && worktreeCleanAfter === true
   const environmentOk =
     scalarInputValid &&
@@ -107,17 +127,20 @@ export const createStage09aAuditBReport = ({
     requestedSignal === null
 
   let reason = gateValid ? gate.reason : 'gate-output-invalid'
-  if (!scalarInputValid) reason = 'report-input-invalid'
+  if (!environmentScalarValid) reason = 'report-input-invalid'
   else if (actualNodeVersion !== requiredNodeVersion) reason = 'node-version-mismatch'
   else if (candidateHeadBefore !== expectedCandidateHead) reason = 'candidate-head-mismatch'
   else if (!worktreeCleanBefore) reason = 'worktree-not-clean'
   else if (candidateHeadAfter !== expectedCandidateHead || !worktreeCleanAfter) {
     reason = 'repository-state-drift'
-  } else if (requestedSignal !== null) reason = 'audit-signaled'
+  } else if (runEvidenceValid !== true) reason = 'run-evidence-invalid'
+  else if (!accountingShapeValid) reason = 'report-input-invalid'
+  else if (!gateValid) reason = 'gate-output-invalid'
+  else if (requestedSignal !== null) reason = 'audit-signaled'
   else if (invocationCount !== 1 || retryCount !== 0) reason = 'invocation-count-invalid'
 
   return Object.freeze({
-    schemaVersion: 2,
+    schemaVersion: 3,
     evidenceKind: 'stage09a-audit-b-single-run',
     candidateHead: canonicalSha.test(expectedCandidateHead) ? expectedCandidateHead : null,
     candidateHeadBefore:
@@ -128,9 +151,8 @@ export const createStage09aAuditBReport = ({
       candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)
         ? candidateHeadAfter
         : null,
-    requiredNodeVersion:
-      typeof requiredNodeVersion === 'string' ? requiredNodeVersion : null,
-    actualNodeVersion: typeof actualNodeVersion === 'string' ? actualNodeVersion : null,
+    requiredNodeVersion: requiredNodeVersionValid ? requiredNodeVersion : null,
+    actualNodeVersion: actualNodeVersionValid ? actualNodeVersion : null,
     worktreeClean,
     worktreeCleanBefore: worktreeCleanBefore === true,
     worktreeCleanAfter: worktreeCleanAfter === true,
@@ -143,6 +165,20 @@ export const createStage09aAuditBReport = ({
     gate: sanitizedGate(gate),
     remoteCiVerified: false,
     verdict: 'evidence-only-not-acceptance'
+  })
+}
+
+/** Production boundary: only a receipt issued by the shared core may supply
+ * gate, signal and invocation accounting to the published report. */
+export const createStage09aAuditBReportFromReceipt = ({ runReceipt, ...environment }) => {
+  const evidence = readStage09aAuditRunReceipt(runReceipt)
+  return createStage09aAuditBReport({
+    ...environment,
+    runEvidenceValid: evidence !== null,
+    invocationCount: evidence?.invocationCount ?? null,
+    retryCount: evidence?.retryCount ?? null,
+    requestedSignal: evidence?.requestedSignal ?? null,
+    gate: evidence?.gate ?? null
   })
 }
 

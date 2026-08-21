@@ -5,6 +5,7 @@ import test from 'node:test'
 
 import {
   createStage09aAuditBReport,
+  createStage09aAuditBReportFromReceipt,
   serializeStage09aAuditBReport,
   validateStage09aGateResult
 } from '../stage09a-audit-b.mjs'
@@ -67,7 +68,7 @@ test('audit B accepts only the basename argv shape produced by pnpm', () => {
 test('the structured gate accepts exactly one closed 14-step PASS shape', () => {
   assert.equal(validateStage09aGateResult(completeGate), true)
   const report = createStage09aAuditBReport(reportInput())
-  assert.equal(report.schemaVersion, 2)
+  assert.equal(report.schemaVersion, 3)
   assert.equal(report.status, 'pass')
   assert.equal(report.reason, 'complete')
   assert.equal(report.invocationCount, 1)
@@ -147,7 +148,13 @@ test('actual invocation accounting records zero and multiple attempts without th
 })
 
 test('a latched signal prevents complete gate evidence from becoming PASS', () => {
-  const report = createStage09aAuditBReport(reportInput({ requestedSignal: 'SIGINT' }))
+  const report = createStage09aAuditBReport(reportInput({
+    requestedSignal: 'SIGINT',
+    gate: {
+      status: 'fail', reason: 'gate-signaled', exitCode: null, signal: 'SIGINT',
+      completedSteps: [], failedStep: null
+    }
+  }))
   assert.equal(report.status, 'fail')
   assert.equal(report.reason, 'audit-signaled')
 })
@@ -166,13 +173,71 @@ test('the report schema does not reflect untrusted input values', () => {
   assert.doesNotMatch(serialized, new RegExp(sentinel))
 })
 
+test('invalid scalar fields and forged run receipts collapse without reflecting input', () => {
+  const sentinel = 'UNTRUSTED-NODE-VERSION-SENTINEL'
+  const scalarReport = createStage09aAuditBReport({
+    ...reportInput(),
+    requiredNodeVersion: sentinel,
+    actualNodeVersion: sentinel
+  })
+  const scalarSerialized = serializeStage09aAuditBReport(scalarReport).toString('utf8')
+  assert.equal(scalarReport.status, 'fail')
+  assert.equal(scalarReport.reason, 'report-input-invalid')
+  assert.equal(scalarReport.requiredNodeVersion, null)
+  assert.equal(scalarReport.actualNodeVersion, null)
+  assert.doesNotMatch(scalarSerialized, new RegExp(sentinel))
+
+  const receiptReport = createStage09aAuditBReportFromReceipt({
+    runReceipt: Object.freeze({}),
+    expectedCandidateHead: candidateHead,
+    candidateHeadBefore: candidateHead,
+    candidateHeadAfter: candidateHead,
+    requiredNodeVersion: '24.18.0',
+    actualNodeVersion: '24.18.0',
+    worktreeCleanBefore: true,
+    worktreeCleanAfter: true
+  })
+  assert.equal(receiptReport.status, 'fail')
+  assert.equal(receiptReport.reason, 'run-evidence-invalid')
+  assert.equal(receiptReport.invocationCount, null)
+  assert.deepEqual(receiptReport.gate.completedSteps, [])
+})
+
+test('ordinary and signaled gate evidence rejects contradictory settlement shapes', () => {
+  const invalid = [
+    {
+      status: 'fail', reason: 'gate-failed', exitCode: null, signal: null,
+      completedSteps: [], failedStep: null
+    },
+    {
+      status: 'fail', reason: 'gate-signaled', exitCode: null, signal: 'SIGTERM',
+      completedSteps: [], failedStep: stage09aStepIds.at(-1)
+    }
+  ]
+  for (const gate of invalid) assert.equal(validateStage09aGateResult(gate), false)
+
+  const mismatchedSignal = createStage09aAuditBReport(reportInput({
+    requestedSignal: 'SIGHUP',
+    gate: {
+      status: 'fail', reason: 'gate-signaled', exitCode: null, signal: 'SIGTERM',
+      completedSteps: [], failedStep: null
+    }
+  }))
+  assert.equal(mismatchedSignal.status, 'fail')
+  assert.equal(mismatchedSignal.reason, 'gate-output-invalid')
+})
+
 test('Audit-B calls the structured core directly and has no transcript or child aggregate', () => {
   const source = readFileSync(resolve(repositoryRoot, 'scripts/run-stage09a-audit-b.mjs'), 'utf8')
-  assert.match(source, /import \{\s*runStage09aCheck,\s*stage09aInvocationSnapshot\s*\}/)
+  assert.match(source, /import \{\s*runStage09aCheckForAudit\s*\}/)
   assert.equal(source.includes('createStage09aTranscriptRecorder'), false)
   assert.equal(source.includes('runAggregateOnce'), false)
   assert.equal(source.includes("spawn(process.execPath"), false)
-  assert.equal((source.match(/await runStage09aCheck\(\[\]\)/g) ?? []).length, 1)
+  assert.equal((source.match(/await runStage09aCheckForAudit\(\[\]\)/g) ?? []).length, 1)
+  assert.equal(source.includes('stage09aInvocationSnapshot'), false)
+  assert.equal(source.includes('outcome.gate'), false)
+  assert.match(source, /nativeWrite\(1, 'stage09a:audit-b structured report published\\n'\)/)
+  assert.equal(source.includes('.local/audit-reports/${reportName}'), false)
   const packageJson = JSON.parse(readFileSync(resolve(repositoryRoot, 'package.json'), 'utf8'))
   assert.equal(packageJson.scripts['stage09a:audit-b'], 'node scripts/run-stage09a-audit-b.mjs')
 })

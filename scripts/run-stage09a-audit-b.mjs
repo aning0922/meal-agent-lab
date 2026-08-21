@@ -13,11 +13,10 @@ import {
   canonicalGitArguments
 } from '../infra/docker/local-test-secrets-contract.mjs'
 import {
-  runStage09aCheck,
-  stage09aInvocationSnapshot
+  runStage09aCheckForAudit
 } from './run-stage09a-check.mjs'
 import {
-  createStage09aAuditBReport,
+  createStage09aAuditBReportFromReceipt,
   serializeStage09aAuditBReport
 } from './stage09a-audit-b.mjs'
 
@@ -89,15 +88,6 @@ const readRepositoryState = () => {
   return { candidateHead, worktreeClean }
 }
 
-const gateNotStarted = Object.freeze({
-  status: 'fail',
-  reason: 'gate-failed',
-  exitCode: 1,
-  signal: null,
-  completedSteps: Object.freeze([]),
-  failedStep: null
-})
-
 export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
   const parsed = parseStage09aAuditBArguments(argv)
   if (parsed === null) {
@@ -123,9 +113,7 @@ export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
   }
 
   const repositoryBefore = readRepositoryState()
-  const invocationCountBefore = stage09aInvocationSnapshot()
-  let gate = gateNotStarted
-  let requestedSignal = null
+  let runReceipt = null
   const canRun =
     requiredNodeVersion !== null &&
     process.versions.node === requiredNodeVersion &&
@@ -133,28 +121,21 @@ export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
     repositoryBefore.worktreeClean
   if (canRun) {
     try {
-      const outcome = await runStage09aCheck([])
-      gate = outcome.gate
-      requestedSignal = outcome.requestedSignal
+      runReceipt = await runStage09aCheckForAudit([])
     } catch {
-      gate = gateNotStarted
+      runReceipt = null
     }
   }
-  const invocationCount = stage09aInvocationSnapshot() - invocationCountBefore
   const repositoryAfter = readRepositoryState()
-  const retryCount = Math.max(0, invocationCount - 1)
-  const report = createStage09aAuditBReport({
+  const report = createStage09aAuditBReportFromReceipt({
+    runReceipt,
     expectedCandidateHead: parsed.expectedCandidateHead,
     candidateHeadBefore: repositoryBefore.candidateHead,
     candidateHeadAfter: repositoryAfter.candidateHead,
     requiredNodeVersion,
     actualNodeVersion: process.versions.node,
     worktreeCleanBefore: repositoryBefore.worktreeClean,
-    worktreeCleanAfter: repositoryAfter.worktreeClean,
-    invocationCount,
-    retryCount,
-    requestedSignal,
-    gate
+    worktreeCleanAfter: repositoryAfter.worktreeClean
   })
 
   try {
@@ -164,10 +145,10 @@ export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
     fixedDiagnostic('the structured report could not be published')
     return Object.freeze({ exitCode: 1, requestedSignal: null })
   }
-  nativeWrite(1, `stage09a:audit-b report: .local/audit-reports/${reportName}\n`)
+  nativeWrite(1, 'stage09a:audit-b structured report published\n')
   return Object.freeze({
     exitCode: report.status === 'pass' ? 0 : 1,
-    requestedSignal
+    requestedSignal: report.requestedSignal
   })
 }
 
