@@ -47,6 +47,18 @@ declaration identity 反向闭合。backup mutation 直接删除真实 pre-fork 
 Implementation complete — pending independent A/B review，M5 未 Accepted，本 ADR 仍为
 `Proposed`。
 
+实施注记（2026-08-21，M5.11，覆盖上一段当前状态）：M5.10 候选 `d8e0e9b` 的两路
+独立审计均为 BLOCK；B 的独立 worktree 缺依赖导致正式链 0/14，单列为基础设施无效，
+其余 P1 仍由纯 Node/结构探针独立确认。M5.11 将 declaration-identity guard 从直接 callee
+计数升级为受保护声明的全部运行时引用闭包，并拒绝 namespace/dynamic/re-export 旁路；
+candidate/accounting 只接受 canonical primitive scalar。Audit-B 使用模块私有静默
+presentation，核心与 child stdio 不再进入 wrapper 输出；receipt 绑定 aggregate invocation
+generation，额外调用会使旧 receipt 失效。`process.exit` guard 跟踪 immutable const key
+与 capability value flow，controller 在 fork 成功后、任何可抛 primitive 前登记 PGID。
+scripts tests 为 203/203；提交前反馈链为 14/14，最终候选证据仍只接受提交后从步骤 1 的
+完整实测。M5.11 当前为 Implementation complete — pending committed-candidate gate and
+independent A/B review；M5 未 Accepted，本 ADR 仍为 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

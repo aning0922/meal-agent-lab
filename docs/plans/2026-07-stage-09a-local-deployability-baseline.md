@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-20 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.10 Implementation complete — pending independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.11 Implementation complete — pending committed-candidate gate and independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（M5.10 Implementation complete — pending independent A/B review，未 Accepted）
+### M5 实施记录（M5.11 Implementation complete — pending committed-candidate gate and independent A/B review，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -4446,6 +4446,28 @@ failure/signal 形状。
 固定 Node.js `v24.18.0` 的纯 Node scripts tests 为 **196/196**。完整 14 步门禁、文档
 链接、diff check 与 scoped 零残留只承认最终提交产生后的实测，不在本段预先声明 PASS。
 完整任务书见 [M5.10 运行 receipt、能力面与安全诊断闭合](2026-08-m5-10-receipt-and-capability-closure.md)。
+
+#### M5.11 能力引用闭包与 Audit-B 静默边界整改（2026-08-21）
+
+M5.10 候选 `d8e0e9b` 的独立审计 A/B 均为 BLOCK：A 确认 direct-callee consumer
+扫描可由 namespace/computed/解构/wrapper/callback/dataflow 绕过，以及 schema 会强制
+转换非规范 candidate；B 与 A 重叠确认 capability 闭包，并另确认 Audit-B 继承核心/child
+stdio、`process.exit` const-key/value-flow 绕过、detached controller 在 PGID 登记前有
+可抛 post-fork 窗口。B 的独立 worktree 缺依赖使唯一正式链停在 0/14，该条只记基础设施
+无效，不能冒充候选动态证据。
+
+总控按五个根因整改：production guard 枚举受保护 declaration 的全部运行时引用并拒绝
+namespace/dynamic/re-export；candidate/accounting 只接受 canonical primitive scalar；
+Audit-B 使用模块私有静默 presentation，receipt 在额外 aggregate invocation 后失效；
+`process.exit` guard 沿 immutable const key 与 capability value flow 判定；controller fork
+成功后立即登记 PGID，再执行任何可抛 primitive。两处 M3B subprocess import 改成静态
+named import，以满足同一能力闭包，不改变其动态语义。
+
+固定 Node.js `v24.18.0` 的 scripts tests 为 **203/203**；production guard mutation 23/23、
+Audit-B/schema/receipt 16/16、聚合器与 settlement 45/45。提交前反馈用的完整
+`pnpm stage09a:check` 为 14/14；最终候选的 14/14、docs links、diff check 与零残留只接受
+本轮 committed HEAD 产生后的重新实测，不在本段预写 PASS。完整任务书见
+[M5.11 能力引用闭包与 Audit-B 静默边界整改](2026-08-m5-11-capability-and-audit-boundary-convergence.md)。
 本段不标记 M5 Accepted、09A Pass 或远端 CI PASS。
 
 ## 工具前置

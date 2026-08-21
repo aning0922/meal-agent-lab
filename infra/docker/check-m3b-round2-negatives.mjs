@@ -64,8 +64,11 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  createProcessGroupLifecycle,
   ownershipAwareSpawnStdio,
-  registerRawSpawnedChild
+  registerRawSpawnedChild,
+  runCommand,
+  terminateControlledSubtree
 } from './m3b-subprocess.mjs'
 
 import {
@@ -4220,7 +4223,6 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
   // TERM 后下一次 probe 模拟 child/整组已经退出；此代必须立即退休，等待超过
   // grace 后也不得再收到 SIGKILL，否则那个 PGID 可能已被复用。
   const name = 'no SIGKILL is sent to a pgid whose child already closed'
-  const { createProcessGroupLifecycle } = await import('./m3b-subprocess.mjs')
   const observed = []
   let alive = true
   const lifecycle = createProcessGroupLifecycle({
@@ -4254,7 +4256,6 @@ process.stdout.write('P1-6: subprocess PGID lifecycle\n')
 {
   // 反向保证：**真实存活**且忽略 TERM 的后代仍必须被 KILL 收掉。
   const name = 'a descendant that ignores TERM is still killed'
-  const { runCommand, terminateControlledSubtree } = await import('./m3b-subprocess.mjs')
   const marker = `m3b-r2-stubborn-${randomBytes(4).toString('hex')}`
   const started = runCommand(
     ['sh', '-c', `trap '' TERM; sleep 30 # ${marker}`],

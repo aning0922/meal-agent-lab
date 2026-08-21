@@ -460,6 +460,71 @@ const spawnGate = ({ directory, bin }, mode, gateEntrypoint = entrypoint) => {
   return { child, stdout, stderr }
 }
 
+test('the Audit-B presentation sink suppresses core and child stdout and stderr', () => {
+  const fixture = createFixture()
+  const mutatedEntrypoint = resolve(fixture.directory, 'audit-presentation-stage09a.mjs')
+  const registryPath = resolve(fixture.directory, 'audit-presentation-registry.mjs')
+  const stepPath = resolve(fixture.directory, 'audit-presentation-step.mjs')
+  const runnerPath = resolve(fixture.directory, 'audit-presentation-runner.mjs')
+  const sentinel = 'AUDIT-PRESENTATION-UNTRUSTED-SENTINEL'
+  try {
+    writeFileSync(
+      stepPath,
+      `process.stdout.write(${JSON.stringify(`${sentinel}-OUT\\n`)})\n` +
+        `process.stderr.write(${JSON.stringify(`${sentinel}-ERR\\n`)})\n`
+    )
+    writeFileSync(
+      registryPath,
+      `export const stage09aSteps = Object.freeze([Object.freeze({\n` +
+        `  id: 'audit-presentation-fixture',\n` +
+        `  title: 'audit presentation fixture',\n` +
+        `  argv: Object.freeze([${JSON.stringify(process.execPath)}, ${JSON.stringify(stepPath)}]),\n` +
+        `  timeoutMs: 10_000,\n` +
+        `  forwardsKeepFailure: false\n` +
+        `})])\n`
+    )
+    const originalSource = readFileSync(entrypoint, 'utf8')
+    const mutatedSource = originalSource
+      .replace(
+        "from './stage09a-prerequisite-evidence.mjs'",
+        `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+      )
+      .replace(
+        "from './stage09a-gate-registry.mjs'",
+        `from ${JSON.stringify(registryPath)}`
+      )
+      .replace(
+        "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
+        `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
+      )
+    assert.notEqual(mutatedSource, originalSource)
+    writeFileSync(mutatedEntrypoint, mutatedSource)
+    writeFileSync(
+      runnerPath,
+      `import { runStage09aCheckForAudit } from ${JSON.stringify(mutatedEntrypoint)}\n` +
+        `await runStage09aCheckForAudit([])\n`
+    )
+    const outcome = spawnSync(process.execPath, [runnerPath], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: {
+        ...process.env,
+        PATH: `${fixture.bin}:${process.env.PATH ?? ''}`,
+        STAGE09A_FIXTURE_DIR: fixture.directory,
+        STAGE09A_FIXTURE_MODE: 'audit-presentation',
+        STAGE09A_FIXTURE_NODE: process.execPath
+      }
+    })
+    assert.equal(outcome.status, 0, outcome.stderr)
+    assert.equal(outcome.signal, null)
+    assert.equal(outcome.stdout, '')
+    assert.equal(outcome.stderr, '')
+  } finally {
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('the aggregate waits for nested scoped cleanup and every announced process group', { timeout: 12_000 }, async () => {
   const fixture = createFixture()
   let gate = null
@@ -1156,6 +1221,67 @@ const nativeSetTimeout = (callback, milliseconds, ...args) => {
     await waitFor(() => !processIsAlive(grandchildPid), 1_000, 'timer-create ESRCH')
   } finally {
     if (grandchildPid !== null && processIsAlive(grandchildPid)) process.kill(grandchildPid, 'SIGKILL')
+    if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
+    rmSync(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('a post-fork descriptor primitive failure is cleaned through the already registered PGID', { timeout: 12_000 }, async () => {
+  const fixture = createFixture()
+  const mutatedEntrypoint = resolve(fixture.directory, 'post-fork-close-failure-stage09a.mjs')
+  const originalSource = readFileSync(entrypoint, 'utf8')
+  const mutatedSource = originalSource
+    .replace(
+      "from './stage09a-prerequisite-evidence.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-prerequisite-evidence.mjs'))}`
+    )
+    .replace(
+      "from './stage09a-gate-registry.mjs'",
+      `from ${JSON.stringify(resolve(repositoryRoot, 'scripts/stage09a-gate-registry.mjs'))}`
+    )
+    .replace(
+      "const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))",
+      `const repositoryRoot = ${JSON.stringify(repositoryRoot)}`
+    )
+    .replace(
+      '    let controllerHandle = null',
+      `    writeFileSync(resolve(process.env.STAGE09A_FIXTURE_DIR, 'post-fork-controller-pgid'), String(child.pid))
+    let controllerHandle = null`
+    )
+    .replace('  closeSync,', '  closeSync as nativeCloseSync,')
+    .replace(
+      "const safeWrite = (fd, message) => {",
+      `let closeFailureInjected = false
+const closeSync = (fd) => {
+  if (!closeFailureInjected) {
+    closeFailureInjected = true
+    throw new Error('POST-FORK-CLOSE-SENTINEL')
+  }
+  return nativeCloseSync(fd)
+}
+
+const safeWrite = (fd, message) => {`
+    )
+  assert.notEqual(mutatedSource, originalSource)
+  writeFileSync(mutatedEntrypoint, mutatedSource)
+  let gate = null
+  let controllerPgid = null
+  try {
+    gate = spawnGate(fixture, 'descendant-silent', mutatedEntrypoint)
+    const pgidFile = resolve(fixture.directory, 'post-fork-controller-pgid')
+    await waitFor(() => existsSync(pgidFile), 4_000, 'post-fork controller ownership')
+    controllerPgid = Number(readFileSync(pgidFile, 'utf8').trim())
+    assert.equal(Number.isSafeInteger(controllerPgid) && controllerPgid > 0, true)
+    const outcome = await waitForClose(gate.child, 7_000)
+    const output = Buffer.concat([...gate.stdout, ...gate.stderr]).toString('utf8')
+    assert.equal(outcome.code, 1)
+    assert.equal(outcome.signal, null)
+    assert.doesNotMatch(output, /POST-FORK-CLOSE-SENTINEL/)
+    await waitFor(() => !processGroupIsAlive(controllerPgid), 2_000, 'post-fork controller ESRCH')
+  } finally {
+    if (controllerPgid !== null && processGroupIsAlive(controllerPgid)) {
+      try { process.kill(-controllerPgid, 'SIGKILL') } catch {}
+    }
     if (gate !== null && processIsAlive(gate.child.pid)) gate.child.kill('SIGKILL')
     rmSync(fixture.directory, { recursive: true, force: true })
   }

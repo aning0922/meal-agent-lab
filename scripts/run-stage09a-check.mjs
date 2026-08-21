@@ -63,6 +63,12 @@ const stepController = resolve(repositoryRoot, 'scripts/stage09a-step-controller
 const usage = 'pnpm stage09a:check [-- --keep-failure]'
 const ownershipFd = 3
 const ownershipAuthFd = 4
+const humanPresentation = Object.freeze({ childStdio: 'inherit', visible: true })
+const auditPresentation = Object.freeze({
+  childStdio: Object.freeze(['ignore', 'ignore', 'ignore']),
+  visible: false
+})
+let activePresentation = humanPresentation
 
 const createOwnershipCapability = () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-stage09a-owner-'))
@@ -119,10 +125,13 @@ const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
 const nativeSetImmediate = globalThis.setImmediate.bind(globalThis)
 const cooperativeShutdownBudgetMs = 310_000
 
-const safeDiagnostic = (message) => safeWrite(2, message)
+const writePresentation = (fd, message) =>
+  activePresentation.visible ? safeWrite(fd, message) : true
+
+const safeDiagnostic = (message) => writePresentation(2, message)
 
 const writeControlled = (fd, message) => {
-  if (!safeWrite(fd, message)) {
+  if (!writePresentation(fd, message)) {
     aggregatePrimitiveFailed = true
     throw new Error('aggregate output channel failed')
   }
@@ -506,6 +515,8 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       ? ['inherit', 'inherit', 'inherit', 'pipe', ownershipCapability.fd]
       : [stdio[0], stdio[1], stdio[2], 'pipe', ownershipCapability.fd]
     let child
+    let lifecyclePrimitiveFailed = false
+    let postForkPrimitiveFailed = false
     try {
       child = spawn(process.execPath, [stepController, JSON.stringify(argv)], {
         cwd: repositoryRoot,
@@ -514,7 +525,11 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
         stdio: childStdio
       })
     } catch {
-      closeSync(ownershipCapability.fd)
+      try {
+        closeSync(ownershipCapability.fd)
+      } catch {
+        aggregatePrimitiveFailed = true
+      }
       resolvePromise({
         ok: false,
         code: null,
@@ -524,7 +539,6 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       })
       return
     }
-    closeSync(ownershipCapability.fd)
 
     let controllerHandle = null
     if (Number.isSafeInteger(child.pid) && child.pid > 0) {
@@ -539,6 +553,16 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       }
     } else {
       ownershipProtocolFailed = true
+    }
+    try {
+      closeSync(ownershipCapability.fd)
+    } catch {
+      // The detached group already has immutable ownership in the ledger.
+      // Any post-fork primitive failure must converge through that handle.
+      aggregatePrimitiveFailed = true
+      lifecyclePrimitiveFailed = true
+      ownershipProtocolFailed = true
+      postForkPrimitiveFailed = true
     }
     if (child.stdout !== null) {
       child.stdout.on('data', (chunk) => {
@@ -674,7 +698,6 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       resolveLeaderExited = resolveExit
     })
     let ownershipDrainTimer = null
-    let lifecyclePrimitiveFailed = false
     child.once('exit', () => {
       if (controllerHandle !== null) {
         closedOwnedGroupLeaders.add(ownershipKey(controllerHandle))
@@ -946,7 +969,7 @@ const runControlled = ({ argv, timeoutMs, stdio, maxStdoutBytes = 64 * 1024 * 10
       }
       finish(null)
     })
-    if (timerStartFailed) {
+    if (timerStartFailed || postForkPrimitiveFailed) {
       settleLifecyclePrimitiveFailure()
     }
   })
@@ -977,7 +1000,11 @@ const runStep = (step) =>
     }
     const argv = step.forwardsKeepFailure === true && keepFailure ? [...step.argv, '--keep-failure'] : step.argv
     const startedAt = nativeNow()
-    void runControlled({ argv, timeoutMs: step.timeoutMs, stdio: 'inherit' })
+    void runControlled({
+      argv,
+      timeoutMs: step.timeoutMs,
+      stdio: activePresentation.childStdio
+    })
       .then((result) => {
         const seconds = Math.max(0, Math.round((nativeNow() - startedAt) / 1000))
         resolvePromise({
@@ -1109,7 +1136,7 @@ const stage09aGateResult = ({ exitCode, requestedSignal }) => {
  * only machine-result producer used by both the human CLI and Audit-B; stdout
  * is presentation, never evidence input.
  */
-export const runStage09aCheck = async (argv = []) => {
+export const runStage09aCheck = async (argv = [], presentation = humanPresentation) => {
   aggregateInvocationCount += 1
   if (aggregateRunStarted) {
     return Object.freeze({
@@ -1124,10 +1151,15 @@ export const runStage09aCheck = async (argv = []) => {
       requestedSignal: null
     })
   }
+  // A later/concurrent invocation invalidates an issued receipt, but it must
+  // never switch the presentation capability of the already active run.
+  activePresentation = presentation === auditPresentation
+    ? auditPresentation
+    : humanPresentation
   aggregateRunStarted = true
   keepFailure = argv.includes('--keep-failure')
   usageInvalid = argv.some((argument) => argument !== '--keep-failure')
-  if (usageInvalid) safeWrite(2, `usage: ${usage}\n`)
+  if (usageInvalid) writePresentation(2, `usage: ${usage}\n`)
   installAggregateSignalHandlers()
 
   let ordinaryExitCode = 1
@@ -1157,22 +1189,29 @@ export const runStage09aCheck = async (argv = []) => {
  */
 export const runStage09aCheckForAudit = async (argv = []) => {
   const invocationCountBefore = aggregateInvocationCount
-  const outcome = await runStage09aCheck(argv)
+  const outcome = await runStage09aCheck(argv, auditPresentation)
   const invocationCount = aggregateInvocationCount - invocationCountBefore
   const receipt = Object.freeze({})
-  auditRunReceipts.set(receipt, Object.freeze({
+  const evidence = Object.freeze({
     gate: outcome.gate,
     requestedSignal: outcome.requestedSignal,
     invocationCount,
     retryCount: Math.max(0, invocationCount - 1)
+  })
+  auditRunReceipts.set(receipt, Object.freeze({
+    aggregateInvocationCount,
+    evidence
   }))
   return receipt
 }
 
-export const readStage09aAuditRunReceipt = (receipt) =>
-  receipt !== null && typeof receipt === 'object'
-    ? (auditRunReceipts.get(receipt) ?? null)
+export const readStage09aAuditRunReceipt = (receipt) => {
+  if (receipt === null || typeof receipt !== 'object') return null
+  const record = auditRunReceipts.get(receipt)
+  return record !== undefined && record.aggregateInvocationCount === aggregateInvocationCount
+    ? record.evidence
     : null
+}
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const outcome = await runStage09aCheck(process.argv.slice(2))

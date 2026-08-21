@@ -15,6 +15,12 @@ const gateKeys = Object.freeze([
   'status'
 ])
 
+const canonicalShaValue = (value) =>
+  typeof value === 'string' && canonicalSha.test(value)
+
+const nonnegativeSafeInteger = (value) =>
+  Number.isSafeInteger(value) && value >= 0
+
 const exactKeys = (value, keys) =>
   value !== null &&
   typeof value === 'object' &&
@@ -101,16 +107,16 @@ export const createStage09aAuditBReport = ({
     typeof actualNodeVersion === 'string' &&
     actualNodeVersionPattern.test(actualNodeVersion)
   const environmentScalarValid =
-    canonicalSha.test(expectedCandidateHead) &&
-    (candidateHeadBefore === null || canonicalSha.test(candidateHeadBefore)) &&
-    (candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)) &&
+    canonicalShaValue(expectedCandidateHead) &&
+    (candidateHeadBefore === null || canonicalShaValue(candidateHeadBefore)) &&
+    (candidateHeadAfter === null || canonicalShaValue(candidateHeadAfter)) &&
     requiredNodeVersionValid &&
     actualNodeVersionValid &&
     typeof worktreeCleanBefore === 'boolean' &&
     typeof worktreeCleanAfter === 'boolean'
   const accountingShapeValid =
-    Number.isSafeInteger(invocationCount) && invocationCount >= 0 &&
-    Number.isSafeInteger(retryCount) && retryCount >= 0 &&
+    nonnegativeSafeInteger(invocationCount) &&
+    nonnegativeSafeInteger(retryCount) &&
     (requestedSignal === null || handledSignals.has(requestedSignal))
   const scalarInputValid =
     environmentScalarValid && accountingShapeValid && runEvidenceValid === true
@@ -142,13 +148,13 @@ export const createStage09aAuditBReport = ({
   return Object.freeze({
     schemaVersion: 3,
     evidenceKind: 'stage09a-audit-b-single-run',
-    candidateHead: canonicalSha.test(expectedCandidateHead) ? expectedCandidateHead : null,
+    candidateHead: canonicalShaValue(expectedCandidateHead) ? expectedCandidateHead : null,
     candidateHeadBefore:
-      candidateHeadBefore === null || canonicalSha.test(candidateHeadBefore)
+      candidateHeadBefore === null || canonicalShaValue(candidateHeadBefore)
         ? candidateHeadBefore
         : null,
     candidateHeadAfter:
-      candidateHeadAfter === null || canonicalSha.test(candidateHeadAfter)
+      candidateHeadAfter === null || canonicalShaValue(candidateHeadAfter)
         ? candidateHeadAfter
         : null,
     requiredNodeVersion: requiredNodeVersionValid ? requiredNodeVersion : null,
@@ -156,8 +162,8 @@ export const createStage09aAuditBReport = ({
     worktreeClean,
     worktreeCleanBefore: worktreeCleanBefore === true,
     worktreeCleanAfter: worktreeCleanAfter === true,
-    invocationCount: Number.isSafeInteger(invocationCount) ? invocationCount : null,
-    retryCount: Number.isSafeInteger(retryCount) ? retryCount : null,
+    invocationCount: nonnegativeSafeInteger(invocationCount) ? invocationCount : null,
+    retryCount: nonnegativeSafeInteger(retryCount) ? retryCount : null,
     requestedSignal: handledSignals.has(requestedSignal) ? requestedSignal : null,
     aggregateStepCount: stage09aStepIds.length,
     status: environmentOk && gateValid && gate.status === 'pass' ? 'pass' : 'fail',

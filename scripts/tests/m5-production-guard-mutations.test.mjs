@@ -18,7 +18,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 
@@ -365,35 +365,106 @@ const compilerProgram = (paths, overrides = new Map()) => {
   })
 }
 
-const discoveredTargetCalls = (callee, overrides = new Map()) => {
+const isDeclarationOnlyIdentifier = (node) => {
+  const parent = node.parent
+  return (
+    (ts.isFunctionDeclaration(parent) && parent.name === node) ||
+    (ts.isFunctionExpression(parent) && parent.name === node) ||
+    (ts.isClassDeclaration(parent) && parent.name === node) ||
+    (ts.isVariableDeclaration(parent) && parent.name === node) ||
+    (ts.isParameter(parent) && parent.name === node) ||
+    ts.isImportSpecifier(parent) ||
+    ts.isImportClause(parent) ||
+    ts.isNamespaceImport(parent)
+  )
+}
+
+const discoverProductionCapabilities = (targets, overrides = new Map()) => {
   const candidates = [...new Set([
     ...trackedProductionModulePaths(),
     ...overrides.keys(),
-    callee.path
+    ...[...targets.values()].map(({ path }) => path)
   ])].sort()
   const program = compilerProgram(candidates, overrides)
   const checker = program.getTypeChecker()
-  const targetFile = program.getSourceFile(resolve(repositoryRoot, callee.path))
-  assert.notEqual(targetFile, undefined, `guard declaration source was not parsed: ${callee.path}`)
-  const targetSymbol = topLevelSymbol(checker, targetFile, callee.name)
-  assert.notEqual(targetSymbol, undefined, `guard declaration disappeared: ${callee.path}#${callee.name}`)
-  const calls = []
+  const targetBySymbol = new Map()
+  const references = new Map()
+  const byModule = new Map()
+  for (const [targetKey, callee] of targets) {
+    const absolute = resolve(repositoryRoot, callee.path)
+    const targetFile = program.getSourceFile(absolute)
+    assert.notEqual(targetFile, undefined, `guard declaration source was not parsed: ${callee.path}`)
+    const targetSymbol = topLevelSymbol(checker, targetFile, callee.name)
+    assert.notEqual(targetSymbol, undefined, `guard declaration disappeared: ${callee.path}#${callee.name}`)
+    targetBySymbol.set(targetSymbol, targetKey)
+    references.set(targetKey, [])
+    const names = byModule.get(absolute) ?? new Set()
+    names.add(callee.name)
+    byModule.set(absolute, names)
+  }
+  const moduleProblems = []
+  const localModuleAbsolutePath = (importerPath, moduleSpecifier) =>
+    moduleSpecifier.startsWith('.')
+      ? resolve(dirname(resolve(repositoryRoot, importerPath)), moduleSpecifier)
+      : null
   for (const path of candidates) {
     const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
     if (sourceFile === undefined) continue
     const visit = (node) => {
+      if (ts.isIdentifier(node) && !isDeclarationOnlyIdentifier(node)) {
+        const targetKey = targetBySymbol.get(resolvedSymbol(checker, node))
+        if (targetKey !== undefined) {
+          references.get(targetKey).push(Object.freeze({ path, node, sourceFile, checker }))
+        }
+      }
+      if (
+        ts.isImportDeclaration(node) &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        const target = localModuleAbsolutePath(path, node.moduleSpecifier.text)
+        const targetNames = target === null ? undefined : byModule.get(target)
+        if (
+          targetNames !== undefined &&
+          node.importClause?.namedBindings !== undefined &&
+          ts.isNamespaceImport(node.importClause.namedBindings)
+        ) {
+          for (const name of targetNames) {
+            moduleProblems.push(`production capability namespace import was forbidden: ${node.moduleSpecifier.text}#${name}`)
+          }
+        }
+      }
       if (
         ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        resolvedSymbol(checker, node.expression) === targetSymbol
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments.length === 1 &&
+        ts.isStringLiteral(node.arguments[0])
       ) {
-        calls.push(Object.freeze({ path, node, sourceFile, checker }))
+        const target = localModuleAbsolutePath(path, node.arguments[0].text)
+        const targetNames = target === null ? undefined : byModule.get(target)
+        if (targetNames !== undefined) {
+          for (const name of targetNames) {
+            moduleProblems.push(`production capability dynamic import was forbidden: ${node.arguments[0].text}#${name}`)
+          }
+        }
+      }
+      if (
+        ts.isExportDeclaration(node) &&
+        node.moduleSpecifier !== undefined &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        const target = localModuleAbsolutePath(path, node.moduleSpecifier.text)
+        const targetNames = target === null ? undefined : byModule.get(target)
+        if (targetNames !== undefined) {
+          for (const name of targetNames) {
+            moduleProblems.push(`production capability re-export was forbidden: ${node.moduleSpecifier.text}#${name}`)
+          }
+        }
       }
       ts.forEachChild(node, visit)
     }
     visit(sourceFile)
   }
-  return calls
+  return { references, moduleProblems }
 }
 
 const productionConsumerRegistryProblems = (
@@ -413,6 +484,7 @@ const productionConsumerRegistryProblems = (
     const key = `${consumer.callee.path}#${consumer.callee.name}`
     if (!targets.has(key)) targets.set(key, consumer.callee)
   }
+  const discovery = discoverProductionCapabilities(targets, overrides)
   for (const [targetKey, callee] of targets) {
     const registeredCounts = new Map()
     for (const { consumer } of consumers) {
@@ -420,7 +492,7 @@ const productionConsumerRegistryProblems = (
       registeredCounts.set(consumer.path, (registeredCounts.get(consumer.path) ?? 0) + consumer.count)
     }
     const discoveredCounts = new Map()
-    for (const { path } of discoveredTargetCalls(callee, overrides)) {
+    for (const { path } of discovery.references.get(targetKey) ?? []) {
       discoveredCounts.set(path, (discoveredCounts.get(path) ?? 0) + 1)
     }
     if (
@@ -434,6 +506,7 @@ const productionConsumerRegistryProblems = (
       )
     }
   }
+  problems.push(...discovery.moduleProblems)
   return problems
 }
 
@@ -521,15 +594,28 @@ const unwrapExpression = (node) => {
   return current
 }
 
-const constantString = (node) => {
+const constantString = (node, checker, seen = new Set()) => {
   const current = unwrapExpression(node)
   if (ts.isStringLiteralLike(current)) return current.text
+  if (ts.isIdentifier(current)) {
+    const symbol = checker.getSymbolAtLocation(current)
+    if (symbol === undefined || seen.has(symbol)) return null
+    seen.add(symbol)
+    const declaration = symbol.declarations?.find((candidate) =>
+      ts.isVariableDeclaration(candidate) &&
+      candidate.initializer !== undefined &&
+      ts.isVariableDeclarationList(candidate.parent) &&
+      (candidate.parent.flags & ts.NodeFlags.Const) !== 0)
+    return declaration === undefined
+      ? null
+      : constantString(declaration.initializer, checker, seen)
+  }
   if (
     ts.isBinaryExpression(current) &&
     current.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
-    const left = constantString(current.left)
-    const right = constantString(current.right)
+    const left = constantString(current.left, checker, seen)
+    const right = constantString(current.right, checker, seen)
     return left === null || right === null ? null : left + right
   }
   return null
@@ -612,8 +698,34 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
         node.name.text === 'exit') ||
       (ts.isElementAccessExpression(node) &&
         isProcessAlias(node.expression) &&
-        constantString(node.argumentExpression) === 'exit')
+        constantString(node.argumentExpression, checker) === 'exit')
+    const canonicalProcessUseIsConfined = (node) => {
+      const parent = node.parent
+      if (ts.isPropertyAccessExpression(parent) && parent.expression === node) return true
+      if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+        const key = constantString(parent.argumentExpression, checker)
+        return key !== null && key !== 'exit'
+      }
+      if (
+        ts.isCallExpression(parent) &&
+        parent.arguments[0] === node &&
+        ts.isPropertyAccessExpression(parent.expression) &&
+        parent.expression.name.text === 'bind' &&
+        ts.isPropertyAccessExpression(parent.expression.expression) &&
+        isProcessAlias(parent.expression.expression.expression) &&
+        parent.expression.expression.name.text !== 'exit'
+      ) {
+        return true
+      }
+      return false
+    }
     const visit = (node) => {
+      if (
+        isCanonicalProcessIdentifier(checker, sourceFile, node) &&
+        !canonicalProcessUseIsConfined(node)
+      ) {
+        problems.push(`${path}: process capability escaped through alias or value flow`)
+      }
       if (isExitMember(node)) {
         problems.push(`${path}: process.exit capability escaped the shared settlement boundary`)
       }
@@ -632,7 +744,7 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
         node.expression.getText(sourceFile) === 'Reflect.get' &&
         node.arguments.length >= 2 &&
         isProcessAlias(node.arguments[0]) &&
-        constantString(node.arguments[1]) === 'exit'
+        constantString(node.arguments[1], checker) === 'exit'
       ) {
         problems.push(`${path}: process.exit capability escaped through reflection`)
       }
@@ -797,6 +909,52 @@ test('the real Stage09A execution graph cannot gain an undeclared settlement con
   )
 })
 
+test('critical capabilities cannot escape through namespace alias or value flow', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = [
+    source,
+    "import * as subprocess from '../infra/docker/m3b-subprocess.mjs'",
+    "import * as evidence from '../infra/docker/m5-evidence-protocol.mjs'",
+    "import * as core from './run-stage09a-check.mjs'",
+    "import * as report from './stage09a-audit-b.mjs'",
+    'const m5Identity = (value) => value',
+    'const m5Callback = (_first, _callback) => undefined',
+    "if (process.env.M5_UNREVIEWED_CAPABILITY === '1') {",
+    '  await subprocess.runSignalSettledCli(async () => 0)',
+    "  await subprocess['runSignalSettledCli'](async () => 0)",
+    '  const { runWithDeclaredOwnedTreeOutputs: ownedTree } = evidence',
+    '  await ownedTree({}, [], async () => undefined)',
+    '  await m5Identity(core.runStage09aCheck)([])',
+    '  await m5Identity(core.runStage09aCheckForAudit)([])',
+    '  const { readStage09aAuditRunReceipt: readReceipt } = core',
+    '  readReceipt(Object.freeze({}))',
+    '  report.createStage09aAuditBReportFromReceipt({ runReceipt: {} })',
+    "  m5Callback('argument-0', report.createStage09aAuditBReport)",
+    '}',
+    ''
+  ].join('\n')
+  const problems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[path, mutant]])
+  )
+  for (const target of [
+    'runSignalSettledCli',
+    'runWithDeclaredOwnedTreeOutputs',
+    'runStage09aCheck',
+    'runStage09aCheckForAudit',
+    'readStage09aAuditRunReceipt',
+    'createStage09aAuditBReportFromReceipt',
+    'createStage09aAuditBReport'
+  ]) {
+    assert.equal(
+      problems.some((problem) => problem.includes(target)),
+      true,
+      `capability escape was not rejected: ${target}`
+    )
+  }
+})
+
 test('the production registry requires every exact consumer path once', () => {
   const mutant = m5ProductionGuards.map((guard) => {
     if (guard.id !== 'scratch-capability') return guard
@@ -812,27 +970,40 @@ test('the production registry requires every exact consumer path once', () => {
 })
 
 test('protected production entrypoints cannot obtain the process.exit capability', () => {
+  const representative = m5ProtectedEntrypoints[0]
+  const representativeSource = readFileSync(resolve(repositoryRoot, representative), 'utf8')
+  for (const addition of [
+    'const exitNow = process.exit\n',
+    "const exitNow = process['exit']\n",
+    "const exitNow = process['ex' + 'it']\n",
+    "const exitKey = 'exit'; const exitNow = process[exitKey]\n",
+    'const processIdentity = (value) => value; const exitNow = processIdentity(process).exit\n',
+    'const processHolder = { runtime: process }; const exitNow = processHolder.runtime.exit\n',
+    'const erasedProcess = /** @type {any} */ (process); const exitNow = erasedProcess.exit\n',
+    'const { exit: exitNow } = process\n',
+    "const exitNow = Reflect.get(process, 'exit')\n",
+    "import { exit as exitNow } from 'node:process'\n",
+    "const { exit: exitNow } = await import('node:process')\n"
+  ]) {
+    const problems = protectedExitCapabilityProblems(
+      new Map([[representative, `${representativeSource}\n${addition}`]])
+    )
+    assert.equal(
+      problems.some((problem) => problem.startsWith(`${representative}:`)),
+      true,
+      `${representative} did not reject ${addition.trim()}`
+    )
+  }
   for (const path of m5ProtectedEntrypoints) {
     const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
-    for (const addition of [
-      'const exitNow = process.exit\n',
-      "const exitNow = process['exit']\n",
-      "const exitNow = process['ex' + 'it']\n",
-      'const erasedProcess = /** @type {any} */ (process); const exitNow = erasedProcess.exit\n',
-      'const { exit: exitNow } = process\n',
-      "const exitNow = Reflect.get(process, 'exit')\n",
-      "import { exit as exitNow } from 'node:process'\n",
-      "const { exit: exitNow } = await import('node:process')\n"
-    ]) {
-      const problems = protectedExitCapabilityProblems(
-        new Map([[path, `${source}\n${addition}`]])
-      )
-      assert.equal(
-        problems.some((problem) => problem.startsWith(`${path}:`)),
-        true,
-        `${path} did not reject ${addition.trim()}`
-      )
-    }
+    const problems = protectedExitCapabilityProblems(
+      new Map([[path, `${source}\nconst exitNow = process.exit\n`]])
+    )
+    assert.equal(
+      problems.some((problem) => problem.startsWith(`${path}:`)),
+      true,
+      `${path} did not reject the canonical exit capability`
+    )
   }
 })
 
@@ -1162,7 +1333,7 @@ guardTest('structured-stage09a-core', 'Audit-B cannot bypass the single structur
   const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
   const mutant = replaceExactly(
     source,
-    'const outcome = await runStage09aCheck(argv)',
+    'const outcome = await runStage09aCheck(argv, auditPresentation)',
     "const outcome = { gate: null, requestedSignal: null }"
   )
   const problems = productionConsumerProblems(new Map([[path, mutant]]))

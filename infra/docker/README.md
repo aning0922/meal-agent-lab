@@ -285,6 +285,17 @@ registry 精确闭合；新增调用点必须显式评审。失败报告、发�
 输出固定类别，不回显 scalar、report basename、stderr 或异常文本。完整 14 步证据只接受
 最终候选提交后的单次串行运行；提交前工作树 PASS 不能作为候选证据。
 
+**M5.11 capability-reference/audit-silence 协议（2026-08-21，覆盖 M5.10 的 direct-call
+判据）**：production guard 现在枚举受保护声明的全部运行时引用，不再把 namespace、
+computed、解构、wrapper、callback 或普通 value flow 当成“没有调用”；指向受保护模块的
+namespace/dynamic/re-export 固定拒绝。Audit-B 通过模块私有 presentation 丢弃核心诊断，
+每个 gate child 的 stdio 固定为 `ignore`，公开调用方不能伪造该 capability。receipt 绑定
+aggregate invocation generation，签发后发生额外调用就失效。candidate/accounting 只接受
+canonical primitive scalar；`process.exit` 门禁跟踪 immutable const key 与 capability
+传递。controller spawn 成功后立即登记 PGID，再执行 fd close；close primitive 失败仍走
+同一 TERM→KILL→ESRCH 收敛。动态审计 B 在消费唯一正式 invocation 前必须先确认固定
+Node 与依赖可用，缺依赖只判任务基础设施无效，不得补装后重放同一候选报告。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

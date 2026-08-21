@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import test from 'node:test'
 
@@ -201,6 +202,92 @@ test('invalid scalar fields and forged run receipts collapse without reflecting 
   assert.equal(receiptReport.reason, 'run-evidence-invalid')
   assert.equal(receiptReport.invocationCount, null)
   assert.deepEqual(receiptReport.gate.completedSteps, [])
+})
+
+test('candidate and accounting scalars are canonical primitives without coercion', () => {
+  let coercions = 0
+  const sentinel = 'NONCANONICAL-CANDIDATE-SENTINEL'
+  const hostileCandidate = {
+    toString() {
+      coercions += 1
+      return candidateHead
+    },
+    toJSON() {
+      return sentinel
+    },
+    [Symbol.toPrimitive]() {
+      coercions += 1
+      return candidateHead
+    }
+  }
+  const report = createStage09aAuditBReport({
+    ...reportInput(),
+    expectedCandidateHead: hostileCandidate,
+    candidateHeadBefore: hostileCandidate,
+    candidateHeadAfter: hostileCandidate,
+    invocationCount: -7,
+    retryCount: -9
+  })
+  const serialized = serializeStage09aAuditBReport(report).toString('utf8')
+  assert.equal(report.status, 'fail')
+  assert.equal(report.reason, 'report-input-invalid')
+  assert.equal(report.candidateHead, null)
+  assert.equal(report.candidateHeadBefore, null)
+  assert.equal(report.candidateHeadAfter, null)
+  assert.equal(report.invocationCount, null)
+  assert.equal(report.retryCount, null)
+  assert.equal(coercions, 0)
+  assert.doesNotMatch(serialized, new RegExp(sentinel))
+})
+
+test('the audit receipt core has a silent presentation boundary', () => {
+  const fixture = [
+    `import { runStage09aCheckForAudit } from ${JSON.stringify(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'))}`,
+    "await runStage09aCheckForAudit(['--invalid-audit-fixture'])"
+  ].join('\n')
+  const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', fixture], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    timeout: 10_000
+  })
+  assert.equal(outcome.status, 0, outcome.stderr)
+  assert.equal(outcome.stdout, '')
+  assert.equal(outcome.stderr, '')
+})
+
+test('a later aggregate invocation invalidates an already issued receipt', () => {
+  const fixture = [
+    `import { readStage09aAuditRunReceipt, runStage09aCheck, runStage09aCheckForAudit } from ${JSON.stringify(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'))}`,
+    "const receipt = await runStage09aCheckForAudit(['--invalid-audit-fixture'])",
+    'const before = readStage09aAuditRunReceipt(receipt) !== null',
+    "await runStage09aCheck(['--invalid-second-invocation'])",
+    'const after = readStage09aAuditRunReceipt(receipt) !== null',
+    'process.stdout.write(JSON.stringify({ before, after }))'
+  ].join('\n')
+  const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', fixture], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    timeout: 10_000
+  })
+  assert.equal(outcome.status, 0, outcome.stderr)
+  assert.deepEqual(JSON.parse(outcome.stdout), { before: true, after: false })
+})
+
+test('a concurrent public invocation cannot switch an active audit presentation', () => {
+  const fixture = [
+    `import { runStage09aCheck, runStage09aCheckForAudit } from ${JSON.stringify(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs'))}`,
+    "const audit = runStage09aCheckForAudit(['--invalid-audit-fixture'])",
+    "await runStage09aCheck(['--invalid-public-fixture'])",
+    'await audit'
+  ].join('\n')
+  const outcome = spawnSync(process.execPath, ['--input-type=module', '--eval', fixture], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    timeout: 10_000
+  })
+  assert.equal(outcome.status, 0, outcome.stderr)
+  assert.equal(outcome.stdout, '')
+  assert.equal(outcome.stderr, '')
 })
 
 test('ordinary and signaled gate evidence rejects contradictory settlement shapes', () => {
