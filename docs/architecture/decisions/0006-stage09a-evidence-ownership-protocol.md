@@ -59,6 +59,17 @@ scripts tests 为 203/203；提交前反馈链为 14/14，最终候选证据仍�
 完整实测。M5.11 当前为 Implementation complete — pending committed-candidate gate and
 independent A/B review；M5 未 Accepted，本 ADR 仍为 `Proposed`。
 
+实施注记（2026-08-21，M5.12，覆盖上一段当前状态）：M5.11 候选 `8bfbf54` 的独立
+审计 A=BLOCK、B=CLEAN；B 的单次正式 14/14 与零残留有效，但 A 证明拼接 dynamic
+import、process 能力重获、wrong-reason mutation 和 object-shaped report input 仍未闭合。
+M5.12 将 production module surface 递归化，要求 dynamic import specifier 静态可判定，
+并把受保护模块的 process/global 属性收窄到评审闭集。Audit-B 公开 report 入口改为 opaque
+receipt + 位置固定 primitive，调用方不再提供 gate/accounting，计数显式拒绝 `-0`；七类
+value flow mutation 分开按 declaration-identity drift 判定。代码落点 `d4bdf2b`；scripts
+tests 208/208、production guard 28/28、Audit-B 16/16。最终候选 14/14 只接受文档提交后的
+从头实测；M5.12 当前为 Implementation complete — pending final committed-candidate gate and
+independent A/B review，M5 未 Accepted，本 ADR 仍为 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

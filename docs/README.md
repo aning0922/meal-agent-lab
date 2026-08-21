@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.11 能力引用/Audit-B 静默边界整改（2026-08-21，覆盖下方历史轮次）**：M5.10 候选 `d8e0e9b` 的独立审计 A/B 均为 BLOCK（A 2 P1，B 4 P1；能力消费者项重叠），B 的独立 worktree 缺依赖导致唯一正式运行 0/14，单列为基础设施无效证据，不作为 finding。总控按 [M5.11 任务书](plans/2026-08-m5-11-capability-and-audit-boundary-convergence.md)把 production guard 扩为全部 runtime reference 的 declaration-identity 闭包；canonical scalar 不执行调用方转换方法；Audit-B 的核心/child 输出使用模块私有静默 presentation；旧 receipt 遇额外 aggregate invocation 即失效；`process.exit` capability 沿 immutable const key/value flow 判定；controller fork 后先登记 PGID 再执行可抛 primitive。固定 Node.js `v24.18.0` 的 scripts tests 为 **203/203**；提交前反馈门禁为 14/14。**M5.11 Implementation complete — pending committed-candidate gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**最终完整门禁只承认候选提交产生后的实测。
+**当前 M5.12 封闭能力入口/canonical report input 整改（2026-08-21，覆盖下方历史轮次）**：M5.11 候选 `8bfbf54` 的独立审计 A=BLOCK、B=CLEAN；动态 14/14 有效，但 A 的 4 个 P1 与 1 个 P2 命中同轮声明的静态能力和输入边界，因此综合仍为 BLOCK。总控按 [M5.12 任务书](plans/2026-08-m5-12-closed-capability-and-canonical-input.md)把 production module/dynamic import 改成封闭面，限制受保护模块的 process/global 属性，删除 object-shaped report environment 与调用方 gate/accounting 输入，并把七类 value flow mutation 拆成精确理由反例。固定 Node.js `v24.18.0` 的 scripts tests 为 **208/208**、production guard 28/28、Audit-B 16/16。**M5.12 Implementation complete — pending final committed-candidate gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**最终完整门禁只承认最终提交产生后的实测。
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
@@ -77,6 +77,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [阶段 09A M5.9 结构化阶段门禁核心与显式命令面整改](plans/2026-08-m5-9-structured-stage-gate-core.md)
 - [阶段 09A M5.10 运行 receipt、能力面与安全诊断闭合](plans/2026-08-m5-10-receipt-and-capability-closure.md)
 - [阶段 09A M5.11 能力引用闭包与 Audit-B 静默边界整改](plans/2026-08-m5-11-capability-and-audit-boundary-convergence.md)
+- [阶段 09A M5.12 封闭能力入口与 canonical report input 整改](plans/2026-08-m5-12-closed-capability-and-canonical-input.md)
 - [计划索引](plans/README.md)
 - [微信开发者工具走查证据](evidence/stage-08-gui/README.md)
 - [依赖例外产物扫描证据](evidence/stage-08-audit/weapp-advisory-scan.json)

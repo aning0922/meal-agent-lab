@@ -296,6 +296,15 @@ canonical primitive scalar；`process.exit` 门禁跟踪 immutable const key 与
 同一 TERM→KILL→ESRCH 收敛。动态审计 B 在消费唯一正式 invocation 前必须先确认固定
 Node 与依赖可用，缺依赖只判任务基础设施无效，不得补装后重放同一候选报告。
 
+**M5.12 closed-capability/canonical-input 协议（2026-08-21，覆盖 M5.11 的开放模块
+与 object-shaped report input）**：production module surface 递归覆盖 tracked
+`infra/docker/**/*.mjs` 与 `scripts/**/*.mjs`（排除 fixtures/tests），dynamic import 的模块名
+必须由 immutable const/literal concatenation 静态求值；不能求值就固定失败。受保护入口只允许
+登记过的 process/global 属性，禁止重新取得 process 或转交 global capability。Audit-B report
+只接受 opaque receipt 与七个位置固定 primitive；gate、signal 与 invocation accounting 只能由
+receipt projector 提供，`-0` 不是 canonical count。namespace、七类 value flow、拼接/动态
+module specifier 与 process 重获路径分别以独立理由断言，不能由无关门禁代偿。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

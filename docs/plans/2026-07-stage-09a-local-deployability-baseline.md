@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-20 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.11 Implementation complete — pending committed-candidate gate and independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5.12 Implementation complete — pending final committed-candidate gate and independent A/B review，M5 未 Accepted**；远端 CI 仅登记 workflow 已配置、无真实 run；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -3401,7 +3401,7 @@ M4 **不覆盖**的 `stage09a:check` 聚合门禁、GitHub Actions 与文档/ADR
 5. 在 **2026-11-08** 前复核 local/weapp-only 依赖例外：不得为了通过阶段 09A 静默续期；例外未关闭时继续阻断阶段 09B、外部测试、体验版和发布。**已于 2026-08-06 完成第一次复核**——逐条对账 9 条零漂移后显式续期至 2026-11-08，依据与条件登记在 ADR-0004；下一次续期必须同样显式决策。
 6. 更新根 README、API/infra/operations README、项目状态、本计划和 [ADR-0005](../architecture/decisions/0005-local-private-deployment-baseline.md)；只有真实容器证据通过后才把 ADR 从 `Proposed` 改为 `Accepted`。
 
-### M5 实施记录（M5.11 Implementation complete — pending committed-candidate gate and independent A/B review，未 Accepted）
+### M5 实施记录（M5.12 Implementation complete — pending final committed-candidate gate and independent A/B review，未 Accepted）
 
 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`。落点：
 
@@ -4468,6 +4468,28 @@ Audit-B/schema/receipt 16/16、聚合器与 settlement 45/45。提交前反馈�
 `pnpm stage09a:check` 为 14/14；最终候选的 14/14、docs links、diff check 与零残留只接受
 本轮 committed HEAD 产生后的重新实测，不在本段预写 PASS。完整任务书见
 [M5.11 能力引用闭包与 Audit-B 静默边界整改](2026-08-m5-11-capability-and-audit-boundary-convergence.md)。
+本段不标记 M5 Accepted、09A Pass 或远端 CI PASS。
+
+#### M5.12 封闭能力入口与 canonical report input 整改（2026-08-21）
+
+M5.11 候选 `8bfbf54` 的两路审计均有效：B 的单次正式 14/14、0 retry 与零残留为
+CLEAN 动态证据；A 确认拼接 dynamic import、process capability 重获、wrong-reason
+mutation 与 object-shaped report input 四个 P1，另确认 `-0` 的 canonical P2，因此综合
+仍为 BLOCK。
+
+总控先在基线运行四条窄反例并取得 4 fail，再按三组根因整改。production tracked module
+surface 递归覆盖嵌套入口，dynamic import specifier 必须能由 immutable const/literal
+concatenation 静态求值；受保护模块只允许登记过的 process/global 属性，禁止 global process、
+拼接 `node:process`、`getBuiltinModule` 与 constructor 重获路径。Audit-B report 删除
+object-shaped environment 和调用方 gate/accounting，改为 opaque receipt + 七个位置固定
+primitive；计数拒绝 `-0`。namespace 与七类 value flow mutation 分离，每条精确断言
+declaration-identity drift，不能由错误理由代偿。
+
+代码落点 `d4bdf2b`。固定 Node.js `v24.18.0` 的 scripts tests 为 **208/208**、production
+guard mutation 28/28、Audit-B/schema/receipt 16/16，`node --check` 与 `git diff --check`
+通过。最终 committed candidate 的完整 14/14、docs links 与零残留只接受文档提交后的
+重新实测。完整任务书见
+[M5.12 封闭能力入口与 canonical report input 整改](2026-08-m5-12-closed-capability-and-canonical-input.md)。
 本段不标记 M5 Accepted、09A Pass 或远端 CI PASS。
 
 ## 工具前置
