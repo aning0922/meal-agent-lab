@@ -390,15 +390,122 @@ const dynamicImportModuleSpecifier = (node, checker) => {
   return constantString(node.arguments[0], checker)
 }
 
-const moduleSpecifierUsesUnreviewedIdentity = (moduleSpecifier) => {
-  if (
-    moduleSpecifier.length === 0 ||
-    /[?#%\\]/u.test(moduleSpecifier) ||
-    /[\p{White_Space}\p{Cf}]/u.test(moduleSpecifier) ||
-    moduleSpecifier.startsWith('/')
-  ) return true
-  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:/u.exec(moduleSpecifier)?.[0] ?? null
-  return scheme !== null && scheme !== 'node:'
+const moduleIdentityRules = Object.freeze([
+  Object.freeze({ id: 'empty', matches: (value) => value.length === 0 }),
+  Object.freeze({ id: 'query', matches: (value) => value.includes('?') }),
+  Object.freeze({ id: 'fragment', matches: (value) => value.includes('#') }),
+  Object.freeze({ id: 'percent', matches: (value) => value.includes('%') }),
+  Object.freeze({ id: 'backslash', matches: (value) => value.includes('\\') }),
+  Object.freeze({ id: 'whitespace', matches: (value) => /\p{White_Space}/u.test(value) }),
+  Object.freeze({ id: 'format-character', matches: (value) => /\p{Cf}/u.test(value) }),
+  Object.freeze({ id: 'absolute-path', matches: (value) => value.startsWith('/') }),
+  Object.freeze({
+    id: 'non-node-scheme',
+    matches: (value) => {
+      const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:/u.exec(value)?.[0] ?? null
+      return scheme !== null && scheme !== 'node:'
+    }
+  })
+])
+
+const moduleSpecifierUsesUnreviewedIdentity = (
+  moduleSpecifier,
+  rules = moduleIdentityRules
+) => rules.some(({ matches }) => matches(moduleSpecifier))
+
+const symbolHasNodeDeclaration = (symbol, fileName, name = null) =>
+  symbol !== undefined &&
+  (name === null || symbol.getName() === name) &&
+  symbol.declarations?.some((declaration) =>
+    new RegExp(`[/\\\\]@types[/\\\\]node[/\\\\]${fileName}\\.d\\.ts$`, 'u')
+      .test(declaration.getSourceFile().fileName)) === true
+
+const nodeDeclarationAt = (checker, node, fileName, name = null) =>
+  symbolHasNodeDeclaration(resolvedSymbol(checker, node), fileName, name)
+
+const nodeTypePropertyIs = (checker, node, property, fileName) =>
+  symbolHasNodeDeclaration(
+    checker.getTypeAtLocation(node).getProperty(property),
+    fileName,
+    property
+  )
+
+// `createRequire()` and `process.getBuiltinModule()` are alternative module
+// acquisition roots. Production has no legitimate consumer for either root,
+// so the closed boundary rejects the capability at acquisition time instead
+// of attempting to follow every alias, holder, reflection call or loaded ESM
+// namespace after the fact. The decisions below are bound to the Node type
+// declarations, not to local variable names.
+const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
+  let found = false
+  const visit = (node) => {
+    if (found) return
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier !== undefined &&
+      nodeDeclarationAt(checker, node.moduleSpecifier, 'module')
+    ) {
+      found = true
+      return
+    }
+    if (
+      ts.isIdentifier(node) &&
+      (
+        nodeDeclarationAt(checker, node, 'module', 'createRequire') ||
+        nodeDeclarationAt(checker, node, 'process', 'getBuiltinModule')
+      )
+    ) {
+      found = true
+      return
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      node.argumentExpression !== undefined
+    ) {
+      const key = constantString(node.argumentExpression, checker)
+      if (
+        (key === 'createRequire' &&
+          nodeTypePropertyIs(checker, node.expression, key, 'module')) ||
+        (key === 'getBuiltinModule' &&
+          nodeTypePropertyIs(checker, node.expression, key, 'process'))
+      ) {
+        found = true
+        return
+      }
+    }
+    if (
+      ts.isCallExpression(node) &&
+      node.arguments.length >= 2
+    ) {
+      const key = constantString(node.arguments[1], checker)
+      if (
+        (key === 'createRequire' &&
+          nodeTypePropertyIs(checker, node.arguments[0], key, 'module')) ||
+        (key === 'getBuiltinModule' &&
+          nodeTypePropertyIs(checker, node.arguments[0], key, 'process'))
+      ) {
+        found = true
+        return
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return found
+}
+
+const synchronousModuleLoaderCapabilityProblems = (paths, program, checker) => {
+  const problems = []
+  for (const path of paths) {
+    const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
+    if (
+      sourceFile !== undefined &&
+      sourceUsesSynchronousModuleLoader(sourceFile, checker)
+    ) {
+      problems.push(`${path}: production synchronous module loader capability was forbidden`)
+    }
+  }
+  return problems
 }
 
 const discoverProductionCapabilities = (targets, overrides = new Map()) => {
@@ -424,7 +531,11 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
     names.add(callee.name)
     byModule.set(absolute, names)
   }
-  const moduleProblems = []
+  const moduleProblems = synchronousModuleLoaderCapabilityProblems(
+    candidates,
+    program,
+    checker
+  )
   const localModuleAbsolutePath = (importerPath, moduleSpecifier) =>
     moduleSpecifier.startsWith('.')
       ? resolve(dirname(resolve(repositoryRoot, importerPath)), moduleSpecifier)
@@ -662,7 +773,11 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
   ])].sort()
   const program = compilerProgram(paths, overrides)
   const checker = program.getTypeChecker()
-  const problems = []
+  const problems = synchronousModuleLoaderCapabilityProblems(
+    paths,
+    program,
+    checker
+  )
   for (const path of paths) {
     const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
     if (sourceFile === undefined) continue
@@ -1161,6 +1276,38 @@ test('two-argument dynamic imports cannot hide protected capability modules', ()
   }
 })
 
+test('each module identity grammar branch has an independent mutation witness', () => {
+  const witnesses = new Map([
+    ['empty', ''],
+    ['query', './module.mjs?audit'],
+    ['fragment', './module.mjs#audit'],
+    ['percent', './module%2emjs'],
+    ['backslash', './module.mjs\\audit'],
+    ['whitespace', './module.mjs\t'],
+    ['format-character', './module.mjs\u200b'],
+    ['absolute-path', '/private/tmp/module.mjs'],
+    ['non-node-scheme', 'custom+loader:module.mjs']
+  ])
+  assert.deepEqual(
+    moduleIdentityRules.map(({ id }) => id),
+    [...witnesses.keys()]
+  )
+  for (const [id, witness] of witnesses) {
+    assert.equal(moduleSpecifierUsesUnreviewedIdentity(witness), true)
+    assert.equal(
+      moduleSpecifierUsesUnreviewedIdentity(
+        witness,
+        moduleIdentityRules.filter((rule) => rule.id !== id)
+      ),
+      false,
+      `module identity rule did not own an independent witness: ${id}`
+    )
+  }
+  for (const allowed of ['./module.mjs', '../module.mjs', 'typescript', 'node:path']) {
+    assert.equal(moduleSpecifierUsesUnreviewedIdentity(allowed), false)
+  }
+})
+
 test('production imports cannot introduce a second module identity system', () => {
   const path = 'scripts/check-markdown-links.mjs'
   const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
@@ -1171,6 +1318,13 @@ test('production imports cannot introduce a second module identity system', () =
     `./run-stage09a-check.mjs?${sentinel}`,
     `./run-stage09a-check.mjs#${sentinel}`,
     './run-stage09a-check%2Emjs',
+    './run-stage09a-check.mjs\\alternate',
+    '/private/tmp/run-stage09a-check.mjs',
+    'C:/private/run-stage09a-check.mjs',
+    './run-stage09a-check.mjs\t',
+    './run-stage09a-check.mjs\u200b',
+    'https://example.invalid/run-stage09a-check.mjs',
+    'custom+loader:run-stage09a-check.mjs',
     targetUrl,
     `data:text/javascript,${encodeURIComponent(dataSource)}`
   ]
@@ -1229,6 +1383,109 @@ test('production imports cannot introduce a second module identity system', () =
     )
     assert.equal(reExportProblems.some((problem) => problem.includes(sentinel)), false)
   }
+
+  for (const specifier of [
+    './run-stage09a-check.mjs',
+    '../docker/m3b-subprocess.mjs',
+    'typescript',
+    '@scope/package/subpath',
+    'node:path'
+  ]) {
+    const allowed = [
+      source,
+      `import * as allowedModule from ${JSON.stringify(specifier)}`,
+      'void allowedModule',
+      ''
+    ].join('\n')
+    const problems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, allowed]])
+    )
+    assert.equal(
+      problems.includes(`${path}: production module specifier used an unreviewed identity form`),
+      false,
+      `reviewed module identity was rejected: ${specifier}`
+    )
+  }
+})
+
+test('production cannot acquire a synchronous module loader capability', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const reason = `${path}: production synchronous module loader capability was forbidden`
+  const cases = [
+    "import { createRequire as acquire } from 'node:module'; void acquire",
+    "import * as nodeModule from 'node:module'; void nodeModule",
+    "import * as nodeModule from 'node:module'; const acquire = nodeModule['create' + 'Require']; void acquire",
+    "import * as nodeModule from 'node:module'; const { createRequire: acquire } = nodeModule; void acquire",
+    "import * as nodeModule from 'node:module'; const acquire = Reflect.get(nodeModule, 'createRequire'); void acquire",
+    "import * as nodeModule from 'node:module'; const forward = (value) => value; void forward(nodeModule)",
+    "import Module from 'node:module'; void Module",
+    "export { createRequire as acquire } from 'node:module'",
+    "export * from 'module'",
+    "const acquire = process.getBuiltinModule('node:module').createRequire; void acquire",
+    "const getBuiltin = process['getBuiltin' + 'Module']; void getBuiltin",
+    "const getBuiltin = Reflect.get(process, 'getBuiltinModule'); void getBuiltin",
+    "const { getBuiltinModule: getBuiltin } = process; void getBuiltin",
+    "const holder = { runtime: process }; const getBuiltin = holder.runtime.getBuiltinModule; void getBuiltin"
+  ]
+  for (const body of cases) {
+    const problems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, `${source}\n${body}\n`]])
+    )
+    assert.equal(
+      problems.includes(reason),
+      true,
+      `synchronous module loader acquisition was not rejected: ${body}`
+    )
+  }
+
+  const localNamesPath = 'scripts/local-loader-names.mjs'
+  const localNames = [
+    'export const createRequire = () => null',
+    'export const helper = { getBuiltinModule: () => null }',
+    ''
+  ].join('\n')
+  const localConsumer = [
+    source,
+    "import { createRequire, helper } from './local-loader-names.mjs'",
+    'void createRequire()',
+    'void helper.getBuiltinModule()',
+    ''
+  ].join('\n')
+  const localProblems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([
+      [path, localConsumer],
+      [localNamesPath, localNames]
+    ])
+  )
+  assert.equal(
+    localProblems.some((problem) =>
+      problem.endsWith('production synchronous module loader capability was forbidden')),
+    false,
+    `local same-name declarations were mistaken for Node capabilities: ${JSON.stringify(localProblems)}`
+  )
+})
+
+test('protected entrypoints cannot use createRequire to reacquire process.exit', () => {
+  const path = m5ProtectedEntrypoints[0]
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = [
+    source,
+    "import { createRequire as acquire } from 'node:module'",
+    'const load = acquire(import.meta.url)',
+    "const exitNow = Reflect.get(load('node:process'), 'exit')",
+    'void exitNow',
+    ''
+  ].join('\n')
+  assert.equal(
+    protectedExitCapabilityProblems(new Map([[path, mutant]])).includes(
+      `${path}: production synchronous module loader capability was forbidden`
+    ),
+    true
+  )
 })
 
 test('the reviewed production module surface includes nested executable modules', () => {
