@@ -3,7 +3,7 @@
 - 日期：2026-08-21
 - 实施基线：`8bfbf547e0303e1f9a3c6cf259496cfb9d47aa90`
 - 代码实现落点：`d4bdf2b33176a6c087ec1a66a691b166f5f1d447`
-- 状态：Implementation complete — pending final committed-candidate gate and independent A/B review；M5 未 Accepted；阶段 09A 未 Pass
+- 状态：Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；阶段 09A 未 Pass
 - 范围：M5 production capability 的模块入口闭包、`process`/global capability、Audit-B canonical input 与 mutation 判别力
 
 ## 一、进入条件与裁定
@@ -73,8 +73,9 @@ dynamic import、非静态 specifier、递归 production surface 与四类 proce
 - Markdown links：76 files / 311 local links（任务书进入 Git 后的 committed candidate 实测）；
 - `node --check` 与 `git diff --check`：通过。
 
-完整 `pnpm stage09a:check`、Markdown links、最终提交态 Git clean 与零残留只承认最终文档
-候选提交后的重新实测，本任务书不预写远端 GitHub Actions PASS。
+提交态反馈候选 `866cf11` 已从步骤 1 完成 `pnpm stage09a:check` 14/14、Markdown
+links 76/311、Git clean 与 scoped 零残留复核。最终证据仍只承认对应最终提交后的重新实测，
+本任务书不把本地门禁写成远端 GitHub Actions PASS。
 
 ## 四、范围与下一门禁
 
@@ -83,7 +84,7 @@ contracts、API/client 业务、migration、Dockerfile、Compose/Secret contract
 动态实现、lockfile、依赖例外或 GitHub Actions workflow。文档同步根 README、infra README、
 project-status、阶段 09A 总计划、ADR-0006、导航与本地项目看板。
 
-最终 committed candidate 完整门禁全绿后，下一步仍是两个**全新、用户可见、彼此独立**的
+最终 committed candidate 完整门禁全绿；下一步仍是两个**全新、用户可见、彼此独立**的
 只读审计会话：A 禁止 Docker，B 独占 Docker；不得复用 M5.11 审计会话。任一路确认 P0/P1，
 M5.12 继续 BLOCK。本轮不 push、merge、建 PR，不自行标记 M5 Accepted、09A Pass 或远端
 CI Pass。

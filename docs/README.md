@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.12 封闭能力入口/canonical report input 整改（2026-08-21，覆盖下方历史轮次）**：M5.11 候选 `8bfbf54` 的独立审计 A=BLOCK、B=CLEAN；动态 14/14 有效，但 A 的 4 个 P1 与 1 个 P2 命中同轮声明的静态能力和输入边界，因此综合仍为 BLOCK。总控按 [M5.12 任务书](plans/2026-08-m5-12-closed-capability-and-canonical-input.md)把 production module/dynamic import 改成封闭面，限制受保护模块的 process/global 属性，删除 object-shaped report environment 与调用方 gate/accounting 输入，并把七类 value flow mutation 拆成精确理由反例。固定 Node.js `v24.18.0` 的 scripts tests 为 **208/208**、production guard 28/28、Audit-B 16/16。**M5.12 Implementation complete — pending final committed-candidate gate and independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**最终完整门禁只承认最终提交产生后的实测。
+**当前 M5.12 封闭能力入口/canonical report input 整改（2026-08-21，覆盖下方历史轮次）**：M5.11 候选 `8bfbf54` 的独立审计 A=BLOCK、B=CLEAN；动态 14/14 有效，但 A 的 4 个 P1 与 1 个 P2 命中同轮声明的静态能力和输入边界，因此综合仍为 BLOCK。总控按 [M5.12 任务书](plans/2026-08-m5-12-closed-capability-and-canonical-input.md)把 production module/dynamic import 改成封闭面，限制受保护模块的 process/global 属性，删除 object-shaped report environment 与调用方 gate/accounting 输入，并把七类 value flow mutation 拆成精确理由反例。固定 Node.js `v24.18.0` 的 scripts tests 为 **208/208**、production guard 28/28、Audit-B 16/16；提交态候选已从步骤 1 通过 `stage09a:check` **14/14**、Markdown links 76/311 与 scoped 零残留复核。**M5.12 Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**完整门禁只承认对应最终提交产生后的实测。
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 

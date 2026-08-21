@@ -66,9 +66,10 @@ M5.12 将 production module surface 递归化，要求 dynamic import specifier 
 并把受保护模块的 process/global 属性收窄到评审闭集。Audit-B 公开 report 入口改为 opaque
 receipt + 位置固定 primitive，调用方不再提供 gate/accounting，计数显式拒绝 `-0`；七类
 value flow mutation 分开按 declaration-identity drift 判定。代码落点 `d4bdf2b`；scripts
-tests 208/208、production guard 28/28、Audit-B 16/16。最终候选 14/14 只接受文档提交后的
-从头实测；M5.12 当前为 Implementation complete — pending final committed-candidate gate and
-independent A/B review，M5 未 Accepted，本 ADR 仍为 `Proposed`。
+tests 208/208、production guard 28/28、Audit-B 16/16。提交态候选从步骤 1 完成
+`stage09a:check` 14/14、Markdown links 76/311 与 scoped 零残留复核；候选证据仍只接受对应
+最终提交后的从头实测。M5.12 当前为 Implementation complete — committed-candidate gate
+PASS, pending independent A/B review；M5 未 Accepted，本 ADR 仍为 `Proposed`。
 
 ## 背景
 
