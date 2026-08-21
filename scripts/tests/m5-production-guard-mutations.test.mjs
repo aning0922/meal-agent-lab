@@ -381,6 +381,26 @@ const isDeclarationOnlyIdentifier = (node) => {
   )
 }
 
+const dynamicImportModuleSpecifier = (node, checker) => {
+  if (
+    !ts.isCallExpression(node) ||
+    node.expression.kind !== ts.SyntaxKind.ImportKeyword
+  ) return undefined
+  if (node.arguments.length < 1 || node.arguments.length > 2) return null
+  return constantString(node.arguments[0], checker)
+}
+
+const moduleSpecifierUsesUnreviewedIdentity = (moduleSpecifier) => {
+  if (
+    moduleSpecifier.length === 0 ||
+    /[?#%\\]/u.test(moduleSpecifier) ||
+    /[\p{White_Space}\p{Cf}]/u.test(moduleSpecifier) ||
+    moduleSpecifier.startsWith('/')
+  ) return true
+  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:/u.exec(moduleSpecifier)?.[0] ?? null
+  return scheme !== null && scheme !== 'node:'
+}
+
 const discoverProductionCapabilities = (targets, overrides = new Map()) => {
   const candidates = [...new Set([
     ...trackedProductionModulePaths(),
@@ -423,6 +443,11 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
         ts.isImportDeclaration(node) &&
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
+        if (moduleSpecifierUsesUnreviewedIdentity(node.moduleSpecifier.text)) {
+          moduleProblems.push(
+            `${path}: production module specifier used an unreviewed identity form`
+          )
+        }
         const target = localModuleAbsolutePath(path, node.moduleSpecifier.text)
         const targetNames = target === null ? undefined : byModule.get(target)
         if (
@@ -435,17 +460,14 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
           }
         }
       }
-      if (
-        ts.isCallExpression(node) &&
-        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments.length === 1
-      ) {
-        const moduleSpecifier = constantString(node.arguments[0], checker)
+      const moduleSpecifier = dynamicImportModuleSpecifier(node, checker)
+      if (moduleSpecifier !== undefined) {
         if (moduleSpecifier === null) {
           moduleProblems.push(`${path}: production dynamic import specifier was not statically closed`)
           ts.forEachChild(node, visit)
           return
         }
+        moduleProblems.push(`${path}: production dynamic import was forbidden`)
         const target = localModuleAbsolutePath(path, moduleSpecifier)
         const targetNames = target === null ? undefined : byModule.get(target)
         if (targetNames !== undefined) {
@@ -459,6 +481,11 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
         node.moduleSpecifier !== undefined &&
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
+        if (moduleSpecifierUsesUnreviewedIdentity(node.moduleSpecifier.text)) {
+          moduleProblems.push(
+            `${path}: production module specifier used an unreviewed identity form`
+          )
+        }
         const target = localModuleAbsolutePath(path, node.moduleSpecifier.text)
         const targetNames = target === null ? undefined : byModule.get(target)
         if (targetNames !== undefined) {
@@ -696,13 +723,13 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
           }
         }
       }
-      if (
-        ts.isCallExpression(node) &&
-        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments.length === 1 &&
-        constantString(node.arguments[0], checker) === 'node:process'
-      ) {
-        namedExitImports.push(node)
+      const moduleSpecifier = dynamicImportModuleSpecifier(node, checker)
+      if (moduleSpecifier !== undefined) {
+        if (moduleSpecifier === null) {
+          problems.push(`${path}: process capability import specifier was not statically closed`)
+        } else if (moduleSpecifier === 'node:process') {
+          namedExitImports.push(node)
+        }
       }
       ts.forEachChild(node, seed)
     }
@@ -1080,6 +1107,130 @@ test('production dynamic import specifiers must be statically closed', () => {
   )
 })
 
+test('two-argument dynamic imports cannot hide protected capability modules', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const protectedMutant = [
+    source,
+    'const hiddenCore = await import("./run-stage09a-check.mjs", {})',
+    'const stolenCore = Reflect.get(hiddenCore, "runStage09aCheck")',
+    'void stolenCore',
+    ''
+  ].join('\n')
+  const protectedProblems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[path, protectedMutant]])
+  )
+  assert.equal(
+    protectedProblems.includes(
+      'production capability dynamic import was forbidden: ./run-stage09a-check.mjs#runStage09aCheck'
+    ),
+    true
+  )
+
+  const openMutant = [
+    source,
+    'const runtimeModuleName = process.env.M5_RUNTIME_MODULE',
+    'void await import(runtimeModuleName, {})',
+    ''
+  ].join('\n')
+  const openProblems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[path, openMutant]])
+  )
+  assert.equal(
+    openProblems.includes(`${path}: production dynamic import specifier was not statically closed`),
+    true
+  )
+
+  for (const malformedCall of [
+    'void import()',
+    'void import("./run-stage09a-check.mjs", {}, {})'
+  ]) {
+    const malformedProblems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, `${source}\n${malformedCall}\n`]])
+    )
+    assert.equal(
+      malformedProblems.includes(
+        `${path}: production dynamic import specifier was not statically closed`
+      ),
+      true,
+      `invalid dynamic import arity was not rejected: ${malformedCall}`
+    )
+  }
+})
+
+test('production imports cannot introduce a second module identity system', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const targetUrl = pathToFileURL(resolve(repositoryRoot, 'scripts/run-stage09a-check.mjs')).href
+  const dataSource = `export { runStage09aCheck } from ${JSON.stringify(targetUrl)}`
+  const sentinel = 'M5_IMPORT_IDENTITY_SENTINEL'
+  const specifiers = [
+    `./run-stage09a-check.mjs?${sentinel}`,
+    `./run-stage09a-check.mjs#${sentinel}`,
+    './run-stage09a-check%2Emjs',
+    targetUrl,
+    `data:text/javascript,${encodeURIComponent(dataSource)}`
+  ]
+  for (const specifier of specifiers) {
+    const dynamicMutant = [
+      source,
+      `const hiddenCore = await import(${JSON.stringify(specifier)}, {})`,
+      'void Reflect.get(hiddenCore, "runStage09aCheck")',
+      ''
+    ].join('\n')
+    const dynamicProblems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, dynamicMutant]])
+    )
+    assert.equal(
+      dynamicProblems.includes(`${path}: production dynamic import was forbidden`),
+      true,
+      `dynamic module identity was not closed: ${specifier}`
+    )
+    assert.equal(dynamicProblems.some((problem) => problem.includes(sentinel)), false)
+
+    const staticMutant = [
+      source,
+      `import * as hiddenCore from ${JSON.stringify(specifier)}`,
+      'void Reflect.get(hiddenCore, "runStage09aCheck")',
+      ''
+    ].join('\n')
+    const staticProblems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, staticMutant]])
+    )
+    assert.equal(
+      staticProblems.includes(
+        `${path}: production module specifier used an unreviewed identity form`
+      ),
+      true,
+      `static module identity was not closed: ${specifier}`
+    )
+    assert.equal(staticProblems.some((problem) => problem.includes(sentinel)), false)
+
+    const reExportMutant = [
+      source,
+      `export * from ${JSON.stringify(specifier)}`,
+      ''
+    ].join('\n')
+    const reExportProblems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, reExportMutant]])
+    )
+    assert.equal(
+      reExportProblems.includes(
+        `${path}: production module specifier used an unreviewed identity form`
+      ),
+      true,
+      `re-export module identity was not closed: ${specifier}`
+    )
+    assert.equal(reExportProblems.some((problem) => problem.includes(sentinel)), false)
+  }
+})
+
 test('the reviewed production module surface includes nested executable modules', () => {
   const paths = trackedProductionModulePaths()
   assert.equal(paths.includes('infra/docker/postgres/no-ctty.mjs'), true)
@@ -1158,6 +1309,36 @@ test('protected entrypoints cannot reacquire process before taking exit', () => 
       `process capability reacquisition was not rejected: ${addition}`
     )
   }
+})
+
+test('two-argument dynamic import cannot reacquire process.exit', () => {
+  const path = m5ProtectedEntrypoints[0]
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = [
+    source,
+    'const runtimeProcess = await import("node:process", {})',
+    'const exitNow = Reflect.get(runtimeProcess, "exit")',
+    'void exitNow',
+    ''
+  ].join('\n')
+  const problems = protectedExitCapabilityProblems(new Map([[path, mutant]]))
+  assert.equal(
+    problems.includes(`${path}: process.exit capability escaped through node:process import`),
+    true
+  )
+
+  const optionsMutant = [
+    source,
+    'void import("node:fs", { with: { type: process.exit } })',
+    ''
+  ].join('\n')
+  const optionsProblems = protectedExitCapabilityProblems(new Map([[path, optionsMutant]]))
+  assert.equal(
+    optionsProblems.includes(
+      `${path}: process.exit capability escaped the shared settlement boundary`
+    ),
+    true
+  )
 })
 
 test('the Markdown gate never reflects Git stderr or spawn errors', () => {
