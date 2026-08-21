@@ -92,8 +92,11 @@ module-loader 根能力，并确认 identity grammar 的部分生产分支删除
 产物的数据流，改为在 production acquisition root 按 TypeScript 的 Node 声明身份拒绝
 module namespace、`createRequire` 与 `getBuiltinModule`；本地同名声明保持允许。九条
 identity rule 各有独立 mutation witness。代码与回归落点 `2ab43dc`，scripts tests
-214/214、production guard 34/34。当前为 Implementation complete — narrow gate PASS,
-committed-candidate gate pending；M5 未 Accepted，本 ADR 保持 `Proposed`。
+214/214、production guard 34/34。第一次提交态链在 tracked-file baseline 371→372
+漂移处 fail closed；机械同步后的证据落点 `0ee3269` 从步骤 1 通过 `stage09a:check`
+14/14、Markdown links 78/317 与 scoped 零残留复核。当前为 Implementation complete —
+committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted，本 ADR
+保持 `Proposed`。
 
 ## 背景
 

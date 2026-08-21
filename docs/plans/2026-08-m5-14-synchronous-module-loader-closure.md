@@ -3,7 +3,8 @@
 - 日期：2026-08-21
 - 实施基线：`e78c5b7a4f33e3c421ec3859a1bbf184dec9c611`
 - 代码与回归落点：`2ab43dc`
-- 状态：Implementation complete — narrow gate PASS, committed-candidate gate pending；M5 未 Accepted；阶段 09A 未 Pass
+- 提交态证据落点：`0ee32697ab035eb044c1f16547e7fde85e6b743c`
+- 状态：Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；阶段 09A 未 Pass
 - 范围：production module-loader 根能力、module identity grammar 的逐分支 mutation 判别力，以及 M5.13 当前状态矛盾
 
 ## 1. 独立审计输入与总控裁定
@@ -79,3 +80,16 @@ consumer 取得 `createRequire` 未被拒绝，protected entrypoint 经同步 lo
 `committed-candidate gate PASS, pending independent A/B review`。之后仍需创建两个全新、
 独立、用户可见的 A/B 审计任务；不得复用 M5.13 任务，不得自行标记 M5 Accepted、09A Pass
 或远端 CI PASS，不 push、不 merge、不创建 PR。
+
+实际提交态证据严格按上述顺序取得：含本任务书的候选先在旧 baseline 上从步骤 1 运行，
+前 8 步全部 PASS，第 9 步只因 `git ls-files` 实测 372、独立 baseline 仍为 371 而 FAIL，
+后 5 步全部 SKIP；随后只把 baseline 机械同步为 372 并提交为 `0ee3269`。固定 Node.js
+`v24.18.0` 在该提交上从步骤 1 重跑，`pnpm stage09a:check` **14/14 PASS**：Stage08
+383 秒、Compose topology 1 秒、45/45 topology mutations 34 秒、runtime image 18 秒、
+1 baseline + 18 built + 2 static-only image mutations 136 秒、local-test 75/75 15 秒、
+surface sweep 0 秒、targeted negatives 69/69 187 秒、registry integrity（372 tracked
+files）1 秒、signal 5/5 deterministic + 6/6 real windows 44 秒、fresh smoke 86 秒、
+八份 Secret identity 5 秒、lifecycle 79 秒、restore 96 秒。Markdown links 为
+78 files / 317 local links，`git diff --check` 干净；本轮容器、网络、卷、per-run image、
+override、Secret、进程组均为零残留。另发现一个出生于本轮开工前的旧 M5 image-mutation
+临时目录，已按精确路径移入用户废纸篓，不把它冒充本轮门禁清理结果。

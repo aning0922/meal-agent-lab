@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.14 同步 module-loader 能力闭包整改（2026-08-21，覆盖下方历史轮次）**：M5.13 候选 `e78c5b7` 的独立审计 A 为有效 BLOCK，确认 `createRequire()`/`process.getBuiltinModule` 同步 loader 根能力未进入 production 闭集，以及九条 identity grammar 分支缺少独立 mutation 判别力；审计 B 因独立 worktree 缺 workspace 依赖而为 INVALID，不能记作 CLEAN。总控按 [M5.14 任务书](plans/2026-08-m5-14-synchronous-module-loader-closure.md)改为声明身份闭集：production surface 拒绝 Node module namespace、`createRequire` 与 `getBuiltinModule`，相同名称的本地声明不受影响；九条 identity rule 各有独立 witness。production guard 为 **34/34**，全部 scripts tests 为 **214/214**。**M5.14 Implementation complete — narrow gate PASS, committed-candidate gate pending；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.14 同步 module-loader 能力闭包整改（2026-08-21，覆盖下方历史轮次）**：M5.13 候选 `e78c5b7` 的独立审计 A 为有效 BLOCK，确认 `createRequire()`/`process.getBuiltinModule` 同步 loader 根能力未进入 production 闭集，以及九条 identity grammar 分支缺少独立 mutation 判别力；审计 B 因独立 worktree 缺 workspace 依赖而为 INVALID，不能记作 CLEAN。总控按 [M5.14 任务书](plans/2026-08-m5-14-synchronous-module-loader-closure.md)改为声明身份闭集：production surface 拒绝 Node module namespace、`createRequire` 与 `getBuiltinModule`，相同名称的本地声明不受影响；九条 identity rule 各有独立 witness。production guard 为 **34/34**，全部 scripts tests 为 **214/214**；提交态证据落点 `0ee3269` 已完整通过 `stage09a:check` 14/14、Markdown links 78/317 与 scoped 零残留复核。**M5.14 Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
