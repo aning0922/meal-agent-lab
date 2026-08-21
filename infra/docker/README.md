@@ -305,6 +305,14 @@ Node 与依赖可用，缺依赖只判任务基础设施无效，不得补装后
 receipt projector 提供，`-0` 不是 canonical count。namespace、七类 value flow、拼接/动态
 module specifier 与 process 重获路径分别以独立理由断言，不能由无关门禁代偿。
 
+**M5.13 production-module-identity 协议（2026-08-21，覆盖 M5.12 对 dynamic import 的
+静态可求值放行）**：production `infra/docker/**/*.mjs` 与 `scripts/**/*.mjs` 不再允许
+dynamic import；唯一 ImportExpression parser 接受 Node 24 的 1—2 参数语法并读取第一
+参数，非静态/非法 arity 固定 fail closed。静态 import/re-export 只接受普通 relative、
+bare-package 与 `node:` specifier；query/hash/percent/file/data、绝对路径、backslash 与
+空白/format 字符固定拒绝且不回显说明符。双参数 protected module、双参数
+`node:process`、import options capability 与五类第二模块身份均有独立 mutation 回归。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

@@ -71,6 +71,17 @@ tests 208/208、production guard 28/28、Audit-B 16/16。提交态候选从步�
 最终提交后的从头实测。M5.12 当前为 Implementation complete — committed-candidate gate
 PASS, pending independent A/B review；M5 未 Accepted，本 ADR 仍为 `Proposed`。
 
+实施注记（2026-08-21，M5.13，覆盖上一段当前状态）：M5.12 候选 `22b30ea` 的 A/B
+任务都被平台 safeguard 以 `systemError` 终止、没有正式最终报告；但两路分别从独立
+worktree 与 Node.js `v24.18.0` 复现了双参数 dynamic import 绕过，总控据确定性反例判定
+候选 BLOCK。进一步实测确认 query、fragment、percent-encoding、绝对 `file:` URL 与
+`data:` 中转都能建立第二模块身份，因此 M5.13 不再逐个归一化：production scripts/infra
+完全禁止 dynamic import，静态 import/re-export 只接受普通 relative、bare-package 与
+`node:` specifier。两条 capability guard 共同消费唯一的 1—2 参数 ImportExpression
+parser，import options 仍完整遍历。代码与回归落点 `fe0cd10`；scripts tests 211/211、
+production guard 31/31。当前只记录 narrow gates PASS；提交态完整 14/14 尚待文档候选
+产生后从步骤 1 重跑。M5 未 Accepted，本 ADR 仍为 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

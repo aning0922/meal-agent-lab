@@ -28,4 +28,5 @@
 - [阶段 09A M5.10：运行 receipt、能力面与安全诊断闭合](2026-08-m5-10-receipt-and-capability-closure.md)
 - [阶段 09A M5.11：能力引用闭包与 Audit-B 静默边界整改](2026-08-m5-11-capability-and-audit-boundary-convergence.md)
 - [阶段 09A M5.12：封闭能力入口与 canonical report input 整改](2026-08-m5-12-closed-capability-and-canonical-input.md)
+- [阶段 09A M5.13：production module identity 闭包整改](2026-08-m5-13-production-module-identity-closure.md)
 - [阶段 09A M5.8：声明身份与动态审计证据闭合（历史）](2026-08-m5-8-declaration-and-audit-evidence-closure.md)
