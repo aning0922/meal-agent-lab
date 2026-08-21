@@ -333,7 +333,9 @@ const trackedProductionModulePaths = () => {
   })
   assert.equal(listed.status, 0, 'tracked production module set could not be read')
   return listed.stdout.toString('utf8').split('\0').filter((path) =>
-    /^(?:infra\/docker|scripts)\/[^/]+\.mjs$/.test(path)).sort()
+    /^(?:infra\/docker|scripts)\/.+\.mjs$/.test(path) &&
+    !/(?:^|\/)fixtures\//.test(path) &&
+    !/^scripts\/tests\//.test(path)).sort()
 }
 
 const compilerProgram = (paths, overrides = new Map()) => {
@@ -436,14 +438,19 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
       if (
         ts.isCallExpression(node) &&
         node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments.length === 1 &&
-        ts.isStringLiteral(node.arguments[0])
+        node.arguments.length === 1
       ) {
-        const target = localModuleAbsolutePath(path, node.arguments[0].text)
+        const moduleSpecifier = constantString(node.arguments[0], checker)
+        if (moduleSpecifier === null) {
+          moduleProblems.push(`${path}: production dynamic import specifier was not statically closed`)
+          ts.forEachChild(node, visit)
+          return
+        }
+        const target = localModuleAbsolutePath(path, moduleSpecifier)
         const targetNames = target === null ? undefined : byModule.get(target)
         if (targetNames !== undefined) {
           for (const name of targetNames) {
-            moduleProblems.push(`production capability dynamic import was forbidden: ${node.arguments[0].text}#${name}`)
+            moduleProblems.push(`production capability dynamic import was forbidden: ${moduleSpecifier}#${name}`)
           }
         }
       }
@@ -634,6 +641,38 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
     if (sourceFile === undefined) continue
     const processAliases = new Set()
     const namedExitImports = []
+    const allowedProcessProperties = new Set([
+      'argv',
+      'env',
+      'execPath',
+      'exitCode',
+      'kill',
+      'on',
+      'pid',
+      'removeListener',
+      'stderr',
+      'stdout',
+      'versions'
+    ])
+    const allowedGlobalProperties = new Set(['clearTimeout', 'setImmediate', 'setTimeout'])
+    const isCanonicalGlobalObject = (node) => {
+      const current = unwrapExpression(node)
+      if (!ts.isIdentifier(current) || !['global', 'globalThis'].includes(current.text)) return false
+      const symbol = checker.getSymbolAtLocation(current)
+      return symbol?.declarations?.every((declaration) => declaration.getSourceFile() !== sourceFile) === true
+    }
+    const isGlobalProcessValue = (node) => {
+      const current = unwrapExpression(node)
+      return (
+        ts.isPropertyAccessExpression(current) &&
+        isCanonicalGlobalObject(current.expression) &&
+        current.name.text === 'process'
+      ) || (
+        ts.isElementAccessExpression(current) &&
+        isCanonicalGlobalObject(current.expression) &&
+        constantString(current.argumentExpression, checker) === 'process'
+      )
+    }
     const seed = (node) => {
       if (isCanonicalProcessIdentifier(checker, sourceFile, node)) {
         processAliases.add(checker.getSymbolAtLocation(node))
@@ -661,14 +700,19 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
         ts.isCallExpression(node) &&
         node.expression.kind === ts.SyntaxKind.ImportKeyword &&
         node.arguments.length === 1 &&
-        ts.isStringLiteral(node.arguments[0]) &&
-        node.arguments[0].text === 'node:process'
+        constantString(node.arguments[0], checker) === 'node:process'
       ) {
         namedExitImports.push(node)
       }
       ts.forEachChild(node, seed)
     }
     seed(sourceFile)
+    const isProcessAlias = (node) => {
+      const current = unwrapExpression(node)
+      return isGlobalProcessValue(current) || (
+        ts.isIdentifier(current) && processAliases.has(checker.getSymbolAtLocation(current))
+      )
+    }
     let changed = true
     while (changed) {
       changed = false
@@ -677,8 +721,7 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
           ts.isVariableDeclaration(node) &&
           ts.isIdentifier(node.name) &&
           node.initializer !== undefined &&
-          ts.isIdentifier(unwrapExpression(node.initializer)) &&
-          processAliases.has(checker.getSymbolAtLocation(unwrapExpression(node.initializer))) &&
+          isProcessAlias(node.initializer) &&
           !processAliases.has(checker.getSymbolAtLocation(node.name))
         ) {
           processAliases.add(checker.getSymbolAtLocation(node.name))
@@ -687,10 +730,6 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
         ts.forEachChild(node, collectAliases)
       }
       collectAliases(sourceFile)
-    }
-    const isProcessAlias = (node) => {
-      const current = unwrapExpression(node)
-      return ts.isIdentifier(current) && processAliases.has(checker.getSymbolAtLocation(current))
     }
     const isExitMember = (node) =>
       (ts.isPropertyAccessExpression(node) &&
@@ -701,10 +740,12 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
         constantString(node.argumentExpression, checker) === 'exit')
     const canonicalProcessUseIsConfined = (node) => {
       const parent = node.parent
-      if (ts.isPropertyAccessExpression(parent) && parent.expression === node) return true
+      if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+        return allowedProcessProperties.has(parent.name.text)
+      }
       if (ts.isElementAccessExpression(parent) && parent.expression === node) {
         const key = constantString(parent.argumentExpression, checker)
-        return key !== null && key !== 'exit'
+        return key !== null && allowedProcessProperties.has(key)
       }
       if (
         ts.isCallExpression(parent) &&
@@ -719,12 +760,36 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
       }
       return false
     }
+    const canonicalGlobalUseIsConfined = (node) => {
+      const parent = node.parent
+      if (ts.isPropertyAccessExpression(parent) && parent.expression === node) {
+        return allowedGlobalProperties.has(parent.name.text)
+      }
+      if (ts.isElementAccessExpression(parent) && parent.expression === node) {
+        return allowedGlobalProperties.has(constantString(parent.argumentExpression, checker))
+      }
+      if (
+        ts.isCallExpression(parent) &&
+        parent.arguments[0] === node &&
+        ts.isPropertyAccessExpression(parent.expression) &&
+        parent.expression.name.text === 'bind' &&
+        ts.isPropertyAccessExpression(parent.expression.expression) &&
+        isCanonicalGlobalObject(parent.expression.expression.expression) &&
+        allowedGlobalProperties.has(parent.expression.expression.name.text)
+      ) {
+        return true
+      }
+      return false
+    }
     const visit = (node) => {
       if (
         isCanonicalProcessIdentifier(checker, sourceFile, node) &&
         !canonicalProcessUseIsConfined(node)
       ) {
         problems.push(`${path}: process capability escaped through alias or value flow`)
+      }
+      if (isCanonicalGlobalObject(node) && !canonicalGlobalUseIsConfined(node)) {
+        problems.push(`${path}: global object capability escaped the reviewed runtime surface`)
       }
       if (isExitMember(node)) {
         problems.push(`${path}: process.exit capability escaped the shared settlement boundary`)
@@ -747,6 +812,16 @@ const protectedExitCapabilityProblems = (overrides = new Map()) => {
         constantString(node.arguments[1], checker) === 'exit'
       ) {
         problems.push(`${path}: process.exit capability escaped through reflection`)
+      }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'getBuiltinModule' &&
+        isProcessAlias(node.expression.expression) &&
+        node.arguments.length === 1 &&
+        constantString(node.arguments[0], checker) === 'node:process'
+      ) {
+        problems.push(`${path}: process capability escaped through getBuiltinModule`)
       }
       ts.forEachChild(node, visit)
     }
@@ -909,50 +984,107 @@ test('the real Stage09A execution graph cannot gain an undeclared settlement con
   )
 })
 
-test('critical capabilities cannot escape through namespace alias or value flow', () => {
+test('namespace imports of protected capability modules fail for their own reason', () => {
   const path = 'scripts/check-markdown-links.mjs'
   const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
   const mutant = [
     source,
-    "import * as subprocess from '../infra/docker/m3b-subprocess.mjs'",
-    "import * as evidence from '../infra/docker/m5-evidence-protocol.mjs'",
     "import * as core from './run-stage09a-check.mjs'",
-    "import * as report from './stage09a-audit-b.mjs'",
-    'const m5Identity = (value) => value',
-    'const m5Callback = (_first, _callback) => undefined',
-    "if (process.env.M5_UNREVIEWED_CAPABILITY === '1') {",
-    '  await subprocess.runSignalSettledCli(async () => 0)',
-    "  await subprocess['runSignalSettledCli'](async () => 0)",
-    '  const { runWithDeclaredOwnedTreeOutputs: ownedTree } = evidence',
-    '  await ownedTree({}, [], async () => undefined)',
-    '  await m5Identity(core.runStage09aCheck)([])',
-    '  await m5Identity(core.runStage09aCheckForAudit)([])',
-    '  const { readStage09aAuditRunReceipt: readReceipt } = core',
-    '  readReceipt(Object.freeze({}))',
-    '  report.createStage09aAuditBReportFromReceipt({ runReceipt: {} })',
-    "  m5Callback('argument-0', report.createStage09aAuditBReport)",
-    '}',
+    'void core.runStage09aCheck',
     ''
   ].join('\n')
   const problems = productionConsumerRegistryProblems(
     m5ProductionGuards,
     new Map([[path, mutant]])
   )
-  for (const target of [
-    'runSignalSettledCli',
-    'runWithDeclaredOwnedTreeOutputs',
-    'runStage09aCheck',
-    'runStage09aCheckForAudit',
-    'readStage09aAuditRunReceipt',
-    'createStage09aAuditBReportFromReceipt',
-    'createStage09aAuditBReport'
-  ]) {
+  assert.equal(problems.includes(
+    'production capability namespace import was forbidden: ./run-stage09a-check.mjs#runStage09aCheck'
+  ), true)
+})
+
+test('each protected capability value flow fails by declaration-identity drift', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const cases = [
+    ['wrapper', 'const identity = (value) => value; identity(runStage09aCheck)'],
+    ['callback', 'const receive = (_value) => undefined; receive(runStage09aCheck)'],
+    ['holder', 'const holder = { capability: runStage09aCheck }; void holder.capability'],
+    ['computed', 'const holder = { capability: runStage09aCheck }; void holder["capability"]'],
+    ['destructure', 'const { capability } = { capability: runStage09aCheck }; void capability'],
+    ['builder', 'const build = () => runStage09aCheck; void build'],
+    ['projector', 'const project = (value) => ({ value }); project(runStage09aCheck)']
+  ]
+  const expectedPrefix =
+    'production consumer registry drifted from declaration identity: ' +
+    'scripts/run-stage09a-check.mjs#runStage09aCheck'
+  for (const [label, body] of cases) {
+    const mutant = [
+      source,
+      "import { runStage09aCheck } from './run-stage09a-check.mjs'",
+      body,
+      ''
+    ].join('\n')
+    const problems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, mutant]])
+    )
     assert.equal(
-      problems.some((problem) => problem.includes(target)),
-      true,
-      `capability escape was not rejected: ${target}`
+      problems.filter((problem) => problem.startsWith(expectedPrefix)).length,
+      1,
+      `${label} did not fail by declaration-identity drift: ${JSON.stringify(problems)}`
+    )
+    assert.equal(
+      problems.some((problem) => problem.includes('namespace import was forbidden')),
+      false,
+      `${label} was masked by a namespace-import failure`
     )
   }
+})
+
+test('a constant-expression dynamic import cannot hide a protected capability module', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = [
+    source,
+    'const hiddenCore = await import("./run-stage09a-check.mjs" + "")',
+    'void hiddenCore.runStage09aCheck',
+    ''
+  ].join('\n')
+  const problems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[path, mutant]])
+  )
+  assert.equal(
+    problems.some((problem) =>
+      problem === 'production capability dynamic import was forbidden: ./run-stage09a-check.mjs#runStage09aCheck'),
+    true
+  )
+})
+
+test('production dynamic import specifiers must be statically closed', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const mutant = [
+    source,
+    'const runtimeModuleName = process.env.M5_RUNTIME_MODULE',
+    'void await import(runtimeModuleName)',
+    ''
+  ].join('\n')
+  const problems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[path, mutant]])
+  )
+  assert.equal(
+    problems.includes(`${path}: production dynamic import specifier was not statically closed`),
+    true
+  )
+})
+
+test('the reviewed production module surface includes nested executable modules', () => {
+  const paths = trackedProductionModulePaths()
+  assert.equal(paths.includes('infra/docker/postgres/no-ctty.mjs'), true)
+  assert.equal(paths.some((path) => path.includes('/fixtures/')), false)
+  assert.equal(paths.some((path) => path.startsWith('scripts/tests/')), false)
 })
 
 test('the production registry requires every exact consumer path once', () => {
@@ -1003,6 +1135,27 @@ test('protected production entrypoints cannot obtain the process.exit capability
       problems.some((problem) => problem.startsWith(`${path}:`)),
       true,
       `${path} did not reject the canonical exit capability`
+    )
+  }
+})
+
+test('protected entrypoints cannot reacquire process before taking exit', () => {
+  const path = m5ProtectedEntrypoints[0]
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  for (const addition of [
+    'const processKey = "pro" + "cess"; const runtimeProcess = globalThis[processKey]; const exitNow = runtimeProcess.exit',
+    'const runtimeGlobal = globalThis; const runtimeProcess = runtimeGlobal.process; const exitNow = runtimeProcess.exit',
+    'const { exit: exitNow } = await import("node:" + "process")',
+    'const exitNow = process.getBuiltinModule("node:process").exit',
+    'const exitNow = process.constructor.constructor("return process.exit")()'
+  ]) {
+    const problems = protectedExitCapabilityProblems(
+      new Map([[path, `${source}\n${addition}\n`]])
+    )
+    assert.equal(
+      problems.some((problem) => problem.startsWith(`${path}:`)),
+      true,
+      `process capability reacquisition was not rejected: ${addition}`
     )
   }
 })
@@ -1363,8 +1516,8 @@ guardTest('structured-stage09a-report-receipt', 'the report cannot bypass receip
   const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
   const mutant = replaceExactly(
     source,
-    'const report = createStage09aAuditBReportFromReceipt({',
-    'const report = createStage09aAuditBReport({'
+    'const report = createStage09aAuditBReportFromReceipt(',
+    'const report = createStage09aAuditBReport('
   )
   const problems = productionConsumerProblems(new Map([[path, mutant]]))
   assert.equal(
@@ -1393,8 +1546,8 @@ guardTest('structured-stage09a-report-builder', 'the receipt wrapper is the only
   const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
   const mutant = replaceExactly(
     source,
-    'return createStage09aAuditBReport({',
-    'return Object.freeze({'
+    'return createStage09aAuditBReport(',
+    'return Object.freeze('
   )
   const problems = productionConsumerProblems(new Map([[path, mutant]]))
   assert.equal(

@@ -127,16 +127,16 @@ export const runStage09aAuditB = async (argv = process.argv.slice(2)) => {
     }
   }
   const repositoryAfter = readRepositoryState()
-  const report = createStage09aAuditBReportFromReceipt({
+  const report = createStage09aAuditBReportFromReceipt(
     runReceipt,
-    expectedCandidateHead: parsed.expectedCandidateHead,
-    candidateHeadBefore: repositoryBefore.candidateHead,
-    candidateHeadAfter: repositoryAfter.candidateHead,
+    parsed.expectedCandidateHead,
+    repositoryBefore.candidateHead,
+    repositoryAfter.candidateHead,
     requiredNodeVersion,
-    actualNodeVersion: process.versions.node,
-    worktreeCleanBefore: repositoryBefore.worktreeClean,
-    worktreeCleanAfter: repositoryAfter.worktreeClean
-  })
+    process.versions.node,
+    repositoryBefore.worktreeClean,
+    repositoryAfter.worktreeClean
+  )
 
   try {
     mkdirSync(reportDirectory, { recursive: true, mode: 0o700 })

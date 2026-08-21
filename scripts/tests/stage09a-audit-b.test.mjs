@@ -5,8 +5,8 @@ import { resolve } from 'node:path'
 import test from 'node:test'
 
 import {
-  createStage09aAuditBReport,
   createStage09aAuditBReportFromReceipt,
+  isCanonicalStage09aAuditCount,
   serializeStage09aAuditBReport,
   validateStage09aGateResult
 } from '../stage09a-audit-b.mjs'
@@ -24,16 +24,12 @@ const completeGate = Object.freeze({
   failedStep: null
 })
 
-const reportInput = ({
-  gate = completeGate,
+const reportEnvironment = ({
   actualNodeVersion = '24.18.0',
   candidateHeadBefore = candidateHead,
   candidateHeadAfter = candidateHead,
   worktreeCleanBefore = true,
-  worktreeCleanAfter = true,
-  invocationCount = 1,
-  retryCount = 0,
-  requestedSignal = null
+  worktreeCleanAfter = true
 } = {}) => ({
   expectedCandidateHead: candidateHead,
   candidateHeadBefore,
@@ -41,12 +37,22 @@ const reportInput = ({
   requiredNodeVersion: '24.18.0',
   actualNodeVersion,
   worktreeCleanBefore,
-  worktreeCleanAfter,
-  invocationCount,
-  retryCount,
-  requestedSignal,
-  gate
+  worktreeCleanAfter
 })
+
+const reportFromReceipt = (runReceipt, overrides = {}) => {
+  const environment = reportEnvironment(overrides)
+  return createStage09aAuditBReportFromReceipt(
+    runReceipt,
+    environment.expectedCandidateHead,
+    environment.candidateHeadBefore,
+    environment.candidateHeadAfter,
+    environment.requiredNodeVersion,
+    environment.actualNodeVersion,
+    environment.worktreeCleanBefore,
+    environment.worktreeCleanAfter
+  )
+}
 
 test('audit B accepts only the basename argv shape produced by pnpm', () => {
   assert.deepEqual(
@@ -68,14 +74,14 @@ test('audit B accepts only the basename argv shape produced by pnpm', () => {
 
 test('the structured gate accepts exactly one closed 14-step PASS shape', () => {
   assert.equal(validateStage09aGateResult(completeGate), true)
-  const report = createStage09aAuditBReport(reportInput())
-  assert.equal(report.schemaVersion, 3)
-  assert.equal(report.status, 'pass')
-  assert.equal(report.reason, 'complete')
-  assert.equal(report.invocationCount, 1)
-  assert.equal(report.retryCount, 0)
-  assert.equal(Object.hasOwn(report, 'retries'), false)
-  assert.deepEqual(report.gate.completedSteps, [...stage09aStepIds])
+  const forged = reportFromReceipt(Object.freeze({}))
+  assert.equal(forged.schemaVersion, 3)
+  assert.equal(forged.status, 'fail')
+  assert.equal(forged.reason, 'run-evidence-invalid')
+  assert.equal(forged.invocationCount, null)
+  assert.equal(forged.retryCount, null)
+  assert.equal(Object.hasOwn(forged, 'retries'), false)
+  assert.deepEqual(forged.gate.completedSteps, [])
 })
 
 test('empty reordered duplicate and unknown gate evidence can never publish PASS', () => {
@@ -90,10 +96,6 @@ test('empty reordered duplicate and unknown gate evidence can never publish PASS
   ]
   for (const gate of mutations) {
     assert.equal(validateStage09aGateResult(gate), false)
-    const report = createStage09aAuditBReport(reportInput({ gate }))
-    assert.equal(report.status, 'fail')
-    assert.equal(report.reason, 'gate-output-invalid')
-    assert.deepEqual(report.gate.completedSteps, [])
   }
 })
 
@@ -108,79 +110,48 @@ test('a failure gate is a trusted ordered prefix with the next failed step', () 
   })
   assert.equal(validateStage09aGateResult(gate), true)
   const serialized = serializeStage09aAuditBReport(
-    createStage09aAuditBReport(reportInput({ gate }))
+    reportFromReceipt(Object.freeze({}))
   ).toString('utf8')
   assert.doesNotMatch(serialized, /UNTRUSTED/)
 })
 
-test('wrong Node candidate and repository state override a valid gate', () => {
-  assert.equal(createStage09aAuditBReport(reportInput({
-    actualNodeVersion: '20.0.0', invocationCount: 0
-  })).reason, 'node-version-mismatch')
-  assert.equal(createStage09aAuditBReport(reportInput({
-    worktreeCleanBefore: false, invocationCount: 0
-  })).reason, 'worktree-not-clean')
-  const report = createStage09aAuditBReport(reportInput({
+test('wrong Node candidate and repository state override an invalid receipt safely', () => {
+  const receipt = Object.freeze({})
+  assert.equal(reportFromReceipt(receipt, {
+    actualNodeVersion: '20.0.0'
+  }).reason, 'node-version-mismatch')
+  assert.equal(reportFromReceipt(receipt, {
+    worktreeCleanBefore: false
+  }).reason, 'worktree-not-clean')
+  const report = reportFromReceipt(receipt, {
     candidateHeadAfter: 'b'.repeat(40)
-  }))
+  })
   assert.equal(report.status, 'fail')
   assert.equal(report.reason, 'repository-state-drift')
 })
 
-test('actual invocation accounting records zero and multiple attempts without throwing', () => {
-  const zero = createStage09aAuditBReport(reportInput({
-    gate: {
-      status: 'fail', reason: 'gate-failed', exitCode: 1, signal: null,
-      completedSteps: [], failedStep: null
-    },
-    invocationCount: 0,
-    retryCount: 0
-  }))
-  assert.equal(zero.status, 'fail')
-  assert.equal(zero.reason, 'invocation-count-invalid')
-  const repeated = createStage09aAuditBReport(reportInput({
-    invocationCount: 2,
-    retryCount: 1
-  }))
-  assert.equal(repeated.status, 'fail')
-  assert.equal(repeated.reason, 'invocation-count-invalid')
-  assert.equal(repeated.invocationCount, 2)
-  assert.equal(repeated.retryCount, 1)
-})
-
-test('a latched signal prevents complete gate evidence from becoming PASS', () => {
-  const report = createStage09aAuditBReport(reportInput({
-    requestedSignal: 'SIGINT',
-    gate: {
-      status: 'fail', reason: 'gate-signaled', exitCode: null, signal: 'SIGINT',
-      completedSteps: [], failedStep: null
-    }
-  }))
-  assert.equal(report.status, 'fail')
-  assert.equal(report.reason, 'audit-signaled')
-})
-
-test('the report schema does not reflect untrusted input values', () => {
+test('a forged receipt cannot reflect untrusted input values', () => {
   const sentinel = 'UNTRUSTED-AUDIT-B-SENTINEL'
-  const report = createStage09aAuditBReport(reportInput({
-    gate: {
-      status: 'pass', reason: sentinel, exitCode: 0, signal: sentinel,
-      completedSteps: [sentinel], failedStep: sentinel
-    }
-  }))
+  const report = reportFromReceipt(Object.freeze({ [sentinel]: sentinel }))
   const serialized = serializeStage09aAuditBReport(report).toString('utf8')
   assert.equal(report.status, 'fail')
-  assert.equal(report.reason, 'gate-output-invalid')
+  assert.equal(report.reason, 'run-evidence-invalid')
   assert.doesNotMatch(serialized, new RegExp(sentinel))
 })
 
 test('invalid scalar fields and forged run receipts collapse without reflecting input', () => {
   const sentinel = 'UNTRUSTED-NODE-VERSION-SENTINEL'
-  const scalarReport = createStage09aAuditBReport({
-    ...reportInput(),
-    requiredNodeVersion: sentinel,
-    actualNodeVersion: sentinel
-  })
+  const environment = reportEnvironment()
+  const scalarReport = createStage09aAuditBReportFromReceipt(
+    Object.freeze({}),
+    environment.expectedCandidateHead,
+    environment.candidateHeadBefore,
+    environment.candidateHeadAfter,
+    sentinel,
+    sentinel,
+    environment.worktreeCleanBefore,
+    environment.worktreeCleanAfter
+  )
   const scalarSerialized = serializeStage09aAuditBReport(scalarReport).toString('utf8')
   assert.equal(scalarReport.status, 'fail')
   assert.equal(scalarReport.reason, 'report-input-invalid')
@@ -188,23 +159,14 @@ test('invalid scalar fields and forged run receipts collapse without reflecting 
   assert.equal(scalarReport.actualNodeVersion, null)
   assert.doesNotMatch(scalarSerialized, new RegExp(sentinel))
 
-  const receiptReport = createStage09aAuditBReportFromReceipt({
-    runReceipt: Object.freeze({}),
-    expectedCandidateHead: candidateHead,
-    candidateHeadBefore: candidateHead,
-    candidateHeadAfter: candidateHead,
-    requiredNodeVersion: '24.18.0',
-    actualNodeVersion: '24.18.0',
-    worktreeCleanBefore: true,
-    worktreeCleanAfter: true
-  })
+  const receiptReport = reportFromReceipt(Object.freeze({}))
   assert.equal(receiptReport.status, 'fail')
   assert.equal(receiptReport.reason, 'run-evidence-invalid')
   assert.equal(receiptReport.invocationCount, null)
   assert.deepEqual(receiptReport.gate.completedSteps, [])
 })
 
-test('candidate and accounting scalars are canonical primitives without coercion', () => {
+test('candidate scalars are positional canonical primitives without coercion', () => {
   let coercions = 0
   const sentinel = 'NONCANONICAL-CANDIDATE-SENTINEL'
   const hostileCandidate = {
@@ -220,14 +182,16 @@ test('candidate and accounting scalars are canonical primitives without coercion
       return candidateHead
     }
   }
-  const report = createStage09aAuditBReport({
-    ...reportInput(),
-    expectedCandidateHead: hostileCandidate,
-    candidateHeadBefore: hostileCandidate,
-    candidateHeadAfter: hostileCandidate,
-    invocationCount: -7,
-    retryCount: -9
-  })
+  const report = createStage09aAuditBReportFromReceipt(
+    Object.freeze({}),
+    hostileCandidate,
+    hostileCandidate,
+    hostileCandidate,
+    '24.18.0',
+    '24.18.0',
+    true,
+    true
+  )
   const serialized = serializeStage09aAuditBReport(report).toString('utf8')
   assert.equal(report.status, 'fail')
   assert.equal(report.reason, 'report-input-invalid')
@@ -238,6 +202,48 @@ test('candidate and accounting scalars are canonical primitives without coercion
   assert.equal(report.retryCount, null)
   assert.equal(coercions, 0)
   assert.doesNotMatch(serialized, new RegExp(sentinel))
+})
+
+test('the report boundary has no object-shaped environment record to read', () => {
+  let getterCalls = 0
+  const hostileScalar = {}
+  Object.defineProperty(hostileScalar, 'value', {
+    get() {
+      getterCalls += 1
+      return candidateHead
+    }
+  })
+  const accessorReport = createStage09aAuditBReportFromReceipt(
+    Object.freeze({}),
+    hostileScalar,
+    candidateHead,
+    candidateHead,
+    '24.18.0',
+    '24.18.0',
+    true,
+    true
+  )
+  assert.equal(getterCalls, 0)
+  assert.equal(accessorReport.status, 'fail')
+  assert.equal(accessorReport.reason, 'report-input-invalid')
+
+  let proxyReads = 0
+  const proxyReceipt = new Proxy({}, {
+    get(target, key, receiver) {
+      proxyReads += 1
+      return Reflect.get(target, key, receiver)
+    }
+  })
+  const proxyReport = reportFromReceipt(proxyReceipt)
+  assert.equal(proxyReads, 0)
+  assert.equal(proxyReport.status, 'fail')
+  assert.equal(proxyReport.reason, 'run-evidence-invalid')
+})
+
+test('negative zero is not canonical invocation accounting', () => {
+  assert.equal(isCanonicalStage09aAuditCount(-0), false)
+  assert.equal(isCanonicalStage09aAuditCount(0), true)
+  assert.equal(isCanonicalStage09aAuditCount(1), true)
 })
 
 test('the audit receipt core has a silent presentation boundary', () => {
@@ -302,16 +308,6 @@ test('ordinary and signaled gate evidence rejects contradictory settlement shape
     }
   ]
   for (const gate of invalid) assert.equal(validateStage09aGateResult(gate), false)
-
-  const mismatchedSignal = createStage09aAuditBReport(reportInput({
-    requestedSignal: 'SIGHUP',
-    gate: {
-      status: 'fail', reason: 'gate-signaled', exitCode: null, signal: 'SIGTERM',
-      completedSteps: [], failedStep: null
-    }
-  }))
-  assert.equal(mismatchedSignal.status, 'fail')
-  assert.equal(mismatchedSignal.reason, 'gate-output-invalid')
 })
 
 test('Audit-B calls the structured core directly and has no transcript or child aggregate', () => {

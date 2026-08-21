@@ -19,7 +19,9 @@ const canonicalShaValue = (value) =>
   typeof value === 'string' && canonicalSha.test(value)
 
 const nonnegativeSafeInteger = (value) =>
-  Number.isSafeInteger(value) && value >= 0
+  Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+
+export const isCanonicalStage09aAuditCount = nonnegativeSafeInteger
 
 const exactKeys = (value, keys) =>
   value !== null &&
@@ -86,7 +88,7 @@ const sanitizedGate = (gate) => validateStage09aGateResult(gate)
     })
   : fixedInvalidGate
 
-export const createStage09aAuditBReport = ({
+const createStage09aAuditBReport = (
   expectedCandidateHead,
   candidateHeadBefore,
   candidateHeadAfter,
@@ -98,8 +100,8 @@ export const createStage09aAuditBReport = ({
   retryCount,
   requestedSignal,
   gate,
-  runEvidenceValid = true
-}) => {
+  runEvidenceValid
+) => {
   const requiredNodeVersionValid =
     typeof requiredNodeVersion === 'string' &&
     requiredNodeVersionPattern.test(requiredNodeVersion)
@@ -120,7 +122,9 @@ export const createStage09aAuditBReport = ({
     (requestedSignal === null || handledSignals.has(requestedSignal))
   const scalarInputValid =
     environmentScalarValid && accountingShapeValid && runEvidenceValid === true
-  const gateValid = validateStage09aGateResult(gate) && gate.signal === requestedSignal
+  const gateValid = runEvidenceValid === true &&
+    validateStage09aGateResult(gate) &&
+    gate.signal === requestedSignal
   const worktreeClean = worktreeCleanBefore === true && worktreeCleanAfter === true
   const environmentOk =
     scalarInputValid &&
@@ -176,16 +180,31 @@ export const createStage09aAuditBReport = ({
 
 /** Production boundary: only a receipt issued by the shared core may supply
  * gate, signal and invocation accounting to the published report. */
-export const createStage09aAuditBReportFromReceipt = ({ runReceipt, ...environment }) => {
+export const createStage09aAuditBReportFromReceipt = (
+  runReceipt,
+  expectedCandidateHead,
+  candidateHeadBefore,
+  candidateHeadAfter,
+  requiredNodeVersion,
+  actualNodeVersion,
+  worktreeCleanBefore,
+  worktreeCleanAfter
+) => {
   const evidence = readStage09aAuditRunReceipt(runReceipt)
-  return createStage09aAuditBReport({
-    ...environment,
-    runEvidenceValid: evidence !== null,
-    invocationCount: evidence?.invocationCount ?? null,
-    retryCount: evidence?.retryCount ?? null,
-    requestedSignal: evidence?.requestedSignal ?? null,
-    gate: evidence?.gate ?? null
-  })
+  return createStage09aAuditBReport(
+    expectedCandidateHead,
+    candidateHeadBefore,
+    candidateHeadAfter,
+    requiredNodeVersion,
+    actualNodeVersion,
+    worktreeCleanBefore,
+    worktreeCleanAfter,
+    evidence?.invocationCount ?? null,
+    evidence?.retryCount ?? null,
+    evidence?.requestedSignal ?? null,
+    evidence?.gate ?? null,
+    evidence !== null
+  )
 }
 
 export const serializeStage09aAuditBReport = (report) =>
