@@ -40,9 +40,11 @@ const expectedStepIds = [
 const expectedActions = new Set([
   'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
   'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
-  'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1'
+  'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1',
+  'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
+  'docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2'
 ])
-const expectedWorkflowSha256 = '3bafc25ccb6e8f520cf818fb81a11c9d55f5fd94c6612007be7b4dd0d7c534e0'
+const expectedWorkflowSha256 = '1bf308e1c997bf2ce92790d4683a8f9b786d571e37afe1d632e7e452e3773137'
 
 const expectedPostgresql18Artifacts = [
   {
@@ -56,6 +58,8 @@ const expectedPostgresql18Artifacts = [
 ]
 
 const countLiteral = (source, literal) => source.split(literal).length - 1
+const countLine = (source, expected) =>
+  source.split('\n').filter((line) => line === expected).length
 
 const ciPostgresql18PolicyProblems = (source) => {
   const problems = []
@@ -96,23 +100,29 @@ const ciPostgresql18PolicyProblems = (source) => {
 
 const ciDockerEvidencePolicyProblems = (source) => {
   const problems = []
-  if (
-    countLiteral(
-      source,
-      'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1'
-    ) !== 1
-  ) {
-    problems.push('CI Docker setup action must be the reviewed immutable release')
+  for (const action of [
+    'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1',
+    'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
+    'docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2'
+  ]) {
+    if (countLiteral(source, action) !== 1) {
+      problems.push('CI Docker setup actions must be the reviewed immutable releases')
+      break
+    }
   }
   for (const expected of [
     '          version: v29.6.2',
     '          set-host: true',
     '                "containerd-snapshotter": true',
+    '          version: v0.35.0',
+    '          driver: docker',
+    '          version: v5.3.1',
     '          if [ "$(docker version --format \'{{.Server.Version}}\')" != 29.6.2 ]; then',
     '          if [ "$(docker info --format \'{{json .DriverStatus}}\')" != \'[["driver-type","io.containerd.snapshotter.v1"]]\' ]; then',
-    '          docker compose version'
+    '          if [ "$(docker buildx version | awk \'{print $2}\')" != v0.35.0 ]; then',
+    '          if [ "$(docker compose version --short)" != 5.3.1 ]; then'
   ]) {
-    if (countLiteral(source, expected) !== 1) {
+    if (countLine(source, expected) !== 1) {
       problems.push('CI Docker 29.6.2 evidence capability policy drifted')
       break
     }
@@ -1014,12 +1024,23 @@ test('the CI Docker evidence environment is immutable and capability-complete', 
       'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1',
       'docker/setup-docker-action@v5'
     ),
+    source.replace(
+      'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
+      'docker/setup-buildx-action@v4'
+    ),
+    source.replace(
+      'docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2',
+      'docker/setup-compose-action@v2'
+    ),
     source.replace('          version: v29.6.2', '          version: latest'),
     source.replace('          set-host: true', '          set-host: false'),
     source.replace(
       '                "containerd-snapshotter": true',
       '                "containerd-snapshotter": false'
     ),
+    source.replace('          version: v0.35.0', '          version: latest'),
+    source.replace('          driver: docker', '          driver: docker-container'),
+    source.replace('          version: v5.3.1', '          version: latest'),
     source.replace(
       '          if [ "$(docker version --format \'{{.Server.Version}}\')" != 29.6.2 ]; then',
       '          if false; then'
@@ -1028,7 +1049,14 @@ test('the CI Docker evidence environment is immutable and capability-complete', 
       '          if [ "$(docker info --format \'{{json .DriverStatus}}\')" != \'[["driver-type","io.containerd.snapshotter.v1"]]\' ]; then',
       '          if false; then'
     ),
-    source.replace('          docker compose version', '          true')
+    source.replace(
+      '          if [ "$(docker buildx version | awk \'{print $2}\')" != v0.35.0 ]; then',
+      '          if false; then'
+    ),
+    source.replace(
+      '          if [ "$(docker compose version --short)" != 5.3.1 ]; then',
+      '          if false; then'
+    )
   ]
   for (const mutant of mutations) {
     assert.notDeepEqual(ciDockerEvidencePolicyProblems(mutant), [])

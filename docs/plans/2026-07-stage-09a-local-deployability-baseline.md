@@ -4662,6 +4662,25 @@ workflow 改用 Docker 官方 `setup-docker-action` v5.4.0 的不可变、已验
 host、关闭 snapshotter、删除 server/driver/Compose 验证；全部 scripts tests 当前为 **221/221**。
 真实成功 run 仍待取得；M5 Accepted 落点不变，09A 保持 In Progress。
 
+#### 第四次远端 CI 与 Buildx/Compose 插件固定（2026-08-22）
+
+Docker capability 提交 `92944ae2d69e523708901d54c813b7992b889118` 的真实 GitHub Actions run
+[`32568308181`](https://github.com/aning0922/meal-agent-lab/actions/runs/32568308181) 已通过 Docker
+29.6.2 + containerd 校验、PostgreSQL 18.4、第 1/14 步 `stage08-check`、Compose topology、
+45/45 mutations 与第 4/14 步 `api-runtime-image`；正向 runtime image 取得了完整 descriptor、
+SLSA v1 provenance 并 PASS。第 5/14 步 `api-runtime-image-mutations` 的前 17 项真实构建变异均
+按指定理由转红，但 `missing-provenance` 在收集证据时 fail closed，后续九步 SKIP。
+
+远端日志给出 Docker client/server 29.6.2，但 Buildx v0.36.1 与 Compose v2.38.2 来自 runner 的
+`/usr/libexec/docker/cli-plugins`；`setup-docker-action` 固定 daemon/client 并不固定这两个插件。
+本地 Accepted/Audit-B 环境为 Buildx 0.35.x 与 Compose 5.3.1，`--provenance=false` 的 metadata
+形状差异因此只在远端第 18 个 built mutation 暴露。workflow 现追加 Docker 官方
+`setup-buildx-action` v4.3.0 与 `setup-compose-action` v2.3.0 的不可变、签名有效提交，分别固定
+Buildx v0.35.0（Docker driver）与 Compose v5.3.1；门禁逐字验证两者版本。CI policy 对 action
+引用、版本、driver 与验证语句逐项设 weakening witness，并把 `driver: docker` 从子串判定改为
+完整行判定，确保 `docker-container` 不会假通过。真实成功 run 仍待取得；M5 Accepted 落点不变，
+09A 保持 In Progress。
+
 ## 工具前置
 
 执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。

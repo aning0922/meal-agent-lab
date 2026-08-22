@@ -41,6 +41,15 @@ jobs:
               }
             }
 
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0; exact Buildx 0.35.0 on the Docker driver
+        with:
+          version: v0.35.0
+          driver: docker
+
+      - uses: docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2 # v2.3.0; exact Compose 5.3.1
+        with:
+          version: v5.3.1
+
       - name: Verify exact Docker evidence capabilities
         run: |
           if [ "$(docker version --format '{{.Server.Version}}')" != 29.6.2 ]; then
@@ -51,7 +60,14 @@ jobs:
             echo "CI Docker image store capability drifted" >&2
             exit 1
           fi
-          docker compose version
+          if [ "$(docker buildx version | awk '{print $2}')" != v0.35.0 ]; then
+            echo "CI Docker Buildx version drifted" >&2
+            exit 1
+          fi
+          if [ "$(docker compose version --short)" != 5.3.1 ]; then
+            echo "CI Docker Compose version drifted" >&2
+            exit 1
+          fi
 
       - name: Install exact PostgreSQL 18.4 toolchain (PGDG)
         run: |
