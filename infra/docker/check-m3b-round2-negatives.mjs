@@ -53,6 +53,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmdirSync,
   rmSync,
   statSync,
@@ -550,6 +551,11 @@ process.stdout.write('P1-3 / R3-2: preflight signal window and the retired busy-
 // ---------------------------------------------------------------------------
 process.stdout.write('R3-1: cleanup honours inode ownership\n')
 
+// Every replacement below is allocated while the owned inode is still live, then
+// moved into the owned name with unlink + rename. Two simultaneously live files
+// cannot share one dev/ino identity; recreating a file after unlink is not a valid
+// precondition because Linux filesystems may immediately reuse the released inode.
+
 {
   // 场景（总控点名的五步）：
   //   1. 第一份 final 完成 promotion；
@@ -565,9 +571,11 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
   const victimName = secretFilenames[0]
   const replacementBody = `EXTERNAL-REPLACEMENT-${randomBytes(8).toString('hex')}\n`
   const injectedMarker = `injected-failure-${randomBytes(4).toString('hex')}`
+  const externalReplacementPath = resolve(parent, 'external-final-replacement')
   try {
     mkdirSync(directory, { mode: 0o700 })
-    let replacementIno = null
+    writeFileSync(externalReplacementPath, replacementBody, { mode: 0o600 })
+    const replacementIdentity = statSync(externalReplacementPath, { bigint: true })
     let caughtError = null
     try {
       generateSecretBundle(directory, {
@@ -577,9 +585,15 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
             return
           }
           const victimPath = resolve(directory, victimName)
+          const ownedIdentity = statSync(victimPath, { bigint: true })
+          if (
+            ownedIdentity.dev === replacementIdentity.dev &&
+            ownedIdentity.ino === replacementIdentity.ino
+          ) {
+            throw new Error('the precondition failed: two live files shared one inode identity')
+          }
           unlinkSync(victimPath)
-          writeFileSync(victimPath, replacementBody, { mode: 0o600 })
-          replacementIno = statSync(victimPath, { bigint: true }).ino
+          renameSync(externalReplacementPath, victimPath)
           throw new Error(injectedMarker)
         }
       })
@@ -591,7 +605,9 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
     const survived =
       existsSync(replacementPath) && readFileSync(replacementPath, 'utf8') === replacementBody
     const sameInode =
-      survived && replacementIno !== null && statSync(replacementPath, { bigint: true }).ino === replacementIno
+      survived &&
+      statSync(replacementPath, { bigint: true }).dev === replacementIdentity.dev &&
+      statSync(replacementPath, { bigint: true }).ino === replacementIdentity.ino
     const leftovers = readdirSync(directory).filter((entry) => entry !== victimName)
 
     if (caughtError === null) {
@@ -634,19 +650,28 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
   const first = secretFilenames[0]
   const stagingName = `.staging.${first}`
   const foreignBody = `FOREIGN-STAGING-${randomBytes(8).toString('hex')}\n`
+  const externalReplacementPath = resolve(parent, 'external-staging-replacement')
   try {
     mkdirSync(directory, { mode: 0o700 })
+    writeFileSync(externalReplacementPath, foreignBody, { mode: 0o600 })
+    const foreignIdentity = statSync(externalReplacementPath, { bigint: true })
     let caughtError = null
-    let foreignIno = null
     try {
       generateSecretBundle(directory, {
         beforePromotion: (filename) => {
           if (filename !== first) {
             return
           }
-          unlinkSync(resolve(directory, stagingName))
-          writeFileSync(resolve(directory, stagingName), foreignBody, { mode: 0o600 })
-          foreignIno = statSync(resolve(directory, stagingName), { bigint: true }).ino
+          const stagingPath = resolve(directory, stagingName)
+          const ownedIdentity = statSync(stagingPath, { bigint: true })
+          if (
+            ownedIdentity.dev === foreignIdentity.dev &&
+            ownedIdentity.ino === foreignIdentity.ino
+          ) {
+            throw new Error('the precondition failed: two live files shared one inode identity')
+          }
+          unlinkSync(stagingPath)
+          renameSync(externalReplacementPath, stagingPath)
         }
       })
     } catch (error) {
@@ -657,8 +682,8 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
     const foreignSurvived =
       existsSync(stagingPath) &&
       readFileSync(stagingPath, 'utf8') === foreignBody &&
-      foreignIno !== null &&
-      statSync(stagingPath, { bigint: true }).ino === foreignIno
+      statSync(stagingPath, { bigint: true }).dev === foreignIdentity.dev &&
+      statSync(stagingPath, { bigint: true }).ino === foreignIdentity.ino
     const promotedAnyway = existsSync(resolve(directory, first))
     const ownLeftovers = readdirSync(directory).filter((entry) => entry !== stagingName)
 
@@ -692,17 +717,25 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
   const directory = resolve(parent, 'bundle')
   const victimName = secretFilenames[2]
   const replacementBody = `EXTERNAL-REPLACEMENT-${randomBytes(8).toString('hex')}\n`
+  const externalReplacementPath = resolve(parent, 'external-preflight-replacement')
   try {
-    let replacementIno = null
+    writeFileSync(externalReplacementPath, replacementBody, { mode: 0o600 })
+    const replacementIdentity = statSync(externalReplacementPath, { bigint: true })
     let caughtError = null
     try {
       generateAndPreflight(directory, {
         // 库级注入 seam：预检期间外部换掉一份成品，然后判定失败。
         preflight: (bundleDirectory) => {
           const victimPath = resolve(bundleDirectory, victimName)
+          const ownedIdentity = statSync(victimPath, { bigint: true })
+          if (
+            ownedIdentity.dev === replacementIdentity.dev &&
+            ownedIdentity.ino === replacementIdentity.ino
+          ) {
+            throw new Error('the precondition failed: two live files shared one inode identity')
+          }
           unlinkSync(victimPath)
-          writeFileSync(victimPath, replacementBody, { mode: 0o600 })
-          replacementIno = statSync(victimPath, { bigint: true }).ino
+          renameSync(externalReplacementPath, victimPath)
           return { problems: ['synthetic preflight rejection'], bodies: new Map() }
         }
       })
@@ -714,7 +747,9 @@ process.stdout.write('R3-1: cleanup honours inode ownership\n')
     const survived =
       existsSync(replacementPath) && readFileSync(replacementPath, 'utf8') === replacementBody
     const sameInode =
-      survived && replacementIno !== null && statSync(replacementPath, { bigint: true }).ino === replacementIno
+      survived &&
+      statSync(replacementPath, { bigint: true }).dev === replacementIdentity.dev &&
+      statSync(replacementPath, { bigint: true }).ino === replacementIdentity.ino
     const ownLeftovers = readdirSync(directory).filter((entry) => entry !== victimName)
 
     if (caughtError === null) {

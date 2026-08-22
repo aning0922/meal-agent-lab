@@ -4697,6 +4697,21 @@ image 与完整 runtime image mutation suite。此前 `missing-provenance` 的�
 后续第 7—14 步在该 run 中按 fail-fast 正确 SKIP；真实成功 run 仍待取得，M5 Accepted 落点
 不变，09A 保持 In Progress。
 
+#### 第六次远端 CI 与文件替换反例统一收敛（2026-08-22）
+
+目录反例提交 `f6b71818d0ef913a4a02452c926fea6c0aa667df` 的真实 GitHub Actions run
+[`32571622520`](https://github.com/aning0922/meal-agent-lab/actions/runs/32571622520) 已通过精确工具链与
+第 1—7/14 步；`local-test-negatives` 远端 **75/75 PASS**，证明第五次 run 的修复有效。
+第 8/14 步 `m3b-round2-negatives` 随后暴露同一根因的三处更早夹具：final replacement、
+staging replacement 与真实 `generateAndPreflight` failure cleanup 都先 unlink 本轮文件、再直接
+按原名写替换文件；Linux 复用刚释放的 inode 后，前两条把替换误认成自有 inode，第三条也由
+cleanup 删掉替换，套件按正确理由失败。
+
+三条夹具现统一在自有 inode 仍存活时于同一父目录预建并登记外部文件，显式证明两者的
+`{dev, ino}` 不同，再执行 unlink + rename。全仓同类模式扫描未发现其他依赖 inode 分配概率的
+ownership 反例；本地 targeted suite 已 **69/69 PASS**。后续第 9—14 步在该 run 中按 fail-fast
+正确 SKIP；真实成功 run 仍待取得，M5 Accepted 落点不变，09A 保持 In Progress。
+
 ## 工具前置
 
 执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。
