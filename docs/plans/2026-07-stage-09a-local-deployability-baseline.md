@@ -4644,6 +4644,24 @@ unlink 后原路径重建，允许 Linux 立即复用同一 inode；两条 layer
 仍须先取得本机完整 14/14，再启动绑定新 HEAD 的第三条远端 run。M5 Accepted 落点不变，09A
 保持 In Progress。
 
+#### 第三次远端 CI 与 Docker evidence capability 固定（2026-08-22）
+
+Linux 可移植性提交 `4aad4bcbbf339b1facbd37c4e88f87f266155f95` 的真实 GitHub Actions run
+[`32566461885`](https://github.com/aning0922/meal-agent-lab/actions/runs/32566461885) 已通过 PostgreSQL
+18.4 安装、第 1/14 步 `stage08-check`（scripts tests **220/220**）、Compose topology 与
+45/45 mutations；第 4/14 步 `api-runtime-image` 在证据采集时 fail closed，后续十步 SKIP。
+仓库外精确 Docker 28.0.4 DinD 复现证明：GitHub 默认 legacy image store 的 BuildKit metadata
+没有 `containerimage.descriptor`；开启 containerd snapshotter 后虽恢复 descriptor，但同版 BuildKit
+只产出 SLSA provenance `v0.2`。M5 Accepted 边界明确要求内容寻址、subject-bound 的结构化 SLSA
+`v1`，因此不得把 descriptor 变成可选字段，也不得为 CI 降级到 v0.2。
+
+workflow 改用 Docker 官方 `setup-docker-action` v5.4.0 的不可变、已验证提交
+`77e84dbf09b47d1e29270283c22f16145aa85ca1`，显式固定 Docker `v29.6.2`、`set-host: true`
+与 `containerd-snapshotter: true`；正式门禁前逐字验证 server version、DriverStatus 与 Compose
+可用性。CI policy 新增独立 7 项 weakening matrix，覆盖可移动 action tag、浮动 Docker 版本、错误
+host、关闭 snapshotter、删除 server/driver/Compose 验证；全部 scripts tests 当前为 **221/221**。
+真实成功 run 仍待取得；M5 Accepted 落点不变，09A 保持 In Progress。
+
 ## 工具前置
 
 执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。

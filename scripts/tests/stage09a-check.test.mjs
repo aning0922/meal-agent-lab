@@ -39,9 +39,10 @@ const expectedStepIds = [
 
 const expectedActions = new Set([
   'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
-  'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020'
+  'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
+  'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1'
 ])
-const expectedWorkflowSha256 = '4ee10aa679d925b659f65b06d966ce35ec6f0b99a1d0f7a7482bb7bcf8812be0'
+const expectedWorkflowSha256 = '3bafc25ccb6e8f520cf818fb81a11c9d55f5fd94c6612007be7b4dd0d7c534e0'
 
 const expectedPostgresql18Artifacts = [
   {
@@ -93,6 +94,32 @@ const ciPostgresql18PolicyProblems = (source) => {
   return problems
 }
 
+const ciDockerEvidencePolicyProblems = (source) => {
+  const problems = []
+  if (
+    countLiteral(
+      source,
+      'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1'
+    ) !== 1
+  ) {
+    problems.push('CI Docker setup action must be the reviewed immutable release')
+  }
+  for (const expected of [
+    '          version: v29.6.2',
+    '          set-host: true',
+    '                "containerd-snapshotter": true',
+    '          if [ "$(docker version --format \'{{.Server.Version}}\')" != 29.6.2 ]; then',
+    '          if [ "$(docker info --format \'{{json .DriverStatus}}\')" != \'[["driver-type","io.containerd.snapshotter.v1"]]\' ]; then',
+    '          docker compose version'
+  ]) {
+    if (countLiteral(source, expected) !== 1) {
+      problems.push('CI Docker 29.6.2 evidence capability policy drifted')
+      break
+    }
+  }
+  return problems
+}
+
 const ciWorkflowPolicyProblems = (source) => {
   const problems = []
   const actualSha256 = createHash('sha256').update(source).digest('hex')
@@ -100,6 +127,7 @@ const ciWorkflowPolicyProblems = (source) => {
     problems.push('CI workflow must match the reviewed byte-for-byte policy')
     return problems
   }
+  problems.push(...ciDockerEvidencePolicyProblems(source))
   problems.push(...ciPostgresql18PolicyProblems(source))
   const lines = source.split('\n')
   const executableSource = lines.filter((line) => !/^\s*#/.test(line)).join('\n')
@@ -974,6 +1002,36 @@ test('the CI PostgreSQL 18.4 installer rejects floating or unverifiable toolchai
   ]
   for (const mutant of mutations) {
     assert.notDeepEqual(ciPostgresql18PolicyProblems(mutant), [])
+  }
+})
+
+test('the CI Docker evidence environment is immutable and capability-complete', () => {
+  const source = readFileSync(resolve(repositoryRoot, '.github/workflows/ci.yml'), 'utf8')
+  assert.deepEqual(ciDockerEvidencePolicyProblems(source), [])
+
+  const mutations = [
+    source.replace(
+      'docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1',
+      'docker/setup-docker-action@v5'
+    ),
+    source.replace('          version: v29.6.2', '          version: latest'),
+    source.replace('          set-host: true', '          set-host: false'),
+    source.replace(
+      '                "containerd-snapshotter": true',
+      '                "containerd-snapshotter": false'
+    ),
+    source.replace(
+      '          if [ "$(docker version --format \'{{.Server.Version}}\')" != 29.6.2 ]; then',
+      '          if false; then'
+    ),
+    source.replace(
+      '          if [ "$(docker info --format \'{{json .DriverStatus}}\')" != \'[["driver-type","io.containerd.snapshotter.v1"]]\' ]; then',
+      '          if false; then'
+    ),
+    source.replace('          docker compose version', '          true')
+  ]
+  for (const mutant of mutations) {
+    assert.notDeepEqual(ciDockerEvidencePolicyProblems(mutant), [])
   }
 })
 

@@ -30,6 +30,29 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1 # v5.4.0; exact Docker 29.6.2 + containerd image store
+        with:
+          version: v29.6.2
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      - name: Verify exact Docker evidence capabilities
+        run: |
+          if [ "$(docker version --format '{{.Server.Version}}')" != 29.6.2 ]; then
+            echo "CI Docker server version drifted" >&2
+            exit 1
+          fi
+          if [ "$(docker info --format '{{json .DriverStatus}}')" != '[["driver-type","io.containerd.snapshotter.v1"]]' ]; then
+            echo "CI Docker image store capability drifted" >&2
+            exit 1
+          fi
+          docker compose version
+
       - name: Install exact PostgreSQL 18.4 toolchain (PGDG)
         run: |
           if [ "$(dpkg --print-architecture)" != amd64 ]; then
