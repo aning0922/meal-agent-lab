@@ -1753,19 +1753,24 @@ stageIsolationNegative: {
   // R3-1（目录层）：`cleanupRun` 在**递归删除**临时 Secret 目录之前复核 inode
   // 身份。这一半此前没有任何门禁触及——`secretsIdentity` 只有 smoke 与 probe
   // 传，四套反例一律走默认的 null，于是把那段守卫整个删掉，所有门禁照样绿。
-  // 这里显式构造 drift：先在 tmp 前缀下建一个目录并记下它的 inode，删掉它，
-  // 再在**同一路径**上建一个新目录（不同 inode），然后带着旧身份跑 cleanup。
+  // 这里显式构造 drift：在旧目录仍然存在时先创建替换目录，所以两者不可能
+  // 同时拥有相同的 dev/ino；随后才删除旧目录并把替换目录 rename 到原路径。
+  // 不允许依赖「删除后重建通常会分配不同 inode」这种文件系统概率假设——Linux
+  // runner 已实测会立即复用刚释放的 inode。
   const name = 'cleanup refuses to recursively delete a secrets directory it does not own'
   const project = `meal-agent-m3b-neg-inode-${randomBytes(4).toString('hex')}`
   usedNegativeProjects.push(project)
   const secretsDirectory = mkdtempSync(resolve(tmpdir(), 'meal-agent-m3b-secrets-'))
   const staleIdentity = inodeIdentityOf(secretsDirectory)
-  let replacementIdentity = null
+  let replacementDirectory = null
   try {
+    replacementDirectory = mkdtempSync(
+      resolve(tmpdir(), 'meal-agent-m3b-secrets-replacement-')
+    )
+    writeFileSync(resolve(replacementDirectory, 'not-ours.txt'), 'foreign\n', { mode: 0o600 })
+    const replacementIdentity = inodeIdentityOf(replacementDirectory)
     rmSync(secretsDirectory, { recursive: true, force: true })
-    mkdirSync(secretsDirectory, { mode: 0o700 })
-    writeFileSync(resolve(secretsDirectory, 'not-ours.txt'), 'foreign\n', { mode: 0o600 })
-    replacementIdentity = inodeIdentityOf(secretsDirectory)
+    renameSync(replacementDirectory, secretsDirectory)
 
     const residue = await cleanupSmokeProject(project, secretsDirectory, {
       secretsIdentity: staleIdentity
@@ -1776,10 +1781,14 @@ stageIsolationNegative: {
     const survived = existsSync(resolve(secretsDirectory, 'not-ours.txt'))
     const sameInode =
       existsSync(secretsDirectory) &&
+      inodeIdentityOf(secretsDirectory).dev === replacementIdentity.dev &&
       inodeIdentityOf(secretsDirectory).ino === replacementIdentity.ino
 
-    if (staleIdentity.ino === replacementIdentity.ino) {
-      fail(name, 'the precondition failed: the replacement directory reused the same inode')
+    if (
+      staleIdentity.dev === replacementIdentity.dev &&
+      staleIdentity.ino === replacementIdentity.ino
+    ) {
+      fail(name, 'the precondition failed: two live directories shared one inode identity')
     } else if (!reportedDrift) {
       fail(name, wrongReason('/secrets-directory: cleanup stage failed/', residue))
     } else if (!survived || !sameInode) {
@@ -1789,6 +1798,9 @@ stageIsolationNegative: {
     }
   } finally {
     rmSync(secretsDirectory, { recursive: true, force: true })
+    if (replacementDirectory !== null) {
+      rmSync(replacementDirectory, { recursive: true, force: true })
+    }
   }
 }
 

@@ -4681,6 +4681,22 @@ Buildx v0.35.0（Docker driver）与 Compose v5.3.1；门禁逐字验证两者�
 完整行判定，确保 `docker-container` 不会假通过。真实成功 run 仍待取得；M5 Accepted 落点不变，
 09A 保持 In Progress。
 
+#### 第五次远端 CI 与目录替换反例确定化（2026-08-22）
+
+插件固定提交 `dc35ebb7b34d59a7facffe7e7dc3ab55ae74eee8` 的真实 GitHub Actions run
+[`32570235763`](https://github.com/aning0922/meal-agent-lab/actions/runs/32570235763) 已逐项通过三个
+不可变 Docker actions、Docker 29.6.2 + containerd、Buildx v0.35.0、Compose v5.3.1、
+PostgreSQL 18.4，以及第 1—5/14 步：`stage08-check`、两条 topology 门禁、正向 runtime
+image 与完整 runtime image mutation suite。此前 `missing-provenance` 的远端差异由此关闭。
+
+第 6/14 步 `local-test-negatives` 的目录 ownership 反例随后在 Linux runner fail closed：夹具先
+删除旧目录、再在同一路径创建替换目录，并把“新目录一定得到不同 inode”当成前置条件；runner
+立即复用了刚释放的 inode，因此这条反例没有实际制造 identity drift。生产 cleanup 未失败，缺陷
+在测试取证。夹具现于旧目录仍存活时先创建并登记另一个目录，二者同时存在保证 `{dev, ino}`
+不同，再删除旧目录并将替换目录 rename 到原路径；本地同一 75-case 套件已 **75/75 PASS**。
+后续第 7—14 步在该 run 中按 fail-fast 正确 SKIP；真实成功 run 仍待取得，M5 Accepted 落点
+不变，09A 保持 In Progress。
+
 ## 工具前置
 
 执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。
