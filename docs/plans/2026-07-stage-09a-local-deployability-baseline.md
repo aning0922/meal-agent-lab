@@ -1,7 +1,7 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-22 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」已于 2026-08-22 由总控 Accepted，验收落点 `efd186f`**；候选分支已推送，已有七条真实远端 run 但尚无 14/14 成功 run；候选尚未合入本地 `main`；09A 总验收未完成）
+- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」已于 2026-08-22 由总控 Accepted，验收落点 `efd186f`**；候选分支已推送，第八条真实远端 run `32577003712` 已在精确候选 `24be8b3` 上完成 `stage09a:check` 14/14；候选尚未合入本地 `main`；09A 总验收未完成）
 - 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
@@ -26,7 +26,7 @@
 - PostgreSQL 18 的空库迁移、RLS、幂等、并发和数据库反向测试已由阶段 08 门禁覆盖。
 - 仓库已有 GitHub `origin`，本地 `main` 跟踪 `origin/main`。GitHub Actions 的 `ci` workflow 已在本分支上真实运行并通过（见 PR #1 记录的 run URL 与 head SHA）；该 run 只执行 `pnpm stage08:check`，**不构建镜像、不跑容器 smoke**，因此它不构成阶段 09A 的完成证据。
 - （规划时的事实）`infra/docker/` 与 `infra/environments/` 为空骨架。**现状**：M1 已交付 `services/api/Dockerfile` 与根 `.dockerignore`；M2A 已交付 `infra/docker/postgres/` 的 bootstrap 与**四个** generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 新增的只读授权投影，R8B 已把其上的共享 CTE 接入 verify/converge）；M2B 已交付 `infra/docker/compose.local-test.yaml` 与解析后配置的静态门禁 `infra/docker/check-compose-topology.mjs`；M3A 已交付 secret file 的 `_FILE` 读取实现、显式部署维度与响应安全边界；M3B 已交付并验收环境模板、八份 Secret、容器 smoke、containment 与网络隔离；M4 已交付并验收生命周期与备份恢复；M5 已交付并验收 `stage09a:check`、runtime image 扫描、CI workflow 与文档，验收落点 `efd186f`。
-- 当前总控机器可用 Node.js 24.18.0（与 M1 镜像和 `.node-version` 一致）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项；当前剩余的是新 HEAD 的远端 CI 真实成功 run、主线/远端集成与 09A 总验收。
+- 当前总控机器可用 Node.js 24.18.0（与 M1 镜像和 `.node-version` 一致）、pnpm 11.9.0、PostgreSQL 18.4，以及 Docker Engine 29.6.2 与 Docker Compose v5.3.1（规划时尚未安装，2026-07-27 已具备）。容器引擎不再是前置阻塞项；新 HEAD 的远端 CI 真实成功 run 已取得，当前剩余的是本地 `main`/Draft PR 集成裁定与 09A 总验收。
 - **对象 catalog 基线绑定 PostgreSQL 18.4**：manifest 里的 `pg_get_constraintdef` / `pg_get_indexdef` / `pg_get_expr` 规范化文本、`pg_constraint` 对 NOT NULL 的登记方式、`acldefault` 的取值都由具体 patch 版本决定。判据是 exact-patch 的，且覆盖**整套工具链**：`environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`pg_dump`、`pg_restore`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的主版本字段锚定解析（不做任何 `includes` / 子串判断），七个都必须是 exact 18.4；任一工具是 18.3、banner 报了别的工具名、或缺失/不可执行时整套判定失败，「只有 server 是 18.4」的混装被明确拒绝。这些结论都有单元测试。因此 M2B 的 Compose 必须固定 PostgreSQL **18.4 的 exact image digest**，且该 digest 必须在 M2B 落地时**解析真实镜像仓库**获得——本计划与其他文档当前**不得写入任何编造的 digest**。任何 patch 升级都必须重新 capture manifest、重新跑 parity 并显式 rebaseline，不能只改 tag。
 - 现有数据库测试主要使用高权限连接建立临时集群。该做法可以验证 migration 与 RLS，但不能直接作为长期测试环境的运行账号方案。
 - 现有 local/weapp-only 依赖审计例外将在 **2026-11-08** 到期（2026-08-06 第二次授予）并明确阻断 external-test；阶段 09A 可以验证本地 API image，但阶段 09B 或任何外部客户端测试不能沿用该例外。
@@ -4736,6 +4736,32 @@ backup 和 restore 两个生产调用点都使用绝对工具路径，以及 wor
 两户五表逐字节对比和零残留全部 PASS；随后同一候选从步骤 1 完整通过本机
 `stage09a:check` **14/14**（scripts tests **222/222**）。新 HEAD 仍须取得新的真实
 远端成功 run；M5 Accepted 落点不变，09A 保持 In Progress。
+
+#### 第八次远端 CI 成功与远端证据闭环（2026-08-22）
+
+host archive 工具链修复提交 `24be8b35b8a115524f7eeb36f90f693bfed59d87`
+已推送至 `claude/stage-09a-m5-gates`。真实 GitHub Actions
+[`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
+由 `workflow_dispatch` 触发，job
+[`97040690124`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712/job/97040690124)
+conclusion 为 `success`，从 2026-08-22 13:51:58Z 运行到 14:24:40Z，耗时
+32m42s；`headSha` 与上述提交逐字一致。
+
+前置步骤逐项证明 Node.js `v24.18.0`、Docker Engine `29.6.2`，以及
+`PG_BIN=/usr/lib/postgresql/18/bin` 下 `createdb`、`initdb`、`pg_ctl`、
+`pg_dump`、`pg_restore`、`postgres`、`psql` 七项工具均为 PostgreSQL
+18.4。随后 workflow 只调用仓库同一入口 `pnpm stage09a:check`，最终逐项输出
+第 1—14/14 步 PASS 与 `stage09a:check PASS (14/14 steps)`。restore drill 还明确
+记录 archive-list command completed、grammar validated、complete custom-archive TOC
+validated；篡改备份在任何 restore step 前按固定 checksum 理由拒绝；全新 stack B
+完成单事务恢复，ledger、授权面与两个合成 household 的五表数据保持逐字节一致；
+cleanup 最终确认容器、网络、named/anonymous volume、本轮 immutable image 与临时
+Secret 全部不存在。
+
+因此 M5 Accepted 后的远端 CI 阻断已关闭，M5 验收落点仍为 `efd186f`，不迁移到
+CI 修复提交。阶段 09A 仍为 In Progress：剩余门禁是候选进入本地 `main`/既有 Draft
+PR 的集成裁定，以及对「## 验收门禁」全表作最终总验收；本段不授权或冒充 merge，
+也不把 workflow success 自动等同于 09A Pass。
 
 ## 工具前置
 
