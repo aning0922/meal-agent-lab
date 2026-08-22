@@ -345,8 +345,11 @@ test 又会因未选择无关 oracle 被 after-hook 假红。production guard �
 runtime source 与三条 identity-loss 闭集规则，每条规则都由删除同一 registry 项的唯一
 fixture 证明；canonical `process` 不再把 property name 当成第二个 source。guard 会计改为
 声明时登记，focused mutation 的退出状态只由所选 oracle 决定。代码与回归落点
-`1e75e47`；production guard 38/38、全部 scripts tests 218/218。完整 committed-candidate
-14 步门禁待文档与 baseline 提交后执行；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+`1e75e47`；production guard 38/38、全部 scripts tests 218/218。最终候选 `efd186f` 的
+独立 A/B 审计均为 CLEAN；动态 B 的唯一正式 `stage09a:check` 14/14、同一 Docker
+generation、1,710 个公告 PGID 全部 ESRCH 与 scoped 零残留证据有效。M5 已于
+2026-08-22 由总控 Accepted，验收落点 `efd186f`；候选尚未合入本地 `main` 或推送，
+09A 未 Pass，远端 CI 无真实 run。
 
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接

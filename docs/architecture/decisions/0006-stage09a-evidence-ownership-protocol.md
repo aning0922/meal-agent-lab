@@ -1,7 +1,7 @@
 # ADR-0006：阶段 09A 外部证据与资源所有权协议
 
-- 状态：Proposed
-- 日期：2026-08-16
+- 状态：Accepted
+- 日期：2026-08-16（**2026-08-22 由 `Proposed` 转 `Accepted`**：M5.16 最终候选 `efd186f` 的两个全新独立审计均为 CLEAN；唯一正式动态门禁 14/14、同一 Docker generation、1,710 个公告 PGID 全部 ESRCH 与 scoped 零残留证据有效。远端 CI 真实 run 与 09A 总验收仍未完成）
 - 范围：阶段 09A M5 的 Docker/Compose、进程组、生命周期、备份与恢复门禁
 
 实施注记（2026-08-20，M5.7）：M5.6 候选的审计 A 证明初版 production guard 仍可由
@@ -120,6 +120,16 @@ source 与三条 identity-loss criterion 变成 production guard 实际消费的
 代码与回归落点 `1e75e47`，scripts tests 218/218、production guard 38/38。完整
 committed-candidate 14 步门禁仍须在文档与 baseline 提交后从步骤 1 执行；M5 未 Accepted，
 本 ADR 保持 `Proposed`。
+
+接受注记（2026-08-22，覆盖上段当前状态）：M5.16 最终候选 `efd186f` 的静态审计 A
+与最终替代动态审计 B 均为 CLEAN。A 证明 11/11 runtime source/identity-loss 规则的
+live-registry deletion witness 具有独立判别力；B 在固定 Node.js `v24.18.0`、同一 Docker
+session/daemon/bridge generation 下只执行一次正式 `stage09a:check`，真实退出码 0、
+14/14 PASS、无 retry，1,710 个公告 PGID 全部 ESRCH，候选和 scoped 资源终态干净。
+此前因 Docker Desktop Resource Saver `idle: shutdown` 造成 generation 改变的两次 B 均
+严格记为 INVALID；关闭 Resource Saver 并先完成 405 秒空闲稳定性验证后才取得最终有效
+报告。项目总控据此将 M5 Accepted（验收落点 `efd186f`），本 ADR 同步转为 `Accepted`。
+候选尚未合入本地 `main` 或推送，远端 CI 无真实 run，阶段 09A 仍为 In Progress。
 
 ## 背景
 

@@ -1,9 +1,10 @@
 # M5.16 runtime source mutation 证据架构整改任务书
 
 - 日期：2026-08-22
-- 状态：Implementation complete — narrow gates PASS, committed-candidate gate pending
+- 状态：**Accepted（2026-08-22，验收落点 `efd186f783d6281084940a210791775857a4a31d`）**
 - 基线候选：`f5c9a4c7d20ff169c061c1bbad8c9af6eb502180`
 - 代码与回归落点：`1e75e47e2591fe9c0edee29511629591e1f729d9`
+- 最终验收候选：`efd186f783d6281084940a210791775857a4a31d`
 - 范围：M5 production guard 的 runtime capability source / identity-loss mutation 证据与 focused 会计
 - 不在范围：产品实现、API/contracts/client、Docker/Compose/M3B/M4 生产实现、云资源、真实微信与远端 CI
 
@@ -95,3 +96,23 @@ git status --short
 
 本任务不 push、不 merge、不创建 PR，不自行标记 M5 Accepted、09A Pass 或远端 CI Pass。
 两路审计均 CLEAN 后才回到项目总控做 Accepted 裁定。
+
+## 5. 总控验收结果
+
+2026-08-22，最终候选 `efd186f` 的两个全新独立审计均为 **CLEAN**：
+
+- 审计 A 复核 11/11 live-registry deletion witness、focused-safe 会计和全部反向控制，
+  未发现确认级 P0/P1；
+- 最终替代审计 B 在固定 Node.js `v24.18.0`、独占且同一 generation 的 Docker 环境中
+  只执行一次正式 `pnpm stage09a:check`，真实退出码 0、14/14 PASS、无 retry；
+- Docker session、daemon 与 bridge immutable ID/Created 在正式区间不变；1,710 个公告
+  PGID 全部到达 ESRCH，候选工作树与 scoped Docker/Secret/backup/image 资源零残留。
+
+此前两次动态 B 因 Docker Desktop Resource Saver 触发 `idle: shutdown`、导致正式区间
+跨 daemon/bridge generation，均按协议判为 INVALID。总控经用户授权关闭该设置并先完成
+405 秒空闲稳定性验证后才创建最终替代审计，没有把基础设施失败归因候选，也没有重试
+唯一正式调用。
+
+项目总控据此将 **M5 Accepted，验收落点为 `efd186f`**。本结论不声称远端 GitHub
+Actions PASS，不把候选写成已合入本地 `main`，也不把阶段 09A 记为 Pass；这些仍需
+后续授权、真实远端 run 与阶段总验收。
