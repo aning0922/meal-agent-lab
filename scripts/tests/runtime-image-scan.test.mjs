@@ -90,6 +90,17 @@ const padTarPayload = (bytes) => Buffer.concat([
   Buffer.alloc((512 - (bytes.length % 512)) % 512)
 ])
 
+const fixtureTar = (entries, { trailingZeroBlocks = 2 } = {}) => Buffer.concat([
+  ...entries.flatMap((entry) => {
+    const bytes = entry.bytes ?? Buffer.alloc(0)
+    return [
+      tarHeader({ ...entry, size: bytes.length }),
+      padTarPayload(bytes)
+    ]
+  }),
+  Buffer.alloc(trailingZeroBlocks * 512)
+])
+
 const assertSavedArchiveDescriptorDataflow = (source) => {
   const sourceFile = ts.createSourceFile(
     'api-image-scan.mjs',
@@ -168,6 +179,30 @@ test('saved-image archive parsing stays on the inherited descriptor after path r
     assert.equal(members.has('foreign'), false)
   } finally {
     closeSync(fd)
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('saved-image archive parsing accepts only zero record padding after its terminator', () => {
+  const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-saved-image-padding-'))
+  try {
+    const padded = fixtureTar(
+      [{ name: 'fixture', bytes: Buffer.from('A') }],
+      { trailingZeroBlocks: 20 }
+    )
+    const valid = resolve(directory, 'valid.tar')
+    writeFileSync(valid, padded)
+    assert.deepEqual([...indexSavedImageTar(valid, throwingFatal).keys()], ['fixture'])
+
+    const nonzeroTail = Buffer.from(padded)
+    nonzeroTail[nonzeroTail.length - 1] = 0x41
+    const invalid = resolve(directory, 'invalid.tar')
+    writeFileSync(invalid, nonzeroTail)
+    assert.throws(
+      () => indexSavedImageTar(invalid, throwingFatal),
+      /data after the tar terminator/
+    )
+  } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })
@@ -381,28 +416,15 @@ test('immutable image, container and history evidence is identity-bound and comp
 test('saved layer blobs are bound by compressed digest and uncompressed diff ID', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-saved-layer-'))
   try {
-    const layerRoot = resolve(directory, 'layer-root')
-    mkdirSync(layerRoot)
-    writeFileSync(resolve(layerRoot, 'fixture.txt'), 'fixture layer bytes\n')
-    const layerArchive = resolve(directory, 'layer.tar')
-    const layerPacked = spawnSync(
-      'tar',
-      ['--format=ustar', '-cf', layerArchive, '-C', layerRoot, '.'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
-    )
-    assert.equal(layerPacked.status, 0, layerPacked.stderr)
-    const layerBytes = readFileSync(layerArchive)
+    const layerBytes = fixtureTar([
+      { name: 'fixture.txt', bytes: Buffer.from('fixture layer bytes\n') }
+    ])
     const digest = createHash('sha256').update(layerBytes).digest('hex')
-    const blobDirectory = resolve(directory, 'root/blobs/sha256')
-    mkdirSync(blobDirectory, { recursive: true })
-    writeFileSync(resolve(blobDirectory, digest), layerBytes)
     const archive = resolve(directory, 'image.tar')
-    const packed = spawnSync(
-      'tar',
-      ['--format=ustar', '-cf', archive, '-C', resolve(directory, 'root'), 'blobs'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    writeFileSync(
+      archive,
+      fixtureTar([{ name: `blobs/sha256/${digest}`, bytes: layerBytes }])
     )
-    assert.equal(packed.status, 0, packed.stderr)
     await assert.doesNotReject(
       verifySavedImageLayers(
         archive,
@@ -435,14 +457,13 @@ test('saved layer blobs are bound by compressed digest and uncompressed diff ID'
 
     const truncatedBytes = layerBytes.subarray(0, layerBytes.length - 512)
     const truncatedDigest = createHash('sha256').update(truncatedBytes).digest('hex')
-    writeFileSync(resolve(blobDirectory, truncatedDigest), truncatedBytes)
     const truncatedArchive = resolve(directory, 'truncated-image.tar')
-    const truncatedPacked = spawnSync(
-      'tar',
-      ['--format=ustar', '-cf', truncatedArchive, '-C', resolve(directory, 'root'), 'blobs'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    writeFileSync(
+      truncatedArchive,
+      fixtureTar([
+        { name: `blobs/sha256/${truncatedDigest}`, bytes: truncatedBytes }
+      ])
     )
-    assert.equal(truncatedPacked.status, 0, truncatedPacked.stderr)
     await assert.rejects(
       verifySavedImageLayers(
         truncatedArchive,
@@ -463,34 +484,29 @@ test('verified layer replay consumes inherited descriptors rather than a replace
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-layer-custody-'))
   try {
     const buildLayer = (name, contents) => {
-      const root = resolve(directory, `${name}-root`)
       const archive = resolve(directory, `${name}.tar`)
-      mkdirSync(resolve(root, 'app/dist/database'), { recursive: true })
-      writeFileSync(resolve(root, 'app/payload.txt'), contents)
-      writeFileSync(resolve(root, 'app/dist/index.js'), 'entrypoint')
-      writeFileSync(resolve(root, 'app/dist/database/migrate.js'), 'migration entrypoint')
-      const packed = spawnSync(
-        'tar',
-        ['--format=ustar', '--uid', '0', '--gid', '0', '-cf', archive, '-C', root, '.'],
-        { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+      writeFileSync(
+        archive,
+        fixtureTar([
+          { name: 'app/payload.txt', bytes: Buffer.from(contents) },
+          { name: 'app/dist/index.js', bytes: Buffer.from('entrypoint') },
+          {
+            name: 'app/dist/database/migrate.js',
+            bytes: Buffer.from('migration entrypoint')
+          }
+        ])
       )
-      assert.equal(packed.status, 0, packed.stderr)
       return archive
     }
     const layerA = buildLayer('a', 'VERIFIED-A')
     const layerB = buildLayer('b', 'UNVERIFIED-B')
     const layerBytes = readFileSync(layerA)
     const digest = createHash('sha256').update(layerBytes).digest('hex')
-    const blobDirectory = resolve(directory, 'saved/blobs/sha256')
-    mkdirSync(blobDirectory, { recursive: true })
-    writeFileSync(resolve(blobDirectory, digest), layerBytes)
     const saved = resolve(directory, 'saved.tar')
-    const packed = spawnSync(
-      'tar',
-      ['--format=ustar', '-cf', saved, '-C', resolve(directory, 'saved'), 'blobs'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    writeFileSync(
+      saved,
+      fixtureTar([{ name: `blobs/sha256/${digest}`, bytes: layerBytes }])
     )
-    assert.equal(packed.status, 0, packed.stderr)
 
     const strict = createStrictRunner(throwingFatal)
     let replaced = false
@@ -523,28 +539,15 @@ test('verified layer replay consumes inherited descriptors rather than a replace
 test('layer replay rejects a whiteout marker without a basename', async () => {
   const directory = mkdtempSync(resolve(tmpdir(), 'meal-agent-layer-whiteout-'))
   try {
-    const root = resolve(directory, 'layer-root')
-    mkdirSync(resolve(root, 'app'), { recursive: true })
-    writeFileSync(resolve(root, 'app/.wh.'), '')
     const layer = resolve(directory, 'layer.tar')
-    const packedLayer = spawnSync(
-      'tar',
-      ['--format=ustar', '--uid', '0', '--gid', '0', '-cf', layer, '-C', root, '.'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
-    )
-    assert.equal(packedLayer.status, 0, packedLayer.stderr)
+    writeFileSync(layer, fixtureTar([{ name: 'app/.wh.' }]))
     const bytes = readFileSync(layer)
     const digest = createHash('sha256').update(bytes).digest('hex')
-    const blobDirectory = resolve(directory, 'saved/blobs/sha256')
-    mkdirSync(blobDirectory, { recursive: true })
-    writeFileSync(resolve(blobDirectory, digest), bytes)
     const saved = resolve(directory, 'saved.tar')
-    const packed = spawnSync(
-      'tar',
-      ['--format=ustar', '-cf', saved, '-C', resolve(directory, 'saved'), 'blobs'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    writeFileSync(
+      saved,
+      fixtureTar([{ name: `blobs/sha256/${digest}`, bytes }])
     )
-    assert.equal(packed.status, 0, packed.stderr)
     const materialized = resolve(directory, 'materialized')
     mkdirSync(materialized)
     await assert.rejects(
@@ -590,16 +593,11 @@ test('PAX identity overrides and app symlink boundaries are part of rootfs evide
     }
     const paxLayerBytes = readFileSync(archive)
     const paxDigest = createHash('sha256').update(paxLayerBytes).digest('hex')
-    const savedRoot = resolve(directory, 'saved/blobs/sha256')
-    mkdirSync(savedRoot, { recursive: true })
-    writeFileSync(resolve(savedRoot, paxDigest), paxLayerBytes)
     const saved = resolve(directory, 'saved.tar')
-    const packed = spawnSync(
-      'tar',
-      ['--format=ustar', '-cf', saved, '-C', resolve(directory, 'saved'), 'blobs'],
-      { encoding: 'utf8', env: { ...process.env, COPYFILE_DISABLE: '1' } }
+    writeFileSync(
+      saved,
+      fixtureTar([{ name: `blobs/sha256/${paxDigest}`, bytes: paxLayerBytes }])
     )
-    assert.equal(packed.status, 0, packed.stderr)
     const materialized = resolve(directory, 'materialized')
     mkdirSync(materialized)
     await assert.rejects(

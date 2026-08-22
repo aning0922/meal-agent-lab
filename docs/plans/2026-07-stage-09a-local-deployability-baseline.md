@@ -4625,6 +4625,25 @@ client/server 双包，下载时固定 HTTPS、包文件名与 SHA-256，严格�
 回归，覆盖架构、URL、校验和、校验步骤、双包安装、下载失败和五工具集合。当前仍等待绑定
 新 HEAD 的真实成功 run；M5 Accepted 落点不变，09A 保持 In Progress，候选尚未合入 `main`。
 
+#### 第二次远端 CI 与 Linux tar/inode 可移植性整改（2026-08-22）
+
+工具链固定提交 `f69f6b79d6a680e7997c878258c1568ae4790911` 的真实 GitHub Actions run
+[`32564219755`](https://github.com/aning0922/meal-agent-lab/actions/runs/32564219755) 已通过官方
+PostgreSQL 18.4 安装与五工具检查；`stage09a:check` 随后在第 1/14 步 `stage08-check`
+fail closed，后续 13 步全部 SKIP。Linux runner 暴露 6 条确定性失败：两条 ownership 测试在
+unlink 后原路径重建，允许 Linux 立即复用同一 inode；两条 layer fixture 使用 macOS tar 的
+`--uid/--gid`；其余失败来自 `docker image save` 外层 tar parser 把 GNU tar 在双零块后的合法
+全零 record padding 误判为数据走私。最后一项属于生产证据 parser 的真实可移植性缺陷，不能
+只改测试或重跑。
+
+整改把 replacement fixture 改为先创建独立 inode、再原子换名；所有测试 layer/save tar 统一由
+仓库内确定性 USTAR builder 产生，不再依赖宿主 tar 的私有参数或默认 blocking factor。生产
+`indexSavedImageTar` 在见到两个终止零块后，只接受剩余长度为完整 512-byte record 且全部字节为
+零；任何非零尾随数据、非整块尾部或截断读取仍固定失败。新增正反回归同时证明 GNU 风格 20 个
+零块可接受、末字节改为非零必拒绝。聚焦的 Linux/Node.js 24.18.0 容器复验为 **7/7 PASS**；
+仍须先取得本机完整 14/14，再启动绑定新 HEAD 的第三条远端 run。M5 Accepted 落点不变，09A
+保持 In Progress。
+
 ## 工具前置
 
 执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。

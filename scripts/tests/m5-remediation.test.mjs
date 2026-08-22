@@ -334,8 +334,10 @@ test('BuildKit evidence ownership is acquired from its output inode and never re
     assert.match(captured.metadataText, /containerimage\.digest/)
     assert.match(captured.iidText, /^sha256:/)
     const original = record.fileIdentities.get(iidfile)
+    const replacement = resolve(directory, 'replacement.id')
+    writeFileSync(replacement, `sha256:${'b'.repeat(64)}\n`)
     unlinkSync(iidfile)
-    writeFileSync(iidfile, `sha256:${'b'.repeat(64)}\n`)
+    renameSync(replacement, iidfile)
     assert.throws(
       () => captureBuildEvidenceFiles(record),
       /docker build evidence file ownership drifted/

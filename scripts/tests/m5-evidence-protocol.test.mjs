@@ -10,6 +10,7 @@ import fs, {
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync
@@ -347,8 +348,10 @@ test('owned tree retirement preserves unknown children and inode replacements', 
       if (variant === 'unknown') {
         writeFileSync(join(directory, 'foreign'), 'foreign')
       } else {
+        const replacement = join(directory, 'replacement')
+        writeFileSync(replacement, 'replacement')
         rmSync(registered)
-        writeFileSync(registered, 'replacement')
+        renameSync(replacement, registered)
       }
       assert.throws(() => retireOwnedTree(journal), EvidenceProtocolError)
       assert.equal(existsSync(directory), true)

@@ -715,7 +715,22 @@ export const indexSavedImageTar = (archiveSource, fatal) => {
       if (header.every((byte) => byte === 0)) {
         zeroBlocks += 1
         offset += tarBlockSize
-        if (zeroBlocks === 2) break
+        if (zeroBlocks === 2) {
+          if ((archiveSize - offset) % tarBlockSize !== 0) {
+            fatal('docker image save returned data after the tar terminator')
+          }
+          while (offset < archiveSize) {
+            const trailing = Buffer.alloc(Math.min(64 * 1024, archiveSize - offset))
+            if (readSync(fd, trailing, 0, trailing.length, offset) !== trailing.length) {
+              fatal('docker image save returned a truncated tar padding record')
+            }
+            if (!trailing.every((byte) => byte === 0)) {
+              fatal('docker image save returned data after the tar terminator')
+            }
+            offset += trailing.length
+          }
+          break
+        }
         continue
       }
       zeroBlocks = 0

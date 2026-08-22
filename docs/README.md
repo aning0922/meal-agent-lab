@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.16 Accepted 事实（2026-08-22，覆盖下方历史轮次）**：总控按 [M5.16 任务书](plans/2026-08-m5-16-runtime-source-mutation-evidence.md)把八条 runtime source 与三条 identity-loss 判据改成生产 guard 实际消费的闭集 registry，并逐条删除同一 registry 项验证唯一 witness；代码与回归落点 `1e75e47`，最终验收候选为 `efd186f`。固定 Node.js `v24.18.0` 下，production guard **38/38**、全部 scripts tests **218/218**；独立静态审计 A 与动态审计 B 均为 **CLEAN**。B 只执行一次正式 `pnpm stage09a:check`，真实退出码 0、**14/14 PASS**，Docker session/daemon/bridge generation 全程不变，1,710 个公告 PGID 全部到达 ESRCH，作用域资源零残留。**M5 已由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 已转 `Accepted`。**候选尚未合入本地 `main`、尚未推送；09A 未 Pass，远端 CI 无真实 run。
+**当前 M5.16 Accepted 事实（2026-08-22，覆盖下方历史轮次）**：总控按 [M5.16 任务书](plans/2026-08-m5-16-runtime-source-mutation-evidence.md)把八条 runtime source 与三条 identity-loss 判据改成生产 guard 实际消费的闭集 registry，并逐条删除同一 registry 项验证唯一 witness；代码与回归落点 `1e75e47`，最终验收候选为 `efd186f`。固定 Node.js `v24.18.0` 下，production guard **38/38**、全部 scripts tests **220/220**（含 CI 工具链与 tar 可移植性回归）；独立静态审计 A 与动态审计 B 均为 **CLEAN**。B 只执行一次正式 `pnpm stage09a:check`，真实退出码 0、**14/14 PASS**，Docker session/daemon/bridge generation 全程不变，1,710 个公告 PGID 全部到达 ESRCH，作用域资源零残留。**M5 已由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 已转 `Accepted`。**候选分支已推送；远端 run `32563304312` 被 PostgreSQL 18.4 exact-version gate 拒绝，修正工具链后的 run `32564219755` 又暴露 Linux tar/inode 夹具差异。18.4 固定与跨平台 parser/夹具整改均已落地，当前等待新的真实成功 run；候选尚未合入本地 `main`，09A 未 Pass。
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
