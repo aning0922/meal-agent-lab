@@ -4,7 +4,12 @@ import { fileURLToPath } from "node:url";
 
 import { Pool, type PoolClient } from "pg";
 
-const migrationsDirectory = fileURLToPath(
+import { resolveDatabaseUrlSource } from "../config-source.js";
+import { byUtf8Bytes } from "./authorization-identity.js";
+import { renderStage06ManifestCheckSql } from "./stage06-manifest-sql.js";
+
+/** tracked 的 migration 目录。测试用注入 seam 覆盖它，绝不改写 tracked 文件。 */
+export const defaultMigrationsDirectory = fileURLToPath(
   new URL("../../migrations/", import.meta.url),
 );
 
@@ -14,14 +19,19 @@ interface MigrationFile {
   readonly hash: string;
 }
 
-const readMigrations = async (): Promise<readonly MigrationFile[]> => {
-  const names = (await readdir(migrationsDirectory))
+const readMigrations = async (
+  directory: string = defaultMigrationsDirectory,
+): Promise<readonly MigrationFile[]> => {
+  const names = (await readdir(directory))
     .filter((name) => name.endsWith(".sql"))
-    .sort();
+    // 与 exact-ledger 的 state identity 共用同一个 **UTF-8 字节序** comparator：
+    // 应用顺序、写进 ledger 的顺序与 identity 的排序必须是同一个序，否则补充
+    // 平面字符会让三者互相错位。
+    .sort(byUtf8Bytes);
 
   return Promise.all(
     names.map(async (name) => {
-      const sql = await readFile(`${migrationsDirectory}/${name}`, "utf8");
+      const sql = await readFile(`${directory}/${name}`, "utf8");
       return {
         name,
         sql,
@@ -44,36 +54,397 @@ const prepareMigrationMetadata = async (
   `);
 };
 
+/** 迁移执行角色：migration login 必须显式进入该 NOLOGIN 高权限角色。 */
+export const migrationRole = "meal_agent_migrator";
+
+/** 冻结的空库 bootstrap migration 文件名。 */
+export const stage06Migration = "0000_stage_06.sql";
+
+const advisoryLockKey = 938_006_001;
+
+/** 默认的有界等待。任何一项都不允许无限阻塞部署 job。 */
+export const migrationDefaults = {
+  connectionTimeoutMs: 10_000,
+  lockWaitMs: 30_000,
+  lockRetryDelayMs: 250,
+} as const;
+
+export class MigrationLockTimeoutError extends Error {
+  public constructor(waitedMs: number) {
+    super(
+      `could not acquire the migration advisory lock within ${waitedMs}ms; ` +
+        "another migration is holding it",
+    );
+    this.name = "MigrationLockTimeoutError";
+  }
+}
+
+export class MigrationOptionError extends Error {
+  public constructor(option: string, maximumMs: number) {
+    super(
+      `${option} must be an integer between 1 and ${String(maximumMs)} ` +
+        "milliseconds",
+    );
+    this.name = "MigrationOptionError";
+  }
+}
+
+/**
+ * 有界等待的**上界**也必须受控，不能接受任意 JS safe integer：
+ *
+ * - Node 的定时器以 32 位有符号毫秒存储，超过 2^31-1 会溢出并退化为约 1ms，
+ *   于是「超大超时」会静默变成「几乎不等待」，与意图完全相反；
+ * - 产品意义上，部署 job 等待数据库连接超过 1 分钟、或等待迁移锁超过 10 分钟，
+ *   应当判定为部署失败并让运维介入，而不是继续挂着。
+ */
+export const migrationLimits = {
+  connectionTimeoutMs: 60_000,
+  lockWaitMs: 600_000,
+} as const;
+
+/**
+ * 有界等待参数必须是位于 [1, 上界] 的整数：0、负数、NaN、Infinity、小数和
+ * 超过上界的值一律立即拒绝，避免把「无界等待」「立即超时」或溢出后的
+ * 「几乎不等待」偷偷带进部署 job。
+ */
+const boundedMilliseconds = (
+  option: "connectionTimeoutMs" | "lockWaitMs",
+  value: number | undefined,
+  fallback: number,
+): number => {
+  const maximum = migrationLimits[option];
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0 || resolved > maximum) {
+    throw new MigrationOptionError(option, maximum);
+  }
+  return resolved;
+};
+
 export interface ApplyMigrationsOptions {
   /**
    * 只应用文件名 <= 该值的迁移（含），用于验证多文件序列的增量应用：
    * 先只上 0000，再单独增量上 0001。缺省应用全部待应用迁移。
    */
   readonly onlyThrough?: string;
+  /**
+   * 只加载并执行**精确的这一个** migration 文件。与 onlyThrough 的字典序上界
+   * 不同：它不依赖排序，也不会因为新增了排在前面的文件而多执行。
+   * admin bootstrap 用它锁定 0000_stage_06.sql。
+   */
+  readonly exactMigration?: string;
+  /**
+   * 迁移执行角色。缺省显式 SET ROLE meal_agent_migrator，供 NOINHERIT 的
+   * migration login 使用。
+   *
+   * 传 null 表示不切换角色，仅用于 bootstrap/admin 路径：冻结的 0000 自身要
+   * CREATE ROLE 并设置 BYPASSRLS，必须由 cluster admin 执行，此时 migrator
+   * 角色尚不存在，无法先切换过去。
+   */
+  readonly role?: string | null;
+  /** 建立数据库连接的上界。 */
+  readonly connectionTimeoutMs?: number;
+  /** advisory lock 与 DDL 锁等待的上界；超时后明确失败，不无限等待。 */
+  readonly lockWaitMs?: number;
+  /**
+   * admin bootstrap 模式。只由独立的 db:bootstrap 入口设置：在执行任何
+   * DDL 之前，用真实连接核对目标库、身份能力与数据库状态；不满足时 fail closed，
+   * 不会留下 drizzle schema、ledger 或 0000 的任何对象。
+   */
+  readonly adminBootstrap?: boolean;
+  /**
+   * migration 文件目录。缺省是 tracked 的 `services/api/migrations/`。
+   *
+   * 这是一个**只读注入 seam**：测试需要验证「排在 0000 之前的文件被拒绝」「目标
+   * 文件缺失时零连接零 DDL」这类场景，但绝不能为此删除或改写 tracked migration
+   * ——那会让一次中断的测试留下一个被破坏的仓库。改为把 tracked 文件复制进临时
+   * 目录再指向它。运维入口不暴露这个参数。
+   */
+  readonly migrationsDirectory?: string;
 }
+
+export class MigrationSelectionError extends Error {
+  public constructor(detail: string) {
+    super(`migration selection: ${detail}`);
+    this.name = "MigrationSelectionError";
+  }
+}
+
+export class MigrationPreflightError extends Error {
+  public constructor(detail: string) {
+    super(`admin bootstrap preflight: ${detail}`);
+    this.name = "MigrationPreflightError";
+  }
+}
+
+/**
+ * 冻结 0000 的对象与安全属性检查 SQL。
+ *
+ * 它由 `stage06-manifest.ts` 的 typed manifest 渲染而来，与 bootstrap 侧
+ * `01-owner-handoff.sql` 通过 `\ir` 加载的 generated adapter 是**同一段文本**
+ * （`manifest:check` 逐字节保证）。因此这里不再维护第二份手写对象 allowlist，
+ * 两个入口对同一批对象漂移也会给出同一条拒绝理由。
+ *
+ * 只渲染一次：渲染是纯函数，且与连接、库名、locale 无关。
+ */
+const stage06ManifestCheckSql = renderStage06ManifestCheckSql();
+
+/**
+ * 执行 manifest 检查。它是只读的：不匹配时抛错，不做任何 ownership/ACL 变更。
+ * 错误信息原样保留，只加上本入口的前缀，方便与 bootstrap 侧逐条对照。
+ */
+const assertStage06Manifest = async (client: PoolClient): Promise<void> => {
+  try {
+    await client.query(stage06ManifestCheckSql);
+  } catch (error) {
+    throw new MigrationPreflightError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+};
+
+const projectDatabasePattern = /^meal_agent(_[a-z0-9_]+)?$/;
+
+/**
+ * admin bootstrap 的前置校验：全部在任何 DDL 之前完成。
+ *
+ * 允许的状态只有两种：
+ *   1. 全新空库——没有 drizzle ledger，public 里也没有业务表；
+ *   2. 只有 0000 已正确应用——ledger 恰好一条 0000 且 checksum 与磁盘一致，
+ *      public 里恰好是 0000 建立的那批表。
+ * 其他任何状态（指向错误库、身份不足、已应用 0001+、存在未知业务对象）都必须
+ * 失败，而不是继续往下写。
+ */
+const assertAdminBootstrapPreflight = async (
+  client: PoolClient,
+  migrationsDirectoryInUse: string,
+): Promise<void> => {
+  const identity = await client.query<{
+    database: string;
+    role: string;
+    superuser: boolean;
+  }>(
+    `SELECT current_database() AS database, current_user AS role,
+            EXISTS (SELECT 1 FROM pg_roles
+                    WHERE rolname = current_user AND rolsuper) AS superuser`,
+  );
+  const database = identity.rows[0]?.database ?? "";
+  if (!projectDatabasePattern.test(database)) {
+    throw new MigrationPreflightError(
+      `connected to ${JSON.stringify(database)}, which is not a project ` +
+        "database (expected meal_agent or meal_agent_<suffix>)",
+    );
+  }
+  if (identity.rows[0]?.superuser !== true) {
+    throw new MigrationPreflightError(
+      `${String(identity.rows[0]?.role)} lacks cluster-admin capability; ` +
+        "applying the frozen 0000 requires creating roles and setting BYPASSRLS",
+    );
+  }
+
+  const ledgerPresent = await client.query<{ present: string | null }>(
+    "SELECT to_regclass('drizzle.__meal_agent_migrations') AS present",
+  );
+
+  if (ledgerPresent.rows[0]?.present === null) {
+    // 全新库必须**真的**是空的：不仅没有 public 普通表，也不能有任何用户
+    // schema、public 里的 view/matview/sequence/foreign table、用户 routine
+    // 或用户自定义类型——它们都可能与 0000 冲突或表示这不是一个干净目标。
+    const residue = await client.query<{ kind: string; ident: string }>(
+      `SELECT 'schema' AS kind, nspname AS ident
+         FROM pg_namespace
+        WHERE nspname NOT IN ('public', 'information_schema')
+          AND nspname NOT LIKE 'pg\\_%'
+       UNION ALL
+       SELECT 'relation', n.nspname || '.' || c.relname
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f')
+       UNION ALL
+       SELECT 'routine', n.nspname || '.' || p.proname
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public'
+       UNION ALL
+       SELECT 'type', n.nspname || '.' || t.typname
+         FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE n.nspname = 'public'
+          AND t.typtype IN ('c','e','d','r')
+          AND NOT EXISTS (SELECT 1 FROM pg_class c
+                          WHERE c.oid = t.typrelid AND c.relkind <> 'c')
+       ORDER BY 1, 2`,
+    );
+    if (residue.rows.length > 0) {
+      throw new MigrationPreflightError(
+        "the database has no migration ledger but is not empty: " +
+          residue.rows
+            .map((row) => `${row.kind} ${row.ident}`)
+            .join(", "),
+      );
+    }
+    return;
+  }
+
+  // ledger 名称顺序统一用 `COLLATE "C"`：它与 Node 侧的 byUtf8Bytes 逐字节等价，
+  // 而不带 COLLATE 时排序取决于数据库的 locale，同一批文件可能给出别的顺序。
+  const applied = await client.query<{ name: string; hash: string }>(
+    `SELECT name, hash FROM drizzle.__meal_agent_migrations
+      ORDER BY name COLLATE "C"`,
+  );
+  if (applied.rows.length !== 1 || applied.rows[0]?.name !== stage06Migration) {
+    throw new MigrationPreflightError(
+      "expected an empty database or exactly 0000_stage_06.sql applied, " +
+        `found: ${
+          applied.rows.length === 0
+            ? "an empty ledger"
+            : applied.rows.map((row) => row.name).join(", ")
+        }`,
+    );
+  }
+  const onDisk = (await readMigrations(migrationsDirectoryInUse)).find(
+    (migration) => migration.name === stage06Migration,
+  );
+  if (applied.rows[0]?.hash !== onDisk?.hash) {
+    throw new MigrationPreflightError(
+      "the applied 0000_stage_06.sql checksum does not match the file on disk",
+    );
+  }
+
+  // 幂等重跑的完整对象状态校验全部交给 manifest：缺失、多余、以及 owner、RLS、
+  // policy、约束、索引、routine 的 proconfig / SECURITY DEFINER / 正文摘要等
+  // 安全属性漂移，都在这一步统一判定。
+  await assertStage06Manifest(client);
+};
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds).unref?.();
+  });
+
+/**
+ * 有界获取 advisory lock：在 deadline 内轮询 pg_try_advisory_lock，
+ * 超时抛出明确错误而不是永久阻塞。
+ */
+const acquireAdvisoryLock = async (
+  client: PoolClient,
+  waitMs: number,
+  retryDelayMs: number,
+): Promise<void> => {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const attempt = await client.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock($1) AS locked",
+      [advisoryLockKey],
+    );
+    if (attempt.rows[0]?.locked === true) {
+      return;
+    }
+    if (Date.now() + retryDelayMs >= deadline) {
+      throw new MigrationLockTimeoutError(waitMs);
+    }
+    await sleep(retryDelayMs);
+  }
+};
 
 export const applyMigrations = async (
   databaseUrl: string,
   options: ApplyMigrationsOptions = {},
 ): Promise<void> => {
+  // 参数校验先于建立连接：非法上界不得先打开连接再失败。
+  const connectionTimeoutMs = boundedMilliseconds(
+    "connectionTimeoutMs",
+    options.connectionTimeoutMs,
+    migrationDefaults.connectionTimeoutMs,
+  );
+  const lockWaitMs = boundedMilliseconds(
+    "lockWaitMs",
+    options.lockWaitMs,
+    migrationDefaults.lockWaitMs,
+  );
+  const role = options.role === undefined ? migrationRole : options.role;
+  const atomicWholeRun = options.adminBootstrap === true;
+
+  // 选中集合在**建立 Pool 之前**解析：目标文件缺失、重复或会被额外执行时，
+  // 直接失败，不产生任何连接或 DDL。
+  const available = await readMigrations(options.migrationsDirectory);
+  let selected: readonly MigrationFile[];
+  if (options.exactMigration !== undefined) {
+    const matches = available.filter(
+      (migration) => migration.name === options.exactMigration,
+    );
+    if (matches.length !== 1) {
+      throw new MigrationSelectionError(
+        matches.length === 0
+          ? `migration ${options.exactMigration} was not found on disk`
+          : `migration ${options.exactMigration} is ambiguous ` +
+            `(${String(matches.length)} matches)`,
+      );
+    }
+    // 精确一个文件：排在它**之前**的文件也不会被这条路径执行。这里的「之前」
+    // 必须与 readMigrations 的应用顺序、ledger 的 `COLLATE "C"` 顺序是**同一个**
+    // UTF-8 字节序；用 JavaScript 默认的 `<`（UTF-16 码元序）会让补充平面字符
+    // 骗过这道检查——一个字节序上更早的文件会被判成「更晚」而不被报告。
+    const exact = String(options.exactMigration);
+    const earlier = available.filter(
+      (migration) => byUtf8Bytes(migration.name, exact) < 0,
+    );
+    if (earlier.length > 0) {
+      throw new MigrationSelectionError(
+        "the admin bootstrap path must execute exactly " +
+          `${String(options.exactMigration)}, but ` +
+          `${earlier.map((migration) => migration.name).join(", ")} would ` +
+          "sort before it and is not part of that path",
+      );
+    }
+    selected = matches;
+  } else if (options.onlyThrough !== undefined) {
+    const bound = options.onlyThrough;
+    // 上界比较同样走同一个 UTF-8 字节序 comparator：默认的 `<=` 是 UTF-16 码元
+    // 序，会把字节序上**超出**上界的补充平面文件误判成「在界内」并执行它。
+    selected = available.filter(
+      (migration) => byUtf8Bytes(migration.name, bound) <= 0,
+    );
+  } else {
+    selected = available;
+  }
+
   const pool = new Pool({
     connectionString: databaseUrl,
     max: 1,
+    connectionTimeoutMillis: connectionTimeoutMs,
     application_name: "meal-agent-migration",
   });
-  const client = await pool.connect();
+  // 连接建立也在 try 内：连接失败时仍必须 pool.end()，client 只在存在时释放，
+  // advisory lock 只在确实取得后才解锁（否则会留下 "you don't own a lock" 警告）。
+  let client: PoolClient | undefined;
+  let advisoryLockHeld = false;
 
   try {
-    await client.query("SELECT pg_advisory_lock(938_006_001)");
+    client = await pool.connect();
+    if (role !== null) {
+      // 参数化设置 role GUC，等价于 SET ROLE，但角色名不进入 SQL 文本。
+      await client.query("SELECT set_config('role', $1, false)", [role]);
+    }
+    // DDL 取锁同样有界：另一会话持表锁时明确失败，不无限等待。
+    await client.query("SELECT set_config('lock_timeout', $1, false)", [
+      `${String(lockWaitMs)}ms`,
+    ]);
+    await acquireAdvisoryLock(
+      client,
+      lockWaitMs,
+      migrationDefaults.lockRetryDelayMs,
+    );
+    advisoryLockHeld = true;
+    if (atomicWholeRun) {
+      // 任何 DDL 之前：核对目标库、admin 能力与数据库状态。
+      await assertAdminBootstrapPreflight(
+        client,
+        options.migrationsDirectory ?? defaultMigrationsDirectory,
+      );
+      // 元数据 schema、ledger、0000 与 ledger insert 必须原子：0000 失败后
+      // 不得留下 drizzle schema 或空 ledger。
+      await client.query("BEGIN");
+    }
     await prepareMigrationMetadata(client);
 
-    for (const migration of await readMigrations()) {
-      if (
-        options.onlyThrough !== undefined &&
-        migration.name > options.onlyThrough
-      ) {
-        break;
-      }
+      for (const migration of selected) {
       const existing = await client.query<{ hash: string }>(
         "SELECT hash FROM drizzle.__meal_agent_migrations WHERE name = $1",
         [migration.name],
@@ -88,6 +459,16 @@ export const applyMigrations = async (
         continue;
       }
 
+      if (atomicWholeRun) {
+        // 已经在外层事务里：单条 migration 不再自开事务。
+        await client.query(migration.sql);
+        await client.query(
+          `INSERT INTO drizzle.__meal_agent_migrations (name, hash)
+           VALUES ($1, $2)`,
+          [migration.name, migration.hash],
+        );
+        continue;
+      }
       await client.query("BEGIN");
       try {
         await client.query(migration.sql);
@@ -102,11 +483,27 @@ export const applyMigrations = async (
         throw error;
       }
     }
+    if (atomicWholeRun) {
+      // 刚刚应用的 0000 也必须与冻结 manifest 完全一致。不一致时整批回滚，
+      // 不会留下一个「与 manifest 不同的 0000」当作后续所有检查的基线。
+      await assertStage06Manifest(client);
+      await client.query("COMMIT");
+    }
+  } catch (error) {
+    if (client !== undefined && atomicWholeRun) {
+      // 原子 bootstrap 失败：整批回滚，不留下 drizzle schema 或空 ledger。
+      await client.query("ROLLBACK").catch(() => undefined);
+    }
+    throw error;
   } finally {
-    await client.query("SELECT pg_advisory_unlock(938_006_001)").catch(
-      () => undefined,
-    );
-    client.release();
+    if (client !== undefined) {
+      if (advisoryLockHeld) {
+        await client
+          .query("SELECT pg_advisory_unlock($1)", [advisoryLockKey])
+          .catch(() => undefined);
+      }
+      client.release();
+    }
     await pool.end();
   }
 };
@@ -115,10 +512,12 @@ export const migrationsAreCurrent = async (
   client: PoolClient,
 ): Promise<boolean> => {
   const migrations = await readMigrations();
+  // 逐位比对的前提是两侧同序：磁盘侧是 byUtf8Bytes，ledger 侧必须是等价的
+  // `COLLATE "C"`，否则 locale 一变就会把「已是最新」误判成「不是最新」。
   const result = await client.query<{ name: string; hash: string }>(
     `SELECT name, hash
      FROM drizzle.__meal_agent_migrations
-     ORDER BY name`,
+     ORDER BY name COLLATE "C"`,
   );
 
   return (
@@ -131,10 +530,51 @@ export const migrationsAreCurrent = async (
   );
 };
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const databaseUrl = process.env["DATABASE_URL"];
-  if (databaseUrl === undefined || databaseUrl === "") {
-    throw new Error("DATABASE_URL is required");
+// ---------------------------------------------------------------------------
+// 运维入口
+//
+// 默认命令走安全路径：显式 SET ROLE meal_agent_migrator 应用全部待应用 migration。
+//
+// admin 例外是一个**独立入口程序** `db:bootstrap`（src/database/bootstrap-0000.ts），
+// 不是本入口的 flag：它只能以 cluster admin 身份（不切换 role）应用冻结的 0000，
+// 因为 0000 自身要 CREATE ROLE 并设置 BYPASSRLS，此时 meal_agent_migrator 还不
+// 存在。该入口不接受任意 role，也不接受任意 migration 边界，更不接受任何参数。
+// ---------------------------------------------------------------------------
+
+/** `db:bootstrap` 独立入口使用的固定参数，调用方无法改写。 */
+export const bootstrapMigrationOptions: ApplyMigrationsOptions = Object.freeze({
+  role: null,
+  exactMigration: stage06Migration,
+  adminBootstrap: true,
+});
+
+export class MigrationCliUsageError extends Error {
+  public constructor(received: readonly string[]) {
+    super(
+      `db:migrate takes no arguments (received ${JSON.stringify(received)}). ` +
+        "The cluster-admin path is a separate entry point: db:bootstrap.",
+    );
+    this.name = "MigrationCliUsageError";
   }
+}
+
+/**
+ * db:migrate 只接受零参数。admin bootstrap 不再是本入口的一个 flag：
+ * 只要 flag 存在，`pnpm ... db:migrate --bootstrap-0000` 就可能误入 admin 模式。
+ */
+export const parseMigrationCliArguments = (argv: readonly string[]): void => {
+  if (argv.length > 0) {
+    throw new MigrationCliUsageError(argv);
+  }
+};
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  // 顺序是判据的一部分，不能调换：
+  //   1. CLI 参数合法性——非法调用不读 Secret 文件，也不建立 Pool；
+  //   2. Secret 来源解析——DATABASE_URL 与 DATABASE_URL_FILE 互斥，文件走 fail
+  //      closed 的安全判据；三个 Node 入口共用 resolveDatabaseUrlSource；
+  //   3. 才是数据库连接。
+  parseMigrationCliArguments(process.argv.slice(2));
+  const databaseUrl = resolveDatabaseUrlSource().value;
   await applyMigrations(databaseUrl);
 }

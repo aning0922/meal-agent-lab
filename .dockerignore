@@ -1,0 +1,72 @@
+# 阶段 09A / M1：API 镜像的根构建上下文过滤规则。
+#
+# 策略是「默认拒绝、明确放行」：先排除全部内容，再逐条放行 API 镜像真正需要的
+# 文件，最后重新排除任何情况下都不得进入构建上下文的密钥与生成物。
+# `.dockerignore` 只控制上下文内容，Dockerfile 仍必须使用明确的 COPY 路径。
+
+# 1. 默认拒绝整个仓库
+**
+
+# 2. 放行 pnpm workspace 根 manifests
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+
+# 3. 放行 @meal-agent/contracts 的构建输入
+#    services/api/tsconfig.json extends 该包的 tsconfig.json，两者都必须存在。
+!packages/contracts/package.json
+!packages/contracts/tsconfig.json
+!packages/contracts/tsconfig.build.json
+!packages/contracts/src
+
+# 4. 放行 @meal-agent/api 的构建输入与运行期 SQL migration
+!services/api/package.json
+!services/api/tsconfig.json
+!services/api/tsconfig.build.json
+!services/api/src
+!services/api/migrations
+!services/api/Dockerfile
+
+# 5. 无条件排除：即使上面的放行规则将来被放宽，以下内容也不得进入上下文。
+#    apps/client、apps/admin、apps/meal-agent-prototype、packages/ui 等客户端与
+#    原型工程不参与服务端镜像；docs、data、assets、tests、ai、infra、scripts、
+#    security 与 openapi 生成物同样不进入 runtime。
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/.git
+**/.github
+**/.claude
+**/.codex
+**/.turbo
+**/.cache
+**/.swc
+**/.pnpm-store
+**/.DS_Store
+**/tmp
+**/artifacts
+**/unpackage
+**/*.tsbuildinfo
+**/*.log
+**/*.sqlite
+**/*.sqlite3
+
+# 6. 无条件排除密钥与凭据材料
+.env
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.crt
+**/*.cer
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/id_rsa*
+**/id_ecdsa*
+**/id_ed25519*
+**/*.gpg
+**/*.asc
+**/project.private.config.json

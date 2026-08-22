@@ -46,6 +46,8 @@ if (databaseUrl === undefined) {
 
 const config = loadConfig({
   NODE_ENV: "test",
+  DEPLOYMENT_STAGE: "local-test",
+  DEPLOYMENT_EXPOSURE: "loopback",
   LOG_LEVEL: "info",
   DATABASE_URL: databaseUrl,
   DATABASE_APP_ROLE: "meal_agent_app",

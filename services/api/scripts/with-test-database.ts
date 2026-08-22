@@ -64,6 +64,24 @@ if (mode !== "migration" && mode !== "test") {
   throw new Error("expected mode: migration or test");
 }
 
+/**
+ * 这个一次性集群用 trust 认证（见下面的 `--auth-local` / `--auth-host`），因此
+ * 口令根本不会被校验。之所以仍然写进连接串：`DATABASE_URL` 的校验要求五个核心
+ * 字段全部显式来自 URL，否则 node-postgres 会回落到宿主的 `PG*` 环境变量。
+ * 这是一个**合成占位值**，不是任何真实凭据。
+ */
+const trustClusterPassword = "synthetic-trust-cluster-password";
+
+/**
+ * stage08 门禁沿用单账号 bootstrap/admin 路径：这些一次性库没有做 owner
+ * 交接，冻结的 0000 还要自己 CREATE ROLE 并设置 BYPASSRLS，因此迁移必须由
+ * cluster admin 执行，不能先切换到 meal_agent_migrator。
+ *
+ * 真实的「migration login 显式 SET ROLE meal_agent_migrator 执行 0001—最新」
+ * 路径由 tests/database/stage09a.roles.database.test.ts 在独立数据库上覆盖。
+ */
+const adminMigration = { role: null } as const;
+
 assertStageNodeVersion();
 const { binDirectory: postgresBin } = await findPostgres18Bin();
 const clusterRoot = await mkdtemp(join(tmpdir(), "meal-agent-stage-06-pg18-"));
@@ -116,8 +134,10 @@ try {
     environment,
   );
 
-  const databaseUrl = `postgresql://postgres@127.0.0.1:${port}/meal_agent_test`;
-  await applyMigrations(databaseUrl);
+  const databaseUrl =
+    `postgresql://postgres:${trustClusterPassword}@127.0.0.1:${port}` +
+    "/meal_agent_test";
+  await applyMigrations(databaseUrl, adminMigration);
 
   if (mode === "migration") {
     const pool = new Pool({ connectionString: databaseUrl });
@@ -163,9 +183,12 @@ try {
       [incrementalDatabase],
       environment,
     );
-    const incrementalUrl = `postgresql://postgres@127.0.0.1:${port}/${incrementalDatabase}`;
+    const incrementalUrl =
+      `postgresql://postgres:${trustClusterPassword}@127.0.0.1:${port}` +
+      `/${incrementalDatabase}`;
 
     await applyMigrations(incrementalUrl, {
+      ...adminMigration,
       onlyThrough: "0000_stage_06.sql",
     });
     const baselinePool = new Pool({ connectionString: incrementalUrl });
@@ -190,6 +213,7 @@ try {
     }
 
     await applyMigrations(incrementalUrl, {
+      ...adminMigration,
       onlyThrough: "0001_stage_08.sql",
     });
     const legacyPool = new Pool({ connectionString: incrementalUrl });
@@ -324,6 +348,7 @@ try {
     // 先真实升级到 0003，并保留一条合法 pending，再单独应用 0004。
     // 这覆盖 0003 的 terminal_reason CHECK 仍存在时的增量顺序。
     await applyMigrations(incrementalUrl, {
+      ...adminMigration,
       onlyThrough: "0003_stage_08_secondary_closeout.sql",
     });
     const preFinalPool = new Pool({ connectionString: incrementalUrl });
@@ -349,7 +374,7 @@ try {
       await preFinalPool.end();
     }
 
-    await applyMigrations(incrementalUrl);
+    await applyMigrations(incrementalUrl, adminMigration);
     const incrementalPool = new Pool({ connectionString: incrementalUrl });
     try {
       const invitesAfter = await incrementalPool.query<{
@@ -475,7 +500,7 @@ try {
         /"mappingStatus":"needs_structured_mapping"/,
       );
       // 重复应用是幂等 no-op：全部 checksum 匹配，不抛错、不重跑。
-      await applyMigrations(incrementalUrl);
+      await applyMigrations(incrementalUrl, adminMigration);
       // checksum 守卫：把 0001 的存储 hash 改坏后再应用必须抛错。
       await incrementalPool.query(
         `UPDATE drizzle.__meal_agent_migrations
@@ -483,7 +508,7 @@ try {
          WHERE name = '0001_stage_08.sql'`,
       );
       await assert.rejects(
-        applyMigrations(incrementalUrl),
+        applyMigrations(incrementalUrl, adminMigration),
         /changed checksum/,
       );
     } finally {

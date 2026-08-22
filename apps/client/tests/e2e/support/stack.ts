@@ -194,8 +194,16 @@ export const startE2eStack = async (
       environment
     )
 
-    const databaseUrl = `postgresql://postgres@127.0.0.1:${databasePort}/meal_agent_stage07_e2e`
-    await applyMigrations(databaseUrl)
+    // 这个一次性集群用 trust 认证，口令不会被校验；补一个**合成**口令是为了让
+    // 连接串写明全部五个核心字段，从而不依赖宿主的 PG* 环境变量。
+    const databaseUrl =
+      `postgresql://postgres:synthetic-trust-cluster-password@127.0.0.1:${databasePort}` +
+      `/meal_agent_stage07_e2e`
+    // 端到端栈沿用单账号 bootstrap/admin 路径：这个一次性库没有做 owner 交接，
+    // 冻结的 0000 还要自己 CREATE ROLE 并设置 BYPASSRLS，因此迁移必须由 cluster
+    // admin 执行，不能先切换到 meal_agent_migrator。真实的 migration login
+    // 路径由 services/api/tests/database/stage09a.roles.database.test.ts 覆盖。
+    await applyMigrations(databaseUrl, { role: null })
 
     apiProcess = spawn(
       process.execPath,
@@ -205,6 +213,10 @@ export const startE2eStack = async (
         env: {
           ...process.env,
           NODE_ENV: 'test',
+          // M3A：部署阶段与暴露级别没有默认值，栈必须显式声明它是
+          // loopback 上的 local-test，fake adapter 才被允许。
+          DEPLOYMENT_STAGE: 'local-test',
+          DEPLOYMENT_EXPOSURE: 'loopback',
           HOST: '127.0.0.1',
           PORT: String(apiPort),
           LOG_LEVEL: 'silent',

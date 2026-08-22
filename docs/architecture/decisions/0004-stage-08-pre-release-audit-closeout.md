@@ -99,7 +99,31 @@ PersonProfile 与 dietary constraint 写操作固定使用 `receipt`。邀请码
 
 ### 依赖审计和交付边界
 
-截至 2026-07-25，`pnpm audit --prod` 报告 1 critical、1 high、8 moderate，均来自 Taro 传递依赖路径。接受一个截至 2026-08-08 的机器可读 `local-weapp` 限时例外；门禁精确匹配 advisory、版本和依赖路径，并扫描 weapp 产物。新增、变化、消失但未清理或过期的 advisory 都会失败。例外期间禁止 H5、外部测试、体验版和发布。
+截至 2026-07-25，`pnpm audit --prod` 报告 1 critical、1 high、8 moderate，均来自 Taro 传递依赖路径。接受一个机器可读的 `local-weapp` 限时例外；门禁精确匹配 advisory、版本和依赖路径，并扫描 weapp 产物。新增、变化、消失但未清理或过期的 advisory 都会失败。例外期间禁止 H5、外部测试、体验版和发布。
+
+**第二次授予（续期）：2026-08-06，新到期日 2026-11-08T23:59:59+08:00。**
+
+这是**显式重新评审**，不是静默续期——阶段 09A 计划已预先禁止「为了通过阶段 09A 静默续期」。续期前逐条对账的实测事实：
+
+- `pnpm audit --prod` 当前 **9 条，与登记逐条一致**：无新增、无消失、无版本变化；
+- 构成：`swiper` 1 条 critical（上游修复要求 `>=12.1.2`，当前解析为 `11.1.15`，**跨主版本**）、`webpack-dev-server` 6 条 moderate、`esbuild` 1 条、`uuid` 1 条；
+- **全部 9 条走同一条根路径** `apps/client → @tarojs/components@4.2.1 → …`，仓库当前无任何 `pnpm.overrides` / `resolutions`；
+- 其中 `webpack-dev-server` 与 `esbuild` 出现在 `--prod` 树里，源于 Taro 把开发期工具声明成普通 dependency，非本项目引入。
+
+**续期依据**：原例外的立论——「仓库没有已部署生产/测试消费者」——**未发生变化**。阶段 09A 至今未部署任何东西、无公网入口；暴露边界不是靠承诺而是靠门禁，`blockedTargets` 已把 h5、external-test、experience、release 全部堵死，`--target` 不匹配即失败。9 条零漂移，暴露面未扩大。
+
+**为什么不在本轮清除**：清除需要用 `pnpm.overrides` 强推版本进 Taro 依赖树，其中 `swiper` 要跨主版本，之后必须以真实客户端构建 + E2E 验证未打断小程序 UI。在阶段 09A 的里程碑链中途注入这条无关风险线，代价与收益不匹配。
+
+**本次续期附带的条件**：新到期日选在 2026-11-08，覆盖阶段 09A 全部里程碑与收口所需时间；**这是第二次授予，任何后续续期必须再次显式决策并在此登记**，不得顺延。例外未关闭前，h5 / 外部测试 / 体验版 / 发布持续阻断的约束不变。
+
+**M5 例外复核：2026-08-11（复核，不是续期；到期日维持 2026-11-08 不变）。**
+
+阶段 09A / M5 按计划要求对本例外做的显式复核，结论与处置：
+
+- **登记零漂移**：`security/audit-exceptions.json` 自 2026-08-06 续期提交（`18b07de`）后无任何改动；`blockedTargets` 仍完整堵死 h5 / external-test / experience / release。
+- **复核当天的真实审计**：registry 在续期后新披露了 `nanoid` 的 GHSA-2v37-7h3g-55p8（high，`postcss→nanoid`，全部路径都在 `apps/client` 的 Taro 树内），门禁按设计以「new advisory」硬失败。处置是**按 `f3e3099` 先例用 patch 级 override 清除**（`nanoid@3.3.16: 3.3.17`，lockfile 仅此一处变化），**不扩展例外登记**。清除后 `pnpm audit:prod:check` 全绿，登记的 advisory 与实际逐条一致，产物禁签名零命中（构成数字以该门禁的 PASS 输出为准）。
+- **到期强制的工具链侧**：`validateAuditPolicy` 对 `now > expiry` 硬拒绝；本次复核补上了此前缺失的「已过期例外 fail closed」回归测试（到期日当天有效、次日拒绝）。同批修复了两条既有测试依赖真实挂钟、在旧夹具到期日（2026-08-08）过后必然误红的时间炸弹——改为显式传入 `now`，判定语义不变。
+- **不续期**：例外的立论（无已部署消费者、无公网入口）未变化，剩余窗口足够覆盖阶段 09A 收口，本次不延长到期日。任何后续续期仍必须显式决策并在此登记。
 
 远端 Git/CI 不是本轮本地实现的阻断项；应在阶段 08 合并 main 后、阶段 09 开发前配置。没有远端证据时不得声称远端 CI Pass。
 

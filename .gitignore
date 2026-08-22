@@ -51,3 +51,10 @@ local.properties
 # Local data imports
 data/raw/*
 !data/raw/.gitkeep
+
+# 阶段 09A / M3B：smoke/probe 的每轮唯一 image tag override（用后即删；
+# 只有被 SIGKILL 打断时才会残留，不得进入版本控制）
+infra/docker/.m3b-image-override-*.yaml
+# 反例套件的 compose 变异副本（用后即删；只有被 SIGKILL 打断才会残留，
+# 其中一个变异体内嵌合成 DSN，绝不得进入版本控制）
+infra/docker/.m3b-neg-compose-*.yaml

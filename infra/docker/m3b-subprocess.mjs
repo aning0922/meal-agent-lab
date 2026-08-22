@@ -1,0 +1,1116 @@
+// 阶段 09A / M3B：四个 M3B CLI 共用的子进程与信号基础设施。
+//
+// 设计目标（阻断整改第二条）：
+//
+//   1. **不用 spawnSync 冒充可响应信号的实现**——长时间运行的子进程（docker
+//      build/up/logs、node 门禁）全部走异步 spawn，事件循环保持存活，
+//      SIGINT/SIGTERM 随时可被处理；
+//   2. 每个子进程 `detached: true` 自成进程组并以 `(pgid, generation)` 登记，
+//      终止时对**当前代的整个组** TERM → 宽限 → KILL，并有界确认 ESRCH；
+//   3. 超时同样按组终止，并以明确错误 reject；
+//   4. `installSignalHandlers` 的次序固定：先终止受控子树 → 再执行调用方的
+//      scoped cleanup（其 residue 必须被打印，不得丢弃）→ 最后卸下自身 handler
+//      并**重投同名信号**，让进程按原信号语义退出（128+signo），而不是伪装成
+//      普通退出码。
+//
+// 本模块自身不打印任何 Secret：它只透传调用方给的参数与输出。
+import { spawn } from 'node:child_process'
+import { fstatSync, readSync, writeSync } from 'node:fs'
+
+// 信号/超时清理不能依赖之后可能被调用方改写的全局 timer primitive。加载模块时
+// 就保存原始引用；这不是为了让测试通过，而是确保清理路径使用自己的受控原语。
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis)
+const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis)
+const nativeSetImmediate = globalThis.setImmediate.bind(globalThis)
+const nativeProcessKill = process.kill.bind(process)
+
+const aggregateOwnershipFdName = 'MEAL_AGENT_STAGE09A_PGID_FD'
+const aggregateOwnershipAuthFdName = 'MEAL_AGENT_STAGE09A_PGID_AUTH_FD'
+const aggregateOwnershipAuthTokenName = 'MEAL_AGENT_STAGE09A_PGID_AUTH_TOKEN'
+const aggregateOwnershipFd = (() => {
+  const raw = process.env[aggregateOwnershipFdName]
+  const rawAuthFd = process.env[aggregateOwnershipAuthFdName]
+  const authToken = process.env[aggregateOwnershipAuthTokenName]
+  if (raw === undefined) {
+    return null
+  }
+  const value = Number(raw)
+  const authFd = Number(rawAuthFd)
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 3 ||
+    !Number.isSafeInteger(authFd) ||
+    authFd < 3 ||
+    typeof authToken !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(authToken)
+  ) {
+    return null
+  }
+  // 聚合器的环境变量会被 pnpm/Node test runner 继续传给更深的后代，但它们未必
+  // 继承对应 fd，而且 fd 3 可能被 test runner 复用为自己的 IPC。除 ownership pipe
+  // 外再要求一个不可预测、只读且已 unlink 的 capability fd；环境遗留或同号 fd
+  // 复用都无法伪装成聚合器直连 producer。
+  try {
+    const stat = fstatSync(value)
+    const authStat = fstatSync(authFd)
+    if (!(stat.isFIFO() || stat.isSocket()) || !authStat.isFile()) {
+      return null
+    }
+    const bytes = Buffer.alloc(Buffer.byteLength(authToken))
+    const count = readSync(authFd, bytes, 0, bytes.length, 0)
+    return count === bytes.length && bytes.toString('utf8') === authToken ? value : null
+  } catch {
+    return null
+  }
+})()
+const aggregateOwnershipAuthFd =
+  aggregateOwnershipFd === null ? null : Number(process.env[aggregateOwnershipAuthFdName])
+
+const writeAggregateFrame = (frame) => {
+  if (aggregateOwnershipFd === null) {
+    return true
+  }
+  const bytes = Buffer.from(frame, 'utf8')
+  try {
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(
+        aggregateOwnershipFd,
+        bytes,
+        offset,
+        bytes.length - offset
+      )
+      if (!Number.isSafeInteger(written) || written <= 0) {
+        return false
+      }
+      offset += written
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+const writeDiagnostic = (message) => {
+  const bytes = Buffer.from(message, 'utf8')
+  try {
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(2, bytes, offset, bytes.length - offset)
+      if (!Number.isSafeInteger(written) || written <= 0) {
+        return false
+      }
+      offset += written
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+const reportDiagnosticFailure = (failed, message) =>
+  writeDiagnostic(message) ? failed : true
+
+const announceProcessGroupOwnership = ({ pgid, generation }) => {
+  // 机器帧先于人类诊断：聚合器只接受带 producer + generation 的完整身份，
+  // 不再把一个裸 PGID 当成可跨时间复用的所有权。任一写入原语失败都返回 false，
+  // 调用点随后由本地 registry 终止并确认该代消失；异常绝不能越过清理路径。
+  const frameWritten = writeAggregateFrame(
+    `GROUP ${String(process.pid)} ${String(pgid)} ${String(generation)}\n`
+  )
+  const diagnosticWritten = writeDiagnostic(
+    `m3b-descendant-pgid ${String(pgid)} generation ${String(generation)}\n`
+  )
+  if (!frameWritten || !diagnosticWritten) {
+    writeDiagnostic('aggregate ownership announcement failed\n')
+    return false
+  }
+  return true
+}
+
+const announceCleanupState = (state) => {
+  if (!writeAggregateFrame(`CLEANUP ${String(process.pid)} ${state}\n`)) {
+    writeDiagnostic('aggregate cleanup acknowledgement failed\n')
+    return false
+  }
+  return true
+}
+
+/**
+ * raw-spawn 的控制层若仍处于 stage09a 聚合器下，必须把机器可读 ownership fd
+ * 原样传到子 CLI 的 fd 3。实际 Docker/命令 child 仍由本模块先登记 PGID，随后
+ * 删除环境变量且不继承 fd；它们不直接持有聚合器通道。
+ */
+export const ownershipAwareSpawnStdio = (stdio) =>
+  aggregateOwnershipFd === null
+    ? stdio
+    : [...stdio, aggregateOwnershipFd, aggregateOwnershipAuthFd]
+
+/**
+ * 尚未确认消失的受控进程组：pgid → { leaderClosed }。
+ *
+ * **组长 close 不等于整组消失。** `close` 只说明我们 spawn 的那个 leader 退出且
+ * stdio 关闭了；它 detach 出去的后代仍然留在同一个 pgid 里。此前 close 处理器
+ * 直接把 pgid 从表里删掉，于是 `terminateControlledSubtree` 再也不会对它发信号，
+ * 孤儿就此存活——signal-window 套件实测两个窗口各留下 1 个仍存活的 announced
+ * pgid，两次独立运行稳定复现。
+ *
+ * 现在 close 只登记 `leaderClosed`；只有 `kill(-pgid, 0)` 得到 **ESRCH** 才把
+ * 这一条**退休**。退休之后绝不再对该 pgid 发任何信号（pid 会被系统复用）。
+ */
+const generationKey = (pgid, generation) => `${String(pgid)}:${String(generation)}`
+
+/**
+ * 正在处置中的信号（null 表示没有）。CLI 用它给信号处置**让位**：一旦信号
+ * 在飞，主流程就不再自己 `process.exit()`，否则普通退出码会抢在信号语义
+ * 之前收场（实测：build 窗口发 SIGINT，主流程因子进程被杀而失败退出 1，
+ * 信号语义被吞掉）。
+ */
+let pendingSignal = null
+let pendingSignalSettlement = null
+export const terminationSignal = () => pendingSignal
+
+/**
+ * 本进程**曾经**派生过的全部进程组（不因退出而移除）。外部套件读 stderr 上的
+ * `m3b-descendant-pgid <pgid>` 行拿到同一份集合，用它逐个确认后代真的消失。
+ */
+const observedProcessGroups = new Set()
+export const observedDescendantPgids = () => [...observedProcessGroups]
+
+const sleep = (milliseconds) =>
+  new Promise((resolveSleep) => {
+    nativeSetTimeout(resolveSleep, milliseconds)
+  })
+
+const killGroup = (pgid, signal) => {
+  try {
+    nativeProcessKill(-pgid, signal)
+    return true
+  } catch (error) {
+    // ESRCH is positive settlement evidence, not a failed termination
+    // primitive.  EPERM means the group still exists but delivery failed.
+    if (error?.code === 'ESRCH') return null
+    if (error?.code === 'EPERM') return false
+    throw error
+  }
+}
+
+/**
+ * 这个进程组还在吗？
+ *
+ * `kill(-pgid, 0)` 只做权限/存在性检查，不投递信号。**只有 ESRCH 才算消失**：
+ * EPERM 说明组还在、只是不归我们管，那绝不能当成「已经没了」。
+ */
+export const probeProcessGroup = (pgid, kill = nativeProcessKill) => {
+  try {
+    kill(-pgid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM') return true
+    // 未知 probe 异常既不是“还活着”的证据，也不是“已消失”的证据。把它抛给
+    // lifecycle，后者会继续有界 TERM/KILL settlement，同时把 primitive failure
+    // 保留到最终裁决；不能像旧实现那样静默折成 alive 后最终报 clean。
+    throw error
+  }
+}
+
+/**
+ * 一份按 `(pgid, generation)` 持有所有权的进程组 registry。
+ *
+ * 工厂接受的三个原语也让回归可以**确定性**构造同号 PGID 复用：不再依赖
+ * OS 恰好在一次测试里复用 pid。这是正常的库级抽象，不是环境变量或忙等注入钩子。
+ *
+ * 已确认 ESRCH 之后，旧 handle 永不再对那个数字 PGID 发信号。若本 registry 后续
+ * 登记同号新代，旧 handle 会先因 generation 不同而退休，不会触碰新代。
+ * 无 pidfd 平台上，在一次同步 `kill(0)` 与紧随的 signal 之间被**无关进程**复用
+ * 仍是 OS 级 TOCTOU 边界；不把它写成已被形式化消除。
+ */
+export const createProcessGroupLifecycle = ({
+  probeGroup = probeProcessGroup,
+  signalGroup = killGroup,
+  delay = sleep
+} = {}) => {
+  const active = new Map()
+  const retired = new Set()
+  let generationCounter = 0
+
+  const currentEntry = ({ pgid, generation }) => {
+    const entry = active.get(pgid)
+    return entry !== undefined && entry.generation === generation ? entry : null
+  }
+
+  const retire = (handle) => {
+    retired.add(generationKey(handle.pgid, handle.generation))
+    if (currentEntry(handle) !== null) {
+      active.delete(handle.pgid)
+    }
+  }
+
+  const register = (pgid) => {
+    const previous = active.get(pgid)
+    if (previous !== undefined) {
+      retire(previous)
+    }
+    generationCounter += 1
+    const handle = Object.freeze({ pgid, generation: generationCounter })
+    active.set(pgid, { ...handle, leaderClosed: false })
+    return handle
+  }
+
+  const markLeaderClosed = (handle) => {
+    const entry = currentEntry(handle)
+    if (entry !== null) {
+      entry.leaderClosed = true
+    }
+  }
+
+  const retireIfGone = (handle) => {
+    const key = generationKey(handle.pgid, handle.generation)
+    if (retired.has(key)) {
+      return true
+    }
+    // 同号新代已由本 registry 登记：旧 handle 的所有权已结束，绝不对
+    // 这个数字再做 probe/signal。
+    if (currentEntry(handle) === null) {
+      retired.add(key)
+      return true
+    }
+    if (probeGroup(handle.pgid)) {
+      return false
+    }
+    retire(handle)
+    return true
+  }
+
+  const waitForExit = async (handle, budgetMs, stepMs = 25) => {
+    const steps = Math.max(1, Math.ceil(budgetMs / stepMs))
+    for (let attempt = 0; attempt < steps; attempt += 1) {
+      if (retireIfGone(handle)) {
+        return true
+      }
+      await delay(stepMs)
+    }
+    return retireIfGone(handle)
+  }
+
+  const signalIfCurrent = (handle, signal) => {
+    if (retireIfGone(handle)) {
+      return null
+    }
+    // probe 与 signal 都是同步调用；JS 无法在两者之间登记一个新代。仍在
+    // signal 前再查一次 generation，把所有权判据写在真正的副作用边界上。
+    if (currentEntry(handle) === null) {
+      retire(handle)
+      return null
+    }
+    const result = signalGroup(handle.pgid, signal)
+    if (result === null) retire(handle)
+    return result
+  }
+
+  const terminateDetailed = async (
+    handles,
+    { graceMs = 1_000, killWaitMs = 3_000 } = {}
+  ) => {
+    let primitiveFailed = false
+    const pending = handles.filter((handle) => {
+      try {
+        return !retireIfGone(handle)
+      } catch {
+        primitiveFailed = true
+        return true
+      }
+    })
+    for (const handle of pending) {
+      try {
+        if (signalIfCurrent(handle, 'SIGTERM') === false) {
+          // `false` is not proof that the signal was delivered.  The default
+          // primitive uses it for EPERM and injected lifecycle implementations
+          // may use it for another delivery failure. ESRCH returns null and is
+          // clean settlement. A
+          // later probe can still prove the group gone, but the cleanup must
+          // retain the failed-delivery fact and fail closed.
+          primitiveFailed = true
+        }
+      } catch {
+        primitiveFailed = true
+      }
+    }
+    try {
+      await Promise.all(pending.map((handle) => waitForExit(handle, graceMs)))
+    } catch {
+      primitiveFailed = true
+    }
+    const survivors = pending.filter((handle) => {
+      try {
+        return !retireIfGone(handle)
+      } catch {
+        primitiveFailed = true
+        return true
+      }
+    })
+    // SIGKILL primitive 本身也可能瞬时失败。旧实现只调用一次，然后无论组是否
+    // 还活着都在 killWait 后抛异常；调用方随即 settlement，真实 PGID 却仍存活。
+    // 这里在同一个有界预算内反复执行「probe → KILL → delay」，直到 ESRCH。
+    // primitive 曾失败但后来已确认 ESRCH，不再把一次瞬时异常升级成假 residue；
+    // 预算耗尽时则返回真实 survivor，由调用方固定理由 fail closed。
+    let unconfirmed = survivors
+    const killSteps = Math.max(2, Math.ceil(killWaitMs / 25))
+    for (let attempt = 0; attempt < killSteps && unconfirmed.length > 0; attempt += 1) {
+      for (const handle of unconfirmed) {
+        try {
+          if (signalIfCurrent(handle, 'SIGKILL') === false) {
+            primitiveFailed = true
+          }
+        } catch {
+          primitiveFailed = true
+        }
+      }
+      try {
+        await delay(25)
+      } catch {
+        primitiveFailed = true
+      }
+      unconfirmed = unconfirmed.filter((handle) => {
+        try {
+          return !retireIfGone(handle)
+        } catch {
+          primitiveFailed = true
+          return true
+        }
+      })
+    }
+    // `primitiveFailed` 只影响我们是否必须继续到预算末端；最终裁决始终来自
+    // ownership registry 的 ESRCH 状态，不能让异常对象替代资源事实。
+    return Object.freeze({ survivors: unconfirmed, primitiveFailed })
+  }
+
+  // 既有调用点只消费 survivor 列表；详细出口额外保留「清理期间曾发生原语
+  // 异常」这一安全事实。资源可以在重试后到达 ESRCH，但 signal handler 仍必须
+  // fail closed，不能把一次 termination primitive 异常伪装成干净信号退出。
+  const terminate = async (handles, options = {}) =>
+    (await terminateDetailed(handles, options)).survivors
+
+  /**
+   * 把 registry 收敛到一个**稳定**状态，而不是只处置一次 `active` 快照。
+   *
+   * signal cleanup 自己也会派生 docker 子进程；旧实现的最终 sweep 若已快照 A，
+   * 此时新登记的 B 不在那份数组里，A 消失后函数便直接返回，B 会跟着「干净」
+   * 的原信号语义一起被遗忘。这里反复取新快照：每一代只处置一次，连续两个
+   * stability window 都没有新代才算收敛。达到固定轮数仍不稳定则抛出固定错误，
+   * 调用方必须 fail closed。
+   */
+  const terminateAllDetailed = async ({
+    graceMs = 1_000,
+    killWaitMs = 3_000,
+    maxSweeps = 8,
+    stablePasses = 2,
+    stabilityMs = 25
+  } = {}) => {
+    const failed = new Set()
+    let emptyPasses = 0
+    let primitiveFailed = false
+
+    for (let sweep = 0; sweep < maxSweeps; sweep += 1) {
+      const current = []
+      for (const handle of active.values()) {
+        try {
+          if (!retireIfGone(handle)) current.push(handle)
+        } catch {
+          primitiveFailed = true
+          current.push(handle)
+        }
+      }
+      const pending = current.filter(
+        (handle) => !failed.has(generationKey(handle.pgid, handle.generation))
+      )
+
+      if (pending.length === 0) {
+        emptyPasses += 1
+        if (emptyPasses >= stablePasses) {
+          return Object.freeze({ survivors: current, primitiveFailed })
+        }
+        await delay(stabilityMs)
+        continue
+      }
+
+      emptyPasses = 0
+      const outcome = await terminateDetailed(pending, { graceMs, killWaitMs })
+      primitiveFailed ||= outcome.primitiveFailed
+      for (const survivor of outcome.survivors) {
+        failed.add(generationKey(survivor.pgid, survivor.generation))
+      }
+    }
+
+    throw new Error('process-group cleanup did not reach a stable state')
+  }
+  const terminateAll = async (options = {}) =>
+    (await terminateAllDetailed(options)).survivors
+  const unconfirmed = () =>
+    [...active.values()]
+      .filter((handle) => !retired.has(generationKey(handle.pgid, handle.generation)))
+      .map(({ pgid }) => pgid)
+
+  return Object.freeze({
+    register,
+    markLeaderClosed,
+    retireIfGone,
+    terminate,
+    terminateDetailed,
+    terminateAll,
+    terminateAllDetailed,
+    unconfirmed
+  })
+}
+
+const processGroupLifecycle = createProcessGroupLifecycle()
+
+/**
+ * raw `spawn()` 控制层本身若使用 `detached: true`，必须在返回事件循环前同步登记
+ * 自己的 PGID；仅把 fd 3 传给它是不够的——它首次调用 `runCommand()` 之前仍有一个
+ * 聚合器不可达窗口。调用方应在 `spawn()` 后立即用本函数包装返回值。
+ */
+export const registerRawSpawnedChild = async (child) => {
+  if (!Number.isSafeInteger(child?.pid) || child.pid <= 0) {
+    child?.once?.('error', () => undefined)
+    throw new Error('raw detached child did not expose a process-group id')
+  }
+  const handle = processGroupLifecycle.register(child.pid)
+  observedProcessGroups.add(child.pid)
+  child.once('close', () => {
+    processGroupLifecycle.markLeaderClosed(handle)
+    try {
+      processGroupLifecycle.retireIfGone(handle)
+    } catch {
+      // Unknown probe failures retain the generation for the bounded final sweep.  An
+      // EventEmitter callback must never leak the primitive exception or retire the group.
+    }
+  })
+  if (!announceProcessGroupOwnership(handle)) {
+    let survivors = [handle]
+    try {
+      survivors = await processGroupLifecycle.terminate([handle])
+    } catch {
+      // 固定失败由下面的 throw 给出；registry 保留未确认组供最终 sweep 复核。
+    }
+    throw new Error(
+      survivors.length === 0
+        ? 'aggregate ownership announcement failed'
+        : 'aggregate ownership announcement failed; descendant process group was not confirmed gone'
+    )
+  }
+  return child
+}
+
+// scoped cleanup 完成后的最终收敛一旦稳定，立即同步关闭新派生入口；随后再做一轮
+// registry 复核。赋值与复核之间不会让事件循环运行，因此不存在「最后一次空快照
+// 之后、重投信号之前」又登记一个新组的窗口。
+let childProcessStartsClosed = false
+
+const refuseChildProcessStart = () => {
+  const refusal = Promise.reject(
+    new Error('child process start refused during final signal convergence')
+  )
+  // 调用方 await 时仍收到 rejection；内部 handler 只防止一个已经返回的
+  // fire-and-forget callback 在 signal cleanup 中制造 unhandled-rejection 竞态。
+  void refusal.catch(() => undefined)
+  return refusal
+}
+
+/**
+ * 异步执行一个命令并收集输出。接口与旧的 spawnSync wrapper 对齐：
+ * resolve 为 { status, stdout, stderr }；spawn 自身失败或超时才 reject。
+ *
+ * 超时处理：对整个进程组先 SIGTERM，1 秒宽限后 SIGKILL，随后以
+ * 「timed out」reject——绝不静默把超时当成功。
+ */
+export const createCommandRunner = ({
+  spawnProcess = spawn,
+  clearTimer = nativeClearTimeout,
+  setTimer = nativeSetTimeout,
+  processGroups = processGroupLifecycle
+} = {}) =>
+  (
+    args,
+    {
+      env = process.env,
+      cwd,
+      timeoutMs = 120_000,
+      stdin = null,
+      allowSuccessfulStdinEpipe = false,
+      inheritedFds = [],
+      stdoutFd = null,
+      maxStdoutBytes = 64 * 1024 * 1024,
+      maxStderrBytes = 64 * 1024 * 1024
+    } = {}
+  ) =>
+    new Promise((resolvePromise, rejectPromise) => {
+    const childEnvironment = { ...env }
+    delete childEnvironment[aggregateOwnershipFdName]
+    delete childEnvironment[aggregateOwnershipAuthFdName]
+    delete childEnvironment[aggregateOwnershipAuthTokenName]
+    if (
+      !Array.isArray(inheritedFds) ||
+      inheritedFds.some((fd) => !Number.isSafeInteger(fd) || fd < 0) ||
+      (stdoutFd !== null && (!Number.isSafeInteger(stdoutFd) || stdoutFd < 0))
+    ) {
+      rejectPromise(new Error('command inherited descriptor evidence was invalid'))
+      return
+    }
+    let child
+    try {
+      child = spawnProcess(args[0], args.slice(1), {
+        cwd,
+        env: childEnvironment,
+        detached: true,
+        stdio: [
+          stdin === null ? 'ignore' : 'pipe',
+          stdoutFd === null ? 'pipe' : stdoutFd,
+          'pipe',
+          ...inheritedFds
+        ]
+      })
+    } catch {
+      // spawn 的同步异常发生在任何 PGID 出现之前；Promise executor 不得把
+      // 调用方的 argv/cwd/异常对象原样变成 rejection。
+      rejectPromise(new Error('command failed to start'))
+      return
+    }
+    let settlementClaimed = false
+    let childHandle = null
+    let timer = null
+    const stdoutChunks = []
+    const stderrChunks = []
+    let stdoutBytes = 0
+    let stderrBytes = 0
+
+    const cancelTimer = () => {
+      if (timer === null) return true
+      const current = timer
+      timer = null
+      try {
+        clearTimer(current)
+        return true
+      } catch {
+        // clear primitive 失败后，这个 timeout 仍可能处于已注册状态。它不能在
+        // 已完成进程组清理和固定 rejection 之后继续把 CLI 吊到原始（最长数十
+        // 分钟）预算；尽力 unref，但不把 unref 成功伪装成 timer cleanup 成功。
+        try {
+          current?.unref?.()
+        } catch {
+          // 固定的 timer-cleanup failure 由调用方统一给出。
+        }
+        return false
+      }
+    }
+
+    const releaseChild = () => {
+      const timerClean = cancelTimer()
+      let primitiveClean = true
+      if (childHandle !== null) {
+        processGroups.markLeaderClosed(childHandle)
+        // **不删除**：组长走了不代表整组走了。只有确认 ESRCH 才退休。
+        try {
+          processGroups.retireIfGone(childHandle)
+        } catch {
+          primitiveClean = false
+        }
+      }
+      return { timerClean, primitiveClean }
+    }
+
+    const rejectAfterCleanup = async (reason) => {
+      const timerClean = cancelTimer()
+      let survivors = childHandle === null ? [] : [childHandle]
+      let terminationFailed = false
+      try {
+        if (childHandle === null) {
+          survivors = []
+        } else {
+          const outcome = await processGroups.terminateDetailed([childHandle])
+          survivors = outcome.survivors
+          terminationFailed ||= outcome.primitiveFailed
+        }
+      } catch {
+        terminationFailed = true
+      }
+      const suffix =
+        !timerClean || terminationFailed || survivors.length > 0
+          ? `; ${String(survivors.length)} descendant process group(s) were not confirmed gone`
+          : ''
+      rejectPromise(new Error(`${reason}${suffix}`))
+    }
+
+    const settleAfterLeaderClose = async (result) => {
+      let survivors = childHandle === null ? [] : [childHandle]
+      let terminationFailed = false
+      try {
+        if (childHandle === null) {
+          survivors = []
+        } else {
+          const outcome = await processGroups.terminateDetailed([childHandle])
+          survivors = outcome.survivors
+          terminationFailed ||= outcome.primitiveFailed
+        }
+      } catch {
+        terminationFailed = true
+      }
+      if (terminationFailed || survivors.length > 0) {
+        rejectPromise(
+          new Error(
+            `command process-group settlement failed; ${String(survivors.length)} ` +
+              'descendant process group(s) were not confirmed gone'
+          )
+        )
+        return
+      }
+      resolvePromise(result)
+    }
+
+    const claimFailure = (reason) => {
+      if (settlementClaimed) return false
+      settlementClaimed = true
+      void rejectAfterCleanup(reason)
+      return true
+    }
+
+    const collectBounded = (chunk, chunks, kind) => {
+      if (settlementClaimed) return
+      const bytes = Buffer.byteLength(chunk)
+      const current = kind === 'stdout' ? stdoutBytes : stderrBytes
+      const limit = kind === 'stdout' ? maxStdoutBytes : maxStderrBytes
+      if (!Number.isSafeInteger(limit) || limit < 0 || current + bytes > limit) {
+        claimFailure(`command ${kind} exceeded its byte limit`)
+        return
+      }
+      if (kind === 'stdout') stdoutBytes += bytes
+      else stderrBytes += bytes
+      chunks.push(chunk)
+    }
+
+    // `spawn()` 成功返回后 pid 已经可用；在任何 timer / event 之前登记，
+    // `timeoutMs: 0` 也不会落进「pid 存在但还没 generation」的窗口。
+    let ownershipAnnouncementFailed = false
+    if (Number.isSafeInteger(child.pid) && child.pid > 0) {
+      childHandle = processGroups.register(child.pid)
+      observedProcessGroups.add(child.pid)
+      // 每个子进程都是 detached，因此**自成进程组**——它们不属于本进程的
+      // pgid，`pgrep -g <cli pid>` 永远看不到它们（实测：CLI 退出后该查询恒
+      // 返回空）。把真实 pgid 逐个公布出去，外部套件才可能真的核查后代是否
+      // 全部消失，而不是做一次结构性空真的查询。
+      ownershipAnnouncementFailed = !announceProcessGroupOwnership(childHandle)
+    }
+
+    child.stdout?.on('data', (chunk) => collectBounded(chunk, stdoutChunks, 'stdout'))
+    child.stderr.on('data', (chunk) => collectBounded(chunk, stderrChunks, 'stderr'))
+
+    child.once('error', () => {
+      const { timerClean, primitiveClean } = releaseChild()
+      if (ownershipAnnouncementFailed) {
+        return
+      }
+      claimFailure(
+        !timerClean
+          ? 'command timer cleanup failed'
+          : primitiveClean
+            ? 'command failed to start'
+            : 'command process-group probe failed'
+      )
+    })
+
+    child.once('close', (code, signal) => {
+      const { timerClean, primitiveClean } = releaseChild()
+      // announcement failure 已经把 settlement 所有权交给下面的异步终止分支；
+      // 快速 `/usr/bin/true` 的 close 绝不能抢先 resolve status 0。
+      if (ownershipAnnouncementFailed) {
+        return
+      }
+      if (settlementClaimed) return
+      if (!primitiveClean) {
+        claimFailure('command process-group probe failed')
+        return
+      }
+      if (!timerClean) {
+        // close 只证明 leader/stdio 已结束；同组 orphan 仍可能存活。timer-clear
+        // primitive 失败也必须走同一个进程组清理出口，不能直接 reject。
+        claimFailure('command timer cleanup failed')
+        return
+      }
+      settlementClaimed = true
+      void settleAfterLeaderClose({
+        status: signal !== null ? null : code,
+        signal,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8')
+      })
+    })
+
+    if (stdin !== null) {
+      child.stdin.once('error', (error) => {
+        if (ownershipAnnouncementFailed) return
+        if (allowSuccessfulStdinEpipe && error?.code === 'EPIPE') {
+          return
+        }
+        claimFailure('command stdin failed')
+      })
+      try {
+        child.stdin.end(stdin)
+      } catch (error) {
+        // Socket.end 的同步异常与异步 EPIPE 具有相同的资源语义：先收敛整组，
+        // 再以固定原因拒绝，绝不让原始异常越过边界。
+        if (!(allowSuccessfulStdinEpipe && error?.code === 'EPIPE')) {
+          claimFailure('command stdin failed')
+        }
+      }
+    }
+
+    if (ownershipAnnouncementFailed && childHandle !== null) {
+      claimFailure('aggregate ownership announcement failed')
+    }
+
+    // timer primitive 自身也属于受控边界。先装好 error/close/stdin handlers，
+    // 再创建 timeout；若 primitive 同步失败，必须先收掉已登记 PGID 才能 reject。
+    if (!settlementClaimed) {
+      try {
+        timer = setTimer(() => {
+          claimFailure(`command timed out after ${String(timeoutMs)}ms`)
+        }, timeoutMs)
+      } catch {
+        claimFailure('command timer setup failed')
+      }
+    }
+    })
+
+/**
+ * Create one memoized scoped-cleanup settlement with a lifecycle registry that
+ * is deliberately separate from ordinary workload groups. If a signal arrives
+ * after ordinary completion has already started cleanup, the handler's first
+ * workload sweep cannot kill cleanup's own inspect/rm command and then await the
+ * same failed Promise. Cleanup commands still announce their PGIDs and each
+ * command settles TERM/KILL/ESRCH before the shared Promise resolves.
+ */
+export const createSignalSafeCleanup = (operation) => {
+  if (typeof operation !== 'function') {
+    throw new TypeError('signal-safe cleanup requires an operation')
+  }
+  const cleanupRunner = createCommandRunner({
+    processGroups: createProcessGroupLifecycle()
+  })
+  let cleanupPromise = null
+  return (options) => {
+    if (cleanupPromise === null) {
+      cleanupPromise = Promise.resolve().then(() => operation(cleanupRunner, options))
+    }
+    return cleanupPromise
+  }
+}
+
+/**
+ * Hand ordinary CLI settlement back to the event loop before choosing an exit
+ * code. An OS signal can already be pending while its JS handler has not yet
+ * run; synchronously calling process.exit immediately after cleanup would hide
+ * that signal. Two explicit turns let the installed signal watcher publish its
+ * winner and join the memoized cleanup settlement. Callers must use the
+ * returned value and natural process.exitCode settlement, never process.exit.
+ */
+export const createCleanupSettlementBarrier = ({
+  scheduleImmediate = nativeSetImmediate
+} = {}) => async () => {
+  for (let turn = 0; turn < 2; turn += 1) {
+    const delivered = await new Promise((resolveTurn) => {
+      try {
+        scheduleImmediate(() => resolveTurn(true))
+      } catch {
+        resolveTurn(false)
+      }
+    })
+    if (!delivered) {
+      return Object.freeze({ ok: false, signal: null })
+    }
+  }
+  return Object.freeze({ ok: true, signal: pendingSignal })
+}
+
+const cleanupSettlementBarrier = createCleanupSettlementBarrier()
+let cliSettlementPrimitiveFailed = false
+
+export const terminationSignalAfterCleanupSettlement = async () => {
+  const outcome = await cleanupSettlementBarrier()
+  if (!outcome.ok) {
+    cliSettlementPrimitiveFailed = true
+    writeDiagnostic('CLI signal settlement primitive failed\n')
+  }
+  if (outcome.signal !== null) {
+    const settlement = pendingSignalSettlement
+    if (settlement === null) {
+      cliSettlementPrimitiveFailed = true
+      writeDiagnostic('CLI signal settlement state was unavailable\n')
+      return null
+    }
+    // A delivered signal owns the process from this point onward.  The signal
+    // handler either exits 1 after a fixed failure or rethrows the same signal;
+    // the ordinary CLI caller must never regain control while scoped cleanup is
+    // still running.
+    await settlement
+    cliSettlementPrimitiveFailed = true
+    writeDiagnostic('CLI signal settlement returned unexpectedly\n')
+    return null
+  }
+  return outcome.signal
+}
+
+/**
+ * Finalize an ordinary CLI without racing an already-delivered signal. Signal
+ * handlers retain ownership of scoped cleanup and same-signal rethrow; the
+ * ordinary path only publishes an exit code after two native event-loop turns
+ * prove that no pending signal winner exists.
+ */
+export const settleCliExitCode = async (exitCode) => {
+  if (!Number.isSafeInteger(exitCode) || exitCode < 0 || exitCode > 255) {
+    throw new TypeError('CLI exit code must be an integer from 0 through 255')
+  }
+  const signal = await terminationSignalAfterCleanupSettlement()
+  if (signal === null) {
+    process.exitCode = cliSettlementPrimitiveFailed ? 1 : exitCode
+  }
+  return signal
+}
+
+/**
+ * One ordinary production CLI boundary. The operation may decide only an exit
+ * code; it cannot publish that code ahead of a delivered signal. Unknown
+ * operation failures and invalid results collapse to fixed local diagnostics.
+ */
+export const runSignalSettledCli = async (operation) => {
+  let exitCode = 1
+  try {
+    if (typeof operation !== 'function') {
+      throw new TypeError('CLI operation is required')
+    }
+    const candidate = await operation()
+    if (!Number.isSafeInteger(candidate) || candidate < 0 || candidate > 255) {
+      throw new TypeError('CLI operation returned an invalid exit code')
+    }
+    exitCode = candidate
+  } catch {
+    writeDiagnostic('CLI operation failed\n')
+    exitCode = 1
+  }
+  return settleCliExitCode(exitCode)
+}
+
+const runCommandUnchecked = createCommandRunner()
+
+export const runCommand = (args, options = {}) =>
+  childProcessStartsClosed
+    ? refuseChildProcessStart()
+    : runCommandUnchecked(args, options)
+
+/**
+ * 终止全部尚未确认消失的受控进程组，并**确认**它们真的消失。
+ *
+ * 返回仍未确认消失的 pgid 列表；空数组表示全部确认 ESRCH。幂等；signal
+ * handler 与超时路径共用同一套原语。
+ */
+export const terminateControlledSubtree = async ({
+  graceMs = 1_000,
+  killWaitMs = 3_000
+} = {}) =>
+  processGroupLifecycle.terminateAll({ graceMs, killWaitMs })
+
+const terminateControlledSubtreeDetailed = async ({
+  graceMs = 1_000,
+  killWaitMs = 3_000
+} = {}) =>
+  processGroupLifecycle.terminateAllDetailed({ graceMs, killWaitMs })
+
+/** 尚未确认消失的受控进程组（测试与门禁用）。 */
+export const unconfirmedProcessGroups = () =>
+  processGroupLifecycle.unconfirmed()
+
+/**
+ * 安装 SIGINT/SIGTERM/SIGHUP 处置。收到信号：
+ *   1. 终止受控子树（等待宽限）；
+ *   2. 执行调用方的 scoped cleanup（异步；只报告固定原因与 residue 数量，不回显
+ *      调用方内容）；
+ *   3. 再次收敛受控子树；只有两类清理都成功时才重投同名信号，否则 exit 1。
+ *
+ * 第二个同名/异名信号在清理期间只登记不重入。
+ */
+export const installSignalHandlers = (
+  cleanup,
+  { rethrowSignal = nativeProcessKill } = {}
+) => {
+  let terminating = false
+  const handler = (signal) => {
+    if (terminating) {
+      return
+    }
+    terminating = true
+    pendingSignal = signal
+    const cleanupStartAnnounced = announceCleanupState('START')
+    let diagnosticFailed = !writeDiagnostic(
+      `\n${signal}: terminating child processes, then running scoped cleanup\n`
+    )
+    pendingSignalSettlement = (async () => {
+      let survivors = []
+      let terminationFailed = false
+      let cleanupFailed = false
+      let cleanupMayRun = true
+      try {
+        const outcome = await terminateControlledSubtreeDetailed()
+        survivors = outcome.survivors
+        if (outcome.primitiveFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed ||= outcome.primitiveFailed
+      } catch {
+        terminationFailed = true
+        diagnosticFailed = reportDiagnosticFailure(
+          diagnosticFailed,
+          'subtree termination failed\n'
+        )
+      }
+
+      // 达到 sweep 上限或仍有未确认组时，不能带着活跃子进程进入 scoped cleanup。
+      // 先同步关闭普通派生入口，再做一次 mutation-free 收敛；只有确认清空后才
+      // 临时重开入口给 cleanup 使用。首次异常仍保留，最终必须 exit 1。
+      if (terminationFailed || survivors.length > 0) {
+        terminationFailed = true
+        childProcessStartsClosed = true
+        try {
+          const outcome = await terminateControlledSubtreeDetailed()
+          survivors = outcome.survivors
+          if (outcome.primitiveFailed && !terminationFailed) {
+            diagnosticFailed = reportDiagnosticFailure(
+              diagnosticFailed,
+              'subtree termination failed\n'
+            )
+          }
+          terminationFailed ||= outcome.primitiveFailed
+          cleanupMayRun = survivors.length === 0
+        } catch {
+          cleanupMayRun = false
+        }
+        if (cleanupMayRun) {
+          childProcessStartsClosed = false
+        }
+      }
+
+      if (cleanupMayRun) {
+        try {
+          const residue = await cleanup(signal)
+          if (!Array.isArray(residue)) {
+            cleanupFailed = true
+            diagnosticFailed = reportDiagnosticFailure(
+              diagnosticFailed,
+              'scoped cleanup returned an invalid result\n'
+            )
+          } else if (residue.length > 0) {
+            cleanupFailed = true
+            diagnosticFailed = reportDiagnosticFailure(
+              diagnosticFailed,
+              `scoped cleanup left ${String(residue.length)} residue item(s)\n`
+            )
+          }
+        } catch {
+          cleanupFailed = true
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'scoped cleanup failed during signal handling\n'
+          )
+        }
+      }
+      // cleanup 期间可能又派生了子进程（scoped cleanup 自己要跑 docker 命令）。
+      // **重投原信号之前反复收敛到稳定空集**。第一次稳定返回后同步关闭新派生
+      // 入口，再复核一次 registry；这样最终判定既能抓到 sweep 期间登记的新组，
+      // 也不会在最后一次空快照与重投信号之间重新打开竞态窗口。
+      try {
+        const outcome = await terminateControlledSubtreeDetailed()
+        survivors = outcome.survivors
+        if (outcome.primitiveFailed && !terminationFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed ||= outcome.primitiveFailed
+      } catch {
+        terminationFailed = true
+        diagnosticFailed = reportDiagnosticFailure(
+          diagnosticFailed,
+          'subtree termination failed\n'
+        )
+      }
+      childProcessStartsClosed = true
+      try {
+        const outcome = await terminateControlledSubtreeDetailed()
+        if (outcome.primitiveFailed && !terminationFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed ||= outcome.primitiveFailed
+        survivors = [...new Set([...survivors, ...outcome.survivors])]
+      } catch {
+        if (!terminationFailed) {
+          diagnosticFailed = reportDiagnosticFailure(
+            diagnosticFailed,
+            'subtree termination failed\n'
+          )
+        }
+        terminationFailed = true
+      }
+      for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+        process.removeListener(handledSignal, handler)
+      }
+      // DONE 只表示本轮清理生命周期已经走完（含最终子树收敛），不表示 scoped
+      // cleanup 的业务结果成功。负向门禁会故意制造 residue / throw，并在固定 exit 1
+      // 后由父测试验证；它们同样必须先确认生命周期结束，不能在聚合器看来留下一个
+      // 永远悬空的 START。相反，若进程在这里之前消失，缺 DONE 仍会由聚合器拒绝。
+      const cleanupDoneAnnounced = cleanupStartAnnounced && announceCleanupState('DONE')
+      if (!cleanupDoneAnnounced) {
+        writeDiagnostic('aggregate cleanup acknowledgement failed\n')
+        process.exit(1)
+      }
+      if (terminationFailed || cleanupFailed || diagnosticFailed || survivors.length > 0) {
+        // **fail closed**：受控子树或 scoped cleanup 任一失败，都不能用「干净的
+        // 信号语义」收场。子树失败只报固定原因，不回显任何命令内容。
+        if (terminationFailed || survivors.length > 0) {
+          writeDiagnostic('descendant process groups were not confirmed gone\n')
+        }
+        process.exit(1)
+      }
+      // 重投同名信号：进程以真实的信号处置收场（退出状态 128+signo）。
+      try {
+        rethrowSignal(process.pid, signal)
+        // A successful self-signal is the terminal publication.  Keeping the
+        // shared settlement pending prevents ordinary callers from observing a
+        // return between cleanup completion and OS signal delivery.
+        await new Promise(() => {})
+      } catch {
+        // 最终 self-signal 也是一条会失败的 termination primitive。不得让它的
+        // Error/stack（可能含调用方文字）逃到 Node 默认异常输出。
+        writeDiagnostic('final signal rethrow failed\n')
+        process.exit(1)
+      }
+    })().catch(() => {
+      writeDiagnostic('signal settlement failed\n')
+      process.exit(1)
+    })
+    void pendingSignalSettlement
+  }
+  for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(handledSignal, handler)
+  }
+  return () => {
+    for (const handledSignal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      process.removeListener(handledSignal, handler)
+    }
+  }
+}

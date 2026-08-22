@@ -1,0 +1,607 @@
+# local-test Compose 拓扑（阶段 09A / M2B）
+
+[`compose.local-test.yaml`](compose.local-test.yaml) 是单机 local-test 部署拓扑。
+它是可重复交付与私有测试的载体，**不是生产拓扑声明**；没有真实微信配置时，也不
+得把它改名或表述为 staging/production（[ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md) §1、§3）。
+
+数据库身份边界本身属于 M2A，见[该目录 README](postgres/README.md)。
+
+## 拓扑
+
+```text
+本机浏览器 / 客户端 / SSH tunnel
+  └─ 127.0.0.1:<host port>
+       └─ api（非 root 10001:10001，容器内 HOST=0.0.0.0）
+            └─ <project>_internal（internal: true）
+                 └─ postgres 18.4（named volume、healthcheck、无 host port）
+
+postgres healthy
+  ├─ bootstrap-*：只能显式调用的一次性 cluster-admin 任务
+  └─ migrate：可重复运行的一次性 migration 任务
+       └─ api 只在 migrate 成功退出后启动
+```
+
+两张网络的分工是刻意的：`internal` 声明 `internal: true`，Compose 因此不为它接入
+网关——挂在上面的 postgres 与全部一次性任务既没有 host port，也没有出站路径。
+`edge` 只承载 api 的那一个 loopback publish。两张网络与数据卷的真实名称都由
+Compose 的 project scope 决定（`<project>_internal` 等），见下方「并行 worktree」。
+
+## 服务
+
+| 服务 | 镜像 | profile | 角色 |
+| --- | --- | --- | --- |
+| `postgres` | PostgreSQL 18.4（固定 digest） | 默认 | 数据库，named volume，不发布端口 |
+| `bootstrap-cluster` | 同上 | `bootstrap` | `bootstrap.sh cluster`：六个角色与 membership |
+| `bootstrap-logins` | 同上 | `bootstrap` | `bootstrap.sh logins`：三个登录角色的 SCRAM 口令 |
+| `bootstrap-createdb` | 同上 | `bootstrap` | `createdb`：建立目标数据库 |
+| `bootstrap-schema` | API 镜像 | `bootstrap` | `dist/database/bootstrap-0000.js`：原子应用冻结的 `0000` |
+| `bootstrap-handoff` | PostgreSQL 18.4 | `bootstrap` | `bootstrap.sh handoff`：0000-only owner 交接 |
+| `bootstrap-acl` | 同上 | `bootstrap` | `bootstrap.sh acl`：containment 阶段 ACL 基线 |
+| `bootstrap-grants` | 同上 | `bootstrap` | `bootstrap.sh grants`：final 阶段备份补授 |
+| `migrate` | API 镜像 | 默认 | `dist/database/migrate.js`：`SET ROLE` 应用 `0001`—最新 |
+| `api` | API 镜像 | 默认 | Fastify 服务，只发布到 `127.0.0.1` |
+
+bootstrap 全部挂在 `bootstrap` profile 下，因此 `docker compose up` 与任何普通
+重启都**不会**再次执行它们。`migrate` 不在该 profile 内：它按 migration ledger
+幂等，重复执行只补齐缺口，等锁与连接超时由 `migrate.ts` 的 `migrationLimits`
+约束，因此是有界的。
+
+### 为什么 bootstrap 是七个容器而不是一个
+
+M2A 的全新安装顺序在 `bootstrap.sh`（psql）与 `db:bootstrap`（Node）之间来回
+切换：`cluster` → `logins` → `createdb` 用 psql，`0000` 用 Node，`handoff` →
+`acl` 又回到 psql。单个 bootstrap 容器因此必须同时具备 Node 与 psql。M2B **不**
+为此构建混合高权限镜像，而是把每个阶段放进一个只用现成镜像的一次性容器：psql
+阶段用固定 digest 的 PostgreSQL 官方镜像，`0000` 阶段用已 Accepted 的 API 镜像。
+每个容器只拿它那一阶段需要的凭据，`depends_on: service_completed_successfully`
+保证顺序，恢复路径（M4）也可以只复用其中的 `cluster` / `logins` / `acl`。
+
+## 镜像固定
+
+PostgreSQL 同时固定 exact patch tag 与不可变的多架构 manifest digest：
+
+```text
+docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
+```
+
+该 digest 由 `docker buildx imagetools inspect docker.io/library/postgres:18.4-bookworm`
+解析真实镜像仓库得到，**不是**猜测值、搜索结果或本地未推送镜像的 RepoDigest。
+它是 OCI image index 的摘要，index 内含 `linux/amd64`
+（`sha256:16fa100a…`）与 `linux/arm64/v8`（`sha256:5803d5d7…`）。复核命令：
+
+```bash
+docker buildx imagetools inspect docker.io/library/postgres:18.4-bookworm --raw | shasum -a 256
+```
+
+版本判据是 exact-patch 的，覆盖整套工具链——容器内 `createdb`、`initdb`、
+`pg_ctl`、`postgres`、`psql` 五个 banner 必须都是 18.4，混装一律拒绝。任何 patch
+升级都必须重新 capture manifest、重跑 parity 并显式 rebaseline，不能只改 tag。
+
+API 镜像由已 Accepted 的 [`services/api/Dockerfile`](../../services/api/Dockerfile)
+以 monorepo 根为上下文构建，M2B 不修改它的安全基线。健康检查只用镜像自带的
+`node`（Node 24 自带 `fetch`），不在运行期安装 `curl` 或任何软件包。
+
+## 安全边界
+
+所有服务统一 `read_only` 根文件系统、`cap_drop: [ALL]`、
+`no-new-privileges:true`、`restart: "no"` 与有界的 json-file 日志轮转；长期运行的
+API/PostgreSQL 与业务 one-shot 使用声明的非 root UID，唯一 `secret-materializer`
+以 root + 最小 `CHOWN` capability 把 host source 物化为消费 UID 所有的 0600 文件。
+全拓扑不使用 privileged、`network_mode: host`、Docker socket，也没有任何
+宿主目录数据库 bind mount。全拓扑只有**两类只读仓库 bind**：M2A 的 bootstrap
+资产目录，以及**仅 `bootstrap-handoff` 可见**的那一个 exact `0000` 文件；数据库
+数据落在 named volume 上，没有任何 host bind。
+
+PostgreSQL 直接以镜像自带的 `postgres`(999:999) 运行，因此 entrypoint 不需要 root，
+也不需要 `CAP_SETUID`/`CAP_SETGID`/`CAP_CHOWN` 去降权；TCP 与 local 登录都强制
+`scram-sha-256`。
+
+## 凭据
+
+Compose 里不出现任何口令或完整连接串的 environment value。全部凭据走 secret
+file，契约见 [`secrets/README.md`](secrets/README.md)。
+
+## 用法
+
+```bash
+node infra/docker/check-compose-topology.mjs
+docker compose --file infra/docker/compose.local-test.yaml config
+docker compose --file infra/docker/compose.local-test.yaml up -d postgres
+```
+
+全新安装（`bootstrap` 必须显式调用）：
+
+```bash
+docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-acl
+docker compose --file infra/docker/compose.local-test.yaml up migrate
+docker compose --file infra/docker/compose.local-test.yaml --profile bootstrap up bootstrap-grants
+docker compose --file infra/docker/compose.local-test.yaml up -d api
+```
+
+`MEAL_AGENT_API_HOST_PORT` 可以改 host 端口，`MEAL_AGENT_SECRETS_DIR` 可以把
+secret 目录移到仓库之外。host publish 地址固定为 `127.0.0.1`，不接受变量覆盖。
+非敏感配置模板见 [`infra/environments/local-test/`](../environments/local-test/README.md)。
+
+### M3B：八份 Secret 与完整链的一条命令验证
+
+两条**运维**命令：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/generate-local-test-secrets.mjs` | 生成八份 Secret（四个原始 CSPRNG 口令派生；默认拒绝覆盖；口令不进 stdout/argv/环境变量/Git） |
+| `node infra/docker/preflight-local-test-secrets.mjs` | 部署前交叉一致性预检（任何数据库容器启动之前必须通过） |
+
+M3B 的**完整门禁清单**（共 9 条，全部要跑，缺一条就不构成本里程碑的证据。这个条数
+与下表行数、以及仓库里真实的 `check-*.mjs` 集合，由
+[`check-m3b-registry-integrity.mjs`](check-m3b-registry-integrity.mjs) 机械比对——
+此前这里写「七条」而表里有 8 行，整整一轮无人发现）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/check-compose-topology.mjs` | 解析后 Compose 配置的静态门禁（14 服务、8 secret source、10 volume、2 网络、project scope） |
+| `node infra/docker/check-compose-topology-mutations.mjs` | **45 项**拓扑变异反例，全部要求以指定理由被拒；只变异仓库外临时副本，不改写 tracked Compose；除已登记 API build 与 postgres/API healthcheck 外，其他服务新增这两类可执行能力同样拒绝；逐项固定 project name、root capability / profile、network/volume/logging 闭集、raw Secret project scope、`security_opt`、published-port 完整 shape、healthcheck cadence/disable 与 depends_on condition/required/restart 语义 |
+| `node infra/docker/check-local-test-negatives.mjs` | **75 cases = 1 个正向 baseline + 74 个反例/边界检查**；baseline 必须通过，其余 74 条必须以指定理由失败 |
+| `node infra/docker/check-m3b-template-surface-sweep.mjs` | **tracked 模板绝对面普查**：以 `node --env-file` 为唯一 oracle，不问「这一轮改了什么」，只问「凡是会真的建立活键且取值非空的写法，扫描器看得见吗」。8 族 × 6 视图 = 48 格 + 一条 pathspec 检查。**它不声称扫描器干净**，而是把当前表面钉死：3 族登记为命中、5 族**登记为开着且逐族附原因**，两份扫描面外的 tracked 模板登记为已披露边界；另有 4 族门禁结构上表达不了（缺渲染面，见 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs) 的 `unguardedFamilies`），**零看守**。未登记族变沉默（新 fail-open）与已登记族被捕获（覆盖变好但登记失真）**同样转红**。登记表在 [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs)，普查前先过一遍自校验；上面这一整组数字由 [`check-m3b-registry-integrity.mjs`](check-m3b-registry-integrity.mjs) 从登记表导出后与本行比对——**删掉一整族或一个视图时普查门禁自己是发现不了的**（它把一切都从登记表导出，少掉一族之后剩下的 42 格同样自洽），只有这条仓库外的形状声明能发现覆盖面缩水 |
+| `node infra/docker/check-m3b-round2-negatives.mjs` | **M3B targeted negative suite：69 cases**；在既有 promotion / cleanup / Git index / Docker 证据 / dotenv、URL 与 Node oracle 门禁上，覆盖 active/nested/quoted/prose/comment 多视图的 split-stem（**含 split-stem 与 `=` 之间带 ASCII 空白的 140 格交叉维度**，以及 quoted 空占位在 compact/legacy 两条路径上的一致结论；运算符尾 `>=`/`+=` 的残留单列登记为当前行为）、slash-crossing 与 path 对照、ambient 与 repository-local Git replacement view（含 preflight 后竞态）、Docker container/image/history 的 envelope、深层元素 shape、immutable identity、history 完整性、失败 logs 的非物化、resolved Compose config 的非空证据、固定输出与精确 argv。collector 子门禁为 **51 个**唯一向量，resolved-config 子门禁为 **5 个**唯一向量。文件名保留旧入口名，**套件名称不带轮次** |
+| `node infra/docker/check-m3b-registry-integrity.mjs` | **登记完整性**：把已发表的话钉到已提交的数据上。逐节 fail closed，检查包括：登记表自校验 + **18 条畸形登记表合成用例**（逐条断言**指定理由**，而非只断言「被拒了」——白名单与三态计数是同外延规则，只断言被拒时单删一条仍然全绿）与三态漂移判别力（`mixed` 由此覆盖，不是死代码）；ADR/project-status 里的族名列表 ↔ [`m3b-surface-registry.mjs`](m3b-surface-registry.mjs) 的 `families`/`unguardedFamilies` **逐 id 比对**；计划文档表面表格**逐格**用真实 `scanTrackedTemplates` 按行内声明的角色复跑断言，合计数由门禁数出来再比对，非注释例均须经 `node --env-file` 确认建立非空活键；已发表的反引号行数 ↔ 真实文件行数；已发表的 tracked 文件数 ↔ `git ls-files`；本清单 ↔ 真实门禁脚本集合。**规则一句话：任何进入文档的计数、比例或族名列表，要么由脚本对已提交的数据导出，要么删掉** |
+| `node infra/docker/check-m3b-signal-windows.mjs` | **5 个**不依赖 Docker 的确定性进程组回归（leader close 与孤儿整组收敛、timeout 不依赖 close、同号 PGID generation 隔离、终止原语/scoped cleanup fail closed、第二次 sweep 期间新增组的 mutation-closed 有界收敛）+ **6 个**真实信号窗口（pre-baseline / pre-override / build / chain / probe / local-test negative daemon-container）的 failure-safe 取证；announced pgid 按有界轮询确认消失 |
+| `node infra/docker/run-local-test-smoke.mjs` | 从空 volume 起的完整链 smoke：`secret-materializer` 加原十步的 11 步链、migrate/grants 幂等重跑、`/healthz`/`/readyz`、数据库证据、containment 扫描、动态网络隔离、scoped cleanup（`--keep-failure` 保留失败现场） |
+| `node infra/docker/probe-compose-secret-identity.mjs` | 真实 Compose Secret 在容器内的 UID/mode 证据（999 与 10001 两侧） |
+
+正向 baseline 是 `check-local-test-negatives.mjs` 里**唯一**一条正向 case，它
+同时断言三件事：刚生成的 bundle 预检零问题、**当前真实 tracked 模板**扫描零
+问题、Git index 与工作树逐字节一致。没有它，「一律判失败」的回归会让其余
+74 条全部恒绿。
+
+[`fixtures/preflight-signal-window.mjs`](fixtures/preflight-signal-window.mjs)
+是**测试夹具**，不是运维入口：它通过库级 `preflight` 注入 seam 制造一段确定性
+的同步 preflight 窗口，跑的是真实的 `runGeneratorCli` 与真实 signal handler。
+生产 generator **不认识**任何用于改变时序的环境变量。
+
+八份 Secret 的文件清单、角色与固定部署 identity 只有一个事实源：
+[`local-test-secrets-contract.mjs`](local-test-secrets-contract.mjs)。
+
+### M4：生命周期、备份与恢复
+
+操作顺序、全新安装与恢复的差异（`pg_dump` 不含 cluster roles）以及各入口的
+硬边界见 [runbook](../../docs/operations/stage-09a-local-test-lifecycle.md)。
+两条**运维**命令（针对长驻的默认部署）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/backup-local-test.mjs` | `pg_dump --format=custom` 备份（backup 角色 BYPASSRLS，FORCE RLS 不截断；写入被 Git 忽略的 [`backups/`](backups/README.md)，将要写入的 dump 与 sidecar **文件路径**在仓库内且未被 Git 忽略即拒绝；生成 `*.sha256` sidecar；前后打印环境与数据库标识，不打印口令或连接串） |
+| `node infra/docker/restore-local-test.mjs` | 恢复到**全新** `meal_agent` 库（`--dump <path>`；checksum sidecar 以 `O_NOFOLLOW|O_NONBLOCK` 有界读取，只接受单链接普通文件与严格 UTF-8；不匹配即拒绝且不调用 `pg_restore`；`createdb --owner=meal_agent_migrator` 后单事务 `pg_restore`；前置 `cluster`/`logins` 与后续 `acl → migrate → grants` 见 runbook） |
+
+两条**演练**命令（每轮唯一 project/immutable image/合成 Secret，零残留复查，逐阶段
+打印本地耗时；均支持 `--keep-failure`）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/run-local-test-lifecycle.mjs` | 生命周期演练：构建 → 空 volume 初始化 → migration → 启动 → `/healthz`/`/readyz` → 合成数据授权读取 → `stop`/`start` 与 `down`/再起两种重启后数据仍在（SIGTERM 优雅退出的容器侧退出码一并断言）→ 销毁归零 |
+| `node infra/docker/run-local-test-restore-drill.mjs` | 备份/恢复演练：栈 A 全链 + 两个合成家庭 sentinel + 授权面快照 → 备份 + sidecar → 栈 B 重建角色（不在 dump 里）→ 篡改反例在 `pg_restore` 之前被拒 → 单事务恢复 → `acl → migrate → grants → api` → ledger/readiness/授权读取/runtime 反向探针/owner-GRANT-RLS 快照逐字一致 |
+
+`pg_dump`/`pg_restore` one-shot 容器使用每轮高熵名称和 ownership label；只有 inspect
+得到 canonical container ID 且 label token 精确属于本轮时才按 immutable ID 删除。
+同名 foreign 容器、inspect 失败或非规范「不存在」证据一律不盲删，并作为 residue
+失败。该所有权边界与 sidecar 的有界普通文件读取均有无 Docker 回归。
+
+这两张表是**登记**（`check-m3b-registry-integrity.mjs` §7 会把 README 记录的
+脚本集合与仓库里真实的可执行脚本集合机械比对），不是 M3B 门禁清单的一部分；
+两条演练已并入 M5 的 `pnpm stage09a:check`（见下节）。
+
+### M5：阶段聚合门禁与 API runtime image 扫描
+
+**阶段级聚合命令**（入口在 `scripts/run-stage09a-check.mjs`，不在本目录）：
+
+```bash
+pnpm stage09a:check                    # stage08 → 静态检查 → 镜像扫描 → 9 条 M3B 门禁 → 两条 M4 演练
+pnpm stage09a:check -- --keep-failure  # 失败时保留支持该开关的门禁现场（显式 opt-in）
+pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<candidate>-b.json  # 固定候选、单次完整链、零 retry 的动态审计证据
+```
+
+它**只做串联**，不实现新检查：按计划文档 M5 的链路顺序执行 `pnpm stage08:check`、
+Compose 静态门禁与变异反例、下面两条 M5 镜像门禁、其余 M3B 门禁（相互之间保持
+上方门禁表的既有顺序）、smoke 与 Secret 身份探针、两条 M4 演练。fail fast，逐步
+状态在结尾汇总表如实列出；Docker CLI / Compose v2 / daemon / git / pnpm 任一缺失
+时在执行任何检查之前明确失败为「缺少前置工具」，不降级成静态检查后宣称通过。
+每个动态门禁/演练自带 scoped cleanup 与零残留复查，`--keep-failure` 逐层透传。
+前置探针与每个步骤都以独立进程组登记；子门禁及其确定性夹具再派生的 detached
+process group 通过聚合器专用的机器可读所有权通道登记。GROUP frame 绑定
+producer、PGID 与严格递增 generation；通道要求 LF 完整帧，cleanup
+ACK 以 producer PID 区分并发 owner；partial/malformed/缺失 ACK 均 fail closed。
+SIGINT/SIGTERM/SIGHUP 或兜底超时会先给子门禁
+有限时间完成 scoped cleanup，再对所有已登记组执行 TERM → grace → KILL 并有界确认
+ESRCH。直接子进程退出但后代仍存活同样判失败；该边界有不依赖 Docker 的真实 CLI
+回归，且明确断言聚合器退出前 scoped cleanup 已完成、嵌套进程组已消失。
+
+**M5 新增的两条镜像门禁**（指向验收门禁 #13 的 BLOCK 级风险——客户端依赖泄漏
+进 runtime image；不属于冻结的 M3B 门禁清单）：
+
+| 命令 | 作用 |
+| --- | --- |
+| `node infra/docker/check-api-runtime-image.mjs` | API runtime image 依赖与组件扫描：BuildKit fork 前登记唯一 recovery tag；tag 只是 locator，只有 inspect 同时证明 canonical immutable image ID、不可猜 build claim 与唯一精确 tag 才产生 cleanup 权。metadata 与 iidfile 分角色交叉核对，后续 Config/history/save、两个 claimed scratch container 与 export 全部绑定 immutable ID。root 容器证明 `/app` root-owned 且不可写并导出 Docker daemon materialize 的最终 rootfs；第二个容器以真实 `10001:10001` + read-only + network-none 运行，证明 `/app`/`dist` 可遍历、两个固定入口可读。宿主用同一 `pnpm deploy --prod --legacy` 派生期望闭包并逐 payload 比对；Config、`/app` 结构、migrations、denylist 与 Secret containment 均 fail closed。`--keep-failure` 只说明保留 owned scene，不输出物理路径 |
+| `node infra/docker/check-api-runtime-image-mutations.mjs` | 上一条门禁**自身的真实变异反例套件**：1 个正向 baseline + **18 个 built + 2 个 static-only**。在原有 payload、`.bin`、symlink、history、Config、provenance、入口 `0600` 与 `/app/dist` `0700` 反例外，新增真实 `ONBUILD` 构建，必须同时由 Dockerfile 静态边界与 image Config `OnBuild` 缺席判据拒绝。每个 build 同样在 fork 前登记 per-case recovery tag，cleanup 仍只接受 immutable ID + claim + exact tag。Dockerfile 变异经 stdin 构建，不改写 tracked 文件；static-only 两项不构建 |
+
+共享扫描核心在 [`api-image-scan.mjs`](api-image-scan.mjs)（库模块，非入口）。
+期望闭包推导对 lockfile 逐字节只读；实测 `pnpm deploy` 会改写 pnpm 的工作区
+deps 状态记录，仓库因此在 `pnpm-workspace.yaml` 显式声明
+`verifyDepsBeforeRun: false`（本地与 CI 都只用显式的
+`pnpm install --frozen-lockfile`，门禁仓库不允许隐式 install）。
+Docker image/container identity 只接受 canonical immutable 形态；命令失败与 Config
+不一致只输出固定类别，不回显 runner stderr 或镜像内实际值。
+
+**M5.3 当前协议（2026-08-19）**：M5.2 候选 `429b248` 的独立审计为 A=BLOCK、B=CLEAN；
+实现提交 `c69b977` 继续把 after-effect publication、非零/信号 producer partial、普通 cleanup
+进行中收到信号与 recovery 最终结算收敛为同一 ownership/settlement 协议。发布 helper 在
+primitive settle 后按 exact `dev/ino` 取得 rollback ownership；backup partial 在 `docker cp`
+之前进入 owned-tree journal；cleanup 使用独立且 memoized 的进程组 lifecycle；pre-evidence
+recovery 只接受 exact tag + claim + immutable ID。三项 guard deletion 由生产源码 mutation
+直接验证。固定 Node.js v24.18.0 的 scripts tests **148/148**；含 committed-evidence 基线
+与文档的候选已从步骤 1 串行通过完整 14 步链、docs links 67/276 与最终零残留复核。
+M5.3 为 Implementation complete — pending independent A/B review，M5 未 Accepted。
+
+**M5.4 当前协议（2026-08-19，覆盖上段 M5.3 当前状态）**：M5.3 候选 `6552384` 的
+两路独立审计均为 BLOCK。两个 runtime-image 入口现在共享最终状态 settlement：destructive
+command 状态不再永久锁存，只有最终 immutable ID、mutable tag、build claim 与 scratch
+container 的事实决定成功；tag/container 被 foreign object 重绑时保留外部对象并失败；
+tagless claimed image 可由唯一 claim 恢复 immutable ID 后结算。scoped cleanup 后连续让出
+原生事件循环 turn，再读取 signal winner，避免 pending signal 被同步退出抢先。backup 的
+真实 `docker cp` 调用点进入 pre-fork owned-tree protocol；六项 critical guard 由机器 registry
+与活调用点 mutant 逐项证明。固定 Node.js v24.18.0 的 scripts tests **157/157**；runtime
+image 正向门禁和 **1 baseline + 17 built + 2 static-only** mutation 均已通过。同一候选已
+从步骤 1 串行通过完整 `stage09a:check` **14/14**；第一次运行的 Stage08 audit ownership
+channel 失败在独立 audit 与第二次完整重跑中均未复现，保留给独立审计复核。M5.4 仍为
+pending independent A/B review，M5 未 Accepted。
+
+**M5.7 动态审计协议（2026-08-20，覆盖上段审计执行方式）**：`stage09a:check` 与
+`stage09a:audit-b` 共用 `scripts/stage09a-gate-registry.mjs` 的唯一 14 步清单。后者不
+增加检查，也不作 Accepted 裁定；它只在精确 `.node-version` 与干净工作树上启动一次
+真实聚合链，不重试，随后把可信 step id、exit/signal、候选 SHA 与固定原因 exclusive
+写入 `.local/audit-reports/`。审计 B 不再自由重跑整链或编写 custom security probe；
+平台直接中断且没有报告时该会话无效，而不是把半截输出解读为候选 BLOCK/CLEAN。
+
+**M5.8 declaration/evidence 协议（2026-08-20，覆盖上一段调用形状）**：动态 B 必须
+额外提供 `--expected-head <40-hex-sha>`；报告分别记录运行前后 HEAD/clean 与真实
+invocation/retry，并从 preflight 前到报告 publication 后持有 INT/TERM/HUP。production
+guard 不再用测试中的第二份手抄名单证明完整性：consumer 按目标 declaration identity
+从 canonical tracked 生产模块反向发现，CLI 入口再与根 `stage09a:*` scripts 交叉核对；
+main guard、精确 owner chain 和 `node:process` exit import 同样由 AST/symbol 门禁判定。
+绝对 `--report` 路径继续被拒绝；它不是合法的审计调用方式。
+
+**M5.9 structured-core 协议（2026-08-20，覆盖 M5.8 wrapper/transcript 模型）**：
+`stage09a:check` 的唯一机器结果由进程内 `runStage09aCheck()` 返回；人类 stdout 只作展示。
+`stage09a:audit-b` 不再 spawn 第二个 aggregate、不解析 transcript、不复制进程组 owner，
+而是直接调用同一核心一次，并把实际调用计数与闭合 14-step gate schema 写入报告。exclusive
+发布是终端证据提交点；发布后无 await、子进程、PGID 或报告改写。生产 CLI 的审查范围由
+显式 `m5CliEntrypoints` manifest 与 `stage09a:*` scripts 交叉核对；同 EUID 的可信源码作者
+与运行期并发仓库改写不在本地敌手模型内，运行前后 canonical HEAD/clean 仍必须一致。
+
+**M5.10 opaque-receipt/consumer-closure 协议（2026-08-21，覆盖 M5.9 的字段接线）**：
+Audit-B 不再读取 `outcome.gate` 或 invocation snapshot；`runStage09aCheckForAudit()` 在
+共享核心模块内部签发 opaque receipt，report schema v3 只经 receipt projector 取得同一次
+gate/signal/调用会计。`runWithDeclaredOwnedTreeOutputs`、`runSignalSettledCli`、核心、
+receipt/projector/report builder 的实际生产消费者按 TypeScript declaration identity 与
+registry 精确闭合；新增调用点必须显式评审。失败报告、发布通知和 Markdown/Git 失败只
+输出固定类别，不回显 scalar、report basename、stderr 或异常文本。完整 14 步证据只接受
+最终候选提交后的单次串行运行；提交前工作树 PASS 不能作为候选证据。
+
+**M5.11 capability-reference/audit-silence 协议（2026-08-21，覆盖 M5.10 的 direct-call
+判据）**：production guard 现在枚举受保护声明的全部运行时引用，不再把 namespace、
+computed、解构、wrapper、callback 或普通 value flow 当成“没有调用”；指向受保护模块的
+namespace/dynamic/re-export 固定拒绝。Audit-B 通过模块私有 presentation 丢弃核心诊断，
+每个 gate child 的 stdio 固定为 `ignore`，公开调用方不能伪造该 capability。receipt 绑定
+aggregate invocation generation，签发后发生额外调用就失效。candidate/accounting 只接受
+canonical primitive scalar；`process.exit` 门禁跟踪 immutable const key 与 capability
+传递。controller spawn 成功后立即登记 PGID，再执行 fd close；close primitive 失败仍走
+同一 TERM→KILL→ESRCH 收敛。动态审计 B 在消费唯一正式 invocation 前必须先确认固定
+Node 与依赖可用，缺依赖只判任务基础设施无效，不得补装后重放同一候选报告。
+
+**M5.12 closed-capability/canonical-input 协议（2026-08-21，覆盖 M5.11 的开放模块
+与 object-shaped report input）**：production module surface 递归覆盖 tracked
+`infra/docker/**/*.mjs` 与 `scripts/**/*.mjs`（排除 fixtures/tests），dynamic import 的模块名
+必须由 immutable const/literal concatenation 静态求值；不能求值就固定失败。受保护入口只允许
+登记过的 process/global 属性，禁止重新取得 process 或转交 global capability。Audit-B report
+只接受 opaque receipt 与七个位置固定 primitive；gate、signal 与 invocation accounting 只能由
+receipt projector 提供，`-0` 不是 canonical count。namespace、七类 value flow、拼接/动态
+module specifier 与 process 重获路径分别以独立理由断言，不能由无关门禁代偿。
+
+**M5.13 production-module-identity 协议（2026-08-21，覆盖 M5.12 对 dynamic import 的
+静态可求值放行）**：production `infra/docker/**/*.mjs` 与 `scripts/**/*.mjs` 不再允许
+dynamic import；唯一 ImportExpression parser 接受 Node 24 的 1—2 参数语法并读取第一
+参数，非静态/非法 arity 固定 fail closed。静态 import/re-export 只接受普通 relative、
+bare-package 与 `node:` specifier；query/hash/percent/file/data、绝对路径、backslash 与
+空白/format 字符固定拒绝且不回显说明符。双参数 protected module、双参数
+`node:process`、import options capability 与五类第二模块身份均有独立 mutation 回归。
+提交态候选 `36265e6` 已从步骤 1 串行通过 `pnpm stage09a:check` 14/14；scripts tests
+211/211、Markdown links 77/314，fresh smoke、八份 Secret identity、lifecycle、restore 与
+本轮 scoped cleanup 全绿。下一门禁为两个全新独立 A/B 审计；M5 未 Accepted。
+
+**M5.14 synchronous-module-loader 协议（2026-08-21，覆盖 M5.13 的 import-only
+闭包）**：production surface 没有合法同步 loader consumer，因此按 TypeScript 声明身份
+拒绝 Node module namespace、`createRequire` 与 `process.getBuiltinModule`，不再追踪载入
+后的 alias/holder/reflection；同名本地声明保持允许。static/dynamic/re-export identity 文法
+的 empty、query、fragment、percent、backslash、White_Space、Cf、absolute path 与
+non-`node:` scheme 九条规则各有独立 mutation witness。代码落点 `2ab43dc`；production
+guard 34/34、全部 scripts tests 214/214。第一次提交态链在 tracked-file baseline
+371→372 漂移处按预期 fail closed；机械同步后的证据落点 `0ee3269` 已从步骤 1 串行通过
+`stage09a:check` 14/14、Markdown links 78/317 与 scoped 零残留复核。当前等待两个全新
+独立 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+**M5.15 runtime-capability-source 协议（2026-08-22，覆盖 M5.14 的 property-only
+判定）**：有效审计 B 证明 descriptor map 会先抹掉 Node 声明身份，再重建
+`getBuiltinModule`/`createRequire`；中断审计 A 无正式结论，但其遗留探针由总控独立复现
+五种类型擦除、`dlopen` 与诊断回显。production guard 现在在 canonical `process`、
+`globalThis` 或 Node Process alias 进入 descriptor/Object/generic/holder/callback/dynamic
+computed access 时立即拒绝，并保留直接受评审 property、native timer/kill bind 与本地同名
+对象的反向对照。三类 capability 诊断不反射 specifier；Windows drive absolute witness
+不再由 scheme rule 代偿。代码落点 `5b4474c`；production guard 35/35、全部 scripts tests
+215/215。完整 committed-candidate 14 步门禁待文档与 baseline 提交后执行；M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run。
+
+**M5.16 runtime-source-mutation 证据协议（2026-08-22，覆盖上段当前状态）**：M5.15
+候选 `f5c9a4c` 的动态审计 B 为 CLEAN，但静态审计 A 证明 dynamic-computed、
+`global`/`globalThis.process` 与 global-root source 判据可被删除而完整 guard 仍全绿；focused
+test 又会因未选择无关 oracle 被 after-hook 假红。production guard 现在实际消费八条
+runtime source 与三条 identity-loss 闭集规则，每条规则都由删除同一 registry 项的唯一
+fixture 证明；canonical `process` 不再把 property name 当成第二个 source。guard 会计改为
+声明时登记，focused mutation 的退出状态只由所选 oracle 决定。代码与回归落点
+`1e75e47`；production guard 38/38、全部 scripts tests 218/218。最终候选 `efd186f` 的
+独立 A/B 审计均为 CLEAN；动态 B 的唯一正式 `stage09a:check` 14/14、同一 Docker
+generation、1,710 个公告 PGID 全部 ESRCH 与 scoped 零残留证据有效。M5 已于
+2026-08-22 由总控 Accepted，验收落点 `efd186f`；候选尚未合入本地 `main` 或推送，
+09A 未 Pass，远端 CI 无真实 run。
+
+**数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
+直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
+选项）。可配置能力归 M3——届时先由统一配置 schema 校验
+`^meal_agent(_[a-z0-9_]+)?$` 与 63 字节上限，再同时生成连接 URL 与 Compose 参数。
+`createdb` 的 argv 因此精确固定，并用 `--` 结束选项解析。
+
+### 并行 worktree
+
+网络与卷**不写死全局 name**，真实名称由 Compose 的 project scope 决定（默认取
+Compose 文件里的 `name:`）。因此**多个 worktree 同时起栈时必须各自指定不同的
+project name**，否则会抢占同一张网络和同一个数据卷：
+
+```bash
+docker compose --file infra/docker/compose.local-test.yaml --project-name meal-agent-wt-a up -d postgres
+```
+
+### handoff 独有的挂载
+
+`bootstrap.sh handoff` 需要冻结 `0000` 的磁盘 sha256，并且固定按
+`${script_directory}/../../../services/api/migrations/0000_stage_06.sql` 解析——
+`script_directory` 是 `/opt/meal-agent/bootstrap`，因此容器内的绝对路径是
+`/services/api/migrations/0000_stage_06.sql`。`bootstrap-handoff` 因此比其它
+bootstrap 服务多**一个文件**的只读 bind；不暴露整个 `migrations/` 目录，也不给
+其它服务。注意服务级 `volumes` 会**整体覆盖** anchor 的 `volumes`（YAML merge key
+不做深合并），所以 `bootstrap-handoff` 必须同时重述 `/opt/meal-agent/bootstrap`
+那一条。
+
+## 静态门禁
+
+[`check-compose-topology.mjs`](check-compose-topology.mjs) 断言的是
+`docker compose config` **解析后**的配置：anchor、profile 与变量插值都已展开。
+它对十个服务的 image、user、profile、**entrypoint、command**、networks、挂载、
+`depends_on` 与 environment **逐项固定**，另外覆盖：
+
+- 镜像固定与来源——PostgreSQL 必须是那一个 exact tag + digest；三个 API 镜像
+  服务**必须**声明 build 且精确指向 monorepo 根与 `services/api/Dockerfile`，
+  build 缺失即失败；
+- 容器逃逸面——privileged、host pid/ipc/uts/cgroup/userns/network、unconfined
+  `security_opt`、`cap_add`、device 透传、root 用户一律拒绝；
+- 挂载——Docker socket 拒绝，bind 必须只读，仓库内判断用 `path.relative`
+  而不是裸 `startsWith`（与仓库同前缀的相邻目录不能绕过），数据库必须是 named
+  volume，`bootstrap-handoff` 的两条挂载逐条精确匹配；
+- 端口与网络——`postgres` 与全部一次性任务不得发布端口，`api` 只能有一个
+  `127.0.0.1` 的 tcp 发布，`internal` 网络必须 `internal: true`；
+- 数据库 identity——用三个投毒值重解析配置并要求输出逐字节不变，因此
+  `MEAL_AGENT_DATABASE` 无法改写任何数据库参数；
+- project scope——network 与 volume 不得写死全局 name，且两个不同 project name
+  解析出的真实名称必须无交集；
+- 凭据最小权限与 **secret ↔ 环境变量精确映射**——每个服务的 secret source、
+  容器内 target 与指向它的 `*_FILE` / `PGPASSFILE` 路径三者必须一一对应；`api`
+  只拿 runtime 连接串，一旦被塞进 admin / migration / backup 凭据即失败；
+- **顶层 secret 的 backing file 身份**——八个 secret 的 name → 文件名映射逐项
+  固定（只有 `postgres_admin_pgpass` 对应 `postgres_admin.pgpass`，其余七项与
+  secret 同名），解析后的绝对路径必须等于 effective secret 目录 + 期望文件名。
+  默认分支显式用 `MEAL_AGENT_SECRETS_DIR=''` 解析并要求回落到
+  `<compose 目录>/secrets/`，override 分支显式用一个非空 probe 目录解析；两条
+  路径都不依赖调用时的宿主环境，并且额外断言「空字符串」与「未设置」解析结果
+  完全一致。全程**只比路径、不读取内容**；
+- **tmpfs 与挂载可写性**——每个服务的 tmpfs 逐项固定（`postgres` 额外持有
+  `/var/run/postgresql:mode=0700,uid=999,gid=999`），bind 与 volume **都**比较
+  `read_only`，数据卷被改成只读会被发现；
+- Secret 边界——Compose 里不出现口令或完整连接串；secret 文件必须未被 Git
+  跟踪（`git ls-files` 非零退出不会被当作「未跟踪」静默放过）且不可被
+  group/world 读取，仓库之外的 secret 目录作为显式分支处理；
+- **部署身份（M3A）**——`api` 必须显式声明 `DEPLOYMENT_STAGE: local-test` 与
+  `DEPLOYMENT_EXPOSURE: loopback`（config.ts 没有默认值，因此「删掉」和「改成
+  别的值」是两种不同的篡改，两种都失败）；fake adapter 只允许出现在
+  local-test + loopback + 非 production 上；只有 `api` 可以携带部署身份；全拓扑
+  不得出现 `WECHAT_APP_ID` / `WECHAT_APP_SECRET`；
+- 健康检查只依赖镜像已有能力，不得引用 curl/wget/包管理器。
+
+[`check-compose-topology-mutations.mjs`](check-compose-topology-mutations.mjs) 是
+上面那条门禁**自身的反向测试**：它把 Compose 复制到仓库外私有临时目录，只变异
+该副本，再要求每一项都**以指定理由**失败（只失败不够——一条无关报错也能让脚本
+变绿）。tracked Compose 从不进入写路径。当前 **29 项全部以指定理由捕获、0 漏网**；
+除未登记的 `post_start`/`pre_stop` 执行能力外，新增反例还明确拒绝 build host
+network、无条件成功 healthcheck，并证明 source/resolved sentinel 不会进入门禁诊断。
+
+Docker CLI 或 git 缺失、或它们非零退出时，它一律以「缺少前置工具 / 无法判定」
+失败退出，不降级成纯文本检查后宣称通过。
+
+它已并入 M5 的 `pnpm stage09a:check`；运行期 Secret 与暴露级别断言已由 M3 落地。
+
+## 当前状态与边界
+
+M2B 已由项目总控 **Accepted**，验收落点 `d0f2219`。**M3A（配置与 Secret file
+消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。**M3B（环境模板、八份
+Secret 的生成与交叉一致性、完整 bootstrap 链、`/readyz=200` 与网络隔离实证）
+已于 2026-08-11 Accepted，验收落点 `cf43452`**。
+**M4（生命周期、备份和恢复）已于 2026-08-11 Accepted**，验收落点 `f671c51`
+（见上方 M4 一节）。第九轮候选 `4a72218` 的两路独立审计仍为 BLOCK；第十轮实现落点
+`3849bbd` 已闭合同步 primitive cleanup-before-settlement、backup formal artifact 回滚/
+promotion inode、build/healthcheck 能力与 topology/Group E/Secret probe 输出边界；runtime
+image mutation 保持 1 baseline + 11 built + 2 static-only，topology mutation 29/29，纯
+Node 脚本回归 83/83，targeted 69/69、local-test 75/75、signal 5+6、Secret identity 与
+restore drill 已通过。含文档候选 `a8ad0b2` 的新 HEAD 已从头通过完整 14/14，之后仍须两个全新独立只读 A/B 审计；M5 仍未 Accepted
+（见计划文档 M5 实施记录）；
+[ADR-0005](../../docs/architecture/decisions/0005-local-private-deployment-baseline.md)
+已凭真实容器证据转为 `Accepted`。**09A 总验收未完成**，阶段仍为 In Progress；
+GitHub Actions workflow 复用同一命令但**尚无真实远端 run**，真实 run 成功之前
+只登记「已配置」。
+
+**Round 11 当前事实（覆盖上段 Round 10 状态）**：Round 10 候选 `df4a378` 的 A/B
+审计均为 BLOCK；实现落点 `9469bc9` 将 build/healthcheck 收紧为逐服务能力闭集、
+`imageIdOf` 收紧为单行 canonical SHA-256、Secret identity 收紧为精确成功协议，并在
+Promise settle 当下断言 cleanup 已让 PGID 达到 ESRCH。脚本测试 85/85、topology
+mutation 29/29、registry integrity 机械计数核对通过；同一落点已串行通过完整
+`pnpm stage09a:check` 14/14。下一门禁是两个全新独立只读 A/B 审计；M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run。
+
+**Round 12 当前事实（覆盖上段 Round 11 状态）**：实现截至 `38698bc`；resolved
+Compose 投影现在包含完整 healthcheck cadence/disable 与 depends_on condition/required/
+restart，topology mutation 为 **33/33**。Docker/Secret/M4 成功证据均要求 canonical
+identity、精确对象形状和有界协议；cleanup 只删除与记录 immutable image ID 一致的
+本轮 tag，信号路径在 image ID 取得后立即同步活动快照。子进程清理既会在预算内重试
+瞬时 termination primitive 失败，也会把该失败事实传给 signal handler 固定 exit 1。
+脚本测试 **97/97**、runtime image **1 baseline + 11 built + 2 static-only**、targeted
+**69/69**、local-test **75/75**、signal **5 deterministic + 6 real** 均通过；完整
+`pnpm stage09a:check` 已从头串行通过 **14/14**。下一门禁是两个全新独立只读 A/B
+审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+**Round 12 cycle 1 审计 BLOCK 后的整改候选（2026-08-16）**：实现提交
+`cd86c12`、`67c3aad` 与 `03e5e41` 关闭本轮确认级证据所有权缺口。resolved Compose 现在固定 project name、
+network/volume/logging 闭集并拒绝未知嵌套字段，topology mutation 增至 **39/39**；
+runtime image 增加 StopSignal 反例，mutation 增至 **1 baseline + 12 built + 2
+static-only**。Docker build 从 BuildKit metadata 取得 manifest identity，并将 iidfile
+按 provenance 模式分别作为 config/index identity 交叉核对；后续扫描与 cleanup 不再
+从可变 tag 反推对象。M4 one-shot 与 graceful stop 均绑定完整容器身份，backup 在
+容器源端和宿主端做 digest 交叉核对且以 `pg_restore --list` 验证 archive，restore
+直接消费同一份已校验内存快照；进程组 termination primitive 返回 false 同样
+fail closed。完整链先在中断 build 窗口抓到 tag ownership，再在 restore drill 抓到
+退出后 `docker exec` 无法取得源摘要；两项都修复后从步骤 1 重跑。最终脚本测试
+**99/99**，同一落点从头串行通过 `stage09a:check` **14/14**，scoped cleanup 无残留。
+下一门禁是 cycle 2 两个全新独立只读 A/B 审计。M5 未 Accepted、09A 未 Pass、远端
+CI 无真实 run。
+
+**架构级证据所有权整改候选（2026-08-16，覆盖上段 Round 12 cycle 1 状态）**：
+有界自动审计循环因同一证据拼接根因连续两轮出现而停止；经重新授权，实现落点
+`27e7467` 以 ADR-0006 统一 closed-schema evidence、immutable identity/claim、
+ownership journal、验证后独占发布、generation settlement 与 15 项 critical-guard
+registry。resolved Compose 新增 profiles、`security_opt` 与 port 结构闭集，topology
+mutation 增至 **44/44**；runtime image mutation 保持 **1 baseline + 12 built + 2
+static-only**，signal 保持 **5 deterministic + 6 real**。完整链从步骤 1 串行通过
+`pnpm stage09a:check` **14/14**，脚本测试 **109/109**，fresh smoke、八份 Secret
+identity、lifecycle、same-ledger restore 与 scoped cleanup 均 PASS。下一门禁是两个
+全新独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+**历史证据闭合修订（2026-08-16，已由下段当前状态覆盖）**：实现落点 `d1e0ef5`
+不再用 scratch container/`docker export` 取得 runtime rootfs，而是验证并重放
+`docker image save` 的内容寻址 OCI layer；BuildKit、Compose、container、PGID 与
+lifecycle cleanup 全部绑定 immutable identity/claim 和 generation。backup 使用稳定
+内存快照，经 `pg_restore --create --list` 完整 TOC 验证后，以 no-replace sidecar 与
+dump 发布同一字节。15 项 critical-guard registry 只做生产调用点漂移索引，不替代
+动态反例与 mutation 判别力。该落点从步骤 1 串行通过 `pnpm stage09a:check` **14/14**，
+脚本测试 **110/110**、topology mutation **44/44**、runtime image mutation **1 baseline
++ 12 built + 2 static-only**、targeted **69/69**、local-test **75/75**、signal **5+6**；
+fresh smoke、八份 Secret identity、lifecycle 与 restore 全部 PASS。下一门禁是两个全新
+独立只读 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
+**当前证据所有权整改（2026-08-16，覆盖上段候选状态）**：候选 `c28cf35` 经两路
+独立审计判定 BLOCK；本轮只追加 `1d30f18`、`23e6e23` 与 `83ad2c0`，将
+M5 runtime scan 的无 tag immutable-ID 路径，与 M3B/M4 恢复型 build 的唯一 per-run
+tag locator 分开；后者只有在 immutable ID、build claim 与精确 tag 三者一致后才取得
+清理权。provenance descriptor、selected manifest、Config/history 与 OCI layer replay
+绑定同一 immutable identity；layer 以持有到消费完成的只读 fd 验证 digest/DiffID，
+最终 rootfs 重放 whiteout、hardlink 与 PAX 元数据并校验 owner/mode。
+Compose 每轮以 128-bit run claim 同时标记 14 服务、2 网络与 10 volume，跨 project 的
+显式 raw Secret `name:` 由 topology 门禁拒绝；service 与 one-off 后续取证只使用首次强
+观察取得的 container ID。进程 status 0 与 stdin EPIPE 只能在整组 PGID 到达 ESRCH 后
+settle。backup 的 archive-list、dump、sidecar 与正式发布绑定同一字节快照、fd/inode、
+uid/gid/mode，TOC 文法按 PostgreSQL 18 真实输出校验 database 项与 declared/visible
+计数。当前硬计数为脚本测试 **131/131**、topology mutation **45/45**、runtime image
+mutation **1 baseline + 15 built + 2 static-only**、targeted **69/69**、local-test
+**75/75**、signal **5 deterministic + 6 real**。同一实现已从步骤 1 完整通过
+`pnpm stage09a:check` 14/14；下一门禁是两个全新独立只读 A/B 审计。M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run。
+
+**M2B 的 Accepted 只覆盖 Compose 拓扑本身**；`DATABASE_URL_FILE` 与
+`MEAL_AGENT_*_PASSWORD_FILE` 在 M2B 只是本拓扑**声明**的契约，**M3A 已实现
+消费**（`services/api/src/config-source.ts` 与 `postgres/secret-source.sh`）。
+**M3B 已取得**：真实 Compose Secret 的容器内 UID/mode 证据、八份 Secret 的单一
+来源生成与部署前预检，以及验收时点从空 volume 起的十步链（8 个 one-shot 读真实 `docker inspect` 退出码，postgres 与 api 两个服务以健康检查通过计 healthy）。第五轮当前架构在链首增加 `secret-materializer`，形成 11 步；migrate/grants
+二次运行幂等、`/healthz=200`/`/readyz=200`、runtime 最小权限与 readiness 连接
+身份、逐服务 secret 可见面、containment 扫描零命中与宿主动态网络隔离，以及
+75 cases = 1 positive baseline + 74 negative/boundary cases、M3B targeted negative suite 的 69 cases、
+当前 29 项拓扑变异反例（M3B 验收时为 15 项）、当前 5 个确定性进程组回归与 6 个真实信号窗口的零残留取证（M3B 验收时为 5 + 5；证据见[阶段 09A 计划的 M3B 实施记录](../../docs/plans/2026-07-stage-09a-local-deployability-baseline.md)）。
+M3B **已于 2026-08-11 Accepted，验收落点 `cf43452`**；M4 与 M5 均已在同日交付
+（M4 已 Accepted，M5 候选待审）。阶段 09A 总验收未完成，阶段仍为 In Progress。
+
+`08da379` 的两路独立复验再次给出 **BLOCK**；Round 19 候选 `c8d7236` 又由项目总控
+第一阶段只读裁定为 **BLOCK**（crossing stem 与 `=` 之间有 ASCII 空白时 5 个非
+active 视图 140 格全漏；外层 closing quote 的空占位在 legacy 路径未生效）。Round 20 候选 `f9997b0` 又由两路独立审计与项目总控**三方同指**判为 **BLOCK**，
+且是**新回退**：搬到 legacy 路径的空占位规则没有证明「键前面那个引号是本赋值的
+**开**引号」，`# psql "dbname=meal"PGPASSWORD="<值>"` 整行零 problem，净新增 280 格
+fail-open 漏检。Round 18
+的共享 canonical Git 边界使已 Accepted 的 M2B topology checker 出现一处受控修订；
+Round 19 至 Round 23 都没有再次修改该 checker。该历史例外
+必须单列披露，不能写成整个 M3B 对全阶段冻结面零改动。
+
+### 模板扫描的候选边界来自 dotenv，不来自 URL 字符表
+
+一个取值在哪里结束是 **dotenv 语法**的问题：quoted 值以配对引号为界（内部的
+空格与制表符原样保留），unquoted 值到行尾，行首 `#` 注释剥离后照扫，引号未闭合
+或闭合后跟着非空白非注释内容一律 **fail closed**。URL 里哪个字符算分隔符则完全
+交给 WHATWG 解析器——扫描器**不维护任何标点或空白字符表**。每个 `scheme://`
+起点给出一个独立、可重叠、延伸到逻辑取值末尾的候选视图；内层起点只计数与独立
+检查，不截断外层候选。
+
+解析成功之后 **userinfo、query parameter 与 fragment 同时判定**。判定顺序如实
+记录：原始文本正则**先跑**（它仍是它能覆盖的那些形态的主判据），解析器给出的
+userinfo 是**补漏**——正则要求 `@` 前无空白，引号内合法保留的空格/制表符会绕过
+它。`unscannable`（有一段没扫到）**优先于**任何「扫到的那段是什么」的结论。
+
+tokenizer 返回**带角色**的片段（主取值 / 行内注释 / 非赋值整行）。整行按锚定的
+dotenv 文法判定；**每个片段**再用**非锚定**扫描过同一份敏感赋值判据——片段是自由
+文本，赋值不一定出现在开头。DSN 判据覆盖全部片段，但 unquoted 行的注释片段是主
+取值的**子串**，因此不重复参与 `scheme://` 起点计数。行尾 CR 在切行时去掉，否则
+CRLF 模板会让整条敏感键判据失效。敏感赋值消息**不含任何输入派生的键名或取值**——只有固定类别、文件标签与行号
+（启发式判断「这个键名像不像 Secret」只能缩小泄漏面，不能关掉它）。赋值取值按
+**引号**定界解析，引号内的 `#` 与空白原样保留；**只有长度精确为 0 的 quoted 取值
+才是空占位**（`PASSWORD=" "` 是写进去的内容，不能用 `trim()` 抹掉），闭合引号
+之后只允许「输入结束 / 水平空白后结束 / 注释」，其余收尾一律 fail closed，且
+顶层与片段走同一份判据得同一结论。
+
+### 本轮的威胁模型（写清边界，避免过度声称）
+
+M3B 的判据面向**运维事故与实现回归**，不面向本机上的敌手：
+
+- **本地同 EUID 进程受信**。同一个 EUID 的进程本来就能读写这些文件、连接
+  Docker socket、并替换 PATH 上的任何二进制；把它当作攻击者会让每一条判据
+  都无法收敛；
+- 因此以下三类**不作为当前 M3B blocker**：目录被恶意替换、外部对 Secret 文件
+  建硬链接、同 EUID 进程抢占临时 Compose override；
+- 已落地的 inode 身份复核、`no-replace` promotion 与 scoped cleanup 的定位是
+  **不误删他人文件、不把读取失败读成阴性证据**，而不是抵御同 EUID 敌手；
+- 真实的凭据隔离仍然只靠：未跟踪的 secret file、0700/0600 权限、容器内
+  UID/mode 实证、以及「Secret 不进入 Git / 模板 / environment / argv /
+  inspect / image history / logs」这条扫描线。
+
+每次 smoke/probe 在 BuildKit 前登记唯一 per-run tag 作为异常窗口恢复 locator，随后
+取得本轮 immutable image ID，并经临时 Compose override 直接引用该 ID；只有 ID、
+build claim 与精确 tag 同时一致才取得 cleanup 所有权。三个 API 镜像服务容器的
+`.Image` 必须等于该 ID，cleanup 只删除带本轮 build claim 的精确 immutable image。
+因此并行 worktree/project 不会通过共享 tag 互相覆盖镜像。
+
+M4（生命周期、备份与恢复）的入口与演练见上方 M4 一节与
+[runbook](../../docs/operations/stage-09a-local-test-lifecycle.md)：停止/重启
+持久化、`pg_dump` 自定义格式备份 + SHA-256 校验 + 单事务恢复、恢复后的
+owner/GRANT/RLS 与授权读取验证、SIGTERM 限时强制退出，已于 2026-08-11
+**Accepted**（验收落点 `f671c51`）。M5 已交付 `pnpm stage09a:check` 聚合门禁并
+取得历史本地全绿证据；第十轮实现落点 `3849bbd` 与文档候选 `a8ad0b2` 已从头通过
+完整 14/14，之后仍须两个全新独立只读 A/B 审计；远端 CI
+workflow 复用同一命令但尚无真实 run，真实 run 成功
+之前只登记「已配置」、不记录 CI Pass。09A 总验收完成之前，阶段状态不变。

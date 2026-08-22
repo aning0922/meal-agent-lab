@@ -24,17 +24,438 @@ Node.js 24 + Fastify 5 模块化单体，使用 PostgreSQL 18、Drizzle schema �
   → 0004_stage_08_final_closeout.sql
 ```
 
-不得修改 0000—0003 或其 checksum。阶段 08 尚未部署，`0004` 按既定预发布策略继续原地修正：它在单一事务内先移除旧终态 CHECK、转换旧 pending、再建立新约束，并固化关联安全披露、统一 household 锁顺序、撤销 link request 直接 INSERT、让 409 终态先提交再映射 HTTP，收紧 constraint JSONB/UUIDv7 数据库边界。最终版本还在 advisory 锁后重取时钟并重验 expiry，封闭安全 409 CHECK 的 SQL UNKNOWN，并允许自退出/关联冲突在 bootstrap 前读取同 key 完成记录，同时让无完成记录的 foreign membership DELETE 稳定返回 404。历史 link 披露明确为 `legacy_unavailable`，历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
+`0000`—`0004` 现已全部冻结，不得修改任何字节或其 checksum。`0004` 在单一事务内先移除旧终态 CHECK、转换旧 pending、再建立新约束，并固化关联安全披露、统一 household 锁顺序、撤销 link request 直接 INSERT、让 409 终态先提交再映射 HTTP，收紧 constraint JSONB/UUIDv7 数据库边界。最终版本还在 advisory 锁后重取时钟并重验 expiry，封闭安全 409 CHECK 的 SQL UNKNOWN，并允许自退出/关联冲突在 bootstrap 前读取同 key 完成记录，同时让无完成记录的 foreign membership DELETE 稳定返回 404。历史 link 披露明确为 `legacy_unavailable`，历史敏感幂等响应保留命令标识并变为 receipt 或 non-replayable tombstone。
 
 ## 本地运行
 
-复制 `.env.example` 到本机未提交配置并提供 `DATABASE_URL`。开发环境可以显式使用 fake adapter；不得写入真实密钥。
+复制 `.env.example` 到本机未提交配置。必须显式声明 `DEPLOYMENT_STAGE` 与
+`DEPLOYMENT_EXPOSURE`（两者都**没有默认值**），并提供 `DATABASE_URL` 或
+`DATABASE_URL_FILE`（二者互斥）。开发环境可以显式使用 fake adapter；不得写入真实
+密钥——`local-test` 携带非空 AppID/AppSecret 会在启动前失败。
 
 ```bash
 pnpm --filter @meal-agent/api environment:check
 pnpm --filter @meal-agent/api db:migrate
 pnpm --filter @meal-agent/api dev
 ```
+
+### 配置来源与部署身份（阶段 09A / M3A）
+
+连接串由 [`src/config-source.ts`](src/config-source.ts) 解析，**三个入口共用同一个**
+`resolveDatabaseUrlSource()`：`loadConfig()`、`db:migrate`、`db:bootstrap`。三处都
+不再直接读 `process.env["DATABASE_URL"]`。
+
+| `DATABASE_URL` | `DATABASE_URL_FILE` | 结果 |
+| --- | --- | --- |
+| 未设置 | 未设置 | 拒绝 |
+| 非空 | 未设置 | 采用进程环境 |
+| 空 | 未设置 | 拒绝 |
+| 未设置 | 非空 | 采用文件 |
+| 未设置 | 空 | 拒绝 |
+| 已出现 | 已出现 | 拒绝：冲突，**不比较内容**，相同也拒绝 |
+
+「已出现」只看变量是否是字符串——空字符串同样算已出现，否则 `DATABASE_URL=` 会
+被当成「没设置」，于是一个歧义配置被静默降级成合法的 file-only 注入。选中来源
+失败时**不回落**到另一来源。secret file 的判据是 fail closed 的（绝对路径、
+`O_NOFOLLOW` 打开后 fstat、普通文件、单链接、属主为当前 EUID、只允许 owner-only
+的 `0400` 或 `0600`、
+≤4096 字节、非空、合法 UTF-8、无 NUL/BOM/CR、单行、最多一个末尾 LF 且不 trim），
+与 [`infra/docker/postgres/secret-source.sh`](../../infra/docker/postgres/secret-source.sh)
+**按条对齐**（不是逐字节等价的同一实现：Node 侧 `fstat` 文件描述符，shell 侧用
+inode 绑定 + 私有快照，差异与残留边界见
+[`infra/docker/postgres/README.md`](../../infra/docker/postgres/README.md)）。
+文件 I/O **不在** Zod 内：先解析来源拿到字符串，再交给配置 schema 校验
+格式；CLI 参数合法性仍先于 Secret 文件读取与数据库连接。
+
+部署身份是两个**没有默认值**的独立维度：
+
+- `DEPLOYMENT_STAGE`：`local-test` / `staging` / `production`；
+- `DEPLOYMENT_EXPOSURE`：`loopback` / `private-network` / `public`。
+
+fake 微信 adapter 只在 `local-test` + `loopback` + 非 production 三者同时成立时被
+接受；`local-test` 携带非空 `WECHAT_APP_ID` 或 `WECHAT_APP_SECRET` 必须在启动前
+失败，因此 `local-test` 与真实 adapter 在结构上互斥。`NODE_ENV` 与两个部署维度是
+三条**互相独立**的防线，任何一条都不替另一条放行。真实 code2Session endpoint 收紧
+为逐字节相同的 `https://api.weixin.qq.com/sns/jscode2session`，配置层与 adapter 层
+各判一次；端口（含 `:443`）、尾斜杠、query、fragment、userinfo、相似域名与子域名
+全部拒绝。
+
+业务日志走 `src/log-events.ts` 的**窄化 typed facade**：事件是闭集，每个事件有
+固定的 runtime projector（逐个字段按名字取值，不遍历调用方传进来的对象），字段
+是专用安全类型——`errorType` 带 brand 且运行期在 allowlist 里验一次，`errorCode`
+用真实的 `ApiErrorCode`，`signal` 只允许 SIGINT/SIGTERM，验不过就抛错。原始
+Error / Request / Reply / Config / Secret 在类型上就进不来。
+
+口径写实：**Fastify 仍然暴露 `app.log` / `request.log`**；成立的是「本仓库的业务
+调用点由 capability gate 约束，业务事件通过独立的 `EventLogSink`」。sink 的底座是
+`createLoggingContext()` 新建的、与 framework 分开的另一个 pino 根。那个 root
+**只存在于模块词法作用域里**：建出来立刻包成 `EventLogSink`，任何公开 interface
+或 factory 都不返回它，`createEventLogSink` 也不再导出。sink 本身 `Object.freeze`
+且 `emit` 不可写不可重定义；`app.eventLog` 用 `Object.defineProperty` 钉成
+不可写不可配置，错误处理器只从词法闭包取 sink，不读那个属性。测试只能换目的地
+（`eventLogDestination?: Writable`），换不掉 sink。`statusCode` 由 `errorCode`
+派生，调用方造不出自相矛盾的组合。
+
+两棵 logger 树的**所有权**在 `LoggingContext`。`app.close` 经 `onClose` flush
+**自建的**那些 logger（event root，以及没被注入时我们自己建的 framework root），
+再等自有 logger 写进去的字节排空。调用方注入的 `Logger` 我们不碰；任何 `Writable` 都归调用方所有——**绝不 `end`**、
+绝不 `destroy`、也绝不往里写关机标记，只读 `writableLength` 等它排空。但口径要
+写实：flush 自有 root 时 pino 会把回调转交给**目的地自己的** `flush`（如果它有），
+所以调用方给的目的地会因此被调用一次 `flush`，它报错同样会让 `close()` 失败。
+
+关机是 **fail closed 且 failure-safe** 的。close 是一个**阶段收集器**：event
+flush、（自建时的）framework flush 与 framework drain、event drain——每一个适用的
+阶段都会跑到，一个阶段失败**不跳过**后面的阶段，最后一次性抛出 `AggregateError`。
+失败原因只由本模块自己的固定文本与**归一化错误类型名**拼成，不带调用方或目的地的
+原始文本；`flush()` 在回调之后**同步 throw** 同样算失败（回调在 `flush()` 返回前
+只暂存结果）。超时定时器**刻意不 `unref()`**：关机那一刻循环里已经没有别的 handle，
+unref 过的定时器不会到，进程会以 0 退出而不是 reject。重复调用拿到的是同一个
+promise，成功失败都一样。
+
+时限只**对异步拖延有效**。同一个 JS 线程里没有办法抢占一个不返回的同步调用，因此
+调用方给的 `Writable` 与它的 `flush` 被明确定义为**受信的、合作式的**接口：死循环
+的 `flush` 这一层挡不住，也不为此引入 worker/子进程改造。能保证的是**有限**的同步
+阻塞会被 fail closed——同步调用返回之后重新量一次已用时间（`performance.now()`，
+不用 `Date.now()`），超了就算超时，哪怕它最终「成功」返回。
+
+关机契约本身在 [`src/shutdown.ts`](src/shutdown.ts)：**应用**关闭失败（不只是日志
+flush）落成 stderr 上一行**完全固定的中性文本** `shutdown: close failed` 与确定的
+非零退出码。两条路径（SIGTERM、listen 失败后再关）都有 **subprocess 回归**，跑的是
+这两个生产函数本身。
+
+静态门禁用 TypeScript 的 type checker 限制**整项 logger capability**，判据是
+**声明身份**而不是类型名字符串：任何解析到 pino `LogFn` 声明的表达式只允许出现在
+facade 与 `logging.ts` 里；`child`/`setBindings` 只有 `logging.ts` 可以碰；组装根
+`src/app.ts` 只有三个**精确上下文**可以命名 logger。能力被装进别的壳子里也算：
+容器、mapped type、indexed access、接口重声明与解构逐条命中，组装根白名单绑的是
+**真实变量符号 + 声明来源 + factory initializer**，且「组装根持有的容器」只认
+`createLoggingContext` 与 **fastify 自己的**工厂这两个声明身份，不是「initializer
+恰好是一个调用」。`createLoggingContext` **这个符号本身也是能力**——拿到它就能凭空
+造一个 context——因此只允许出现在组装根那一次合法工厂调用的 callee 位置，取别名或
+交给别人一律报红；`logging.ts` 的 `createLogger` 直接返回 raw `Logger`，更严一层，
+在两个边界文件之外一处都不许出现。形参也**没有**通行证：它只能作为**成员访问的基**
+出现（`options.logger` 可以，`(logger: Logger) => logger` 不行），而工厂的注入槽还
+要求那个基必须是组装根**自己的 options 对象**。二十一种违规接线固定在
+`tests/fixtures/app-wiring-variants.ts` 里，测试把它当作组装根喂给收集器，因此
+白名单有自动化回归。它是**工程护栏，不是形式化安全证明**——类型系统看不见的东西（`any`、运行期反射、伪造声明）不在射程内。
+
+`logging.ts` 的中央脱敏边界（`hooks.logMethod` + `formatters.log` + `child()`
+与 `setBindings()` 覆盖 + 子 logger options 的安全包装）保留为**纵深防御**，覆盖
+Fastify 自己打的请求日志那条绕不过 facade 的路径。**pino 的 `redact` 整条不用**：
+根 logger 不配置它，子 logger 传了直接抛错。它覆盖任意嵌套层级的连接串/口令/DSN 命名变体、按
+取值识别的 PostgreSQL 连接串与 libpq conninfo，以及 Error 对象。全部响应统一携带
+`Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`，不启用任何 CORS。
+
+### 数据库身份与迁移入口
+
+阶段 09A / M2A 起，迁移按数据库身份分成两条命令，`DATABASE_URL` 决定用哪个登录角色：
+
+```bash
+# 全新空库：cluster admin 应用冻结的 0000（它自身要 CREATE ROLE 并设置 BYPASSRLS）
+pnpm --filter @meal-agent/api db:bootstrap
+
+# 常规迁移：migration login 显式进入 meal_agent_migrator 应用 0001—最新
+pnpm --filter @meal-agent/api db:migrate
+```
+
+两条命令是**两个独立的入口程序**，都不接受任何参数。`db:bootstrap`
+（`src/database/bootstrap-0000.ts`）语义固定：只应用 `0000_stage_06.sql`、不切换
+role；`db:migrate`（`src/database/migrate.ts`）总是显式 `SET ROLE
+meal_agent_migrator`。admin 路径不是 `db:migrate` 的一个 flag：一旦存在这样的 flag，误敲一次就可能让
+常规迁移进入 admin 模式，因此它被拆成独立入口程序。两个入口都在**建立连接之前**
+拒绝任何参数。
+
+`db:bootstrap` 在执行任何 DDL 之前用真实连接核对目标库名、admin 能力和数据库
+状态。「空库」的判定是严格的：除了没有业务表，也不能有任何用户 schema、
+`public` 里的 view/matview/sequence/routine/用户类型。指向 `postgres`、
+`template1`、任何非项目库或任何非空库时立即失败。
+
+metadata schema、ledger、`0000` 与 ledger 写入在**同一个事务**内完成：`0000`
+失败时整批回滚，不会留下 `drizzle` schema 或空 ledger。
+
+### 阶段 09A / M2A 当前状态
+
+M1 已 Accepted；M2A 的 **R8A 只读 projector** 已由项目总控 **Accepted**，验收落点
+`ca65275`。**R8B 已由项目总控 Accepted**；**M2A 整体已 Accepted**，验收落点
+`5e480803`。**M2B（Compose 拓扑）已由项目总控 Accepted**，验收落点 `d0f2219`；
+**M3A（配置与 Secret file 消费核心）已由项目总控 Accepted**，验收落点 `a839df1`。
+**M3B（环境模板、八份 Secret 的生成与交叉一致性、完整 bootstrap 链、
+`/readyz=200` 与网络隔离实证）已于 2026-08-11 Accepted，验收落点
+`cf43452`**：从空 volume 起，本目录的 `db:bootstrap`（`bootstrap-schema` 容器）与
+`db:migrate`（`migrate` 容器）已在真实 Compose 链里以 `_FILE` 注入的凭据执行
+`0000` 与 `0001—0004`，`/healthz` 与 `/readyz` 均 200，readiness 只以
+runtime login 连接（证据与工具见
+[`infra/docker/README.md`](../../infra/docker/README.md)）。**M4（生命周期、
+备份和恢复）已于 2026-08-11 Accepted，验收落点 `f671c51`**；M5 固定候选
+`c44c579` 经两路独立复审仍为 BLOCK，第四轮定点整改已落在 `8ca4e8c`，并通过
+主工作树 `pnpm stage09a:check` 14/14；当前等待文档候选后的独立 A/B 复审，仍未
+Accepted。聚合链包含
+API runtime image 依赖扫描与变异反例，
+本镜像的依赖闭包与组件面由该扫描按真实构建产物钉住**。阶段 09A 仍为
+In Progress（09A 总验收未完成，远端 CI 无真实 run），ADR-0005 已凭真实容器
+证据转 `Accepted`，PR #1 保持 Draft。
+
+R8A 只交付**可观察性**：canonical projector 是一段纯 SELECT，尚未接入任何收敛或
+断言阶段。R8B 把它接入了 verify 与 converge，结构是：
+
+```text
+PostgreSQL catalog
+  → 共享结构化 projector CTE（authorization-projection-sql.ts）
+      → 公开只读 projection adapter（对外三列，R8A 语义不回归）
+      → 可移植策略匹配器（authorization-policy-sql.ts）→ verify
+      → 可移植策略匹配器（authorization-policy-sql.ts）→ converge
+```
+
+**共享的是事实采集**，不是把动态投影冻结成跨环境快照：期望值与策略全部在
+manifest 与 policy 两层，projector 一条期望值都没有。
+
+「ACL 全主体覆盖」指两件互不等同的事：**normalized raw ACL** 在受监管对象类别内
+动态枚举**全部 grantee 与 grantor**；**effective** 只覆盖 `PUBLIC`、项目角色
+（`meal_agent` 前缀）与目标库内**全部非 superuser LOGIN**——它不是对集群所有角色的
+枚举，外部 NOLOGIN 角色的直接授权由 raw 层可见但不进入 effective 探测。R8B 起，
+这两件事**同时**是收敛与断言的判据，不再有 `watchedGrantees` 那样的观察名单。
+
+**R8B 已统一替换的缺陷**：旧 `authorization-manifest-sql.ts` 的 `currentDefaultCte`
+有三个互相独立的错误——①`COALESCE(schema, global, builtin)` 三选一**冒充叠加语义**；
+②把「空 global 行」与「没有这一行」混为一谈；③把 `pg_default_acl.defaclobjtype`
+直接喂给 `acldefault`，sequence 的 `S` 被当成 FOREIGN SERVER。它同时被 converge 与
+verify 引用，因此三条同时影响收敛与断言。该 CTE 连同 `currentAclCte`（第二份
+catalog 枚举）与 `watchedGrantees` 观察过滤一并删除，两个 generated adapter 已重新
+生成并在真实 PostgreSQL 18.4 上复验。
+
+R8B 另外补上了一个只有收敛侧才会暴露的语义：`ALTER DEFAULT PRIVILEGES` 的**起算
+点**是 global 从内建 `acldefault` 起算、schema 从空起算。因此「内容是内建默认真
+子集」的 global 行（本基线的 `f@global`）只能靠**撤销**得到——旧实现只补授缺失项，
+而补授的结果恰好等于内建默认时 PostgreSQL 会直接把行删掉，于是那一行永远造不出来。
+
+### 冻结 0000 的安全 manifest
+
+已经应用过 `0000` 的库（幂等重跑，以及 bootstrap 侧的 owner handoff）不再各自
+维护一份手写对象清单。唯一事实源是
+[`src/database/stage06-manifest.ts`](src/database/stage06-manifest.ts) 的 typed
+readonly manifest：它描述冻结 `0000`（外加 migration runner 建立的 drizzle
+ledger）执行完毕后，catalog 中与安全相关的规范化投影——**当前共 408 条规范化行**：
+
+| kind | 条数 | 覆盖 |
+| --- | --- | --- |
+| `database` / `schema` | 1 / 3 | 归属，以及「没有多余 schema」 |
+| `relation` | 10 | `relkind`/owner/persistence/RLS/FORCE RLS |
+| `column` | 119 | 序号、类型、NOT NULL、默认值、identity/generated、存储与排序规则 |
+| `index` / `constraint` | 24 / 163 | 规范化定义（PostgreSQL 18 把 NOT NULL 也登记为约束） |
+| `routine` | 4 | identity args/owner/`SECURITY DEFINER`/language/`proconfig`（固定 `search_path` 与 `row_security=off`）/正文 `sha256` 摘要 |
+| `policy` | 14 | command/roles/permissive/`USING`/`WITH CHECK` |
+| `type` | 10 | managed schema 内的用户 type。**当前这 10 条全部是每张表的数组类型**（10 张表 → 10 个 `_<表名>` 数组类型），**不含行类型**：投影排除了 `typrelid` 指向真实 relation 的行类型，`0000` 也没有建 shell / base / enum / domain。`pg_catalog` 等系统 schema 不在范围内 |
+| `constraint-trigger` | 60 | 外键背后的内部触发器**启用状态** |
+| `trigger` / `rule` / operator / opclass / opfamily / collation / conversion / statistics / text-search / extension | 0 | 0000 一个都不建，出现即 `unexpected` |
+
+`constraint-trigger` 是容易被忽略的一类：`ALTER TABLE … DISABLE TRIGGER ALL` 会
+把外键背后的内部触发器一起置为禁用，从此外键不再强制，而表结构、约束定义与 RLS
+全都看不出任何变化。它们的名字里带 OID，因此按「表 + 约束 + 触发器函数」定位。
+
+owner handoff 的阶段由**整组 owner** 判定，而不是 database owner 单字段：整组
+（database、`public`/`drizzle` schema、drizzle ledger 及其数组类型）要么全部尚未
+交接，要么全部属于 `meal_agent_migrator`；任何混合态——例如 handoff 之后只把
+database owner 夺回给 admin——都直接拒绝，因为单字段判据会被一次局部改动整体
+带偏。
+
+规范化投影在事务内固定 `search_path` 与 `quote_all_identifiers`，因此
+`pg_get_indexdef` / `pg_get_constraintdef` / `pg_get_expr` 的输出不随会话变化；
+块结束时两个 GUC 都会**显式还原**——`set_config(..., true)` 只在**事务**结束时
+恢复，不会在 `DO` 块结束时恢复，而这些块是在 `BEGIN…COMMIT` 里被 `\ir` 进来的。
+
+对象 catalog 基线实际绑定 **PostgreSQL 18.4**：约束/索引/表达式的规范化文本、
+PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都由具体 patch
+版本决定。判据是 exact-patch 的，并且覆盖**整套工具链**：`pnpm --filter
+@meal-agent/api environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`pg_dump`、
+`pg_restore`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的**主版本
+字段**严格解析（锚定文法，不做任何 `includes` / 子串判断），七个都必须是
+exact 18.4。混装会被拒绝：任一工具
+是 18.3、banner 报的是别的工具名、或缺失/不可执行，即使 `postgres` 自己是 18.4 也
+失败；`psql (PostgreSQL) 18.3 (Ubuntu 18.4-1…)` 这种「主版本 18.3、vendor suffix
+含 18.4」的形态也会被拒绝。M2B 已按此要求解析真实仓库并在
+[`infra/docker/compose.local-test.yaml`](../../infra/docker/compose.local-test.yaml)
+固定 18.4 的 exact image digest（容器内五个 banner 实测均为 18.4）；patch 升级要
+重新 capture manifest、重跑 parity 并显式 rebaseline。
+
+[`src/database/stage06-manifest-sql.ts`](src/database/stage06-manifest-sql.ts)
+把它渲染成一段**纯 SQL**：单条 `DO` 语句，不含 psql 元命令，不做任何
+ownership/ACL/DDL 变更，只在不匹配时 `RAISE EXCEPTION`。`migrate.ts` 直接执行
+内存渲染结果；`infra/docker/postgres/sql/database/01-owner-handoff.sql` 通过相对
+路径 `\ir` 加载 generated 出的同一段文本。因此两个入口对同一批漂移给出**逐字
+相同**的拒绝理由。
+
+```bash
+# 开发期重新生成 generated adapter（会覆盖 tracked 文件）
+pnpm --filter @meal-agent/api manifest:generate
+
+# 只读门禁：内存渲染与 tracked 文件逐字节比较，不会自动改写
+pnpm --filter @meal-agent/api manifest:check
+```
+
+`manifest:check` 已并入 `pnpm --filter @meal-agent/api check`，它一次校验**四个**
+generated adapter（对象 manifest、授权收敛、授权断言，以及 R8A 的只读授权投影）。
+generated 文件带 do-not-edit 标记、manifest 版本与 canonical
+digest，不含时间戳、绝对路径、locale 或随机值。「TS manifest ↔ generated SQL
+一致」只是其中一环：数据库测试还在真实 PostgreSQL 18 上执行冻结 `0000`，把 catalog
+的规范化投影与 TypeScript manifest 逐行比对（owner handoff 前后各一次），因此
+manifest 不可能只是自洽而与事实脱节。
+
+### ledger 感知的授权 manifest
+
+对象 manifest 只描述冻结 `0000` 之后的**结构**，回答不了「0001—0004 应用之后 app
+应该有哪些表权限」。授权因此另立一个事实源
+[`src/database/authorization-manifest.ts`](src/database/authorization-manifest.ts)，
+按 `(ledger, phase)` 登记**固定允许项**。R8B 起它不再表达「要观察谁」——观察面
+由 canonical projector 动态给出（全部 grantee 与 grantor），manifest 只回答「什么
+是允许的」：
+
+- `grants`：固定允许的**直接授权**，canonical grantor 恒为 `meal_agent_migrator`，
+  永不允许可再授予。只覆盖 database / schema / relation / routine 四类；type、
+  column、language、Large Object 与 20 个 LO 入口点由**可移植策略**判定，manifest
+  不得为它们登记允许项；
+- `defaults`：`pg_default_acl` 的**物理行**条目——它决定实际要执行哪条默认权限
+  语句，**不是**有效默认权限；
+- `defaultEffective`：按 PostgreSQL 真实语义叠加出的**有效**默认权限，**只用于
+  最终语义验证**。禁止据此反推该执行哪条语句：内建默认不需要任何语句；
+- `effective`：`has_*_privilege` 的**有效**权限——`PUBLIC` 派生与角色继承都算在内。
+  只对 `PUBLIC`/app/backup/三个 login × 上述四类对象逐条精确验证，其余非
+  superuser LOGIN 由策略判定（除内建 language `USAGE` 外不得有任何受监管权限）；
+- `routines`：受控 routine 的 identity/owner/`SECURITY DEFINER`/`proconfig`/正文
+  摘要，**按 identity 精确匹配，没有 schema 级通配豁免**；managed schema 里出现
+  任何**未登记**的 routine 一律 fail closed。
+
+全部 identity 都是**结构化 JSON 数组**，与 canonical projector 的编码逐字节相同
+（[`src/database/authorization-identity.ts`](src/database/authorization-identity.ts)）；
+两侧都不再用 `#`/`@`/`|` 拼接串，也不允许 `split_part` 反解。
+
+当前 manifest 版本为 **2**，登记 4 个状态（`0000` 与 `0000—0004` 两个 ledger ×
+containment / final 两个阶段），共 **408 条规范化行**（`grant` 138、`effective`
+138、`default-effective` 78、`routine` 40、`default` 14）；未登记的
+`(ledger, phase)` 一律 fail closed。canonical digest 覆盖**全部顶层字段**——
+`version`、`principals`（owner / grantees / logins / memberships）、
+`managedSchemas`、`deniedRoutines` 与 `states`，改动其中任何一项都会改变
+generated adapter 头部的 digest。
+
+**exact-ledger 不因默认权限而放宽**：`pg_default_acl` 只保护**创建窗口**——它决定
+新对象出生时带什么权限，不代表那个对象已经被登记。任何新增 migration 一旦创建
+relation 或 sequence，都必须同时**新增一个 ledger 状态**并在其中登记该对象的固定
+授权；否则新对象会以「未登记对象」的身份进入策略判定，收敛会把默认权限带来的
+授权当作漂移撤掉。
+
+阶段划分对应恢复/安装流程的两个真实时刻：`bootstrap.sh acl` 是 **containment**
+（migration 之前 / `pg_restore` 之后收敛，刻意不给备份角色表级 `SELECT`），
+`bootstrap.sh grants` 是 **final**（migration 之后建立最终 ACL，并同时验证 PUBLIC、
+app、backup 与三个 login）。两个阶段执行同一段生成的收敛块。
+
+收敛块的顺序是固定且可复核的：
+
+1. **致命前置条件**先于任何 mutation 执行——managed schema 齐全、六个项目角色
+   存在、归属正确、登录角色不拥有任何对象、routine 指纹与未知 routine、manifest
+   要求的对象存在、未知 `defaclobjtype`、**任意** Large Object，以及无法由 ACL
+   mutation 修复的 membership 漂移。不允许「先改、再靠事务回滚冒充 preflight」：
+   回滚只让命令失败，中途已经产生过真实变更，权限本身也仍留在数据库里；
+2. 按**真实 grantor** 撤销策略不允许的直接授权与一切可再授予标志（普通 REVOKE
+   只撤销「由执行者授予」的那一份）；
+3. 以 canonical grantor（`meal_agent_migrator`）补齐固定允许项；
+4. 按 `pg_default_acl` 的**物理行**收敛默认权限。
+
+可移植策略（[`src/database/authorization-policy-sql.ts`](src/database/authorization-policy-sql.ts)）
+不含任何环境相关的名字：
+
+- 固定允许授权的 canonical grantor 恒为 `meal_agent_migrator`，永不允许可再授予；
+  完整元组是 object + grantee + grantor + privilege + grantable，因此权限集合看起来
+  合规但 grantor 错误、存在重复授权或可再授予，都会被发现并收敛；
+- 对象 owner 自身的内建权限按策略放行——managed 非数组 type 因此只剩 owner；
+- 数组类型只记录向元素类型的委托，既不进入收敛目标也不该有独立 ACL；
+- 列级授权没有任何允许项；
+- `language` 只允许 PostgreSQL 内建的 owner 与 `PUBLIC USAGE`，显式外部授权、
+  错误 grantor 与可再授予一律是漂移；
+- 20 个 `pg_catalog` LO 入口点只允许**函数 owner** 的 `EXECUTE`，因此 `PUBLIC`、
+  项目角色与全部非 superuser LOGIN 都无法有效到达；
+- `language` 的内建 owner 与 `PUBLIC USAGE` 是**必需项**而不只是允许项：owner 从
+  catalog 现取（不写死角色名），缺失时 verify 拒绝、converge 以 language owner 的
+  身份恢复；
+- **任意** Large Object 在**任何 ACL / default ACL mutation 之前** fail closed：
+  **只报告，不解除链接、不删数据、不接管归属、不改 `lomacl`**，OID 也不进入任何
+  固定允许集合。只有在确实没有 LO 时，收敛才会处理 `defaclobjtype = 'L'` 的异常
+  默认权限与 20 个入口点的多余 `EXECUTE`；
+- 外部角色经**外部 NOLOGIN 或 predefined role**（如 `pg_read_all_data`）拿到受监管
+  有效权限时，同样在任何 mutation 之前 fail closed：database scope 按设计不修改
+  membership，这类越权不可能靠 ACL mutation 修好，只能先跑 cluster role baseline。
+
+### canonical projector 与只读授权投影
+
+[`src/database/authorization-projection-sql.ts`](src/database/authorization-projection-sql.ts)
+被拆成两层：
+
+- `renderAuthorizationProjectorCtes` 是**可复用的结构化 projector CTE renderer**，
+  只做事实采集（`regulated_object` / `acl_source` / `default_row` / `default_raw` /
+  `default_effective` / `owner_source` / `effective_source` / `routine_fingerprint` /
+  `role_membership` / `type_class` / `large_object` / `probe_role` …），不含任何
+  期望值、任何策略判断、任何 mutation。verify 与 converge 复用的就是这一层；
+- `renderAuthorizationProjectionSql` 是**对外三列 `(kind, identity, detail)` 的只读
+  SELECT**（`generated/authorization-projection.generated.sql`）：不含
+  `GRANT`/`REVOKE`/`ALTER`/`SET ROLE`/`SET`/`set_config`，既不改数据也不改调用方
+  会话。它的行集与语义在 R8B **不回归**——四个状态下与 R8A 逐行相同。
+
+每个 kind 只声称自己实际证明的事：
+
+| kind | 含义 |
+| --- | --- |
+| `acl` | **规范化的直接授权语义**：`NULL` ACL 按 PostgreSQL 语义展开为隐式内建默认权限。它**不是**「物理 catalog 里存在的 ACL 行」——`relacl IS NULL` 的表物理上一条 aclitem 都没有，投影仍会给出 owner 的内建默认权限。唯一例外是列级 `attacl`：它没有内建默认值 |
+| `default-row` | `pg_default_acl` 的**物理行**存在性（含 `empty` 标志）。空 ACL 展开是零行，与「没有这一行」无法区分，因此存在性只能由这一层承载 |
+| `default-global` / `default-schema` | 物理行展开后的条目 |
+| `default-effective` | 按 PostgreSQL 真实语义叠加出的有效默认权限 |
+| `default-unmapped` | 未知 `defaclobjtype` 的 fail-closed 标记，健康库恒为空 |
+| `effective` | `has_*_privilege` 探测结果，含 `PUBLIC` 派生与角色继承 |
+| `owner` / `large-object` | 归属 |
+| `type-class` | 类型分类与数组类型的委托关系 |
+| `role` | 参与 effective 探测的角色集合——**覆盖面证据，不是允许角色白名单** |
+
+三条由真实 PostgreSQL 18.4 实测确定、并已固化为自动化测试的语义：
+
+1. **非空** global `pg_default_acl` 行**替换**内建默认，而不是与之合并；
+2. **空** global 行等价于「没有行」（新对象落回内建默认），但 `default-row` 仍能
+   区分两者；
+3. `pg_default_acl.defaclobjtype` 与 `acldefault()` 是**两套 objtype 编码**：
+   sequence 在前者是 `S`、在后者是 `s`，而 `acldefault('S', …)` 是
+   **FOREIGN SERVER**（只有 `USAGE`）。直接把 `defaclobjtype` 喂给 `acldefault`
+   会把 sequence 的内建默认从 `SELECT`/`UPDATE`/`USAGE` **低报**成只剩 `USAGE`。
+   现在由显式映射表承载，六种 objtype 穷尽，未知 objtype fail closed。
+
+另一条实测更正：`acldefault('l', owner)` 对**受信与非受信语言完全相同**，都是
+`{=U/owner, owner=U/owner}`；非受信语言的限制在建函数时按 superuser 判定，不体现
+在 ACL 上。因此投影不再按 `lanpltrusted` 过滤 raw 层——否则 raw 说「没人有
+USAGE」而 effective 说「所有人都有」，两层自相矛盾。
+
+类型与 Large Object 的策略**已决定**，R8B 已落实（下列都由真实 PostgreSQL 18.4
+测试证明）：
+
+- **managed 非数组类型**：owner（`meal_agent_migrator`）保留必要 `USAGE`；
+  `PUBLIC`、app、backup 与三个 login 无 `USAGE`。这一条同时落在**两层**：
+  对象 ACL 由收敛保证，而 `T@global` 的 `pg_default_acl` 物理行把 `PUBLIC` 的
+  内建 `TYPES USAGE` 去掉，因此新建的 enum / domain / composite **出生时**就只有
+  owner 的 `USAGE`——不需要「先漂移、再收敛一次」；
+- **数组类型**：只记录「向元素类型委托」，既不建立也不撤销独立 ACL——PostgreSQL
+  对数组类型直接拒绝授权与改属（`cannot set privileges of array types`）；
+- **Large Object**：产品声明禁用。**任意** LO 对象（不限于项目角色拥有的）在任何
+  mutation 之前 fail closed，且**只报告、不自动删除未知数据**——不解除链接、不接管
+  归属、不改 `lomacl`。LO 存在时其他无关 ACL 漂移在前后逐字节不变。LO 的 OID 不
+  进入任何固定允许集合。
+
+边界仍然成立：投影结果**必然反映当前环境**（动态 LOGIN 角色、`pg_default_acl` 里
+出现过的 owner、LO 的 OID），因此整份投影**没有**被冻结成跨 cluster 的固定快照。
+只有 database identity 是可移植的逻辑键 `["database", "<current>"]`；外部角色一律
+用策略匹配，没有逐个登记角色名。
+
+连接、advisory lock 与 DDL 取锁都有界（默认 10s / 30s / 30s，上限分别为 60s 与
+600s），另一会话持锁时在限定时间内明确失败，不会无限等待。上限存在的原因是
+Node 定时器超过 2^31-1 毫秒会溢出并退化为约 1ms，"超大超时"会静默变成"几乎不
+等待"。
+
+角色基线、口令、owner 交接与备份授权由
+[`infra/docker/postgres/`](../../infra/docker/postgres/) 的 bootstrap 完成，
+完整顺序见该目录的 README。
 
 测试与构建：
 

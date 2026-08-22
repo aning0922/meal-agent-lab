@@ -92,10 +92,13 @@ export const generateOpenApiDocument =
   async (): Promise<OpenAPIV3.Document> => {
     const config = loadConfig({
       NODE_ENV: "test",
+      DEPLOYMENT_STAGE: "local-test",
+      DEPLOYMENT_EXPOSURE: "loopback",
       HOST: "127.0.0.1",
       PORT: "3000",
       LOG_LEVEL: "silent",
-      DATABASE_URL: "postgresql://openapi.invalid/meal_agent",
+      DATABASE_URL:
+        "postgresql://openapi:synthetic-not-a-real-password@openapi.invalid:5432/meal_agent",
       DATABASE_APP_ROLE: "meal_agent_app",
       WECHAT_ADAPTER: "fake",
       SESSION_ABSOLUTE_TTL_DAYS: "30",

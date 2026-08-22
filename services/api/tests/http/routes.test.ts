@@ -15,6 +15,7 @@ import {
   type BuildAppOptions,
 } from "../../src/app.js";
 import { loadConfig } from "../../src/config.js";
+import { createPersistence } from "../../src/database/pool.js";
 import { createLogger } from "../../src/logging.js";
 
 const ids = {
@@ -80,8 +81,11 @@ const operations = {
 
 const config = loadConfig({
   NODE_ENV: "test",
+  DEPLOYMENT_STAGE: "local-test",
+  DEPLOYMENT_EXPOSURE: "loopback",
   LOG_LEVEL: "info",
-  DATABASE_URL: "postgresql://localhost/not-used",
+  DATABASE_URL:
+    "postgresql://api_tests:synthetic-not-a-real-password@127.0.0.1:5432/not-used",
   WECHAT_ADAPTER: "fake",
 });
 
@@ -114,6 +118,60 @@ test("health and readiness use the shared success/error contracts", async () => 
       apiErrorSchema.parse(readiness.json()).code,
       "EXTERNAL_DEPENDENCY_UNAVAILABLE",
     );
+  } finally {
+    await app.close();
+  }
+});
+
+test("readiness fails closed as 503 when the database itself is unreachable", async () => {
+  // 走真实 checkReadiness 路径：不注入 readiness 替身，只把 persistence 指向
+  // 本机 loopback 上确定无人监听的端口，因此 pool.connect() 必然被拒绝。
+  const dsnSentinel = "readiness_unreachable_sentinel";
+  const unreachable = loadConfig({
+    NODE_ENV: "test",
+    DEPLOYMENT_STAGE: "local-test",
+    DEPLOYMENT_EXPOSURE: "loopback",
+    LOG_LEVEL: "info",
+    DATABASE_URL:
+      `postgresql://readiness_probe:synthetic-not-a-real-password@127.0.0.1:1/${dsnSentinel}`,
+    WECHAT_ADAPTER: "fake",
+  });
+  let logs = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      logs += chunk.toString();
+      callback();
+    },
+  });
+  const app = await buildApp({
+    config: unreachable,
+    logger: createLogger("info", stream),
+    operations,
+    persistence: createPersistence(unreachable),
+    closePersistence: true,
+  });
+  try {
+    // /healthz 只证明进程存活，语义不受数据库影响。
+    const health = await app.inject({ method: "GET", url: "/healthz" });
+    assert.equal(health.statusCode, 200, health.body);
+    serviceLivenessSuccessSchema.parse(health.json());
+
+    const readiness = await app.inject({ method: "GET", url: "/readyz" });
+    assert.equal(readiness.statusCode, 503, readiness.body);
+    assert.equal(readiness.headers["content-type"]?.includes(
+      "application/problem+json",
+    ), true);
+    const problem = apiErrorSchema.parse(readiness.json());
+    assert.equal(problem.code, "EXTERNAL_DEPENDENCY_UNAVAILABLE");
+    assert.equal(problem.status, 503);
+    assert.equal(problem.retryable, true);
+
+    // 连接串、主机端口和数据库错误都不得进入响应体或日志。
+    assert.equal(readiness.body.includes(dsnSentinel), false);
+    assert.equal(readiness.body.includes("127.0.0.1"), false);
+    assert.equal(readiness.body.includes("ECONNREFUSED"), false);
+    assert.equal(logs.includes(dsnSentinel), false);
+    assert.equal(logs.includes("ECONNREFUSED"), false);
   } finally {
     await app.close();
   }
@@ -425,6 +483,94 @@ test("request logging excludes login code and issued token values", async () => 
     assert.equal(response.json().data.accessToken, token);
     assert.equal(logs.includes(codeSentinel), false);
     assert.equal(logs.includes(token), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("every response carries the fixed security headers and no wildcard CORS", async () => {
+  // 家庭私有的成功响应也必须覆盖到，因此这里给出一个符合契约的空分页。
+  const privateOperations = {
+    ...operations,
+    listHouseholds: async () => ({
+      items: [],
+      pageInfo: { nextCursor: null, hasMore: false },
+    }),
+  } satisfies NonNullable<BuildAppOptions["operations"]>;
+
+  const app = await buildApp({
+    config,
+    operations: privateOperations,
+    readiness: async () => false,
+  });
+  try {
+    const cases: readonly [string, number, Awaited<ReturnType<typeof app.inject>>][] =
+      [
+        ["liveness", 200, await app.inject({ method: "GET", url: "/healthz" })],
+        ["readiness", 503, await app.inject({ method: "GET", url: "/readyz" })],
+        [
+          "login",
+          200,
+          await app.inject({
+            method: "POST",
+            url: "/api/v1/auth/wechat/exchange",
+            payload: { loginCode: "header-boundary-login-code" },
+          }),
+        ],
+        [
+          "household-private success",
+          200,
+          await app.inject({
+            method: "GET",
+            url: "/api/v1/households",
+            headers: { authorization: `Bearer ${token}` },
+          }),
+        ],
+        [
+          "household-private problem",
+          400,
+          await app.inject({
+            method: "GET",
+            url: "/api/v1/households/not-a-household-id/members",
+            headers: { authorization: `Bearer ${token}` },
+          }),
+        ],
+        [
+          "validation problem",
+          400,
+          await app.inject({
+            method: "POST",
+            url: "/api/v1/auth/wechat/exchange",
+            payload: { loginCode: "" },
+          }),
+        ],
+        [
+          "not found problem",
+          404,
+          await app.inject({ method: "GET", url: "/api/v1/not-a-route" }),
+        ],
+      ];
+
+    for (const [label, expectedStatus, response] of cases) {
+      assert.equal(response.statusCode, expectedStatus, `${label}: ${response.body}`);
+      assert.equal(
+        response.headers["cache-control"],
+        "no-store",
+        `${label} must not be cacheable`,
+      );
+      assert.equal(
+        response.headers["x-content-type-options"],
+        "nosniff",
+        `${label} must forbid MIME sniffing`,
+      );
+      // 阶段 09A 不启用 CORS，因此绝不能出现 wildcard 允许来源。
+      assert.equal(
+        response.headers["access-control-allow-origin"],
+        undefined,
+        `${label} must not enable CORS`,
+      );
+      assert.equal(response.headers["access-control-allow-credentials"], undefined);
+    }
   } finally {
     await app.close();
   }

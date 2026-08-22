@@ -25,9 +25,7 @@ const assertExactKeys = (value, keys, label) => {
   const actual = Object.keys(value).sort()
   const expected = [...keys].sort()
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(
-      `${label} keys are invalid: expected ${expected.join(',')}, got ${actual.join(',')}`
-    )
+    throw new Error(`${label} has invalid keys`)
   }
 }
 
@@ -87,7 +85,7 @@ export const validateAuditPolicy = (input, now = Date.now()) => {
     throw new Error('policy expiresAt must be a finite parseable timestamp')
   }
   if (now > expiry) {
-    throw new Error(`exception expired at ${input.expiresAt}`)
+    throw new Error('audit exception has expired')
   }
   if (
     typeof input.acceptedAt !== 'string' ||
@@ -138,10 +136,11 @@ export const validateAuditPolicy = (input, now = Date.now()) => {
       !Number.isInteger(advisory.pathCount) ||
       advisory.pathCount < 1 ||
       !/^[0-9a-f]{64}$/.test(advisory.pathSetSha256) ||
-      seen.has(advisory.id)
+      seen.has(advisory.id.toLowerCase())
     ) {
-      throw new Error(`policy advisory ${advisory.id ?? '(missing)'} is invalid`)
+      throw new Error('policy advisory is invalid')
     }
+    advisory.id = advisory.id.toLowerCase()
     seen.add(advisory.id)
   }
   return input
@@ -152,27 +151,22 @@ const sha256 = (value) =>
 
 export const interpretAuditCommand = (command) => {
   if (command.error !== undefined) {
-    throw new Error(`could not run pnpm audit: ${command.error.message}`)
+    throw new Error('could not run pnpm audit')
   }
   if (
     command.signal !== null &&
     command.signal !== undefined
   ) {
-    throw new Error(`pnpm audit terminated by signal ${command.signal}`)
+    throw new Error('pnpm audit terminated by a signal')
   }
   if (command.status !== 0 && command.status !== 1) {
-    throw new Error(
-      `pnpm audit exit ${String(command.status)} is not a vulnerability result`
-    )
+    throw new Error('pnpm audit returned a non-vulnerability exit status')
   }
   let audit
   try {
     audit = JSON.parse(command.stdout)
   } catch {
-    throw new Error(
-      `pnpm audit returned no parseable JSON (exit=${command.status}): ` +
-        `${command.stderr?.trim() || '(no stderr)'}`
-    )
+    throw new Error('pnpm audit returned no parseable JSON')
   }
   if (
     audit === null ||
@@ -180,9 +174,7 @@ export const interpretAuditCommand = (command) => {
     Array.isArray(audit) ||
     audit.error !== undefined
   ) {
-    throw new Error(
-      `pnpm audit registry/network failure: ${JSON.stringify(audit?.error ?? audit)}`
-    )
+    throw new Error('pnpm audit registry/network failure')
   }
   if (
     audit.advisories === null ||
@@ -234,7 +226,7 @@ export const interpretAuditCommand = (command) => {
       ...new Set(advisory.findings.map((finding) => finding.version))
     ].sort()
     return {
-      id: advisory.github_advisory_id,
+      id: advisory.github_advisory_id.toLowerCase(),
       module: advisory.module_name,
       severity: advisory.severity,
       version: versions.join(','),
@@ -242,6 +234,9 @@ export const interpretAuditCommand = (command) => {
       pathSetSha256: sha256(JSON.stringify(paths))
     }
   })
+  if (new Set(actual.map((advisory) => advisory.id)).size !== actual.length) {
+    throw new Error('pnpm audit returned duplicate advisory identities')
+  }
   if (
     (command.status === 0 && actual.length !== 0) ||
     (command.status === 1 && actual.length === 0)
@@ -259,9 +254,7 @@ export const interpretAuditCommand = (command) => {
   }
   for (const advisory of actual) {
     if (!(advisory.severity in counted)) {
-      throw new Error(
-        `pnpm audit advisory severity ${advisory.severity} is invalid`
-      )
+      throw new Error('pnpm audit advisory severity is invalid')
     }
     counted[advisory.severity] += 1
   }
@@ -279,6 +272,12 @@ export const interpretAuditCommand = (command) => {
 }
 
 export const assertAcceptedAdvisories = (policy, actual) => {
+  if (
+    new Set(policy.advisories.map((advisory) => advisory.id)).size !== policy.advisories.length ||
+    new Set(actual.map((advisory) => advisory.id)).size !== actual.length
+  ) {
+    throw new Error('audit advisory identities must be unique')
+  }
   const expectedById = new Map(
     policy.advisories.map((advisory) => [advisory.id, advisory])
   )
@@ -288,21 +287,15 @@ export const assertAcceptedAdvisories = (policy, actual) => {
   for (const advisory of actual) {
     const expected = expectedById.get(advisory.id)
     if (expected === undefined) {
-      throw new Error(`new advisory ${advisory.id} (${advisory.module})`)
+      throw new Error('pnpm audit returned an unaccepted advisory')
     }
     if (JSON.stringify(advisory) !== JSON.stringify(expected)) {
-      throw new Error(
-        `advisory ${advisory.id} changed\n` +
-          `expected ${JSON.stringify(expected)}\n` +
-          `actual   ${JSON.stringify(advisory)}`
-      )
+      throw new Error('pnpm audit advisory evidence changed')
     }
   }
   for (const expected of policy.advisories) {
     if (!actualById.has(expected.id)) {
-      throw new Error(
-        `accepted advisory ${expected.id} disappeared; remove the stale exception`
-      )
+      throw new Error('an accepted advisory disappeared; remove the stale exception')
     }
   }
 }
@@ -549,6 +542,14 @@ const collectFiles = (directory) =>
     return entry.isDirectory() ? collectFiles(path) : [path]
   })
 
+export const closeAuditRelaySafely = async (relay, fail) => {
+  try {
+    await relay?.close()
+  } catch {
+    fail('production audit relay could not be closed safely')
+  }
+}
+
 const main = async () => {
   const fail = (message) => {
     process.stderr.write(`audit gate failed: ${message}\n`)
@@ -565,9 +566,7 @@ const main = async () => {
     )
     const target = targetArgument?.slice('--target='.length) ?? ''
     if (target !== policy.allowedTarget) {
-      throw new Error(
-        `target "${target || '(missing)'}" is blocked; exception only permits ${policy.allowedTarget}`
-      )
+      throw new Error('requested target is not permitted by the audit exception')
     }
     relay = await startAuditRegistryRelay()
     const command = await runAuditCommand(relay.registry)
@@ -593,10 +592,8 @@ const main = async () => {
       if (buffer.includes(0)) continue
       const text = buffer.toString('utf8')
       for (const signature of policy.forbiddenArtifactSignatures) {
-        if (text.includes(signature)) {
-          throw new Error(
-            `vulnerable dependency signature "${signature}" found in ${fileName}`
-          )
+      if (text.includes(signature)) {
+          throw new Error('forbidden vulnerable dependency signature found in built artifact')
         }
       }
     }
@@ -618,9 +615,22 @@ const main = async () => {
     }
     process.stdout.write(`audit exception gate PASS ${JSON.stringify(result)}\n`)
   } catch (error) {
-    fail(error instanceof Error ? error.message : String(error))
+    // CLI 是最终输出边界。库函数只生成固定错误，但这里仍不信任任何意外异常、
+    // transport 原语或未来调用点的 message；绝不把其文本直接写到 stderr。
+    const knownMessages = new Set([
+      'requested target is not permitted by the audit exception',
+      'forbidden vulnerable dependency signature found in built artifact',
+      'weapp artifact contains no files'
+    ])
+    fail(
+      error instanceof Error && knownMessages.has(error.message)
+        ? error.message
+        : 'production audit evidence could not be verified'
+    )
   } finally {
-    await relay?.close()
+    // relay close 是 CLI 最后的外部 primitive；其异常同样不可信，不能让
+    // message/stack/绝对路径越过固定诊断边界。
+    await closeAuditRelaySafely(relay, fail)
   }
 }
 

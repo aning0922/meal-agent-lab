@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 import test from 'node:test'
 import { Readable } from 'node:stream'
 import { gzipSync } from 'node:zlib'
@@ -6,6 +8,7 @@ import { gzipSync } from 'node:zlib'
 import {
   assertAcceptedAdvisories,
   assertAuditUpstreamStatus,
+  closeAuditRelaySafely,
   interpretAuditCommand,
   normalizeAuditRegistryBody,
   readLimitedAuditStream,
@@ -65,10 +68,22 @@ test('invalid or infinite expiry fails closed', () => {
   )
 })
 
+test('an already-expired exception fails closed', () => {
+  // 到期强制是「不得静默续期」的工具链侧另一半：过期后任何 target 的审计都
+  // 必须硬失败，而不是继续沿用旧例外。到期日当天仍然有效，次日拒绝。
+  assert.throws(
+    () => validateAuditPolicy(policy(), Date.parse('2026-08-09T00:00:01+08:00')),
+    /audit exception has expired/
+  )
+  assert.doesNotThrow(() =>
+    validateAuditPolicy(policy(), Date.parse('2026-08-08T23:59:58+08:00'))
+  )
+})
+
 test('exit 2 fails even when JSON contains matching advisories', () => {
   assert.throws(
     () => interpretAuditCommand(command({ status: 2 })),
-    /is not a vulnerability result/
+    /non-vulnerability exit status/
   )
 })
 
@@ -78,7 +93,7 @@ test('a signalled audit subprocess fails closed', () => {
       interpretAuditCommand(
         command({ status: null, signal: 'SIGTERM' })
       ),
-    /terminated by signal/
+    /terminated by a signal/
   )
 })
 
@@ -93,6 +108,104 @@ test('registry/network error payload fails closed', () => {
       ),
     /registry\/network failure/
   )
+})
+
+test('audit command failures never echo runner or registry controlled text', () => {
+  const sentinel = 'AUDIT-UNTRUSTED-SENTINEL'
+  for (const fixture of [
+    command({ status: 0, stdout: 'not-json', stderr: sentinel }),
+    command({ status: 1, stdout: JSON.stringify({ error: { summary: sentinel } }), stderr: '' }),
+    command({ status: null, signal: null, stdout: '', stderr: '', error: new Error(sentinel) })
+  ]) {
+    assert.throws(
+      () => interpretAuditCommand(fixture),
+      (error) => error instanceof Error && !error.message.includes(sentinel)
+    )
+  }
+})
+
+test('relay close failure stays behind the fixed CLI diagnostic boundary', async () => {
+  const sentinel = 'M5_CLOSE_SENTINEL /tmp/M5_CLOSE_SENTINEL'
+  const failures = []
+  await closeAuditRelaySafely(
+    { close: async () => { throw new Error(sentinel) } },
+    (message) => failures.push(message)
+  )
+  assert.deepEqual(failures, ['production audit relay could not be closed safely'])
+  assert.doesNotMatch(failures.join('\n'), /M5_CLOSE_SENTINEL/)
+})
+
+test('advisory identity uniqueness is case-insensitive', () => {
+  const duplicatePolicy = {
+    ...policy(),
+    advisories: [
+      {
+        id: 'GHSA-abcd-efgh-ijkl',
+        module: 'fixture',
+        severity: 'high',
+        version: '1.0.0',
+        pathCount: 1,
+        pathSetSha256: 'a'.repeat(64)
+      },
+      {
+        id: 'ghsa-ABCD-EFGH-IJKL',
+        module: 'fixture',
+        severity: 'high',
+        version: '1.0.0',
+        pathCount: 1,
+        pathSetSha256: 'a'.repeat(64)
+      }
+    ]
+  }
+  assert.throws(
+    () => validateAuditPolicy(duplicatePolicy, Date.parse('2026-07-25')),
+    /policy advisory is invalid/
+  )
+})
+
+test('unexpected metadata keys and advisory identities never enter diagnostics', () => {
+  const sentinel = 'AUDIT-UNTRUSTED-SENTINEL'
+  const extraKey = command({
+    stdout: JSON.stringify({
+      advisories: { 1: rawAdvisory },
+      metadata: {
+        vulnerabilities: {
+          info: 0,
+          low: 0,
+          moderate: 0,
+          high: 1,
+          critical: 0,
+          [sentinel]: 1
+        }
+      }
+    })
+  })
+  assert.throws(
+    () => interpretAuditCommand(extraKey),
+    (error) => error instanceof Error && !error.message.includes(sentinel)
+  )
+
+  const duplicate = command({
+    stdout: JSON.stringify({
+      advisories: { 1: rawAdvisory, 2: { ...rawAdvisory } },
+      metadata: {
+        vulnerabilities: { info: 0, low: 0, moderate: 0, high: 2, critical: 0 }
+      }
+    })
+  })
+  assert.throws(() => interpretAuditCommand(duplicate), /duplicate advisory identities/)
+})
+
+test('the audit CLI boundary never echoes an untrusted target argument', () => {
+  const sentinel = 'AUDIT-UNTRUSTED-SENTINEL'
+  const outcome = spawnSync(
+    process.execPath,
+    [resolve(import.meta.dirname, '../check-production-audit.mjs'), `--target=${sentinel}`],
+    { encoding: 'utf8' }
+  )
+  assert.equal(outcome.status, 1)
+  assert.match(outcome.stderr, /requested target is not permitted/)
+  assert.doesNotMatch(outcome.stderr, new RegExp(sentinel))
 })
 
 test('audit registry transport accepts plain JSON and valid gzip JSON', async () => {
@@ -159,20 +272,30 @@ test('missing vulnerability metadata fails closed', () => {
   )
 })
 
+// 下面两条必须传显式 `now`：夹具的默认到期日是过去式的 2026-08-08，靠真实挂钟
+// 会在到期次日让这两条先撞上「exception expired」而不是各自要断言的理由——
+// 2026-08-11 实测整个 suite 就是这样红掉的（时间炸弹，而非判定失真）。
 test('a new advisory fails closed', () => {
   const { actual } = interpretAuditCommand(command())
   assert.throws(
-    () => assertAcceptedAdvisories(validateAuditPolicy(policy()), actual),
-    /new advisory/
+    () =>
+      assertAcceptedAdvisories(
+        validateAuditPolicy(policy(), Date.parse('2026-07-25')),
+        actual
+      ),
+    /unaccepted advisory/
   )
 })
 
 test('a disappeared advisory fails closed', () => {
   const { actual } = interpretAuditCommand(command())
-  const accepted = validateAuditPolicy({
-    ...policy(),
-    advisories: actual
-  })
+  const accepted = validateAuditPolicy(
+    {
+      ...policy(),
+      advisories: actual
+    },
+    Date.parse('2026-07-25')
+  )
   assert.throws(
     () => assertAcceptedAdvisories(accepted, []),
     /disappeared/

@@ -10,3 +10,11 @@
 - 渲染和检查文档。
 
 脚本应支持重复执行，避免依赖个人目录和隐式全局环境。
+
+阶段 09A 的单一聚合入口是 [`run-stage09a-check.mjs`](run-stage09a-check.mjs)，根命令
+为 `pnpm stage09a:check`。它固定串联 14 个既有门禁/演练，前置探针与步骤统一按
+独立进程组管理；嵌套控制层通过 LF framing 的 ownership fd 公告 PGID，并以
+producer PID 配对 scoped cleanup START/DONE。SIGINT、SIGTERM、SIGHUP、超时、
+termination primitive 异常、partial/malformed frame、cleanup ACK 缺失或步骤退出后
+残留后代都会有界地 fail closed。对应的 11 条不依赖 Docker 回归位于
+[`tests/stage09a-check.test.mjs`](tests/stage09a-check.test.mjs)。

@@ -6,7 +6,19 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)已完成规划、尚未实施。当前不购买服务器，不接真实微信配置，也不开放公网；先完成 Docker Compose、数据库账号隔离、迁移、健康检查和备份恢复门禁。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1—M5 均已由项目总控 Accepted；M3B、M4 与 M5 的验收落点分别为 `cf43452`、`f671c51` 与 `efd186f`。M5.16 把八条 runtime source 与三条 identity-loss 判据收敛为 production guard 实际消费的闭集 registry，并为 11/11 规则建立独立 deletion witness。最终候选 `efd186f` 的静态审计 A 与动态审计 B 均为 **CLEAN**；B 在固定 Node.js `v24.18.0` 和同一 Docker generation 下只执行一次正式 `pnpm stage09a:check`，真实退出码 0、**14/14 PASS**、1,710 个公告 PGID 全部到达 ESRCH，作用域资源零残留。**M5 已于 2026-08-22 由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 同步转为 `Accepted`。**Accepted 后的远端 CI 收口候选 `24be8b3` 已推送，并由真实 GitHub Actions run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 在精确 Node.js 24.18.0、Docker 29.6.2 与七项 PostgreSQL 18.4 host 工具链上完整通过 `stage09a:check` **14/14**；archive-list、完整 TOC、篡改拒绝、单事务恢复与作用域零残留均取得远端证据。候选尚未合入本地 `main`，所以 09A 总验收仍未完成、阶段不得记为 Pass。当前不购买服务器，不接真实微信配置，也不开放公网。
+
+**远端 CI 收口进度（2026-08-22）**：第八条真实 run
+[`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
+在精确 HEAD `24be8b35b8a115524f7eeb36f90f693bfed59d87` 上以
+`workflow_dispatch` 完成，job `97040690124` conclusion 为 `success`，总用时
+32m42s。前置逐个验证 Node.js 24.18.0、Docker 29.6.2 以及 `createdb`、
+`initdb`、`pg_ctl`、`pg_dump`、`pg_restore`、`postgres`、`psql` 七项
+PostgreSQL 18.4 工具；同一个 `pnpm stage09a:check` 明确输出 **14/14 PASS**。
+第七条 run 暴露的 host `pg_restore` 混装已关闭，restore drill 的 archive-list、
+语法与完整 TOC、篡改拒绝、单事务恢复、授权面/两户五表逐字节一致和零残留均在
+远端日志中通过。远端 CI 阻断已关闭；剩余门禁是候选进入本地 `main`/既有 Draft PR
+的集成裁定，以及 09A 总验收，当前仍不得提前记为 Pass。
 
 当前纵切覆盖：
 
@@ -28,10 +40,11 @@ FAM-003 已完成。FAM-004 的登记、确认、隐私和页面范围已实现�
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-pnpm stage08:check
+pnpm stage09a:check
+pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<candidate>-b.json
 ```
 
-`stage08:check` 串联环境检查、迁移、contracts、API 单元/HTTP/PostgreSQL/OpenAPI、客户端页面单测、weapp 构建、双用户 E2E、依赖审计策略和 Markdown 本地链接检查。依赖审计的限时 local/weapp-only 例外见 [`security/audit-exceptions.json`](security/audit-exceptions.json)；例外期间 H5、外部测试、体验版和发布均被阻断。
+`stage09a:check` 是阶段 09A 的聚合门禁：先跑完整的 `pnpm stage08:check`（环境检查、迁移、contracts、API 单元/HTTP/PostgreSQL/OpenAPI、客户端页面单测、weapp 构建、双用户 E2E、依赖审计策略、Markdown 本地链接检查），再串联 Dockerfile/Compose 静态检查、API runtime image 构建与依赖扫描、全部 M3B 容器门禁、空 volume 全链 smoke、生命周期与备份/恢复演练（需要运行中的 Docker Engine + Compose v2；缺失时明确失败为缺少前置工具）。各命令的单独用法见 [`infra/docker/README.md`](infra/docker/README.md)。只关心 workspace 语义时可单独跑 `pnpm stage08:check`。依赖审计的限时 local/weapp-only 例外见 [`security/audit-exceptions.json`](security/audit-exceptions.json)（到期 2026-11-08，复核记录见 ADR-0004）；例外期间 H5、外部测试、体验版和发布均被阻断。
 
 ## 仓库结构
 
