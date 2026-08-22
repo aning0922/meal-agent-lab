@@ -433,31 +433,119 @@ const nodeTypePropertyIs = (checker, node, property, fileName) =>
     property
   )
 
-const sourceLosesRuntimeCapabilityIdentity = (node, sourceFile, checker) => {
-  if (!ts.isExpressionNode(node)) return false
+const canonicalGlobalObjectName = (candidate, sourceFile, checker) => {
+  if (
+    !ts.isIdentifier(candidate) ||
+    !['global', 'globalThis'].includes(candidate.text) ||
+    resolvedSymbol(checker, candidate)?.declarations?.every((declaration) =>
+      declaration.getSourceFile() !== sourceFile) !== true
+  ) return null
+  return candidate.text
+}
+
+// These entries are the production criteria, not a mirror maintained only by
+// the mutation test. The live guard consumes this same closed registry. A test
+// can therefore delete exactly one entry and prove that its fixture loses the
+// fixed diagnostic without editing or reimplementing the scanner.
+const runtimeCapabilitySourceRules = Object.freeze([
+  Object.freeze({
+    id: 'canonical-process',
+    kind: 'process',
+    matches: ({ node, nodeIsPropertyName, sourceFile, checker }) =>
+      !nodeIsPropertyName &&
+      isCanonicalProcessIdentifier(checker, sourceFile, node)
+  }),
+  Object.freeze({
+    id: 'globalthis-process-property',
+    kind: 'process',
+    matches: ({ node, sourceFile, checker }) =>
+      ts.isPropertyAccessExpression(node) &&
+      canonicalGlobalObjectName(node.expression, sourceFile, checker) === 'globalThis' &&
+      node.name.text === 'process'
+  }),
+  Object.freeze({
+    id: 'global-process-property',
+    kind: 'process',
+    matches: ({ node, sourceFile, checker }) =>
+      ts.isPropertyAccessExpression(node) &&
+      canonicalGlobalObjectName(node.expression, sourceFile, checker) === 'global' &&
+      node.name.text === 'process'
+  }),
+  Object.freeze({
+    id: 'globalthis-process-element',
+    kind: 'process',
+    matches: ({ node, sourceFile, checker }) =>
+      ts.isElementAccessExpression(node) &&
+      canonicalGlobalObjectName(node.expression, sourceFile, checker) === 'globalThis' &&
+      constantString(node.argumentExpression, checker) === 'process'
+  }),
+  Object.freeze({
+    id: 'global-process-element',
+    kind: 'process',
+    matches: ({ node, sourceFile, checker }) =>
+      ts.isElementAccessExpression(node) &&
+      canonicalGlobalObjectName(node.expression, sourceFile, checker) === 'global' &&
+      constantString(node.argumentExpression, checker) === 'process'
+  }),
+  Object.freeze({
+    id: 'node-process-alias',
+    kind: 'process',
+    matches: ({ node, nodeIsPropertyName, sourceFile, checker }) =>
+      ts.isIdentifier(node) &&
+      !nodeIsPropertyName &&
+      !isCanonicalProcessIdentifier(checker, sourceFile, node) &&
+      nodeTypePropertyIs(checker, node, 'getBuiltinModule', 'process')
+  }),
+  Object.freeze({
+    id: 'canonical-globalthis-root',
+    kind: 'global',
+    matches: ({ node, sourceFile, checker }) =>
+      canonicalGlobalObjectName(node, sourceFile, checker) === 'globalThis'
+  }),
+  Object.freeze({
+    id: 'canonical-global-root',
+    kind: 'global',
+    matches: ({ node, sourceFile, checker }) =>
+      canonicalGlobalObjectName(node, sourceFile, checker) === 'global'
+  })
+])
+
+const runtimeCapabilityLossRules = Object.freeze([
+  Object.freeze({ id: 'jsdoc-cast' }),
+  Object.freeze({ id: 'dynamic-computed-access' }),
+  Object.freeze({ id: 'unreviewed-value-flow' })
+])
+
+const runtimeCapabilityPolicy = Object.freeze({
+  sourceRules: runtimeCapabilitySourceRules,
+  lossRules: runtimeCapabilityLossRules
+})
+
+const runtimeCapabilitySource = (node, sourceFile, checker, policy) => {
+  if (!ts.isExpressionNode(node)) return null
   const nodeIsPropertyName =
     (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
     (ts.isPropertyAssignment(node.parent) && node.parent.name === node)
-  const globalObjectIsCanonical = (candidate) =>
-    ts.isIdentifier(candidate) &&
-    ['global', 'globalThis'].includes(candidate.text) &&
-    resolvedSymbol(checker, candidate)?.declarations?.every((declaration) =>
-      declaration.getSourceFile() !== sourceFile) === true
-  const canonicalGlobalProcess =
-    (ts.isPropertyAccessExpression(node) &&
-      globalObjectIsCanonical(node.expression) &&
-      node.name.text === 'process') ||
-    (ts.isElementAccessExpression(node) &&
-      globalObjectIsCanonical(node.expression) &&
-      constantString(node.argumentExpression, checker) === 'process')
-  const processSource =
-    isCanonicalProcessIdentifier(checker, sourceFile, node) ||
-    canonicalGlobalProcess ||
-    (ts.isIdentifier(node) &&
-      !nodeIsPropertyName &&
-      nodeTypePropertyIs(checker, node, 'getBuiltinModule', 'process'))
-  const globalSource = globalObjectIsCanonical(node)
-  if (!processSource && !globalSource) return false
+  const context = { node, nodeIsPropertyName, sourceFile, checker }
+  const matches = policy.sourceRules.filter((rule) => rule.matches(context))
+  assert.equal(
+    matches.length <= 1,
+    true,
+    `runtime capability source matched multiple rules: ${matches.map(({ id }) => id).join(',')}`
+  )
+  return matches[0] ?? null
+}
+
+const sourceLosesRuntimeCapabilityIdentity = (
+  node,
+  sourceFile,
+  checker,
+  policy = runtimeCapabilityPolicy
+) => {
+  const source = runtimeCapabilitySource(node, sourceFile, checker, policy)
+  if (source === null) return false
+  const processSource = source.kind === 'process'
+  const globalSource = source.kind === 'global'
 
   let current = node
   while (ts.isParenthesizedExpression(current.parent) && current.parent.jsDoc === undefined) {
@@ -467,19 +555,27 @@ const sourceLosesRuntimeCapabilityIdentity = (node, sourceFile, checker) => {
 
   // A JSDoc cast can replace the Process type with `any`; accepting it would
   // make every later declaration-identity check optional.
-  if (ts.isParenthesizedExpression(parent) && parent.jsDoc !== undefined) return true
+  let lossRuleId = null
+  if (ts.isParenthesizedExpression(parent) && parent.jsDoc !== undefined) {
+    lossRuleId = 'jsdoc-cast'
+  }
 
-  if (ts.isPropertyAccessExpression(parent) && parent.expression === current) {
+  if (lossRuleId === null && ts.isPropertyAccessExpression(parent) && parent.expression === current) {
     return false
   }
-  if (ts.isElementAccessExpression(parent) && parent.expression === current) {
-    return constantString(parent.argumentExpression, checker) === null
+  if (lossRuleId === null && ts.isElementAccessExpression(parent) && parent.expression === current) {
+    if (constantString(parent.argumentExpression, checker) === null) {
+      lossRuleId = 'dynamic-computed-access'
+    } else {
+      return false
+    }
   }
 
   // `process.kill.bind(process)` is the one reviewed bare-process use in the
   // production tree. The receiver retains its Node declaration identity and
   // the second occurrence is only the native method's `this` value.
   if (
+    lossRuleId === null &&
     ts.isCallExpression(parent) &&
     parent.arguments[0] === current &&
     ts.isPropertyAccessExpression(parent.expression) &&
@@ -499,7 +595,12 @@ const sourceLosesRuntimeCapabilityIdentity = (node, sourceFile, checker) => {
           'process'
         )
       ) ||
-      globalSource && globalObjectIsCanonical(parent.expression.expression.expression)
+      globalSource &&
+        canonicalGlobalObjectName(
+          parent.expression.expression.expression,
+          sourceFile,
+          checker
+        ) !== null
     ) &&
     !['getBuiltinModule', 'dlopen'].includes(parent.expression.expression.name.text)
   ) return false
@@ -508,7 +609,8 @@ const sourceLosesRuntimeCapabilityIdentity = (node, sourceFile, checker) => {
   // move `process` or the global-object root past the last point at which
   // declaration identity can be proved. Production has no legitimate need for
   // such a value flow.
-  return true
+  lossRuleId ??= 'unreviewed-value-flow'
+  return policy.lossRules.some(({ id }) => id === lossRuleId)
 }
 
 // `createRequire()`, `process.getBuiltinModule()` and `process.dlopen()` are
@@ -516,7 +618,11 @@ const sourceLosesRuntimeCapabilityIdentity = (node, sourceFile, checker) => {
 // consumer for them. The boundary therefore closes both the roots and every
 // operation that would erase a Process source's declaration identity, rather
 // than guessing the capability back after reflection or generic forwarding.
-const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
+const sourceUsesSynchronousModuleLoader = (
+  sourceFile,
+  checker,
+  policy = runtimeCapabilityPolicy
+) => {
   let found = false
   const visit = (node) => {
     if (found) return
@@ -556,7 +662,7 @@ const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
         return
       }
     }
-    if (sourceLosesRuntimeCapabilityIdentity(node, sourceFile, checker)) {
+    if (sourceLosesRuntimeCapabilityIdentity(node, sourceFile, checker, policy)) {
       found = true
       return
     }
@@ -581,13 +687,18 @@ const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
   return found
 }
 
-const synchronousModuleLoaderCapabilityProblems = (paths, program, checker) => {
+const synchronousModuleLoaderCapabilityProblems = (
+  paths,
+  program,
+  checker,
+  policy = runtimeCapabilityPolicy
+) => {
   const problems = []
   for (const path of paths) {
     const sourceFile = program.getSourceFile(resolve(repositoryRoot, path))
     if (
       sourceFile !== undefined &&
-      sourceUsesSynchronousModuleLoader(sourceFile, checker)
+      sourceUsesSynchronousModuleLoader(sourceFile, checker, policy)
     ) {
       problems.push(`${path}: production synchronous module loader capability was forbidden`)
     }
@@ -595,7 +706,11 @@ const synchronousModuleLoaderCapabilityProblems = (paths, program, checker) => {
   return problems
 }
 
-const discoverProductionCapabilities = (targets, overrides = new Map()) => {
+const discoverProductionCapabilities = (
+  targets,
+  overrides = new Map(),
+  policy = runtimeCapabilityPolicy
+) => {
   const candidates = [...new Set([
     ...trackedProductionModulePaths(),
     ...overrides.keys(),
@@ -621,7 +736,8 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
   const moduleProblems = synchronousModuleLoaderCapabilityProblems(
     candidates,
     program,
-    checker
+    checker,
+    policy
   )
   const localModuleAbsolutePath = (importerPath, moduleSpecifier) =>
     moduleSpecifier.startsWith('.')
@@ -701,7 +817,8 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
 
 const productionConsumerRegistryProblems = (
   registry = m5ProductionGuards,
-  overrides = new Map()
+  overrides = new Map(),
+  policy = runtimeCapabilityPolicy
 ) => {
   const problems = []
   const consumers = registry.flatMap((guard) =>
@@ -716,7 +833,7 @@ const productionConsumerRegistryProblems = (
     const key = `${consumer.callee.path}#${consumer.callee.name}`
     if (!targets.has(key)) targets.set(key, consumer.callee)
   }
-  const discovery = discoverProductionCapabilities(targets, overrides)
+  const discovery = discoverProductionCapabilities(targets, overrides, policy)
   for (const [targetKey, callee] of targets) {
     const registeredCounts = new Map()
     for (const { consumer } of consumers) {
@@ -1074,18 +1191,21 @@ const importFresh = (path, label) =>
   import(`${pathToFileURL(path).href}?mutation=${encodeURIComponent(label)}-${Date.now()}`)
 
 const registeredGuardIds = new Set(m5ProductionGuards.map(({ id }) => id))
-const executedGuardIds = new Set()
+const declaredGuardOracleIds = new Set()
 assert.equal(registeredGuardIds.size, m5ProductionGuards.length)
 const guardTest = (id, name, operation) => {
   assert.equal(registeredGuardIds.has(id), true, `unregistered production guard: ${id}`)
+  assert.equal(declaredGuardOracleIds.has(id), false, `duplicate production guard oracle: ${id}`)
+  declaredGuardOracleIds.add(id)
   test(`[${id}] ${name}`, async () => {
-    assert.equal(executedGuardIds.has(id), false, `duplicate production guard oracle: ${id}`)
     await operation()
-    executedGuardIds.add(id)
   })
 }
 test.after(() => {
-  assert.deepEqual([...executedGuardIds].sort(), [...registeredGuardIds].sort())
+  // Accounting is declaration based. A full invocation still executes every
+  // registered test; a focused mutation invocation may intentionally select
+  // one oracle and must not fail merely because unrelated tests were filtered.
+  assert.deepEqual([...declaredGuardOracleIds].sort(), [...registeredGuardIds].sort())
 })
 
 test('declared consumers and the explicit CLI manifest match current production', () => {
@@ -1604,6 +1724,124 @@ test('production cannot acquire a synchronous module loader capability', () => {
     false,
     `local same-name roots were mistaken for Node capabilities: ${JSON.stringify(localRootProblems)}`
   )
+})
+
+const runtimeCapabilityFixtureProblems = (
+  body,
+  policy = runtimeCapabilityPolicy
+) => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  return productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[path, `${source}\n${body}\n`]]),
+    policy
+  )
+}
+
+const withoutRuntimeCapabilityRule = (kind, id) => Object.freeze({
+  sourceRules: kind === 'source'
+    ? Object.freeze(runtimeCapabilitySourceRules.filter((rule) => rule.id !== id))
+    : runtimeCapabilitySourceRules,
+  lossRules: kind === 'loss'
+    ? Object.freeze(runtimeCapabilityLossRules.filter((rule) => rule.id !== id))
+    : runtimeCapabilityLossRules
+})
+
+test('each runtime capability source rule owns an independent weakening witness', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const reason = `${path}: production synchronous module loader capability was forbidden`
+  const witnesses = new Map([
+    [
+      'canonical-process',
+      'const forwardCanonicalProcess = (value) => value; void forwardCanonicalProcess(process)'
+    ],
+    [
+      'globalthis-process-property',
+      'const forwardGlobalThisProcess = (value) => value; void forwardGlobalThisProcess(globalThis.process)'
+    ],
+    [
+      'global-process-property',
+      'const forwardGlobalProcess = (value) => value; void forwardGlobalProcess(global.process)'
+    ],
+    [
+      'globalthis-process-element',
+      "const forwardGlobalThisElement = (value) => value; void forwardGlobalThisElement(globalThis['process'])"
+    ],
+    [
+      'global-process-element',
+      "const forwardGlobalElement = (value) => value; void forwardGlobalElement(global['process'])"
+    ],
+    [
+      'node-process-alias',
+      'import processRoot from "node:process"; const forwardProcessRoot = (value) => value; void forwardProcessRoot(processRoot)'
+    ],
+    [
+      'canonical-globalthis-root',
+      'const forwardGlobalThis = (value) => value; void forwardGlobalThis(globalThis)'
+    ],
+    [
+      'canonical-global-root',
+      'const forwardGlobal = (value) => value; void forwardGlobal(global)'
+    ]
+  ])
+  assert.deepEqual(
+    runtimeCapabilitySourceRules.map(({ id }) => id),
+    [...witnesses.keys()]
+  )
+  for (const [id, body] of witnesses) {
+    assert.equal(
+      runtimeCapabilityFixtureProblems(body).includes(reason),
+      true,
+      `runtime source witness was not rejected: ${id}`
+    )
+    assert.equal(
+      runtimeCapabilityFixtureProblems(
+        body,
+        withoutRuntimeCapabilityRule('source', id)
+      ).includes(reason),
+      false,
+      `runtime source rule had no independent deletion witness: ${id}`
+    )
+  }
+})
+
+test('each runtime capability identity-loss rule owns an independent weakening witness', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const reason = `${path}: production synchronous module loader capability was forbidden`
+  const witnesses = new Map([
+    [
+      'jsdoc-cast',
+      'const erasedProcess = /** @type {any} */ (process); void erasedProcess'
+    ],
+    [
+      'dynamic-computed-access',
+      'const runtimeKey = ["run", "time"].join(""); void process[runtimeKey]'
+    ],
+    [
+      'unreviewed-value-flow',
+      'const forwardRuntimeRoot = (value) => value; void forwardRuntimeRoot(process)'
+    ]
+  ])
+  assert.deepEqual(
+    runtimeCapabilityLossRules.map(({ id }) => id),
+    [...witnesses.keys()]
+  )
+  for (const [id, body] of witnesses) {
+    assert.equal(
+      runtimeCapabilityFixtureProblems(body).includes(reason),
+      true,
+      `runtime identity-loss witness was not rejected: ${id}`
+    )
+    assert.equal(
+      runtimeCapabilityFixtureProblems(
+        body,
+        withoutRuntimeCapabilityRule('loss', id)
+      ).includes(reason),
+      false,
+      `runtime identity-loss rule had no independent deletion witness: ${id}`
+    )
+  }
 })
 
 test('production capability diagnostics never reflect an untrusted module identity', () => {
@@ -2331,6 +2569,16 @@ guardTest('runtime-scratch-final-settlement', 'the live runtime consumer retires
     /owned runtime probe immutable identity was not proven absent/
   )
   assert.equal(retired, false)
+})
+
+test('production guard oracle accounting is declaration-based and focused-safe', () => {
+  assert.deepEqual(
+    [...declaredGuardOracleIds].sort(),
+    [...registeredGuardIds].sort()
+  )
+  const missing = new Set(declaredGuardOracleIds)
+  missing.delete([...registeredGuardIds][0])
+  assert.notDeepEqual([...missing].sort(), [...registeredGuardIds].sort())
 })
 
 test('mutation fixtures leave no production evidence names behind', () => {
