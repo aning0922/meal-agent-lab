@@ -41,7 +41,57 @@ const expectedActions = new Set([
   'actions/checkout@11d5960a326750d5838078e36cf38b85af677262',
   'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020'
 ])
-const expectedWorkflowSha256 = 'ed84405c0db61f55c1255bd1183e353bdd9131e64f25a7e31f645ac8fd155f91'
+const expectedWorkflowSha256 = '4ee10aa679d925b659f65b06d966ce35ec6f0b99a1d0f7a7482bb7bcf8812be0'
+
+const expectedPostgresql18Artifacts = [
+  {
+    url: 'https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-18/postgresql-client-18_18.4-1.pgdg24.04%2B1_amd64.deb',
+    sha256: 'ff3fb9af478e4bdada47168681d9987917fd3170b043c612d6d01f0c923469c2'
+  },
+  {
+    url: 'https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-18/postgresql-18_18.4-1.pgdg24.04%2B1_amd64.deb',
+    sha256: '13f382b7c876ffafd98a43431007697827197da78a86dd01b4e5a3da5e3de5eb'
+  }
+]
+
+const countLiteral = (source, literal) => source.split(literal).length - 1
+
+const ciPostgresql18PolicyProblems = (source) => {
+  const problems = []
+  if (!source.includes('if [ "$(dpkg --print-architecture)" != amd64 ]; then')) {
+    problems.push('CI PostgreSQL packages must be bound to the reviewed amd64 runner architecture')
+  }
+  if (countLiteral(source, 'sudo apt-get update') !== 2) {
+    problems.push('CI must refresh apt metadata before and after adding the PGDG repository')
+  }
+  if (
+    countLiteral(
+      source,
+      "curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error"
+    ) !== expectedPostgresql18Artifacts.length
+  ) {
+    problems.push('CI PostgreSQL artifacts must use the reviewed fail-closed HTTPS download shape')
+  }
+  for (const artifact of expectedPostgresql18Artifacts) {
+    if (countLiteral(source, artifact.url) !== 1 || countLiteral(source, artifact.sha256) !== 1) {
+      problems.push('CI PostgreSQL artifact URL and checksum allowlist drifted')
+      break
+    }
+  }
+  if (!source.includes('| sha256sum --check --strict')) {
+    problems.push('CI PostgreSQL artifacts must pass strict SHA-256 verification before installation')
+  }
+  if (!source.includes('sudo apt-get install -y "$pg_client_deb" "$pg_server_deb"')) {
+    problems.push('CI must install both reviewed PostgreSQL 18.4 artifacts')
+  }
+  if (/sudo apt-get install -y postgresql-(?:client-)?18(?:\s|$)/m.test(source)) {
+    problems.push('CI must not install the floating PostgreSQL 18 package candidate')
+  }
+  if (!source.includes('for tool in createdb initdb pg_ctl postgres psql; do')) {
+    problems.push('CI must expose all five PostgreSQL tools to the exact-version environment gate')
+  }
+  return problems
+}
 
 const ciWorkflowPolicyProblems = (source) => {
   const problems = []
@@ -50,6 +100,7 @@ const ciWorkflowPolicyProblems = (source) => {
     problems.push('CI workflow must match the reviewed byte-for-byte policy')
     return problems
   }
+  problems.push(...ciPostgresql18PolicyProblems(source))
   const lines = source.split('\n')
   const executableSource = lines.filter((line) => !/^\s*#/.test(line)).join('\n')
   const uses = []
@@ -894,6 +945,36 @@ test('every host detached spawn in the formal chain has an explicit ownership bo
     readFileSync(resolve(repositoryRoot, 'infra/docker/postgres/no-ctty.mjs'), 'utf8'),
     /ownership exception: 这是 Docker 容器内部/
   )
+})
+
+test('the CI PostgreSQL 18.4 installer rejects floating or unverifiable toolchains', () => {
+  const source = readFileSync(resolve(repositoryRoot, '.github/workflows/ci.yml'), 'utf8')
+  assert.deepEqual(ciPostgresql18PolicyProblems(source), [])
+
+  const mutations = [
+    source.replace('if [ "$(dpkg --print-architecture)" != amd64 ]; then', 'if false; then'),
+    source.replace('postgresql-client-18_18.4-1.pgdg24.04%2B1_amd64.deb', 'postgresql-client-18_18.6-1.pgdg24.04%2B2_amd64.deb'),
+    source.replace(
+      '13f382b7c876ffafd98a43431007697827197da78a86dd01b4e5a3da5e3de5eb',
+      '03f382b7c876ffafd98a43431007697827197da78a86dd01b4e5a3da5e3de5eb'
+    ),
+    source.replace('| sha256sum --check --strict', '| true'),
+    source.replace(
+      'sudo apt-get install -y "$pg_client_deb" "$pg_server_deb"',
+      'sudo apt-get install -y postgresql-18'
+    ),
+    source.replace(
+      'for tool in createdb initdb pg_ctl postgres psql; do',
+      'for tool in postgres; do'
+    ),
+    source.replace(
+      "curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error",
+      "curl --proto '=https' --tlsv1.2 --location --silent --show-error"
+    )
+  ]
+  for (const mutant of mutations) {
+    assert.notDeepEqual(ciPostgresql18PolicyProblems(mutant), [])
+  }
 })
 
 test('the CI workflow policy rejects every audited weakening shape', () => {

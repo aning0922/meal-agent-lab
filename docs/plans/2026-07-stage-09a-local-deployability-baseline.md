@@ -4609,6 +4609,22 @@ PASS，也不等于阶段 09A 已完成。候选尚未合入本地 `main`、尚�
 仍无真实 run；下一门禁是经用户授权推送、取得真实远端成功 run，再完成主线/远端集成
 与 09A 总验收。
 
+#### 首次远端 CI 与 PostgreSQL 18.4 工具链固定（2026-08-22）
+
+用户授权后，候选分支 `claude/stage-09a-m5-gates` 已推送。首次真实 GitHub Actions run
+[`32563304312`](https://github.com/aning0922/meal-agent-lab/actions/runs/32563304312) 精确绑定
+提交 `a360ce0c911957e621a880eb4f1ad9489dddac70`，在 `stage09a:check` 第 1/14 步失败：
+workflow 的 `apt-get install postgresql-18` 取得 PGDG 当前浮动版本 18.6，而仓库环境契约要求
+`createdb`、`initdb`、`pg_ctl`、`postgres` 与 `psql` 全部精确为 18.4。该失败证明环境门禁
+按设计 fail closed，不能记录为 CI Pass。
+
+整改不放宽环境契约：workflow 改为只在 `linux/amd64` 安装 PGDG 官方 pool 中的 18.4
+client/server 双包，下载时固定 HTTPS、包文件名与 SHA-256，严格校验后才交给 `apt` 解依赖；
+五个工具逐一输出版本，随后仍由同一 `pnpm stage09a:check` 做最终 exact-version 判定。该路径已
+在一次性 `linux/amd64` Ubuntu 24.04 容器中真实验证五个工具均为 18.4，并新增独立削弱变异
+回归，覆盖架构、URL、校验和、校验步骤、双包安装、下载失败和五工具集合。当前仍等待绑定
+新 HEAD 的真实成功 run；M5 Accepted 落点不变，09A 保持 In Progress，候选尚未合入 `main`。
+
 ## 工具前置
 
 执行任务开始时先检查 Docker CLI 与 Compose v2。总控机器已安装 Docker Engine 29.6.2 与 Docker Compose v5.3.1（2026-07-27 核实），因此工具前置不再阻塞；M1 的镜像构建与 M2B—M5 的 Compose 运行都可以取得真实证据。仍然成立的是：没有真实容器运行、备份与恢复证据之前，阶段 09A 不得完成最终验收。

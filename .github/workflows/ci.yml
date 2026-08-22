@@ -30,13 +30,36 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install PostgreSQL 18 (PGDG)
+      - name: Install exact PostgreSQL 18.4 toolchain (PGDG)
         run: |
+          if [ "$(dpkg --print-architecture)" != amd64 ]; then
+            echo "CI PostgreSQL package architecture is unsupported" >&2
+            exit 1
+          fi
           sudo apt-get update
-          sudo apt-get install -y postgresql-common
+          sudo apt-get install -y ca-certificates curl postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y postgresql-18
-          "$PG_BIN/postgres" --version
+          sudo apt-get update
+
+          pg_deb_dir="${RUNNER_TEMP}/postgresql-18.4"
+          install -d -m 0700 "$pg_deb_dir"
+          pg_client_deb="$pg_deb_dir/postgresql-client-18.deb"
+          pg_server_deb="$pg_deb_dir/postgresql-18.deb"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            'https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-18/postgresql-client-18_18.4-1.pgdg24.04%2B1_amd64.deb' \
+            --output "$pg_client_deb"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            'https://apt.postgresql.org/pub/repos/apt/pool/main/p/postgresql-18/postgresql-18_18.4-1.pgdg24.04%2B1_amd64.deb' \
+            --output "$pg_server_deb"
+          printf '%s  %s\n%s  %s\n' \
+            'ff3fb9af478e4bdada47168681d9987917fd3170b043c612d6d01f0c923469c2' "$pg_client_deb" \
+            '13f382b7c876ffafd98a43431007697827197da78a86dd01b4e5a3da5e3de5eb' "$pg_server_deb" \
+            | sha256sum --check --strict
+          sudo apt-get install -y "$pg_client_deb" "$pg_server_deb"
+
+          for tool in createdb initdb pg_ctl postgres psql; do
+            "$PG_BIN/$tool" --version
+          done
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
