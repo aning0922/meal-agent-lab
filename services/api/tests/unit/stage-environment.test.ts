@@ -15,7 +15,8 @@ import {
  *
  * 对象 manifest 与授权 manifest 的 catalog 基线是从具体 patch 采集的，因此判据必须
  * fail closed 到 exact 18.4，而且必须覆盖**整套工具**：`initdb` 建集群、`pg_ctl`
- * 起停、`createdb` 建库、`psql` 执行 bootstrap 与 generated adapter。「只有 server
+ * 起停、`createdb` 建库、`psql` 执行 bootstrap 与 generated adapter，
+ * `pg_dump` / `pg_restore` 产生并验证备份。「只有 server
  * 是 18.4」是最容易发生、也最难被发现的那种混装。
  *
  * 这些结论不能只写在注释里，所以下面逐条断言。
@@ -37,7 +38,7 @@ test("the toolchain gate pins an exact patch and covers every required tool", ()
   assert.equal(supportedPostgresVersion, "18.4");
   assert.deepEqual(
     [...requiredPostgresExecutables],
-    ["createdb", "initdb", "pg_ctl", "postgres", "psql"],
+    ["createdb", "initdb", "pg_ctl", "pg_dump", "pg_restore", "postgres", "psql"],
   );
   assert.deepEqual(evaluatePostgresToolchain(healthyToolchain()), []);
 });
@@ -209,6 +210,7 @@ test("a mixed toolchain is refused even when postgres itself is 18.4", () => {
   // 全部失败项一次报出，不是只报第一个。
   assert.equal(
     evaluatePostgresToolchain({
+      ...healthyToolchain(),
       createdb: banner("createdb", "18.3"),
       initdb: null,
       pg_ctl: banner("pg_ctl", "18.4"),
@@ -218,6 +220,6 @@ test("a mixed toolchain is refused even when postgres itself is 18.4", () => {
     3,
   );
 
-  // 完全没有工具链时，五个工具全部报缺失。
-  assert.equal(evaluatePostgresToolchain({}).length, 5);
+  // 完全没有工具链时，七个工具全部报缺失。
+  assert.equal(evaluatePostgresToolchain({}).length, 7);
 });

@@ -8,6 +8,15 @@
 
 [阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1—M5 均已由项目总控 Accepted；M3B、M4 与 M5 的验收落点分别为 `cf43452`、`f671c51` 与 `efd186f`。M5.16 把八条 runtime source 与三条 identity-loss 判据收敛为 production guard 实际消费的闭集 registry，并为 11/11 规则建立独立 deletion witness。最终候选 `efd186f` 的静态审计 A 与动态审计 B 均为 **CLEAN**；B 在固定 Node.js `v24.18.0` 和同一 Docker generation 下只执行一次正式 `pnpm stage09a:check`，真实退出码 0、**14/14 PASS**、1,710 个公告 PGID 全部到达 ESRCH，作用域资源零残留。**M5 已于 2026-08-22 由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 同步转为 `Accepted`。**候选分支已推送；第五条远端 run 关闭了 `local-test-negatives` 的 inode 复用假设。第六条真实 run [`32571622520`](https://github.com/aning0922/meal-agent-lab/actions/runs/32571622520) 已通过工具链与第 1—7/14 步，第 8/14 步进一步暴露 targeted suite 三个文件替换反例的同类假设；现已统一改为旧 inode 仍存活时预建外部 inode，再以 rename 换名，本地 targeted suite **69/69 PASS**。仍待新的真实成功 run；候选尚未合入本地 `main`，所以 09A 总验收仍未完成、阶段不得记为 Pass。当前不购买服务器，不接真实微信配置，也不开放公网。
 
+**远端 CI 收口进度（2026-08-22）**：第七条真实 run
+[`32573159865`](https://github.com/aning0922/meal-agent-lab/actions/runs/32573159865)
+已通过精确工具链和第 1—13/14 步，最终 restore drill 暴露出一条混装缺口：
+workflow 验证 `PG_BIN` 内工具，archive 预检却裸调了 Ubuntu 系统旧版
+`pg_restore`。exact 18.4 契约现已扩为七个工具（新增 `pg_dump` /
+`pg_restore`），备份/恢复显式绑定已验证的 `PG_BIN`。新候选已从步骤 1
+完整通过本机 `stage09a:check` **14/14**（scripts tests **222/222**，restore drill
+及零残留均 PASS）。仍待该 HEAD 的真实远端成功 run；09A 不得提前记为 Pass。
+
 当前纵切覆盖：
 
 - fake 微信登录、家庭与 exact-only 最小库存流；

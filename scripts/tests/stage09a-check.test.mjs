@@ -44,7 +44,7 @@ const expectedActions = new Set([
   'docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e',
   'docker/setup-compose-action@4eb059ff7f16592f9c84d5ca339c53cb7c5064e2'
 ])
-const expectedWorkflowSha256 = '1bf308e1c997bf2ce92790d4683a8f9b786d571e37afe1d632e7e452e3773137'
+const expectedWorkflowSha256 = 'ad282b8831f750c02a0968d6efa6b3911935116206ce502b3be95bd531aa762d'
 
 const expectedPostgresql18Artifacts = [
   {
@@ -92,8 +92,8 @@ const ciPostgresql18PolicyProblems = (source) => {
   if (/sudo apt-get install -y postgresql-(?:client-)?18(?:\s|$)/m.test(source)) {
     problems.push('CI must not install the floating PostgreSQL 18 package candidate')
   }
-  if (!source.includes('for tool in createdb initdb pg_ctl postgres psql; do')) {
-    problems.push('CI must expose all five PostgreSQL tools to the exact-version environment gate')
+  if (!source.includes('for tool in createdb initdb pg_ctl pg_dump pg_restore postgres psql; do')) {
+    problems.push('CI must expose all seven PostgreSQL tools to the exact-version environment gate')
   }
   return problems
 }
@@ -1002,7 +1002,7 @@ test('the CI PostgreSQL 18.4 installer rejects floating or unverifiable toolchai
       'sudo apt-get install -y postgresql-18'
     ),
     source.replace(
-      'for tool in createdb initdb pg_ctl postgres psql; do',
+      'for tool in createdb initdb pg_ctl pg_dump pg_restore postgres psql; do',
       'for tool in postgres; do'
     ),
     source.replace(

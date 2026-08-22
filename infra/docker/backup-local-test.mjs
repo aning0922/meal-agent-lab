@@ -50,6 +50,7 @@ import {
   composeRunOneOff,
   createScopedArtifactCleanup,
   defaultProjectName,
+  hostPostgresExecutable,
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
@@ -384,7 +385,8 @@ export const performBackup = async (
     run,
     log,
     registerCleanup = null,
-    publishFile = writeExclusiveEvidenceFile
+    publishFile = writeExclusiveEvidenceFile,
+    environment = process.env
   },
   { project, outputDirectory, fileName = null }
 ) => {
@@ -589,7 +591,7 @@ export const performBackup = async (
             throw new Error('backup handoff bytes differed from the container source')
           }
           log('backup evidence: immutable source snapshot acquired')
-          const listed = await run(['pg_restore', '--create', '--list'], {
+          const listed = await run([hostPostgresExecutable('pg_restore', environment), '--create', '--list'], {
             timeoutMs: 120_000,
             cwd: repositoryRoot,
             stdin: source.bytes,

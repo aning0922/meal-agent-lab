@@ -57,6 +57,7 @@ import {
 import {
   composeRunOneOff,
   createScopedArtifactCleanup,
+  hostPostgresExecutable,
   oneOffIsGone,
   removeLingeringOneOffs,
   startExistingContainer
@@ -75,6 +76,22 @@ import {
 } from '../../infra/docker/m5-evidence-protocol.mjs'
 
 const repositoryRoot = resolve(import.meta.dirname, '../..')
+
+test('host PostgreSQL archive tools bind to the exact PG_BIN toolchain', () => {
+  assert.equal(hostPostgresExecutable('pg_restore', {}), 'pg_restore')
+  assert.equal(
+    hostPostgresExecutable('pg_restore', { PG_BIN: '/opt/postgresql/18/bin' }),
+    '/opt/postgresql/18/bin/pg_restore'
+  )
+  assert.throws(
+    () => hostPostgresExecutable('pg_restore', { PG_BIN: '' }),
+    /PG_BIN did not name a PostgreSQL tool directory/
+  )
+  assert.throws(
+    () => hostPostgresExecutable('unreviewed-tool', {}),
+    /unsupported host PostgreSQL executable/
+  )
+})
 
 const processGroupIsAlive = (pgid) => {
   try {
@@ -1027,7 +1044,11 @@ test('backup publishes no formal name until transient cleanup has succeeded', as
       writeFileSync(argv[3], archiveBytes)
       return { status: 0, signal: null, stdout: '', stderr: '' }
     }
-    if (argv[0] === 'pg_restore' && argv[1] === '--create' && argv[2] === '--list') {
+    if (
+      argv[0] === hostPostgresExecutable('pg_restore') &&
+      argv[1] === '--create' &&
+      argv[2] === '--list'
+    ) {
       listed += 1
       return {
         status: 0,
@@ -1260,7 +1281,11 @@ test('backup commits dump then sidecar only after transient cleanup is complete'
       writeFileSync(argv[3], archiveBytes)
       return { status: 0, signal: null, stdout: '', stderr: '' }
     }
-    if (argv[0] === 'pg_restore' && argv[1] === '--create' && argv[2] === '--list') {
+    if (
+      argv[0] === '/opt/postgresql/18/bin/pg_restore' &&
+      argv[1] === '--create' &&
+      argv[2] === '--list'
+    ) {
       return {
         status: 0,
         signal: null,
@@ -1314,7 +1339,13 @@ test('backup commits dump then sidecar only after transient cleanup is complete'
   }
   try {
     const result = await performBackup(
-      { compose, run, log: () => undefined, publishFile },
+      {
+        compose,
+        run,
+        log: () => undefined,
+        publishFile,
+        environment: { PG_BIN: '/opt/postgresql/18/bin' }
+      },
       { project: 'meal-agent-fixture', outputDirectory: directory, fileName: 'fixture.dump' }
     )
     assert.equal(result.dumpPath, resolve(realpathSync(directory), 'fixture.dump'))
@@ -1345,9 +1376,10 @@ test('restore rejects a checksum-valid malformed archive before any Compose side
             throw new Error('compose must not run')
           },
           run: async (argv) => {
-            assert.deepEqual(argv, ['pg_restore', '--create', '--list'])
+            assert.deepEqual(argv, ['/opt/postgresql/18/bin/pg_restore', '--create', '--list'])
             return { status: 1, signal: null, stdout: '', stderr: 'untrusted' }
           },
+          environment: { PG_BIN: '/opt/postgresql/18/bin' },
           log: () => undefined
         },
         { project: 'meal-agent-fixture', dumpPath: dump }

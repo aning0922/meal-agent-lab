@@ -6,6 +6,14 @@
 
 **当前 M5.16 Accepted 事实（2026-08-22，覆盖本文所有旧 M5 “当前”段落）**：总控按 [M5.16 任务书](plans/2026-08-m5-16-runtime-source-mutation-evidence.md)把八条 runtime source 与三条 identity-loss 判据改为 production guard 实际消费的闭集 registry，每条规则均由删除同一 registry 项的唯一 fixture 证明；代码与回归落点 `1e75e47`，验收候选为 `efd186f`。固定 Node.js `v24.18.0` 下，scripts tests **221/221**、production guard **38/38**；独立静态审计 A 与最终动态替代审计 B 均为 **CLEAN**，本地正式 `pnpm stage09a:check` 为 **14/14 PASS**。**M5 已由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 已转 `Accepted`。**候选分支已推送；第六条远端 run [`32571622520`](https://github.com/aning0922/meal-agent-lab/actions/runs/32571622520) 已通过前 7/14 步，第 8/14 步暴露 targeted suite 三个文件替换反例同样依赖 inode 不复用；现已统一采用预建外部 inode + rename，且本地 **69/69 PASS**。当前等待新的真实成功 run；候选尚未合入本地 `main`，09A 仍未 Pass。
 
+**远端 CI 收口进度（2026-08-22）**：第七条真实 run
+[`32573159865`](https://github.com/aning0922/meal-agent-lab/actions/runs/32573159865)
+已通过前 13/14 步，restore drill 暴露 CI 验证的 `PG_BIN` 与 archive 预检
+裸调系统旧版 `pg_restore` 的混装缺口。exact 18.4 契约现扩为七工具，
+备份/恢复显式绑定 `PG_BIN`；新候选已从步骤 1 完整通过本机
+`stage09a:check` **14/14**（scripts tests **222/222**，restore drill 与零残留均
+PASS）。该 HEAD 仍须取得真实远端 14/14；09A 仍未 Pass。
+
 > 下方 M5.15 及更早的“当前”字样均是当轮历史记录；状态判定只以上段 M5.16 Accepted 事实为准。
 
 **当前 M5.6 结构化退出与生产消费者收敛事实（2026-08-20，覆盖下方历史轮次）**：M5.5 候选 `72b75db` 的两个全新独立审计均为 **BLOCK**。总控已按 [M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)把 runtime `id:null` 学到的 immutable ID 纳入最终复查；五个生产 CLI 由顶层 `runSignalSettledCli` 包住全部普通出口；event-loop primitive 失败固定为 exit 1 且不回显异常；consumer registry 用 TypeScript checker 核对真实声明节点与直接 AST 位置，`if (false)` 和局部同名冒充均转红。实现提交 `b2780aa` 已通过 scripts tests **173/173**；证据候选 `2e2af96` 已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**。**M5.6 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
@@ -802,7 +810,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1—M5 均已 Accepted（各验收落点见上表）；M5 验收落点为 `efd186f`，scripts tests 221/221，独立 A/B 均 CLEAN，唯一正式本地 `stage09a:check` 14/14。候选分支已推送；第六条远端 run 已通过工具链与前 7/14 步，在第 8/14 步继续关闭同根因的三个 inode 替换反例，仍待新的真实成功 run。下一门禁是取得该成功 run，再完成本地 main/远端集成与 09A 总验收。依赖例外保持 9 条（到期 2026-11-08，见 ADR-0004）。ADR-0005 与 ADR-0006 均为 `Accepted`；候选尚未合入本地 `main`，PR #1 保持 Draft，阶段 09A 未标记完成。
+- 阶段 09A 状态：**In Progress**。M1—M5 均已 Accepted（各验收落点见上表）；M5 验收落点为 `efd186f`，独立 A/B 均 CLEAN。第七条远端 run 已通过前 13/14 步并暴露 host `pg_restore` 混装；当前整改候选把 exact 18.4 契约扩为七工具并已从步骤 1 完整通过本机 `stage09a:check` 14/14（scripts tests 222/222）。下一门禁是取得同一新 HEAD 的真实远端成功 run，再完成本地 main/远端集成与 09A 总验收。依赖例外保持 9 条（到期 2026-11-08，见 ADR-0004）。ADR-0005 与 ADR-0006 均为 `Accepted`；候选尚未合入本地 `main`，PR #1 保持 Draft，阶段 09A 未标记完成。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（已于 2026-08-11 Accepted）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，69 cases）、`check-m3b-signal-windows.mjs`（M3B Accepted 时为 5 个确定性进程组回归 + 5 个真实信号窗口；当前 M5 第七轮门禁为 5 + 6）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也

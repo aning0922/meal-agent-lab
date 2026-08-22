@@ -4,6 +4,14 @@
 
 **当前 M5.16 Accepted 事实（2026-08-22，覆盖下方历史轮次）**：总控按 [M5.16 任务书](plans/2026-08-m5-16-runtime-source-mutation-evidence.md)把八条 runtime source 与三条 identity-loss 判据改成生产 guard 实际消费的闭集 registry，并逐条删除同一 registry 项验证唯一 witness；代码与回归落点 `1e75e47`，最终验收候选为 `efd186f`。固定 Node.js `v24.18.0` 下，production guard **38/38**、全部 scripts tests **221/221**；独立静态审计 A 与动态审计 B 均为 **CLEAN**，本地正式 `pnpm stage09a:check` 为 **14/14 PASS**。**M5 已由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 已转 `Accepted`。**候选分支已推送；第六条远端 run `32571622520` 已通过前 7/14 步，第 8/14 步暴露 targeted suite 三个文件替换反例同样依赖 inode 不复用；现已统一采用预建外部 inode + rename，且本地 **69/69 PASS**。当前等待新的真实成功 run；候选尚未合入本地 `main`，09A 未 Pass。
 
+**远端 CI 收口进度（2026-08-22）**：第七条真实 run
+[`32573159865`](https://github.com/aning0922/meal-agent-lab/actions/runs/32573159865)
+已通过前 13/14 步，restore drill 暴露 `PG_BIN` 与系统旧版 `pg_restore` 混装。
+exact 18.4 工具链现覆盖 `pg_dump` / `pg_restore` 在内的七个工具，archive
+预检显式绑定 `PG_BIN`。新候选已从步骤 1 完整通过本机 `stage09a:check`
+**14/14**（scripts tests **222/222**，restore drill 与零残留均 PASS）。当前等待
+该 HEAD 的真实远端成功 run；09A 未 Pass。
+
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
 **历史 M5.5（2026-08-19，已被 M5.6 覆盖）**：[M5.5 任务书](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)的实现提交 `5b3f9b3` 曾通过 scripts tests 167/167；最终文档候选 `72b75db` 的 A/B 审计均为 BLOCK，且其 committed tracked-file baseline 不匹配，所以不能沿用当时的 14/14 作为最终候选证据。

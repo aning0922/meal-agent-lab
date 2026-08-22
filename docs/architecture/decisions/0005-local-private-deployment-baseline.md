@@ -121,8 +121,9 @@ database、`public`/`drizzle` schema、drizzle ledger 及其数组类型要么�
 GUC。
 
 对象 catalog 基线实际绑定 **PostgreSQL 18.4**，且判据是 exact-patch 的，并覆盖
-整套工具链：`createdb`、`initdb`、`pg_ctl`、`postgres`、`psql` 逐个按标准 banner 的
-主版本字段锚定解析，五个都必须是 18.4；混装（例如只有 server 是 18.4）与 `18.3`
+整套工具链：`createdb`、`initdb`、`pg_ctl`、`pg_dump`、`pg_restore`、`postgres`、`psql`
+逐个按标准 banner 的主版本字段锚定解析，七个都必须是 18.4；混装（例如只有 server
+是 18.4）与 `18.3`
 一律拒绝，并有自动化测试。M2B 已按此要求**解析真实镜像仓库**固定 18.4 的 exact
 image digest：`docker.io/library/postgres:18.4-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296`，
 由 `docker buildx imagetools inspect` 取得的 OCI image index 摘要，内含

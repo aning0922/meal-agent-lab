@@ -41,6 +41,7 @@ import {
   composeRunOneOff,
   createScopedArtifactCleanup,
   defaultProjectName,
+  hostPostgresExecutable,
   removeLingeringOneOffs
 } from './m4-lifecycle.mjs'
 import { createSecretScrubber } from './m3b-safe-output.mjs'
@@ -167,7 +168,7 @@ export const verifyBackupChecksum = (dumpPath) => {
  * `compose(args, options)` 与 `run` 由调用方提供。
  */
 export const performRestore = async (
-  { compose, run, log },
+  { compose, run, log, environment = process.env },
   { project, dumpPath }
 ) => {
   const { sha256, verifiedBytes } = verifyBackupChecksum(resolve(dumpPath))
@@ -190,7 +191,7 @@ export const performRestore = async (
   // pg_restore 从同一 verifiedBytes stdin 读取；不重新打开调用方路径。
   let listed
   try {
-    listed = await run(['pg_restore', '--create', '--list'], {
+    listed = await run([hostPostgresExecutable('pg_restore', environment), '--create', '--list'], {
       timeoutMs: 120_000,
       stdin: verifiedBytes,
       allowSuccessfulStdinEpipe: true

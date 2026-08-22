@@ -7,14 +7,17 @@ const execFileAsync = promisify(execFile);
 
 /**
  * 受监管的 PostgreSQL 工具。门禁不只看 `postgres`：`initdb` 建集群、`pg_ctl` 起
- * 停、`createdb` 建库、`psql` 执行 bootstrap 与 generated adapter。任何一个来自
- * 另一个 patch 的安装，采集到的 catalog 文本就可能与冻结 manifest 不一致，而
+ * 停、`createdb` 建库、`psql` 执行 bootstrap 与 generated adapter、`pg_dump` /
+ * `pg_restore` 产生并验证备份。任何一个来自另一个 patch 的安装，采集到的
+ * catalog 或 archive 证据就可能与冻结基线不一致，而
  * 「只有 server 是 18.4」恰恰是最容易发生、也最难被发现的那种混装。
  */
 export const requiredPostgresExecutables = [
   "createdb",
   "initdb",
   "pg_ctl",
+  "pg_dump",
+  "pg_restore",
   "postgres",
   "psql",
 ] as const;

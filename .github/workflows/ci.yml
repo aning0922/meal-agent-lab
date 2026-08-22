@@ -96,7 +96,7 @@ jobs:
             | sha256sum --check --strict
           sudo apt-get install -y "$pg_client_deb" "$pg_server_deb"
 
-          for tool in createdb initdb pg_ctl postgres psql; do
+          for tool in createdb initdb pg_ctl pg_dump pg_restore postgres psql; do
             "$PG_BIN/$tool" --version
           done
 

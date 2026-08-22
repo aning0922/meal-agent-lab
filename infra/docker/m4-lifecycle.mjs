@@ -53,6 +53,36 @@ export const composeDirectory = resolve(fileURLToPath(new URL('.', import.meta.u
 export const composeFile = resolve(composeDirectory, 'compose.local-test.yaml')
 export const migrationsDirectory = resolve(repositoryRoot, 'services/api/migrations')
 
+const supportedHostPostgresTools = new Set([
+  'createdb',
+  'initdb',
+  'pg_ctl',
+  'pg_dump',
+  'pg_restore',
+  'postgres',
+  'psql'
+])
+
+/**
+ * Resolve a host PostgreSQL executable through the same `PG_BIN` boundary that
+ * `environment:check` validates. Falling back to PATH is retained only when the
+ * operator did not provide PG_BIN (the local Homebrew path is discovered there).
+ * A configured PG_BIN must never be ignored: doing so let Ubuntu's older
+ * `pg_restore` consume a PostgreSQL 18.4 archive after the exact toolchain gate
+ * had already reported success.
+ */
+export const hostPostgresExecutable = (tool, environment = process.env) => {
+  if (!supportedHostPostgresTools.has(tool)) {
+    throw new Error('unsupported host PostgreSQL executable')
+  }
+  const binDirectory = environment.PG_BIN
+  if (binDirectory === undefined) return tool
+  if (typeof binDirectory !== 'string' || binDirectory === '') {
+    throw new Error('PG_BIN did not name a PostgreSQL tool directory')
+  }
+  return resolve(binDirectory, tool)
+}
+
 const zeroDockerTimestamp = '0001-01-01T00:00:00Z'
 
 export const parseContainerRuntimeState = (value) => {

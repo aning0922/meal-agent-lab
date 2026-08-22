@@ -266,9 +266,10 @@ database owner 夺回给 admin——都直接拒绝，因为单字段判据会�
 对象 catalog 基线实际绑定 **PostgreSQL 18.4**：约束/索引/表达式的规范化文本、
 PostgreSQL 18 把 NOT NULL 登记为约束的方式、`acldefault` 的取值都由具体 patch
 版本决定。判据是 exact-patch 的，并且覆盖**整套工具链**：`pnpm --filter
-@meal-agent/api environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`postgres`、
-`psql` 逐个执行 `--version`，按标准 banner 的**主版本字段**严格解析（锚定文法，
-不做任何 `includes` / 子串判断），五个都必须是 exact 18.4。混装会被拒绝：任一工具
+@meal-agent/api environment:check` 对 `createdb`、`initdb`、`pg_ctl`、`pg_dump`、
+`pg_restore`、`postgres`、`psql` 逐个执行 `--version`，按标准 banner 的**主版本
+字段**严格解析（锚定文法，不做任何 `includes` / 子串判断），七个都必须是
+exact 18.4。混装会被拒绝：任一工具
 是 18.3、banner 报的是别的工具名、或缺失/不可执行，即使 `postgres` 自己是 18.4 也
 失败；`psql (PostgreSQL) 18.3 (Ubuntu 18.4-1…)` 这种「主版本 18.3、vendor suffix
 含 18.4」的形态也会被拒绝。M2B 已按此要求解析真实仓库并在
