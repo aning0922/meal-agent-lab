@@ -110,6 +110,17 @@ generic、holder、callback 与动态 computed value flow 固定失败；`create
 committed-candidate 14 步门禁尚待本轮文档与 baseline 提交后执行；M5 未 Accepted，本 ADR
 保持 `Proposed`。
 
+实施注记（2026-08-22，M5.16，覆盖上一段当前状态）：M5.15 候选 `f5c9a4c` 的替代
+独立审计为 A=BLOCK、B=CLEAN。B 的单次正式 14/14 与动态资源终态证据有效；A 证明
+source/loss 布尔分支会被后续类型判据代偿，删掉 dynamic-computed 等 criterion 后 guard
+仍可全绿，且 focused test 会被全局执行计数以无关理由判红。M5.16 将八条 runtime
+source 与三条 identity-loss criterion 变成 production guard 实际消费的闭集 registry；
+每条规则由删除同一 registry 项的唯一 fixture 证明，测试失败不得来自另一 guard、总计数
+或异常。guard oracle 完整性在声明时结算，focused mutation 不再要求执行无关 oracle。
+代码与回归落点 `1e75e47`，scripts tests 218/218、production guard 38/38。完整
+committed-candidate 14 步门禁仍须在文档与 baseline 提交后从步骤 1 执行；M5 未 Accepted，
+本 ADR 保持 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

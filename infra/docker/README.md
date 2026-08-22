@@ -338,6 +338,16 @@ computed access 时立即拒绝，并保留直接受评审 property、native tim
 215/215。完整 committed-candidate 14 步门禁待文档与 baseline 提交后执行；M5 未 Accepted、
 09A 未 Pass、远端 CI 无真实 run。
 
+**M5.16 runtime-source-mutation 证据协议（2026-08-22，覆盖上段当前状态）**：M5.15
+候选 `f5c9a4c` 的动态审计 B 为 CLEAN，但静态审计 A 证明 dynamic-computed、
+`global`/`globalThis.process` 与 global-root source 判据可被删除而完整 guard 仍全绿；focused
+test 又会因未选择无关 oracle 被 after-hook 假红。production guard 现在实际消费八条
+runtime source 与三条 identity-loss 闭集规则，每条规则都由删除同一 registry 项的唯一
+fixture 证明；canonical `process` 不再把 property name 当成第二个 source。guard 会计改为
+声明时登记，focused mutation 的退出状态只由所选 oracle 决定。代码与回归落点
+`1e75e47`；production guard 38/38、全部 scripts tests 218/218。完整 committed-candidate
+14 步门禁待文档与 baseline 提交后执行；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验
