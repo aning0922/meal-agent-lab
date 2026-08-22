@@ -398,12 +398,15 @@ const moduleIdentityRules = Object.freeze([
   Object.freeze({ id: 'backslash', matches: (value) => value.includes('\\') }),
   Object.freeze({ id: 'whitespace', matches: (value) => /\p{White_Space}/u.test(value) }),
   Object.freeze({ id: 'format-character', matches: (value) => /\p{Cf}/u.test(value) }),
-  Object.freeze({ id: 'absolute-path', matches: (value) => value.startsWith('/') }),
+  Object.freeze({
+    id: 'absolute-path',
+    matches: (value) => value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value)
+  }),
   Object.freeze({
     id: 'non-node-scheme',
     matches: (value) => {
       const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:/u.exec(value)?.[0] ?? null
-      return scheme !== null && scheme !== 'node:'
+      return scheme !== null && scheme !== 'node:' && !/^[A-Za-z]:[\\/]/u.test(value)
     }
   })
 ])
@@ -430,12 +433,89 @@ const nodeTypePropertyIs = (checker, node, property, fileName) =>
     property
   )
 
-// `createRequire()` and `process.getBuiltinModule()` are alternative module
-// acquisition roots. Production has no legitimate consumer for either root,
-// so the closed boundary rejects the capability at acquisition time instead
-// of attempting to follow every alias, holder, reflection call or loaded ESM
-// namespace after the fact. The decisions below are bound to the Node type
-// declarations, not to local variable names.
+const sourceLosesRuntimeCapabilityIdentity = (node, sourceFile, checker) => {
+  if (!ts.isExpressionNode(node)) return false
+  const nodeIsPropertyName =
+    (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
+    (ts.isPropertyAssignment(node.parent) && node.parent.name === node)
+  const globalObjectIsCanonical = (candidate) =>
+    ts.isIdentifier(candidate) &&
+    ['global', 'globalThis'].includes(candidate.text) &&
+    resolvedSymbol(checker, candidate)?.declarations?.every((declaration) =>
+      declaration.getSourceFile() !== sourceFile) === true
+  const canonicalGlobalProcess =
+    (ts.isPropertyAccessExpression(node) &&
+      globalObjectIsCanonical(node.expression) &&
+      node.name.text === 'process') ||
+    (ts.isElementAccessExpression(node) &&
+      globalObjectIsCanonical(node.expression) &&
+      constantString(node.argumentExpression, checker) === 'process')
+  const processSource =
+    isCanonicalProcessIdentifier(checker, sourceFile, node) ||
+    canonicalGlobalProcess ||
+    (ts.isIdentifier(node) &&
+      !nodeIsPropertyName &&
+      nodeTypePropertyIs(checker, node, 'getBuiltinModule', 'process'))
+  const globalSource = globalObjectIsCanonical(node)
+  if (!processSource && !globalSource) return false
+
+  let current = node
+  while (ts.isParenthesizedExpression(current.parent) && current.parent.jsDoc === undefined) {
+    current = current.parent
+  }
+  const parent = current.parent
+
+  // A JSDoc cast can replace the Process type with `any`; accepting it would
+  // make every later declaration-identity check optional.
+  if (ts.isParenthesizedExpression(parent) && parent.jsDoc !== undefined) return true
+
+  if (ts.isPropertyAccessExpression(parent) && parent.expression === current) {
+    return false
+  }
+  if (ts.isElementAccessExpression(parent) && parent.expression === current) {
+    return constantString(parent.argumentExpression, checker) === null
+  }
+
+  // `process.kill.bind(process)` is the one reviewed bare-process use in the
+  // production tree. The receiver retains its Node declaration identity and
+  // the second occurrence is only the native method's `this` value.
+  if (
+    ts.isCallExpression(parent) &&
+    parent.arguments[0] === current &&
+    ts.isPropertyAccessExpression(parent.expression) &&
+    parent.expression.name.text === 'bind' &&
+    ts.isPropertyAccessExpression(parent.expression.expression) &&
+    (
+      processSource && (
+        isCanonicalProcessIdentifier(
+          checker,
+          sourceFile,
+          parent.expression.expression.expression
+        ) ||
+        nodeTypePropertyIs(
+          checker,
+          parent.expression.expression.expression,
+          'getBuiltinModule',
+          'process'
+        )
+      ) ||
+      globalSource && globalObjectIsCanonical(parent.expression.expression.expression)
+    ) &&
+    !['getBuiltinModule', 'dlopen'].includes(parent.expression.expression.name.text)
+  ) return false
+
+  // Descriptor maps, Object/generic/JSDoc erasure, holders and callbacks all
+  // move `process` or the global-object root past the last point at which
+  // declaration identity can be proved. Production has no legitimate need for
+  // such a value flow.
+  return true
+}
+
+// `createRequire()`, `process.getBuiltinModule()` and `process.dlopen()` are
+// synchronous module acquisition roots. Production has no legitimate
+// consumer for them. The boundary therefore closes both the roots and every
+// operation that would erase a Process source's declaration identity, rather
+// than guessing the capability back after reflection or generic forwarding.
 const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
   let found = false
   const visit = (node) => {
@@ -452,7 +532,8 @@ const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
       ts.isIdentifier(node) &&
       (
         nodeDeclarationAt(checker, node, 'module', 'createRequire') ||
-        nodeDeclarationAt(checker, node, 'process', 'getBuiltinModule')
+        nodeDeclarationAt(checker, node, 'process', 'getBuiltinModule') ||
+        nodeDeclarationAt(checker, node, 'process', 'dlopen')
       )
     ) {
       found = true
@@ -467,11 +548,17 @@ const sourceUsesSynchronousModuleLoader = (sourceFile, checker) => {
         (key === 'createRequire' &&
           nodeTypePropertyIs(checker, node.expression, key, 'module')) ||
         (key === 'getBuiltinModule' &&
+          nodeTypePropertyIs(checker, node.expression, key, 'process')) ||
+        (key === 'dlopen' &&
           nodeTypePropertyIs(checker, node.expression, key, 'process'))
       ) {
         found = true
         return
       }
+    }
+    if (sourceLosesRuntimeCapabilityIdentity(node, sourceFile, checker)) {
+      found = true
+      return
     }
     if (
       ts.isCallExpression(node) &&
@@ -567,7 +654,7 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
           ts.isNamespaceImport(node.importClause.namedBindings)
         ) {
           for (const name of targetNames) {
-            moduleProblems.push(`production capability namespace import was forbidden: ${node.moduleSpecifier.text}#${name}`)
+            moduleProblems.push(`${path}: production capability namespace import was forbidden`)
           }
         }
       }
@@ -583,7 +670,7 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
         const targetNames = target === null ? undefined : byModule.get(target)
         if (targetNames !== undefined) {
           for (const name of targetNames) {
-            moduleProblems.push(`production capability dynamic import was forbidden: ${moduleSpecifier}#${name}`)
+            moduleProblems.push(`${path}: production capability dynamic import was forbidden`)
           }
         }
       }
@@ -601,7 +688,7 @@ const discoverProductionCapabilities = (targets, overrides = new Map()) => {
         const targetNames = target === null ? undefined : byModule.get(target)
         if (targetNames !== undefined) {
           for (const name of targetNames) {
-            moduleProblems.push(`production capability re-export was forbidden: ${node.moduleSpecifier.text}#${name}`)
+            moduleProblems.push(`${path}: production capability re-export was forbidden`)
           }
         }
       }
@@ -1140,7 +1227,7 @@ test('namespace imports of protected capability modules fail for their own reaso
     new Map([[path, mutant]])
   )
   assert.equal(problems.includes(
-    'production capability namespace import was forbidden: ./run-stage09a-check.mjs#runStage09aCheck'
+    `${path}: production capability namespace import was forbidden`
   ), true)
 })
 
@@ -1198,7 +1285,7 @@ test('a constant-expression dynamic import cannot hide a protected capability mo
   )
   assert.equal(
     problems.some((problem) =>
-      problem === 'production capability dynamic import was forbidden: ./run-stage09a-check.mjs#runStage09aCheck'),
+      problem === `${path}: production capability dynamic import was forbidden`),
     true
   )
 })
@@ -1238,7 +1325,7 @@ test('two-argument dynamic imports cannot hide protected capability modules', ()
   )
   assert.equal(
     protectedProblems.includes(
-      'production capability dynamic import was forbidden: ./run-stage09a-check.mjs#runStage09aCheck'
+      `${path}: production capability dynamic import was forbidden`
     ),
     true
   )
@@ -1303,6 +1390,16 @@ test('each module identity grammar branch has an independent mutation witness', 
       `module identity rule did not own an independent witness: ${id}`
     )
   }
+  const windowsAbsolutePath = 'C:/private/tmp/module.mjs'
+  assert.equal(moduleSpecifierUsesUnreviewedIdentity(windowsAbsolutePath), true)
+  assert.equal(
+    moduleSpecifierUsesUnreviewedIdentity(
+      windowsAbsolutePath,
+      moduleIdentityRules.filter((rule) => rule.id !== 'absolute-path')
+    ),
+    false,
+    'the absolute-path rule did not own the Windows drive-path witness'
+  )
   for (const allowed of ['./module.mjs', '../module.mjs', 'typescript', 'node:path']) {
     assert.equal(moduleSpecifierUsesUnreviewedIdentity(allowed), false)
   }
@@ -1427,7 +1524,28 @@ test('production cannot acquire a synchronous module loader capability', () => {
     "const getBuiltin = process['getBuiltin' + 'Module']; void getBuiltin",
     "const getBuiltin = Reflect.get(process, 'getBuiltinModule'); void getBuiltin",
     "const { getBuiltinModule: getBuiltin } = process; void getBuiltin",
-    "const holder = { runtime: process }; const getBuiltin = holder.runtime.getBuiltinModule; void getBuiltin"
+    "const holder = { runtime: process }; const getBuiltin = holder.runtime.getBuiltinModule; void getBuiltin",
+    [
+      'const key = ["get", "Builtin", "Module"].join("")',
+      'const descriptors = Object.getOwnPropertyDescriptors(process)',
+      'const getBuiltin = descriptors[key].value',
+      'const moduleNamespace = getBuiltin("node:module")',
+      'const createKey = ["create", "Require"].join("")',
+      'const create = Object.getOwnPropertyDescriptors(moduleNamespace)[createKey].value',
+      'const load = create(import.meta.url)',
+      'void load("node:process").exit'
+    ].join('; '),
+    'const erasedProcess = /** @type {any} */ (process); const loaderRoot = erasedProcess.getBuiltinModule; void loaderRoot',
+    'const loaderRoot = Object(process)["get" + "BuiltinModule"]; void loaderRoot',
+    'const loaderRoot = (/** @type {any} */ (process))?.getBuiltinModule; void loaderRoot',
+    '/** @template T @param {T} value @returns {any} */ const erase = (value) => value; const loaderRoot = erase(process).getBuiltinModule; void loaderRoot',
+    'const loaderRoot = Object(process).getBuiltinModule.bind(process); void loaderRoot',
+    'const descriptors = Object.getOwnPropertyDescriptors(globalThis); const loaderRoot = descriptors.process.value.getBuiltinModule; void loaderRoot',
+    'const loaderRoot = Reflect.get(globalThis, "process").getBuiltinModule; void loaderRoot',
+    'const holder = { root: globalThis }; const loaderRoot = holder.root.process.getBuiltinModule; void loaderRoot',
+    'import processRoot from "node:process"; const loaderRoot = Object(processRoot).getBuiltinModule; void loaderRoot',
+    "const addon = { exports: {} }; process.dlopen(addon, '/private/tmp/audit.node')",
+    "const addon = { exports: {} }; process['dl' + 'open'](addon, '/private/tmp/audit.node')"
   ]
   for (const body of cases) {
     const problems = productionConsumerRegistryProblems(
@@ -1467,6 +1585,57 @@ test('production cannot acquire a synchronous module loader capability', () => {
     false,
     `local same-name declarations were mistaken for Node capabilities: ${JSON.stringify(localProblems)}`
   )
+
+  const localRootsPath = 'scripts/local-runtime-roots.mjs'
+  const localRoots = [
+    'const process = { getBuiltinModule: () => null, dlopen: () => null }',
+    'const globalThis = { process }',
+    'const reflected = Object.getOwnPropertyDescriptors(globalThis)',
+    'void reflected.process.value.getBuiltinModule',
+    ''
+  ].join('\n')
+  const localRootProblems = productionConsumerRegistryProblems(
+    m5ProductionGuards,
+    new Map([[localRootsPath, localRoots]])
+  )
+  assert.equal(
+    localRootProblems.some((problem) =>
+      problem.endsWith('production synchronous module loader capability was forbidden')),
+    false,
+    `local same-name roots were mistaken for Node capabilities: ${JSON.stringify(localRootProblems)}`
+  )
+})
+
+test('production capability diagnostics never reflect an untrusted module identity', () => {
+  const path = 'scripts/check-markdown-links.mjs'
+  const source = readFileSync(resolve(repositoryRoot, path), 'utf8')
+  const sentinel = 'M5_DIAGNOSTIC_SENTINEL'
+  const cases = [
+    {
+      body: `import * as hidden from './${sentinel}/../run-stage09a-check.mjs'; void hidden`,
+      reason: `${path}: production capability namespace import was forbidden`
+    },
+    {
+      body: `void import('./${sentinel}/../run-stage09a-check.mjs')`,
+      reason: `${path}: production capability dynamic import was forbidden`
+    },
+    {
+      body: `export * from './${sentinel}/../run-stage09a-check.mjs'`,
+      reason: `${path}: production capability re-export was forbidden`
+    }
+  ]
+  for (const { body, reason } of cases) {
+    const problems = productionConsumerRegistryProblems(
+      m5ProductionGuards,
+      new Map([[path, `${source}\n${body}\n`]])
+    )
+    assert.equal(problems.includes(reason), true, `fixed diagnostic disappeared for ${body}`)
+    assert.equal(
+      problems.some((problem) => problem.includes(sentinel)),
+      false,
+      `production diagnostic reflected the module identity for ${body}`
+    )
+  }
 })
 
 test('protected entrypoints cannot use createRequire to reacquire process.exit', () => {
