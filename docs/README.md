@@ -2,7 +2,7 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前 M5.14 同步 module-loader 能力闭包整改（2026-08-21，覆盖下方历史轮次）**：M5.13 候选 `e78c5b7` 的独立审计 A 为有效 BLOCK，确认 `createRequire()`/`process.getBuiltinModule` 同步 loader 根能力未进入 production 闭集，以及九条 identity grammar 分支缺少独立 mutation 判别力；审计 B 因独立 worktree 缺 workspace 依赖而为 INVALID，不能记作 CLEAN。总控按 [M5.14 任务书](plans/2026-08-m5-14-synchronous-module-loader-closure.md)改为声明身份闭集：production surface 拒绝 Node module namespace、`createRequire` 与 `getBuiltinModule`，相同名称的本地声明不受影响；九条 identity rule 各有独立 witness。production guard 为 **34/34**，全部 scripts tests 为 **214/214**；提交态证据落点 `0ee3269` 已完整通过 `stage09a:check` 14/14、Markdown links 78/317 与 scoped 零残留复核。**M5.14 Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.15 runtime capability source 闭包整改（2026-08-22，覆盖下方历史轮次）**：M5.14 候选 `3523ebe` 的独立审计 B 为有效 BLOCK，确认 descriptor map 会在 property 检查前抹掉 `process`/`node:module` 的声明身份；审计 A 被平台中断、没有正式报告，按 INVALID 处理，但其探针中的类型擦除、诊断回显与 Windows rule 归属已由总控在 Node.js `v24.18.0` 下独立复现。总控按 [M5.15 任务书](plans/2026-08-m5-15-runtime-capability-source-closure.md)把闭包前移到 runtime capability source 的身份丢失点，并将 capability 诊断固定化。production guard 为 **35/35**，全部 scripts tests 为 **215/215**；完整 committed-candidate 14 步门禁尚待本轮文档与 baseline 提交后从步骤 1 执行。**M5.15 Implementation complete — narrow gates PASS, committed-candidate gate pending；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 **历史 M5.6（2026-08-20，已被 M5.7 覆盖）**：[M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)的 runtime learned ID 与初版结构化退出实现仍保留；其最终独立审计结论为 A=BLOCK，B 因平台 cybersecurity `systemError` 无有效报告，不能作为 CLEAN。
 
@@ -80,6 +80,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [阶段 09A M5.12 封闭能力入口与 canonical report input 整改](plans/2026-08-m5-12-closed-capability-and-canonical-input.md)
 - [阶段 09A M5.13 production module identity 闭包整改](plans/2026-08-m5-13-production-module-identity-closure.md)
 - [阶段 09A M5.14 同步 module-loader 能力闭包整改](plans/2026-08-m5-14-synchronous-module-loader-closure.md)
+- [阶段 09A M5.15 runtime capability source 闭包整改](plans/2026-08-m5-15-runtime-capability-source-closure.md)
 - [计划索引](plans/README.md)
 - [微信开发者工具走查证据](evidence/stage-08-gui/README.md)
 - [依赖例外产物扫描证据](evidence/stage-08-audit/weapp-advisory-scan.json)

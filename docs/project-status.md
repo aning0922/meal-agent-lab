@@ -1,18 +1,18 @@
 # 项目状态
 
-最后更新：2026-08-21
+最后更新：2026-08-22
 
 ## 当前结论
 
-**当前 M5.14 同步 module-loader 能力闭包整改事实（2026-08-21，覆盖本文所有旧 M5 “当前”段落）**：M5.13 候选 `e78c5b7` 的独立审计 A 为有效 BLOCK，确认 `node:module#createRequire()` 可同步取得受保护 ESM 与 `process.exit`，且 identity grammar 的新增分支删除后回归仍可能全绿；审计 B 因新 worktree 缺 workspace 依赖而为 INVALID，不能记作 CLEAN。总控按 [M5.14 任务书](plans/2026-08-m5-14-synchronous-module-loader-closure.md)把同步 module-loader 收成能力根闭集：production surface 依据 TypeScript 的 Node 声明身份拒绝 module namespace、`createRequire` 与 `process.getBuiltinModule`，同名本地声明保持允许；empty/query/fragment/percent/backslash/White_Space/Cf/absolute path/non-node scheme 九条 identity rule 各有独立 mutation witness。代码与回归落点 `2ab43dc`，固定 Node.js `v24.18.0` 的 scripts tests 为 **214/214**、production guard 34/34；提交态证据落点 `0ee3269` 已从步骤 1 通过 `pnpm stage09a:check` **14/14**，Markdown links 78/317，scoped cleanup 零残留。**M5.14 Implementation complete — committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
+**当前 M5.15 runtime capability source 闭包整改事实（2026-08-22，覆盖本文所有旧 M5 “当前”段落）**：M5.14 候选 `3523ebe` 的独立审计 B 为有效 BLOCK，确认 descriptor map 会在检查 Node property 前抹掉 `process`/`node:module` 的声明身份；审计 A 被平台中断、没有正式报告，按 INVALID 处理，但其遗留探针里的类型擦除、诊断回显和 Windows absolute 归属已由总控在 Node.js `v24.18.0` 下独立复现。总控按 [M5.15 任务书](plans/2026-08-m5-15-runtime-capability-source-closure.md)把 loader boundary 前移到 canonical `process`/`globalThis` 进入 descriptor、Object、generic、holder 或动态 computed access 的最后可证明身份点，并固定三类 capability 诊断。代码与回归落点 `5b4474c`；scripts tests **215/215**、production guard 35/35。**M5.15 Implementation complete — narrow gates PASS, committed-candidate 14-step gate pending；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
-> 下方 M5.13 及更早的“当前”字样均是当轮历史记录；状态判定只以上段 M5.14 为准。
+> 下方 M5.14 及更早的“当前”字样均是当轮历史记录；状态判定只以上段 M5.15 为准。
 
 **当前 M5.6 结构化退出与生产消费者收敛事实（2026-08-20，覆盖下方历史轮次）**：M5.5 候选 `72b75db` 的两个全新独立审计均为 **BLOCK**。总控已按 [M5.6 任务书](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)把 runtime `id:null` 学到的 immutable ID 纳入最终复查；五个生产 CLI 由顶层 `runSignalSettledCli` 包住全部普通出口；event-loop primitive 失败固定为 exit 1 且不回显异常；consumer registry 用 TypeScript checker 核对真实声明节点与直接 AST 位置，`if (false)` 和局部同名冒充均转红。实现提交 `b2780aa` 已通过 scripts tests **173/173**；证据候选 `2e2af96` 已从步骤 1 串行通过 `pnpm stage09a:check` **14/14**。**M5.6 Implementation complete — pending independent A/B review；M5 未 Accepted；09A 未 Pass；远端 CI 无真实 run。**
 
 **历史 M5.4（2026-08-19，已被 M5.5/M5.6 覆盖）**：实现提交 `ec14771` 的当时正向证据与未复现异常保留在 [M5.4 任务书](plans/2026-08-m5-4-final-state-signal-guard-convergence.md)；后续独立审计结论和当前状态一律以上方 M5.6 段落为准。
 
-阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1、M2A、M2B、M3A、M3B 与 M4 均已 Accepted；M5.14 的 committed-candidate gate 已完整 14/14 PASS，当前等待两个全新独立 A/B 审计，M5 未 Accepted。远端 CI 只登记 workflow 已配置、无真实 run，ADR-0005 已转 `Accepted`，ADR-0006 保持 `Proposed`。**09A 总验收未完成，阶段 09A 仍不得记为 Pass。**详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
+阶段 08 最终审计整改已完成本地实现与标准门禁，并于 2026-07-26 由项目总控以 fast-forward 合并至 `main`（实现落点 `df8107c`）。阶段 08 已收口。[阶段 09A](plans/2026-07-stage-09a-local-deployability-baseline.md)**实施中**：先建立 Docker Compose 本地可部署性、数据库账号隔离、迁移、健康检查与备份恢复基线，不购买服务器、不接真实微信配置、不开放公网。M1、M2A、M2B、M3A、M3B 与 M4 均已 Accepted；M5.15 窄门禁已绿，完整 committed-candidate 14 步门禁待本轮提交后执行，M5 未 Accepted。远端 CI 只登记 workflow 已配置、无真实 run，ADR-0005 已转 `Accepted`，ADR-0006 保持 `Proposed`。**09A 总验收未完成，阶段 09A 仍不得记为 Pass。**详见本文末的阶段 09A 小节。整改遵循 [ADR-0004](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 的预发布窄例外：仓库没有已部署生产/测试消费者，因此 contracts 保持 `0.4.0` 并在 `/api/v1` 原地修正；若发现真实环境或外部消费者，该例外立即失效。
 
 **当前 M5 更新（2026-08-15，覆盖上段历史句）**：第九轮候选 `4a72218` 的两路独立
 审计仍为 BLOCK；第十轮实现落点 `3849bbd` 已关闭同步 spawn/stdin/timer-clear primitive
@@ -133,11 +133,11 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | PostgreSQL migration/RLS/concurrency/身份边界 | 128/128 |
 | client unit + page rendering | 129/129 |
 | stage 07 + stage 08 双用户 E2E | 21/21 |
-| audit、runtime image、M4 remediation、聚合器/审计协议/CI 脚本单测 | 214/214（M5.14 同步 loader 能力闭包与逐分支 mutation 门禁） |
+| audit、runtime image、M4 remediation、聚合器/审计协议/CI 脚本单测 | 215/215（M5.15 runtime capability source 闭包与固定诊断门禁） |
 | generated adapter 只读门禁 | 4/4 逐字节一致 |
 | OpenAPI | 19 paths / 25 operations，生成一致 |
 | weapp | production build Pass |
-| Markdown links | 78 files / 317 local links（M5.14 committed candidate 实测） |
+| Markdown links | 本轮 M5.15 文档提交后复跑 |
 | Compose 拓扑静态门禁 | PASS（14 服务 / 8 host Secret source / 10 named volume / 2 网络） |
 | Compose 拓扑变异反向测试 | 当前 45/45 以指定理由捕获，0 漏网；历史 15/15、39/39、44/44 仅代表更早拓扑 |
 
@@ -159,7 +159,7 @@ contracts 28、API unit 12、API HTTP 6、PostgreSQL 50；差额来自阶段 09A
 | M3A 配置与 Secret file 消费核心 | 总控 **Accepted**，验收落点 `a839df1` |
 | M3B 环境模板、八份 Secret 与完整 bootstrap 链实证 | **已于 2026-08-11 Accepted，验收落点 `cf43452`**。扫描器范围与已登记的未闭合族见下方专节 |
 | M4 生命周期、备份和恢复 | **已于 2026-08-11 Accepted，验收落点 `f671c51`**（停止/重启持久化、`pg_dump` + SHA-256 + 单事务恢复、授权面逐字一致、SIGTERM 限时强制退出，均有演练实证） |
-| M5 门禁、CI 与文档 | **M5.14 Implementation complete — committed-candidate gate PASS, pending independent A/B review，未 Accepted**。scripts tests 214/214；production scripts/infra 禁止 dynamic import 与同步 module-loader 根能力，九条静态 identity rule 各有独立 mutation witness；`stage09a:check` 14/14。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.14 任务书与 ADR-0006 |
+| M5 门禁、CI 与文档 | **M5.15 Implementation complete — narrow gates PASS, committed-candidate gate pending，未 Accepted**。scripts tests 215/215；production runtime roots 在身份丢失点 fail closed，capability 诊断不反射 module specifier；完整 `stage09a:check` 待本轮提交后从步骤 1 执行。GitHub Actions **无真实远端 run，只登记已配置**。见 M5.15 任务书与 ADR-0006 |
 | 09A 总验收 | **未完成**（「## 验收门禁」全表 + 远端 CI 条件） |
 
 #### M3B 扫描器范围与已登记的未闭合族
@@ -802,7 +802,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**In Progress**。M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted（各验收落点见上表）；**M5.14 Implementation complete — committed-candidate gate PASS, pending independent A/B review，M5 未 Accepted；scripts tests 214/214、stage09a 14/14**。下一门禁是两个全新独立 A/B 审计。GitHub Actions 无真实远端 run，只登记已配置。依赖例外保持 9 条（到期 2026-11-08，见 ADR-0004）。本轮受控修改了 M5 production module guard，不能声称整个 09A 冻结面零改动。ADR-0005 已凭既有真实容器证据转 `Accepted`；ADR-0006 保持 `Proposed`；09A 总验收未完成，阶段 09A 未标记完成。PR #1 保持 Draft。
+- 阶段 09A 状态：**In Progress**。M1、M2A、M2B、M3A、M3B 与 M4 已 Accepted（各验收落点见上表）；**M5.15 Implementation complete — narrow gates PASS, committed-candidate gate pending，M5 未 Accepted；scripts tests 215/215**。下一门禁是本轮提交后的完整 `stage09a:check`。GitHub Actions 无真实远端 run，只登记已配置。依赖例外保持 9 条（到期 2026-11-08，见 ADR-0004）。本轮受控修改了 M5 production module guard，不能声称整个 09A 冻结面零改动。ADR-0005 已凭既有真实容器证据转 `Accepted`；ADR-0006 保持 `Proposed`；09A 总验收未完成，阶段 09A 未标记完成。PR #1 保持 Draft。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（已于 2026-08-11 Accepted）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，69 cases）、`check-m3b-signal-windows.mjs`（M3B Accepted 时为 5 个确定性进程组回归 + 5 个真实信号窗口；当前 M5 第七轮门禁为 5 + 6）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
@@ -995,4 +995,4 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 
 菜单推荐、菜谱、采购、完整做饭、Agent、报餐/投票也不在阶段 08 范围。
 
-仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M1—M4 已 Accepted；**M5.14 Implementation complete — committed-candidate gate PASS, pending independent A/B review，M5 未 Accepted；GitHub Actions workflow 已配置但无真实 run**；09A 总验收未完成。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。
+仓库已配置受控 remote/upstream；远端 CI 仍需由阶段 09A 的真实 GitHub Actions run 提供证据。M1—M4 已 Accepted；**M5.15 Implementation complete — narrow gates PASS, committed-candidate gate pending，M5 未 Accepted；GitHub Actions workflow 已配置但无真实 run**；09A 总验收未完成。所有外部 Deferred 项保持原状态。菜单推荐开始前仍需单独完成 cooking-technique、allergen、food concept、宗教/伦理及食品安全规则词表的数据治理；该产品安全工作不与本地容器化混成同一个提交。

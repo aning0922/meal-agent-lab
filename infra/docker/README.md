@@ -327,6 +327,17 @@ guard 34/34、全部 scripts tests 214/214。第一次提交态链在 tracked-fi
 `stage09a:check` 14/14、Markdown links 78/317 与 scoped 零残留复核。当前等待两个全新
 独立 A/B 审计；M5 未 Accepted、09A 未 Pass、远端 CI 无真实 run。
 
+**M5.15 runtime-capability-source 协议（2026-08-22，覆盖 M5.14 的 property-only
+判定）**：有效审计 B 证明 descriptor map 会先抹掉 Node 声明身份，再重建
+`getBuiltinModule`/`createRequire`；中断审计 A 无正式结论，但其遗留探针由总控独立复现
+五种类型擦除、`dlopen` 与诊断回显。production guard 现在在 canonical `process`、
+`globalThis` 或 Node Process alias 进入 descriptor/Object/generic/holder/callback/dynamic
+computed access 时立即拒绝，并保留直接受评审 property、native timer/kill bind 与本地同名
+对象的反向对照。三类 capability 诊断不反射 specifier；Windows drive absolute witness
+不再由 scheme rule 代偿。代码落点 `5b4474c`；production guard 35/35、全部 scripts tests
+215/215。完整 committed-candidate 14 步门禁待文档与 baseline 提交后执行；M5 未 Accepted、
+09A 未 Pass、远端 CI 无真实 run。
+
 **数据库名在 M2B 是固定的 `meal_agent`**，不接受环境变量插值：未经校验的插值会
 直接落进 `createdb` / `bootstrap.sh` 的 argv（例如 `--host=evil` 会被当成连接
 选项）。可配置能力归 M3——届时先由统一配置 schema 校验

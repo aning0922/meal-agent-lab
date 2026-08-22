@@ -98,6 +98,18 @@ identity rule 各有独立 mutation witness。代码与回归落点 `2ab43dc`，
 committed-candidate gate PASS, pending independent A/B review；M5 未 Accepted，本 ADR
 保持 `Proposed`。
 
+实施注记（2026-08-22，M5.15，覆盖上一段当前状态）：M5.14 候选 `3523ebe` 的
+独立审计 B 为有效 BLOCK：descriptor map 可在 declaration-identity 判据前抹掉
+`process`/`node:module` 的类型并重建同步 loader；审计 A 被平台中断、没有正式报告，
+按 INVALID 处理，但其遗留探针由总控独立复现。M5.15 把边界前移到 runtime capability
+source 的最后可证明身份点：canonical `process`/`globalThis` 的 descriptor、Object、
+generic、holder、callback 与动态 computed value flow 固定失败；`createRequire`、
+`getBuiltinModule` 和 `dlopen` 仍绑定 Node 声明身份；本地同名对象保持允许。capability
+诊断不再反射 module specifier，Windows drive absolute witness 由 absolute rule 独立拥有。
+代码与回归落点 `5b4474c`，scripts tests 215/215、production guard 35/35。当前完整
+committed-candidate 14 步门禁尚待本轮文档与 baseline 提交后执行；M5 未 Accepted，本 ADR
+保持 `Proposed`。
+
 ## 背景
 
 M5 Round 12 的两个有界审计周期都证明了同一类问题：正常路径可以连续通过

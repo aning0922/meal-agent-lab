@@ -30,4 +30,5 @@
 - [阶段 09A M5.12：封闭能力入口与 canonical report input 整改](2026-08-m5-12-closed-capability-and-canonical-input.md)
 - [阶段 09A M5.13：production module identity 闭包整改](2026-08-m5-13-production-module-identity-closure.md)
 - [阶段 09A M5.14：同步 module-loader 能力闭包整改](2026-08-m5-14-synchronous-module-loader-closure.md)
+- [阶段 09A M5.15：runtime capability source 闭包整改](2026-08-m5-15-runtime-capability-source-closure.md)
 - [阶段 09A M5.8：声明身份与动态审计证据闭合（历史）](2026-08-m5-8-declaration-and-audit-evidence-closure.md)
