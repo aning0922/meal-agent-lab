@@ -6,9 +6,9 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**进行中**：M1—M5 均已由项目总控 Accepted；M3B、M4 与 M5 的验收落点分别为 `cf43452`、`f671c51` 与 `efd186f`。M5.16 把八条 runtime source 与三条 identity-loss 判据收敛为 production guard 实际消费的闭集 registry，并为 11/11 规则建立独立 deletion witness。最终候选 `efd186f` 的静态审计 A 与动态审计 B 均为 **CLEAN**；B 在固定 Node.js `v24.18.0` 和同一 Docker generation 下只执行一次正式 `pnpm stage09a:check`，真实退出码 0、**14/14 PASS**、1,710 个公告 PGID 全部到达 ESRCH，作用域资源零残留。**M5 已于 2026-08-22 由项目总控 Accepted，验收落点 `efd186f`；ADR-0006 同步转为 `Accepted`。**Accepted 后的远端 CI 收口候选 `24be8b3` 已推送，并由真实 GitHub Actions run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 在精确 Node.js 24.18.0、Docker 29.6.2 与七项 PostgreSQL 18.4 host 工具链上完整通过 `stage09a:check` **14/14**；archive-list、完整 TOC、篡改拒绝、单事务恢复与作用域零残留均取得远端证据。候选尚未合入本地 `main`，所以 09A 总验收仍未完成、阶段不得记为 Pass。当前不购买服务器，不接真实微信配置，也不开放公网。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**已完成并通过项目总控验收**：M1—M5 均已 Accepted；M3B、M4 与 M5 的验收落点分别为 `cf43452`、`f671c51` 与 `efd186f`。最终独立审计 A/B 均为 **CLEAN**；M5 后的远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 随后在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；主线 run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。本地 `main` 与 `origin/main` 已一致，阶段 09A 于 2026-08-22 记为 **Accepted / Pass**。范围仍只覆盖本地/私有测试部署基线；当前不购买服务器，不接真实微信配置，也不开放公网。
 
-**远端 CI 收口进度（2026-08-22）**：第八条真实 run
+**阶段 09A 集成收口（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
 在精确 HEAD `24be8b35b8a115524f7eeb36f90f693bfed59d87` 上以
 `workflow_dispatch` 完成，job `97040690124` conclusion 为 `success`，总用时
@@ -17,8 +17,9 @@
 PostgreSQL 18.4 工具；同一个 `pnpm stage09a:check` 明确输出 **14/14 PASS**。
 第七条 run 暴露的 host `pg_restore` 混装已关闭，restore drill 的 archive-list、
 语法与完整 TOC、篡改拒绝、单事务恢复、授权面/两户五表逐字节一致和零残留均在
-远端日志中通过。远端 CI 阻断已关闭；剩余门禁是候选进入本地 `main`/既有 Draft PR
-的集成裁定，以及 09A 总验收，当前仍不得提前记为 Pass。
+远端日志中通过。随后 PR #1 的完整门禁 run `32579605469` 与 main push run
+`32581313226` 均成功；PR 已合并，本地 `main` 与 `origin/main` 均为 `8b77ce3`。
+阶段 09A 的集成和总验收门禁已闭合，下一步进入阶段 09B/产品核心工作的单独规划。
 
 当前纵切覆盖：
 

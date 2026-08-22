@@ -1,8 +1,8 @@
 # 阶段 09A：本地可部署性与私有测试基线
 
 - 日期：2026-07-26（2026-08-22 更新实施状态）
-- 状态：In Progress（M1 Accepted；M2A 的 R8A 只读 projector 已由总控 Accepted，验收落点 `ca65275`；R8B 已由总控 Accepted；**M2A 整体已由总控 Accepted，验收落点 `5e480803`**；**M2B 已由总控 Accepted，验收落点 `d0f2219`**；**M3A「配置与 Secret file 消费核心」已由总控 Accepted，验收落点 `a839df1`**；**M3B「环境模板、八份 Secret、完整 bootstrap 链、`/readyz=200` 与网络隔离实证」已于 2026-08-11 Accepted，验收落点 `cf43452`**；**M4「生命周期、备份和恢复」已于 2026-08-11 由总控 Accepted，验收落点 `f671c51`**；**M5「门禁、CI 与文档」已于 2026-08-22 由总控 Accepted，验收落点 `efd186f`**；候选分支已推送，第八条真实远端 run `32577003712` 已在精确候选 `24be8b3` 上完成 `stage09a:check` 14/14；候选尚未合入本地 `main`；09A 总验收未完成）
-- 计划分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1，保持 Draft）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
+- 状态：**Accepted / Pass（2026-08-22）**。M1—M5 均已由总控 Accepted；M3B、M4、M5 验收落点分别为 `cf43452`、`f671c51`、`efd186f`。远端候选 run `32577003712`、PR run `32579605469` 与 main run `32581313226` 均完整通过 `stage09a:check` 14/14；PR #1 已以普通 merge 合入，集成落点 `8b77ce3`；本地 `main` 与 `origin/main` 已一致。阶段验收只覆盖本地可部署性与私有测试基线，不代表云、公网、真实微信或发布能力。
+- 阶段分支：`claude/stage-09a-api-container-baseline-9f286c`（PR #1 已普通 merge，集成落点 `8b77ce3`）；R8B 实施分支 `claude/stage-09a-m2a-r8b`，基线 `ca65275`，验收落点 `5e480803`；M2B 实施分支 `claude/stage-09a-m2b-compose-topology`（本地 worktree 的分支名带工具生成后缀 `-e463dc`，目录名沿用更早的 `stage-07-…`），基线 `0ca4ca2`；M3A 实施分支 `claude/stage-09a-m3-config-secret-consumption`，基线 `8c99c46`，验收落点 `a839df1`；M3B 实施分支 `claude/stage-09a-m3b-bootstrap-chain`，基线 `8292df0`，验收落点 `cf43452`；M4 实施分支 `claude/stage-09a-m4-lifecycle`，验收落点 `f671c51`；M5 实施分支 `claude/stage-09a-m5-gates`，基线 main `5281482`
 - 规划基线：`main` `35ddf78`
 - 负责人：项目总控、基础设施执行任务、安全复核任务
 
@@ -4759,9 +4759,36 @@ cleanup 最终确认容器、网络、named/anonymous volume、本轮 immutable 
 Secret 全部不存在。
 
 因此 M5 Accepted 后的远端 CI 阻断已关闭，M5 验收落点仍为 `efd186f`，不迁移到
-CI 修复提交。阶段 09A 仍为 In Progress：剩余门禁是候选进入本地 `main`/既有 Draft
+CI 修复提交。**在该 run 完成时**阶段 09A 仍为 In Progress：剩余门禁是候选进入本地 `main`/既有 Draft
 PR 的集成裁定，以及对「## 验收门禁」全表作最终总验收；本段不授权或冒充 merge，
 也不把 workflow success 自动等同于 09A Pass。
+
+#### PR/main 集成与阶段 09A 总验收（2026-08-22）
+
+用户随后明确授权主线与既有 PR 集成。PR #1 的 head 由旧的 M2A 落点
+`ca65275` 以 fast-forward 更新到完整阶段候选 `b0af270`，正文同步为 M1—M5 的
+真实验收范围，并从 Draft 转为 Ready；没有 amend、rebase、reset 或 force-push。
+PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469)
+在精确 head `b0af2705da4262df906f4d8fc90d22b72e33163a` 上成功完成同一
+`stage09a:check` 14/14 后，PR #1 以普通 merge 合入 `main`，merge commit 为
+`8b77ce311777b7be374aa5ed486bee8a40028ccc`。
+
+合并触发的 main push run
+[`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226)
+在上述精确 merge commit 上再次成功完成 `stage09a:check` 14/14：前置工具链为
+Node.js 24.18.0、Docker 29.6.2 与七项 PostgreSQL 18.4；第 1—14 步逐项 PASS，
+scripts tests 222/222，
+restore drill 明确完成 archive-list、完整 custom-archive TOC、篡改拒绝、单事务恢复
+及 scoped cleanup。job `97050998490` 从 2026-08-22 15:18:50Z 运行到
+15:52:41Z，conclusion 为 `success`。本地 `main` 与 `origin/main` 随后核对为同一
+`8b77ce3`，工作区干净。
+
+基于 M1—M5 Accepted、独立 A/B CLEAN、候选/PR/main 三层远端门禁成功、PR 与主线
+集成完成以及「## 验收门禁」证据全表闭合，项目总控将阶段 09A 记为
+**Accepted / Pass（2026-08-22）**。M5 的验收落点仍是 `efd186f`；`24be8b3`、
+`b0af270` 与 `8b77ce3` 分别是 CI 修复、远端证据记录和主线集成落点，不能互相冒充。
+下一工作项必须单独规划；本验收不购买云资源、不接真实微信配置、不开放公网，也不把
+本地/私有测试能力扩写成 staging、production 或发布完成。
 
 ## 工具前置
 
