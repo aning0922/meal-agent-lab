@@ -3,12 +3,14 @@
 ## 目录
 
 - `raw/`：本地导入的原始数据，默认不提交。
-- `schemas/`：机器可读数据格式和校验规则。
+- [`schemas/`](schemas/)：机器可读数据格式和校验规则；阶段 09P-M0 新增治理 release
+  与合成 invalid fixture schema。
 - `reference/ingredients/`：食材标准名、别名、分类、单位和过敏原映射。
 - `reference/recipes/`：经过审核的结构化菜谱。
 - `reference/shelf-life/`：带来源、地区和版本的期限规则。
 - `seeds/`：开发环境可重复导入的最小种子数据。
-- `samples/`：脱敏或完全合成的格式示例，不用于正式推荐。
+- [`samples/`](samples/)：脱敏或完全合成的格式示例，不用于正式推荐；M0 样本位于
+  [`samples/stage09p-m0/`](samples/stage09p-m0/)。
 
 ## 数据要求
 
@@ -19,8 +21,9 @@
 ## 阶段 09P 已接受的治理边界
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-已于 2026-08-23 Accepted，但只接受治理与架构方向；真实数据内容、release 和实现均未
-开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 未来必须共用
+已于 2026-08-23 Accepted，但只接受治理与架构方向。09P-M0 的治理内核当前为
+**Implemented / pending total-control review**，不是 Accepted；真实知识数据 release
+仍未开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 必须共用
 以下治理信封：
 
 - dataset/release ID、单调 revision 和 canonical content digest；
@@ -35,10 +38,27 @@
 引用版本不存在或 withdrawn 时必须 fail closed。撤回和恢复均发布新 release，不静默
 改写历史。
 
-阶段 09P-M0 只允许在 `samples/` 中提交完全合成数据，用于验证格式、版本、别名、
-撤回和 fail-closed；它不得向 `reference/` 导入真实食品事实。规划中的 24 concepts、
+阶段 09P-M0 只在 `samples/stage09p-m0/` 中提交完全合成数据，用于验证格式、版本、
+别名、撤回和 fail-closed；没有向 `reference/` 导入真实食品事实。规划中的 24 concepts、
 4 allergen 类别、8 safety 规则族、8 techniques 和 12 recipes 只是 M1 的 Proposed
 候选覆盖规模，不是 Accepted 数据范围。
 
 真实 allergen、食品安全、宗教/伦理预设、外部菜谱和许可内容必须在 M1 取得对应的
 食品安全、文化/伦理、法律/合规和许可证审查，才能从 draft 进入 active。
+
+## M0 合成数据机械证明
+
+M0 不是靠文件名或人工声明证明 synthetic。`pnpm stage09p:m0:check` 会机械断言：
+
+- valid manifest 精确为五份、各覆盖一种 `datasetKind`，每份只有一个 envelope；
+- 每个 envelope 都携带逐字段固定的 `syntheticEvidence`，ID/actor/source/snapshot/
+  license 使用保留的 `syn:`、`synthetic://`、`synthetic-license://` namespace；
+- entity ID 位于本门禁保留的合成 UUIDv7 区间，region/language/alias/content 只能使用
+  `SYNTHETIC-*`、`x-synthetic` 和 `SYNTHETIC_*` token；
+- 十份 invalid fixture 只能引用五份 valid base，只能执行固定 mutation allowlist；
+  hard mapping 也必须使用保留合成 namespace；
+- manifest 多一项、少一项、出现未允许的 mutation、真实数据标志变化或 namespace
+  逸出都会使门禁失败。
+
+这些样本只证明治理格式和 fail-closed 行为，不含真实家庭、健康、儿童、消费、食品、
+allergen、宗教/伦理、安全、烹饪或菜谱事实，也不授权 M1 数据发布。

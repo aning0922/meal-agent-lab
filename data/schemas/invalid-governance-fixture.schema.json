@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "synthetic://meal-agent/stage09p-m0/invalid-governance-fixture.schema.json",
+  "title": "Stage 09P M0 fully synthetic invalid fixture mutation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "syntheticFixture",
+    "baseValidFiles",
+    "mutations",
+    "hardMappings",
+    "recomputeReleaseDigests",
+    "expectedIssueCodes"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "syntheticFixture": { "const": "fully_synthetic_mutation" },
+    "baseValidFiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "enum": [
+          "food-concept.json",
+          "allergen.json",
+          "religious-ethical.json",
+          "food-safety.json",
+          "cooking-technique.json"
+        ]
+      }
+    },
+    "mutations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["operation", "releaseIndex", "envelopeIndex"],
+        "properties": {
+          "operation": { "enum": ["set", "duplicate_envelope"] },
+          "releaseIndex": { "type": "integer", "minimum": 0 },
+          "envelopeIndex": { "type": "integer", "minimum": 0 },
+          "field": { "type": "string" },
+          "value": {},
+          "entityId": { "type": "string" },
+          "syntheticToken": { "type": "string", "pattern": "^SYNTHETIC_" },
+          "aliasValue": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "hardMappings": { "type": "array" },
+    "recomputeReleaseDigests": { "type": "boolean" },
+    "expectedIssueCodes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string" }
+    }
+  }
+}

@@ -1,6 +1,7 @@
 packages:
   - apps/client
   - packages/contracts
+  - packages/domain
   - services/api
 
 # 阶段 09A / M5：显式关闭 pnpm 的 verify-deps-before-run 隐式安装层。

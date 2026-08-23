@@ -1,0 +1,17 @@
+{
+  "$schema": "../../../schemas/invalid-governance-fixture.schema.json",
+  "syntheticFixture": "fully_synthetic_mutation",
+  "baseValidFiles": ["food-concept.json", "allergen.json"],
+  "mutations": [
+    {
+      "operation": "set",
+      "releaseIndex": 1,
+      "envelopeIndex": 0,
+      "field": "entityId",
+      "value": "01900000-7000-7000-8000-000000000001"
+    }
+  ],
+  "hardMappings": [],
+  "recomputeReleaseDigests": true,
+  "expectedIssueCodes": ["REUSED_ENTITY_ID"]
+}

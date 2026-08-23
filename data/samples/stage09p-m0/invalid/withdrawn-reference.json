@@ -1,0 +1,29 @@
+{
+  "$schema": "../../../schemas/invalid-governance-fixture.schema.json",
+  "syntheticFixture": "fully_synthetic_mutation",
+  "baseValidFiles": ["food-concept.json", "allergen.json"],
+  "mutations": [
+    { "operation": "set", "releaseIndex": 1, "envelopeIndex": 0, "field": "lifecycleStatus", "value": "withdrawn" },
+    { "operation": "set", "releaseIndex": 1, "envelopeIndex": 0, "field": "withdrawalState", "value": "withdrawn" },
+    { "operation": "set", "releaseIndex": 1, "envelopeIndex": 0, "field": "withdrawalReason", "value": "SYNTHETIC_WITHDRAWAL_REASON" },
+    { "operation": "set", "releaseIndex": 1, "envelopeIndex": 0, "field": "withdrawnAt", "value": "2000-01-03T00:00:00.000Z" }
+  ],
+  "hardMappings": [
+    {
+      "mappingId": "syn:mapping:withdrawn-reference",
+      "source": {
+        "datasetId": "syn:dataset:food-concept",
+        "entityId": "01900000-7000-7000-8000-000000000001",
+        "entityRevision": 1
+      },
+      "target": {
+        "datasetId": "syn:dataset:allergen",
+        "entityId": "01900000-7000-7000-8000-000000000002",
+        "entityRevision": 1
+      },
+      "required": true
+    }
+  ],
+  "recomputeReleaseDigests": true,
+  "expectedIssueCodes": ["WITHDRAWN_REFERENCE"]
+}

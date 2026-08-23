@@ -1,0 +1,12 @@
+{
+  "$schema": "../../../schemas/invalid-governance-fixture.schema.json",
+  "syntheticFixture": "fully_synthetic_mutation",
+  "baseValidFiles": ["food-concept.json"],
+  "mutations": [
+    { "operation": "set", "releaseIndex": 0, "envelopeIndex": 0, "field": "licenseStatus", "value": "pending" },
+    { "operation": "set", "releaseIndex": 0, "envelopeIndex": 0, "field": "licenseReference", "value": null }
+  ],
+  "hardMappings": [],
+  "recomputeReleaseDigests": true,
+  "expectedIssueCodes": ["MISSING_LICENSE"]
+}

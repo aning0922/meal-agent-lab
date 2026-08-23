@@ -1,0 +1,18 @@
+{
+  "$schema": "../../../schemas/invalid-governance-fixture.schema.json",
+  "syntheticFixture": "fully_synthetic_mutation",
+  "baseValidFiles": ["food-concept.json"],
+  "mutations": [
+    {
+      "operation": "duplicate_envelope",
+      "releaseIndex": 0,
+      "envelopeIndex": 0,
+      "entityId": "01900000-7000-7000-8000-000000000011",
+      "syntheticToken": "SYNTHETIC_FOOD_CONCEPT_BETA",
+      "aliasValue": " synthetic_food_concept_alpha "
+    }
+  ],
+  "hardMappings": [],
+  "recomputeReleaseDigests": true,
+  "expectedIssueCodes": ["ALIAS_CONFLICT"]
+}

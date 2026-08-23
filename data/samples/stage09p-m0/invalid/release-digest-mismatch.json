@@ -1,0 +1,17 @@
+{
+  "$schema": "../../../schemas/invalid-governance-fixture.schema.json",
+  "syntheticFixture": "fully_synthetic_mutation",
+  "baseValidFiles": ["food-concept.json"],
+  "mutations": [
+    {
+      "operation": "set",
+      "releaseIndex": 0,
+      "envelopeIndex": 0,
+      "field": "contentDigest",
+      "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "hardMappings": [],
+  "recomputeReleaseDigests": false,
+  "expectedIssueCodes": ["RELEASE_DIGEST_MISMATCH"]
+}

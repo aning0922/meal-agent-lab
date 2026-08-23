@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "synthetic://meal-agent/stage09p-m0/governance-release.schema.json",
+  "title": "Stage 09P M0 governance release",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["envelopes"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "envelopes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/governanceEnvelope" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "positiveRevision": { "type": "integer", "minimum": 1 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorId", "role"],
+      "properties": {
+        "actorId": { "$ref": "#/$defs/nonEmptyString" },
+        "role": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datasetId", "entityId", "entityRevision"],
+      "properties": {
+        "datasetId": { "$ref": "#/$defs/nonEmptyString" },
+        "entityId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "entityRevision": { "$ref": "#/$defs/positiveRevision" }
+      }
+    },
+    "sourceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["referenceId", "referenceRevision", "locator"],
+      "properties": {
+        "referenceId": { "$ref": "#/$defs/nonEmptyString" },
+        "referenceRevision": { "$ref": "#/$defs/nonEmptyString" },
+        "locator": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "sourceSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["snapshotId", "referenceId", "referenceRevision", "contentDigest", "retrievedAt"],
+      "properties": {
+        "snapshotId": { "$ref": "#/$defs/nonEmptyString" },
+        "referenceId": { "$ref": "#/$defs/nonEmptyString" },
+        "referenceRevision": { "$ref": "#/$defs/nonEmptyString" },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "retrievedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "region", "language", "sourceReferenceId"],
+      "properties": {
+        "value": { "$ref": "#/$defs/nonEmptyString" },
+        "region": { "$ref": "#/$defs/nonEmptyString" },
+        "language": { "$ref": "#/$defs/nonEmptyString" },
+        "sourceReferenceId": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "syntheticEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "generator",
+        "containsRealUserData",
+        "containsRealFoodFacts",
+        "purpose"
+      ],
+      "properties": {
+        "classification": { "const": "fully_synthetic" },
+        "generator": { "const": "stage09p-m0-fixture-v1" },
+        "containsRealUserData": { "const": false },
+        "containsRealFoodFacts": { "const": false },
+        "purpose": { "const": "governance-format-and-fail-closed-testing-only" }
+      }
+    },
+    "governanceEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "datasetId",
+        "datasetKind",
+        "releaseId",
+        "releaseRevision",
+        "contentDigest",
+        "entityId",
+        "entityRevision",
+        "lifecycleStatus",
+        "owner",
+        "approvers",
+        "sourceTier",
+        "sourceReferences",
+        "sourceSnapshots",
+        "applicableRegions",
+        "languages",
+        "licenseStatus",
+        "licenseReference",
+        "retrievedAt",
+        "reviewedAt",
+        "reviewDueAt",
+        "aliases",
+        "supersededBy",
+        "withdrawalState",
+        "withdrawalReason",
+        "withdrawnAt",
+        "content"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "datasetId": { "$ref": "#/$defs/nonEmptyString" },
+        "datasetKind": {
+          "enum": ["food_concept", "allergen", "religious_ethical", "food_safety", "cooking_technique"]
+        },
+        "releaseId": { "$ref": "#/$defs/nonEmptyString" },
+        "releaseRevision": { "$ref": "#/$defs/positiveRevision" },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "entityId": { "$ref": "#/$defs/reference/properties/entityId" },
+        "entityRevision": { "$ref": "#/$defs/positiveRevision" },
+        "lifecycleStatus": {
+          "enum": ["draft", "under_review", "approved", "active", "superseded", "withdrawn"]
+        },
+        "owner": { "$ref": "#/$defs/actor" },
+        "approvers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/actor" } },
+        "sourceTier": { "enum": ["L1", "L2", "L3", "L4"] },
+        "sourceReferences": { "type": "array", "items": { "$ref": "#/$defs/sourceReference" } },
+        "sourceSnapshots": { "type": "array", "items": { "$ref": "#/$defs/sourceSnapshot" } },
+        "applicableRegions": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "languages": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "licenseStatus": { "enum": ["approved", "restricted", "pending", "rejected"] },
+        "licenseReference": { "type": ["string", "null"] },
+        "retrievedAt": { "$ref": "#/$defs/timestamp" },
+        "reviewedAt": { "$ref": "#/$defs/timestamp" },
+        "reviewDueAt": { "$ref": "#/$defs/timestamp" },
+        "aliases": { "type": "array", "items": { "$ref": "#/$defs/alias" } },
+        "supersededBy": { "oneOf": [{ "$ref": "#/$defs/reference" }, { "type": "null" }] },
+        "withdrawalState": { "enum": ["not_withdrawn", "withdrawn"] },
+        "withdrawalReason": { "type": ["string", "null"] },
+        "withdrawnAt": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
+        "content": {},
+        "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
+      }
+    }
+  }
+}

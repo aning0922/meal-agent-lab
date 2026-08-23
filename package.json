@@ -8,16 +8,17 @@
   },
   "packageManager": "pnpm@11.9.0",
   "scripts": {
-    "build": "pnpm --filter @meal-agent/contracts build && pnpm --filter @meal-agent/api build",
+    "build": "pnpm --filter @meal-agent/domain build && pnpm --filter @meal-agent/contracts build && pnpm --filter @meal-agent/api build",
     "audit:prod:check": "node --test scripts/tests/*.test.mjs && node scripts/check-production-audit.mjs --target=local-weapp",
-    "check": "pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check && pnpm --filter @meal-agent/client check",
+    "check": "pnpm --filter @meal-agent/domain check && pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check && pnpm --filter @meal-agent/client check",
     "docs:links:check": "node scripts/check-markdown-links.mjs",
     "stage06:check": "pnpm --filter @meal-agent/api environment:check && pnpm --filter @meal-agent/contracts check && pnpm --filter @meal-agent/api check",
     "stage07:check": "pnpm --filter @meal-agent/api environment:check && pnpm check && pnpm --filter @meal-agent/client test:e2e",
     "stage08:check": "pnpm --filter @meal-agent/api environment:check && pnpm --filter @meal-agent/api db:migrate:test && pnpm check && pnpm --filter @meal-agent/client test:e2e && pnpm audit:prod:check && pnpm docs:links:check",
     "stage09a:audit-b": "node scripts/run-stage09a-audit-b.mjs",
     "stage09a:check": "node scripts/run-stage09a-check.mjs",
-    "test": "pnpm --filter @meal-agent/contracts test && pnpm --filter @meal-agent/api test && pnpm --filter @meal-agent/client test",
-    "typecheck": "pnpm --filter @meal-agent/contracts typecheck && pnpm --filter @meal-agent/api typecheck && pnpm --filter @meal-agent/client typecheck"
+    "stage09p:m0:check": "pnpm --filter @meal-agent/domain check && node scripts/check-stage09p-m0-scope.mjs && pnpm docs:links:check",
+    "test": "pnpm --filter @meal-agent/domain test && pnpm --filter @meal-agent/contracts test && pnpm --filter @meal-agent/api test && pnpm --filter @meal-agent/client test",
+    "typecheck": "pnpm --filter @meal-agent/domain typecheck && pnpm --filter @meal-agent/contracts typecheck && pnpm --filter @meal-agent/api typecheck && pnpm --filter @meal-agent/client typecheck"
   }
 }

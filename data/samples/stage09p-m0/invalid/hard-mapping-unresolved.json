@@ -1,0 +1,24 @@
+{
+  "$schema": "../../../schemas/invalid-governance-fixture.schema.json",
+  "syntheticFixture": "fully_synthetic_mutation",
+  "baseValidFiles": ["food-concept.json"],
+  "mutations": [],
+  "hardMappings": [
+    {
+      "mappingId": "syn:mapping:unresolved",
+      "source": {
+        "datasetId": "syn:dataset:food-concept",
+        "entityId": "01900000-7000-7000-8000-000000000001",
+        "entityRevision": 1
+      },
+      "target": {
+        "datasetId": "syn:dataset:missing",
+        "entityId": "01900000-7000-7000-8000-000000000099",
+        "entityRevision": 1
+      },
+      "required": true
+    }
+  ],
+  "recomputeReleaseDigests": true,
+  "expectedIssueCodes": ["HARD_MAPPING_UNRESOLVED"]
+}
