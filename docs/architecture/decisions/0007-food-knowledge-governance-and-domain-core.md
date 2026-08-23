@@ -1,12 +1,15 @@
 # ADR-0007：食品知识治理与确定性领域核心
 
-- 状态：Proposed
+- 状态：Accepted（2026-08-23；仅规划/架构方向）
 - 日期：2026-08-23
 - 负责人：产品负责人、领域架构、食品安全与数据治理
 - 规划：[阶段 09P：安全知识治理与确定性产品核心闭环](../../plans/2026-08-stage-09p-safe-deterministic-product-core.md)
 
-本 ADR 是阶段 09P 的候选架构决策。文档落库不表示本 ADR 已 Accepted，也不授权
-创建 `packages/domain`、导入真实数据、创建 migration 或开始产品实现。
+本 ADR 的规划/架构方向已在规划验收落点
+`cff32929916592fa79d40c980564d3cc9a93fbeb` 上由总控 Accepted。接受范围仅覆盖
+09P/09B 双轨、`packages/domain` 目标职责、统一治理信封和 M0 合成 fail-closed 边界；
+不授权创建 `packages/domain`、导入真实数据、实施 M0、创建 migration 或启用任何
+外部能力。
 
 ## 背景
 
@@ -201,14 +204,18 @@ conditional，直到 09P 本地闭环、远端 CI、外部测试安全条件和�
   静默确认。
 - 数据与安全规则的发布需要明确 owner、外部审核和许可证责任，不能由实现 Agent
   自行批准。
-- 本 ADR 保持 `Proposed`，直到规划候选和目标边界由总控复核；在此之前 09P-M0
-  仍为 `Not started`。
+- 本 ADR 的规划/架构方向已 `Accepted`；09P-M0 仍为 `Not started`，真实数据、
+  migration 和外部能力仍须遵守各自里程碑与授权边界。
 
-## 接受本 ADR 前的必要证据
+## 接受依据与边界
+
+总控已在精确规划提交 `cff32929916592fa79d40c980564d3cc9a93fbeb` 上复核并接受
+以下规划/架构方向：
 
 1. 阶段 09P 计划完整覆盖 M0—M6、门禁、回滚、A/B 和 09B 触发条件；
 2. `packages/domain` 职责与 contracts/database/application 的禁止交叉面清楚；
 3. 五类治理信封、source tier、许可、地区、语言、版本和 withdrawal 可机械实现；
 4. M0 任务书只使用合成数据，并由总控在规划 Accepted 后重签精确基线；
 5. 没有把 Proposed 数据数量或外部能力写成已决定/已实现；
-6. 项目总控在精确规划提交上复核并显式把本 ADR 从 `Proposed` 转为 `Accepted`。
+6. 该 Accepted 不等于 09P 实施、M0、`packages/domain`、真实数据、migration、09B
+   或任何外部能力已完成或获准开始。

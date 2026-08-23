@@ -2,10 +2,11 @@
 
 本文件描述产品必须执行的安全底线，不替代专业食品安全或医疗建议。
 
-阶段 09P 的治理和确定性领域边界当前是 `Planning candidate`，关联
+阶段 09P 规划已于 2026-08-23 Accepted，规划验收落点为
+`cff32929916592fa79d40c980564d3cc9a93fbeb`；关联
 [ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-保持 `Proposed`；尚未发布任何权威食品安全、allergen、宗教/伦理或
-cooking-technique 数据 release。
+的规划/架构方向已 `Accepted`，但 implementation not started；尚未发布任何权威
+食品安全、allergen、宗教/伦理或 cooking-technique 数据 release。
 
 ## 数据治理与审核
 

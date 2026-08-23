@@ -16,7 +16,7 @@
 - [阶段 08：家庭成员与硬约束原始实施记录](2026-07-stage-08-members-and-constraints.md)
 - [阶段 08：审计整改与架构收口实施记录](2026-07-stage-08-audit-closeout.md)
 - [阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)
-- [阶段 09P：安全知识治理与确定性产品核心闭环（Planning candidate）](2026-08-stage-09p-safe-deterministic-product-core.md)
+- [阶段 09P：安全知识治理与确定性产品核心闭环（Planning Accepted）](2026-08-stage-09p-safe-deterministic-product-core.md)
 - [阶段 09A M5：架构收缩与收敛任务书](2026-08-m5-architecture-convergence.md)
 - [阶段 09A M5.1：架构级证据协议整改任务书](2026-08-m5-1-evidence-protocol-remediation.md)
 - [阶段 09A M5.2：发布与收场协议整改任务书](2026-08-m5-2-publication-settlement-remediation.md)

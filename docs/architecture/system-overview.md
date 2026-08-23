@@ -4,7 +4,7 @@
 
 阶段 08 最终审计整改已于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）；阶段 09A 已于 2026-08-22 记为 `Accepted / Pass`。当前 `main/origin/main` 的事实源收口提交为 `23450a1f3508e8030d753748291d265ad308df05`；`8b77ce3` 只是 PR #1 的普通 merge 集成落点。系统当前只有家庭、成员/用餐档案、硬约束和最小 exact 库存纵切；没有菜单推荐、菜谱、采购、完整做饭或 Agent。
 
-[阶段 09P](../plans/2026-08-stage-09p-safe-deterministic-product-core.md)已形成规划候选，状态为 `Planning candidate — pending total-control review`，尚未实施；[ADR-0007](decisions/0007-food-knowledge-governance-and-domain-core.md)保持 `Proposed`，`packages/domain` 当前不存在。阶段 09B 私有测试服务器为 P1 conditional，触发条件未满足前不实施。
+[阶段 09P](../plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划已于 2026-08-23 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`，implementation not started；[ADR-0007](decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向已 `Accepted`，`packages/domain` 仍只是目标架构且当前不存在。阶段 09B 私有测试服务器为 P1 conditional，触发条件未满足前不实施。
 
 ## 逻辑边界
 
@@ -32,7 +32,7 @@ PostgreSQL 18
 
 服务端保持一个部署单元，领域模块共享契约和事务边界。当前规模不支持拆微服务，也没有检索需求需要向量数据库。
 
-## 阶段 09P Proposed 目标边界
+## 阶段 09P 已接受的目标边界
 
 ```text
 受治理的 data release

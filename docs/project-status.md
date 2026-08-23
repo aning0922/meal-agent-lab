@@ -6,7 +6,7 @@
 
 **当前阶段 09A Accepted 事实（2026-08-22，覆盖本文所有旧 M5/09A “当前”段落）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与最终动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main push run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 `stage09a:check` 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由项目总控记为 **Accepted / Pass**，冻结面不因 09P 规划而改变。ADR-0005 与 ADR-0006 均保持 `Accepted`。
 
-**阶段 09P 规划候选（2026-08-23）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划固化完成，当前是 `Planning candidate — pending total-control review`，尚未实施，09P-M0 为 `Not started`。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)保持 `Proposed`。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
+**阶段 09P 规划 Accepted（2026-08-23）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`，implementation not started，09P-M0 为 `Not started`。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向已 `Accepted`，但不授权真实数据、M0、migration 或外部能力。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -813,7 +813,7 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 `0000_stage_06.sql,0001_stage_08.sql` 拼出的 key 与两个真实文件完全相同，一行
 伪造的 ledger 就能冒充已登记状态。
 
-- 阶段 09A 状态：**Accepted / Pass（2026-08-22）**。M1—M5 均已 Accepted（各验收落点见上表）；M5 验收落点为 `efd186f`，独立 A/B 均 CLEAN。远端候选、PR 与 merge main 三层门禁分别由 run `32577003712`、`32579605469`、`32581313226` 成功验证；PR #1 的普通 merge 集成落点为 `8b77ce3`。当前本地 `main` 与 `origin/main` 均为事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05`，run `32583959281` 在该精确 HEAD 再次完成 14/14。依赖例外保持 9 条（到期 2026-11-08，见 ADR-0004），ADR-0005 与 ADR-0006 均为 `Accepted`。下一步是阶段 09P 规划候选的总控复核；09B 保持 conditional，不把本地基线扩写成云或发布能力。
+- 阶段 09A 状态：**Accepted / Pass（2026-08-22）**。M1—M5 均已 Accepted（各验收落点见上表）；M5 验收落点为 `efd186f`，独立 A/B 均 CLEAN。远端候选、PR 与 merge main 三层门禁分别由 run `32577003712`、`32579605469`、`32581313226` 成功验证；PR #1 的普通 merge 集成落点为 `8b77ce3`。当前本地 `main` 与 `origin/main` 均为事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05`，run `32583959281` 在该精确 HEAD 再次完成 14/14。依赖例外保持 9 条（到期 2026-11-08，见 ADR-0004），ADR-0005 与 ADR-0006 均为 `Accepted`。阶段 09P 规划与 ADR-0007 方向已 Accepted；下一步须由总控新建 M0 会话并重签精确基线。09B 保持 conditional，不把本地基线扩写成云或发布能力。
 - 当前实现落点：`services/api/Dockerfile` + 根 `.dockerignore`（Node 24.18.0 固定 digest、非 root `10001:10001`、runtime 无包管理器/客户端依赖）；`infra/docker/postgres/` 的 cluster/database 两作用域 bootstrap（六个项目角色、SCRAM 口令、owner 交接、ACL 基线、备份只读补授）；`db:bootstrap` 与 `db:migrate` 两个零参数运维入口；`infra/docker/compose.local-test.yaml` 的 local-test Compose 拓扑与 `infra/docker/check-compose-topology.mjs` 的解析后配置静态门禁（另有 `infra/docker/check-compose-topology-mutations.mjs` 的变异反向测试）；`services/api/src/config-source.ts` 与 `infra/docker/postgres/secret-source.sh` 这一对按条对齐的 Secret 来源解析器。M3B 新增（已于 2026-08-11 Accepted）：`infra/docker/local-test-secrets-contract.mjs`（八份 Secret 的唯一事实源）、`generate-local-test-secrets.mjs` / `preflight-local-test-secrets.mjs`（单一来源生成与部署前交叉一致性预检）、`probe-compose-secret-identity.mjs`（Compose Secret 容器内 UID/mode 探针）、`run-local-test-smoke.mjs` + `local-test-containment.mjs`（完整 fresh 链 smoke、containment 扫描与动态网络隔离）、`check-local-test-negatives.mjs`（75 cases：1 个正向 baseline + 74 个反例/边界检查）、`check-m3b-round2-negatives.mjs`（M3B targeted negative suite，69 cases）、`check-m3b-signal-windows.mjs`（M3B Accepted 时为 5 个确定性进程组回归 + 5 个真实信号窗口；当前 M5 第七轮门禁为 5 + 6）、`m3b-docker.mjs` / `m3b-subprocess.mjs`（唯一 image tag、fail-closed Docker 证据、异步 spawn 与信号处置）、`m3b-safe-output.mjs`（门禁输出边界）、`fixtures/preflight-signal-window.mjs`（preflight 信号窗口测试夹具）与 `infra/environments/local-test/` 配置模板。
 - **两个固定 manifest + 一份动态只读 projector**。前两者是**冻结的期望值**，逐字节
   受 `manifest:check` 约束；第三者是对**当前环境**的动态观察，不含任何期望值，也
@@ -991,22 +991,22 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   真实信号窗口（`check-m3b-signal-windows.mjs`）。失败消息不含任何 Secret 取值：
   wrong-reason 分支只输出期望判据与条目计数，不回显 raw problems/residue。
 
-## 阶段 09P 规划候选
+## 阶段 09P 规划 Accepted
 
 - 正式名称：阶段 09P“安全知识治理与确定性产品核心闭环”，P0。
-- 当前状态：**Planning candidate — 规划固化完成，pending total-control review**。
+- 当前状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；implementation not started**。
 - ADR：[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-  保持 `Proposed`。
+  的规划/架构方向已 `Accepted`，不授权真实数据、M0、migration 或外部能力。
 - 首个未来里程碑：09P-M0“数据治理契约与合成 fail-closed 内核”，`Not started`；
-  规划提交 Accepted 后由总控重新签发精确实施基线。
+  由总控在新建 M0 会话时以状态收口后的精确 HEAD 重新签发实施基线。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
-- `packages/domain` 是总控已决定的目标架构方向，但 ADR-0007 仍为 `Proposed`、当前
-  尚未创建；本规划候选没有修改
+- `packages/domain` 是已接受的目标架构方向，但当前尚未创建；本规划及状态收口没有修改
   packages、workspace、migration、API 或客户端。
 - 24 concepts、4 allergen 类别、8 safety 规则族、8 techniques、12 recipes 只是
   Proposed 候选覆盖规模，M1 外部审查前不构成正式数据范围；M0 只使用完全合成数据。
-- 本地总控看板需要在本候选复核后使用独立仓库、独立提交链更新；本规划批次未修改看板。
+- 本地总控看板需要在后续单独授权后使用独立仓库、独立提交链更新；本规划及状态收口
+  未修改看板。
 
 阶段 09B“私有测试服务器”为 P1 conditional，当前 `Not started`。只有 09P-M6 本地
 Accepted、精确 HEAD Remote CI、外部测试依赖审计边界、测试计划、预算、IAM/网络/

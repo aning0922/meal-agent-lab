@@ -1,8 +1,8 @@
 # 领域数据模型
 
-- 状态：阶段 05 共享契约基线已接受；阶段 09P 目标扩展为 Planning candidate
+- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted，implementation not started
 - 代码事实源：[`packages/contracts`](../../packages/contracts/)
-- Proposed 领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)；`packages/domain` 当前尚未创建
+- 目标领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md) 的规划/架构方向已 Accepted；`packages/domain` 当前尚未创建
 
 ## 核心实体
 
@@ -53,7 +53,7 @@ AuthIdentity ──> User ──> Session
 
 Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 和 ShoppingItem 必须属于 Household。
 
-## 阶段 09P Proposed 全局参考数据治理
+## 阶段 09P 已接受的全局参考数据治理方向
 
 FoodConcept、Allergen、CookingTechnique、SafetyPolicy 与 RecipeRevision 作为全局
 immutable 参考数据；每个实体必须绑定 dataset release、entity revision、来源、适用

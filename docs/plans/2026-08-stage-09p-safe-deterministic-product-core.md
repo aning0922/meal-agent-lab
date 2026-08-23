@@ -2,14 +2,14 @@
 
 - 日期：2026-08-23
 - 优先级：P0
-- 状态：**Planning candidate — 规划固化完成，pending total-control review**
+- 状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；implementation not started**
 - 规划基线：`23450a1f3508e8030d753748291d265ad308df05`
-- 关联决策：[ADR-0007：食品知识治理与确定性领域核心](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)（`Proposed`）
+- 关联决策：[ADR-0007：食品知识治理与确定性领域核心](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)（`Accepted`，仅规划/架构方向）
 - 前置阶段：[阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)（`Accepted / Pass`）
 
-本文件固化阶段 09P 的候选范围、依赖、门禁和实施顺序。文件进入 Git 历史只表示
-规划候选已形成，**不表示阶段 09P、ADR-0007 或任何里程碑已 Accepted / Pass**。
-首个未来实施里程碑 09P-M0 当前仍为 `Not started`。
+本文件固化阶段 09P 的范围、依赖、门禁和实施顺序。规划已由总控 Accepted，ADR-0007
+的规划/架构方向同时被接受；这**不表示阶段 09P 实施、任何里程碑或外部能力已
+Accepted / Pass**。首个未来实施里程碑 09P-M0 当前仍为 `Not started`。
 
 ## 1. 事实基线与双轨命名
 
@@ -33,7 +33,7 @@
 
 | Workstream | 名称 | 优先级 | 当前状态 |
 | --- | --- | --- | --- |
-| 阶段 09P | 安全知识治理与确定性产品核心闭环 | P0 | Planning candidate；尚未实施 |
+| 阶段 09P | 安全知识治理与确定性产品核心闭环 | P0 | Planning Accepted；implementation not started |
 | 阶段 09B | 私有测试服务器 | P1 conditional | Conditional / Not started；触发条件未满足 |
 
 `09P` 的 `P` 表示 Product workstream，不表示它必须排在 09B 之后。两条线的
@@ -69,7 +69,7 @@ Decision state、Delivery state、证据和回滚边界必须分别维护，不�
 
 ### 2.2 Proposed
 
-- ADR-0007 与 `packages/domain` 的具体 public API。
+- `packages/domain` 的具体 public API、依赖和实现设计。
 - 首批验证数据的确切内容、地区适用范围、来源和审核人。
 - “24 个 FoodConcept、4 个 allergen 类别、8 个 safety 规则族、8 个
   cooking techniques、12 道 recipes”仅是 **Proposed 候选覆盖规模**；它不是
@@ -268,7 +268,7 @@ M0 不使用上述真实内容，只使用完全合成 ID、来源、许可和�
 
 ### 5.2 `packages/domain` 目标职责
 
-ADR-0007 Proposed 建议未来新增 `@meal-agent/domain`：
+ADR-0007 已接受未来新增 `@meal-agent/domain` 的目标职责；该 package 当前尚未创建：
 
 - FoodConcept/Allergen/Technique/Policy 内部值对象和解析结果；
 - 库存事件 reducer、lot allocation 和状态机；
@@ -612,8 +612,8 @@ M0 至少需要一次独立静态 A。若 M0 扩大到运行时安全决策，�
 基线规则：
 - 当前规划事实基线 23450a1f3508e8030d753748291d265ad308df05 不能直接
   作为 M0 的最终实施基线。
-- 本规划提交经总控 Accepted 后，由总控把上方占位符替换为规划候选的精确 40 位 SHA，
-  并重新签发任务书。
+- 本规划已在 `cff32929916592fa79d40c980564d3cc9a93fbeb` 上 Accepted；总控将在
+  新建 M0 会话时以上述规划的状态收口后精确 HEAD 替换占位符，并重新签发任务书。
 - 未取得该精确 SHA 前不得创建 M0 worktree 或开始实现。
 - 不得自行 rebase 到未验收 HEAD。
 
@@ -691,16 +691,17 @@ codex/stage-09p-m0-governance-contract
 10. 只能请求总控复验，不得自行 Accepted
 ```
 
-## 15. 本规划候选的完成边界
+## 15. 本规划 Accepted 的完成边界
 
 本规划固化批次完成时：
 
-- 09P 状态保持 `Planning candidate / pending total-control review`；
-- ADR-0007 保持 `Proposed`；
+- 09P 状态为 `Planning Accepted（2026-08-23）/ implementation not started`，规划
+  验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；
+- ADR-0007 的规划/架构方向为 `Accepted`，不授权实施；
 - 09P-M0 保持 `Not started`；
 - 09B 保持 `Conditional / Not started`；
 - 外部能力保持 `Deferred`；
 - 09A 保持 `Accepted / Pass` 且冻结；
 - 不创建 `packages/domain`、migration、数据 release、服务器或凭据；
 - 不修改独立本地看板；
-- 只有总控复核本规划候选后，才能决定是否接受并重新签发 M0 精确基线任务书。
+- 只有总控新建 M0 会话并重新签发状态收口后的精确实施基线，才能开始 M0。
