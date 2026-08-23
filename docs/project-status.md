@@ -6,7 +6,20 @@
 
 **当前阶段 09A Accepted 事实（2026-08-22，覆盖本文所有旧 M5/09A “当前”段落）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与最终动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main push run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 `stage09a:check` 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由项目总控记为 **Accepted / Pass**，冻结面不因 09P 规划而改变。ADR-0005 与 ADR-0006 均保持 `Accepted`。
 
-**阶段 09P 规划 Accepted（2026-08-23）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`，implementation not started，09P-M0 为 `Not started`。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向已 `Accepted`，但不授权真实数据、M0、migration 或外部能力。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
+**阶段 09P 规划 Accepted / 实施 In Progress（2026-08-23）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`。09P-M0“数据治理契约与合成 fail-closed 内核”已在实施提交 `5408e6225422a798a6b7de4e33dd2d6689979353` 完成，当前为 **Implemented / pending total-control review**，不是 Accepted/Pass。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向保持 `Accepted`；本轮没有导入真实知识数据、创建 migration 或启用外部能力。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
+
+**09P-M0 实施候选事实（pending total-control review）**：新增纯 TypeScript
+`@meal-agent/domain`，生产源码只依赖纯 JavaScript `@noble/hashes`，不依赖
+Fastify、Drizzle、Taro、Node I/O、数据库或模型 SDK，也不定义 HTTP DTO、数据库 row
+或副作用接口。统一 `GovernanceEnvelope` 覆盖 owner/approvers、source tier/reference/
+snapshot、地区/语言、许可、稳定 ID/revision、release/content digest、alias/
+`supersededBy` 与 lifecycle/withdrawal；引用解析结果固定为 `mapped / unmapped /
+withdrawn / version_mismatch / unapproved`。五类 valid 样本和十类 invalid fixture 均为
+保留 namespace 的完全合成数据；scope gate 机械固定 **5 valid / 10 exclusive invalid /
+2 schemas / 5 pure source files / 2 test files**，domain tests **8/8**，无 skip/todo。
+invalid fixture 除 digest mismatch 外先重算 canonical release digest，每份只允许一个
+预期失败码，删除对应校验会直接使测试转红。M0 不包含运行时 Recommendation 安全决策，
+因此下一门禁建议为同一精确候选 SHA 上的独立只读 Audit A；当前未自行创建审计任务。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -994,15 +1007,17 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 ## 阶段 09P 规划 Accepted
 
 - 正式名称：阶段 09P“安全知识治理与确定性产品核心闭环”，P0。
-- 当前状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；implementation not started**。
+- 当前状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；delivery In Progress**。09P-M0 当前为 **Implemented / pending total-control review**，未 Accepted。
 - ADR：[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-  的规划/架构方向已 `Accepted`，不授权真实数据、M0、migration 或外部能力。
-- 首个未来里程碑：09P-M0“数据治理契约与合成 fail-closed 内核”，`Not started`；
-  由总控在新建 M0 会话时以状态收口后的精确 HEAD 重新签发实施基线。
+  的规划/架构方向已 `Accepted`；本轮 M0 实施授权只覆盖完全合成治理内核，不授权真实
+  数据、migration 或外部能力。
+- 首个里程碑：09P-M0“数据治理契约与合成 fail-closed 内核”，实现提交
+  `5408e6225422a798a6b7de4e33dd2d6689979353`；当前等待精确最终候选的独立静态 Audit A
+  与总控复验，不自行 Accepted。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
-- `packages/domain` 是已接受的目标架构方向，但当前尚未创建；本规划及状态收口没有修改
-  packages、workspace、migration、API 或客户端。
+- `packages/domain` 的目标架构方向已实现为 `@meal-agent/domain` 纯规则 package，并已
+  接入 workspace；本轮没有修改 contracts、migration、API 或客户端。
 - 24 concepts、4 allergen 类别、8 safety 规则族、8 techniques、12 recipes 只是
   Proposed 候选覆盖规模，M1 外部审查前不构成正式数据范围；M0 只使用完全合成数据。
 - 本地总控看板需要在后续单独授权后使用独立仓库、独立提交链更新；本规划及状态收口
