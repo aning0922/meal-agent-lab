@@ -6,7 +6,7 @@
 
 阶段 08“家庭成员、用餐档案与硬约束”已完成最终本地审计整改，并于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）。`@meal-agent/contracts` 当前为 `0.4.0`；API、数据库 migration、客户端、OpenAPI 和依赖审计已按 [ADR-0004](docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md) 收口，外部能力仍保持 Deferred。
 
-[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**已完成并通过项目总控验收**：M1—M5 均已 Accepted；M3B、M4 与 M5 的验收落点分别为 `cf43452`、`f671c51` 与 `efd186f`。最终独立审计 A/B 均为 **CLEAN**；M5 后的远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 随后在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；主线 run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。本地 `main` 与 `origin/main` 已一致，阶段 09A 于 2026-08-22 记为 **Accepted / Pass**。范围仍只覆盖本地/私有测试部署基线；当前不购买服务器，不接真实微信配置，也不开放公网。
+[阶段 09A“本地可部署性与私有测试基线”](docs/plans/2026-07-stage-09a-local-deployability-baseline.md)**已完成并通过项目总控验收**：M1—M5 均已 Accepted；M3B、M4 与 M5 的验收落点分别为 `cf43452`、`f671c51` 与 `efd186f`。最终独立审计 A/B 均为 **CLEAN**；M5 后的远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 随后在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；主线 run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 `stage09a:check` **14/14 PASS**、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为该事实源收口提交。阶段 09A 于 2026-08-22 记为 **Accepted / Pass**。范围仍只覆盖本地/私有测试部署基线；当前不购买服务器，不接真实微信配置，也不开放公网。
 
 **阶段 09A 集成收口（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -18,8 +18,16 @@ PostgreSQL 18.4 工具；同一个 `pnpm stage09a:check` 明确输出 **14/14 PA
 第七条 run 暴露的 host `pg_restore` 混装已关闭，restore drill 的 archive-list、
 语法与完整 TOC、篡改拒绝、单事务恢复、授权面/两户五表逐字节一致和零残留均在
 远端日志中通过。随后 PR #1 的完整门禁 run `32579605469` 与 main push run
-`32581313226` 均成功；PR 已合并，本地 `main` 与 `origin/main` 均为 `8b77ce3`。
-阶段 09A 的集成和总验收门禁已闭合，下一步进入阶段 09B/产品核心工作的单独规划。
+`32581313226` 均成功；PR 已合并，`8b77ce3` 是 PR #1 的普通 merge 集成落点。
+其后的事实源收口提交为 `23450a1f3508e8030d753748291d265ad308df05`，当前本地
+`main` 与 `origin/main` 均在该提交；run `32583959281` 已在这一精确 HEAD 完成最终
+14/14。阶段 09A 的集成和总验收门禁已闭合。
+
+[阶段 09P“安全知识治理与确定性产品核心闭环”](docs/plans/2026-08-stage-09p-safe-deterministic-product-core.md)
+已完成规划固化，当前状态为 **Planning candidate — pending total-control review**，
+尚未进入实施；首个未来里程碑 09P-M0 为 `Not started`。阶段 09B“私有测试服务器”
+是 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、
+体验版、审核和发布继续 Deferred。产品能力 `25%–35%` 只能作为管理估算，不是验收指标。
 
 当前纵切覆盖：
 
@@ -52,6 +60,7 @@ pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<can
 - [`apps/client`](apps/client/)：Taro/React 正式客户端；
 - [`services/api`](services/api/)：Fastify 模块化单体 API；
 - [`packages/contracts`](packages/contracts/)：跨端唯一契约与规则 manifest；
+- `packages/domain`：阶段 09P 的 Proposed 目标架构，当前尚未创建；
 - [`docs`](docs/)：产品、架构、安全、计划和状态事实源；
 - [`tests`](tests/)：跨模块和安全回归；
 - [`security`](security/)：机器可读安全例外；

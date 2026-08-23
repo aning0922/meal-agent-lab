@@ -1,7 +1,8 @@
 # 领域数据模型
 
-- 状态：阶段 05 共享契约基线已接受
+- 状态：阶段 05 共享契约基线已接受；阶段 09P 目标扩展为 Planning candidate
 - 代码事实源：[`packages/contracts`](../../packages/contracts/)
+- Proposed 领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)；`packages/domain` 当前尚未创建
 
 ## 核心实体
 
@@ -52,6 +53,39 @@ AuthIdentity ──> User ──> Session
 
 Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 和 ShoppingItem 必须属于 Household。
 
+## 阶段 09P Proposed 全局参考数据治理
+
+FoodConcept、Allergen、CookingTechnique、SafetyPolicy 与 RecipeRevision 作为全局
+immutable 参考数据；每个实体必须绑定 dataset release、entity revision、来源、适用
+地区、语言、许可、审核状态和 withdrawal 状态。全局实体不得包含家庭、成员、消费或
+推荐数据，普通 runtime 只读，发布只能通过受控导入或 migration 身份。
+
+五类数据共用的治理信封、source tier、生命周期和 fail-closed 语义见
+[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)。具体
+真实内容和数量留给阶段 09P-M1 审查；规划中的 24 concepts、4 allergen 类别、8 个
+safety 规则族、8 个 techniques 和 12 recipes 只是 Proposed 覆盖规模，不是 Accepted
+数据范围。09P-M0 只允许完全合成数据。
+
+## Recommendation 快照与历史边界
+
+Recommendation 必须绑定四类 immutable snapshot：
+
+1. 按 ID 排序的 `(lotId, lotVersion, foodConceptRevision, safetyAssessmentRevision)`
+   及 inventory digest；
+2. 按参与者排序的 `(profileId, profileVersion, constraintSetDigest)`、mapping release
+   及 constraint digest；
+3. 按 Recipe 排序的 `(recipeId, recipeVersion, contentDigest, datasetReleaseId)`；
+4. FoodConcept、allergen、宗教/伦理、食品安全、technique release 与推荐引擎版本。
+
+确认 Meal 前重新读取并比较全部 revision/digest。库存、参与者约束、Recipe、撤回清单
+或 policy 任一变化都返回稳定 conflict 并重新计算，不允许静默接受旧 Recommendation。
+Meal 固化所选 Recipe revision 和 Recommendation snapshot，后续全局内容更新不能改写
+历史餐次。
+
+私密 PersonProfile constraint 原文只保留在 Household 私有边界；Recommendation 只
+保存必要的 digest、rule ID 和 blocker code，日志、全局数据和模型 prompt 不默认包含
+成员姓名或完整私密约束。
+
 ## 批次原则
 
 同一种食材的不同购买批次必须分开保存，因为到期日、开封状态和储存条件可能不同。当前库存由事件聚合得到，事件至少包含家庭、批次、操作者、发生时间、幂等键、来源、期望版本和结果版本。
@@ -98,6 +132,16 @@ Recipe 可以是全局审核内容；Meal、Recommendation、InventoryLot/Event 
 - 库存事件满足 `resultingLotVersion = expectedLotVersion + 1`，且数字扣减不得产生负库存。
 - 幂等记录、事件和投影在同一事务提交。
 
+阶段 09P 的产品流写命令 Proposed 锁序为：completed replay → session/household
+bootstrap → household product-flow advisory → idempotency marker → 按 ID 排序的
+participant profile rows → recommendation/meal → shopping rows → inventory lots →
+append events/create leftover lots → projection/receipt。任一路径不得先锁 inventory 再
+回头锁 meal/profile。精确 SQL 和并发证据必须在对应里程碑接受后才能成为实现事实。
+
 ## 契约与数据库的关系
 
 共享 contract 是客户端与服务端的网络边界，不是数据库表定义。Drizzle row、领域聚合和 API entity snapshot 分开，服务端使用显式 mapper；客户端和服务端都不得复制一套同名核心类型。
+
+阶段 09P 的 Proposed `packages/domain` 只承载纯确定性领域值、reducer、hard filter、
+份量/候选组合和状态机；它不定义 HTTP DTO、Drizzle row、SQL 或 I/O。DTO schema、模型
+输出和外部自由文本均不能替代领域引擎。

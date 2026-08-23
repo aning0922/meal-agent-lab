@@ -2,7 +2,9 @@
 
 文档默认使用中文，并区分“已决定”“已本地验证”“待验证”和 `Deferred — 外部依赖`。
 
-**当前阶段 09A Accepted 事实（2026-08-22，覆盖下方历史轮次）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证；PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确提交上再次输出 `stage09a:check` **14/14 PASS**。本地 `main` 与 `origin/main` 已同步，阶段 09A 已由总控记为 **Accepted / Pass**；ADR-0005、ADR-0006 均保持 `Accepted`。
+**当前阶段 09A Accepted 事实（2026-08-22，覆盖下方历史轮次）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证；PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次输出 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由总控记为 **Accepted / Pass**；ADR-0005、ADR-0006 均保持 `Accepted`。
+
+**当前下一阶段规划候选（2026-08-23）**：[阶段 09P](plans/2026-08-stage-09p-safe-deterministic-product-core.md)采用“安全知识治理与确定性产品核心闭环”P0 workstream；规划已固化，状态为 `Planning candidate — pending total-control review`，09P-M0 仍为 `Not started`。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)保持 `Proposed`。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施；云、公网、真实微信、合法域名、真机、体验版和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -78,6 +80,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [阶段 08 原始实施记录](plans/2026-07-stage-08-members-and-constraints.md)
 - [阶段 08 审计整改记录](plans/2026-07-stage-08-audit-closeout.md)
 - [阶段 09A 本地可部署性计划](plans/2026-07-stage-09a-local-deployability-baseline.md)
+- [阶段 09P 安全知识治理与确定性产品核心闭环规划候选](plans/2026-08-stage-09p-safe-deterministic-product-core.md)
 - [阶段 09A M5.4 最终状态、信号交付与生产 guard 收敛](plans/2026-08-m5-4-final-state-signal-guard-convergence.md)
 - [阶段 09A M5.5 最终结算与活生产消费者 guard 收敛](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)
 - [阶段 09A M5.6 结构化退出与生产消费者收敛](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)
@@ -113,6 +116,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [ADR-0004：阶段 08 预发布审计整改例外](architecture/decisions/0004-stage-08-pre-release-audit-closeout.md)
 - [ADR-0005：本地与私有测试部署基线](architecture/decisions/0005-local-private-deployment-baseline.md)
 - [ADR-0006：阶段 09A 外部证据与资源所有权协议](architecture/decisions/0006-stage09a-evidence-ownership-protocol.md)
+- [ADR-0007：食品知识治理与确定性领域核心（Proposed）](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 - [领域数据模型](domain/data-model.md)
 - [信息架构](design/information-architecture.md)
 - [P0 页面状态基线](design/p0-page-state-baseline.md)
