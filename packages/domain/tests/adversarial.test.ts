@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   canonicalReleaseText,
   canonicalReleaseDigest,
+  decodeGovernanceCatalogJson,
   decodeGovernanceRelease,
   decodeGovernanceReleaseJson,
   resolveGovernedReference,
@@ -200,6 +201,85 @@ test("reflection failures collapse to a fixed safe issue without leaking caller 
   assert.doesNotMatch(JSON.stringify(validateGovernanceRelease(hostile)), /SECRET_CALLER_MESSAGE/);
 });
 
+test("JSON text entrypoints are total and never coerce hostile non-strings", () => {
+  const releaseText = readFileSync(validPath, "utf8");
+  const catalogText = JSON.stringify({ releases: [JSON.parse(releaseText)], hardMappings: [] });
+  const methods = {
+    calls: 0,
+    toString() {
+      this.calls += 1;
+      return releaseText;
+    },
+    valueOf() {
+      this.calls += 1;
+      return releaseText;
+    },
+    [Symbol.toPrimitive]() {
+      this.calls += 1;
+      return releaseText;
+    },
+  };
+  const boxed = new String(releaseText) as String & { calls: number };
+  boxed.calls = 0;
+  Object.defineProperties(boxed, {
+    toString: { value: () => { boxed.calls += 1; return releaseText; } },
+    valueOf: { value: () => { boxed.calls += 1; return releaseText; } },
+    [Symbol.toPrimitive]: { value: () => { boxed.calls += 1; return releaseText; } },
+  });
+  let proxyTraps = 0;
+  const hostileProxy = new Proxy({}, {
+    getPrototypeOf() {
+      proxyTraps += 1;
+      throw new Error("SECRET_CALLER_MESSAGE");
+    },
+    get() {
+      proxyTraps += 1;
+      throw new Error("SECRET_CALLER_MESSAGE");
+    },
+  });
+
+  for (const candidate of [methods, boxed, hostileProxy, null, true, 1, Symbol("hostile")]) {
+    assert.deepEqual(decodeGovernanceReleaseJson(candidate as unknown as string), {
+      ok: false,
+      issue: { code: "INVALID_SHAPE", path: "release" },
+    });
+    assert.deepEqual(decodeGovernanceCatalogJson(candidate as unknown as string), {
+      ok: false,
+      issue: { code: "INVALID_SHAPE", path: "catalog" },
+    });
+  }
+  assert.equal(methods.calls, 0);
+  assert.equal(boxed.calls, 0);
+  assert.equal(proxyTraps, 0);
+  assert.equal(decodeGovernanceReleaseJson(releaseText).ok, true);
+  assert.equal(decodeGovernanceCatalogJson(catalogText).ok, true);
+});
+
+test("hostile thrown values cannot forge or escape the private decode failure identity", () => {
+  const callerException = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("SECRET_CALLER_MESSAGE");
+    },
+    get() {
+      throw new Error("SECRET_CALLER_MESSAGE");
+    },
+  });
+  const hostileInput = new Proxy({}, {
+    getPrototypeOf() {
+      throw callerException;
+    },
+  });
+  let result: ReturnType<typeof decodeGovernanceRelease> | undefined;
+  assert.doesNotThrow(() => {
+    result = decodeGovernanceRelease(hostileInput);
+  });
+  assert.deepEqual(result, {
+    ok: false,
+    issue: { code: "INVALID_SHAPE", path: "release" },
+  });
+  assert.doesNotMatch(JSON.stringify(result), /SECRET_CALLER_MESSAGE/);
+});
+
 test("strict decoding rejects every non-JSON or non-exact shape and deep-freezes snapshots", () => {
   let toJsonCalls = 0;
   const cases: unknown[] = [];
@@ -279,6 +359,50 @@ test("canonical digest covers declared fields, preserves content order, and perm
   const separated = structuredClone(shared);
   assert.equal(canonicalReleaseText(shared), canonicalReleaseText(separated));
   assert.throws(() => canonicalReleaseText({ ...base, unknown: true }), /INVALID_SHAPE/);
+});
+
+test("lossless snapshots preserve every legal JSON key across object and text entrypoints", () => {
+  const withSpecialKeys = structuredClone(validRelease());
+  const content = JSON.parse(
+    '{"__proto__":"SYNTHETIC_PROTO","constructor":"SYNTHETIC_CONSTRUCTOR",' +
+      '"prototype":"SYNTHETIC_PROTOTYPE","":"SYNTHETIC_EMPTY",' +
+      '"\\u0000":"SYNTHETIC_NUL","😀":"SYNTHETIC_ASTRAL"}',
+  ) as Record<string, unknown>;
+  (withSpecialKeys.envelopes[0] as unknown as Record<string, unknown>)["content"] = content;
+  setDigest(withSpecialKeys);
+
+  const objectDecoded = decodeGovernanceRelease(withSpecialKeys);
+  const textDecoded = decodeGovernanceReleaseJson(JSON.stringify(withSpecialKeys));
+  assert.equal(objectDecoded.ok, true);
+  assert.equal(textDecoded.ok, true);
+  if (!objectDecoded.ok || !textDecoded.ok) return;
+  const expectedKeys = ["", "\u0000", "__proto__", "constructor", "prototype", "😀"].sort();
+  assert.deepEqual(Object.keys(objectDecoded.value.envelopes[0]?.content ?? {}).sort(), expectedKeys);
+  assert.deepEqual(Object.keys(textDecoded.value.envelopes[0]?.content ?? {}).sort(), expectedKeys);
+  assert.equal(Object.isFrozen(objectDecoded.value.envelopes[0]?.content), true);
+  assert.equal(Object.isFrozen(textDecoded.value.envelopes[0]?.content), true);
+  assert.equal(canonicalReleaseText(objectDecoded.value), canonicalReleaseText(textDecoded.value));
+  assert.equal(canonicalReleaseDigest(objectDecoded.value), canonicalReleaseDigest(textDecoded.value));
+  assert.equal(validateGovernanceRelease(withSpecialKeys).ok, true);
+
+  const empty = structuredClone(withSpecialKeys);
+  (empty.envelopes[0] as unknown as Record<string, unknown>)["content"] = {};
+  assert.notEqual(canonicalReleaseDigest(withSpecialKeys), canonicalReleaseDigest(empty));
+});
+
+test("full canonical material is the deterministic tie-break for equal envelope identities", () => {
+  const release = structuredClone(validRelease());
+  const first = release.envelopes[0];
+  assert.ok(first !== undefined);
+  const second = structuredClone(first);
+  (second as unknown as Record<string, unknown>)["content"] = {
+    syntheticToken: "SYNTHETIC_TIE_BREAK_SECOND",
+  };
+  (release.envelopes as unknown as typeof second[]).push(second);
+  const reversed = structuredClone(release);
+  (reversed.envelopes as unknown as typeof second[]).reverse();
+  assert.equal(canonicalReleaseText(release), canonicalReleaseText(reversed));
+  assert.equal(canonicalReleaseDigest(release), canonicalReleaseDigest(reversed));
 });
 
 test("collection identities, source revisions, and actor ownership are mechanically unique", () => {
@@ -458,4 +582,59 @@ test("independent governance negatives retain safe stable codes and paths", () =
   (reversedReviewWindow.envelopes[0] as unknown as Record<string, unknown>)["reviewedAt"] =
     "2099-01-02T00:00:00.000Z";
   assertOnlyIssue(reversedReviewWindow, "INVALID_SHAPE", "envelopes/0/reviewedAt");
+});
+
+test("source snapshot chronology is closed over review and due-time boundaries", () => {
+  const equalBoundary = structuredClone(validRelease());
+  const equalEnvelope = equalBoundary.envelopes[0];
+  assert.ok(equalEnvelope !== undefined);
+  Object.assign(equalEnvelope, {
+    retrievedAt: "2000-01-02T00:00:00.000Z",
+    reviewedAt: "2000-01-02T00:00:00.000Z",
+    reviewDueAt: "2000-01-02T00:00:00.000Z",
+  });
+  (equalEnvelope.sourceSnapshots[0] as unknown as Record<string, unknown>)["retrievedAt"] =
+    "2000-01-02T00:00:00.000Z";
+  setDigest(equalBoundary);
+  assert.equal(validateGovernanceRelease(equalBoundary).ok, true);
+
+  const multipleSnapshots = structuredClone(validRelease());
+  const multipleEnvelope = multipleSnapshots.envelopes[0];
+  assert.ok(multipleEnvelope !== undefined);
+  (multipleEnvelope as unknown as Record<string, unknown>)["sourceReferences"] = [
+    multipleEnvelope.sourceReferences[0],
+    {
+      referenceId: "syn:source:food-concept:second",
+      referenceRevision: "syn-revision-2",
+      locator: "synthetic://stage09p-m0/food-concept/second",
+    },
+  ];
+  (multipleEnvelope as unknown as Record<string, unknown>)["sourceSnapshots"] = [
+    multipleEnvelope.sourceSnapshots[0],
+    {
+      snapshotId: "syn:snapshot:food-concept:second",
+      referenceId: "syn:source:food-concept:second",
+      referenceRevision: "syn-revision-2",
+      contentDigest: `sha256:${"9".repeat(64)}`,
+      retrievedAt: multipleEnvelope.reviewedAt,
+    },
+  ];
+  setDigest(multipleSnapshots);
+  assert.equal(validateGovernanceRelease(multipleSnapshots).ok, true);
+
+  for (const retrievedAt of [
+    "2000-01-02T00:00:00.001Z",
+    "2099-01-02T00:00:00.000Z",
+  ]) {
+    const invalid = structuredClone(validRelease());
+    const envelope = invalid.envelopes[0];
+    assert.ok(envelope !== undefined);
+    (envelope.sourceSnapshots[0] as unknown as Record<string, unknown>)["retrievedAt"] =
+      retrievedAt;
+    setDigest(invalid);
+    assert.deepEqual(validateGovernanceRelease(invalid), {
+      ok: false,
+      issues: [{ code: "SOURCE_SNAPSHOT_MISMATCH", path: "envelopes/0/sourceSnapshots" }],
+    });
+  }
 });

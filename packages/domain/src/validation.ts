@@ -16,6 +16,8 @@ const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const uuidV7Pattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ambiguousControl = /[\u0000-\u001F\u007F-\u009F]/u;
+const canonicalInstantPattern =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
 
 const issue = (code: ValidationIssueCode, path: string): ValidationIssue => ({ code, path });
 const keyOf = (values: readonly (string | number)[]): string => canonicalJson(values);
@@ -30,6 +32,7 @@ const sortedIssues = (issues: ValidationIssue[]): readonly ValidationIssue[] => 
 };
 
 const isCanonicalInstant = (value: string): boolean => {
+  if (!canonicalInstantPattern.test(value)) return false;
   const milliseconds = Date.parse(value);
   if (!Number.isFinite(milliseconds)) return false;
   try {
@@ -78,11 +81,15 @@ const validateEnvelope = (
     const snapshotIds = new Set<string>();
     for (const snapshot of envelope.sourceSnapshots) {
       const identity = keyOf([snapshot.referenceId, snapshot.referenceRevision]);
+      const snapshotInstantValid = isCanonicalInstant(snapshot.retrievedAt);
       if (
         snapshots.has(identity) ||
         snapshotIds.has(snapshot.snapshotId) ||
         !digestPattern.test(snapshot.contentDigest) ||
-        !isCanonicalInstant(snapshot.retrievedAt)
+        !snapshotInstantValid ||
+        (snapshotInstantValid &&
+          isCanonicalInstant(envelope.reviewedAt) &&
+          snapshot.retrievedAt > envelope.reviewedAt)
       ) {
         issues.push(issue("SOURCE_SNAPSHOT_MISMATCH", `${base}/sourceSnapshots`));
       }

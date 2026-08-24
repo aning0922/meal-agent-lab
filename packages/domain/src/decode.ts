@@ -24,14 +24,11 @@ const invalidUnicodeScalar =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const arrayIndex = /^(?:0|[1-9][0-9]*)$/;
 
-class DecodeFailure {
-  readonly path: string;
-  constructor(path: string) {
-    this.path = path;
-  }
-}
+const decodeFailures = new WeakMap<object, string>();
 const fail = (path: string): never => {
-  throw new DecodeFailure(path);
+  const failure = Object.freeze(Object.create(null) as object);
+  decodeFailures.set(failure, path);
+  throw failure;
 };
 const scalarString = (value: unknown, path: string): string => {
   if (typeof value !== "string" || invalidUnicodeScalar.test(value)) fail(path);
@@ -76,7 +73,7 @@ const dataObject = (
   const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of keys) {
     if (typeof key !== "string" || invalidUnicodeScalar.test(key) || !allowedSet.has(key)) {
-      fail(typeof key === "string" ? `${path}/${key}` : path);
+      fail(path);
     }
     const stringKey = key as string;
     const descriptor = Object.getOwnPropertyDescriptor(objectValue, stringKey);
@@ -152,13 +149,18 @@ const decodeJsonValue = (value: unknown, path: string, ancestors: Set<object>): 
       const stringKey = key as string;
       const descriptor = Object.getOwnPropertyDescriptor(objectValue, stringKey);
       if (descriptor === undefined || !("value" in descriptor) || descriptor.enumerable !== true) {
-        fail(`${path}/${stringKey}`);
+        fail(path);
       }
-      decoded[stringKey] = decodeJsonValue(
-        (descriptor as PropertyDescriptor & { value: unknown }).value,
-        `${path}/${stringKey}`,
-        ancestors,
-      );
+      Object.defineProperty(decoded, stringKey, {
+        configurable: false,
+        enumerable: true,
+        writable: false,
+        value: decodeJsonValue(
+          (descriptor as PropertyDescriptor & { value: unknown }).value,
+          path,
+          ancestors,
+        ),
+      });
     }
     return Object.freeze(decoded);
   } finally {
@@ -382,11 +384,15 @@ const result = <T>(operation: () => T, rootPath: string): DecodeResult<T> => {
   try {
     return { ok: true, value: operation() };
   } catch (error: unknown) {
+    const failurePath =
+      (typeof error === "object" || typeof error === "function") && error !== null
+        ? decodeFailures.get(error)
+        : undefined;
     return {
       ok: false,
       issue: {
         code: "INVALID_SHAPE",
-        path: error instanceof DecodeFailure ? error.path : rootPath,
+        path: failurePath ?? rootPath,
       },
     };
   }
@@ -398,7 +404,10 @@ export const decodeGovernanceRelease = (value: unknown): DecodeResult<DecodedGov
 export const decodeGovernanceReleaseJson = (
   text: string,
 ): DecodeResult<DecodedGovernanceRelease> =>
-  result(() => decodeReleaseUnsafe(JSON.parse(text) as unknown, "release"), "release");
+  result(() => {
+    if (typeof text !== "string") fail("release");
+    return decodeReleaseUnsafe(JSON.parse(text) as unknown, "release");
+  }, "release");
 
 export const decodeGovernedReference = (value: unknown): DecodeResult<GovernedReference> =>
   result(() => decodeReference(value, "reference"), "reference");
@@ -409,4 +418,7 @@ export const decodeGovernanceCatalog = (value: unknown): DecodeResult<DecodedGov
 export const decodeGovernanceCatalogJson = (
   text: string,
 ): DecodeResult<DecodedGovernanceCatalog> =>
-  result(() => decodeCatalogUnsafe(JSON.parse(text) as unknown), "catalog");
+  result(() => {
+    if (typeof text !== "string") fail("catalog");
+    return decodeCatalogUnsafe(JSON.parse(text) as unknown);
+  }, "catalog");

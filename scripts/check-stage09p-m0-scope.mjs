@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { posix, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import Ajv2020 from 'ajv/dist/2020.js'
@@ -50,6 +50,59 @@ export const manifests = Object.freeze({
   mutationTests: Object.freeze(['stage09p-m0-scope.test.mjs'])
 })
 
+const surfaceRoots = (root) => Object.freeze({
+  valid: resolve(root, 'data/samples/stage09p-m0/valid'),
+  invalid: resolve(root, 'data/samples/stage09p-m0/invalid'),
+  schemas: resolve(root, 'data/schemas'),
+  sources: resolve(root, 'packages/domain/src'),
+  tests: resolve(root, 'packages/domain/tests')
+})
+
+const surfaceType = (entry) => {
+  if (entry.isFile()) return 'file'
+  if (entry.isDirectory()) return 'directory'
+  if (entry.isSymbolicLink()) return 'symlink'
+  return 'special'
+}
+
+const enumerateSurface = (directory) => {
+  const entries = []
+  let readable = true
+  const visit = (current, prefix) => {
+    let children
+    try {
+      children = readdirSync(current, { withFileTypes: true })
+    } catch {
+      readable = false
+      return
+    }
+    children.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0)
+    for (const child of children) {
+      const path = prefix.length === 0 ? child.name : `${prefix}/${child.name}`
+      const type = surfaceType(child)
+      entries.push(Object.freeze({ path, type }))
+      if (type === 'directory') visit(resolve(current, child.name), path)
+    }
+  }
+  visit(directory, '')
+  return Object.freeze({ directory, entries: Object.freeze(entries), readable })
+}
+
+export const collectM0Surfaces = (root = repositoryRoot) => {
+  const roots = surfaceRoots(root)
+  return Object.freeze(Object.fromEntries(
+    Object.entries(roots).map(([name, directory]) => [name, enumerateSurface(directory)])
+  ))
+}
+
+const expectedSurface = (files) => files.map((path) => ({ path, type: 'file' }))
+const sameSurface = (surface, files) =>
+  surface.readable &&
+  JSON.stringify(surface.entries) === JSON.stringify(expectedSurface(files))
+const surfaceFiles = (surface) => surface.entries
+  .filter(({ type }) => type === 'file')
+  .map(({ path }) => path)
+
 const fixtureRoot = (root) => resolve(root, 'data/samples/stage09p-m0')
 const parseJson = (path, failures, label) => {
   try {
@@ -64,39 +117,32 @@ const exactKeys = (value, expected) =>
   typeof value === 'object' &&
   !Array.isArray(value) &&
   JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort())
-const exactFiles = (directory, expected) =>
-  JSON.stringify(
-    readdirSync(directory, { withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .map(({ name }) => name)
-      .sort()
-  ) === JSON.stringify([...expected].sort())
-
-export const collectManifestFailures = (root = repositoryRoot) => {
+export const collectManifestFailures = (root = repositoryRoot, surfaces = collectM0Surfaces(root)) => {
   const failures = []
   const checks = [
-    [resolve(fixtureRoot(root), 'valid'), manifests.valid, 'valid fixture'],
-    [resolve(fixtureRoot(root), 'invalid'), manifests.invalid, 'invalid fixture'],
-    [resolve(root, 'data/schemas'), manifests.schemas, 'schema'],
-    [resolve(root, 'packages/domain/src'), manifests.sources, 'domain source'],
-    [resolve(root, 'packages/domain/tests'), manifests.tests, 'domain test']
+    [surfaces.valid, manifests.valid, 'valid fixture'],
+    [surfaces.invalid, manifests.invalid, 'invalid fixture'],
+    [surfaces.schemas, manifests.schemas, 'schema'],
+    [surfaces.sources, manifests.sources, 'domain source'],
+    [surfaces.tests, manifests.tests, 'domain test']
   ]
-  for (const [directory, expected, label] of checks) {
-    try {
-      if (!exactFiles(directory, expected)) failures.push(`${label} manifest must be exact`)
-    } catch {
-      failures.push(`${label} manifest must be exact`)
+  for (const [surface, expected, label] of checks) {
+    if (!sameSurface(surface, expected)) {
+      failures.push(`${label} recursive manifest must be exact across paths and node types`)
     }
   }
   try {
-    const actual = readdirSync(resolve(root, 'scripts/tests'))
-      .filter((name) => name.startsWith('stage09p-m0-') && name.endsWith('.test.mjs'))
-      .sort()
-    if (JSON.stringify(actual) !== JSON.stringify(manifests.mutationTests)) {
-      failures.push('M0 mutation-test manifest must be exact')
+    const actual = enumerateSurface(resolve(root, 'scripts/tests')).entries
+      .filter(({ path, type }) => {
+        const name = path.split('/').at(-1) ?? ''
+        return type !== 'directory' && name.startsWith('stage09p-m0-') && name.endsWith('.test.mjs')
+      })
+      .map(({ path, type }) => ({ path, type }))
+    if (JSON.stringify(actual) !== JSON.stringify(expectedSurface(manifests.mutationTests))) {
+      failures.push('M0 mutation-test recursive manifest must be exact across paths and node types')
     }
   } catch {
-    failures.push('M0 mutation-test manifest must be exact')
+    failures.push('M0 mutation-test recursive manifest must be exact across paths and node types')
   }
   return failures
 }
@@ -118,8 +164,11 @@ const envelopeKeys = [
 const reservedEntityId = /^01900000-7000-7000-8000-0000000000[0-9]{2}$/
 const digest = /^sha256:[0-9a-f]{64}$/
 
-export const collectSyntheticFailures = (root = repositoryRoot) => {
+export const collectSyntheticFailures = (root = repositoryRoot, surfaces = collectM0Surfaces(root)) => {
   const failures = []
+  if (!sameSurface(surfaces.valid, manifests.valid)) {
+    failures.push('valid fixture synthetic leaf/key registry must cover the exact recursive surface')
+  }
   const validDirectory = resolve(fixtureRoot(root), 'valid')
   for (const file of manifests.valid) {
     const release = parseJson(resolve(validDirectory, file), failures, 'valid fixture')
@@ -259,8 +308,14 @@ const validDuplicateMutation = (mutation) =>
   /^SYNTHETIC_[A-Z0-9_]+$/.test(String(mutation.syntheticToken)) &&
   String(mutation.aliasValue).trim().toUpperCase() === 'SYNTHETIC_FOOD_CONCEPT_ALPHA'
 
-export const collectInvalidSyntheticFailures = (root = repositoryRoot) => {
+export const collectInvalidSyntheticFailures = (
+  root = repositoryRoot,
+  surfaces = collectM0Surfaces(root)
+) => {
   const failures = []
+  if (!sameSurface(surfaces.invalid, manifests.invalid)) {
+    failures.push('invalid fixture synthetic leaf/key registry must cover the exact recursive surface')
+  }
   const invalidDirectory = resolve(fixtureRoot(root), 'invalid')
   for (const file of manifests.invalid) {
     const fixture = parseJson(resolve(invalidDirectory, file), failures, 'invalid fixture')
@@ -381,14 +436,14 @@ const permittedRuntimeImports = new Set([
   '@noble/hashes/utils.js'
 ])
 const bannedCapabilities = new Set([
-  'fetch', 'process', 'require', 'eval', 'Function', 'WebSocket', 'Worker',
+  'fetch', 'process', 'require', 'eval', 'Function', 'WebSocket', 'Worker', 'globalThis',
   'XMLHttpRequest', 'Deno', 'Bun', 'readFile', 'readFileSync', 'writeFile',
   'writeFileSync', 'appendFile', 'open', 'createReadStream', 'createWriteStream',
   'connect', 'createConnection', 'indexedDB', 'localStorage', 'sessionStorage',
   'document', 'window', 'navigator', 'setTimeout', 'setInterval'
 ])
 
-export const collectCapabilityFailures = (root = repositoryRoot) => {
+export const collectCapabilityFailures = (root = repositoryRoot, surfaces = collectM0Surfaces(root)) => {
   const failures = []
   const sourceRoot = resolve(root, 'packages/domain/src')
   const testRoot = resolve(root, 'packages/domain/tests')
@@ -396,8 +451,12 @@ export const collectCapabilityFailures = (root = repositoryRoot) => {
   if (JSON.stringify(Object.keys(packageJson?.dependencies ?? {})) !== '["@noble/hashes"]') {
     failures.push('domain runtime dependencies must equal the audited pure allowlist')
   }
-  const sourceSet = new Set(manifests.sources)
-  for (const file of manifests.sources) {
+  if (!surfaces.sources.readable || surfaces.sources.entries.some(({ type }) => type !== 'file')) {
+    failures.push('domain production recursive source surface must contain registered ordinary files only')
+  }
+  const sourceFiles = surfaceFiles(surfaces.sources)
+  const sourceSet = new Set(sourceFiles)
+  for (const file of sourceFiles) {
     let source
     try {
       source = readFileSync(resolve(sourceRoot, file), 'utf8')
@@ -416,8 +475,10 @@ export const collectCapabilityFailures = (root = repositoryRoot) => {
         if (!ts.isStringLiteral(specifier)) {
           failures.push('domain module specifiers must be static strings')
         } else if (specifier.text.startsWith('.')) {
-          const target = specifier.text.replace(/^\.\//, '').replace(/\.js$/, '.ts')
-          if (specifier.text.includes('..') || !sourceSet.has(target)) {
+          const target = posix.normalize(
+            posix.join(posix.dirname(file), specifier.text)
+          ).replace(/\.js$/, '.ts')
+          if (target.startsWith('../') || !sourceSet.has(target)) {
             failures.push('domain relative module graph must remain inside the exact source manifest')
           }
         } else if (!permittedRuntimeImports.has(specifier.text)) {
@@ -440,7 +501,10 @@ export const collectCapabilityFailures = (root = repositoryRoot) => {
     }
     visit(tree)
   }
-  for (const file of manifests.tests) {
+  if (!surfaces.tests.readable || surfaces.tests.entries.some(({ type }) => type !== 'file')) {
+    failures.push('M0 recursive test surface must contain registered ordinary files only')
+  }
+  for (const file of surfaceFiles(surfaces.tests)) {
     try {
       const source = readFileSync(resolve(testRoot, file), 'utf8')
       const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -486,7 +550,10 @@ export const collectCapabilityFailures = (root = repositoryRoot) => {
 }
 
 const canonicalInstant = (value) => {
-  if (typeof value !== 'string') return false
+  if (
+    typeof value !== 'string' ||
+    !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/.test(value)
+  ) return false
   const milliseconds = Date.parse(value)
   if (!Number.isFinite(milliseconds)) return false
   try {
@@ -494,6 +561,24 @@ const canonicalInstant = (value) => {
   } catch {
     return false
   }
+}
+
+const unicodeScalar = (value) =>
+  typeof value === 'string' &&
+  !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)
+
+const createSchemaValidator = () => {
+  const ajv = new Ajv2020({ strict: true, allErrors: true, validateFormats: true })
+  ajv.addFormat('canonical-utc-instant', { type: 'string', validate: canonicalInstant })
+  ajv.addFormat('unicode-scalar', { type: 'string', validate: unicodeScalar })
+  ajv.addKeyword({
+    keyword: 'notNegativeZero',
+    schemaType: 'boolean',
+    type: 'number',
+    errors: false,
+    validate: (enabled, value) => !enabled || !Object.is(value, -0)
+  })
+  return ajv
 }
 
 const materializeFixture = (fixture, validDirectory, domain) => {
@@ -523,8 +608,7 @@ const materializeFixture = (fixture, validDirectory, domain) => {
 }
 
 const compiledSchemas = (root) => {
-  const ajv = new Ajv2020({ strict: true, allErrors: true, validateFormats: true })
-  ajv.addFormat('canonical-utc-instant', { type: 'string', validate: canonicalInstant })
+  const ajv = createSchemaValidator()
   return {
     governance: ajv.compile(JSON.parse(
       readFileSync(resolve(root, 'data/schemas/governance-release.schema.json'), 'utf8')
@@ -535,9 +619,153 @@ const compiledSchemas = (root) => {
   }
 }
 
-export const collectSchemaContractFailures = (root = repositoryRoot) => {
+const ownJsonObject = (entries) => {
+  const value = {}
+  for (const [key, child] of entries) {
+    Object.defineProperty(value, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: child
+    })
+  }
+  return value
+}
+
+export const JSON_BOUNDARY_CASE_COUNT = 30
+export const jsonBoundaryCases = () => Object.freeze([
+  Object.freeze({ id: 'empty-object', value: {}, expected: true }),
+  Object.freeze({ id: 'null', value: null, expected: true }),
+  Object.freeze({ id: 'true', value: true, expected: true }),
+  Object.freeze({ id: 'false', value: false, expected: true }),
+  Object.freeze({ id: 'zero', value: 0, expected: true }),
+  Object.freeze({ id: 'finite-positive', value: 1.25, expected: true }),
+  Object.freeze({ id: 'finite-negative', value: -2.5, expected: true }),
+  Object.freeze({ id: 'negative-zero', value: -0, expected: false }),
+  Object.freeze({ id: 'nan', value: Number.NaN, expected: false }),
+  Object.freeze({ id: 'positive-infinity', value: Number.POSITIVE_INFINITY, expected: false }),
+  Object.freeze({ id: 'negative-infinity', value: Number.NEGATIVE_INFINITY, expected: false }),
+  Object.freeze({ id: 'empty-string', value: '', expected: true }),
+  Object.freeze({ id: 'nul-value', value: '\u0000', expected: true }),
+  Object.freeze({ id: 'bmp-value', value: 'SYNTHETIC_É', expected: true }),
+  Object.freeze({ id: 'astral-value', value: 'SYNTHETIC_😀', expected: true }),
+  Object.freeze({ id: 'lone-high-value', value: '\uD800', expected: false }),
+  Object.freeze({ id: 'lone-low-value', value: '\uDC00', expected: false }),
+  Object.freeze({ id: 'array', value: [null, true, 1, 'SYNTHETIC_ARRAY'], expected: true }),
+  Object.freeze({
+    id: 'nested-object-array',
+    value: { nested: { values: [false, 2.5, 'SYNTHETIC_NESTED'] } },
+    expected: true
+  }),
+  Object.freeze({ id: 'empty-key', value: ownJsonObject([['', 'SYNTHETIC_EMPTY_KEY']]), expected: true }),
+  Object.freeze({ id: 'nul-key', value: ownJsonObject([['\u0000', 'SYNTHETIC_NUL_KEY']]), expected: true }),
+  Object.freeze({ id: 'bmp-key', value: ownJsonObject([['é', 'SYNTHETIC_BMP_KEY']]), expected: true }),
+  Object.freeze({ id: 'astral-key', value: ownJsonObject([['😀', 'SYNTHETIC_ASTRAL_KEY']]), expected: true }),
+  Object.freeze({ id: 'lone-high-key', value: ownJsonObject([['\uD800', 'SYNTHETIC_BAD_KEY']]), expected: false }),
+  Object.freeze({ id: 'lone-low-key', value: ownJsonObject([['\uDC00', 'SYNTHETIC_BAD_KEY']]), expected: false }),
+  Object.freeze({ id: 'proto-key', value: ownJsonObject([['__proto__', 'SYNTHETIC_PROTO']]), expected: true }),
+  Object.freeze({ id: 'constructor-key', value: ownJsonObject([['constructor', 'SYNTHETIC_CONSTRUCTOR']]), expected: true }),
+  Object.freeze({ id: 'prototype-key', value: ownJsonObject([['prototype', 'SYNTHETIC_PROTOTYPE']]), expected: true }),
+  Object.freeze({
+    id: 'combined-special-keys',
+    value: ownJsonObject([
+      ['__proto__', 'SYNTHETIC_PROTO'],
+      ['constructor', 'SYNTHETIC_CONSTRUCTOR'],
+      ['prototype', 'SYNTHETIC_PROTOTYPE'],
+      ['', 'SYNTHETIC_EMPTY'],
+      ['\u0000', 'SYNTHETIC_NUL'],
+      ['😀', 'SYNTHETIC_ASTRAL']
+    ]),
+    expected: true
+  }),
+  Object.freeze({
+    id: 'deep-mixed-json',
+    value: { array: [ownJsonObject([['__proto__', null]]), { scalar: 'SYNTHETIC_DEEP' }] },
+    expected: true
+  })
+])
+
+const stringCodeUnits = (value) => {
+  const units = []
+  for (let index = 0; index < value.length; index += 1) {
+    units.push(value.charCodeAt(index).toString(16).padStart(4, '0'))
+  }
+  return units.join('-')
+}
+
+const boundaryIdentity = (value) => {
+  if (value === null) return 'null'
+  if (typeof value === 'boolean') return `boolean:${value}`
+  if (typeof value === 'string') return `string:${stringCodeUnits(value)}`
+  if (typeof value === 'number') {
+    if (Object.is(value, -0)) return 'number:-0'
+    if (Number.isNaN(value)) return 'number:NaN'
+    if (value === Number.POSITIVE_INFINITY) return 'number:+Infinity'
+    if (value === Number.NEGATIVE_INFINITY) return 'number:-Infinity'
+    return `number:${value}`
+  }
+  if (Array.isArray(value)) return `array:[${value.map(boundaryIdentity).join(',')}]`
+  const entries = Object.keys(value).map((key) => [key, value[key]])
+  entries.sort((left, right) => stringCodeUnits(left[0]) < stringCodeUnits(right[0]) ? -1 : 1)
+  return `object:{${entries.map(([key, child]) =>
+    `${stringCodeUnits(key)}:${boundaryIdentity(child)}`).join(',')}}`
+}
+
+export const collectJsonBoundaryParityFailures = (
+  root = repositoryRoot,
+  cases = jsonBoundaryCases()
+) => {
   const failures = []
+  const identities = cases.map(({ value }) => boundaryIdentity(value))
+  if (
+    cases.length !== JSON_BOUNDARY_CASE_COUNT ||
+    new Set(cases.map(({ id }) => id)).size !== JSON_BOUNDARY_CASE_COUNT ||
+    new Set(identities).size !== JSON_BOUNDARY_CASE_COUNT
+  ) {
+    failures.push('JSON boundary parity matrix count and distinct inputs must remain exact')
+    return failures
+  }
   try {
+    const validators = compiledSchemas(root)
+    const baseText = readFileSync(
+      resolve(fixtureRoot(root), 'valid/food-concept.json'),
+      'utf8'
+    )
+    for (const boundary of cases) {
+      const release = JSON.parse(baseText)
+      release.envelopes[0].content = boundary.value
+      let runtimeOk = false
+      try {
+        release.envelopes[0].contentDigest = domain.canonicalReleaseDigest(release)
+        runtimeOk = domain.validateGovernanceRelease(release).ok
+      } catch {
+        runtimeOk = false
+      }
+      const schemaOk = validators.governance(release)
+      if (schemaOk !== boundary.expected || runtimeOk !== boundary.expected || schemaOk !== runtimeOk) {
+        failures.push('JSON boundary schema/runtime parity must match the exact expected matrix')
+      }
+    }
+  } catch {
+    failures.push('JSON boundary schema/runtime parity must execute with fixed safe diagnostics')
+  }
+  return [...new Set(failures)]
+}
+
+export const collectSchemaContractFailures = (
+  root = repositoryRoot,
+  surfaces = collectM0Surfaces(root)
+) => {
+  const failures = []
+  if (!sameSurface(surfaces.schemas, manifests.schemas)) {
+    failures.push('schema compile registry must cover the exact recursive surface')
+  }
+  try {
+    for (const file of surfaceFiles(surfaces.schemas)) {
+      createSchemaValidator().compile(JSON.parse(
+        readFileSync(resolve(root, 'data/schemas', file), 'utf8')
+      ))
+    }
     const validators = compiledSchemas(root)
     const validDirectory = resolve(fixtureRoot(root), 'valid')
     const invalidDirectory = resolve(fixtureRoot(root), 'invalid')
@@ -576,8 +804,11 @@ export const collectSchemaContractFailures = (root = repositoryRoot) => {
   return [...new Set(failures)]
 }
 
-export const collectSchemaParityFailures = async (root = repositoryRoot) => {
-  const failures = collectSchemaContractFailures(root)
+export const collectSchemaParityFailures = async (
+  root = repositoryRoot,
+  surfaces = collectM0Surfaces(root)
+) => {
+  const failures = collectSchemaContractFailures(root, surfaces)
   if (failures.length > 0) return failures
   try {
     const validators = compiledSchemas(root)
@@ -610,6 +841,7 @@ export const collectSchemaParityFailures = async (root = repositoryRoot) => {
         failures.push('materialized fixture schema/runtime parity matrix must match expressibility')
       }
     }
+    failures.push(...collectJsonBoundaryParityFailures(root))
   } catch {
     failures.push('both M0 schemas must compile and execute with the independent 2020-12 validator')
   }
@@ -617,13 +849,14 @@ export const collectSchemaParityFailures = async (root = repositoryRoot) => {
 }
 
 export const runStage09pM0ScopeCheck = async (root = repositoryRoot) => {
+  const surfaces = collectM0Surfaces(root)
   const groups = [
-    collectManifestFailures(root),
-    collectSyntheticFailures(root),
-    collectInvalidSyntheticFailures(root),
-    collectCapabilityFailures(root),
+    collectManifestFailures(root, surfaces),
+    collectSyntheticFailures(root, surfaces),
+    collectInvalidSyntheticFailures(root, surfaces),
+    collectCapabilityFailures(root, surfaces),
     collectRepositoryScopeFailures(root),
-    await collectSchemaParityFailures(root)
+    await collectSchemaParityFailures(root, surfaces)
   ]
   const failures = groups.flat()
   return { ok: failures.length === 0, failures: [...new Set(failures)] }
@@ -640,7 +873,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `Stage 09P M0 scope check PASS (${manifests.valid.length} valid, ` +
       `${manifests.invalid.length} exclusive invalid, ${manifests.schemas.length} compiled schemas, ` +
       `${manifests.sources.length} pure source, ${manifests.tests.length} domain test files, ` +
-      `${manifests.valid.length + manifests.invalid.length} schema/runtime matrix cases)\n`
+      `${manifests.valid.length + manifests.invalid.length} fixture parity + ` +
+      `${JSON_BOUNDARY_CASE_COUNT} JSON boundary parity cases)\n`
     )
   }
 }
