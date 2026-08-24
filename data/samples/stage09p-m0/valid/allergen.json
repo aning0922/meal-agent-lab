@@ -7,7 +7,7 @@
       "datasetKind": "allergen",
       "releaseId": "syn:release:allergen:1",
       "releaseRevision": 1,
-      "contentDigest": "sha256:aff148df4845bf983bc4c21f72cd5e158ef22a5e6c0d894e2381a55d088deb0c",
+      "contentDigest": "sha256:2a2b15b356afa28b9e9839961d9438826328e10a580002959c2c148014b3716e",
       "entityId": "01900000-7000-7000-8000-000000000002",
       "entityRevision": 1,
       "lifecycleStatus": "active",
@@ -44,7 +44,8 @@
           "value": "SYNTHETIC_ALLERGEN_ALPHA",
           "region": "SYNTHETIC-REGION-1",
           "language": "x-synthetic",
-          "sourceReferenceId": "syn:source:allergen"
+          "sourceReferenceId": "syn:source:allergen",
+          "sourceReferenceRevision": "syn-revision-1"
         }
       ],
       "supersededBy": null,

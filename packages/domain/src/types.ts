@@ -8,30 +8,33 @@ export const datasetKinds = [
   "food_safety",
   "cooking_technique",
 ] as const;
+export const sourceTiers = ["L1", "L2", "L3", "L4"] as const;
+export const licenseStatuses = ["approved", "restricted", "pending", "rejected"] as const;
+export const lifecycleStatuses = [
+  "draft",
+  "under_review",
+  "approved",
+  "active",
+  "superseded",
+  "withdrawn",
+] as const;
+export const withdrawalStates = ["not_withdrawn", "withdrawn"] as const;
 
 export type DatasetKind = (typeof datasetKinds)[number];
-export type SourceTier = "L1" | "L2" | "L3" | "L4";
-export type LicenseStatus = "approved" | "restricted" | "pending" | "rejected";
-export type LifecycleStatus =
-  | "draft"
-  | "under_review"
-  | "approved"
-  | "active"
-  | "superseded"
-  | "withdrawn";
-export type WithdrawalState = "not_withdrawn" | "withdrawn";
+export type SourceTier = (typeof sourceTiers)[number];
+export type LicenseStatus = (typeof licenseStatuses)[number];
+export type LifecycleStatus = (typeof lifecycleStatuses)[number];
+export type WithdrawalState = (typeof withdrawalStates)[number];
 
 export interface GovernanceActor {
   readonly actorId: string;
   readonly role: string;
 }
-
 export interface SourceReference {
   readonly referenceId: string;
   readonly referenceRevision: string;
   readonly locator: string;
 }
-
 export interface SourceSnapshot {
   readonly snapshotId: string;
   readonly referenceId: string;
@@ -39,20 +42,18 @@ export interface SourceSnapshot {
   readonly contentDigest: string;
   readonly retrievedAt: string;
 }
-
 export interface GovernanceAlias {
   readonly value: string;
   readonly region: string;
   readonly language: string;
   readonly sourceReferenceId: string;
+  readonly sourceReferenceRevision: string;
 }
-
 export interface GovernedReference {
   readonly datasetId: string;
   readonly entityId: string;
   readonly entityRevision: number;
 }
-
 export interface SyntheticEvidence {
   readonly classification: "fully_synthetic";
   readonly generator: "stage09p-m0-fixture-v1";
@@ -61,10 +62,7 @@ export interface SyntheticEvidence {
   readonly purpose: "governance-format-and-fail-closed-testing-only";
 }
 
-/**
- * 五类知识数据共用的治理信封。它是内部领域值，不是 HTTP DTO、数据库 row 或
- * persistence interface。
- */
+/** Internal domain value; never an HTTP DTO, database row, or persistence interface. */
 export interface GovernanceEnvelope<TContent extends JsonValue = JsonValue> {
   readonly schemaVersion: 1;
   readonly datasetId: string;
@@ -95,21 +93,37 @@ export interface GovernanceEnvelope<TContent extends JsonValue = JsonValue> {
   readonly content: TContent;
   readonly syntheticEvidence?: SyntheticEvidence;
 }
-
 export interface GovernanceRelease {
+  readonly $schema?: string;
   readonly envelopes: readonly GovernanceEnvelope[];
 }
-
 export interface HardMapping {
   readonly mappingId: string;
   readonly source: GovernedReference;
   readonly target: GovernedReference;
   readonly required: boolean;
 }
-
 export interface GovernanceCatalog {
   readonly releases: readonly GovernanceRelease[];
   readonly hardMappings: readonly HardMapping[];
+}
+
+declare const decodedReleaseBrand: unique symbol;
+declare const decodedCatalogBrand: unique symbol;
+declare const validatedCatalogBrand: unique symbol;
+export type DecodedGovernanceRelease = GovernanceRelease & {
+  readonly [decodedReleaseBrand]: true;
+};
+export type DecodedGovernanceCatalog = GovernanceCatalog & {
+  readonly releases: readonly DecodedGovernanceRelease[];
+  readonly [decodedCatalogBrand]: true;
+};
+/** Created only by full catalog validation; resolver authenticity is also checked at runtime. */
+export interface ValidatedCatalogIndex {
+  readonly releases: readonly DecodedGovernanceRelease[];
+  readonly hardMappings: readonly HardMapping[];
+  readonly envelopes: readonly GovernanceEnvelope[];
+  readonly [validatedCatalogBrand]: true;
 }
 
 export const mappingStatuses = [
@@ -119,9 +133,7 @@ export const mappingStatuses = [
   "version_mismatch",
   "unapproved",
 ] as const;
-
 export type MappingStatus = (typeof mappingStatuses)[number];
-
 export type MappingResolution =
   | { readonly status: "mapped"; readonly envelope: GovernanceEnvelope }
   | {
@@ -137,6 +149,7 @@ export type ValidationIssueCode =
   | "MISSING_OWNER"
   | "MISSING_APPROVER"
   | "MISSING_SOURCE"
+  | "UNAPPROVED_SOURCE"
   | "SOURCE_SNAPSHOT_MISMATCH"
   | "MISSING_LICENSE"
   | "MISSING_REGION"
@@ -144,16 +157,25 @@ export type ValidationIssueCode =
   | "INVALID_LIFECYCLE"
   | "ALIAS_CONFLICT"
   | "REUSED_ENTITY_ID"
+  | "DUPLICATE_ENTITY_REVISION"
+  | "DUPLICATE_RELEASE"
   | "RELEASE_DIGEST_MISMATCH"
   | "UNKNOWN_REVISION"
   | "WITHDRAWN_REFERENCE"
   | "HARD_MAPPING_UNRESOLVED";
-
 export interface ValidationIssue {
   readonly code: ValidationIssueCode;
   readonly path: string;
 }
-
 export type ValidationResult =
   | { readonly ok: true; readonly issues: readonly [] }
   | { readonly ok: false; readonly issues: readonly ValidationIssue[] };
+export type ReleaseValidationResult =
+  | { readonly ok: true; readonly issues: readonly []; readonly release: DecodedGovernanceRelease }
+  | { readonly ok: false; readonly issues: readonly ValidationIssue[] };
+export type CatalogValidationResult =
+  | { readonly ok: true; readonly issues: readonly []; readonly catalog: ValidatedCatalogIndex }
+  | { readonly ok: false; readonly issues: readonly ValidationIssue[] };
+export type DecodeResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly issue: { readonly code: "INVALID_SHAPE"; readonly path: string } };

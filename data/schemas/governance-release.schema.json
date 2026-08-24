@@ -68,12 +68,13 @@
     "alias": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["value", "region", "language", "sourceReferenceId"],
+      "required": ["value", "region", "language", "sourceReferenceId", "sourceReferenceRevision"],
       "properties": {
         "value": { "$ref": "#/$defs/nonEmptyString" },
         "region": { "$ref": "#/$defs/nonEmptyString" },
         "language": { "$ref": "#/$defs/nonEmptyString" },
-        "sourceReferenceId": { "$ref": "#/$defs/nonEmptyString" }
+        "sourceReferenceId": { "$ref": "#/$defs/nonEmptyString" },
+        "sourceReferenceRevision": { "$ref": "#/$defs/nonEmptyString" }
       }
     },
     "syntheticEvidence": {

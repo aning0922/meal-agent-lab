@@ -1,114 +1,48 @@
-import { canonicalReleaseDigest, compareUtf8 } from "./canonical.js";
-import {
-  datasetKinds,
-  type GovernanceAlias,
-  type GovernanceCatalog,
-  type GovernanceEnvelope,
-  type GovernanceRelease,
-  type ValidationIssue,
-  type ValidationIssueCode,
-  type ValidationResult,
+import { canonicalJson, canonicalReleaseDigest, compareUtf8 } from "./canonical.js";
+import { createValidatedCatalogIndex, resolveValidatedReference } from "./catalog.js";
+import { decodeGovernanceCatalog, decodeGovernanceRelease } from "./decode.js";
+import type {
+  CatalogValidationResult,
+  DecodedGovernanceCatalog,
+  DecodedGovernanceRelease,
+  GovernanceAlias,
+  GovernanceEnvelope,
+  ReleaseValidationResult,
+  ValidationIssue,
+  ValidationIssueCode,
 } from "./types.js";
-import { resolveGovernedReference } from "./resolution.js";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
-const uuidV7Pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const isNonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0;
-const isPositiveRevision = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) > 0;
-const isStringArray = (value: unknown): value is string[] =>
-  Array.isArray(value) && value.every(isNonEmptyString);
-const isNullableString = (value: unknown): value is string | null =>
-  value === null || typeof value === "string";
-const actorShape = (value: unknown): boolean =>
-  isRecord(value) && isNonEmptyString(value["actorId"]) && isNonEmptyString(value["role"]);
-const governedReferenceShape = (value: unknown): boolean =>
-  isRecord(value) &&
-  isNonEmptyString(value["datasetId"]) &&
-  isNonEmptyString(value["entityId"]) &&
-  isPositiveRevision(value["entityRevision"]);
-const sourceReferenceShape = (value: unknown): boolean =>
-  isRecord(value) &&
-  isNonEmptyString(value["referenceId"]) &&
-  isNonEmptyString(value["referenceRevision"]) &&
-  isNonEmptyString(value["locator"]);
-const sourceSnapshotShape = (value: unknown): boolean =>
-  isRecord(value) &&
-  isNonEmptyString(value["snapshotId"]) &&
-  isNonEmptyString(value["referenceId"]) &&
-  isNonEmptyString(value["referenceRevision"]) &&
-  isNonEmptyString(value["contentDigest"]) &&
-  isNonEmptyString(value["retrievedAt"]);
-const aliasShape = (value: unknown): boolean =>
-  isRecord(value) &&
-  isNonEmptyString(value["value"]) &&
-  isNonEmptyString(value["region"]) &&
-  isNonEmptyString(value["language"]) &&
-  isNonEmptyString(value["sourceReferenceId"]);
-const syntheticEvidenceShape = (value: unknown): boolean =>
-  isRecord(value) &&
-  value["classification"] === "fully_synthetic" &&
-  value["generator"] === "stage09p-m0-fixture-v1" &&
-  value["containsRealUserData"] === false &&
-  value["containsRealFoodFacts"] === false &&
-  value["purpose"] === "governance-format-and-fail-closed-testing-only";
+const uuidV7Pattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const ambiguousControl = /[\u0000-\u001F\u007F-\u009F]/u;
 
 const issue = (code: ValidationIssueCode, path: string): ValidationIssue => ({ code, path });
+const keyOf = (values: readonly (string | number)[]): string => canonicalJson(values);
 
-const sortedResult = (issues: ValidationIssue[]): ValidationResult => {
-  issues.sort((left, right) => {
+const sortedIssues = (issues: ValidationIssue[]): readonly ValidationIssue[] => {
+  const unique = new Map<string, ValidationIssue>();
+  for (const item of issues) unique.set(keyOf([item.path, item.code]), item);
+  return [...unique.values()].sort((left, right) => {
     const pathOrder = compareUtf8(left.path, right.path);
     return pathOrder === 0 ? compareUtf8(left.code, right.code) : pathOrder;
   });
-  return issues.length === 0 ? { ok: true, issues: [] } : { ok: false, issues };
 };
 
-const aliasKey = (alias: GovernanceAlias): string => {
-  const canonicalValue = alias.value
-    .replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "")
-    .replace(/[A-Z]/g, (letter) => letter.toLowerCase());
-  return `${alias.region}\u0000${alias.language}\u0000${canonicalValue}`;
+const isCanonicalInstant = (value: string): boolean => {
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) return false;
+  try {
+    return new Date(milliseconds).toISOString() === value;
+  } catch {
+    return false;
+  }
 };
 
-const envelopeShape = (value: unknown): value is GovernanceEnvelope => {
-  if (!isRecord(value)) return false;
-  return (
-    Number.isSafeInteger(value["schemaVersion"]) &&
-    isNonEmptyString(value["datasetId"]) &&
-    datasetKinds.includes(value["datasetKind"] as never) &&
-    isNonEmptyString(value["releaseId"]) &&
-    Number.isSafeInteger(value["releaseRevision"]) &&
-    isNonEmptyString(value["contentDigest"]) &&
-    isNonEmptyString(value["entityId"]) &&
-    Number.isSafeInteger(value["entityRevision"]) &&
-    ["draft", "under_review", "approved", "active", "superseded", "withdrawn"].includes(
-      value["lifecycleStatus"] as string,
-    ) &&
-    actorShape(value["owner"]) &&
-    Array.isArray(value["approvers"]) && value["approvers"].every(actorShape) &&
-    ["L1", "L2", "L3", "L4"].includes(value["sourceTier"] as string) &&
-    Array.isArray(value["sourceReferences"]) && value["sourceReferences"].every(sourceReferenceShape) &&
-    Array.isArray(value["sourceSnapshots"]) && value["sourceSnapshots"].every(sourceSnapshotShape) &&
-    isStringArray(value["applicableRegions"]) &&
-    isStringArray(value["languages"]) &&
-    ["approved", "restricted", "pending", "rejected"].includes(value["licenseStatus"] as string) &&
-    isNullableString(value["licenseReference"]) &&
-    isNonEmptyString(value["retrievedAt"]) &&
-    isNonEmptyString(value["reviewedAt"]) &&
-    isNonEmptyString(value["reviewDueAt"]) &&
-    Array.isArray(value["aliases"]) && value["aliases"].every(aliasShape) &&
-    (value["supersededBy"] === null || governedReferenceShape(value["supersededBy"])) &&
-    ["not_withdrawn", "withdrawn"].includes(value["withdrawalState"] as string) &&
-    isNullableString(value["withdrawalReason"]) &&
-    isNullableString(value["withdrawnAt"]) &&
-    Object.hasOwn(value, "content") &&
-    (!Object.hasOwn(value, "syntheticEvidence") || syntheticEvidenceShape(value["syntheticEvidence"]))
-  );
+const normalizeAlias = (alias: GovernanceAlias): string | null => {
+  if (ambiguousControl.test(alias.value)) return null;
+  const normalized = alias.value.normalize("NFC").trim().toLowerCase();
+  return normalized.length === 0 || ambiguousControl.test(normalized) ? null : normalized;
 };
 
 const validateEnvelope = (
@@ -117,132 +51,137 @@ const validateEnvelope = (
   issues: ValidationIssue[],
 ): void => {
   const base = `envelopes/${index}`;
-  if (envelope.schemaVersion !== 1) issues.push(issue("UNSUPPORTED_SCHEMA_VERSION", `${base}/schemaVersion`));
-  if (!isPositiveRevision(envelope.releaseRevision) || !isPositiveRevision(envelope.entityRevision)) {
-    issues.push(issue("INVALID_REVISION", base));
-  }
   if (!uuidV7Pattern.test(envelope.entityId)) issues.push(issue("INVALID_SHAPE", `${base}/entityId`));
-  if (!isNonEmptyString(envelope.owner.actorId) || !isNonEmptyString(envelope.owner.role)) {
+
+  if (envelope.owner.actorId.length === 0 || envelope.owner.role.length === 0) {
     issues.push(issue("MISSING_OWNER", `${base}/owner`));
   }
-  if (
-    envelope.approvers.length === 0 ||
-    envelope.approvers.some(
-      (actor) => !isNonEmptyString(actor?.actorId) || !isNonEmptyString(actor?.role),
-    )
-  ) {
-    issues.push(issue("MISSING_APPROVER", `${base}/approvers`));
+  if (envelope.approvers.length === 0) issues.push(issue("MISSING_APPROVER", `${base}/approvers`));
+  const actors = new Set<string>([envelope.owner.actorId]);
+  for (const actor of envelope.approvers) {
+    if (actors.has(actor.actorId)) issues.push(issue("INVALID_SHAPE", `${base}/approvers`));
+    actors.add(actor.actorId);
   }
-  if (
-    new Set(envelope.approvers.map(({ actorId }) => actorId)).size !== envelope.approvers.length ||
-    envelope.approvers.some(({ actorId }) => actorId === envelope.owner.actorId)
-  ) {
-    issues.push(issue("INVALID_SHAPE", `${base}/approvers`));
-  }
+
   if (envelope.sourceReferences.length === 0 || envelope.sourceSnapshots.length === 0) {
     issues.push(issue("MISSING_SOURCE", `${base}/sourceReferences`));
   } else {
-    const references = new Set(
-      envelope.sourceReferences.map(({ referenceId, referenceRevision }) =>
-        `${referenceId}\u0000${referenceRevision}`,
-      ),
-    );
-    const snapshots = new Set(
-      envelope.sourceSnapshots.map(({ referenceId, referenceRevision }) =>
-        `${referenceId}\u0000${referenceRevision}`,
-      ),
-    );
+    const references = new Set<string>();
+    for (const reference of envelope.sourceReferences) {
+      const identity = keyOf([reference.referenceId, reference.referenceRevision]);
+      if (references.has(identity)) {
+        issues.push(issue("SOURCE_SNAPSHOT_MISMATCH", `${base}/sourceReferences`));
+      }
+      references.add(identity);
+    }
+    const snapshots = new Set<string>();
+    const snapshotIds = new Set<string>();
+    for (const snapshot of envelope.sourceSnapshots) {
+      const identity = keyOf([snapshot.referenceId, snapshot.referenceRevision]);
+      if (
+        snapshots.has(identity) ||
+        snapshotIds.has(snapshot.snapshotId) ||
+        !digestPattern.test(snapshot.contentDigest) ||
+        !isCanonicalInstant(snapshot.retrievedAt)
+      ) {
+        issues.push(issue("SOURCE_SNAPSHOT_MISMATCH", `${base}/sourceSnapshots`));
+      }
+      snapshots.add(identity);
+      snapshotIds.add(snapshot.snapshotId);
+    }
     if (
-      references.size !== envelope.sourceReferences.length ||
-      snapshots.size !== envelope.sourceSnapshots.length ||
       references.size !== snapshots.size ||
-      [...references].some((key) => !snapshots.has(key)) ||
-      envelope.sourceReferences.some(
-        (reference) =>
-          !isNonEmptyString(reference.referenceId) ||
-          !isNonEmptyString(reference.referenceRevision) ||
-          !isNonEmptyString(reference.locator),
-      ) ||
-      envelope.sourceSnapshots.some(
-        (snapshot) =>
-          !isNonEmptyString(snapshot.snapshotId) ||
-          !digestPattern.test(snapshot.contentDigest) ||
-          !timestampPattern.test(snapshot.retrievedAt),
-      )
+      [...references].some((identity) => !snapshots.has(identity))
     ) {
       issues.push(issue("SOURCE_SNAPSHOT_MISMATCH", `${base}/sourceSnapshots`));
     }
   }
-  if (envelope.licenseStatus !== "approved" || !isNonEmptyString(envelope.licenseReference)) {
+  if (envelope.sourceTier === "L4") {
+    issues.push(issue("UNAPPROVED_SOURCE", `${base}/sourceTier`));
+  }
+  if (envelope.licenseStatus !== "approved" || envelope.licenseReference === null) {
     issues.push(issue("MISSING_LICENSE", `${base}/licenseStatus`));
   }
-  if (!isStringArray(envelope.applicableRegions) || envelope.applicableRegions.length === 0) {
+
+  if (envelope.applicableRegions.length === 0) {
     issues.push(issue("MISSING_REGION", `${base}/applicableRegions`));
   } else if (new Set(envelope.applicableRegions).size !== envelope.applicableRegions.length) {
     issues.push(issue("INVALID_SHAPE", `${base}/applicableRegions`));
   }
-  if (!isStringArray(envelope.languages) || envelope.languages.length === 0) {
+  if (envelope.languages.length === 0) {
     issues.push(issue("MISSING_LANGUAGE", `${base}/languages`));
   } else if (new Set(envelope.languages).size !== envelope.languages.length) {
     issues.push(issue("INVALID_SHAPE", `${base}/languages`));
   }
+
   if (
-    !timestampPattern.test(envelope.retrievedAt) ||
-    !timestampPattern.test(envelope.reviewedAt) ||
-    !timestampPattern.test(envelope.reviewDueAt) ||
+    !isCanonicalInstant(envelope.retrievedAt) ||
+    !isCanonicalInstant(envelope.reviewedAt) ||
+    !isCanonicalInstant(envelope.reviewDueAt) ||
     envelope.retrievedAt > envelope.reviewedAt ||
     envelope.reviewedAt > envelope.reviewDueAt
   ) {
     issues.push(issue("INVALID_SHAPE", `${base}/reviewedAt`));
   }
 
+  const target = envelope.supersededBy;
+  const targetShape =
+    target !== null &&
+    uuidV7Pattern.test(target.entityId) &&
+    !(
+      target.datasetId === envelope.datasetId &&
+      target.entityId === envelope.entityId &&
+      target.entityRevision === envelope.entityRevision
+    );
   const lifecycleValid =
     (envelope.lifecycleStatus === "withdrawn" &&
       envelope.withdrawalState === "withdrawn" &&
-      isNonEmptyString(envelope.withdrawalReason) &&
-      typeof envelope.withdrawnAt === "string" &&
-      timestampPattern.test(envelope.withdrawnAt)) ||
+      envelope.withdrawalReason !== null &&
+      envelope.withdrawnAt !== null &&
+      isCanonicalInstant(envelope.withdrawnAt) &&
+      envelope.withdrawnAt >= envelope.reviewedAt &&
+      target === null) ||
     (envelope.lifecycleStatus === "superseded" &&
       envelope.withdrawalState === "not_withdrawn" &&
-      envelope.supersededBy !== null &&
+      targetShape &&
       envelope.withdrawalReason === null &&
       envelope.withdrawnAt === null) ||
     (["draft", "under_review", "approved", "active"] as const).includes(
       envelope.lifecycleStatus as "draft",
     ) &&
       envelope.withdrawalState === "not_withdrawn" &&
-      envelope.supersededBy === null &&
+      target === null &&
       envelope.withdrawalReason === null &&
       envelope.withdrawnAt === null;
   if (!lifecycleValid) issues.push(issue("INVALID_LIFECYCLE", `${base}/lifecycleStatus`));
 
-  const sourceIds = new Set(envelope.sourceReferences.map(({ referenceId }) => referenceId));
-  if (
-    envelope.aliases.some(
-      (alias) =>
-        !isNonEmptyString(alias?.value) ||
-        !envelope.applicableRegions.includes(alias.region) ||
-        !envelope.languages.includes(alias.language) ||
-        !sourceIds.has(alias.sourceReferenceId),
-    )
-  ) {
-    issues.push(issue("INVALID_SHAPE", `${base}/aliases`));
+  const sourceIdentities = new Set(
+    envelope.sourceReferences.map((reference) =>
+      keyOf([reference.referenceId, reference.referenceRevision]),
+    ),
+  );
+  for (const alias of envelope.aliases) {
+    if (
+      normalizeAlias(alias) === null ||
+      !envelope.applicableRegions.includes(alias.region) ||
+      !envelope.languages.includes(alias.language) ||
+      !sourceIdentities.has(keyOf([alias.sourceReferenceId, alias.sourceReferenceRevision]))
+    ) {
+      issues.push(issue("INVALID_SHAPE", `${base}/aliases`));
+    }
   }
 };
 
-export const validateGovernanceRelease = (value: unknown): ValidationResult => {
-  if (!isRecord(value) || !Array.isArray(value["envelopes"]) || value["envelopes"].length === 0) {
-    return sortedResult([issue("INVALID_SHAPE", "envelopes")]);
-  }
-  if (!value["envelopes"].every(envelopeShape)) {
-    return sortedResult([issue("INVALID_SHAPE", "envelopes")]);
-  }
-  const release: GovernanceRelease = { envelopes: value["envelopes"] };
+const validateDecodedRelease = (
+  release: DecodedGovernanceRelease,
+): readonly ValidationIssue[] => {
   const issues: ValidationIssue[] = [];
   const first = release.envelopes[0];
-  if (first === undefined) return sortedResult([issue("INVALID_SHAPE", "envelopes")]);
-
-  for (const [index, envelope] of release.envelopes.entries()) {
+  if (first === undefined) return [issue("INVALID_SHAPE", "envelopes")];
+  const seenIds = new Set<string>();
+  const aliases = new Set<string>();
+  for (let index = 0; index < release.envelopes.length; index += 1) {
+    const envelope = release.envelopes[index] as GovernanceEnvelope;
     validateEnvelope(envelope, index, issues);
     if (
       envelope.datasetId !== first.datasetId ||
@@ -253,26 +192,18 @@ export const validateGovernanceRelease = (value: unknown): ValidationResult => {
     ) {
       issues.push(issue("INCONSISTENT_RELEASE", `envelopes/${index}`));
     }
-  }
-
-  const seenIds = new Set<string>();
-  const aliases = new Map<string, string>();
-  for (const [index, envelope] of release.envelopes.entries()) {
     if (seenIds.has(envelope.entityId)) {
       issues.push(issue("REUSED_ENTITY_ID", `envelopes/${index}/entityId`));
     }
     seenIds.add(envelope.entityId);
     for (const alias of envelope.aliases) {
-      const key = aliasKey(alias);
-      const existing = aliases.get(key);
-      if (existing !== undefined && existing !== envelope.entityId) {
-        issues.push(issue("ALIAS_CONFLICT", `envelopes/${index}/aliases`));
-      } else {
-        aliases.set(key, envelope.entityId);
-      }
+      const normalized = normalizeAlias(alias);
+      if (normalized === null) continue;
+      const identity = keyOf([alias.region.normalize("NFC"), alias.language.normalize("NFC"), normalized]);
+      if (aliases.has(identity)) issues.push(issue("ALIAS_CONFLICT", `envelopes/${index}/aliases`));
+      aliases.add(identity);
     }
   }
-
   try {
     if (!digestPattern.test(first.contentDigest) || canonicalReleaseDigest(release) !== first.contentDigest) {
       issues.push(issue("RELEASE_DIGEST_MISMATCH", "contentDigest"));
@@ -280,73 +211,111 @@ export const validateGovernanceRelease = (value: unknown): ValidationResult => {
   } catch {
     issues.push(issue("INVALID_SHAPE", "envelopes"));
   }
-  return sortedResult(issues);
+  return sortedIssues(issues);
 };
 
-export const validateGovernanceCatalog = (value: unknown): ValidationResult => {
-  if (
-    !isRecord(value) ||
-    !Array.isArray(value["releases"]) ||
-    !Array.isArray(value["hardMappings"])
-  ) {
-    return sortedResult([issue("INVALID_SHAPE", "catalog")]);
+const decodedFailure = (path: string): ReleaseValidationResult => ({
+  ok: false,
+  issues: [{ code: "INVALID_SHAPE", path: path.replace(/^release\//, "") }],
+});
+
+export const validateGovernanceRelease = (value: unknown): ReleaseValidationResult => {
+  const decoded = decodeGovernanceRelease(value);
+  if (!decoded.ok) return decodedFailure(decoded.issue.path);
+  const issues = validateDecodedRelease(decoded.value);
+  return issues.length === 0
+    ? { ok: true, issues: [], release: decoded.value }
+    : { ok: false, issues };
+};
+
+const referenceShape = (reference: { readonly entityId: string }): boolean =>
+  uuidV7Pattern.test(reference.entityId);
+
+export const validateGovernanceCatalog = (value: unknown): CatalogValidationResult => {
+  const decoded = decodeGovernanceCatalog(value);
+  if (!decoded.ok) {
+    return { ok: false, issues: [{ code: "INVALID_SHAPE", path: decoded.issue.path }] };
   }
-  const catalog = value as unknown as GovernanceCatalog;
+  const catalog: DecodedGovernanceCatalog = decoded.value;
   const issues: ValidationIssue[] = [];
-  const shapedReleases: GovernanceRelease[] = [];
-  for (const [index, release] of catalog.releases.entries()) {
-    const result = validateGovernanceRelease(release);
-    for (const child of result.issues) {
-      issues.push(issue(child.code, `releases/${index}/${child.path}`));
+  const releaseIdentities = new Set<string>();
+  const releaseIds = new Map<string, string>();
+  const entityRevisions = new Set<string>();
+  const entityDatasets = new Map<string, string>();
+
+  for (let releaseIndex = 0; releaseIndex < catalog.releases.length; releaseIndex += 1) {
+    const release = catalog.releases[releaseIndex] as DecodedGovernanceRelease;
+    for (const child of validateDecodedRelease(release)) {
+      issues.push(issue(child.code, `releases/${releaseIndex}/${child.path}`));
     }
-    if (
-      isRecord(release) &&
-      Array.isArray(release["envelopes"]) &&
-      release["envelopes"].every(envelopeShape)
-    ) {
-      shapedReleases.push(release as unknown as GovernanceRelease);
+    const first = release.envelopes[0];
+    if (first === undefined) continue;
+    const releaseIdentity = keyOf([first.datasetId, first.releaseId, first.releaseRevision]);
+    if (releaseIdentities.has(releaseIdentity)) {
+      issues.push(issue("DUPLICATE_RELEASE", `releases/${releaseIndex}`));
+    }
+    releaseIdentities.add(releaseIdentity);
+    const releaseDataset = releaseIds.get(first.releaseId);
+    if (releaseDataset !== undefined && releaseDataset !== first.datasetId) {
+      issues.push(issue("DUPLICATE_RELEASE", `releases/${releaseIndex}`));
+    }
+    releaseIds.set(first.releaseId, first.datasetId);
+
+    for (const envelope of release.envelopes) {
+      const revisionIdentity = keyOf([
+        envelope.datasetId,
+        envelope.entityId,
+        envelope.entityRevision,
+      ]);
+      if (entityRevisions.has(revisionIdentity)) {
+        issues.push(issue("DUPLICATE_ENTITY_REVISION", `releases/${releaseIndex}/entityRevision`));
+      }
+      entityRevisions.add(revisionIdentity);
+      const dataset = entityDatasets.get(envelope.entityId);
+      if (dataset !== undefined && dataset !== envelope.datasetId) {
+        issues.push(issue("REUSED_ENTITY_ID", `releases/${releaseIndex}/entityId`));
+      }
+      entityDatasets.set(envelope.entityId, envelope.datasetId);
     }
   }
 
-  const seen = new Map<string, string>();
-  for (const [releaseIndex, release] of shapedReleases.entries()) {
-    for (const envelope of release.envelopes) {
-      const existingDataset = seen.get(envelope.entityId);
-      if (existingDataset !== undefined && existingDataset !== envelope.datasetId) {
-        issues.push(issue("REUSED_ENTITY_ID", `releases/${releaseIndex}/entityId`));
-      } else {
-        seen.set(envelope.entityId, envelope.datasetId);
+  const mappingIds = new Set<string>();
+  for (let index = 0; index < catalog.hardMappings.length; index += 1) {
+    const mapping = catalog.hardMappings[index];
+    if (mapping === undefined) continue;
+    if (mappingIds.has(mapping.mappingId)) issues.push(issue("INVALID_SHAPE", `hardMappings/${index}/mappingId`));
+    mappingIds.add(mapping.mappingId);
+    if (!referenceShape(mapping.source) || !referenceShape(mapping.target)) {
+      issues.push(issue("INVALID_SHAPE", `hardMappings/${index}`));
+    }
+  }
+
+  if (issues.length === 0) {
+    const index = createValidatedCatalogIndex(catalog);
+    for (let releaseIndex = 0; releaseIndex < catalog.releases.length; releaseIndex += 1) {
+      for (const envelope of catalog.releases[releaseIndex]?.envelopes ?? []) {
+        if (envelope.lifecycleStatus !== "superseded" || envelope.supersededBy === null) continue;
+        if (resolveValidatedReference(index, envelope.supersededBy).status !== "mapped") {
+          issues.push(issue("INVALID_LIFECYCLE", `releases/${releaseIndex}/supersededBy`));
+        }
       }
     }
-  }
-
-  const mappingShape = (mapping: unknown): mapping is GovernanceCatalog["hardMappings"][number] =>
-    isRecord(mapping) &&
-    isNonEmptyString(mapping["mappingId"]) &&
-    governedReferenceShape(mapping["source"]) &&
-    governedReferenceShape(mapping["target"]) &&
-    typeof mapping["required"] === "boolean";
-  if (!catalog.hardMappings.every(mappingShape)) {
-    issues.push(issue("INVALID_SHAPE", "hardMappings"));
-    return sortedResult(issues);
-  }
-  const safeCatalog: GovernanceCatalog = {
-    releases: shapedReleases,
-    hardMappings: catalog.hardMappings,
-  };
-  for (const [index, mapping] of catalog.hardMappings.entries()) {
-    if (!mapping.required) continue;
-    const source = resolveGovernedReference(safeCatalog, mapping.source);
-    const target = resolveGovernedReference(safeCatalog, mapping.target);
-    if (source.status !== "mapped") {
-      issues.push(issue("HARD_MAPPING_UNRESOLVED", `hardMappings/${index}/source`));
-    } else if (target.status === "version_mismatch") {
-      issues.push(issue("UNKNOWN_REVISION", `hardMappings/${index}/target`));
-    } else if (target.status === "withdrawn") {
-      issues.push(issue("WITHDRAWN_REFERENCE", `hardMappings/${index}/target`));
-    } else if (target.status !== "mapped") {
-      issues.push(issue("HARD_MAPPING_UNRESOLVED", `hardMappings/${index}/target`));
+    for (let mappingIndex = 0; mappingIndex < catalog.hardMappings.length; mappingIndex += 1) {
+      const mapping = catalog.hardMappings[mappingIndex];
+      if (mapping === undefined || !mapping.required) continue;
+      const source = resolveValidatedReference(index, mapping.source);
+      const target = resolveValidatedReference(index, mapping.target);
+      if (source.status !== "mapped") {
+        issues.push(issue("HARD_MAPPING_UNRESOLVED", `hardMappings/${mappingIndex}/source`));
+      } else if (target.status === "version_mismatch") {
+        issues.push(issue("UNKNOWN_REVISION", `hardMappings/${mappingIndex}/target`));
+      } else if (target.status === "withdrawn") {
+        issues.push(issue("WITHDRAWN_REFERENCE", `hardMappings/${mappingIndex}/target`));
+      } else if (target.status !== "mapped") {
+        issues.push(issue("HARD_MAPPING_UNRESOLVED", `hardMappings/${mappingIndex}/target`));
+      }
     }
+    if (issues.length === 0) return { ok: true, issues: [], catalog: index };
   }
-  return sortedResult(issues);
+  return { ok: false, issues: sortedIssues(issues) };
 };

@@ -4,12 +4,27 @@ export {
   canonicalReleaseText,
   compareUtf8,
 } from "./canonical.js";
+export {
+  decodeGovernanceCatalog,
+  decodeGovernanceCatalogJson,
+  decodeGovernanceRelease,
+  decodeGovernanceReleaseJson,
+  decodeGovernedReference,
+} from "./decode.js";
 export { resolveGovernedReference } from "./resolution.js";
 export { validateGovernanceCatalog, validateGovernanceRelease } from "./validation.js";
 export {
   datasetKinds,
+  licenseStatuses,
+  lifecycleStatuses,
   mappingStatuses,
+  sourceTiers,
+  withdrawalStates,
+  type CatalogValidationResult,
   type DatasetKind,
+  type DecodeResult,
+  type DecodedGovernanceCatalog,
+  type DecodedGovernanceRelease,
   type GovernanceActor,
   type GovernanceAlias,
   type GovernanceCatalog,
@@ -30,5 +45,7 @@ export {
   type ValidationIssue,
   type ValidationIssueCode,
   type ValidationResult,
+  type ReleaseValidationResult,
+  type ValidatedCatalogIndex,
   type WithdrawalState,
 } from "./types.js";

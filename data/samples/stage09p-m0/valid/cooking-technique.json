@@ -7,7 +7,7 @@
       "datasetKind": "cooking_technique",
       "releaseId": "syn:release:cooking-technique:1",
       "releaseRevision": 1,
-      "contentDigest": "sha256:5a5472b85281b6876760b27b9fda2ab953c45daf6de3fb22226f067894f044d1",
+      "contentDigest": "sha256:a88f2f75853a7638ce0a2c74438c5df2d2f1fdd9193dd3f4a85557796d16b70e",
       "entityId": "01900000-7000-7000-8000-000000000005",
       "entityRevision": 1,
       "lifecycleStatus": "active",
@@ -44,7 +44,8 @@
           "value": "SYNTHETIC_COOKING_TECHNIQUE_ALPHA",
           "region": "SYNTHETIC-REGION-1",
           "language": "x-synthetic",
-          "sourceReferenceId": "syn:source:cooking-technique"
+          "sourceReferenceId": "syn:source:cooking-technique",
+          "sourceReferenceRevision": "syn-revision-1"
         }
       ],
       "supersededBy": null,

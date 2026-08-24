@@ -1,19 +1,19 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
+import { decodeGovernanceRelease } from "./decode.js";
 import type {
+  DecodedGovernanceRelease,
   GovernanceAlias,
   GovernanceEnvelope,
-  GovernanceRelease,
   JsonValue,
 } from "./types.js";
 
-const invalidUnicodeScalar = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+const invalidUnicodeScalar =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 const assertString = (value: string): void => {
-  if (invalidUnicodeScalar.test(value)) {
-    throw new TypeError("canonical JSON requires Unicode scalar strings");
-  }
+  if (invalidUnicodeScalar.test(value)) throw new TypeError("INVALID_SHAPE");
 };
 
 export const compareUtf8 = (left: string, right: string): number => {
@@ -29,7 +29,7 @@ export const compareUtf8 = (left: string, right: string): number => {
   return leftBytes.length - rightBytes.length;
 };
 
-const canonicalValue = (value: unknown, seen: Set<object>): string => {
+const canonicalValue = (value: unknown, ancestors: Set<object>): string => {
   if (value === null) return "null";
   if (typeof value === "string") {
     assertString(value);
@@ -37,70 +37,101 @@ const canonicalValue = (value: unknown, seen: Set<object>): string => {
   }
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
-    if (!Number.isFinite(value) || Object.is(value, -0)) {
-      throw new TypeError("canonical JSON requires finite non-negative-zero numbers");
-    }
+    if (!Number.isFinite(value) || Object.is(value, -0)) throw new TypeError("INVALID_SHAPE");
     return JSON.stringify(value);
   }
-  if (typeof value !== "object" || value === undefined) {
-    throw new TypeError("canonical JSON accepts JSON values only");
-  }
-  if (seen.has(value)) throw new TypeError("canonical JSON rejects cyclic values");
-  seen.add(value);
+  if (typeof value !== "object" || value === undefined) throw new TypeError("INVALID_SHAPE");
+  if (ancestors.has(value)) throw new TypeError("INVALID_SHAPE");
+  ancestors.add(value);
   try {
     if (Array.isArray(value)) {
-      if (Object.keys(value).some((key) => !/^(?:0|[1-9][0-9]*)$/.test(key))) {
-        throw new TypeError("canonical JSON rejects arrays with extra properties");
+      if (Object.getPrototypeOf(value) !== Array.prototype) throw new TypeError("INVALID_SHAPE");
+      const keys = Reflect.ownKeys(value);
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (lengthDescriptor === undefined || !("value" in lengthDescriptor)) {
+        throw new TypeError("INVALID_SHAPE");
+      }
+      const length = lengthDescriptor.value as number;
+      if (!Number.isSafeInteger(length) || length < 0 || keys.length !== length + 1) {
+        throw new TypeError("INVALID_SHAPE");
       }
       const items: string[] = [];
-      for (let index = 0; index < value.length; index += 1) {
-        if (!Object.hasOwn(value, index)) {
-          throw new TypeError("canonical JSON rejects sparse arrays");
-        }
+      for (let index = 0; index < length; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-        if (descriptor === undefined || !("value" in descriptor)) {
-          throw new TypeError("canonical JSON rejects accessors");
-        }
-        items.push(canonicalValue(descriptor.value, seen));
+        if (descriptor === undefined || !("value" in descriptor)) throw new TypeError("INVALID_SHAPE");
+        items.push(canonicalValue(descriptor.value, ancestors));
       }
       return `[${items.join(",")}]`;
     }
-
     const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw new TypeError("canonical JSON requires plain objects");
-    }
-    if (Object.getOwnPropertySymbols(value).length !== 0) {
-      throw new TypeError("canonical JSON rejects symbol keys");
-    }
+    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("INVALID_SHAPE");
+    const keys = Reflect.ownKeys(value);
+    if (keys.some((key) => typeof key !== "string")) throw new TypeError("INVALID_SHAPE");
+    const stringKeys = keys as string[];
+    stringKeys.sort(compareUtf8);
     const entries: string[] = [];
-    for (const key of Object.keys(value).sort(compareUtf8)) {
+    for (const key of stringKeys) {
       assertString(key);
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      if (descriptor === undefined || !("value" in descriptor)) {
-        throw new TypeError("canonical JSON rejects accessors");
-      }
-      entries.push(`${JSON.stringify(key)}:${canonicalValue(descriptor.value, seen)}`);
+      if (descriptor === undefined || !("value" in descriptor)) throw new TypeError("INVALID_SHAPE");
+      entries.push(`${JSON.stringify(key)}:${canonicalValue(descriptor.value, ancestors)}`);
     }
     return `{${entries.join(",")}}`;
   } finally {
-    seen.delete(value);
+    ancestors.delete(value);
   }
 };
 
-export const canonicalJson = (value: unknown): string => canonicalValue(value, new Set());
+export const canonicalJson = (value: unknown): string => {
+  try {
+    return canonicalValue(value, new Set());
+  } catch {
+    throw new TypeError("INVALID_SHAPE");
+  }
+};
 
-const stringKey = (...values: readonly string[]): string => values.join("\u0000");
+const copyArray = <T>(values: readonly T[]): T[] => {
+  const copy: T[] = [];
+  for (let index = 0; index < values.length; index += 1) copy.push(values[index] as T);
+  return copy;
+};
 
-const sortStrings = (values: readonly string[]): string[] => [...values].sort(compareUtf8);
+const compareStructural = <T>(
+  left: T,
+  right: T,
+  fields: (value: T) => readonly string[],
+  material: (value: T) => JsonValue = (value) => value as JsonValue,
+): number => {
+  const leftFields = fields(left);
+  const rightFields = fields(right);
+  const length = Math.max(leftFields.length, rightFields.length);
+  for (let index = 0; index < length; index += 1) {
+    const comparison = compareUtf8(leftFields[index] ?? "", rightFields[index] ?? "");
+    if (comparison !== 0) return comparison;
+  }
+  return compareUtf8(canonicalJson(material(left)), canonicalJson(material(right)));
+};
 
-const sortAliases = (aliases: readonly GovernanceAlias[]): GovernanceAlias[] =>
-  [...aliases].sort((left, right) =>
-    compareUtf8(
-      stringKey(left.region, left.language, left.value, left.sourceReferenceId),
-      stringKey(right.region, right.language, right.value, right.sourceReferenceId),
-    ),
-  );
+const sorted = <T>(
+  values: readonly T[],
+  fields: (value: T) => readonly string[],
+  material?: (value: T) => JsonValue,
+): T[] => copyArray(values).sort((left, right) => compareStructural(left, right, fields, material));
+
+const sortedStrings = (values: readonly string[]): string[] =>
+  copyArray(values).sort((left, right) => {
+    const comparison = compareUtf8(left, right);
+    return comparison === 0 ? compareUtf8(canonicalJson(left), canonicalJson(right)) : comparison;
+  });
+
+const sortedAliases = (aliases: readonly GovernanceAlias[]): GovernanceAlias[] =>
+  sorted(aliases, (alias) => [
+    alias.region,
+    alias.language,
+    alias.value,
+    alias.sourceReferenceId,
+    alias.sourceReferenceRevision,
+  ]);
 
 const canonicalEnvelopeMaterial = (envelope: GovernanceEnvelope): JsonValue => ({
   schemaVersion: envelope.schemaVersion,
@@ -112,30 +143,28 @@ const canonicalEnvelopeMaterial = (envelope: GovernanceEnvelope): JsonValue => (
   entityRevision: envelope.entityRevision,
   lifecycleStatus: envelope.lifecycleStatus,
   owner: envelope.owner,
-  approvers: [...envelope.approvers].sort((left, right) =>
-    compareUtf8(stringKey(left.actorId, left.role), stringKey(right.actorId, right.role)),
-  ),
+  approvers: sorted(envelope.approvers, (actor) => [actor.actorId, actor.role]),
   sourceTier: envelope.sourceTier,
-  sourceReferences: [...envelope.sourceReferences].sort((left, right) =>
-    compareUtf8(
-      stringKey(left.referenceId, left.referenceRevision, left.locator),
-      stringKey(right.referenceId, right.referenceRevision, right.locator),
-    ),
-  ),
-  sourceSnapshots: [...envelope.sourceSnapshots].sort((left, right) =>
-    compareUtf8(
-      stringKey(left.referenceId, left.referenceRevision, left.snapshotId),
-      stringKey(right.referenceId, right.referenceRevision, right.snapshotId),
-    ),
-  ),
-  applicableRegions: sortStrings(envelope.applicableRegions),
-  languages: sortStrings(envelope.languages),
+  sourceReferences: sorted(envelope.sourceReferences, (reference) => [
+    reference.referenceId,
+    reference.referenceRevision,
+    reference.locator,
+  ]),
+  sourceSnapshots: sorted(envelope.sourceSnapshots, (snapshot) => [
+    snapshot.referenceId,
+    snapshot.referenceRevision,
+    snapshot.snapshotId,
+    snapshot.contentDigest,
+    snapshot.retrievedAt,
+  ]),
+  applicableRegions: sortedStrings(envelope.applicableRegions),
+  languages: sortedStrings(envelope.languages),
   licenseStatus: envelope.licenseStatus,
   licenseReference: envelope.licenseReference,
   retrievedAt: envelope.retrievedAt,
   reviewedAt: envelope.reviewedAt,
   reviewDueAt: envelope.reviewDueAt,
-  aliases: sortAliases(envelope.aliases),
+  aliases: sortedAliases(envelope.aliases),
   supersededBy: envelope.supersededBy,
   withdrawalState: envelope.withdrawalState,
   withdrawalReason: envelope.withdrawalReason,
@@ -146,18 +175,28 @@ const canonicalEnvelopeMaterial = (envelope: GovernanceEnvelope): JsonValue => (
     : { syntheticEvidence: envelope.syntheticEvidence }),
 }) as unknown as JsonValue;
 
-/** The declared contentDigest is excluded to avoid a circular self-reference. */
-export const canonicalReleaseText = (release: GovernanceRelease): string =>
-  canonicalJson({
-    envelopes: [...release.envelopes]
-      .sort((left, right) =>
-        compareUtf8(
-          stringKey(left.datasetId, left.entityId, String(left.entityRevision)),
-          stringKey(right.datasetId, right.entityId, String(right.entityRevision)),
-        ),
-      )
-      .map(canonicalEnvelopeMaterial),
+const decodedReleaseText = (release: DecodedGovernanceRelease): string => {
+  const materials = release.envelopes.map(canonicalEnvelopeMaterial);
+  const ordered = sorted(materials, (material) => {
+    const envelope = material as Record<string, JsonValue>;
+    return [
+      String(envelope["datasetId"]),
+      String(envelope["entityId"]),
+      String(envelope["entityRevision"]),
+    ];
   });
+  return canonicalJson({
+    ...(release.$schema === undefined ? {} : { $schema: release.$schema }),
+    envelopes: ordered,
+  });
+};
 
-export const canonicalReleaseDigest = (release: GovernanceRelease): string =>
-  `sha256:${bytesToHex(sha256(utf8ToBytes(canonicalReleaseText(release))))}`;
+/** The declared contentDigest is the only excluded field, preventing self-reference. */
+export const canonicalReleaseText = (value: unknown): string => {
+  const decoded = decodeGovernanceRelease(value);
+  if (!decoded.ok) throw new TypeError("INVALID_SHAPE");
+  return decodedReleaseText(decoded.value);
+};
+
+export const canonicalReleaseDigest = (value: unknown): string =>
+  `sha256:${bytesToHex(sha256(utf8ToBytes(canonicalReleaseText(value))))}`;

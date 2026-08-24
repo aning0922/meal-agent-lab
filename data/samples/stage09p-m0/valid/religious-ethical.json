@@ -7,7 +7,7 @@
       "datasetKind": "religious_ethical",
       "releaseId": "syn:release:religious-ethical:1",
       "releaseRevision": 1,
-      "contentDigest": "sha256:43c26b0c398fe577f9bae0de012895259f4a9970412c4dc44c01c3a2ad0380ca",
+      "contentDigest": "sha256:e0ecb4fe4621a8b2a2a4027b254e79ab13a7025e843665d32ae633eb657b0d61",
       "entityId": "01900000-7000-7000-8000-000000000003",
       "entityRevision": 1,
       "lifecycleStatus": "active",
@@ -44,7 +44,8 @@
           "value": "SYNTHETIC_RELIGIOUS_ETHICAL_ALPHA",
           "region": "SYNTHETIC-REGION-1",
           "language": "x-synthetic",
-          "sourceReferenceId": "syn:source:religious-ethical"
+          "sourceReferenceId": "syn:source:religious-ethical",
+          "sourceReferenceRevision": "syn-revision-1"
         }
       ],
       "supersededBy": null,

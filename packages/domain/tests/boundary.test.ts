@@ -11,7 +11,15 @@ test("domain production source remains pure and framework-free", () => {
   ) as { dependencies?: Record<string, string> };
   assert.deepEqual(Object.keys(packageJson.dependencies ?? {}), ["@noble/hashes"]);
 
-  for (const file of ["canonical.ts", "index.ts", "resolution.ts", "types.ts", "validation.ts"]) {
+  for (const file of [
+    "canonical.ts",
+    "catalog.ts",
+    "decode.ts",
+    "index.ts",
+    "resolution.ts",
+    "types.ts",
+    "validation.ts",
+  ]) {
     const source = readFileSync(resolve(packageRoot, "src", file), "utf8");
     const executableSource = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
     assert.doesNotMatch(

@@ -127,6 +127,7 @@ test("canonical release bytes and digest ignore insertion and set ordering", () 
   assert.ok(syntheticEvidence !== undefined);
 
   const reordered = {
+    ...(release.$schema === undefined ? {} : { $schema: release.$schema }),
     envelopes: [
       {
         content: envelope.content,
@@ -237,6 +238,12 @@ test("reference resolution returns only the stable closed result set", () => {
     withdrawnAt: "2000-01-03T00:00:00.000Z",
   });
   Object.assign(unapproved, { lifecycleStatus: "under_review" });
+  for (const release of [withdrawnRelease, unapprovedRelease]) {
+    const digest = canonicalReleaseDigest(release);
+    for (const current of release.envelopes) {
+      (current as unknown as Record<string, unknown>)["contentDigest"] = digest;
+    }
+  }
   const catalog: GovernanceCatalog = {
     releases: [releases[0] as GovernanceRelease, withdrawnRelease, unapprovedRelease],
     hardMappings: [],
@@ -289,10 +296,10 @@ test("reference resolution returns only the stable closed result set", () => {
 });
 
 test("canonicalization rejects environment-sensitive or non-JSON values", () => {
-  assert.throws(() => canonicalJson({ bad: Number.NaN }), /canonical JSON/);
-  assert.throws(() => canonicalJson({ bad: -0 }), /canonical JSON/);
-  assert.throws(() => canonicalJson({ bad: undefined }), /canonical JSON/);
-  assert.throws(() => canonicalJson({ bad: new Date(0) }), /canonical JSON/);
+  assert.throws(() => canonicalJson({ bad: Number.NaN }), /INVALID_SHAPE/);
+  assert.throws(() => canonicalJson({ bad: -0 }), /INVALID_SHAPE/);
+  assert.throws(() => canonicalJson({ bad: undefined }), /INVALID_SHAPE/);
+  assert.throws(() => canonicalJson({ bad: new Date(0) }), /INVALID_SHAPE/);
 });
 
 test("malformed nested input fails closed without throwing", () => {

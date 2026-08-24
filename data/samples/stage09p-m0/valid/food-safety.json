@@ -7,7 +7,7 @@
       "datasetKind": "food_safety",
       "releaseId": "syn:release:food-safety:1",
       "releaseRevision": 1,
-      "contentDigest": "sha256:c105477b4d52a5b787ca4a0cda83befa58769a55524c29e3e47809d7cceb9874",
+      "contentDigest": "sha256:d3b01a76a619125e0cc7c7caf59e407472b99f23db7e672aa5616270769294f7",
       "entityId": "01900000-7000-7000-8000-000000000004",
       "entityRevision": 1,
       "lifecycleStatus": "active",
@@ -44,7 +44,8 @@
           "value": "SYNTHETIC_FOOD_SAFETY_ALPHA",
           "region": "SYNTHETIC-REGION-1",
           "language": "x-synthetic",
-          "sourceReferenceId": "syn:source:food-safety"
+          "sourceReferenceId": "syn:source:food-safety",
+          "sourceReferenceRevision": "syn-revision-1"
         }
       ],
       "supersededBy": null,
