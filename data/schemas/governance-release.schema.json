@@ -15,10 +15,11 @@
   },
   "$defs": {
     "nonEmptyString": { "type": "string", "minLength": 1 },
-    "positiveRevision": { "type": "integer", "minimum": 1 },
+    "positiveRevision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "timestamp": {
       "type": "string",
+      "format": "canonical-utc-instant",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
     },
     "actor": {
@@ -142,25 +143,60 @@
           "enum": ["draft", "under_review", "approved", "active", "superseded", "withdrawn"]
         },
         "owner": { "$ref": "#/$defs/actor" },
-        "approvers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/actor" } },
+        "approvers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/actor" } },
         "sourceTier": { "enum": ["L1", "L2", "L3", "L4"] },
-        "sourceReferences": { "type": "array", "items": { "$ref": "#/$defs/sourceReference" } },
-        "sourceSnapshots": { "type": "array", "items": { "$ref": "#/$defs/sourceSnapshot" } },
-        "applicableRegions": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
-        "languages": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "sourceReferences": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceReference" } },
+        "sourceSnapshots": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceSnapshot" } },
+        "applicableRegions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
+        "languages": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
         "licenseStatus": { "enum": ["approved", "restricted", "pending", "rejected"] },
         "licenseReference": { "type": ["string", "null"] },
         "retrievedAt": { "$ref": "#/$defs/timestamp" },
         "reviewedAt": { "$ref": "#/$defs/timestamp" },
         "reviewDueAt": { "$ref": "#/$defs/timestamp" },
-        "aliases": { "type": "array", "items": { "$ref": "#/$defs/alias" } },
+        "aliases": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/alias" } },
         "supersededBy": { "oneOf": [{ "$ref": "#/$defs/reference" }, { "type": "null" }] },
         "withdrawalState": { "enum": ["not_withdrawn", "withdrawn"] },
         "withdrawalReason": { "type": ["string", "null"] },
         "withdrawnAt": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
         "content": {},
         "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "lifecycleStatus": { "const": "withdrawn" } } },
+          "then": {
+            "properties": {
+              "withdrawalState": { "const": "withdrawn" },
+              "withdrawalReason": { "$ref": "#/$defs/nonEmptyString" },
+              "withdrawnAt": { "$ref": "#/$defs/timestamp" },
+              "supersededBy": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "withdrawalState": { "const": "not_withdrawn" },
+              "withdrawalReason": { "type": "null" },
+              "withdrawnAt": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "lifecycleStatus": { "const": "superseded" } } },
+          "then": { "properties": { "supersededBy": { "$ref": "#/$defs/reference" } } },
+          "else": { "properties": { "supersededBy": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "lifecycleStatus": { "enum": ["approved", "active", "superseded", "withdrawn"] } } },
+          "then": {
+            "properties": {
+              "licenseStatus": { "const": "approved" },
+              "licenseReference": { "$ref": "#/$defs/nonEmptyString" },
+              "sourceTier": { "enum": ["L1", "L2", "L3"] }
+            }
+          }
+        }
+      ]
     }
   }
 }

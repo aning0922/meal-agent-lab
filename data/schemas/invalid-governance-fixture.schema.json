@@ -18,40 +18,130 @@
     "baseValidFiles": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "enum": [
-          "food-concept.json",
-          "allergen.json",
-          "religious-ethical.json",
-          "food-safety.json",
-          "cooking-technique.json"
-        ]
-      }
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/validFile" }
     },
     "mutations": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": ["operation", "releaseIndex", "envelopeIndex"],
-        "properties": {
-          "operation": { "enum": ["set", "duplicate_envelope"] },
-          "releaseIndex": { "type": "integer", "minimum": 0 },
-          "envelopeIndex": { "type": "integer", "minimum": 0 },
-          "field": { "type": "string" },
-          "value": {},
-          "entityId": { "type": "string" },
-          "syntheticToken": { "type": "string", "pattern": "^SYNTHETIC_" },
-          "aliasValue": { "type": "string", "minLength": 1 }
-        }
+        "oneOf": [
+          { "$ref": "#/$defs/setMutation" },
+          { "$ref": "#/$defs/duplicateEnvelopeMutation" }
+        ]
       }
     },
-    "hardMappings": { "type": "array" },
+    "hardMappings": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/hardMapping" }
+    },
     "recomputeReleaseDigests": { "type": "boolean" },
     "expectedIssueCodes": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 1,
       "uniqueItems": true,
-      "items": { "type": "string" }
+      "items": {
+        "enum": [
+          "MISSING_SOURCE",
+          "MISSING_LICENSE",
+          "MISSING_REGION",
+          "MISSING_LANGUAGE",
+          "ALIAS_CONFLICT",
+          "REUSED_ENTITY_ID",
+          "UNKNOWN_REVISION",
+          "WITHDRAWN_REFERENCE",
+          "RELEASE_DIGEST_MISMATCH",
+          "HARD_MAPPING_UNRESOLVED"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "validFile": {
+      "enum": [
+        "food-concept.json",
+        "allergen.json",
+        "religious-ethical.json",
+        "food-safety.json",
+        "cooking-technique.json"
+      ]
+    },
+    "index": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "setMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "releaseIndex", "envelopeIndex", "field", "value"],
+      "properties": {
+        "operation": { "const": "set" },
+        "releaseIndex": { "$ref": "#/$defs/index" },
+        "envelopeIndex": { "$ref": "#/$defs/index" },
+        "field": {
+          "enum": [
+            "sourceReferences",
+            "sourceSnapshots",
+            "aliases",
+            "applicableRegions",
+            "languages",
+            "licenseStatus",
+            "licenseReference",
+            "entityId",
+            "lifecycleStatus",
+            "withdrawalState",
+            "withdrawalReason",
+            "withdrawnAt",
+            "contentDigest"
+          ]
+        },
+        "value": {}
+      }
+    },
+    "duplicateEnvelopeMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "releaseIndex",
+        "envelopeIndex",
+        "entityId",
+        "syntheticToken",
+        "aliasValue"
+      ],
+      "properties": {
+        "operation": { "const": "duplicate_envelope" },
+        "releaseIndex": { "$ref": "#/$defs/index" },
+        "envelopeIndex": { "$ref": "#/$defs/index" },
+        "entityId": {
+          "type": "string",
+          "pattern": "^01900000-7000-7000-8000-0000000000[0-9]{2}$"
+        },
+        "syntheticToken": { "type": "string", "pattern": "^SYNTHETIC_[A-Z0-9_]+$" },
+        "aliasValue": { "type": "string", "minLength": 1 }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datasetId", "entityId", "entityRevision"],
+      "properties": {
+        "datasetId": { "type": "string", "pattern": "^syn:dataset:" },
+        "entityId": {
+          "type": "string",
+          "pattern": "^01900000-7000-7000-8000-0000000000[0-9]{2}$"
+        },
+        "entityRevision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "hardMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mappingId", "source", "target", "required"],
+      "properties": {
+        "mappingId": { "type": "string", "pattern": "^syn:mapping:" },
+        "source": { "$ref": "#/$defs/reference" },
+        "target": { "$ref": "#/$defs/reference" },
+        "required": { "const": true }
+      }
     }
   }
 }
