@@ -3,8 +3,9 @@
 跨应用共享模块：
 
 - [`domain/`](domain/README.md)：阶段 09P-M0 的纯 TypeScript 治理信封、canonical
-  digest、引用解析与合成 fail-closed 规则；当前实现完成，等待总控复验，不含后续
-  Recipe/Recommendation/Meal/Shopping 业务。
+  digest、strict decode、validated catalog index、引用解析与合成 fail-closed 规则；
+  Round 2 implementation complete, pending total-control review，不含后续
+  Recipe/Recommendation/Meal/Shopping 业务，也未 Accepted。
 - [`contracts/`](contracts/README.md)：正式 API、实体快照、事件和校验契约；同时提供 Zod schema 与推导的 TypeScript 类型。
 - `ui/`：设计令牌和可跨端复用的 UI 约定。
 - `config/`：共享构建、格式化、静态检查和测试配置。

@@ -25,9 +25,11 @@ PostgreSQL 18.4 工具；同一个 `pnpm stage09a:check` 明确输出 **14/14 PA
 
 [阶段 09P“安全知识治理与确定性产品核心闭环”](docs/plans/2026-08-stage-09p-safe-deterministic-product-core.md)
 规划已于 2026-08-23 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；
-implementation not started，首个未来里程碑 09P-M0 为 `Not started`。阶段 09B“私有测试服务器”
-是 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、
-体验版、审核和发布继续 Deferred。产品能力 `25%–35%` 只能作为管理估算，不是验收指标。
+delivery 保持 **In Progress**。09P-M0 Round 2 已实现 strict decode → validation →
+validated catalog index 的单一信任链，当前仅为 **M0 Round 2 implementation complete,
+pending total-control review**，不是 Accepted/Pass。阶段 09B“私有测试服务器”是 P1
+conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、
+审核和发布继续 Deferred。产品能力 `25%–35%` 只能作为管理估算，不是验收指标。
 
 当前纵切覆盖：
 
@@ -60,7 +62,8 @@ pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<can
 - [`apps/client`](apps/client/)：Taro/React 正式客户端；
 - [`services/api`](services/api/)：Fastify 模块化单体 API；
 - [`packages/contracts`](packages/contracts/)：跨端唯一契约与规则 manifest；
-- `packages/domain`：阶段 09P 已接受的目标架构方向，当前尚未创建；
+- [`packages/domain`](packages/domain/)：09P-M0 的纯 TypeScript 治理解码、摘要、
+  validated catalog index 与 fail-closed 引用解析边界，Round 2 等待总控复验；
 - [`docs`](docs/)：产品、架构、安全、计划和状态事实源；
 - [`tests`](tests/)：跨模块和安全回归；
 - [`security`](security/)：机器可读安全例外；
