@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process'
-import { createRequire } from 'node:module'
 import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import Ajv2020 from 'ajv/dist/2020.js'
+import ts from 'typescript'
+
+import * as domain from '../packages/domain/dist/index.js'
+
 export const BASELINE_SHA = '2c2ccd9015268fe44db4bb5446f3340e551914be'
 export const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
-
-const domainRequire = createRequire(resolve(repositoryRoot, 'packages/domain/package.json'))
-const Ajv2020 = domainRequire('ajv/dist/2020').default
-const ts = domainRequire('typescript')
 
 export const manifests = Object.freeze({
   valid: Object.freeze([
@@ -581,7 +581,6 @@ export const collectSchemaParityFailures = async (root = repositoryRoot) => {
   if (failures.length > 0) return failures
   try {
     const validators = compiledSchemas(root)
-    const domain = await import(new URL('../packages/domain/dist/index.js', import.meta.url))
     const validDirectory = resolve(fixtureRoot(root), 'valid')
     const invalidDirectory = resolve(fixtureRoot(root), 'invalid')
     for (const file of manifests.valid) {

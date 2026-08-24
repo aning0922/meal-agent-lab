@@ -20,5 +20,9 @@
     "stage09p:m0:check": "pnpm --filter @meal-agent/domain check && node scripts/check-stage09p-m0-scope.mjs && node --test scripts/tests/stage09p-m0-scope.test.mjs && pnpm docs:links:check",
     "test": "pnpm --filter @meal-agent/domain test && pnpm --filter @meal-agent/contracts test && pnpm --filter @meal-agent/api test && pnpm --filter @meal-agent/client test",
     "typecheck": "pnpm --filter @meal-agent/domain typecheck && pnpm --filter @meal-agent/contracts typecheck && pnpm --filter @meal-agent/api typecheck && pnpm --filter @meal-agent/client typecheck"
+  },
+  "devDependencies": {
+    "ajv": "8.20.0",
+    "typescript": "5.9.3"
   }
 }
