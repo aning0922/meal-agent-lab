@@ -441,7 +441,8 @@ const forbiddenCapabilityNames = new Set([
   'writeFileSync', 'appendFile', 'open', 'createReadStream', 'createWriteStream',
   'connect', 'createConnection', 'indexedDB', 'localStorage', 'sessionStorage',
   'document', 'window', 'navigator', 'setTimeout', 'setInterval', 'createRequire',
-  'getBuiltinModule', 'dlopen', 'module', 'global', 'AsyncFunction', 'GeneratorFunction'
+  'getBuiltinModule', 'dlopen', 'module', 'global', 'crypto', 'AsyncFunction',
+  'GeneratorFunction'
 ])
 const forbiddenMemberNames = new Set([
   ...forbiddenCapabilityNames,
@@ -465,12 +466,54 @@ const auditedParameterCalls = new Set([
   'decode.ts#result:operation'
 ])
 
+const registeredPublicReexports = Object.freeze({
+  './canonical.js': Object.freeze({
+    values: Object.freeze([
+      'canonicalJson', 'canonicalReleaseDigest', 'canonicalReleaseText', 'compareUtf8'
+    ]),
+    types: Object.freeze([])
+  }),
+  './decode.js': Object.freeze({
+    values: Object.freeze([
+      'decodeGovernanceCatalog', 'decodeGovernanceCatalogJson', 'decodeGovernanceRelease',
+      'decodeGovernanceReleaseJson', 'decodeGovernedReference'
+    ]),
+    types: Object.freeze([])
+  }),
+  './resolution.js': Object.freeze({
+    values: Object.freeze(['resolveGovernedReference']),
+    types: Object.freeze([])
+  }),
+  './validation.js': Object.freeze({
+    values: Object.freeze(['validateGovernanceCatalog', 'validateGovernanceRelease']),
+    types: Object.freeze([])
+  }),
+  './types.js': Object.freeze({
+    values: Object.freeze([
+      'datasetKinds', 'licenseStatuses', 'lifecycleStatuses', 'mappingStatuses',
+      'sourceTiers', 'withdrawalStates'
+    ]),
+    types: Object.freeze([
+      'CatalogValidationResult', 'DatasetKind', 'DecodeResult', 'DecodedGovernanceCatalog',
+      'DecodedGovernanceRelease', 'GovernanceActor', 'GovernanceAlias', 'GovernanceCatalog',
+      'GovernanceEnvelope', 'GovernanceRelease', 'GovernedReference', 'HardMapping',
+      'JsonPrimitive', 'JsonValue', 'LicenseStatus', 'LifecycleStatus', 'MappingResolution',
+      'MappingStatus', 'ReleaseValidationResult', 'SourceReference', 'SourceSnapshot',
+      'SourceTier', 'SyntheticEvidence', 'ValidatedCatalogIndex', 'ValidationIssue',
+      'ValidationIssueCode', 'ValidationResult', 'WithdrawalState'
+    ])
+  })
+})
+
 export const capabilityReasons = Object.freeze({
   moduleGrammar: 'domain module grammar must remain static, literal, relative-or-audited, and ImportEquals-free',
   capabilitySource: 'domain production source acquires a forbidden capability by declaration identity',
   prototypeChain: 'domain production source cannot acquire capability through constructor or prototype chains',
   computedSensitive: 'domain production source cannot acquire sensitive capability through computed member keys',
-  declarationIdentity: 'domain call/new/tagged-template must resolve to an audited declaration identity'
+  declarationIdentity: 'domain call/new/tagged-template must resolve to an audited declaration identity',
+  valueProvenance: 'domain capability values must retain an audited declaration and acquisition provenance',
+  reflectiveAcquisition: 'domain source cannot acquire capabilities through reflective value lookup',
+  publicSurface: 'domain public exports and re-exports must equal the registered package surface'
 })
 
 const resolvedSymbol = (checker, node) => {
@@ -583,6 +626,111 @@ const symbolHasAuditedLibDeclaration = (symbol, allowedNames) =>
       declaration.getSourceFile().fileName
     )) === true
 
+const symbolHasTypescriptLibDeclaration = (symbol) =>
+  symbol !== undefined &&
+  symbol.declarations?.some((declaration) =>
+    /[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u.test(
+      declaration.getSourceFile().fileName
+    )) === true
+
+const nodeContainsTypeErasure = (node) => {
+  let found = false
+  const visit = (child) => {
+    if (
+      ts.isAsExpression(child) || ts.isTypeAssertionExpression(child)
+    ) {
+      const sourceType = child.expression.getText()
+      const targetType = child.type.getText()
+      if (sourceType.length > 0 && (targetType === 'unknown' || child.expression.getText().includes(' as unknown'))) {
+        found = true
+      }
+    }
+    if (!found) ts.forEachChild(child, visit)
+  }
+  visit(node)
+  return found
+}
+
+const expressionHasTypeErasedProvenance = (expression, checker) => {
+  const current = unwrapExpression(expression)
+  if (current === undefined) return false
+  if (nodeContainsTypeErasure(expression)) return true
+  if (!ts.isIdentifier(current)) return false
+  const symbol = resolvedSymbol(checker, current)
+  return symbol?.declarations?.some((declaration) =>
+    ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined &&
+    nodeContainsTypeErasure(declaration.initializer)
+  ) === true
+}
+
+const callUsesTypeErasedReceiver = (node, checker) => {
+  const expression = unwrapExpression(node.expression)
+  if (expression === undefined) return false
+  return (
+    ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)
+  ) && expressionHasTypeErasedProvenance(expression.expression, checker)
+}
+
+const isReflectiveValueLookup = (node, checker) => {
+  const expression = unwrapExpression(node.expression)
+  if (!ts.isPropertyAccessExpression(expression) && !ts.isElementAccessExpression(expression)) {
+    return false
+  }
+  const key = ts.isPropertyAccessExpression(expression)
+    ? expression.name.text
+    : constantString(expression.argumentExpression, checker)
+  const receiver = unwrapExpression(expression.expression)
+  return key === 'get' && ts.isIdentifier(receiver) && receiver.text === 'Reflect' &&
+    symbolHasTypescriptLibDeclaration(resolvedSymbol(checker, receiver))
+}
+
+const publicReexportSurface = (tree) => {
+  const surface = {}
+  let invalidDeclaration = false
+  for (const statement of tree.statements) {
+    if (!ts.isExportDeclaration(statement)) {
+      if (statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+        invalidDeclaration = true
+      }
+      continue
+    }
+    if (
+      statement.moduleSpecifier === undefined || !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.exportClause === undefined || !ts.isNamedExports(statement.exportClause)
+    ) {
+      invalidDeclaration = true
+      continue
+    }
+    const specifier = statement.moduleSpecifier.text
+    const current = surface[specifier] ?? { values: [], types: [] }
+    for (const element of statement.exportClause.elements) {
+      if (element.propertyName !== undefined && element.propertyName.text !== element.name.text) {
+        invalidDeclaration = true
+      }
+      const target = statement.isTypeOnly || element.isTypeOnly ? current.types : current.values
+      target.push(element.name.text)
+    }
+    surface[specifier] = current
+  }
+  for (const current of Object.values(surface)) {
+    current.values.sort()
+    current.types.sort()
+  }
+  return { invalidDeclaration, surface }
+}
+
+const registeredPublicSurfaceMatches = (tree) => {
+  const actual = publicReexportSurface(tree)
+  if (actual.invalidDeclaration) return false
+  const expected = Object.fromEntries(Object.entries(registeredPublicReexports).map(
+    ([specifier, current]) => [specifier, {
+      values: [...current.values].sort(),
+      types: [...current.types].sort()
+    }]
+  ))
+  return JSON.stringify(actual.surface) === JSON.stringify(expected)
+}
+
 const symbolHasAuditedNobleDeclaration = (symbol) =>
   symbol !== undefined &&
   auditedNobleCalls.has(symbol.getName()) &&
@@ -664,6 +812,18 @@ const recordDeclarationIdentityFailure = (failures) => {
   /* guard:declaration-identity */
   failures.push(capabilityReasons.declarationIdentity)
 }
+const recordValueProvenanceFailure = (failures) => {
+  /* guard:value-provenance */
+  failures.push(capabilityReasons.valueProvenance)
+}
+const recordReflectiveAcquisitionFailure = (failures) => {
+  /* guard:reflective-acquisition */
+  failures.push(capabilityReasons.reflectiveAcquisition)
+}
+const recordPublicSurfaceFailure = (failures) => {
+  /* guard:public-surface */
+  failures.push(capabilityReasons.publicSurface)
+}
 
 export const collectCapabilityFailures = (root = repositoryRoot, surfaces = collectM0Surfaces(root)) => {
   const failures = []
@@ -695,6 +855,9 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
         failures.push('domain source must be readable for AST capability analysis')
         continue
       }
+    if (file === 'index.ts' && !registeredPublicSurfaceMatches(tree)) {
+      recordPublicSurfaceFailure(failures)
+    }
     const visit = (node) => {
       if (
         ts.isImportDeclaration(node) ||
@@ -734,7 +897,23 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
             (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
             type.getCallSignatures().length > 0 || type.getConstructSignatures().length > 0
           ) recordComputedSensitiveFailure(failures)
+          if (expressionHasTypeErasedProvenance(node.expression, checker)) {
+            recordValueProvenanceFailure(failures)
+          }
         }
+      }
+      if (ts.isBindingElement(node)) {
+        const property = node.propertyName ?? node.name
+        const key = ts.isIdentifier(property) || ts.isStringLiteralLike(property)
+          ? property.text
+          : ts.isComputedPropertyName(property)
+            ? constantString(property.expression, checker)
+            : null
+        if (
+          key === 'constructor' || key === 'prototype' || key === '__proto__' ||
+          key === 'caller' || key === 'callee' || key === 'arguments' ||
+          key !== null && forbiddenMemberNames.has(key)
+        ) recordValueProvenanceFailure(failures)
       }
       if (
         ts.isIdentifier(node) && forbiddenCapabilityNames.has(node.text) &&
@@ -742,10 +921,15 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
       ) {
         failures.push(capabilityReasons.capabilitySource)
       }
-      if (
-        ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword &&
-        !callHasAuditedIdentity(node, checker, sourceRoot)
-      ) recordDeclarationIdentityFailure(failures)
+      if (ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
+        if (isReflectiveValueLookup(node, checker)) {
+          recordReflectiveAcquisitionFailure(failures)
+        } else if (callUsesTypeErasedReceiver(node, checker)) {
+          recordValueProvenanceFailure(failures)
+        } else if (!callHasAuditedIdentity(node, checker, sourceRoot)) {
+          recordDeclarationIdentityFailure(failures)
+        }
+      }
       if (ts.isNewExpression(node) && !newHasAuditedIdentity(node, checker)) {
         recordDeclarationIdentityFailure(failures)
       }
@@ -1004,7 +1188,7 @@ export const jsonBoundaryEvidenceStats = (cases = jsonBoundaryCases()) => {
 }
 
 export const SCHEMA_EXTENSION_EXECUTION_COUNTS = Object.freeze({
-  unicodeScalar: 1184,
+  unicodeScalar: 1334,
   canonicalInstant: 120,
   notNegativeZero: 6
 })
@@ -1106,6 +1290,12 @@ const semanticStringMutationBuilders = Object.freeze([
   Object.freeze({ id: 'timestamp-reviewed-at', mutate: (release, value) => { release.envelopes[0].reviewedAt = value } })
 ])
 
+const layerPolicy = (ajvRaw, ajvText, decoderRaw, decoderJson, finalValidator) =>
+  Object.freeze({ ajvRaw, ajvText, decoderRaw, decoderJson, finalValidator })
+const allLayersAccept = layerPolicy(true, true, true, true, true)
+const allLayersReject = layerPolicy(false, false, false, false, false)
+const schemaRejectsShapeAcceptsFinalRejects = layerPolicy(false, false, true, true, false)
+
 const validMappingFixture = () => ({
   $schema: '../../../schemas/invalid-governance-fixture.schema.json',
   syntheticFixture: 'fully_synthetic_mutation',
@@ -1137,10 +1327,15 @@ export const governanceStringCases = (root = repositoryRoot) => {
   )
   const cases = []
   for (const builder of releaseStringMutationBuilders) {
+    const thirdVariant = builder.id === 'root-schema'
+      ? { id: 'empty', value: '', expected: allLayersReject }
+      : builder.id === 'dataset-id'
+        ? { id: 'null', value: null, expected: allLayersReject }
+        : { id: 'lone-low', value: '\uDC00', expected: allLayersReject }
     for (const variant of [
-      { id: 'lone-high', value: '\uD800', expected: false },
-      { id: 'lone-low', value: '\uDC00', expected: false },
-      { id: 'astral', value: 'SYNTHETIC_😀', expected: true }
+      { id: 'lone-high', value: '\uD800', expected: allLayersReject },
+      thirdVariant,
+      { id: 'astral', value: 'SYNTHETIC_😀', expected: allLayersAccept }
     ]) {
       const release = JSON.parse(baseText)
       builder.mutate(release, variant.value)
@@ -1148,29 +1343,43 @@ export const governanceStringCases = (root = repositoryRoot) => {
         id: `${builder.id}:${variant.id}`,
         kind: 'release',
         input: release,
-        expected: variant.expected
+        expected: variant.expected,
+        resign: true
       }))
     }
   }
-  const semanticValues = Object.freeze({
-    'enum-dataset-kind': 'allergen',
-    'uuid-entity-id': '01900000-7000-7000-8000-000000000011',
-    'digest-content-digest': `sha256:${'b'.repeat(64)}`,
-    'timestamp-reviewed-at': '2000-01-02T00:00:00.001Z'
+  const semanticVariants = Object.freeze({
+    'enum-dataset-kind': Object.freeze([
+      Object.freeze({ id: 'invalid-enum', value: 'not_a_dataset_kind', expected: allLayersReject }),
+      Object.freeze({ id: 'lone-low', value: '\uDC00', expected: allLayersReject }),
+      Object.freeze({ id: 'valid-enum', value: 'allergen', expected: allLayersAccept })
+    ]),
+    'uuid-entity-id': Object.freeze([
+      Object.freeze({ id: 'invalid-uuid', value: 'not-a-uuid', expected: schemaRejectsShapeAcceptsFinalRejects }),
+      Object.freeze({ id: 'lone-low', value: '\uDC00', expected: allLayersReject }),
+      Object.freeze({ id: 'valid-uuid', value: '01900000-7000-7000-8000-000000000011', expected: allLayersAccept })
+    ]),
+    'digest-content-digest': Object.freeze([
+      Object.freeze({ id: 'invalid-digest', value: 'sha256:bad', expected: schemaRejectsShapeAcceptsFinalRejects, resign: false }),
+      Object.freeze({ id: 'lone-low', value: '\uDC00', expected: allLayersReject, resign: false }),
+      Object.freeze({ id: 'valid-digest', value: null, expected: allLayersAccept, resign: true })
+    ]),
+    'timestamp-reviewed-at': Object.freeze([
+      Object.freeze({ id: 'invalid-timestamp', value: '2000-97-01T00:00:00.000Z', expected: schemaRejectsShapeAcceptsFinalRejects }),
+      Object.freeze({ id: 'lone-low', value: '\uDC00', expected: allLayersReject }),
+      Object.freeze({ id: 'valid-timestamp', value: '2000-01-02T00:00:00.001Z', expected: allLayersAccept })
+    ])
   })
   for (const builder of semanticStringMutationBuilders) {
-    for (const variant of [
-      { id: 'lone-high', value: '\uD800', expected: false },
-      { id: 'lone-low', value: '\uDC00', expected: false },
-      { id: 'valid-family-control', value: semanticValues[builder.id], expected: true }
-    ]) {
+    for (const variant of semanticVariants[builder.id]) {
       const release = JSON.parse(baseText)
-      builder.mutate(release, variant.value)
+      if (variant.value !== null) builder.mutate(release, variant.value)
       cases.push(Object.freeze({
         id: `${builder.id}:${variant.id}`,
         kind: 'release',
         input: release,
-        expected: variant.expected
+        expected: variant.expected,
+        resign: variant.resign ?? true
       }))
     }
   }
@@ -1178,24 +1387,38 @@ export const governanceStringCases = (root = repositoryRoot) => {
     Object.freeze({
       id: 'mapping-id',
       valid: 'syn:mapping:lexical-parity-control',
+      invalidId: 'invalid-pattern',
+      invalid: 'not-a-mapping-id',
       mutate: (fixture, value) => { fixture.hardMappings[0].mappingId = value }
     }),
     Object.freeze({
       id: 'mapping-dataset-id',
-      valid: 'syn:dataset:lexical-control',
-      mutate: (fixture, value) => { fixture.hardMappings[0].source.datasetId = value }
+      valid: 'syn:dataset:food-concept',
+      invalidId: 'invalid-pattern',
+      invalid: 'not-a-dataset-id',
+      mutate: (fixture, value) => {
+        fixture.hardMappings[0].mappingId = 'syn:mapping:lexical-dataset'
+        fixture.hardMappings[0].source.datasetId = value
+        fixture.hardMappings[0].target.datasetId = value
+      }
     }),
     Object.freeze({
       id: 'mapping-entity-id',
-      valid: '01900000-7000-7000-8000-000000000011',
-      mutate: (fixture, value) => { fixture.hardMappings[0].source.entityId = value }
+      valid: '01900000-7000-7000-8000-000000000001',
+      invalidId: 'invalid-uuid',
+      invalid: 'not-a-uuid',
+      mutate: (fixture, value) => {
+        fixture.hardMappings[0].mappingId = 'syn:mapping:lexical-entity'
+        fixture.hardMappings[0].source.entityId = value
+        fixture.hardMappings[0].target.entityId = value
+      }
     })
   ])
   for (const builder of mappingBuilders) {
     for (const variant of [
-      { id: 'lone-high', value: `${builder.valid.split(':').slice(0, -1).join(':')}:\uD800`, expected: false },
-      { id: 'lone-low', value: `${builder.valid.split(':').slice(0, -1).join(':')}:\uDC00`, expected: false },
-      { id: 'valid-family-control', value: builder.valid, expected: true }
+      { id: 'lone-high', value: `syn:\uD800`, expected: allLayersReject },
+      { id: builder.invalidId, value: builder.invalid, expected: schemaRejectsShapeAcceptsFinalRejects },
+      { id: 'valid-family-control', value: builder.valid, expected: allLayersAccept }
     ]) {
       const fixture = validMappingFixture()
       builder.mutate(fixture, variant.value)
@@ -1210,98 +1433,293 @@ export const governanceStringCases = (root = repositoryRoot) => {
   return Object.freeze(cases)
 }
 
-const governanceStringReasons = Object.freeze({
-  shape: 'governance string lexical matrix count, IDs, and material inputs must remain exact',
-  parity: 'governance string lexical parity must match Ajv raw/text and runtime raw/text',
-  oracle: 'governance string lexical parity oracle must execute successfully'
+export const governanceStringReasons = Object.freeze({
+  count: 'governance string evidence case count must remain exactly 51',
+  idDistinct: 'governance string evidence case IDs must remain unique and stable',
+  materialDistinct: 'governance string evidence input materials must remain distinct',
+  layering: 'governance string declared schema/decode/final-validator layering policy must match',
+  oracle: 'governance string evidence oracle must execute every declared layer successfully'
 })
 
-export const governanceStringEvidenceStats = (cases = governanceStringCases()) => ({
-  count: cases.length,
-  uniqueIds: new Set(cases.map(({ id }) => id)).size,
-  uniqueMaterials: new Set(cases.map(({ kind, input }) =>
-    boundaryIdentity(ownJsonObject([['kind', kind], ['input', input]])))).size
-})
+const governancePolicyKeys = Object.freeze([
+  'ajvRaw', 'ajvText', 'decoderRaw', 'decoderJson', 'finalValidator'
+])
+
+export const governanceStringEvidenceStats = (cases = governanceStringCases()) => {
+  const expectedDifferences = {
+    ajvRawVsDecoderRaw: 0,
+    ajvTextVsDecoderJson: 0,
+    ajvRawVsFinalValidator: 0
+  }
+  const expectedAccepts = Object.fromEntries(governancePolicyKeys.map((key) => [key, 0]))
+  for (const current of cases) {
+    const expected = current.expected
+    if (expected?.ajvRaw !== expected?.decoderRaw) expectedDifferences.ajvRawVsDecoderRaw += 1
+    if (expected?.ajvText !== expected?.decoderJson) expectedDifferences.ajvTextVsDecoderJson += 1
+    if (expected?.ajvRaw !== expected?.finalValidator) expectedDifferences.ajvRawVsFinalValidator += 1
+    for (const key of governancePolicyKeys) if (expected?.[key] === true) expectedAccepts[key] += 1
+  }
+  return Object.freeze({
+    count: cases.length,
+    uniqueIds: new Set(cases.map(({ id }) => id)).size,
+    uniqueMaterials: new Set(cases.map(({ kind, input }) =>
+      boundaryIdentity(ownJsonObject([['kind', kind], ['input', input]])))).size,
+    expectedDifferences: Object.freeze(expectedDifferences),
+    expectedAccepts: Object.freeze(expectedAccepts)
+  })
+}
+
+const validGovernancePolicy = (expected) =>
+  expected !== null && typeof expected === 'object' && !Array.isArray(expected) &&
+  JSON.stringify(Object.keys(expected).sort()) === JSON.stringify([...governancePolicyKeys].sort()) &&
+  governancePolicyKeys.every((key) => typeof expected[key] === 'boolean')
+
+const recordGovernanceStringOracleFailure = (failures) => {
+  /* guard:governance-string-oracle */
+  failures.push(governanceStringReasons.oracle)
+}
+
+export const evaluateGovernanceStringLayers = (
+  root = repositoryRoot,
+  cases = governanceStringCases(root)
+) => {
+  const validators = compiledSchemas(root)
+  const validDirectory = resolve(fixtureRoot(root), 'valid')
+  return Object.freeze(cases.map((current) => {
+    const text = JSON.stringify(current.input)
+    const parsed = JSON.parse(text)
+    let ajvRaw
+    let ajvText
+    let decoderRaw
+    let decoderJson
+    let finalValidator
+    if (current.kind === 'release') {
+      ajvRaw = validators.governance(current.input)
+      ajvText = validators.governance(parsed)
+      decoderRaw = domain.decodeGovernanceRelease(current.input).ok
+      decoderJson = domain.decodeGovernanceReleaseJson(text).ok
+      const finalInput = JSON.parse(text)
+      if (current.resign !== false && domain.decodeGovernanceRelease(finalInput).ok) {
+        finalInput.envelopes[0].contentDigest = domain.canonicalReleaseDigest(finalInput)
+      }
+      finalValidator = domain.validateGovernanceRelease(finalInput).ok
+    } else {
+      ajvRaw = validators.fixture(current.input)
+      ajvText = validators.fixture(parsed)
+      const rawCatalog = materializeFixture(current.input, validDirectory, domain)
+      const textCatalog = materializeFixture(parsed, validDirectory, domain)
+      decoderRaw = domain.decodeGovernanceCatalog(rawCatalog).ok
+      decoderJson = domain.decodeGovernanceCatalogJson(JSON.stringify(textCatalog)).ok
+      finalValidator = domain.validateGovernanceCatalog(rawCatalog).ok
+    }
+    return Object.freeze({
+      id: current.id,
+      actual: Object.freeze({ ajvRaw, ajvText, decoderRaw, decoderJson, finalValidator })
+    })
+  }))
+}
+
+export const governanceStringLayerStats = (
+  root = repositoryRoot,
+  cases = governanceStringCases(root)
+) => {
+  const results = evaluateGovernanceStringLayers(root, cases)
+  const accepts = Object.fromEntries(governancePolicyKeys.map((key) => [
+    key,
+    results.filter(({ actual }) => actual[key]).length
+  ]))
+  const differences = {
+    ajvRawVsDecoderRaw: results.filter(({ actual }) =>
+      actual.ajvRaw !== actual.decoderRaw).length,
+    ajvTextVsDecoderJson: results.filter(({ actual }) =>
+      actual.ajvText !== actual.decoderJson).length,
+    ajvRawVsFinalValidator: results.filter(({ actual }) =>
+      actual.ajvRaw !== actual.finalValidator).length
+  }
+  return Object.freeze({
+    executed: results.length,
+    accepts: Object.freeze(accepts),
+    differences: Object.freeze(differences)
+  })
+}
 
 export const collectGovernanceStringParityFailures = (
   root = repositoryRoot,
   cases = governanceStringCases(root)
 ) => {
   const failures = []
+  let stats
   try {
-    const stats = governanceStringEvidenceStats(cases)
-    if (
-      stats.count !== GOVERNANCE_STRING_CASE_COUNT ||
-      stats.uniqueIds !== stats.count ||
-      stats.uniqueMaterials !== stats.count
-    ) failures.push(governanceStringReasons.shape)
-    const validators = compiledSchemas(root)
-    const validDirectory = resolve(fixtureRoot(root), 'valid')
-    for (const current of cases) {
-      const text = JSON.stringify(current.input)
-      const parsed = JSON.parse(text)
-      let ajvRaw
-      let ajvText
-      let runtimeRaw
-      let runtimeText
-      if (current.kind === 'release') {
-        ajvRaw = validators.governance(current.input)
-        ajvText = validators.governance(parsed)
-        runtimeRaw = domain.decodeGovernanceRelease(current.input).ok
-        runtimeText = domain.decodeGovernanceReleaseJson(text).ok
-      } else {
-        ajvRaw = validators.fixture(current.input)
-        ajvText = validators.fixture(parsed)
-        const rawCatalog = materializeFixture(current.input, validDirectory, domain)
-        const textCatalog = materializeFixture(parsed, validDirectory, domain)
-        runtimeRaw = domain.decodeGovernanceCatalog(rawCatalog).ok
-        runtimeText = domain.decodeGovernanceCatalogJson(JSON.stringify(textCatalog)).ok
-      }
+    stats = governanceStringEvidenceStats(cases)
+  } catch {
+    recordGovernanceStringOracleFailure(failures)
+    return failures
+  }
+  /* guard:governance-string-count */
+  if (stats.count !== GOVERNANCE_STRING_CASE_COUNT) failures.push(governanceStringReasons.count)
+  /* guard:governance-string-id-distinct */
+  if (stats.uniqueIds !== stats.count) failures.push(governanceStringReasons.idDistinct)
+  /* guard:governance-string-material-distinct */
+  if (stats.uniqueMaterials !== stats.count) failures.push(governanceStringReasons.materialDistinct)
+  if (cases.some((current) => !validGovernancePolicy(current.expected))) {
+    failures.push(governanceStringReasons.layering)
+    return [...new Set(failures)]
+  }
+  let executed = 0
+  try {
+    const results = evaluateGovernanceStringLayers(root, cases)
+    for (let index = 0; index < cases.length; index += 1) {
+      const current = cases[index]
+      const actual = results[index]?.actual
+      /* guard:governance-string-layering */
       if (
-        ajvRaw !== current.expected || ajvText !== current.expected ||
-        runtimeRaw !== current.expected || runtimeText !== current.expected
-      ) failures.push(governanceStringReasons.parity)
+        actual === undefined || governancePolicyKeys.some(
+          (key) => actual[key] !== current.expected[key]
+        )
+      ) failures.push(governanceStringReasons.layering)
+      executed += 1
     }
   } catch {
-    failures.push(governanceStringReasons.oracle)
+    recordGovernanceStringOracleFailure(failures)
   }
+  if (executed !== cases.length) recordGovernanceStringOracleFailure(failures)
   return [...new Set(failures)]
 }
 
-const schemaStringContractClosed = (schema) => {
-  const scalarReference = '#/$defs/scalarString'
+export const schemaClosureReasons = Object.freeze({
+  ref: 'schema closure $ref targets and scalar routing must remain exact',
+  allOf: 'schema closure allOf nodes must remain recursively enumerable arrays',
+  oneOf: 'schema closure oneOf nodes must remain recursively enumerable arrays',
+  items: 'schema closure items string families must route through unicode scalar base',
+  additionalProperties: 'schema closure additionalProperties string families must route through unicode scalar base',
+  propertyNames: 'schema closure propertyNames string families must route through unicode scalar base',
+  const: 'schema closure string const constraints must route through unicode scalar base',
+  enum: 'schema closure string enum constraints must route through unicode scalar base'
+})
+
+const scalarReference = '#/$defs/scalarString'
+const schemaNodeAcceptsString = (node) =>
+  node !== null && typeof node === 'object' && !Array.isArray(node) && (
+    node.type === 'string' ||
+    Array.isArray(node.type) && node.type.includes('string') ||
+    typeof node.pattern === 'string' || typeof node.format === 'string' ||
+    typeof node.minLength === 'number'
+  )
+
+const recordSchemaClosureFailure = (failures, reason) => {
+  switch (reason) {
+    case schemaClosureReasons.ref: {
+      /* guard:schema-closure-ref */
+      failures.push(schemaClosureReasons.ref)
+      break
+    }
+    case schemaClosureReasons.allOf: {
+      /* guard:schema-closure-allOf */
+      failures.push(schemaClosureReasons.allOf)
+      break
+    }
+    case schemaClosureReasons.oneOf: {
+      /* guard:schema-closure-oneOf */
+      failures.push(schemaClosureReasons.oneOf)
+      break
+    }
+    case schemaClosureReasons.items: {
+      /* guard:schema-closure-items */
+      failures.push(schemaClosureReasons.items)
+      break
+    }
+    case schemaClosureReasons.additionalProperties: {
+      /* guard:schema-closure-additionalProperties */
+      failures.push(schemaClosureReasons.additionalProperties)
+      break
+    }
+    case schemaClosureReasons.propertyNames: {
+      /* guard:schema-closure-propertyNames */
+      failures.push(schemaClosureReasons.propertyNames)
+      break
+    }
+    case schemaClosureReasons.const: {
+      /* guard:schema-closure-const */
+      failures.push(schemaClosureReasons.const)
+      break
+    }
+    case schemaClosureReasons.enum: {
+      /* guard:schema-closure-enum */
+      failures.push(schemaClosureReasons.enum)
+      break
+    }
+  }
+}
+
+export const collectSchemaStringClosureFailures = (schema) => {
+  const failures = []
+  const definitions = schema?.$defs
   if (
-    schema?.$defs?.scalarString?.type !== 'string' ||
-    schema.$defs.scalarString.format !== 'unicode-scalar'
-  ) return false
-  let closed = true
-  const visit = (node, protectedByScalar = false, scalarNode = false) => {
-    if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+    definitions === null || typeof definitions !== 'object' || Array.isArray(definitions) ||
+    definitions.scalarString?.type !== 'string' ||
+    definitions.scalarString.format !== 'unicode-scalar'
+  ) {
+    recordSchemaClosureFailure(failures, schemaClosureReasons.ref)
+    return failures
+  }
+  const definitionNames = new Set(Object.keys(definitions))
+  const visit = (node, state = Object.freeze({ protectedByScalar: false, keyword: null, scalarNode: false })) => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child, state)
+      return
+    }
+    if (node === null || typeof node !== 'object') return
+    if (Object.hasOwn(node, '$ref')) {
+      const reference = node.$ref
+      if (
+        typeof reference !== 'string' || !reference.startsWith('#/$defs/') ||
+        !definitionNames.has(reference.slice('#/$defs/'.length))
+      ) recordSchemaClosureFailure(failures, schemaClosureReasons.ref)
+    }
+    if (Object.hasOwn(node, 'allOf') && !Array.isArray(node.allOf)) {
+      recordSchemaClosureFailure(failures, schemaClosureReasons.allOf)
+    }
+    if (Object.hasOwn(node, 'oneOf') && !Array.isArray(node.oneOf)) {
+      recordSchemaClosureFailure(failures, schemaClosureReasons.oneOf)
+    }
     const allOfProtects = Array.isArray(node.allOf) &&
       node.allOf.some((child) => child?.$ref === scalarReference)
-    const protectedHere = protectedByScalar || allOfProtects || node.$ref === scalarReference
-    const acceptsOpenString =
-      node.type === 'string' ||
-      Array.isArray(node.type) && node.type.includes('string') ||
-      typeof node.pattern === 'string' || typeof node.format === 'string' ||
-      typeof node.minLength === 'number' ||
-      Array.isArray(node.enum) && node.enum.some((value) => typeof value === 'string') ||
-      typeof node.const === 'string'
-    if (acceptsOpenString && !protectedHere && !scalarNode) closed = false
+    const protectedHere = state.protectedByScalar || state.scalarNode || allOfProtects ||
+      node.$ref === scalarReference
+    const directString = schemaNodeAcceptsString(node)
+    if (directString && !protectedHere) {
+      const reason = state.keyword === 'items'
+        ? schemaClosureReasons.items
+        : state.keyword === 'additionalProperties'
+          ? schemaClosureReasons.additionalProperties
+          : state.keyword === 'propertyNames'
+            ? schemaClosureReasons.propertyNames
+            : state.keyword === 'oneOf'
+              ? schemaClosureReasons.oneOf
+              : schemaClosureReasons.ref
+      recordSchemaClosureFailure(failures, reason)
+    }
+    if (typeof node.const === 'string' && !protectedHere) {
+      recordSchemaClosureFailure(failures, schemaClosureReasons.const)
+    }
+    if (
+      Array.isArray(node.enum) && node.enum.some((value) => typeof value === 'string') &&
+      !protectedHere
+    ) recordSchemaClosureFailure(failures, schemaClosureReasons.enum)
     for (const [key, child] of Object.entries(node)) {
-      if (key === 'scalarString' && node === schema.$defs) {
-        visit(child, true, true)
-      } else if (key !== '$defs' || child !== schema.$defs) {
-        visit(child, protectedHere, false)
-      } else {
-        for (const [definition, definitionNode] of Object.entries(child)) {
-          visit(definitionNode, definition === 'scalarString', definition === 'scalarString')
-        }
-      }
+      const scalarNode = key === 'scalarString' && node === definitions
+      const keyword = [
+        'allOf', 'oneOf', 'items', 'additionalProperties', 'propertyNames'
+      ].includes(key) ? key : state.keyword
+      visit(child, {
+        protectedByScalar: protectedHere || scalarNode,
+        keyword,
+        scalarNode
+      })
     }
   }
   visit(schema)
-  return closed
+  return [...new Set(failures)]
 }
 
 export const collectSchemaContractFailures = (
@@ -1316,9 +1734,7 @@ export const collectSchemaContractFailures = (
     for (const file of surfaceFiles(surfaces.schemas)) {
       const schema = JSON.parse(readFileSync(resolve(root, 'data/schemas', file), 'utf8'))
       createSchemaValidator().compile(schema)
-      if (!schemaStringContractClosed(schema)) {
-        failures.push('schema string lexical contract must route every string family through unicode scalar base')
-      }
+      failures.push(...collectSchemaStringClosureFailures(schema))
     }
     const validators = compiledSchemas(root)
     const validDirectory = resolve(fixtureRoot(root), 'valid')
@@ -1429,6 +1845,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   } else {
     const boundaryStats = jsonBoundaryEvidenceStats()
     const stringStats = governanceStringEvidenceStats()
+    const stringLayerStats = governanceStringLayerStats()
     const extensionStats = schemaExtensionExecutionStats()
     process.stdout.write(
       `Stage 09P M0 scope check PASS (${manifests.valid.length} valid, ` +
@@ -1438,7 +1855,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `${boundaryStats.count} JSON boundary parity cases / ${boundaryStats.uniqueIds} unique IDs / ` +
       `${boundaryStats.uniqueMaterials} unique material inputs + ${stringStats.count} governance ` +
       `string parity cases / ${stringStats.uniqueIds} unique IDs / ` +
-      `${stringStats.uniqueMaterials} unique material inputs; schema extension executions ` +
+      `${stringStats.uniqueMaterials} unique material inputs / ${stringLayerStats.executed} complete ` +
+      `layer oracles; layer accepts ajv-raw=${stringLayerStats.accepts.ajvRaw}, ` +
+      `ajv-text=${stringLayerStats.accepts.ajvText}, decoder-raw=${stringLayerStats.accepts.decoderRaw}, ` +
+      `decoder-json=${stringLayerStats.accepts.decoderJson}, final=${stringLayerStats.accepts.finalValidator}; ` +
+      `declared differences schema/decode raw=${stringLayerStats.differences.ajvRawVsDecoderRaw}, ` +
+      `text=${stringLayerStats.differences.ajvTextVsDecoderJson}, ` +
+      `schema/final=${stringLayerStats.differences.ajvRawVsFinalValidator}; schema extension executions ` +
       `unicode=${extensionStats.unicodeScalar}, utc=${extensionStats.canonicalInstant}, ` +
       `negative-zero=${extensionStats.notNegativeZero})\n`
     )

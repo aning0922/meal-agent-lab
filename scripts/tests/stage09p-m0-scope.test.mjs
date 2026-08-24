@@ -22,11 +22,17 @@ import {
   collectManifestFailures,
   collectSchemaContractFailures,
   collectSchemaParityFailures,
+  collectSchemaStringClosureFailures,
   collectSyntheticFailures,
+  evaluateGovernanceStringLayers,
+  governanceStringCases,
   governanceStringEvidenceStats,
+  governanceStringLayerStats,
+  governanceStringReasons,
   jsonBoundaryCases,
   jsonBoundaryReasons,
   repositoryRoot,
+  schemaClosureReasons,
   schemaExtensionExecutionStats
 } from '../check-stage09p-m0-scope.mjs'
 
@@ -87,7 +93,12 @@ const runDomainMutation = (relativePath, mutate) => {
   )
 }
 
-const runScopeCheckerMutation = ({ mutateChecker, witness, productionAppend = '' }) => {
+const runScopeCheckerMutation = ({
+  mutateChecker,
+  witness,
+  productionAppend = '',
+  productionFile = 'types.ts'
+}) => {
   const root = fixtureRoot(
     'data/samples/stage09p-m0',
     'data/schemas',
@@ -110,7 +121,7 @@ const runScopeCheckerMutation = ({ mutateChecker, witness, productionAppend = ''
   assert.notEqual(checkerMutant, checkerSource, 'scope checker mutation anchor disappeared')
   writeFileSync(checkerPath, checkerMutant)
   if (productionAppend.length > 0) {
-    const productionPath = resolve(root, 'packages/domain/src/types.ts')
+    const productionPath = resolve(root, 'packages/domain/src', productionFile)
     writeFileSync(productionPath, `${readFileSync(productionPath, 'utf8')}\n${productionAppend}\n`)
   }
   const witnessPath = resolve(root, 'round4-mutation-witness.mjs')
@@ -282,6 +293,46 @@ test('capability grammar closes declaration identity, value flow, members, and m
       name: 'higher-order opaque forwarding',
       source: 'declare const opaque: () => unknown; export const witness = () => opaque()',
       reason: capabilityReasons.declarationIdentity
+    },
+    {
+      name: 'destructured constructor capability forwarding',
+      source: 'const { constructor: leakedConstructor } = (() => undefined); export { leakedConstructor }',
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      name: 'Reflect.get capability acquisition',
+      source: 'export const leakedConstructorFactory = () => Reflect.get(() => undefined, "constructor")',
+      reason: capabilityReasons.reflectiveAcquisition
+    },
+    {
+      name: 'runtime-computed key after type erasure',
+      source: `const keyParts = ["con", "structor"]
+const erasedKey = keyParts.join("")
+const erasedCallable = (() => undefined) as unknown as Record<string, unknown>
+export const leakedDynamicCapability = () => erasedCallable[erasedKey]`,
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      name: 'type-erased local impersonates an audited lib receiver',
+      source: 'const impostor = { trim: () => "LOCAL" } as unknown as string; export const witness = () => impostor.trim()',
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      name: 'unapproved global capability forwarding',
+      source: 'export const leakedRuntimeCrypto = crypto',
+      reason: capabilityReasons.capabilitySource
+    },
+    {
+      name: 'unregistered named public re-export',
+      file: 'index.ts',
+      source: 'export { createValidatedCatalogIndex } from "./catalog.js"',
+      reason: capabilityReasons.publicSurface
+    },
+    {
+      name: 'unregistered star public re-export',
+      file: 'index.ts',
+      source: 'export * from "./catalog.js"',
+      reason: capabilityReasons.publicSurface
     }
   ]
   for (const current of cases) {
@@ -291,7 +342,7 @@ test('capability grammar closes declaration identity, value flow, members, and m
       'packages/domain/tests',
       'scripts/tests/stage09p-m0-scope.test.mjs'
     )
-    const casePath = resolve(caseRoot, 'packages/domain/src/types.ts')
+    const casePath = resolve(caseRoot, 'packages/domain/src', current.file ?? 'types.ts')
     symlinkSync(
       resolve(repositoryRoot, 'packages/domain/node_modules'),
       resolve(caseRoot, 'packages/domain/node_modules'),
@@ -336,34 +387,143 @@ test('schema mutation witness executes the same compiled 2020-12 contract checks
   )
 })
 
+test('schema closure recursively distinguishes all eight governed keyword families', () => {
+  const base = () => ({
+    $defs: {
+      scalarString: { type: 'string', format: 'unicode-scalar' }
+    }
+  })
+  const fixtures = [
+    [schemaClosureReasons.ref, { $ref: '#/$defs/missing' }],
+    [schemaClosureReasons.allOf, { allOf: {} }],
+    [schemaClosureReasons.oneOf, { oneOf: {} }],
+    [schemaClosureReasons.items, { type: 'array', items: { type: 'string' } }],
+    [schemaClosureReasons.additionalProperties, {
+      type: 'object', additionalProperties: { type: 'string' }
+    }],
+    [schemaClosureReasons.propertyNames, {
+      type: 'object', propertyNames: { type: 'string' }
+    }],
+    [schemaClosureReasons.const, { const: 'SYNTHETIC_CONST' }],
+    [schemaClosureReasons.enum, { enum: ['SYNTHETIC_ENUM'] }]
+  ]
+  for (const [reason, value] of fixtures) {
+    const schema = base()
+    schema.$defs.value = value
+    assert.deepEqual(collectSchemaStringClosureFailures(schema), [reason], reason)
+  }
+})
+
+test('each schema closure keyword guard has an executable deletion witness', () => {
+  const fixtures = [
+    [schemaClosureReasons.ref, `{ $ref: '#/$defs/missing' }`],
+    [schemaClosureReasons.allOf, `{ allOf: {} }`],
+    [schemaClosureReasons.oneOf, `{ oneOf: {} }`],
+    [schemaClosureReasons.items, `{ type: 'array', items: { type: 'string' } }`],
+    [schemaClosureReasons.additionalProperties, `{ type: 'object', additionalProperties: { type: 'string' } }`],
+    [schemaClosureReasons.propertyNames, `{ type: 'object', propertyNames: { type: 'string' } }`],
+    [schemaClosureReasons.const, `{ const: 'SYNTHETIC_CONST' }`],
+    [schemaClosureReasons.enum, `{ enum: ['SYNTHETIC_ENUM'] }`]
+  ]
+  for (const [reason, fixture] of fixtures) {
+    const key = Object.entries(schemaClosureReasons).find(([, value]) => value === reason)[0]
+    const checkerBefore = readFileSync(resolve(repositoryRoot, 'scripts/check-stage09p-m0-scope.mjs'))
+    const outcome = runScopeCheckerMutation({
+      mutateChecker: (source) => source.replace(
+        `      failures.push(schemaClosureReasons.${key})`,
+        '      void failures'
+      ),
+      witness: `import {
+  collectSchemaStringClosureFailures,
+  schemaClosureReasons
+} from './scripts/check-stage09p-m0-scope.mjs'
+const schema = { $defs: {
+  scalarString: { type: 'string', format: 'unicode-scalar' },
+  value: ${fixture}
+} }
+assert.deepEqual(
+  collectSchemaStringClosureFailures(schema),
+  [schemaClosureReasons.${key}],
+  schemaClosureReasons.${key}
+)`
+    })
+    assertTargetedMutationFailure(outcome, reason)
+    assert.deepEqual(
+      readFileSync(resolve(repositoryRoot, 'scripts/check-stage09p-m0-scope.mjs')),
+      checkerBefore,
+      `${key} witness must restore the production checker byte-for-byte`
+    )
+  }
+})
+
 test('governance string lexical contract is scalar-first across all schema families', () => {
   assert.deepEqual(collectGovernanceStringParityFailures(), [])
   assert.deepEqual(governanceStringEvidenceStats(), {
     count: 51,
     uniqueIds: 51,
-    uniqueMaterials: 51
+    uniqueMaterials: 51,
+    expectedDifferences: {
+      ajvRawVsDecoderRaw: 6,
+      ajvTextVsDecoderJson: 6,
+      ajvRawVsFinalValidator: 0
+    },
+    expectedAccepts: {
+      ajvRaw: 17,
+      ajvText: 17,
+      decoderRaw: 23,
+      decoderJson: 23,
+      finalValidator: 17
+    }
+  })
+  assert.deepEqual(governanceStringLayerStats(), {
+    executed: 51,
+    accepts: {
+      ajvRaw: 17,
+      ajvText: 17,
+      decoderRaw: 23,
+      decoderJson: 23,
+      finalValidator: 17
+    },
+    differences: {
+      ajvRawVsDecoderRaw: 6,
+      ajvTextVsDecoderJson: 6,
+      ajvRawVsFinalValidator: 0
+    }
   })
   assert.deepEqual(schemaExtensionExecutionStats(), {
-    unicodeScalar: 1184,
+    unicodeScalar: 1334,
     canonicalInstant: 120,
     notNegativeZero: 6
+  })
+  const mappingPattern = evaluateGovernanceStringLayers().find(
+    ({ id }) => id === 'mapping-id:invalid-pattern'
+  )
+  assert.deepEqual(mappingPattern?.actual, {
+    ajvRaw: false,
+    ajvText: false,
+    decoderRaw: true,
+    decoderJson: true,
+    finalValidator: false
   })
   const mutations = [
     {
       name: 'unified scalar base',
-      mutate: (schema) => { delete schema.$defs.scalarString.format }
+      mutate: (schema) => { delete schema.$defs.scalarString.format },
+      reason: schemaClosureReasons.ref
     },
     {
       name: 'nonEmptyString scalar inheritance',
       mutate: (schema) => {
         schema.$defs.nonEmptyString = { type: 'string', minLength: 1 }
-      }
+      },
+      reason: schemaClosureReasons.ref
     },
     {
       name: 'bare array-item string',
       mutate: (schema) => {
         schema.$defs.governanceEnvelope.properties.applicableRegions.items = { type: 'string' }
-      }
+      },
+      reason: schemaClosureReasons.items
     }
   ]
   for (const current of mutations) {
@@ -374,9 +534,138 @@ test('governance string lexical contract is scalar-first across all schema famil
     writeFileSync(path, `${JSON.stringify(schema, null, 2)}\n`)
     assert.ok(
       collectSchemaContractFailures(root).includes(
-        'schema string lexical contract must route every string family through unicode scalar base'
+        current.reason
       ),
       current.name
+    )
+  }
+})
+
+test('governance string evidence guards report count, IDs, materials, layering, and oracle independently', () => {
+  const root = fixtureRoot('data/schemas', 'data/samples/stage09p-m0')
+  const base = governanceStringCases(root)
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base.slice(0, -1)), [
+    governanceStringReasons.count
+  ])
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current) =>
+    current.id === 'owner-role:astral' ? { ...current, id: 'owner-actor-id:astral' } : current
+  )), [governanceStringReasons.idDistinct])
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current) =>
+    current.id === 'owner-role:astral'
+      ? { ...current, input: base.find(({ id }) => id === 'owner-actor-id:astral').input }
+      : current
+  )), [governanceStringReasons.materialDistinct])
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current) =>
+    current.id === 'owner-role:astral'
+      ? { ...current, expected: { ...current.expected, ajvRaw: false } }
+      : current
+  )), [governanceStringReasons.layering])
+  const hostile = [...base]
+  hostile[0] = {
+    id: base[0].id,
+    kind: base[0].kind,
+    get input() { throw new Error('SYNTHETIC_ORACLE_FAILURE') },
+    expected: base[0].expected
+  }
+  assert.deepEqual(collectGovernanceStringParityFailures(root, hostile), [
+    governanceStringReasons.oracle
+  ])
+})
+
+test('each governance string evidence guard has an executable deletion witness', () => {
+  const witnesses = [
+    {
+      reason: governanceStringReasons.count,
+      mutateChecker: (source) => deleteCheckerGuard(
+        source,
+        '/* guard:governance-string-count */',
+        '  if (stats.count !== GOVERNANCE_STRING_CASE_COUNT) failures.push(governanceStringReasons.count)',
+        '  void stats.count'
+      ),
+      cases: 'governanceStringCases(repositoryRoot).slice(0, -1)'
+    },
+    {
+      reason: governanceStringReasons.idDistinct,
+      mutateChecker: (source) => deleteCheckerGuard(
+        source,
+        '/* guard:governance-string-id-distinct */',
+        '  if (stats.uniqueIds !== stats.count) failures.push(governanceStringReasons.idDistinct)',
+        '  void stats.uniqueIds'
+      ),
+      cases: `governanceStringCases(repositoryRoot).map((current) =>
+  current.id === 'owner-role:astral' ? { ...current, id: 'owner-actor-id:astral' } : current)`
+    },
+    {
+      reason: governanceStringReasons.materialDistinct,
+      mutateChecker: (source) => deleteCheckerGuard(
+        source,
+        '/* guard:governance-string-material-distinct */',
+        '  if (stats.uniqueMaterials !== stats.count) failures.push(governanceStringReasons.materialDistinct)',
+        '  void stats.uniqueMaterials'
+      ),
+      cases: `(() => {
+  const base = governanceStringCases(repositoryRoot)
+  const duplicate = base.find(({ id }) => id === 'owner-actor-id:astral').input
+  return base.map((current) => current.id === 'owner-role:astral'
+    ? { ...current, input: duplicate }
+    : current)
+})()`
+    },
+    {
+      reason: governanceStringReasons.layering,
+      mutateChecker: (source) => deleteCheckerGuard(
+        source,
+        '/* guard:governance-string-layering */',
+        '      ) failures.push(governanceStringReasons.layering)',
+        '      ) void actual'
+      ),
+      cases: `governanceStringCases(repositoryRoot).map((current) =>
+  current.id === 'owner-role:astral'
+    ? { ...current, expected: { ...current.expected, ajvRaw: false } }
+    : current)`
+    },
+    {
+      reason: governanceStringReasons.oracle,
+      mutateChecker: (source) => deleteCheckerGuard(
+        source,
+        '/* guard:governance-string-oracle */',
+        '  failures.push(governanceStringReasons.oracle)',
+        '  void failures'
+      ),
+      cases: `(() => {
+  const base = [...governanceStringCases(repositoryRoot)]
+  base[0] = {
+    id: base[0].id,
+    kind: base[0].kind,
+    get input() { throw new Error('SYNTHETIC') },
+    expected: base[0].expected
+  }
+  return base
+})()`
+    }
+  ]
+  for (const current of witnesses) {
+    const checkerBefore = readFileSync(resolve(repositoryRoot, 'scripts/check-stage09p-m0-scope.mjs'))
+    const outcome = runScopeCheckerMutation({
+      mutateChecker: current.mutateChecker,
+      witness: `import {
+  collectGovernanceStringParityFailures,
+  governanceStringCases,
+  governanceStringReasons,
+  repositoryRoot
+} from './scripts/check-stage09p-m0-scope.mjs'
+const cases = ${current.cases}
+assert.deepEqual(
+  collectGovernanceStringParityFailures(repositoryRoot, cases),
+  [${JSON.stringify(current.reason)}],
+  ${JSON.stringify(current.reason)}
+)`
+    })
+    assertTargetedMutationFailure(outcome, current.reason)
+    assert.deepEqual(
+      readFileSync(resolve(repositoryRoot, 'scripts/check-stage09p-m0-scope.mjs')),
+      checkerBefore,
+      'governance witness must restore the production checker byte-for-byte'
     )
   }
 })
@@ -600,12 +889,46 @@ test('capability grammar guard families have executable deletion witnesses', () 
         '  failures.push(capabilityReasons.moduleGrammar)',
         '  void failures'
       )
+    },
+    {
+      reason: capabilityReasons.valueProvenance,
+      productionAppend: 'const { constructor: leakedConstructor } = (() => undefined); void leakedConstructor',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.valueProvenance)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.reflectiveAcquisition,
+      productionAppend: 'const leakedConstructor = Reflect.get(() => undefined, "constructor"); void leakedConstructor',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.reflectiveAcquisition)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.capabilitySource,
+      productionAppend: 'void crypto',
+      mutateChecker: (source) => source.replace(
+        '        failures.push(capabilityReasons.capabilitySource)',
+        '        void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.publicSurface,
+      productionFile: 'index.ts',
+      productionAppend: 'export { createValidatedCatalogIndex } from "./catalog.js"',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.publicSurface)',
+        '  void failures'
+      )
     }
   ]
   for (const current of witnesses) {
     const outcome = runScopeCheckerMutation({
       mutateChecker: current.mutateChecker,
       productionAppend: current.productionAppend,
+      productionFile: current.productionFile,
       witness: `import {
   capabilityReasons,
   collectCapabilityFailures,
@@ -675,6 +998,17 @@ test('domain trust, copy, comparator, and chronology guards have executable dele
           isCanonicalInstant(envelope.reviewedAt) &&
           snapshot.retrievedAt > envelope.reviewedAt)`,
         '        false'
+      )
+    },
+    {
+      file: 'src/validation.ts',
+      expectedTest: 'hard mapping identifiers satisfy the governed synthetic namespace at final validation',
+      mutate: (source) => source.replace(
+        `    if (!mappingIdPattern.test(mapping.mappingId)) {
+      issues.push(issue("INVALID_SHAPE", \`hardMappings/\${index}/mappingId\`));
+    }
+`,
+        ''
       )
     }
   ]

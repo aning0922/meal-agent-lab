@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
+const mappingIdPattern = /^syn:mapping:/;
 const uuidV7Pattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ambiguousControl = /[\u0000-\u001F\u007F-\u009F]/u;
@@ -290,6 +291,9 @@ export const validateGovernanceCatalog = (value: unknown): CatalogValidationResu
   for (let index = 0; index < catalog.hardMappings.length; index += 1) {
     const mapping = catalog.hardMappings[index];
     if (mapping === undefined) continue;
+    if (!mappingIdPattern.test(mapping.mappingId)) {
+      issues.push(issue("INVALID_SHAPE", `hardMappings/${index}/mappingId`));
+    }
     if (mappingIds.has(mapping.mappingId)) issues.push(issue("INVALID_SHAPE", `hardMappings/${index}/mappingId`));
     mappingIds.add(mapping.mappingId);
     if (!referenceShape(mapping.source) || !referenceShape(mapping.target)) {

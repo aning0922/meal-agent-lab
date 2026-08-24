@@ -235,10 +235,24 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "lifecycleStatus": { "const": "withdrawn" } } },
+          "if": {
+            "properties": {
+              "lifecycleStatus": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "const": "withdrawn" }
+                ]
+              }
+            }
+          },
           "then": {
             "properties": {
-              "withdrawalState": { "const": "withdrawn" },
+              "withdrawalState": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "const": "withdrawn" }
+                ]
+              },
               "withdrawalReason": { "$ref": "#/$defs/nonEmptyString" },
               "withdrawnAt": { "$ref": "#/$defs/timestamp" },
               "supersededBy": { "type": "null" }
@@ -246,22 +260,50 @@
           },
           "else": {
             "properties": {
-              "withdrawalState": { "const": "not_withdrawn" },
+              "withdrawalState": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "const": "not_withdrawn" }
+                ]
+              },
               "withdrawalReason": { "type": "null" },
               "withdrawnAt": { "type": "null" }
             }
           }
         },
         {
-          "if": { "properties": { "lifecycleStatus": { "const": "superseded" } } },
+          "if": {
+            "properties": {
+              "lifecycleStatus": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "const": "superseded" }
+                ]
+              }
+            }
+          },
           "then": { "properties": { "supersededBy": { "$ref": "#/$defs/reference" } } },
           "else": { "properties": { "supersededBy": { "type": "null" } } }
         },
         {
-          "if": { "properties": { "lifecycleStatus": { "enum": ["approved", "active", "superseded", "withdrawn"] } } },
+          "if": {
+            "properties": {
+              "lifecycleStatus": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "enum": ["approved", "active", "superseded", "withdrawn"] }
+                ]
+              }
+            }
+          },
           "then": {
             "properties": {
-              "licenseStatus": { "const": "approved" },
+              "licenseStatus": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "const": "approved" }
+                ]
+              },
               "licenseReference": { "$ref": "#/$defs/nonEmptyString" },
               "sourceTier": {
                 "allOf": [

@@ -526,6 +526,31 @@ test("optional hard mappings are descriptive while required mappings fail closed
   assert.equal(required.issues.some(({ code }) => code === "HARD_MAPPING_UNRESOLVED"), true);
 });
 
+test("hard mapping identifiers satisfy the governed synthetic namespace at final validation", () => {
+  const release = validRelease();
+  const envelope = release.envelopes[0]!;
+  const reference = {
+    datasetId: envelope.datasetId,
+    entityId: envelope.entityId,
+    entityRevision: envelope.entityRevision,
+  };
+  const result = validateGovernanceCatalog({
+    releases: [release],
+    hardMappings: [{
+      mappingId: "not-a-mapping-id",
+      source: reference,
+      target: reference,
+      required: true,
+    }],
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.issues, [{
+    code: "INVALID_SHAPE",
+    path: "hardMappings/0/mappingId",
+  }]);
+});
+
 test("independent governance negatives retain safe stable codes and paths", () => {
   const assertOnlyIssue = (
     release: GovernanceRelease,
