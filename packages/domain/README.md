@@ -68,13 +68,16 @@ hard mapping 校验，会让该用例不再产生唯一预期错误码并直接�
 错误掩盖。
 
 `pnpm stage09p:m0:check` 还真实编译并执行两份 Draft 2020-12 JSON Schema，以 15 项 fixture
-matrix 和精确 30 项 JSON boundary matrix 对照 runtime。Schema 的递归 JSON value 对 key
-与 string value 使用同一 Unicode scalar 边界，拒绝 lone surrogate、接受合法 surrogate
-pair/astral scalar。valid/invalid/schema/source/test surface 由同一递归 inventory 派生；
+matrix、精确 30 项 JSON boundary matrix 和 51 项治理字符串词法 matrix 对照 runtime。
+Schema 中所有字符串定义族先复用同一 Unicode scalar base，再叠加 enum、pattern、format
+或长度语义；Ajv raw/parsed 与 runtime raw/text 一致拒绝 lone surrogate、接受合法
+surrogate pair/astral scalar。valid/invalid/schema/source/test surface 由同一递归 inventory 派生；
 nested file、directory、symlink 与特殊节点不能绕过 manifest、synthetic registry、Schema
-compile 或 AST/module graph。10 项 mutation suite 包含实际删除 total decoder、safe copy、
-comparator tie-break 与 snapshot chronology guard 的 domain 回归。生产源码能力检查使用
-TypeScript AST 与相对模块图，字符串和注释中的敏感词不会造成假判。
+compile 或 AST/module graph。scope suite 分别硬钉 case count、ID distinct、material-input
+distinct、Schema/runtime parity 和 oracle success，并为每个 guard 执行独立删除 witness。
+生产源码能力检查使用 TypeScript declaration identity 与受限 AST grammar，只允许精确
+静态模块和已盘点纯计算调用；动态模块、原型链能力取得、敏感 computed key 与无法归类
+的 call/new/tagged template 均 fail closed，字符串和注释中的敏感词不会造成假判。
 
 ```bash
 PATH=/Users/aipuli/.nvm/versions/node/v24.18.0/bin:$PATH \
