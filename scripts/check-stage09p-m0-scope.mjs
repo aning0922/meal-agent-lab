@@ -435,13 +435,235 @@ const permittedRuntimeImports = new Set([
   '@noble/hashes/sha2.js',
   '@noble/hashes/utils.js'
 ])
-const bannedCapabilities = new Set([
+const forbiddenCapabilityNames = new Set([
   'fetch', 'process', 'require', 'eval', 'Function', 'WebSocket', 'Worker', 'globalThis',
   'XMLHttpRequest', 'Deno', 'Bun', 'readFile', 'readFileSync', 'writeFile',
   'writeFileSync', 'appendFile', 'open', 'createReadStream', 'createWriteStream',
   'connect', 'createConnection', 'indexedDB', 'localStorage', 'sessionStorage',
-  'document', 'window', 'navigator', 'setTimeout', 'setInterval'
+  'document', 'window', 'navigator', 'setTimeout', 'setInterval', 'createRequire',
+  'getBuiltinModule', 'dlopen', 'module', 'global', 'AsyncFunction', 'GeneratorFunction'
 ])
+const forbiddenMemberNames = new Set([
+  ...forbiddenCapabilityNames,
+  'constructor', 'prototype', '__proto__', 'caller', 'callee', 'arguments', 'construct'
+])
+const auditedLibCallNames = new Set([
+  'Number', 'String', 'add', 'create', 'defineProperty', 'delete', 'freeze', 'get',
+  'getOwnPropertyDescriptor', 'getPrototypeOf', 'has', 'hasOwn', 'includes', 'is',
+  'isArray', 'isFinite', 'isSafeInteger', 'join', 'map', 'max', 'min', 'normalize',
+  'ownKeys', 'parse', 'push', 'replace', 'set', 'slice', 'some', 'sort', 'stringify',
+  'test', 'toISOString', 'toLowerCase', 'trim', 'values'
+])
+const auditedLibConstructors = new Set([
+  'Date', 'Map', 'Set', 'TypeError', 'WeakMap', 'WeakSet'
+])
+const auditedNobleCalls = new Set(['bytesToHex', 'sha256', 'utf8ToBytes'])
+const auditedParameterCalls = new Set([
+  'canonical.ts#compareStructural:fields',
+  'canonical.ts#compareStructural:material',
+  'decode.ts#dataArray:decodeItem',
+  'decode.ts#result:operation'
+])
+
+export const capabilityReasons = Object.freeze({
+  moduleGrammar: 'domain module grammar must remain static, literal, relative-or-audited, and ImportEquals-free',
+  capabilitySource: 'domain production source acquires a forbidden capability by declaration identity',
+  prototypeChain: 'domain production source cannot acquire capability through constructor or prototype chains',
+  computedSensitive: 'domain production source cannot acquire sensitive capability through computed member keys',
+  declarationIdentity: 'domain call/new/tagged-template must resolve to an audited declaration identity'
+})
+
+const resolvedSymbol = (checker, node) => {
+  const symbol = checker.getSymbolAtLocation(node)
+  return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0
+    ? checker.getAliasedSymbol(symbol)
+    : symbol
+}
+
+const unwrapExpression = (node) => {
+  let current = node
+  while (
+    current !== undefined &&
+    (ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current))
+  ) current = current.expression
+  return current
+}
+
+const constantString = (node, checker, seen = new Set()) => {
+  const current = unwrapExpression(node)
+  if (current === undefined) return null
+  if (ts.isStringLiteralLike(current)) return current.text
+  if (
+    ts.isBinaryExpression(current) &&
+    current.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = constantString(current.left, checker, seen)
+    const right = constantString(current.right, checker, seen)
+    return left === null || right === null ? null : `${left}${right}`
+  }
+  if (ts.isIdentifier(current)) {
+    const symbol = resolvedSymbol(checker, current)
+    if (symbol === undefined || seen.has(symbol)) return null
+    seen.add(symbol)
+    const declarations = symbol.declarations ?? []
+    if (declarations.length !== 1 || !ts.isVariableDeclaration(declarations[0])) return null
+    const declaration = declarations[0]
+    if (
+      declaration.initializer === undefined ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0
+    ) return null
+    return constantString(declaration.initializer, checker, seen)
+  }
+  return null
+}
+
+const isDeclarationName = (node) => {
+  const parent = node.parent
+  return (
+    (ts.isVariableDeclaration(parent) || ts.isParameter(parent) ||
+      ts.isFunctionDeclaration(parent) || ts.isFunctionExpression(parent) ||
+      ts.isClassDeclaration(parent) || ts.isInterfaceDeclaration(parent) ||
+      ts.isTypeAliasDeclaration(parent)) && parent.name === node
+  )
+}
+
+const isNonReferenceIdentifier = (node) => {
+  const parent = node.parent
+  return isDeclarationName(node) ||
+    ts.isImportClause(parent) || ts.isImportSpecifier(parent) || ts.isNamespaceImport(parent) ||
+    ts.isExportSpecifier(parent) || ts.isPropertySignature(parent) || ts.isPropertyDeclaration(parent) ||
+    ts.isTypeReferenceNode(parent) || ts.isLiteralTypeNode(parent) || ts.isExternalModuleReference(parent) ||
+    ts.isPropertyAccessExpression(parent) && parent.name === node ||
+    ts.isPropertyAssignment(parent) && parent.name === node ||
+    ts.isShorthandPropertyAssignment(parent)
+}
+
+const relativeSourcePath = (sourceRoot, fileName) =>
+  fileName.startsWith(`${sourceRoot}/`) ? fileName.slice(sourceRoot.length + 1) : null
+
+const nearestNamedFunction = (node) => {
+  let current = node.parent
+  while (current !== undefined) {
+    if (ts.isFunctionDeclaration(current) && current.name !== undefined) return current.name.text
+    if (
+      (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) &&
+      ts.isVariableDeclaration(current.parent) && ts.isIdentifier(current.parent.name)
+    ) return current.parent.name.text
+    current = current.parent
+  }
+  return null
+}
+
+const auditedParameterIdentity = (declaration, sourceRoot) => {
+  if (!ts.isParameter(declaration) || !ts.isIdentifier(declaration.name)) return null
+  const file = relativeSourcePath(sourceRoot, declaration.getSourceFile().fileName)
+  const owner = nearestNamedFunction(declaration)
+  return file === null || owner === null ? null : `${file}#${owner}:${declaration.name.text}`
+}
+
+const declarationIsLocalCallable = (declaration, sourceRoot) => {
+  if (relativeSourcePath(sourceRoot, declaration.getSourceFile().fileName) === null) return false
+  if (ts.isFunctionDeclaration(declaration)) return true
+  if (!ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return false
+  const initializer = unwrapExpression(declaration.initializer)
+  return initializer !== undefined &&
+    (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+}
+
+const symbolHasAuditedLibDeclaration = (symbol, allowedNames) =>
+  symbol !== undefined &&
+  allowedNames.has(symbol.getName()) &&
+  symbol.declarations?.some((declaration) =>
+    /[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u.test(
+      declaration.getSourceFile().fileName
+    )) === true
+
+const symbolHasAuditedNobleDeclaration = (symbol) =>
+  symbol !== undefined &&
+  auditedNobleCalls.has(symbol.getName()) &&
+  symbol.declarations?.some((declaration) =>
+    /[/\\]@noble\+hashes@[^/\\]+[/\\]node_modules[/\\]@noble[/\\]hashes[/\\]/u.test(
+      declaration.getSourceFile().fileName
+    )) === true
+
+const callHasAuditedIdentity = (node, checker, sourceRoot) => {
+  const expression = unwrapExpression(node.expression)
+  if (expression === undefined) return false
+  const symbolNode = ts.isPropertyAccessExpression(expression)
+    ? expression.name
+    : ts.isElementAccessExpression(expression)
+      ? expression.argumentExpression
+      : expression
+  const symbol = resolvedSymbol(checker, symbolNode)
+  if (symbolHasAuditedLibDeclaration(symbol, auditedLibCallNames)) return true
+  if (symbolHasAuditedNobleDeclaration(symbol)) return true
+  if (symbol?.declarations?.some((declaration) => declarationIsLocalCallable(declaration, sourceRoot))) {
+    return true
+  }
+  return symbol?.declarations?.some((declaration) => {
+    const identity = auditedParameterIdentity(declaration, sourceRoot)
+    return identity !== null && auditedParameterCalls.has(identity)
+  }) === true
+}
+
+const newHasAuditedIdentity = (node, checker) => {
+  const expression = unwrapExpression(node.expression)
+  if (expression === undefined) return false
+  return symbolHasAuditedLibDeclaration(
+    resolvedSymbol(checker, expression),
+    auditedLibConstructors
+  )
+}
+
+const moduleSpecifierFailure = (file, specifier, sourceSet) => {
+  if (!ts.isStringLiteral(specifier)) return true
+  const value = specifier.text
+  if (
+    value.length === 0 || value.includes('?') || value.includes('#') || value.includes('%') ||
+    value.includes('\\') || /\p{White_Space}|\p{Cf}/u.test(value) ||
+    value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value)
+  ) return true
+  if (value.startsWith('.')) {
+    if (!/^\.\.?\/[A-Za-z0-9./-]+\.js$/u.test(value)) return true
+    const target = posix.normalize(posix.join(posix.dirname(file), value)).replace(/\.js$/u, '.ts')
+    return target.startsWith('../') || !sourceSet.has(target)
+  }
+  return !permittedRuntimeImports.has(value)
+}
+
+const programForDomainSources = (root, sourceFiles) => ts.createProgram({
+  rootNames: sourceFiles.map((file) => resolve(root, 'packages/domain/src', file)),
+  options: {
+    noEmit: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    types: []
+  }
+})
+
+const recordModuleGrammarFailure = (failures) => {
+  /* guard:module-grammar */
+  failures.push(capabilityReasons.moduleGrammar)
+}
+const recordPrototypeChainFailure = (failures) => {
+  /* guard:prototype-chain */
+  failures.push(capabilityReasons.prototypeChain)
+}
+const recordComputedSensitiveFailure = (failures) => {
+  /* guard:computed-sensitive */
+  failures.push(capabilityReasons.computedSensitive)
+}
+const recordDeclarationIdentityFailure = (failures) => {
+  /* guard:declaration-identity */
+  failures.push(capabilityReasons.declarationIdentity)
+}
 
 export const collectCapabilityFailures = (root = repositoryRoot, surfaces = collectM0Surfaces(root)) => {
   const failures = []
@@ -456,42 +678,79 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
   }
   const sourceFiles = surfaceFiles(surfaces.sources)
   const sourceSet = new Set(sourceFiles)
-  for (const file of sourceFiles) {
-    let source
-    try {
-      source = readFileSync(resolve(sourceRoot, file), 'utf8')
-    } catch {
-      failures.push('domain source must be readable for AST capability analysis')
-      continue
+  let program
+  try {
+    program = programForDomainSources(root, sourceFiles)
+  } catch {
+    failures.push('domain source must be readable for AST capability analysis')
+  }
+  if (program !== undefined) {
+    const checker = program.getTypeChecker()
+    if (program.getSyntacticDiagnostics().length > 0) {
+      failures.push('domain source must parse as TypeScript')
     }
-    const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-    if (tree.parseDiagnostics.length > 0) failures.push('domain source must parse as TypeScript')
+    for (const file of sourceFiles) {
+      const tree = program.getSourceFile(resolve(sourceRoot, file))
+      if (tree === undefined) {
+        failures.push('domain source must be readable for AST capability analysis')
+        continue
+      }
     const visit = (node) => {
       if (
         ts.isImportDeclaration(node) ||
         ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined
       ) {
-        const specifier = node.moduleSpecifier
-        if (!ts.isStringLiteral(specifier)) {
-          failures.push('domain module specifiers must be static strings')
-        } else if (specifier.text.startsWith('.')) {
-          const target = posix.normalize(
-            posix.join(posix.dirname(file), specifier.text)
-          ).replace(/\.js$/, '.ts')
-          if (target.startsWith('../') || !sourceSet.has(target)) {
-            failures.push('domain relative module graph must remain inside the exact source manifest')
-          }
-        } else if (!permittedRuntimeImports.has(specifier.text)) {
-          failures.push('domain production source imports a forbidden runtime capability')
+        if (moduleSpecifierFailure(file, node.moduleSpecifier, sourceSet)) {
+          recordModuleGrammarFailure(failures)
         }
       }
       if (
-        ts.isCallExpression(node) &&
-        (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
-          ts.isIdentifier(node.expression) && node.expression.text === 'require')
-      ) failures.push('domain production source cannot dynamically load modules')
-      if (ts.isIdentifier(node) && bannedCapabilities.has(node.text)) {
-        failures.push('domain production source references a forbidden side-effect capability')
+        ts.isImportEqualsDeclaration(node) || ts.isExternalModuleReference(node) ||
+        ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+      ) recordModuleGrammarFailure(failures)
+      if (
+        ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)
+      ) {
+        const key = ts.isPropertyAccessExpression(node)
+          ? node.name.text
+          : constantString(node.argumentExpression, checker)
+        if (key === 'constructor' || key === 'prototype' || key === '__proto__' ||
+          key === 'caller' || key === 'callee' || key === 'arguments') {
+          const safePrototype = ts.isPropertyAccessExpression(node) &&
+            key === 'prototype' && ts.isIdentifier(node.expression) &&
+            (node.expression.text === 'Array' || node.expression.text === 'Object') &&
+            symbolHasAuditedLibDeclaration(resolvedSymbol(checker, node.expression), new Set([
+              'Array', 'Object'
+            ]))
+          if (!safePrototype) recordPrototypeChainFailure(failures)
+        }
+        if (
+          key !== null && forbiddenMemberNames.has(key) &&
+          !['constructor', 'prototype', '__proto__', 'caller', 'callee', 'arguments'].includes(key)
+        ) recordComputedSensitiveFailure(failures)
+        if (ts.isElementAccessExpression(node) && key === null) {
+          const type = checker.getTypeAtLocation(node.expression)
+          if (
+            (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+            type.getCallSignatures().length > 0 || type.getConstructSignatures().length > 0
+          ) recordComputedSensitiveFailure(failures)
+        }
+      }
+      if (
+        ts.isIdentifier(node) && forbiddenCapabilityNames.has(node.text) &&
+        !isNonReferenceIdentifier(node)
+      ) {
+        failures.push(capabilityReasons.capabilitySource)
+      }
+      if (
+        ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword &&
+        !callHasAuditedIdentity(node, checker, sourceRoot)
+      ) recordDeclarationIdentityFailure(failures)
+      if (ts.isNewExpression(node) && !newHasAuditedIdentity(node, checker)) {
+        recordDeclarationIdentityFailure(failures)
+      }
+      if (ts.isTaggedTemplateExpression(node)) {
+        recordDeclarationIdentityFailure(failures)
       }
       if (
         (ts.isInterfaceDeclaration(node) || ts.isClassDeclaration(node) || ts.isTypeAliasDeclaration(node)) &&
@@ -500,6 +759,7 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
       ts.forEachChild(node, visit)
     }
     visit(tree)
+    }
   }
   if (!surfaces.tests.readable || surfaces.tests.entries.some(({ type }) => type !== 'file')) {
     failures.push('M0 recursive test surface must contain registered ordinary files only')
@@ -567,16 +827,31 @@ const unicodeScalar = (value) =>
   typeof value === 'string' &&
   !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)
 
-const createSchemaValidator = () => {
+const createSchemaValidator = (executionCounts = null) => {
   const ajv = new Ajv2020({ strict: true, allErrors: true, validateFormats: true })
-  ajv.addFormat('canonical-utc-instant', { type: 'string', validate: canonicalInstant })
-  ajv.addFormat('unicode-scalar', { type: 'string', validate: unicodeScalar })
+  ajv.addFormat('canonical-utc-instant', {
+    type: 'string',
+    validate: (value) => {
+      if (executionCounts !== null) executionCounts.canonicalInstant += 1
+      return canonicalInstant(value)
+    }
+  })
+  ajv.addFormat('unicode-scalar', {
+    type: 'string',
+    validate: (value) => {
+      if (executionCounts !== null) executionCounts.unicodeScalar += 1
+      return unicodeScalar(value)
+    }
+  })
   ajv.addKeyword({
     keyword: 'notNegativeZero',
     schemaType: 'boolean',
     type: 'number',
     errors: false,
-    validate: (enabled, value) => !enabled || !Object.is(value, -0)
+    validate: (enabled, value) => {
+      if (executionCounts !== null) executionCounts.notNegativeZero += 1
+      return !enabled || !Object.is(value, -0)
+    }
   })
   return ajv
 }
@@ -607,8 +882,8 @@ const materializeFixture = (fixture, validDirectory, domain) => {
   return { releases, hardMappings: fixture.hardMappings }
 }
 
-const compiledSchemas = (root) => {
-  const ajv = createSchemaValidator()
+const compiledSchemas = (root, executionCounts = null) => {
+  const ajv = createSchemaValidator(executionCounts)
   return {
     governance: ajv.compile(JSON.parse(
       readFileSync(resolve(root, 'data/schemas/governance-release.schema.json'), 'utf8')
@@ -711,20 +986,67 @@ const boundaryIdentity = (value) => {
     `${stringCodeUnits(key)}:${boundaryIdentity(child)}`).join(',')}}`
 }
 
+export const jsonBoundaryReasons = Object.freeze({
+  count: 'JSON boundary parity case count must remain exactly 30',
+  idDistinct: 'JSON boundary parity case IDs must remain distinct',
+  materialDistinct: 'JSON boundary parity material inputs must remain distinct',
+  parity: 'JSON boundary schema/runtime parity must match the exact expected matrix',
+  oracle: 'JSON boundary parity oracle must execute successfully'
+})
+
+export const jsonBoundaryEvidenceStats = (cases = jsonBoundaryCases()) => {
+  const identities = cases.map(({ value }) => boundaryIdentity(value))
+  return Object.freeze({
+    count: cases.length,
+    uniqueIds: new Set(cases.map(({ id }) => id)).size,
+    uniqueMaterials: new Set(identities).size
+  })
+}
+
+export const SCHEMA_EXTENSION_EXECUTION_COUNTS = Object.freeze({
+  unicodeScalar: 1184,
+  canonicalInstant: 120,
+  notNegativeZero: 6
+})
+
+export const schemaExtensionExecutionStats = (root = repositoryRoot) => {
+  const executionCounts = { unicodeScalar: 0, canonicalInstant: 0, notNegativeZero: 0 }
+  const validators = compiledSchemas(root, executionCounts)
+  const baseText = readFileSync(
+    resolve(fixtureRoot(root), 'valid/food-concept.json'),
+    'utf8'
+  )
+  for (const boundary of jsonBoundaryCases()) {
+    const release = JSON.parse(baseText)
+    release.envelopes[0].content = boundary.value
+    validators.governance(release)
+  }
+  return Object.freeze({ ...executionCounts })
+}
+
+const recordJsonBoundaryOracleFailure = (failures) => {
+  /* guard:json-boundary-oracle */
+  failures.push(jsonBoundaryReasons.oracle)
+}
+
 export const collectJsonBoundaryParityFailures = (
   root = repositoryRoot,
   cases = jsonBoundaryCases()
 ) => {
   const failures = []
-  const identities = cases.map(({ value }) => boundaryIdentity(value))
-  if (
-    cases.length !== JSON_BOUNDARY_CASE_COUNT ||
-    new Set(cases.map(({ id }) => id)).size !== JSON_BOUNDARY_CASE_COUNT ||
-    new Set(identities).size !== JSON_BOUNDARY_CASE_COUNT
-  ) {
-    failures.push('JSON boundary parity matrix count and distinct inputs must remain exact')
+  let stats
+  try {
+    stats = jsonBoundaryEvidenceStats(cases)
+  } catch {
+    recordJsonBoundaryOracleFailure(failures)
     return failures
   }
+  /* guard:json-boundary-count */
+  if (stats.count !== JSON_BOUNDARY_CASE_COUNT) failures.push(jsonBoundaryReasons.count)
+  /* guard:json-boundary-id-distinct */
+  if (stats.uniqueIds !== stats.count) failures.push(jsonBoundaryReasons.idDistinct)
+  /* guard:json-boundary-material-distinct */
+  if (stats.uniqueMaterials !== stats.count) failures.push(jsonBoundaryReasons.materialDistinct)
   try {
     const validators = compiledSchemas(root)
     const baseText = readFileSync(
@@ -734,22 +1056,252 @@ export const collectJsonBoundaryParityFailures = (
     for (const boundary of cases) {
       const release = JSON.parse(baseText)
       release.envelopes[0].content = boundary.value
-      let runtimeOk = false
-      try {
+      const decoded = domain.decodeGovernanceRelease(release)
+      let runtimeOk = decoded.ok
+      if (decoded.ok) {
         release.envelopes[0].contentDigest = domain.canonicalReleaseDigest(release)
         runtimeOk = domain.validateGovernanceRelease(release).ok
-      } catch {
-        runtimeOk = false
       }
       const schemaOk = validators.governance(release)
+      /* guard:json-boundary-parity */
       if (schemaOk !== boundary.expected || runtimeOk !== boundary.expected || schemaOk !== runtimeOk) {
-        failures.push('JSON boundary schema/runtime parity must match the exact expected matrix')
+        failures.push(jsonBoundaryReasons.parity)
       }
     }
   } catch {
-    failures.push('JSON boundary schema/runtime parity must execute with fixed safe diagnostics')
+    recordJsonBoundaryOracleFailure(failures)
   }
   return [...new Set(failures)]
+}
+
+const releaseStringMutationBuilders = Object.freeze([
+  Object.freeze({ id: 'root-schema', mutate: (release, value) => { release.$schema = value } }),
+  Object.freeze({ id: 'dataset-id', mutate: (release, value) => { release.envelopes[0].datasetId = value } }),
+  Object.freeze({ id: 'release-id', mutate: (release, value) => { release.envelopes[0].releaseId = value } }),
+  Object.freeze({ id: 'owner-actor-id', mutate: (release, value) => { release.envelopes[0].owner.actorId = value } }),
+  Object.freeze({ id: 'owner-role', mutate: (release, value) => { release.envelopes[0].owner.role = value } }),
+  Object.freeze({ id: 'source-locator', mutate: (release, value) => { release.envelopes[0].sourceReferences[0].locator = value } }),
+  Object.freeze({ id: 'alias-value', mutate: (release, value) => { release.envelopes[0].aliases[0].value = value } }),
+  Object.freeze({
+    id: 'region-array-item',
+    mutate: (release, value) => {
+      release.envelopes[0].applicableRegions[0] = value
+      release.envelopes[0].aliases[0].region = value
+    }
+  }),
+  Object.freeze({
+    id: 'language-array-item',
+    mutate: (release, value) => {
+      release.envelopes[0].languages[0] = value
+      release.envelopes[0].aliases[0].language = value
+    }
+  }),
+  Object.freeze({ id: 'nullable-license-reference', mutate: (release, value) => { release.envelopes[0].licenseReference = value } })
+])
+
+const semanticStringMutationBuilders = Object.freeze([
+  Object.freeze({ id: 'enum-dataset-kind', mutate: (release, value) => { release.envelopes[0].datasetKind = value } }),
+  Object.freeze({ id: 'uuid-entity-id', mutate: (release, value) => { release.envelopes[0].entityId = value } }),
+  Object.freeze({ id: 'digest-content-digest', mutate: (release, value) => { release.envelopes[0].contentDigest = value } }),
+  Object.freeze({ id: 'timestamp-reviewed-at', mutate: (release, value) => { release.envelopes[0].reviewedAt = value } })
+])
+
+const validMappingFixture = () => ({
+  $schema: '../../../schemas/invalid-governance-fixture.schema.json',
+  syntheticFixture: 'fully_synthetic_mutation',
+  baseValidFiles: ['food-concept.json'],
+  mutations: [],
+  hardMappings: [{
+    mappingId: 'syn:mapping:lexical-parity',
+    source: {
+      datasetId: 'syn:dataset:food-concept',
+      entityId: '01900000-7000-7000-8000-000000000001',
+      entityRevision: 1
+    },
+    target: {
+      datasetId: 'syn:dataset:food-concept',
+      entityId: '01900000-7000-7000-8000-000000000001',
+      entityRevision: 1
+    },
+    required: true
+  }],
+  recomputeReleaseDigests: true,
+  expectedIssueCodes: ['HARD_MAPPING_UNRESOLVED']
+})
+
+export const GOVERNANCE_STRING_CASE_COUNT = 51
+export const governanceStringCases = (root = repositoryRoot) => {
+  const baseText = readFileSync(
+    resolve(fixtureRoot(root), 'valid/food-concept.json'),
+    'utf8'
+  )
+  const cases = []
+  for (const builder of releaseStringMutationBuilders) {
+    for (const variant of [
+      { id: 'lone-high', value: '\uD800', expected: false },
+      { id: 'lone-low', value: '\uDC00', expected: false },
+      { id: 'astral', value: 'SYNTHETIC_😀', expected: true }
+    ]) {
+      const release = JSON.parse(baseText)
+      builder.mutate(release, variant.value)
+      cases.push(Object.freeze({
+        id: `${builder.id}:${variant.id}`,
+        kind: 'release',
+        input: release,
+        expected: variant.expected
+      }))
+    }
+  }
+  const semanticValues = Object.freeze({
+    'enum-dataset-kind': 'allergen',
+    'uuid-entity-id': '01900000-7000-7000-8000-000000000011',
+    'digest-content-digest': `sha256:${'b'.repeat(64)}`,
+    'timestamp-reviewed-at': '2000-01-02T00:00:00.001Z'
+  })
+  for (const builder of semanticStringMutationBuilders) {
+    for (const variant of [
+      { id: 'lone-high', value: '\uD800', expected: false },
+      { id: 'lone-low', value: '\uDC00', expected: false },
+      { id: 'valid-family-control', value: semanticValues[builder.id], expected: true }
+    ]) {
+      const release = JSON.parse(baseText)
+      builder.mutate(release, variant.value)
+      cases.push(Object.freeze({
+        id: `${builder.id}:${variant.id}`,
+        kind: 'release',
+        input: release,
+        expected: variant.expected
+      }))
+    }
+  }
+  const mappingBuilders = Object.freeze([
+    Object.freeze({
+      id: 'mapping-id',
+      valid: 'syn:mapping:lexical-parity-control',
+      mutate: (fixture, value) => { fixture.hardMappings[0].mappingId = value }
+    }),
+    Object.freeze({
+      id: 'mapping-dataset-id',
+      valid: 'syn:dataset:lexical-control',
+      mutate: (fixture, value) => { fixture.hardMappings[0].source.datasetId = value }
+    }),
+    Object.freeze({
+      id: 'mapping-entity-id',
+      valid: '01900000-7000-7000-8000-000000000011',
+      mutate: (fixture, value) => { fixture.hardMappings[0].source.entityId = value }
+    })
+  ])
+  for (const builder of mappingBuilders) {
+    for (const variant of [
+      { id: 'lone-high', value: `${builder.valid.split(':').slice(0, -1).join(':')}:\uD800`, expected: false },
+      { id: 'lone-low', value: `${builder.valid.split(':').slice(0, -1).join(':')}:\uDC00`, expected: false },
+      { id: 'valid-family-control', value: builder.valid, expected: true }
+    ]) {
+      const fixture = validMappingFixture()
+      builder.mutate(fixture, variant.value)
+      cases.push(Object.freeze({
+        id: `${builder.id}:${variant.id}`,
+        kind: 'fixture',
+        input: fixture,
+        expected: variant.expected
+      }))
+    }
+  }
+  return Object.freeze(cases)
+}
+
+const governanceStringReasons = Object.freeze({
+  shape: 'governance string lexical matrix count, IDs, and material inputs must remain exact',
+  parity: 'governance string lexical parity must match Ajv raw/text and runtime raw/text',
+  oracle: 'governance string lexical parity oracle must execute successfully'
+})
+
+export const governanceStringEvidenceStats = (cases = governanceStringCases()) => ({
+  count: cases.length,
+  uniqueIds: new Set(cases.map(({ id }) => id)).size,
+  uniqueMaterials: new Set(cases.map(({ kind, input }) =>
+    boundaryIdentity(ownJsonObject([['kind', kind], ['input', input]])))).size
+})
+
+export const collectGovernanceStringParityFailures = (
+  root = repositoryRoot,
+  cases = governanceStringCases(root)
+) => {
+  const failures = []
+  try {
+    const stats = governanceStringEvidenceStats(cases)
+    if (
+      stats.count !== GOVERNANCE_STRING_CASE_COUNT ||
+      stats.uniqueIds !== stats.count ||
+      stats.uniqueMaterials !== stats.count
+    ) failures.push(governanceStringReasons.shape)
+    const validators = compiledSchemas(root)
+    const validDirectory = resolve(fixtureRoot(root), 'valid')
+    for (const current of cases) {
+      const text = JSON.stringify(current.input)
+      const parsed = JSON.parse(text)
+      let ajvRaw
+      let ajvText
+      let runtimeRaw
+      let runtimeText
+      if (current.kind === 'release') {
+        ajvRaw = validators.governance(current.input)
+        ajvText = validators.governance(parsed)
+        runtimeRaw = domain.decodeGovernanceRelease(current.input).ok
+        runtimeText = domain.decodeGovernanceReleaseJson(text).ok
+      } else {
+        ajvRaw = validators.fixture(current.input)
+        ajvText = validators.fixture(parsed)
+        const rawCatalog = materializeFixture(current.input, validDirectory, domain)
+        const textCatalog = materializeFixture(parsed, validDirectory, domain)
+        runtimeRaw = domain.decodeGovernanceCatalog(rawCatalog).ok
+        runtimeText = domain.decodeGovernanceCatalogJson(JSON.stringify(textCatalog)).ok
+      }
+      if (
+        ajvRaw !== current.expected || ajvText !== current.expected ||
+        runtimeRaw !== current.expected || runtimeText !== current.expected
+      ) failures.push(governanceStringReasons.parity)
+    }
+  } catch {
+    failures.push(governanceStringReasons.oracle)
+  }
+  return [...new Set(failures)]
+}
+
+const schemaStringContractClosed = (schema) => {
+  const scalarReference = '#/$defs/scalarString'
+  if (
+    schema?.$defs?.scalarString?.type !== 'string' ||
+    schema.$defs.scalarString.format !== 'unicode-scalar'
+  ) return false
+  let closed = true
+  const visit = (node, protectedByScalar = false, scalarNode = false) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) return
+    const allOfProtects = Array.isArray(node.allOf) &&
+      node.allOf.some((child) => child?.$ref === scalarReference)
+    const protectedHere = protectedByScalar || allOfProtects || node.$ref === scalarReference
+    const acceptsOpenString =
+      node.type === 'string' ||
+      Array.isArray(node.type) && node.type.includes('string') ||
+      typeof node.pattern === 'string' || typeof node.format === 'string' ||
+      typeof node.minLength === 'number' ||
+      Array.isArray(node.enum) && node.enum.some((value) => typeof value === 'string') ||
+      typeof node.const === 'string'
+    if (acceptsOpenString && !protectedHere && !scalarNode) closed = false
+    for (const [key, child] of Object.entries(node)) {
+      if (key === 'scalarString' && node === schema.$defs) {
+        visit(child, true, true)
+      } else if (key !== '$defs' || child !== schema.$defs) {
+        visit(child, protectedHere, false)
+      } else {
+        for (const [definition, definitionNode] of Object.entries(child)) {
+          visit(definitionNode, definition === 'scalarString', definition === 'scalarString')
+        }
+      }
+    }
+  }
+  visit(schema)
+  return closed
 }
 
 export const collectSchemaContractFailures = (
@@ -762,9 +1314,11 @@ export const collectSchemaContractFailures = (
   }
   try {
     for (const file of surfaceFiles(surfaces.schemas)) {
-      createSchemaValidator().compile(JSON.parse(
-        readFileSync(resolve(root, 'data/schemas', file), 'utf8')
-      ))
+      const schema = JSON.parse(readFileSync(resolve(root, 'data/schemas', file), 'utf8'))
+      createSchemaValidator().compile(schema)
+      if (!schemaStringContractClosed(schema)) {
+        failures.push('schema string lexical contract must route every string family through unicode scalar base')
+      }
     }
     const validators = compiledSchemas(root)
     const validDirectory = resolve(fixtureRoot(root), 'valid')
@@ -798,6 +1352,10 @@ export const collectSchemaContractFailures = (
     if (validators.governance(unknownEnvelopeKey)) {
       failures.push('compiled governance schema must reject unknown envelope keys')
     }
+    if (
+      JSON.stringify(schemaExtensionExecutionStats(root)) !==
+      JSON.stringify(SCHEMA_EXTENSION_EXECUTION_COUNTS)
+    ) failures.push('schema format and keyword execution counts must remain exact')
   } catch {
     failures.push('both M0 schemas must compile and execute with the independent 2020-12 validator')
   }
@@ -809,7 +1367,6 @@ export const collectSchemaParityFailures = async (
   surfaces = collectM0Surfaces(root)
 ) => {
   const failures = collectSchemaContractFailures(root, surfaces)
-  if (failures.length > 0) return failures
   try {
     const validators = compiledSchemas(root)
     const validDirectory = resolve(fixtureRoot(root), 'valid')
@@ -842,6 +1399,7 @@ export const collectSchemaParityFailures = async (
       }
     }
     failures.push(...collectJsonBoundaryParityFailures(root))
+    failures.push(...collectGovernanceStringParityFailures(root))
   } catch {
     failures.push('both M0 schemas must compile and execute with the independent 2020-12 validator')
   }
@@ -869,12 +1427,20 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const failure of result.failures) process.stderr.write(`- ${failure}\n`)
     process.exitCode = 1
   } else {
+    const boundaryStats = jsonBoundaryEvidenceStats()
+    const stringStats = governanceStringEvidenceStats()
+    const extensionStats = schemaExtensionExecutionStats()
     process.stdout.write(
       `Stage 09P M0 scope check PASS (${manifests.valid.length} valid, ` +
       `${manifests.invalid.length} exclusive invalid, ${manifests.schemas.length} compiled schemas, ` +
       `${manifests.sources.length} pure source, ${manifests.tests.length} domain test files, ` +
       `${manifests.valid.length + manifests.invalid.length} fixture parity + ` +
-      `${JSON_BOUNDARY_CASE_COUNT} JSON boundary parity cases)\n`
+      `${boundaryStats.count} JSON boundary parity cases / ${boundaryStats.uniqueIds} unique IDs / ` +
+      `${boundaryStats.uniqueMaterials} unique material inputs + ${stringStats.count} governance ` +
+      `string parity cases / ${stringStats.uniqueIds} unique IDs / ` +
+      `${stringStats.uniqueMaterials} unique material inputs; schema extension executions ` +
+      `unicode=${extensionStats.unicodeScalar}, utc=${extensionStats.canonicalInstant}, ` +
+      `negative-zero=${extensionStats.notNegativeZero})\n`
     )
   }
 }

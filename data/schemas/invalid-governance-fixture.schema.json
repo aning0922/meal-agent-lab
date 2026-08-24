@@ -13,8 +13,10 @@
     "expectedIssueCodes"
   ],
   "properties": {
-    "$schema": { "type": "string" },
-    "syntheticFixture": { "const": "fully_synthetic_mutation" },
+    "$schema": { "$ref": "#/$defs/nonEmptyString" },
+    "syntheticFixture": {
+      "allOf": [{ "$ref": "#/$defs/scalarString" }, { "const": "fully_synthetic_mutation" }]
+    },
     "baseValidFiles": {
       "type": "array",
       "minItems": 1,
@@ -42,29 +44,66 @@
       "maxItems": 1,
       "uniqueItems": true,
       "items": {
-        "enum": [
-          "MISSING_SOURCE",
-          "MISSING_LICENSE",
-          "MISSING_REGION",
-          "MISSING_LANGUAGE",
-          "ALIAS_CONFLICT",
-          "REUSED_ENTITY_ID",
-          "UNKNOWN_REVISION",
-          "WITHDRAWN_REFERENCE",
-          "RELEASE_DIGEST_MISMATCH",
-          "HARD_MAPPING_UNRESOLVED"
+        "allOf": [
+          { "$ref": "#/$defs/scalarString" },
+          {
+            "enum": [
+              "MISSING_SOURCE",
+              "MISSING_LICENSE",
+              "MISSING_REGION",
+              "MISSING_LANGUAGE",
+              "ALIAS_CONFLICT",
+              "REUSED_ENTITY_ID",
+              "UNKNOWN_REVISION",
+              "WITHDRAWN_REFERENCE",
+              "RELEASE_DIGEST_MISMATCH",
+              "HARD_MAPPING_UNRESOLVED"
+            ]
+          }
         ]
       }
     }
   },
   "$defs": {
+    "scalarString": { "type": "string", "format": "unicode-scalar" },
+    "nonEmptyString": {
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number", "notNegativeZero": true },
+        { "$ref": "#/$defs/scalarString" },
+        { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } },
+        {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/scalarString" },
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    },
+    "uuidV7": {
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        { "type": "string", "pattern": "^01900000-7000-7000-8000-0000000000[0-9]{2}$" }
+      ]
+    },
     "validFile": {
-      "enum": [
-        "food-concept.json",
-        "allergen.json",
-        "religious-ethical.json",
-        "food-safety.json",
-        "cooking-technique.json"
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        {
+          "enum": [
+            "food-concept.json",
+            "allergen.json",
+            "religious-ethical.json",
+            "food-safety.json",
+            "cooking-technique.json"
+          ]
+        }
       ]
     },
     "index": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
@@ -73,27 +112,34 @@
       "additionalProperties": false,
       "required": ["operation", "releaseIndex", "envelopeIndex", "field", "value"],
       "properties": {
-        "operation": { "const": "set" },
+        "operation": {
+          "allOf": [{ "$ref": "#/$defs/scalarString" }, { "const": "set" }]
+        },
         "releaseIndex": { "$ref": "#/$defs/index" },
         "envelopeIndex": { "$ref": "#/$defs/index" },
         "field": {
-          "enum": [
-            "sourceReferences",
-            "sourceSnapshots",
-            "aliases",
-            "applicableRegions",
-            "languages",
-            "licenseStatus",
-            "licenseReference",
-            "entityId",
-            "lifecycleStatus",
-            "withdrawalState",
-            "withdrawalReason",
-            "withdrawnAt",
-            "contentDigest"
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            {
+              "enum": [
+                "sourceReferences",
+                "sourceSnapshots",
+                "aliases",
+                "applicableRegions",
+                "languages",
+                "licenseStatus",
+                "licenseReference",
+                "entityId",
+                "lifecycleStatus",
+                "withdrawalState",
+                "withdrawalReason",
+                "withdrawnAt",
+                "contentDigest"
+              ]
+            }
           ]
         },
-        "value": {}
+        "value": { "$ref": "#/$defs/jsonValue" }
       }
     },
     "duplicateEnvelopeMutation": {
@@ -108,15 +154,19 @@
         "aliasValue"
       ],
       "properties": {
-        "operation": { "const": "duplicate_envelope" },
+        "operation": {
+          "allOf": [{ "$ref": "#/$defs/scalarString" }, { "const": "duplicate_envelope" }]
+        },
         "releaseIndex": { "$ref": "#/$defs/index" },
         "envelopeIndex": { "$ref": "#/$defs/index" },
-        "entityId": {
-          "type": "string",
-          "pattern": "^01900000-7000-7000-8000-0000000000[0-9]{2}$"
+        "entityId": { "$ref": "#/$defs/uuidV7" },
+        "syntheticToken": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "type": "string", "pattern": "^SYNTHETIC_[A-Z0-9_]+$" }
+          ]
         },
-        "syntheticToken": { "type": "string", "pattern": "^SYNTHETIC_[A-Z0-9_]+$" },
-        "aliasValue": { "type": "string", "minLength": 1 }
+        "aliasValue": { "$ref": "#/$defs/nonEmptyString" }
       }
     },
     "reference": {
@@ -124,11 +174,13 @@
       "additionalProperties": false,
       "required": ["datasetId", "entityId", "entityRevision"],
       "properties": {
-        "datasetId": { "type": "string", "pattern": "^syn:dataset:" },
-        "entityId": {
-          "type": "string",
-          "pattern": "^01900000-7000-7000-8000-0000000000[0-9]{2}$"
+        "datasetId": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "type": "string", "pattern": "^syn:dataset:" }
+          ]
         },
+        "entityId": { "$ref": "#/$defs/uuidV7" },
         "entityRevision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
       }
     },
@@ -137,7 +189,12 @@
       "additionalProperties": false,
       "required": ["mappingId", "source", "target", "required"],
       "properties": {
-        "mappingId": { "type": "string", "pattern": "^syn:mapping:" },
+        "mappingId": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "type": "string", "pattern": "^syn:mapping:" }
+          ]
+        },
         "source": { "$ref": "#/$defs/reference" },
         "target": { "$ref": "#/$defs/reference" },
         "required": { "const": true }

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["envelopes"],
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": { "$ref": "#/$defs/nonEmptyString" },
     "envelopes": {
       "type": "array",
       "minItems": 1,
@@ -14,8 +14,14 @@
     }
   },
   "$defs": {
-    "nonEmptyString": { "type": "string", "minLength": 1 },
-    "unicodeScalarString": { "type": "string", "format": "unicode-scalar" },
+    "scalarString": { "type": "string", "format": "unicode-scalar" },
+    "nonEmptyString": {
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "unicodeScalarString": { "$ref": "#/$defs/scalarString" },
     "jsonValue": {
       "oneOf": [
         { "type": "null" },
@@ -34,11 +40,27 @@
       ]
     },
     "positiveRevision": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
-    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "digest": {
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      ]
+    },
+    "uuidV7": {
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" }
+      ]
+    },
     "timestamp": {
-      "type": "string",
-      "format": "canonical-utc-instant",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+      "allOf": [
+        { "$ref": "#/$defs/scalarString" },
+        {
+          "type": "string",
+          "format": "canonical-utc-instant",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        }
+      ]
     },
     "actor": {
       "type": "object",
@@ -55,10 +77,7 @@
       "required": ["datasetId", "entityId", "entityRevision"],
       "properties": {
         "datasetId": { "$ref": "#/$defs/nonEmptyString" },
-        "entityId": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        },
+        "entityId": { "$ref": "#/$defs/uuidV7" },
         "entityRevision": { "$ref": "#/$defs/positiveRevision" }
       }
     },
@@ -107,11 +126,20 @@
         "purpose"
       ],
       "properties": {
-        "classification": { "const": "fully_synthetic" },
-        "generator": { "const": "stage09p-m0-fixture-v1" },
+        "classification": {
+          "allOf": [{ "$ref": "#/$defs/scalarString" }, { "const": "fully_synthetic" }]
+        },
+        "generator": {
+          "allOf": [{ "$ref": "#/$defs/scalarString" }, { "const": "stage09p-m0-fixture-v1" }]
+        },
         "containsRealUserData": { "const": false },
         "containsRealFoodFacts": { "const": false },
-        "purpose": { "const": "governance-format-and-fail-closed-testing-only" }
+        "purpose": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "const": "governance-format-and-fail-closed-testing-only" }
+          ]
+        }
       }
     },
     "governanceEnvelope": {
@@ -150,32 +178,57 @@
         "schemaVersion": { "const": 1 },
         "datasetId": { "$ref": "#/$defs/nonEmptyString" },
         "datasetKind": {
-          "enum": ["food_concept", "allergen", "religious_ethical", "food_safety", "cooking_technique"]
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "enum": ["food_concept", "allergen", "religious_ethical", "food_safety", "cooking_technique"] }
+          ]
         },
         "releaseId": { "$ref": "#/$defs/nonEmptyString" },
         "releaseRevision": { "$ref": "#/$defs/positiveRevision" },
         "contentDigest": { "$ref": "#/$defs/digest" },
-        "entityId": { "$ref": "#/$defs/reference/properties/entityId" },
+        "entityId": { "$ref": "#/$defs/uuidV7" },
         "entityRevision": { "$ref": "#/$defs/positiveRevision" },
         "lifecycleStatus": {
-          "enum": ["draft", "under_review", "approved", "active", "superseded", "withdrawn"]
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "enum": ["draft", "under_review", "approved", "active", "superseded", "withdrawn"] }
+          ]
         },
         "owner": { "$ref": "#/$defs/actor" },
         "approvers": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/actor" } },
-        "sourceTier": { "enum": ["L1", "L2", "L3", "L4"] },
+        "sourceTier": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "enum": ["L1", "L2", "L3", "L4"] }
+          ]
+        },
         "sourceReferences": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceReference" } },
         "sourceSnapshots": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/sourceSnapshot" } },
         "applicableRegions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
         "languages": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/nonEmptyString" } },
-        "licenseStatus": { "enum": ["approved", "restricted", "pending", "rejected"] },
-        "licenseReference": { "type": ["string", "null"] },
+        "licenseStatus": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "enum": ["approved", "restricted", "pending", "rejected"] }
+          ]
+        },
+        "licenseReference": {
+          "oneOf": [{ "$ref": "#/$defs/nonEmptyString" }, { "type": "null" }]
+        },
         "retrievedAt": { "$ref": "#/$defs/timestamp" },
         "reviewedAt": { "$ref": "#/$defs/timestamp" },
         "reviewDueAt": { "$ref": "#/$defs/timestamp" },
         "aliases": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/alias" } },
         "supersededBy": { "oneOf": [{ "$ref": "#/$defs/reference" }, { "type": "null" }] },
-        "withdrawalState": { "enum": ["not_withdrawn", "withdrawn"] },
-        "withdrawalReason": { "type": ["string", "null"] },
+        "withdrawalState": {
+          "allOf": [
+            { "$ref": "#/$defs/scalarString" },
+            { "enum": ["not_withdrawn", "withdrawn"] }
+          ]
+        },
+        "withdrawalReason": {
+          "oneOf": [{ "$ref": "#/$defs/nonEmptyString" }, { "type": "null" }]
+        },
         "withdrawnAt": { "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }] },
         "content": { "$ref": "#/$defs/jsonValue" },
         "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
@@ -210,7 +263,12 @@
             "properties": {
               "licenseStatus": { "const": "approved" },
               "licenseReference": { "$ref": "#/$defs/nonEmptyString" },
-              "sourceTier": { "enum": ["L1", "L2", "L3"] }
+              "sourceTier": {
+                "allOf": [
+                  { "$ref": "#/$defs/scalarString" },
+                  { "enum": ["L1", "L2", "L3"] }
+                ]
+              }
             }
           }
         }
