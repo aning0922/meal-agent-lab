@@ -6,9 +6,9 @@
 
 **当前阶段 09A Accepted 事实（2026-08-22，覆盖本文所有旧 M5/09A “当前”段落）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与最终动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main push run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 `stage09a:check` 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由项目总控记为 **Accepted / Pass**，冻结面不因 09P 规划而改变。ADR-0005 与 ADR-0006 均保持 `Accepted`。
 
-**阶段 09P 规划 Accepted / 实施 In Progress（2026-08-24）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`。09P-M0 Round 2 架构整改已追加实现提交 `f2abf80` 与门禁提交 `758cba0`；Round 2.1 以提交 `92da64a` 将 M0 checker 的 Ajv、TypeScript 与 domain dist 接线收敛为静态字面量 import，不修改既有 M5 production capability guard。当前状态只能是 **M0 Round 2.1 implementation complete, pending total-control review**，不是 Accepted/Pass。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向保持 `Accepted`；本轮没有导入真实知识数据、创建 migration 或启用外部能力。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
+**阶段 09P 规划 Accepted / 实施 In Progress（2026-08-24）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`。09P-M0 Round 2 架构整改已追加实现提交 `f2abf80` 与门禁提交 `758cba0`；Round 2.1 以提交 `92da64a` 将 M0 checker 的 Ajv、TypeScript 与 domain dist 接线收敛为静态字面量 import，不修改既有 M5 production capability guard。Round 3 以实现提交 `8f88b45dc3aca3ff39b45e91b8e8949a7625349a` 闭合 total decoder、lossless JSON snapshot、governance chronology 与 recursive evidence surface。当前状态只能是 **M0 Round 3 implementation complete, pending total-control review**，不是 Accepted/Pass。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向保持 `Accepted`；本轮没有导入真实知识数据、创建 migration 或启用外部能力。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
 
-**09P-M0 Round 2.1 实施候选事实（pending total-control review）**：纯 TypeScript
+**09P-M0 Round 3 实施候选事实（pending total-control review）**：纯 TypeScript
 `@meal-agent/domain`，生产源码只依赖纯 JavaScript `@noble/hashes`，不依赖
 Fastify、Drizzle、Taro、Node I/O、数据库或模型 SDK，也不定义 HTTP DTO、数据库 row
 或副作用接口。统一 `GovernanceEnvelope` 覆盖 owner/approvers、source tier/reference/
@@ -23,7 +23,15 @@ resolver 的 raw 兼容入口每次完整 decode+validate，失败 release 不�
 invalid fixture 除 digest mismatch 外先重算 canonical release digest，每份只允许一个
 预期失败码。Round 2.1 的 scope checker 仅用静态字面量 import 取得 Ajv 2020、TypeScript
 compiler API 与 `packages/domain/dist/index.js`；根 workspace 精确复用 `ajv@8.20.0` 和
-`typescript@5.9.3`，没有增加第二版本，也没有放宽 M5 capability policy。M0 不包含运行时
+`typescript@5.9.3`，没有增加第二版本，也没有放宽 M5 capability policy。Round 3 将两条
+JSON text 入口收敛为不强制转换、私有 failure identity 的 total boundary；任意合法 JSON
+property name 被无损复制，`__proto__` 不再与空 content 摘要碰撞。runtime 新增每个 snapshot
+`retrievedAt <= reviewedAt <= reviewDueAt` 的时序闭包；Schema 与 runtime 通过原有 15 项
+fixture matrix 和新增 30 项、30 个 distinct input 的递归 JSON/Unicode boundary matrix
+逐项对照。valid/invalid/schema/source/test 由同一递归 surface inventory 派生，正式 scope
+suite 为 **10/10**，domain tests 为 **24/24**，skip/todo 均为 0；nested file、directory、
+symlink、Unicode guard、parity 空转及 domain guard 删除都有目标语义 mutation witness。
+M0 不包含运行时
 Recommendation 安全决策；下一门禁是总控在精确候选上复验
 后新建独立只读 Audit A，当前没有自行创建审计任务。
 
@@ -1018,8 +1026,9 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   的规划/架构方向已 `Accepted`；本轮 M0 实施授权只覆盖完全合成治理内核，不授权真实
   数据、migration 或外部能力。
 - 首个里程碑：09P-M0“数据治理契约与合成 fail-closed 内核”，Round 2 实现提交
-  `f2abf80`、门禁提交 `758cba0`；Round 2.1 静态门禁兼容提交 `92da64a`。当前为
-  **M0 Round 2.1 implementation complete,
+  `f2abf80`、门禁提交 `758cba0`；Round 2.1 静态门禁兼容提交 `92da64a`；Round 3
+  架构整改实现提交 `8f88b45dc3aca3ff39b45e91b8e8949a7625349a`。当前为
+  **M0 Round 3 implementation complete,
   pending total-control review**，等待总控复验后创建全新独立 Audit A，不自行 Accepted。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。

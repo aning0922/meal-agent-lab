@@ -22,7 +22,7 @@
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 已于 2026-08-23 Accepted，但只接受治理与架构方向。09P-M0 治理内核当前为
-**M0 Round 2 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
+**M0 Round 3 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
 仍未开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 必须共用
 以下治理信封：
 
@@ -63,8 +63,11 @@ M0 不是靠文件名或人工声明证明 synthetic。`pnpm stage09p:m0:check` 
   都有 exact key/leaf registry；M0 content 只能是单键 `{ "syntheticToken": "SYNTHETIC_*" }`。
   增加 `uncheckedExternalFact` 或任何未登记叶值，即使保留 synthetic 自报字段，也会转红。
 - 两份 Schema 由独立 Ajv 2020-12 validator 编译执行；5 valid、10 materialized invalid
-  与 domain runtime 形成 15-case matrix。scope/schema/synthetic/capability/manifest 五类
-  判据各有一个在仓库外临时副本运行的 mutation witness。
+  与 domain runtime 形成 15-case fixture matrix，另有精确 30 项、30 个 distinct input 的
+  JSON boundary matrix，递归覆盖 key/value、嵌套 JSON、特殊 property name 与 Unicode
+  scalar。valid/invalid/schema/source/test surface 统一递归枚举，nested file、directory、
+  symlink 或特殊节点均 fail closed；10 项正式 mutation suite 含 manifest、synthetic、
+  capability、schema、Unicode/parity 与 domain 关键 guard 的实际删除/弱化反例。
 
 这些样本只证明治理格式和 fail-closed 行为，不含真实家庭、健康、儿童、消费、食品、
 allergen、宗教/伦理、安全、烹饪或菜谱事实，也不授权 M1 数据发布。

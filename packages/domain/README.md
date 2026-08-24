@@ -24,9 +24,12 @@ Recipe、Recommendation、Meal、Shopping、库存写入或运行时安全决策
 raw object 不被视为治理事实。唯一解码层逐层只复制 own data descriptor，要求 exact
 string keys、标准 prototype 与致密数组，拒绝 accessor、symbol、额外数组属性、循环、
 `undefined`、Date、非有限 number、`-0`、null/custom prototype 和非法 Unicode scalar，并生成 deep-frozen
-品牌快照。JS 对 Proxy 的反射操作仍可能触发 trap；这里不声称“零 trap”，只保证 trap
-抛错或异常 shape 被折叠为固定 `INVALID_SHAPE`，不回显调用方异常。正式外部入口优先
-使用 JSON text → `JSON.parse` → strict decode。
+品牌快照。JSON text 公共入口先拒绝所有非 primitive string，不执行调用方 `toString`、
+`valueOf` 或 `Symbol.toPrimitive`；内部 failure identity 为模块私有，不从 hostile exception
+读取属性。任意合法 JSON key（含 `__proto__`、空串、NUL 与 astral scalar）均以 own data
+property 无损复制。JS 对 Proxy 的反射操作仍可能触发 trap；这里不声称“零 trap”，只保证
+trap 抛错或异常 shape 被折叠为固定 `INVALID_SHAPE`，不回显调用方异常。正式外部入口优先
+使用 JSON text → `JSON.parse` → strict decode；两个 JSON 入口均为不抛出的 total boundary。
 
 alias identity 先拒绝 C0/C1 控制字符，再执行 NFC、Unicode `trim()` 和不带 locale 的
 `toLowerCase()`；region、language 与精确 `sourceReferenceId + sourceReferenceRevision`
@@ -50,6 +53,11 @@ identity、重复 entity revision、跨 dataset 复用 entity ID、多 exact can
 品牌索引；兼容 raw catalog 时会先完整 strict decode+validate。`required: false` 的 hard
 mapping 只作描述，不阻断 catalog；`required: true` 的 source/target 必须精确 mapped。
 
+每个 `sourceSnapshot.retrievedAt` 必须不晚于对应 envelope 的 `reviewedAt`，并继续要求
+`reviewedAt <= reviewDueAt`；相等边界允许。JSON Schema 负责 canonical UTC timestamp 的
+字符串 shape，跨字段 chronology 由 runtime validator fail closed 执行，不能把 Schema
+shape 当作时序证明。
+
 ## 校验与反例
 
 五份 valid release 和十份单一原因 invalid fixture 位于
@@ -59,9 +67,14 @@ release digest。因此删除对应的来源、许可、地区、语言、别名
 hard mapping 校验，会让该用例不再产生唯一预期错误码并直接转红，不会被顺带的 digest
 错误掩盖。
 
-`pnpm stage09p:m0:check` 还真实编译并执行两份 Draft 2020-12 JSON Schema，并以仓库外
-临时副本运行 scope/schema/synthetic/capability/manifest 五类 mutation witness。生产
-源码能力检查使用 TypeScript AST 与相对模块图，字符串和注释中的敏感词不会造成假判。
+`pnpm stage09p:m0:check` 还真实编译并执行两份 Draft 2020-12 JSON Schema，以 15 项 fixture
+matrix 和精确 30 项 JSON boundary matrix 对照 runtime。Schema 的递归 JSON value 对 key
+与 string value 使用同一 Unicode scalar 边界，拒绝 lone surrogate、接受合法 surrogate
+pair/astral scalar。valid/invalid/schema/source/test surface 由同一递归 inventory 派生；
+nested file、directory、symlink 与特殊节点不能绕过 manifest、synthetic registry、Schema
+compile 或 AST/module graph。10 项 mutation suite 包含实际删除 total decoder、safe copy、
+comparator tie-break 与 snapshot chronology guard 的 domain 回归。生产源码能力检查使用
+TypeScript AST 与相对模块图，字符串和注释中的敏感词不会造成假判。
 
 ```bash
 PATH=/Users/aipuli/.nvm/versions/node/v24.18.0/bin:$PATH \
