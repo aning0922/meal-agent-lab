@@ -31,6 +31,12 @@ property 无损复制。JS 对 Proxy 的反射操作仍可能触发 trap；这�
 trap 抛错或异常 shape 被折叠为固定 `INVALID_SHAPE`，不回显调用方异常。正式外部入口优先
 使用 JSON text → `JSON.parse` → strict decode；两个 JSON 入口均为不抛出的 total boundary。
 
+职责分层是显式的：decoder 只证明 shape、own-property 与安全物化边界；Draft 2020-12
+Schema 证明 type/enum/pattern/UUID/digest/timestamp 等词法与结构约束；最终 runtime
+validator 闭合跨字段时序、digest、lifecycle、catalog identity 和 hard mapping 语义。
+因此证据不会要求 decoder 与 Schema 对 UUID、digest、timestamp 或 mapping namespace
+产生相同结论；对外可接受集合由 Schema 与最终 validator 对齐。
+
 alias identity 先拒绝 C0/C1 控制字符，再执行 NFC、Unicode `trim()` 和不带 locale 的
 `toLowerCase()`；region、language 与精确 `sourceReferenceId + sourceReferenceRevision`
 共同约束来源。规范化冲突和同实体重复 alias 都 fail closed。
@@ -52,6 +58,8 @@ identity、重复 entity revision、跨 dataset 复用 entity ID、多 exact can
 或 lifecycle/source/license 失败都会阻止索引发布。`resolveGovernedReference()` 可接收该
 品牌索引；兼容 raw catalog 时会先完整 strict decode+validate。`required: false` 的 hard
 mapping 只作描述，不阻断 catalog；`required: true` 的 source/target 必须精确 mapped。
+所有 hard mapping 的 `mappingId` 在最终 validation 中也必须满足 `^syn:mapping:`，不能
+仅凭 decoder 的 non-empty shape 进入 validated catalog。
 
 每个 `sourceSnapshot.retrievedAt` 必须不晚于对应 envelope 的 `reviewedAt`，并继续要求
 `reviewedAt <= reviewDueAt`；相等边界允许。JSON Schema 负责 canonical UTC timestamp 的
@@ -68,16 +76,19 @@ hard mapping 校验，会让该用例不再产生唯一预期错误码并直接�
 错误掩盖。
 
 `pnpm stage09p:m0:check` 还真实编译并执行两份 Draft 2020-12 JSON Schema，以 15 项 fixture
-matrix、精确 30 项 JSON boundary matrix 和 51 项治理字符串词法 matrix 对照 runtime。
+matrix、精确 30 项 JSON boundary matrix 和 51 项治理字符串分层 matrix 对照 runtime。
 Schema 中所有字符串定义族先复用同一 Unicode scalar base，再叠加 enum、pattern、format
 或长度语义；Ajv raw/parsed 与 runtime raw/text 一致拒绝 lone surrogate、接受合法
 surrogate pair/astral scalar。valid/invalid/schema/source/test surface 由同一递归 inventory 派生；
 nested file、directory、symlink 与特殊节点不能绕过 manifest、synthetic registry、Schema
 compile 或 AST/module graph。scope suite 分别硬钉 case count、ID distinct、material-input
-distinct、Schema/runtime parity 和 oracle success，并为每个 guard 执行独立删除 witness。
-生产源码能力检查使用 TypeScript declaration identity 与受限 AST grammar，只允许精确
-静态模块和已盘点纯计算调用；动态模块、原型链能力取得、敏感 computed key 与无法归类
-的 call/new/tagged template 均 fail closed，字符串和注释中的敏感词不会造成假判。
+distinct、声明的 layering policy 和 oracle completeness，并为每个 guard 执行独立删除
+witness。Schema closure 递归覆盖对象与数组中的 `$ref`、`allOf`、`oneOf`、`items`、
+`additionalProperties`、`propertyNames`、string `const` 与 string `enum`，八类各有固定理由。
+生产源码能力检查使用 TypeScript declaration identity、值来源/provenance 与精确 public
+export registry，只允许静态模块和已盘点纯计算调用；动态模块、反射取得、类型擦除冒充、
+原型链能力、未批准 global、敏感 computed key、未登记 re-export 与无法归类的
+call/new/tagged template 均 fail closed，字符串和注释中的敏感词不会造成假判。
 
 ```bash
 PATH=/Users/aipuli/.nvm/versions/node/v24.18.0/bin:$PATH \

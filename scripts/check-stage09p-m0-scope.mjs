@@ -370,6 +370,8 @@ const allowedChangedPath = (path) =>
   path === 'README.md' ||
   path === 'docs/README.md' ||
   path === 'docs/project-status.md' ||
+  path === 'docs/plans/2026-08-stage-09p-safe-deterministic-product-core.md' ||
+  path === 'docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md' ||
   path === 'package.json' ||
   path === 'pnpm-workspace.yaml' ||
   path === 'pnpm-lock.yaml' ||
@@ -1854,7 +1856,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `${manifests.valid.length + manifests.invalid.length} fixture parity + ` +
       `${boundaryStats.count} JSON boundary parity cases / ${boundaryStats.uniqueIds} unique IDs / ` +
       `${boundaryStats.uniqueMaterials} unique material inputs + ${stringStats.count} governance ` +
-      `string parity cases / ${stringStats.uniqueIds} unique IDs / ` +
+      `string layered cases / ${stringStats.uniqueIds} unique IDs / ` +
       `${stringStats.uniqueMaterials} unique material inputs / ${stringLayerStats.executed} complete ` +
       `layer oracles; layer accepts ajv-raw=${stringLayerStats.accepts.ajvRaw}, ` +
       `ajv-text=${stringLayerStats.accepts.ajvText}, decoder-raw=${stringLayerStats.accepts.decoderRaw}, ` +

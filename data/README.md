@@ -22,7 +22,7 @@
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 已于 2026-08-23 Accepted，但只接受治理与架构方向。09P-M0 治理内核当前为
-**M0 Round 4 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
+**M0 Round 5 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
 仍未开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 必须共用
 以下治理信封：
 
@@ -65,10 +65,13 @@ M0 不是靠文件名或人工声明证明 synthetic。`pnpm stage09p:m0:check` 
 - 两份 Schema 由独立 Ajv 2020-12 validator 编译执行；5 valid、10 materialized invalid
   与 domain runtime 形成 15-case fixture matrix；精确 30 项 JSON boundary matrix 保持
   30 个 distinct ID / 30 个 distinct material input；另有 51 项治理字符串词法 matrix，
-  四条 raw/text + Ajv/runtime 路径共同拒绝 lone surrogate 并接受合法 astral scalar。
+  分别记录 Ajv raw/parsed、shape decoder raw/JSON 与 final runtime validator。decoder 只证明
+  可安全物化，UUID/digest/timestamp/pattern 等 Schema 词法与最终语义不会伪装成 decoder
+  职责；51 项的 count/ID/material/layering/oracle 五个门分别取证。
   valid/invalid/schema/source/test surface 统一递归枚举，nested file、directory、symlink
   或特殊节点均 fail closed；正式 13-test scope suite 含 manifest、synthetic、受限 AST
-  capability、Schema 字符串族、parity 五类独立 guard 与 domain 关键 guard 的真实删除/
+  capability provenance/public export、Schema 八类递归 closure、parity 五类独立 guard
+  与 domain 关键 guard 的真实删除/
   弱化反例。
 
 这些样本只证明治理格式和 fail-closed 行为，不含真实家庭、健康、儿童、消费、食品、

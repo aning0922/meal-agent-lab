@@ -4,7 +4,7 @@
 
 - [`domain/`](domain/README.md)：阶段 09P-M0 的纯 TypeScript 治理信封、canonical
   digest、strict decode、validated catalog index、引用解析与合成 fail-closed 规则；
-  Round 4 implementation complete, pending total-control review，不含后续
+  Round 5 implementation complete, pending total-control review，不含后续
   Recipe/Recommendation/Meal/Shopping 业务，也未 Accepted。
 - [`contracts/`](contracts/README.md)：正式 API、实体快照、事件和校验契约；同时提供 Zod schema 与推导的 TypeScript 类型。
 - `ui/`：设计令牌和可跨端复用的 UI 约定。

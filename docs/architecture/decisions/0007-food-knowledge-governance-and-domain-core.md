@@ -11,6 +11,13 @@
 不授权创建 `packages/domain`、导入真实数据、实施 M0、创建 migration 或启用任何
 外部能力。
 
+> 实施注记（2026-08-24）：上句记录本 ADR 在规划验收时的授权边界。后续总控已单独
+> 授权 M0；Round 5 当前把 decoder（shape/safe materialization）、Schema
+>（lexical/structural）与 final runtime validator（跨字段与 catalog 语义）分层，并为
+> 递归 Schema closure、capability provenance/public exports 和 51-case 治理字符串证据
+> 建立独立 fail-closed 门禁。当前仍仅为 **implementation complete, pending
+> total-control review**，不改变本 ADR 的 Accepted 范围，也不表示 M0 Accepted。
+
 ## 背景
 
 当前系统已经实现家庭、成员/PersonProfile、hard constraint 登记、字段级 redaction、

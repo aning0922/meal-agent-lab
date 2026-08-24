@@ -2,14 +2,20 @@
 
 - 日期：2026-08-23
 - 优先级：P0
-- 状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；implementation not started**
+- 状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；delivery In Progress；M0 Round 5 implementation complete, pending total-control review**
 - 规划基线：`23450a1f3508e8030d753748291d265ad308df05`
 - 关联决策：[ADR-0007：食品知识治理与确定性领域核心](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)（`Accepted`，仅规划/架构方向）
 - 前置阶段：[阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)（`Accepted / Pass`）
 
 本文件固化阶段 09P 的范围、依赖、门禁和实施顺序。规划已由总控 Accepted，ADR-0007
 的规划/架构方向同时被接受；这**不表示阶段 09P 实施、任何里程碑或外部能力已
-Accepted / Pass**。首个未来实施里程碑 09P-M0 当前仍为 `Not started`。
+Accepted / Pass**。M0 当前只有 Round 5 implementation candidate，仍待总控复验。
+
+> 实施事实更新（2026-08-24）：上述 `implementation not started` 是规划验收时状态。
+> 当前 delivery 为 **In Progress**；09P-M0 Round 5 已实现 decode shape、Schema
+> lexical/structural 与 final runtime validation 的分层证据、八类递归 Schema closure、
+> capability provenance/public export closure 和治理字符串五轴门禁，状态仅为
+> **M0 Round 5 implementation complete, pending total-control review**，未 Accepted。
 
 ## 1. 事实基线与双轨命名
 
