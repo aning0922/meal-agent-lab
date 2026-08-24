@@ -207,6 +207,10 @@ test("strict decoding rejects every non-JSON or non-exact shape and deep-freezes
   Object.defineProperty(symbolKey, Symbol("hidden"), { value: true });
   cases.push(symbolKey);
 
+  const nullPrototype = structuredClone(validRelease()) as unknown as object;
+  Object.setPrototypeOf(nullPrototype, null);
+  cases.push(nullPrototype);
+
   const sparse = structuredClone(validRelease());
   delete (sparse.envelopes as unknown as Record<number, unknown>)[0];
   cases.push(sparse);
@@ -396,4 +400,62 @@ test("optional hard mappings are descriptive while required mappings fail closed
   });
   assert.equal(required.ok, false);
   assert.equal(required.issues.some(({ code }) => code === "HARD_MAPPING_UNRESOLVED"), true);
+});
+
+test("independent governance negatives retain safe stable codes and paths", () => {
+  const assertOnlyIssue = (
+    release: GovernanceRelease,
+    code: string,
+    path: string,
+  ): void => {
+    setDigest(release);
+    const result = validateGovernanceRelease(release);
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.issues, [{ code, path }]);
+  };
+
+  const unapprovedSource = structuredClone(validRelease());
+  (unapprovedSource.envelopes[0] as unknown as Record<string, unknown>)["sourceTier"] = "L4";
+  assertOnlyIssue(unapprovedSource, "UNAPPROVED_SOURCE", "envelopes/0/sourceTier");
+
+  const ownerApproverCollision = structuredClone(validRelease());
+  const collisionEnvelope = ownerApproverCollision.envelopes[0];
+  assert.ok(collisionEnvelope !== undefined);
+  (collisionEnvelope.approvers[0] as unknown as Record<string, unknown>)["actorId"] =
+    collisionEnvelope.owner.actorId;
+  assertOnlyIssue(ownerApproverCollision, "INVALID_SHAPE", "envelopes/0/approvers");
+
+  const missingWithdrawalReason = structuredClone(validRelease());
+  const withdrawalEnvelope = missingWithdrawalReason.envelopes[0];
+  assert.ok(withdrawalEnvelope !== undefined);
+  Object.assign(withdrawalEnvelope, {
+    lifecycleStatus: "withdrawn",
+    withdrawalState: "withdrawn",
+    withdrawalReason: null,
+    withdrawnAt: "2000-01-03T00:00:00.000Z",
+  });
+  assertOnlyIssue(missingWithdrawalReason, "INVALID_LIFECYCLE", "envelopes/0/lifecycleStatus");
+
+  const invalidSupersededTarget = structuredClone(validRelease());
+  const supersededEnvelope = invalidSupersededTarget.envelopes[0];
+  assert.ok(supersededEnvelope !== undefined);
+  Object.assign(supersededEnvelope, {
+    lifecycleStatus: "superseded",
+    supersededBy: {
+      datasetId: "syn:dataset:food-concept",
+      entityId: "not-a-uuid-v7",
+      entityRevision: 2,
+    },
+  });
+  assertOnlyIssue(invalidSupersededTarget, "INVALID_LIFECYCLE", "envelopes/0/lifecycleStatus");
+
+  const ambiguousAlias = structuredClone(validRelease());
+  (ambiguousAlias.envelopes[0]?.aliases[0] as unknown as Record<string, unknown>)["value"] =
+    "SYNTHETIC_ALIAS\u0000CONTROL";
+  assertOnlyIssue(ambiguousAlias, "INVALID_SHAPE", "envelopes/0/aliases");
+
+  const reversedReviewWindow = structuredClone(validRelease());
+  (reversedReviewWindow.envelopes[0] as unknown as Record<string, unknown>)["reviewedAt"] =
+    "2099-01-02T00:00:00.000Z";
+  assertOnlyIssue(reversedReviewWindow, "INVALID_SHAPE", "envelopes/0/reviewedAt");
 });

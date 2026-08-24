@@ -64,7 +64,7 @@ const canonicalValue = (value: unknown, ancestors: Set<object>): string => {
       return `[${items.join(",")}]`;
     }
     const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) throw new TypeError("INVALID_SHAPE");
+    if (prototype !== Object.prototype) throw new TypeError("INVALID_SHAPE");
     const keys = Reflect.ownKeys(value);
     if (keys.some((key) => typeof key !== "string")) throw new TypeError("INVALID_SHAPE");
     const stringKeys = keys as string[];

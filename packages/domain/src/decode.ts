@@ -70,7 +70,7 @@ const dataObject = (
   if (typeof value !== "object" || value === null || Array.isArray(value)) fail(path);
   const objectValue = value as object;
   const prototype = Object.getPrototypeOf(objectValue);
-  if (prototype !== Object.prototype && prototype !== null) fail(path);
+  if (prototype !== Object.prototype) fail(path);
   const allowedSet = new Set(allowed);
   const keys = Reflect.ownKeys(objectValue);
   const values: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
@@ -145,7 +145,7 @@ const decodeJsonValue = (value: unknown, path: string, ancestors: Set<object>): 
       );
     }
     const prototype = Object.getPrototypeOf(objectValue);
-    if (prototype !== Object.prototype && prototype !== null) fail(path);
+    if (prototype !== Object.prototype) fail(path);
     const decoded: Record<string, JsonValue> = {};
     for (const key of Reflect.ownKeys(objectValue)) {
       if (typeof key !== "string" || invalidUnicodeScalar.test(key)) fail(path);
