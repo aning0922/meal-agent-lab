@@ -81,12 +81,17 @@ Schema 中所有字符串定义族先复用同一 Unicode scalar base，再叠�
 或长度语义；Ajv raw/parsed 与 runtime raw/text 一致拒绝 lone surrogate、接受合法
 surrogate pair/astral scalar。valid/invalid/schema/source/test surface 由同一递归 inventory 派生；
 nested file、directory、symlink 与特殊节点不能绕过 manifest、synthetic registry、Schema
-compile 或 AST/module graph。scope suite 分别硬钉 case count、ID distinct、material-input
-distinct、声明的 layering policy 和 oracle completeness，并为每个 guard 执行独立删除
-witness。Schema closure 递归覆盖对象与数组中的 `$ref`、`allOf`、`oneOf`、`items`、
+compile 或 AST/module graph。scope suite 对 content matrix 分别硬钉 case count、ID
+distinct、material-input distinct、声明的 layering policy 和 oracle completeness；治理
+字符串 matrix 另以固定 51-case ordered ID registry 将 ID uniqueness 与 stable
+registration 分开，总计六轴，并为每个 guard 执行独立删除 witness。Schema closure
+递归覆盖对象与数组中的 `$ref`、`allOf`、`oneOf`、`items`、
 `additionalProperties`、`propertyNames`、string `const` 与 string `enum`，八类各有固定理由。
 生产源码能力检查使用 TypeScript declaration identity、值来源/provenance 与精确 public
-export registry，只允许静态模块和已盘点纯计算调用；动态模块、反射取得、类型擦除冒充、
+export registry，只允许静态模块和已盘点纯计算调用；`any`/`unknown`/不兼容 assertion
+不能伪装审核过的 lib receiver，Reflect 的直接/别名/element access 均按声明来源识别，
+property descriptor 读取仅放行 decoder/canonicalizer 中精确登记的调用位置、参数来源、
+key 和 result consumption。动态模块、未审核反射取得、类型擦除冒充、
 原型链能力、未批准 global、敏感 computed key、未登记 re-export 与无法归类的
 call/new/tagged template 均 fail closed，字符串和注释中的敏感词不会造成假判。
 

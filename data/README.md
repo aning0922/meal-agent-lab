@@ -22,7 +22,7 @@
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 已于 2026-08-23 Accepted，但只接受治理与架构方向。09P-M0 治理内核当前为
-**M0 Round 5 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
+**M0 Round 5.1 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
 仍未开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 必须共用
 以下治理信封：
 
@@ -67,10 +67,11 @@ M0 不是靠文件名或人工声明证明 synthetic。`pnpm stage09p:m0:check` 
   30 个 distinct ID / 30 个 distinct material input；另有 51 项治理字符串词法 matrix，
   分别记录 Ajv raw/parsed、shape decoder raw/JSON 与 final runtime validator。decoder 只证明
   可安全物化，UUID/digest/timestamp/pattern 等 Schema 词法与最终语义不会伪装成 decoder
-  职责；51 项的 count/ID/material/layering/oracle 五个门分别取证。
+  职责；51 项的 exact count、ID uniqueness、冻结 ordered ID registry、unique material、
+  layering 与 oracle 六个门分别取证，不能用“51 个唯一 ID”替代稳定登记证明。
   valid/invalid/schema/source/test surface 统一递归枚举，nested file、directory、symlink
-  或特殊节点均 fail closed；正式 13-test scope suite 含 manifest、synthetic、受限 AST
-  capability provenance/public export、Schema 八类递归 closure、parity 五类独立 guard
+  或特殊节点均 fail closed；正式 17-test scope suite 含 manifest、synthetic、受限 AST
+  capability provenance/public export、Schema 八类递归 closure、parity 独立 guard
   与 domain 关键 guard 的真实删除/
   弱化反例。
 
