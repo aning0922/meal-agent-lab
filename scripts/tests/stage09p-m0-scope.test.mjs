@@ -33,6 +33,7 @@ import {
   jsonBoundaryCases,
   jsonBoundaryReasons,
   registeredDescriptorCallSites,
+  registeredDescriptorSiteContracts,
   registeredModuleExportSurfaces,
   repositoryRoot,
   schemaClosureReasons,
@@ -101,7 +102,8 @@ const runScopeCheckerMutation = ({
   witness,
   productionAppend = '',
   productionFile = 'types.ts',
-  mutateProduction = null
+  mutateProduction = null,
+  mutateFixture = null
 }) => {
   const root = fixtureRoot(
     'data/samples/stage09p-m0',
@@ -135,6 +137,7 @@ const runScopeCheckerMutation = ({
     assert.notEqual(productionMutant, productionSource, 'production mutation anchor disappeared')
     writeFileSync(productionPath, productionMutant)
   }
+  if (mutateFixture !== null) mutateFixture(root)
   const witnessPath = resolve(root, 'round4-mutation-witness.mjs')
   writeFileSync(
     witnessPath,
@@ -151,9 +154,9 @@ const runScopeCheckerMutation = ({
   })
 }
 
-const assertTargetedMutationFailure = (outcome, reason) => {
+const assertTargetedMutationFailure = (outcome, reason, label = reason) => {
   const output = `${outcome.stdout}${outcome.stderr}`
-  assert.equal(outcome.status, 1, output)
+  assert.equal(outcome.status, 1, `${label}\n${output}`)
   assert.match(output, new RegExp(reason.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   assert.doesNotMatch(
     output,
@@ -161,7 +164,7 @@ const assertTargetedMutationFailure = (outcome, reason) => {
   )
 }
 
-const capabilityFixtureFailures = (source, file = 'types.ts') => {
+const capabilityFixtureRoot = () => {
   const root = fixtureRoot(
     'packages/domain/package.json',
     'packages/domain/src',
@@ -173,8 +176,24 @@ const capabilityFixtureFailures = (source, file = 'types.ts') => {
     resolve(root, 'packages/domain/node_modules'),
     'dir'
   )
+  return root
+}
+
+const capabilityFixtureFailures = (source, file = 'types.ts') => {
+  const root = capabilityFixtureRoot()
   const path = resolve(root, 'packages/domain/src', file)
   writeFileSync(path, `${readFileSync(path, 'utf8')}\n${source}\n`)
+  return collectCapabilityFailures(root)
+}
+
+const capabilityExternalInputFailures = ({ declaration, referenceFile = 'canonical.ts' }) => {
+  const root = capabilityFixtureRoot()
+  const referencePath = resolve(root, 'packages/domain/src', referenceFile)
+  writeFileSync(
+    referencePath,
+    `/// <reference path="../round53-augmentation.d.ts" />\n${readFileSync(referencePath, 'utf8')}`
+  )
+  writeFileSync(resolve(root, 'packages/domain/round53-augmentation.d.ts'), declaration)
   return collectCapabilityFailures(root)
 }
 
@@ -558,6 +577,77 @@ void safeLiteral
 `), [])
 })
 
+test('Round 5.3 shorthand capability references are rejected before stored provenance can escape', () => {
+  const cases = [
+    ['shorthand-store', 'const box = { Reflect }; void box'],
+    [
+      'shorthand-member-forward',
+      'const box = { Reflect }; const member = box.Reflect.getOwnPropertyDescriptor; void member'
+    ],
+    [
+      'shorthand-pass',
+      'const sink = (value: unknown) => value; sink({ Reflect })'
+    ],
+    [
+      'shorthand-export',
+      'export const round53ShorthandBox = { Reflect }'
+    ]
+  ]
+  assert.equal(cases.length, 4)
+  assert.equal(new Set(cases.map(([id]) => id)).size, 4)
+  for (const [id, source] of cases) {
+    assert.ok(
+      capabilityFixtureFailures(source).includes(capabilityReasons.reflectiveAcquisition),
+      id
+    )
+  }
+  assert.deepEqual(capabilityFixtureFailures(`
+const safeOwnKeys = (value: object) => Reflect.ownKeys(value)
+const safePrototype = Object.getPrototypeOf({ synthetic: true })
+type SafeOwnKeys = typeof Reflect.ownKeys
+const safeLiteral = { mode: "SYNTHETIC" } as const
+void safeOwnKeys({})
+void safePrototype
+void safeLiteral
+`), [])
+})
+
+test('Round 5.3 compiler inputs and declaration augmentations equal the seven-module manifest', () => {
+  const compilerInputReason =
+    'domain TypeScript compiler inputs and augmentations must equal the seven-module registered manifest'
+  const relativeAugmentation = capabilityFixtureFailures(`
+declare module "./types.js" {
+  interface GovernanceActor {
+    readonly round53Augmented?: string
+  }
+}
+type Round53Visible = import("./types.js").GovernanceActor["round53Augmented"]
+void (null as unknown as Round53Visible)
+`, 'canonical.ts')
+  assert.ok(relativeAugmentation.includes(compilerInputReason))
+
+  const externalInput = capabilityExternalInputFailures({
+    declaration: 'interface Round53ExternalCompilerInput { readonly synthetic?: true }\n'
+  })
+  assert.ok(externalInput.includes(compilerInputReason))
+
+  const mergedLib = capabilityExternalInputFailures({
+    declaration: `interface ObjectConstructor {
+  getOwnPropertyDescriptor(
+    value: object,
+    key: PropertyKey,
+  ): PropertyDescriptor | undefined
+}
+`
+  })
+  assert.ok(mergedLib.includes(compilerInputReason))
+  assert.equal(
+    mergedLib.some((reason) =>
+      reason.includes('round53') || reason.includes('SENTINEL') || reason.includes('/')),
+    false
+  )
+})
+
 test('all seven production modules have an exact fixed export-surface registry', () => {
   const modules = Object.keys(registeredModuleExportSurfaces).sort()
   assert.deepEqual(modules, [
@@ -628,6 +718,40 @@ var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
     capabilityFixtureFailures('const syntacticallyBrokenRound52 =')
       .includes(capabilityReasons.syntaxDiagnostics)
   )
+})
+
+test('Round 5.3 descriptor contracts bind exact receiver, key, and complete result flow per site', () => {
+  assert.equal(registeredDescriptorSiteContracts.length, 7)
+  assert.equal(new Set(registeredDescriptorSiteContracts.map(({ site }) => site)).size, 7)
+  assert.deepEqual(
+    registeredDescriptorSiteContracts.map(({ site }) => site).sort(),
+    [...registeredDescriptorCallSites]
+  )
+  const receiverSubstitution = capabilityMutatedFileFailures('canonical.ts', (source) =>
+    source.replace(
+      'Object.getOwnPropertyDescriptor(value, "length")',
+      'Object.getOwnPropertyDescriptor(ancestors, "length")'
+    )
+  )
+  assert.ok(receiverSubstitution.includes(capabilityReasons.descriptorCallSite))
+
+  const keySubstitution = capabilityMutatedFileFailures('canonical.ts', (source) =>
+    source.replace(
+      'Object.getOwnPropertyDescriptor(value, key)',
+      'Object.getOwnPropertyDescriptor(value, "length")'
+    )
+  )
+  assert.ok(keySubstitution.includes(capabilityReasons.descriptorCallSite))
+
+  const resultFlowSubstitution = capabilityMutatedFileFailures('canonical.ts', (source) =>
+    source.replace(
+      '        items.push(canonicalValue(descriptor.value, ancestors));',
+      `        const continued = descriptor.value;
+        items.push(canonicalValue(continued, ancestors));`
+    )
+  )
+  assert.ok(resultFlowSubstitution.includes(capabilityReasons.descriptorCallSite))
+  assert.deepEqual(collectCapabilityFailures(), [])
 })
 
 test('schema mutation witness executes the same compiled 2020-12 contract checks', () => {
@@ -1248,8 +1372,13 @@ test('Round 5.2 acquisition, module, declaration, diagnostics, and call-site gua
       }`
   )
   const descriptorDeclarationSpoof = (source) =>
-    `${source.replace('const canonicalValue =', 'var canonicalValue =')}
-var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
+    `${source.replace('const dataObject =', 'var dataObject =')}
+var dataObject: (
+  value: unknown,
+  allowed: readonly string[],
+  required: readonly string[],
+  path: string,
+) => Readonly<Record<string, unknown>>;
 `
   const witnesses = [
     {
@@ -1278,7 +1407,7 @@ var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
     },
     {
       reason: capabilityReasons.descriptorCallSite,
-      productionFile: 'canonical.ts',
+      productionFile: 'decode.ts',
       mutateProduction: descriptorDeclarationSpoof,
       mutateChecker: (source) => source.replace(
         `  return symbol !== undefined && symbol.declarations?.length === 1 &&
@@ -1300,8 +1429,13 @@ var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
       mutateProduction: copiedDescriptorMutation,
       mutateChecker: (source) => source
         .replace(
-          '  if (fingerprint === null || !registeredDescriptorCallSites.includes(fingerprint)) return false',
-          '  if (fingerprint === null) return false'
+          '  if (expected === undefined || observed.callee !== expected.callee) return false',
+          `  if (expected === undefined) return true
+  if (observed.callee !== expected.callee) return false`
+        )
+        .replace(
+          '  if (observed.resultFlow !== expected.resultFlow) return false',
+          '  void observed.resultFlow'
         )
         .replace(
           `    /* guard:descriptor-call-site-exactness */
@@ -1314,7 +1448,7 @@ var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
     }
   ]
   assert.equal(witnesses.length, 6)
-  for (const current of witnesses) {
+  for (const [index, current] of witnesses.entries()) {
     const outcome = runScopeCheckerMutation({
       mutateChecker: current.mutateChecker,
       productionAppend: current.productionAppend,
@@ -1332,7 +1466,167 @@ assert.equal(
   ${JSON.stringify(current.reason)}
 )`
     })
-    assertTargetedMutationFailure(outcome, current.reason)
+    assertTargetedMutationFailure(outcome, current.reason, `Round 5.2 witness ${index + 1}`)
+  }
+})
+
+test('Round 5.3 shorthand, compiler-input, augmentation, descriptor contracts, and options guards have targeted witnesses', () => {
+  const compilerInputReason = capabilityReasons.compilerInput
+  const addExternalInput = (root, declaration) => {
+    const referencePath = resolve(root, 'packages/domain/src/canonical.ts')
+    writeFileSync(
+      referencePath,
+      `/// <reference path="../round53-witness.d.ts" />\n${readFileSync(referencePath, 'utf8')}`
+    )
+    writeFileSync(resolve(root, 'packages/domain/round53-witness.d.ts'), declaration)
+  }
+  const receiverMutation = (source) => source.replace(
+    'Object.getOwnPropertyDescriptor(value, "length")',
+    'Object.getOwnPropertyDescriptor(ancestors, "length")'
+  )
+  const keyMutation = (source) => source.replace(
+    'Object.getOwnPropertyDescriptor(value, key)',
+    'Object.getOwnPropertyDescriptor(value, "length")'
+  )
+  const resultFlowMutation = (source) => source.replace(
+    '        items.push(canonicalValue(descriptor.value, ancestors));',
+    `        const continued = descriptor.value;
+        items.push(canonicalValue(continued, ancestors));`
+  )
+  const witnesses = [
+    {
+      id: 'shorthand-reference',
+      reason: capabilityReasons.reflectiveAcquisition,
+      productionAppend: 'const round53Box = { Reflect }; void round53Box',
+      mutateChecker: (source) => source.replace(
+        `    ts.isPropertyAssignment(parent) && parent.name === node
+    /* guard:shorthand-reference-provenance */`,
+        `    ts.isPropertyAssignment(parent) && parent.name === node ||
+    ts.isShorthandPropertyAssignment(parent)
+    /* guard:shorthand-reference-provenance:weakened */`
+      )
+    },
+    {
+      id: 'compiler-input-manifest',
+      reason: compilerInputReason,
+      mutateFixture: (root) => addExternalInput(
+        root,
+        'interface Round53WitnessInput { readonly synthetic?: true }\n'
+      ),
+      mutateChecker: (source) => source.replace(
+        '    if (!compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {',
+        '    if (false && !compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {'
+      )
+    },
+    {
+      id: 'relative-module-augmentation',
+      reason: compilerInputReason,
+      productionFile: 'canonical.ts',
+      productionAppend: `declare module "./types.js" {
+  interface GovernanceActor { readonly round53Witness?: string }
+}
+type Round53WitnessVisible = import("./types.js").GovernanceActor["round53Witness"]
+void (null as unknown as Round53WitnessVisible)`,
+      mutateChecker: (source) => source.replace(
+        '    if (treeContainsDeclarationAugmentation(tree)) recordCompilerInputFailure(failures)',
+        '    if (false && treeContainsDeclarationAugmentation(tree)) recordCompilerInputFailure(failures)'
+      )
+    },
+    {
+      id: 'merged-lib-declaration',
+      reason: compilerInputReason,
+      mutateFixture: (root) => addExternalInput(root, `interface ObjectConstructor {
+  getOwnPropertyDescriptor(
+    value: object,
+    key: PropertyKey,
+  ): PropertyDescriptor | undefined
+}
+`),
+      mutateChecker: (source) => source
+        .replace(
+          '    if (!compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {',
+          '    if (false && !compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {'
+        )
+        .replace(
+          [
+            '  const identities = declarations.map(typescriptLibDeclarationIdentity)',
+            '  if (identities.some((identity) => identity === null)) return null',
+            "  return `${expectedName}|${identities.sort().join(',')}`"
+          ].join('\n'),
+          [
+            '  const identities = declarations.map(typescriptLibDeclarationIdentity)',
+            '    .filter((identity) => identity !== null)',
+            '  if (identities.length === 0) return null',
+            "  return `${expectedName}|${identities.sort().join(',')}`"
+          ].join('\n')
+        )
+    },
+    {
+      id: 'descriptor-receiver',
+      reason: capabilityReasons.descriptorCallSite,
+      productionFile: 'canonical.ts',
+      mutateProduction: receiverMutation,
+      mutateChecker: (source) => source.replace(
+        '  if (observed.receiver !== expected.receiver) return false',
+        '  void observed.receiver'
+      )
+    },
+    {
+      id: 'descriptor-key',
+      reason: capabilityReasons.descriptorCallSite,
+      productionFile: 'canonical.ts',
+      mutateProduction: keyMutation,
+      mutateChecker: (source) => source.replace(
+        '  if (observed.key !== expected.key) return false',
+        '  void observed.key'
+      )
+    },
+    {
+      id: 'descriptor-result-flow',
+      reason: capabilityReasons.descriptorCallSite,
+      productionFile: 'canonical.ts',
+      mutateProduction: resultFlowMutation,
+      mutateChecker: (source) => source.replace(
+        '  if (observed.resultFlow !== expected.resultFlow) return false',
+        '  void observed.resultFlow'
+      )
+    },
+    {
+      id: 'options-diagnostics',
+      reason: capabilityReasons.optionsDiagnostics,
+      mutateChecker: (source) => source
+        .replace('    module: ts.ModuleKind.NodeNext,', '    module: ts.ModuleKind.CommonJS,')
+        .replace(
+          '  failures.push(capabilityReasons.optionsDiagnostics)',
+          '  void failures'
+        )
+    }
+  ]
+  assert.equal(witnesses.length, 8)
+  assert.equal(new Set(witnesses.map(({ id }) => id)).size, 8)
+  for (const current of witnesses) {
+    const outcome = runScopeCheckerMutation({
+      mutateChecker: current.mutateChecker,
+      productionAppend: current.productionAppend,
+      productionFile: current.productionFile,
+      mutateProduction: current.mutateProduction,
+      mutateFixture: current.mutateFixture,
+      witness: `import {
+  capabilityReasons,
+  collectCapabilityFailures,
+  repositoryRoot
+} from './scripts/check-stage09p-m0-scope.mjs'
+const target = ${JSON.stringify(current.reason)}
+const failures = collectCapabilityFailures(repositoryRoot)
+if (failures.includes(target)) process.exit(0)
+if (failures.length !== 0) {
+  process.stderr.write('WRONG_REASON')
+  process.exit(2)
+}
+process.stderr.write(target)
+process.exit(1)`
+    })
+    assertTargetedMutationFailure(outcome, current.reason, current.id)
   }
 })
 

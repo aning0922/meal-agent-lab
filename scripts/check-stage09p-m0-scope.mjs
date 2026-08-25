@@ -2,7 +2,7 @@
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
-import { posix, resolve } from 'node:path'
+import { posix, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import Ajv2020 from 'ajv/dist/2020.js'
@@ -594,13 +594,16 @@ export const capabilityReasons = Object.freeze({
   descriptorCallSite: 'domain descriptor call sites must equal the registered declaration-identity structural fingerprints',
   moduleSurface: 'domain module export surfaces must equal the seven-module registered declarations',
   publicSurface: 'domain module export surfaces must equal the seven-module registered declarations',
+  compilerInput: 'domain TypeScript compiler inputs and augmentations must equal the seven-module registered manifest',
   syntaxDiagnostics: 'domain TypeScript program must have zero syntactic diagnostics',
   optionsDiagnostics: 'domain TypeScript program must have zero options diagnostics',
   semanticDiagnostics: 'domain TypeScript program must have zero semantic diagnostics'
 })
 
 const resolvedSymbol = (checker, node) => {
-  const symbol = checker.getSymbolAtLocation(node)
+  const symbol = ts.isIdentifier(node) && ts.isShorthandPropertyAssignment(node.parent)
+    ? checker.getShorthandAssignmentValueSymbol(node.parent)
+    : checker.getSymbolAtLocation(node)
   return symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0
     ? checker.getAliasedSymbol(symbol)
     : symbol
@@ -665,8 +668,8 @@ const isNonReferenceIdentifier = (node) => {
     ts.isExportSpecifier(parent) || ts.isPropertySignature(parent) || ts.isPropertyDeclaration(parent) ||
     ts.isTypeReferenceNode(parent) || ts.isLiteralTypeNode(parent) || ts.isExternalModuleReference(parent) ||
     ts.isPropertyAccessExpression(parent) && parent.name === node ||
-    ts.isPropertyAssignment(parent) && parent.name === node ||
-    ts.isShorthandPropertyAssignment(parent)
+    ts.isPropertyAssignment(parent) && parent.name === node
+    /* guard:shorthand-reference-provenance */
 }
 
 const nodeIsInTypePosition = (node) => {
@@ -710,20 +713,28 @@ const declarationIsLocalCallable = (declaration, sourceRoot) => {
     (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
 }
 
+const typescriptLibDeclarationIdentity = (declaration) => {
+  const match = /[/\\]typescript[/\\]lib[/\\](lib\.[^/\\]+\.d\.ts)$/u.exec(
+    declaration.getSourceFile().fileName
+  )
+  return match === null ? null : `${match[1]}:${ts.SyntaxKind[declaration.kind]}`
+}
+
+const exactTypescriptLibSymbolIdentity = (symbol, expectedName = symbol?.getName()) => {
+  if (symbol === undefined || symbol.getName() !== expectedName) return null
+  const declarations = symbol.declarations ?? []
+  if (declarations.length === 0) return null
+  const identities = declarations.map(typescriptLibDeclarationIdentity)
+  if (identities.some((identity) => identity === null)) return null
+  return `${expectedName}|${identities.sort().join(',')}`
+}
+
 const symbolHasAuditedLibDeclaration = (symbol, allowedNames) =>
-  symbol !== undefined &&
-  allowedNames.has(symbol.getName()) &&
-  symbol.declarations?.some((declaration) =>
-    /[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u.test(
-      declaration.getSourceFile().fileName
-    )) === true
+  symbol !== undefined && allowedNames.has(symbol.getName()) &&
+  exactTypescriptLibSymbolIdentity(symbol) !== null
 
 const symbolHasTypescriptLibDeclaration = (symbol) =>
-  symbol !== undefined &&
-  symbol.declarations?.some((declaration) =>
-    /[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u.test(
-      declaration.getSourceFile().fileName
-    )) === true
+  exactTypescriptLibSymbolIdentity(symbol) !== null
 
 const assertionChangesValueProvenance = (node, checker) => {
   if (!ts.isAsExpression(node) && !ts.isTypeAssertionExpression(node)) return false
@@ -770,11 +781,8 @@ const callUsesTypeErasedReceiver = (node, checker) => {
   ) && expressionHasTypeErasedProvenance(expression.expression, checker)
 }
 
-const symbolHasTypescriptLibName = (symbol, expectedName, filePattern = /[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u) =>
-  symbol !== undefined && symbol.getName() === expectedName &&
-  symbol.declarations?.some((declaration) =>
-    filePattern.test(declaration.getSourceFile().fileName)
-  ) === true
+const symbolHasTypescriptLibName = (symbol, expectedName) =>
+  exactTypescriptLibSymbolIdentity(symbol, expectedName) !== null
 
 const expressionOriginatesFromLibNamespace = (
   expression,
@@ -871,6 +879,61 @@ export const registeredDescriptorCallSites = frozenStrings([
   'decode.ts|owner=FirstStatement@13/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=3|call=Block@5/TryStatement@7/Block@0/ForOfStatement@4/Block@2/FirstStatement@2/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1'
 ])
 
+const registeredDescriptorCallee =
+  'Object|lib.es5.d.ts:InterfaceDeclaration,lib.es5.d.ts:VariableDeclaration/getOwnPropertyDescriptor|lib.es5.d.ts:MethodSignature'
+
+export const registeredDescriptorSiteContracts = Object.freeze([
+  Object.freeze({
+    site: registeredDescriptorCallSites[0],
+    callee: registeredDescriptorCallee,
+    receiver: 'parameter:0',
+    key: 'local:VariableDeclaration@242.4/259.7/242.0/251.8/262.0/261.0<-for-of(local:VariableDeclaration@242.4/259.7/242.0/244.5/262.0/261.0<-assert:ArrayType(local:VariableDeclaration@242.4/259.7/242.0/244.3/262.0/261.0<-call:lib:ownKeys(parameter:0)))',
+    resultFlow: '["binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right","member:\\"value\\">call-argument:0:local:canonical.ts:VariableDeclaration@244.7/262.0/261.0>call-argument:0:lib:push"]'
+  }),
+  Object.freeze({
+    site: registeredDescriptorCallSites[1],
+    callee: registeredDescriptorCallee,
+    receiver: 'parameter:0',
+    key: 'string:"length"',
+    resultFlow: '["binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right","member:\\"value\\">assert:NumberKeyword>variable-initializer:VariableDeclaration@242.4/259.7/242.0/246.0/242.1/244.4/262.0/261.0"]'
+  }),
+  Object.freeze({
+    site: registeredDescriptorCallSites[2],
+    callee: registeredDescriptorCallee,
+    receiver: 'parameter:0',
+    key: 'call:lib:String(local:VariableDeclaration@242.4/259.7/242.0/246.0/242.1/249.7/262.0/261.0<-number:0)',
+    resultFlow: '["binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right","member:\\"value\\">call-argument:0:local:canonical.ts:VariableDeclaration@244.7/262.0/261.0>call-argument:0:lib:push"]'
+  }),
+  Object.freeze({
+    site: registeredDescriptorCallSites[3],
+    callee: registeredDescriptorCallee,
+    receiver: 'local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ObjectKeyword(parameter:0)',
+    key: 'local:VariableDeclaration@242.6/251.7/242.2/244.1/262.0/261.0<-assert:StringKeyword(local:VariableDeclaration@242.6/251.7/262.0/261.0<-for-of(local:VariableDeclaration@242.6/244.5/262.0/261.0<-call:lib:ownKeys(local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ObjectKeyword(parameter:0))))',
+    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">binary:FirstAssignment:right","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left","member:\\"enumerable\\">binary:ExclamationEqualsEqualsToken:left>binary:BarBarToken:right"]'
+  }),
+  Object.freeze({
+    site: registeredDescriptorCallSites[4],
+    callee: registeredDescriptorCallee,
+    receiver: 'local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ArrayType(parameter:0)',
+    key: 'string:"length"',
+    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">variable-initializer:VariableDeclaration@242.6/244.5/262.0/261.0","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left>binary:BarBarToken:left","member:\\"value\\">binary:FirstBinaryOperator:left>binary:BarBarToken:right","member:\\"value\\">call-argument:0:lib:isSafeInteger>binary:BarBarToken:right>binary:BarBarToken:left"]'
+  }),
+  Object.freeze({
+    site: registeredDescriptorCallSites[5],
+    callee: registeredDescriptorCallee,
+    receiver: 'local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ArrayType(parameter:0)',
+    key: 'call:lib:String(local:VariableDeclaration@242.6/249.9/262.0/261.0<-number:0)',
+    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">call-argument:0:local:decode.ts:Parameter@244.12/262.0/261.0/220.1/170.3>call-argument:0:lib:push","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left","member:\\"enumerable\\">binary:ExclamationEqualsEqualsToken:left>binary:BarBarToken:right"]'
+  }),
+  Object.freeze({
+    site: registeredDescriptorCallSites[6],
+    callee: registeredDescriptorCallee,
+    receiver: 'local:VariableDeclaration@242.5/244.4/262.0/261.0<-assert:ObjectKeyword(parameter:0)',
+    key: 'local:VariableDeclaration@242.5/259.7/242.0/251.4/242.2/244.1/262.0/261.0<-assert:StringKeyword(local:VariableDeclaration@242.5/259.7/242.0/251.4/262.0/261.0<-for-of(call:lib:ownKeys(local:VariableDeclaration@242.5/244.4/262.0/261.0<-assert:ObjectKeyword(parameter:0))))',
+    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">call-argument:0:local:decode.ts:VariableDeclaration@244.13/262.0/261.0>call-argument:2:lib:defineProperty","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left","member:\\"enumerable\\">binary:ExclamationEqualsEqualsToken:left>binary:BarBarToken:right"]'
+  })
+])
+
 const directChildren = (node) => {
   const children = []
   node.forEachChild((child) => { children.push(child) })
@@ -887,6 +950,21 @@ const structuralNodePath = (owner, node) => {
     const index = siblings.indexOf(current)
     if (index < 0) return null
     parts.unshift(`${ts.SyntaxKind[current.kind]}@${index}`)
+    current = parent
+  }
+  return parts.join('/')
+}
+
+const structuralContractPath = (owner, node) => {
+  const parts = []
+  let current = node
+  while (current !== owner) {
+    const parent = current.parent
+    if (parent === undefined) return null
+    const siblings = directChildren(parent)
+    const index = siblings.indexOf(current)
+    if (index < 0) return null
+    parts.unshift(`${current.kind}.${index}`)
     current = parent
   }
   return parts.join('/')
@@ -935,62 +1013,140 @@ const declarationInside = (declaration, owner) =>
   declaration.getSourceFile() === owner.getSourceFile() &&
   declaration.pos >= owner.pos && declaration.end <= owner.end
 
-const expressionOriginatesFromFunctionParameter = (
+const exactSingleDeclaration = (symbol) => {
+  const declarations = symbol?.declarations ?? []
+  return declarations.length === 1 ? declarations[0] : null
+}
+
+const declarationPathContract = (owner, declaration) => {
+  const path = structuralContractPath(owner, declaration)
+  return path === null ? null : `${ts.SyntaxKind[declaration.kind]}@${path}`
+}
+
+const sourceDeclarationIdentity = (symbol, sourceRoot) => {
+  if (symbol === undefined) return null
+  const libIdentity = exactTypescriptLibSymbolIdentity(symbol)
+  if (libIdentity !== null) return `lib:${symbol.getName()}`
+  const declarations = symbol.declarations ?? []
+  if (declarations.length === 0) return null
+  const identities = declarations.map((declaration) => {
+    const file = relativeSourcePath(sourceRoot, declaration.getSourceFile().fileName)
+    const path = structuralContractPath(declaration.getSourceFile(), declaration)
+    return file === null || path === null
+      ? null
+      : `local:${file}:${ts.SyntaxKind[declaration.kind]}@${path}`
+  })
+  return identities.some((identity) => identity === null)
+    ? null
+    : identities.sort().join(',')
+}
+
+const expressionProvenanceContract = (
   expression,
   owner,
   checker,
+  sourceRoot,
   seen = new Set()
 ) => {
-  const current = unwrapExpression(expression)
-  if (current === undefined || !ts.isIdentifier(current)) return false
-  const symbol = resolvedSymbol(checker, current)
-  if (symbol === undefined || seen.has(symbol)) return false
-  if (symbol.declarations?.some((declaration) =>
-    ts.isParameter(declaration) && declaration.parent === owner
-  )) return true
-  seen.add(symbol)
-  return symbol.declarations?.some((declaration) =>
-    ts.isVariableDeclaration(declaration) && declarationInside(declaration, owner) &&
-    declaration.initializer !== undefined && expressionOriginatesFromFunctionParameter(
-      declaration.initializer,
-      owner,
-      checker,
-      seen
-    )
-  ) === true
-}
-
-const expressionIsFunctionLocalKey = (expression, owner, checker) => {
-  const constant = constantString(expression, checker)
-  if (constant !== null) return constant === 'length'
-  const current = unwrapExpression(expression)
-  if (current === undefined) return false
-  if (ts.isIdentifier(current)) {
-    const symbol = resolvedSymbol(checker, current)
-    return symbol?.declarations?.some((declaration) => {
-      if (!ts.isVariableDeclaration(declaration) || !declarationInside(declaration, owner)) {
-        return false
-      }
-      const list = declaration.parent
-      const statement = ts.isVariableDeclarationList(list) ? list.parent : null
-      if (statement !== null && (ts.isForOfStatement(statement) || ts.isForStatement(statement))) {
-        return true
-      }
-      return declaration.initializer !== undefined && expressionIsFunctionLocalKey(
+  if (ts.isParenthesizedExpression(expression)) {
+    const child = expressionProvenanceContract(expression.expression, owner, checker, sourceRoot, seen)
+    return child === null ? null : `paren(${child})`
+  }
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) {
+    const child = expressionProvenanceContract(expression.expression, owner, checker, sourceRoot, seen)
+    return child === null ? null : `assert:${ts.SyntaxKind[expression.type.kind]}(${child})`
+  }
+  if (ts.isSatisfiesExpression(expression)) {
+    const child = expressionProvenanceContract(expression.expression, owner, checker, sourceRoot, seen)
+    return child === null ? null : `satisfies:${ts.SyntaxKind[expression.type.kind]}(${child})`
+  }
+  if (ts.isNonNullExpression(expression)) {
+    const child = expressionProvenanceContract(expression.expression, owner, checker, sourceRoot, seen)
+    return child === null ? null : `non-null(${child})`
+  }
+  if (ts.isStringLiteralLike(expression)) return `string:${JSON.stringify(expression.text)}`
+  if (ts.isNumericLiteral(expression)) return `number:${expression.text}`
+  if (expression.kind === ts.SyntaxKind.TrueKeyword) return 'boolean:true'
+  if (expression.kind === ts.SyntaxKind.FalseKeyword) return 'boolean:false'
+  if (ts.isIdentifier(expression)) {
+    const symbol = resolvedSymbol(checker, expression)
+    if (symbol === undefined || seen.has(symbol)) return null
+    const libIdentity = exactTypescriptLibSymbolIdentity(symbol)
+    if (libIdentity !== null) return `lib:${libIdentity}`
+    const declaration = exactSingleDeclaration(symbol)
+    if (declaration === null || !declarationInside(declaration, owner)) return null
+    if (ts.isParameter(declaration) && declaration.parent === owner) {
+      const index = owner.parameters.indexOf(declaration)
+      return index < 0 ? null : `parameter:${index}`
+    }
+    if (!ts.isVariableDeclaration(declaration)) return null
+    const path = declarationPathContract(owner, declaration)
+    if (path === null) return null
+    seen.add(symbol)
+    let origin = null
+    if (declaration.initializer !== undefined) {
+      origin = expressionProvenanceContract(
         declaration.initializer,
         owner,
-        checker
+        checker,
+        sourceRoot,
+        seen
       )
-    }) === true
+    } else if (
+      ts.isVariableDeclarationList(declaration.parent) &&
+      ts.isForOfStatement(declaration.parent.parent)
+    ) {
+      origin = expressionProvenanceContract(
+        declaration.parent.parent.expression,
+        owner,
+        checker,
+        sourceRoot,
+        seen
+      )
+      if (origin !== null) origin = `for-of(${origin})`
+    }
+    seen.delete(symbol)
+    return origin === null ? null : `local:${path}<-${origin}`
   }
-  if (
-    ts.isCallExpression(current) && current.arguments.length === 1 &&
-    symbolHasAuditedLibDeclaration(
-      resolvedSymbol(checker, unwrapExpression(current.expression)),
-      new Set(['String'])
+  if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+    const receiver = expressionProvenanceContract(
+      expression.expression,
+      owner,
+      checker,
+      sourceRoot,
+      seen
     )
-  ) return expressionIsFunctionLocalKey(current.arguments[0], owner, checker)
-  return false
+    const key = ts.isPropertyAccessExpression(expression)
+      ? expression.name.text
+      : constantString(expression.argumentExpression, checker)
+    const symbolNode = ts.isPropertyAccessExpression(expression)
+      ? expression.name
+      : expression.argumentExpression
+    const identity = sourceDeclarationIdentity(resolvedSymbol(checker, symbolNode), sourceRoot)
+    return receiver === null || key === null || identity === null
+      ? null
+      : `member:${JSON.stringify(key)}:${identity}(${receiver})`
+  }
+  if (ts.isCallExpression(expression)) {
+    const callee = sourceDeclarationIdentity(
+      resolvedSymbol(
+        checker,
+        ts.isPropertyAccessExpression(unwrapExpression(expression.expression))
+          ? unwrapExpression(expression.expression).name
+          : ts.isElementAccessExpression(unwrapExpression(expression.expression))
+            ? unwrapExpression(expression.expression).argumentExpression
+            : unwrapExpression(expression.expression)
+      ),
+      sourceRoot
+    )
+    const args = expression.arguments.map((argument) =>
+      expressionProvenanceContract(argument, owner, checker, sourceRoot, new Set(seen))
+    )
+    return callee === null || args.some((argument) => argument === null)
+      ? null
+      : `call:${callee}(${args.join(',')})`
+  }
+  return null
 }
 
 const outerExpression = (node) => {
@@ -1002,19 +1158,60 @@ const outerExpression = (node) => {
   return current
 }
 
-const descriptorPropertyUseIsAudited = (access) => {
-  const use = outerExpression(access)
-  const parent = use.parent
-  if (ts.isBinaryExpression(parent)) return true
-  if (ts.isVariableDeclaration(parent) && parent.initializer === use) return true
-  if (ts.isCallExpression(parent) && parent.arguments.includes(use)) return true
-  return false
+const descriptorUseContract = (reference, owner, checker, sourceRoot) => {
+  const path = structuralContractPath(owner, reference)
+  if (path === null) return null
+  const flow = []
+  let current = reference
+  while (current !== owner) {
+    const parent = current.parent
+    if (parent === undefined) return null
+    if (
+      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+      parent.expression === current
+    ) {
+      const key = ts.isPropertyAccessExpression(parent)
+        ? parent.name.text
+        : constantString(parent.argumentExpression, checker)
+      if (key === null) return null
+      flow.push(`member:${JSON.stringify(key)}`)
+    } else if (ts.isAsExpression(parent) || ts.isTypeAssertionExpression(parent)) {
+      flow.push(`assert:${ts.SyntaxKind[parent.type.kind]}`)
+    } else if (ts.isParenthesizedExpression(parent)) {
+      flow.push('paren')
+    } else if (ts.isNonNullExpression(parent)) {
+      flow.push('non-null')
+    } else if (ts.isBinaryExpression(parent)) {
+      const side = parent.left === current ? 'left' : parent.right === current ? 'right' : null
+      if (side === null) return null
+      flow.push(`binary:${ts.SyntaxKind[parent.operatorToken.kind]}:${side}`)
+    } else if (ts.isCallExpression(parent)) {
+      const argumentIndex = parent.arguments.indexOf(current)
+      if (argumentIndex < 0) return null
+      const expression = unwrapExpression(parent.expression)
+      const symbolNode = ts.isPropertyAccessExpression(expression)
+        ? expression.name
+        : ts.isElementAccessExpression(expression)
+          ? expression.argumentExpression
+          : expression
+      const target = sourceDeclarationIdentity(resolvedSymbol(checker, symbolNode), sourceRoot)
+      if (target === null) return null
+      flow.push(`call-argument:${argumentIndex}:${target}`)
+    } else if (ts.isVariableDeclaration(parent) && parent.initializer === current) {
+      const declarationPath = declarationPathContract(owner, parent)
+      if (declarationPath === null) return null
+      flow.push(`variable-initializer:${declarationPath}`)
+    }
+    current = parent
+  }
+  return path === null ? null : flow.join('>')
 }
 
-const descriptorResultFlowIsAudited = (declaration, owner, checker) => {
-  if (!ts.isIdentifier(declaration.name)) return false
+const descriptorResultFlowContract = (declaration, owner, checker, sourceRoot) => {
+  if (!ts.isIdentifier(declaration.name)) return null
   const symbol = resolvedSymbol(checker, declaration.name)
-  if (symbol === undefined) return false
+  if (symbol === undefined || exactSingleDeclaration(symbol) !== declaration) return null
+  const references = []
   let valid = true
   const visit = (node) => {
     if (!valid) return
@@ -1024,40 +1221,15 @@ const descriptorResultFlowIsAudited = (declaration, owner, checker) => {
         valid = false
         return
       }
-      const reference = outerExpression(node)
-      const parent = reference.parent
-      const isGlobalUndefined = (candidate) => {
-        if (!ts.isIdentifier(candidate) || candidate.text !== 'undefined') return false
-        const symbol = resolvedSymbol(checker, candidate)
-        return symbol?.getName() === 'undefined' && (symbol.declarations?.length ?? 0) === 0
-      }
-      if (
-        ts.isBinaryExpression(parent) && (
-          parent.operatorToken.kind === ts.SyntaxKind.InKeyword && parent.right === reference ||
-          parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
-            (parent.left === reference && isGlobalUndefined(parent.right) ||
-              parent.right === reference && isGlobalUndefined(parent.left))
-        )
-      ) return
-      if (
-        (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
-        parent.expression === reference
-      ) {
-        const key = ts.isPropertyAccessExpression(parent)
-          ? parent.name.text
-          : constantString(parent.argumentExpression, checker)
-        if (
-          (key === 'value' || key === 'enumerable') &&
-          descriptorPropertyUseIsAudited(parent)
-        ) return
-      }
-      valid = false
+      const contract = descriptorUseContract(node, owner, checker, sourceRoot)
+      if (contract === null) valid = false
+      else references.push(contract)
       return
     }
     ts.forEachChild(node, visit)
   }
   visit(owner)
-  return valid
+  return valid ? JSON.stringify(references.sort()) : null
 }
 
 const isDescriptorAcquisition = (node, checker) =>
@@ -1073,9 +1245,9 @@ const isDescriptorAcquisition = (node, checker) =>
     'getOwnPropertyDescriptor'
   )
 
-const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
+const descriptorSiteContract = (node, checker, sourceRoot) => {
   const fingerprint = descriptorCallSiteFingerprint(node, checker, sourceRoot)
-  if (fingerprint === null || !registeredDescriptorCallSites.includes(fingerprint)) return false
+  if (fingerprint === null) return null
   const expression = unwrapExpression(node.expression)
   if (
     !ts.isPropertyAccessExpression(expression) || expression.name.text !== 'getOwnPropertyDescriptor' ||
@@ -1083,19 +1255,53 @@ const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
     !symbolHasTypescriptLibName(resolvedSymbol(checker, expression.expression), 'Object') ||
     !symbolHasTypescriptLibName(resolvedSymbol(checker, expression.name), 'getOwnPropertyDescriptor') ||
     node.arguments.length !== 2
-  ) return false
+  ) return null
   const owner = nearestFunctionLike(node)
-  if (
-    owner === null || !expressionOriginatesFromFunctionParameter(node.arguments[0], owner, checker) ||
-    !expressionIsFunctionLocalKey(node.arguments[1], owner, checker)
-  ) return false
+  if (owner === null) return null
   const declaration = node.parent
   if (
     !ts.isVariableDeclaration(declaration) || declaration.initializer !== node ||
     !ts.isVariableDeclarationList(declaration.parent) ||
     (declaration.parent.flags & ts.NodeFlags.Const) === 0
-  ) return false
-  return descriptorResultFlowIsAudited(declaration, owner, checker)
+  ) return null
+  const namespaceIdentity = exactTypescriptLibSymbolIdentity(
+    resolvedSymbol(checker, expression.expression),
+    'Object'
+  )
+  const memberIdentity = exactTypescriptLibSymbolIdentity(
+    resolvedSymbol(checker, expression.name),
+    'getOwnPropertyDescriptor'
+  )
+  const receiver = expressionProvenanceContract(
+    node.arguments[0], owner, checker, sourceRoot
+  )
+  const key = expressionProvenanceContract(node.arguments[1], owner, checker, sourceRoot)
+  const resultFlow = descriptorResultFlowContract(declaration, owner, checker, sourceRoot)
+  if (
+    namespaceIdentity === null || memberIdentity === null || receiver === null || key === null ||
+    resultFlow === null
+  ) return null
+  return Object.freeze({
+    site: fingerprint,
+    callee: `${namespaceIdentity}/${memberIdentity}`,
+    receiver,
+    key,
+    resultFlow
+  })
+}
+
+const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
+  const observed = descriptorSiteContract(node, checker, sourceRoot)
+  if (observed === null) return false
+  const expected = registeredDescriptorSiteContracts.find(({ site }) => site === observed.site)
+  if (expected === undefined || observed.callee !== expected.callee) return false
+  /* guard:descriptor-receiver-contract */
+  if (observed.receiver !== expected.receiver) return false
+  /* guard:descriptor-key-contract */
+  if (observed.key !== expected.key) return false
+  /* guard:descriptor-result-flow-contract */
+  if (observed.resultFlow !== expected.resultFlow) return false
+  return true
 }
 
 const memberKey = (node, checker) => ts.isPropertyAccessExpression(node)
@@ -1331,6 +1537,55 @@ const programForDomainSources = (root, sourceFiles) => ts.createProgram({
   }
 })
 
+export const inspectDescriptorSiteContracts = (root = repositoryRoot) => {
+  const sourceRoot = resolve(root, 'packages/domain/src')
+  const program = programForDomainSources(root, manifests.sources)
+  const checker = program.getTypeChecker()
+  const contracts = []
+  for (const file of manifests.sources) {
+    const tree = program.getSourceFile(resolve(sourceRoot, file))
+    if (tree === undefined) continue
+    const visit = (node) => {
+      if (ts.isCallExpression(node) && directDescriptorCallIdentity(node, checker)) {
+        const contract = descriptorSiteContract(node, checker, sourceRoot)
+        if (contract !== null) contracts.push(contract)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(tree)
+  }
+  return contracts.sort((left, right) => left.site < right.site ? -1 : left.site > right.site ? 1 : 0)
+}
+
+const compilerInputIdentity = (root, tree) => {
+  const fileName = tree.fileName
+  if (/[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u.test(fileName)) return null
+  if (/[/\\]node_modules[/\\]/u.test(fileName)) return null
+  const identity = relative(root, fileName).replaceAll('\\', '/')
+  return identity === '..' || identity.startsWith('../') || /^[A-Za-z]:\//u.test(identity)
+    ? '<external>'
+    : identity
+}
+
+const compilerInputsEqualRegisteredManifest = (root, program, sourceFiles) => {
+  const observed = program.getSourceFiles()
+    .map((tree) => compilerInputIdentity(root, tree))
+    .filter((identity) => identity !== null)
+    .sort()
+  const expected = sourceFiles.map((file) => `packages/domain/src/${file}`).sort()
+  return JSON.stringify(observed) === JSON.stringify(expected)
+}
+
+const treeContainsDeclarationAugmentation = (tree) => {
+  let found = false
+  const visit = (node) => {
+    if (ts.isModuleDeclaration(node)) found = true
+    if (!found) ts.forEachChild(node, visit)
+  }
+  visit(tree)
+  return found
+}
+
 const recordModuleGrammarFailure = (failures) => {
   /* guard:module-grammar */
   failures.push(capabilityReasons.moduleGrammar)
@@ -1366,6 +1621,10 @@ const recordDescriptorCallSiteFailure = (failures) => {
 const recordPublicSurfaceFailure = (failures) => {
   /* guard:module-export-surface */
   failures.push(capabilityReasons.moduleSurface)
+}
+const recordCompilerInputFailure = (failures) => {
+  /* guard:compiler-input-manifest */
+  failures.push(capabilityReasons.compilerInput)
 }
 const recordSyntacticDiagnosticsFailure = (failures) => {
   /* guard:syntactic-diagnostics */
@@ -1428,6 +1687,9 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
       JSON.stringify(Object.keys(registeredModuleExportSurfaces).sort()) !==
       JSON.stringify([...sourceFiles].sort())
     ) recordPublicSurfaceFailure(failures)
+    if (!compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {
+      recordCompilerInputFailure(failures)
+    }
     for (const file of sourceFiles) {
       const tree = program.getSourceFile(resolve(sourceRoot, file))
       if (tree === undefined) {
@@ -1435,6 +1697,7 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
         continue
       }
     if (!registeredModuleSurfaceMatches(file, tree)) recordPublicSurfaceFailure(failures)
+    if (treeContainsDeclarationAugmentation(tree)) recordCompilerInputFailure(failures)
     const visit = (node) => {
       if (
         ts.isImportDeclaration(node) ||
