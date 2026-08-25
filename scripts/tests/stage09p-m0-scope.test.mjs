@@ -13,6 +13,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { after, test } from 'node:test'
 
+import ts from 'typescript'
+
 import {
   capabilityReasons,
   collectCapabilityFailures,
@@ -24,6 +26,7 @@ import {
   collectSchemaParityFailures,
   collectSchemaStringClosureFailures,
   collectSyntheticFailures,
+  collectTypescriptLibSymbolIdentityFailures,
   evaluateGovernanceStringLayers,
   GOVERNANCE_STRING_CASE_IDS,
   governanceStringCases,
@@ -32,9 +35,12 @@ import {
   governanceStringReasons,
   jsonBoundaryCases,
   jsonBoundaryReasons,
+  programInputTrustStats,
   registeredDescriptorCallSites,
+  registeredDescriptorOwnerFingerprints,
   registeredDescriptorSiteContracts,
   registeredModuleExportSurfaces,
+  registeredProgramInputManifest,
   repositoryRoot,
   schemaClosureReasons,
   schemaExtensionExecutionStats
@@ -215,6 +221,48 @@ const capabilityMutatedFileFailures = (file, mutate) => {
   assert.notEqual(mutant, source, `capability mutation anchor disappeared: ${file}`)
   writeFileSync(path, mutant)
   return collectCapabilityFailures(root)
+}
+
+const canonicalLibMemberIdentityFailures = (declaration) => {
+  const root = mkdtempSync(join(tmpdir(), 'meal-agent-stage09p-r54-lib-'))
+  temporaryRoots.push(root)
+  const declarationPath = resolve(root, 'identity-fixture.d.ts')
+  const usePath = resolve(root, 'identity-use.ts')
+  writeFileSync(declarationPath, declaration)
+  writeFileSync(
+    usePath,
+    'const round54Member = Object.getOwnPropertyDescriptor\nvoid round54Member\n'
+  )
+  const program = ts.createProgram({
+    rootNames: [declarationPath, usePath],
+    options: {
+      noEmit: true,
+      strict: true,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      types: []
+    }
+  })
+  assert.equal(program.getSyntacticDiagnostics().length, 0)
+  assert.equal(program.getOptionsDiagnostics().length, 0)
+  assert.equal(program.getSemanticDiagnostics().length, 0)
+  const tree = program.getSourceFile(usePath)
+  assert.notEqual(tree, undefined)
+  const checker = program.getTypeChecker()
+  let memberSymbol
+  const visit = (node) => {
+    if (
+      ts.isPropertyAccessExpression(node) && node.name.text === 'getOwnPropertyDescriptor'
+    ) memberSymbol = checker.getSymbolAtLocation(node.name)
+    ts.forEachChild(node, visit)
+  }
+  visit(tree)
+  assert.notEqual(memberSymbol, undefined)
+  return collectTypescriptLibSymbolIdentityFailures(
+    memberSymbol,
+    'getOwnPropertyDescriptor'
+  )
 }
 
 const deleteCheckerGuard = (source, marker, statement, replacement) => {
@@ -648,6 +696,103 @@ void (null as unknown as Round53Visible)
   )
 })
 
+test('Round 5.4 canonical ownership-first trust classifies every Program input exactly', () => {
+  const compilerInputReason = capabilityReasons.compilerInput
+  assert.deepEqual(programInputTrustStats(), {
+    counts: {
+      repository: 7,
+      typescriptLib: 63,
+      auditedDependency: 3,
+      rejected: 0
+    },
+    exact: true
+  })
+  assert.equal(registeredProgramInputManifest.repository.length, 7)
+  assert.equal(registeredProgramInputManifest.typescriptLib.length, 63)
+  assert.equal(registeredProgramInputManifest.auditedDependency.length, 3)
+
+  const referencedFailures = (configure) => {
+    const root = capabilityFixtureRoot()
+    const reference = configure(root)
+    const referencePath = resolve(root, 'packages/domain/src/canonical.ts')
+    writeFileSync(
+      referencePath,
+      `/// <reference path=${JSON.stringify(reference)} />\n${readFileSync(referencePath, 'utf8')}`
+    )
+    return collectCapabilityFailures(root)
+  }
+  const declaration =
+    'interface Round54RepositoryOwnedInput { readonly synthetic?: true }\n'
+  const cases = [
+    ['ordinary-repo-dts', (root) => {
+      const target = resolve(root, 'packages/domain/round54-regression.d.ts')
+      writeFileSync(target, declaration)
+      return '../round54-regression.d.ts'
+    }],
+    ['typescript-lib-shaped', (root) => {
+      const target = resolve(
+        root,
+        'packages/domain/typescript/lib/lib.round54-regression.d.ts'
+      )
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, declaration)
+      return '../typescript/lib/lib.round54-regression.d.ts'
+    }],
+    ['node-modules-shaped', (root) => {
+      const target = resolve(
+        root,
+        'packages/domain/vendor/node_modules/round54-regression.d.ts'
+      )
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, declaration)
+      return '../vendor/node_modules/round54-regression.d.ts'
+    }],
+    ['repo-symlink-to-external', (root) => {
+      const external = mkdtempSync(join(tmpdir(), 'meal-agent-stage09p-r54-external-'))
+      temporaryRoots.push(external)
+      const externalTarget = resolve(external, 'round54-external.d.ts')
+      writeFileSync(externalTarget, declaration)
+      symlinkSync(externalTarget, resolve(root, 'packages/domain/round54-link.d.ts'))
+      return '../round54-link.d.ts'
+    }],
+    ['external-symlink-to-repo', (root) => {
+      const repositoryTarget = resolve(root, 'packages/domain/round54-owned.d.ts')
+      writeFileSync(repositoryTarget, declaration)
+      const external = mkdtempSync(join(tmpdir(), 'meal-agent-stage09p-r54-external-'))
+      temporaryRoots.push(external)
+      const externalLink = resolve(external, 'round54-link.d.ts')
+      symlinkSync(repositoryTarget, externalLink)
+      return externalLink
+    }],
+    ['unknown-external-dependency', () => {
+      const external = mkdtempSync(join(tmpdir(), 'meal-agent-stage09p-r54-external-'))
+      temporaryRoots.push(external)
+      const target = resolve(external, 'round54-unknown.d.ts')
+      writeFileSync(target, declaration)
+      return target
+    }]
+  ]
+  assert.equal(cases.length, 6)
+  assert.equal(new Set(cases.map(([id]) => id)).size, 6)
+  for (const [id, configure] of cases) {
+    const failures = referencedFailures(configure)
+    assert.deepEqual(failures, [compilerInputReason], id)
+    assert.equal(failures.some((reason) => /round54|SENTINEL|\//u.test(reason)), false, id)
+  }
+})
+
+test('Round 5.4 canonical TypeScript lib identity rejects every merged declaration', () => {
+  assert.deepEqual(canonicalLibMemberIdentityFailures(''), [])
+  assert.deepEqual(canonicalLibMemberIdentityFailures(`
+interface ObjectConstructor {
+  getOwnPropertyDescriptor(
+    value: object,
+    key: PropertyKey,
+  ): PropertyDescriptor | undefined
+}
+`), [capabilityReasons.libDeclarationIdentity])
+})
+
 test('all seven production modules have an exact fixed export-surface registry', () => {
   const modules = Object.keys(registeredModuleExportSurfaces).sort()
   assert.deepEqual(modules, [
@@ -720,7 +865,7 @@ var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
   )
 })
 
-test('Round 5.3 descriptor contracts bind exact receiver, key, and complete result flow per site', () => {
+test('Round 5.3 descriptor receiver, key, and local-continuation mutations remain rejected', () => {
   assert.equal(registeredDescriptorSiteContracts.length, 7)
   assert.equal(new Set(registeredDescriptorSiteContracts.map(({ site }) => site)).size, 7)
   assert.deepEqual(
@@ -743,15 +888,95 @@ test('Round 5.3 descriptor contracts bind exact receiver, key, and complete resu
   )
   assert.ok(keySubstitution.includes(capabilityReasons.descriptorCallSite))
 
-  const resultFlowSubstitution = capabilityMutatedFileFailures('canonical.ts', (source) =>
+  const localContinuationSubstitution = capabilityMutatedFileFailures('canonical.ts', (source) =>
     source.replace(
       '        items.push(canonicalValue(descriptor.value, ancestors));',
       `        const continued = descriptor.value;
         items.push(canonicalValue(continued, ancestors));`
     )
   )
-  assert.ok(resultFlowSubstitution.includes(capabilityReasons.descriptorCallSite))
+  assert.ok(localContinuationSubstitution.includes(capabilityReasons.descriptorCallSite))
   assert.deepEqual(collectCapabilityFailures(), [])
+})
+
+test('Round 5.4 descriptor contracts freeze complete owner control and sink structure', () => {
+  assert.equal(Object.keys(registeredDescriptorOwnerFingerprints).length, 4)
+  assert.equal(
+    Object.values(registeredDescriptorOwnerFingerprints)
+      .every((value) => /^sha256:[0-9a-f]{64}$/u.test(value)),
+    true
+  )
+  assert.equal(
+    registeredDescriptorSiteContracts.every(({ ownerFingerprint }) =>
+      Object.values(registeredDescriptorOwnerFingerprints).includes(ownerFingerprint)),
+    true
+  )
+  const cases = [
+    [
+      'dead-branch',
+      'canonical.ts',
+      (source) => source.replace(
+        '        items.push(canonicalValue(descriptor.value, ancestors));',
+        `        if (!ancestors.has(value)) {
+          items.push(canonicalValue(descriptor.value, ancestors));
+        }`
+      )
+    ],
+    [
+      'conditional-substitution',
+      'canonical.ts',
+      (source) => source.replace(
+        '        items.push(canonicalValue(descriptor.value, ancestors));',
+        `        items.push(canonicalValue(
+          !ancestors.has(value) ? descriptor.value : "SYNTHETIC",
+          ancestors,
+        ));`
+      )
+    ],
+    [
+      'other-sink-argument',
+      'canonical.ts',
+      (source) => source.replace(
+        '        items.push(canonicalValue(descriptor.value, ancestors));',
+        '        items.push(canonicalValue(descriptor.value, new Set<object>()));'
+      )
+    ],
+    [
+      'redirect-assignment-target',
+      'decode.ts',
+      (source) => source.replace(
+        '    values[stringKey] = (descriptor as PropertyDescriptor & { value: unknown }).value;',
+        '    values["round54Redirect"] = (descriptor as PropertyDescriptor & { value: unknown }).value;'
+      )
+    ],
+    [
+      'assignment-under-dead-branch',
+      'decode.ts',
+      (source) => source.replace(
+        '    values[stringKey] = (descriptor as PropertyDescriptor & { value: unknown }).value;',
+        `    if (false) {
+      values[stringKey] = (descriptor as PropertyDescriptor & { value: unknown }).value;
+    }`
+      )
+    ],
+    [
+      'redirect-define-property-key',
+      'decode.ts',
+      (source) => source.replace(
+        '      Object.defineProperty(decoded, stringKey, {',
+        '      Object.defineProperty(decoded, "round54Redirect", {'
+      )
+    ]
+  ]
+  assert.equal(cases.length, 6)
+  assert.equal(new Set(cases.map(([id]) => id)).size, 6)
+  for (const [id, file, mutate] of cases) {
+    assert.deepEqual(
+      capabilityMutatedFileFailures(file, mutate),
+      [capabilityReasons.descriptorCallSite],
+      id
+    )
+  }
 })
 
 test('schema mutation witness executes the same compiled 2020-12 contract checks', () => {
@@ -1363,14 +1588,6 @@ assert.deepEqual(
 })
 
 test('Round 5.2 acquisition, module, declaration, diagnostics, and call-site guards have targeted witnesses', () => {
-  const copiedDescriptorMutation = (source) => source.replace(
-    '      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");',
-    `      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
-      const copiedDescriptor = Object.getOwnPropertyDescriptor(value, "length");
-      if (copiedDescriptor === undefined || !("value" in copiedDescriptor)) {
-        throw new TypeError("INVALID_SHAPE");
-      }`
-  )
   const descriptorDeclarationSpoof = (source) =>
     `${source.replace('const dataObject =', 'var dataObject =')}
 var dataObject: (
@@ -1425,26 +1642,17 @@ var dataObject: (
     },
     {
       reason: capabilityReasons.descriptorCallSite,
-      productionFile: 'canonical.ts',
-      mutateProduction: copiedDescriptorMutation,
-      mutateChecker: (source) => source
-        .replace(
-          '  if (expected === undefined || observed.callee !== expected.callee) return false',
-          `  if (expected === undefined) return true
-  if (observed.callee !== expected.callee) return false`
-        )
-        .replace(
-          '  if (observed.resultFlow !== expected.resultFlow) return false',
-          '  void observed.resultFlow'
-        )
-        .replace(
-          `    /* guard:descriptor-call-site-exactness */
-    if (
-      JSON.stringify(observedDescriptorCallSites.sort()) !==
-      JSON.stringify(registeredDescriptorCallSites)
-    ) recordDescriptorCallSiteFailure(failures)`,
-          '    /* guard:descriptor-call-site-exactness:weakened */\n    void observedDescriptorCallSites'
-        )
+      productionAppend: `const round52UnregisteredDescriptorOwner = () => {
+  const descriptor = Object.getOwnPropertyDescriptor({}, "synthetic")
+  return descriptor === undefined ? undefined : descriptor.value
+}
+void round52UnregisteredDescriptorOwner`,
+      mutateChecker: (source) => source.replace(
+        `          } else if (directDescriptorCallIdentity(node, checker)) {
+            recordDescriptorCallSiteFailure(failures)`,
+        `          } else if (directDescriptorCallIdentity(node, checker)) {
+            void failures`
+      )
     }
   ]
   assert.equal(witnesses.length, 6)
@@ -1470,7 +1678,7 @@ assert.equal(
   }
 })
 
-test('Round 5.3 shorthand, compiler-input, augmentation, descriptor contracts, and options guards have targeted witnesses', () => {
+test('Round 5.3 shorthand, compiler-input, augmentation, and options guards retain targeted witnesses', () => {
   const compilerInputReason = capabilityReasons.compilerInput
   const addExternalInput = (root, declaration) => {
     const referencePath = resolve(root, 'packages/domain/src/canonical.ts')
@@ -1480,19 +1688,6 @@ test('Round 5.3 shorthand, compiler-input, augmentation, descriptor contracts, a
     )
     writeFileSync(resolve(root, 'packages/domain/round53-witness.d.ts'), declaration)
   }
-  const receiverMutation = (source) => source.replace(
-    'Object.getOwnPropertyDescriptor(value, "length")',
-    'Object.getOwnPropertyDescriptor(ancestors, "length")'
-  )
-  const keyMutation = (source) => source.replace(
-    'Object.getOwnPropertyDescriptor(value, key)',
-    'Object.getOwnPropertyDescriptor(value, "length")'
-  )
-  const resultFlowMutation = (source) => source.replace(
-    '        items.push(canonicalValue(descriptor.value, ancestors));',
-    `        const continued = descriptor.value;
-        items.push(canonicalValue(continued, ancestors));`
-  )
   const witnesses = [
     {
       id: 'shorthand-reference',
@@ -1533,65 +1728,6 @@ void (null as unknown as Round53WitnessVisible)`,
       )
     },
     {
-      id: 'merged-lib-declaration',
-      reason: compilerInputReason,
-      mutateFixture: (root) => addExternalInput(root, `interface ObjectConstructor {
-  getOwnPropertyDescriptor(
-    value: object,
-    key: PropertyKey,
-  ): PropertyDescriptor | undefined
-}
-`),
-      mutateChecker: (source) => source
-        .replace(
-          '    if (!compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {',
-          '    if (false && !compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {'
-        )
-        .replace(
-          [
-            '  const identities = declarations.map(typescriptLibDeclarationIdentity)',
-            '  if (identities.some((identity) => identity === null)) return null',
-            "  return `${expectedName}|${identities.sort().join(',')}`"
-          ].join('\n'),
-          [
-            '  const identities = declarations.map(typescriptLibDeclarationIdentity)',
-            '    .filter((identity) => identity !== null)',
-            '  if (identities.length === 0) return null',
-            "  return `${expectedName}|${identities.sort().join(',')}`"
-          ].join('\n')
-        )
-    },
-    {
-      id: 'descriptor-receiver',
-      reason: capabilityReasons.descriptorCallSite,
-      productionFile: 'canonical.ts',
-      mutateProduction: receiverMutation,
-      mutateChecker: (source) => source.replace(
-        '  if (observed.receiver !== expected.receiver) return false',
-        '  void observed.receiver'
-      )
-    },
-    {
-      id: 'descriptor-key',
-      reason: capabilityReasons.descriptorCallSite,
-      productionFile: 'canonical.ts',
-      mutateProduction: keyMutation,
-      mutateChecker: (source) => source.replace(
-        '  if (observed.key !== expected.key) return false',
-        '  void observed.key'
-      )
-    },
-    {
-      id: 'descriptor-result-flow',
-      reason: capabilityReasons.descriptorCallSite,
-      productionFile: 'canonical.ts',
-      mutateProduction: resultFlowMutation,
-      mutateChecker: (source) => source.replace(
-        '  if (observed.resultFlow !== expected.resultFlow) return false',
-        '  void observed.resultFlow'
-      )
-    },
-    {
       id: 'options-diagnostics',
       reason: capabilityReasons.optionsDiagnostics,
       mutateChecker: (source) => source
@@ -1602,8 +1738,8 @@ void (null as unknown as Round53WitnessVisible)`,
         )
     }
   ]
-  assert.equal(witnesses.length, 8)
-  assert.equal(new Set(witnesses.map(({ id }) => id)).size, 8)
+  assert.equal(witnesses.length, 4)
+  assert.equal(new Set(witnesses.map(({ id }) => id)).size, 4)
   for (const current of witnesses) {
     const outcome = runScopeCheckerMutation({
       mutateChecker: current.mutateChecker,
@@ -1625,6 +1761,152 @@ if (failures.length !== 0) {
 }
 process.stderr.write(target)
 process.exit(1)`
+    })
+    assertTargetedMutationFailure(outcome, current.reason, current.id)
+  }
+})
+
+test('Round 5.4 compiler input, canonical lib identity, and owner freeze have independent witnesses', () => {
+  const ownerMutation = (source) => source.replace(
+    '        items.push(canonicalValue(descriptor.value, ancestors));',
+    `        if (!ancestors.has(value)) {
+          items.push(canonicalValue(descriptor.value, ancestors));
+        }`
+  )
+  const witnesses = [
+    {
+      id: 'compiler-input-exact-set',
+      reason: capabilityReasons.compilerInput,
+      mutateFixture: (root) => {
+        const referencePath = resolve(root, 'packages/domain/src/canonical.ts')
+        writeFileSync(
+          referencePath,
+          `/// <reference path="../typescript/lib/lib.round54-witness.d.ts" />\n${readFileSync(referencePath, 'utf8')}`
+        )
+        const target = resolve(
+          root,
+          'packages/domain/typescript/lib/lib.round54-witness.d.ts'
+        )
+        mkdirSync(dirname(target), { recursive: true })
+        writeFileSync(target, 'interface Round54CompilerInputWitness {}\n')
+      },
+      mutateChecker: (source) => source.replace(
+        '    if (!compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {',
+        '    if (false && !compilerInputsEqualRegisteredManifest(root, program, sourceFiles)) {'
+      ),
+      witness: `import {
+  capabilityReasons,
+  collectCapabilityFailures,
+  repositoryRoot
+} from './scripts/check-stage09p-m0-scope.mjs'
+const target = capabilityReasons.compilerInput
+const failures = collectCapabilityFailures(repositoryRoot)
+if (failures.includes(target)) process.exit(0)
+if (failures.length !== 0) {
+  process.stderr.write('WRONG_REASON')
+  process.exit(2)
+}
+process.stderr.write(target)
+process.exit(1)`
+    },
+    {
+      id: 'canonical-lib-all-declarations',
+      reason: capabilityReasons.libDeclarationIdentity,
+      mutateChecker: (source) => source
+        .replace(
+          `  /* guard:canonical-lib-all-declarations */
+  if (identities.some((identity) => identity === null)) return null`,
+          `  /* guard:canonical-lib-all-declarations:weakened */
+  const trustedIdentities = identities.filter((identity) => identity !== null)
+  if (trustedIdentities.length === 0) return null`
+        )
+        .replace(
+          "  return `${expectedName}|${identities.sort().join(',')}`",
+          "  return `${expectedName}|${trustedIdentities.sort().join(',')}`"
+        ),
+      witness: `import { writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import ts from 'typescript'
+import {
+  capabilityReasons,
+  collectTypescriptLibSymbolIdentityFailures,
+  repositoryRoot
+} from './scripts/check-stage09p-m0-scope.mjs'
+const declarationPath = resolve(repositoryRoot, 'round54-lib-identity-witness.d.ts')
+const usePath = resolve(repositoryRoot, 'round54-lib-identity-use.ts')
+writeFileSync(declarationPath, \`interface ObjectConstructor {
+  getOwnPropertyDescriptor(value: object, key: PropertyKey): PropertyDescriptor | undefined
+}
+\`)
+writeFileSync(usePath, 'const witness = Object.getOwnPropertyDescriptor\\nvoid witness\\n')
+const program = ts.createProgram({
+  rootNames: [declarationPath, usePath],
+  options: {
+    noEmit: true,
+    strict: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.NodeNext,
+    moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    types: []
+  }
+})
+const tree = program.getSourceFile(usePath)
+const checker = program.getTypeChecker()
+let member
+const visit = (node) => {
+  if (ts.isPropertyAccessExpression(node) && node.name.text === 'getOwnPropertyDescriptor') {
+    member = checker.getSymbolAtLocation(node.name)
+  }
+  ts.forEachChild(node, visit)
+}
+visit(tree)
+const target = capabilityReasons.libDeclarationIdentity
+const failures = collectTypescriptLibSymbolIdentityFailures(
+  member,
+  'getOwnPropertyDescriptor'
+)
+if (failures.includes(target)) process.exit(0)
+if (failures.length !== 0) {
+  process.stderr.write('WRONG_REASON')
+  process.exit(2)
+}
+process.stderr.write(target)
+process.exit(1)`
+    },
+    {
+      id: 'descriptor-reviewed-owner-ast',
+      reason: capabilityReasons.descriptorCallSite,
+      productionFile: 'canonical.ts',
+      mutateProduction: ownerMutation,
+      mutateChecker: (source) => source.replace(
+        '  if (observed.ownerFingerprint !== expected.ownerFingerprint) return false',
+        '  void observed.ownerFingerprint'
+      ),
+      witness: `import {
+  capabilityReasons,
+  collectCapabilityFailures,
+  repositoryRoot
+} from './scripts/check-stage09p-m0-scope.mjs'
+const target = capabilityReasons.descriptorCallSite
+const failures = collectCapabilityFailures(repositoryRoot)
+if (failures.includes(target)) process.exit(0)
+if (failures.length !== 0) {
+  process.stderr.write('WRONG_REASON')
+  process.exit(2)
+}
+process.stderr.write(target)
+process.exit(1)`
+    }
+  ]
+  assert.equal(witnesses.length, 3)
+  assert.equal(new Set(witnesses.map(({ id }) => id)).size, 3)
+  for (const current of witnesses) {
+    const outcome = runScopeCheckerMutation({
+      mutateChecker: current.mutateChecker,
+      productionFile: current.productionFile,
+      mutateProduction: current.mutateProduction,
+      mutateFixture: current.mutateFixture,
+      witness: current.witness
     })
     assertTargetedMutationFailure(outcome, current.reason, current.id)
   }

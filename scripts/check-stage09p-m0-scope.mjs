@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync } from 'node:fs'
-import { posix, relative, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
+import { readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { dirname, posix, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import Ajv2020 from 'ajv/dist/2020.js'
@@ -470,6 +471,200 @@ const auditedParameterCalls = new Set([
 
 const frozenStrings = (values) => Object.freeze([...values].sort())
 
+const domainCompilerOptions = Object.freeze({
+  noEmit: true,
+  strict: true,
+  target: ts.ScriptTarget.ES2022,
+  module: ts.ModuleKind.NodeNext,
+  moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  types: Object.freeze([])
+})
+
+const registeredTypescriptVersion = '5.9.3'
+const registeredNobleHashesVersion = '2.0.1'
+export const registeredTypescriptLibInputs = frozenStrings([
+  'lib.decorators.d.ts',
+  'lib.decorators.legacy.d.ts',
+  'lib.dom.asynciterable.d.ts',
+  'lib.dom.d.ts',
+  'lib.dom.iterable.d.ts',
+  'lib.es2015.collection.d.ts',
+  'lib.es2015.core.d.ts',
+  'lib.es2015.d.ts',
+  'lib.es2015.generator.d.ts',
+  'lib.es2015.iterable.d.ts',
+  'lib.es2015.promise.d.ts',
+  'lib.es2015.proxy.d.ts',
+  'lib.es2015.reflect.d.ts',
+  'lib.es2015.symbol.d.ts',
+  'lib.es2015.symbol.wellknown.d.ts',
+  'lib.es2016.array.include.d.ts',
+  'lib.es2016.d.ts',
+  'lib.es2016.intl.d.ts',
+  'lib.es2017.arraybuffer.d.ts',
+  'lib.es2017.d.ts',
+  'lib.es2017.date.d.ts',
+  'lib.es2017.intl.d.ts',
+  'lib.es2017.object.d.ts',
+  'lib.es2017.sharedmemory.d.ts',
+  'lib.es2017.string.d.ts',
+  'lib.es2017.typedarrays.d.ts',
+  'lib.es2018.asyncgenerator.d.ts',
+  'lib.es2018.asynciterable.d.ts',
+  'lib.es2018.d.ts',
+  'lib.es2018.intl.d.ts',
+  'lib.es2018.promise.d.ts',
+  'lib.es2018.regexp.d.ts',
+  'lib.es2019.array.d.ts',
+  'lib.es2019.d.ts',
+  'lib.es2019.intl.d.ts',
+  'lib.es2019.object.d.ts',
+  'lib.es2019.string.d.ts',
+  'lib.es2019.symbol.d.ts',
+  'lib.es2020.bigint.d.ts',
+  'lib.es2020.d.ts',
+  'lib.es2020.date.d.ts',
+  'lib.es2020.intl.d.ts',
+  'lib.es2020.number.d.ts',
+  'lib.es2020.promise.d.ts',
+  'lib.es2020.sharedmemory.d.ts',
+  'lib.es2020.string.d.ts',
+  'lib.es2020.symbol.wellknown.d.ts',
+  'lib.es2021.d.ts',
+  'lib.es2021.intl.d.ts',
+  'lib.es2021.promise.d.ts',
+  'lib.es2021.string.d.ts',
+  'lib.es2021.weakref.d.ts',
+  'lib.es2022.array.d.ts',
+  'lib.es2022.d.ts',
+  'lib.es2022.error.d.ts',
+  'lib.es2022.full.d.ts',
+  'lib.es2022.intl.d.ts',
+  'lib.es2022.object.d.ts',
+  'lib.es2022.regexp.d.ts',
+  'lib.es2022.string.d.ts',
+  'lib.es5.d.ts',
+  'lib.scripthost.d.ts',
+  'lib.webworker.importscripts.d.ts'
+])
+export const registeredAuditedDependencyInputs = Object.freeze({
+  [`@noble/hashes@${registeredNobleHashesVersion}`]: frozenStrings([
+    '_md.d.ts',
+    'sha2.d.ts',
+    'utils.d.ts'
+  ])
+})
+
+const pathInside = (root, candidate) =>
+  candidate === root || candidate.startsWith(`${root}${sep}`)
+
+const safeRealpath = (path) => {
+  try {
+    return realpathSync(path)
+  } catch {
+    return null
+  }
+}
+
+const safePackageVersion = (root) => {
+  try {
+    const value = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+    return typeof value.version === 'string' ? value.version : null
+  } catch {
+    return null
+  }
+}
+
+const fixedTypescriptTrust = (() => {
+  try {
+    const entry = resolve(fileURLToPath(import.meta.resolve('typescript')))
+    const packageLexicalRoot = resolve(dirname(entry), '..')
+    const packageCanonicalRoot = realpathSync(packageLexicalRoot)
+    const defaultLib = resolve(ts.getDefaultLibFilePath(domainCompilerOptions))
+    const libLexicalRoot = dirname(defaultLib)
+    const libCanonicalRoot = realpathSync(libLexicalRoot)
+    const valid =
+      ts.version === registeredTypescriptVersion &&
+      safePackageVersion(packageCanonicalRoot) === registeredTypescriptVersion &&
+      pathInside(packageLexicalRoot, libLexicalRoot) &&
+      pathInside(packageCanonicalRoot, libCanonicalRoot) &&
+      realpathSync(defaultLib) === realpathSync(
+        resolve(libCanonicalRoot, 'lib.es2022.full.d.ts')
+      )
+    return Object.freeze({
+      valid,
+      lexicalRoot: libLexicalRoot,
+      canonicalRoot: libCanonicalRoot,
+      inputs: registeredTypescriptLibInputs,
+      prefix: `typescript@${registeredTypescriptVersion}`
+    })
+  } catch {
+    return Object.freeze({
+      valid: false,
+      lexicalRoot: '',
+      canonicalRoot: '',
+      inputs: registeredTypescriptLibInputs,
+      prefix: `typescript@${registeredTypescriptVersion}`
+    })
+  }
+})()
+
+const auditedDependencyTrust = (root) => {
+  const lexicalRoot = resolve(root, 'packages/domain/node_modules/@noble/hashes')
+  const canonicalRoot = safeRealpath(lexicalRoot)
+  if (canonicalRoot === null) return null
+  return Object.freeze({
+    valid: safePackageVersion(canonicalRoot) === registeredNobleHashesVersion,
+    lexicalRoot,
+    canonicalRoot,
+    inputs: registeredAuditedDependencyInputs[
+      `@noble/hashes@${registeredNobleHashesVersion}`
+    ],
+    prefix: `@noble/hashes@${registeredNobleHashesVersion}`
+  })
+}
+
+const relativeInside = (root, candidate) => {
+  const value = relative(root, candidate).replaceAll('\\', '/')
+  return value === '' || value === '..' || value.startsWith('../') || /^[A-Za-z]:\//u.test(value)
+    ? null
+    : value
+}
+
+const trustedRootInputIdentity = (fileName, trust) => {
+  if (trust === null || !trust.valid) return null
+  const lexical = resolve(fileName)
+  const canonical = safeRealpath(lexical)
+  if (canonical === null) return null
+  const canonicalRelative = relativeInside(trust.canonicalRoot, canonical)
+  if (canonicalRelative === null || !trust.inputs.includes(canonicalRelative)) return null
+  const lexicalRelative = relativeInside(trust.lexicalRoot, lexical)
+  const canonicalAsLexicalRelative = relativeInside(trust.canonicalRoot, lexical)
+  if (
+    lexicalRelative !== canonicalRelative &&
+    canonicalAsLexicalRelative !== canonicalRelative
+  ) return null
+  const registeredCanonical = safeRealpath(resolve(trust.canonicalRoot, canonicalRelative))
+  if (registeredCanonical === null || registeredCanonical !== canonical) return null
+  return `${trust.prefix}:${canonicalRelative}`
+}
+
+const repositoryInputOwnership = (root, fileName) => {
+  const lexicalRoot = resolve(root)
+  const canonicalRoot = safeRealpath(lexicalRoot)
+  const lexical = resolve(fileName)
+  const canonical = safeRealpath(lexical)
+  return Object.freeze({
+    lexicalRoot,
+    canonicalRoot,
+    lexical,
+    canonical,
+    lexicalOwned: pathInside(lexicalRoot, lexical),
+    canonicalOwned: canonicalRoot !== null && canonical !== null &&
+      pathInside(canonicalRoot, canonical)
+  })
+}
+
 export const registeredModuleExportSurfaces = Object.freeze({
   'canonical.ts': frozenStrings([
     'declaration:value:variable:canonicalJson',
@@ -595,6 +790,7 @@ export const capabilityReasons = Object.freeze({
   moduleSurface: 'domain module export surfaces must equal the seven-module registered declarations',
   publicSurface: 'domain module export surfaces must equal the seven-module registered declarations',
   compilerInput: 'domain TypeScript compiler inputs and augmentations must equal the seven-module registered manifest',
+  libDeclarationIdentity: 'domain audited TypeScript lib symbols must contain canonical fixed-compiler declarations only',
   syntaxDiagnostics: 'domain TypeScript program must have zero syntactic diagnostics',
   optionsDiagnostics: 'domain TypeScript program must have zero options diagnostics',
   semanticDiagnostics: 'domain TypeScript program must have zero semantic diagnostics'
@@ -714,10 +910,11 @@ const declarationIsLocalCallable = (declaration, sourceRoot) => {
 }
 
 const typescriptLibDeclarationIdentity = (declaration) => {
-  const match = /[/\\]typescript[/\\]lib[/\\](lib\.[^/\\]+\.d\.ts)$/u.exec(
-    declaration.getSourceFile().fileName
+  const identity = trustedRootInputIdentity(
+    declaration.getSourceFile().fileName,
+    fixedTypescriptTrust
   )
-  return match === null ? null : `${match[1]}:${ts.SyntaxKind[declaration.kind]}`
+  return identity === null ? null : `${identity}:${ts.SyntaxKind[declaration.kind]}`
 }
 
 const exactTypescriptLibSymbolIdentity = (symbol, expectedName = symbol?.getName()) => {
@@ -725,9 +922,15 @@ const exactTypescriptLibSymbolIdentity = (symbol, expectedName = symbol?.getName
   const declarations = symbol.declarations ?? []
   if (declarations.length === 0) return null
   const identities = declarations.map(typescriptLibDeclarationIdentity)
+  /* guard:canonical-lib-all-declarations */
   if (identities.some((identity) => identity === null)) return null
   return `${expectedName}|${identities.sort().join(',')}`
 }
+
+export const collectTypescriptLibSymbolIdentityFailures = (symbol, expectedName) =>
+  exactTypescriptLibSymbolIdentity(symbol, expectedName) === null
+    ? [capabilityReasons.libDeclarationIdentity]
+    : []
 
 const symbolHasAuditedLibDeclaration = (symbol, allowedNames) =>
   symbol !== undefined && allowedNames.has(symbol.getName()) &&
@@ -880,59 +1083,77 @@ export const registeredDescriptorCallSites = frozenStrings([
 ])
 
 const registeredDescriptorCallee =
-  'Object|lib.es5.d.ts:InterfaceDeclaration,lib.es5.d.ts:VariableDeclaration/getOwnPropertyDescriptor|lib.es5.d.ts:MethodSignature'
+  'Object|typescript@5.9.3:lib.es5.d.ts:InterfaceDeclaration,typescript@5.9.3:lib.es5.d.ts:VariableDeclaration/getOwnPropertyDescriptor|typescript@5.9.3:lib.es5.d.ts:MethodSignature'
 
-export const registeredDescriptorSiteContracts = Object.freeze([
+const registeredDescriptorSiteBindings = Object.freeze([
   Object.freeze({
     site: registeredDescriptorCallSites[0],
     callee: registeredDescriptorCallee,
     receiver: 'parameter:0',
     key: 'local:VariableDeclaration@242.4/259.7/242.0/251.8/262.0/261.0<-for-of(local:VariableDeclaration@242.4/259.7/242.0/244.5/262.0/261.0<-assert:ArrayType(local:VariableDeclaration@242.4/259.7/242.0/244.3/262.0/261.0<-call:lib:ownKeys(parameter:0)))',
-    resultFlow: '["binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right","member:\\"value\\">call-argument:0:local:canonical.ts:VariableDeclaration@244.7/262.0/261.0>call-argument:0:lib:push"]'
   }),
   Object.freeze({
     site: registeredDescriptorCallSites[1],
     callee: registeredDescriptorCallee,
     receiver: 'parameter:0',
     key: 'string:"length"',
-    resultFlow: '["binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right","member:\\"value\\">assert:NumberKeyword>variable-initializer:VariableDeclaration@242.4/259.7/242.0/246.0/242.1/244.4/262.0/261.0"]'
   }),
   Object.freeze({
     site: registeredDescriptorCallSites[2],
     callee: registeredDescriptorCallee,
     receiver: 'parameter:0',
     key: 'call:lib:String(local:VariableDeclaration@242.4/259.7/242.0/246.0/242.1/249.7/262.0/261.0<-number:0)',
-    resultFlow: '["binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right","member:\\"value\\">call-argument:0:local:canonical.ts:VariableDeclaration@244.7/262.0/261.0>call-argument:0:lib:push"]'
   }),
   Object.freeze({
     site: registeredDescriptorCallSites[3],
     callee: registeredDescriptorCallee,
     receiver: 'local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ObjectKeyword(parameter:0)',
     key: 'local:VariableDeclaration@242.6/251.7/242.2/244.1/262.0/261.0<-assert:StringKeyword(local:VariableDeclaration@242.6/251.7/262.0/261.0<-for-of(local:VariableDeclaration@242.6/244.5/262.0/261.0<-call:lib:ownKeys(local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ObjectKeyword(parameter:0))))',
-    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">binary:FirstAssignment:right","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left","member:\\"enumerable\\">binary:ExclamationEqualsEqualsToken:left>binary:BarBarToken:right"]'
   }),
   Object.freeze({
     site: registeredDescriptorCallSites[4],
     callee: registeredDescriptorCallee,
     receiver: 'local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ArrayType(parameter:0)',
     key: 'string:"length"',
-    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">variable-initializer:VariableDeclaration@242.6/244.5/262.0/261.0","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left>binary:BarBarToken:left","member:\\"value\\">binary:FirstBinaryOperator:left>binary:BarBarToken:right","member:\\"value\\">call-argument:0:lib:isSafeInteger>binary:BarBarToken:right>binary:BarBarToken:left"]'
   }),
   Object.freeze({
     site: registeredDescriptorCallSites[5],
     callee: registeredDescriptorCallee,
     receiver: 'local:VariableDeclaration@242.6/244.1/262.0/261.0<-assert:ArrayType(parameter:0)',
     key: 'call:lib:String(local:VariableDeclaration@242.6/249.9/262.0/261.0<-number:0)',
-    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">call-argument:0:local:decode.ts:Parameter@244.12/262.0/261.0/220.1/170.3>call-argument:0:lib:push","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left","member:\\"enumerable\\">binary:ExclamationEqualsEqualsToken:left>binary:BarBarToken:right"]'
   }),
   Object.freeze({
     site: registeredDescriptorCallSites[6],
     callee: registeredDescriptorCallee,
     receiver: 'local:VariableDeclaration@242.5/244.4/262.0/261.0<-assert:ObjectKeyword(parameter:0)',
     key: 'local:VariableDeclaration@242.5/259.7/242.0/251.4/242.2/244.1/262.0/261.0<-assert:StringKeyword(local:VariableDeclaration@242.5/259.7/242.0/251.4/262.0/261.0<-for-of(call:lib:ownKeys(local:VariableDeclaration@242.5/244.4/262.0/261.0<-assert:ObjectKeyword(parameter:0))))',
-    resultFlow: '["assert:IntersectionType>paren>member:\\"value\\">call-argument:0:local:decode.ts:VariableDeclaration@244.13/262.0/261.0>call-argument:2:lib:defineProperty","binary:EqualsEqualsEqualsToken:left>binary:BarBarToken:left>binary:BarBarToken:left","binary:InKeyword:right>paren>binary:BarBarToken:right>binary:BarBarToken:left","member:\\"enumerable\\">binary:ExclamationEqualsEqualsToken:left>binary:BarBarToken:right"]'
   })
 ])
+
+const descriptorOwnerIdentity = (site) => site.slice(0, site.indexOf('|call='))
+
+export const registeredDescriptorOwnerFingerprints = Object.freeze({
+  [descriptorOwnerIdentity(registeredDescriptorCallSites[0])]:
+    'sha256:22dc56048d1e23c1eec4ca397adcea6306f51c1c024449583fc17da7c189cdad',
+  [descriptorOwnerIdentity(registeredDescriptorCallSites[3])]:
+    'sha256:4f61f378f3e3d3ab12bad5b3c4401723d4daeea4a8265a7cf25f63a6c26e7d08',
+  [descriptorOwnerIdentity(registeredDescriptorCallSites[4])]:
+    'sha256:3ca5d995e764c3ac88d320409a829f24f6dcb973a2ba9f80877d90d3120c10ac',
+  [descriptorOwnerIdentity(registeredDescriptorCallSites[6])]:
+    'sha256:e15ae61aeee037ef3810b6aeacb6f013c1d95918b344cb31571c9c5158be3216'
+})
+
+export const registeredDescriptorSiteContracts = Object.freeze(
+  registeredDescriptorSiteBindings.map((binding) => Object.freeze({
+    site: binding.site,
+    callee: binding.callee,
+    receiver: binding.receiver,
+    key: binding.key,
+    ownerFingerprint: registeredDescriptorOwnerFingerprints[
+      descriptorOwnerIdentity(binding.site)
+    ]
+  }))
+)
 
 const directChildren = (node) => {
   const children = []
@@ -1039,6 +1260,107 @@ const sourceDeclarationIdentity = (symbol, sourceRoot) => {
   return identities.some((identity) => identity === null)
     ? null
     : identities.sort().join(',')
+}
+
+const fingerprintSymbolIdentity = (symbol, sourceRoot) => {
+  if (symbol === undefined) return null
+  const typescriptIdentity = exactTypescriptLibSymbolIdentity(symbol)
+  if (typescriptIdentity !== null) return `typescript:${typescriptIdentity}`
+  const nobleIdentity = exactAuditedNobleSymbolIdentity(
+    symbol,
+    resolve(sourceRoot, '../../..')
+  )
+  if (nobleIdentity !== null) return `dependency:${nobleIdentity}`
+  const declarations = symbol.declarations ?? []
+  if (declarations.length === 0) {
+    return `transient:${symbol.flags}:${symbol.getName()}`
+  }
+  const identities = declarations.map((declaration) => {
+    const file = relativeSourcePath(sourceRoot, declaration.getSourceFile().fileName)
+    const path = structuralContractPath(declaration.getSourceFile(), declaration)
+    return file === null || path === null
+      ? null
+      : `local:${file}:${ts.SyntaxKind[declaration.kind]}@${path}`
+  })
+  return identities.some((identity) => identity === null)
+    ? null
+    : identities.sort().join(',')
+}
+
+const callableSymbolNode = (expression) => {
+  const current = unwrapExpression(expression)
+  if (current === undefined) return null
+  if (ts.isPropertyAccessExpression(current)) return current.name
+  if (ts.isElementAccessExpression(current)) return current.argumentExpression
+  return current
+}
+
+const ownerAstShape = (node, sourceFile) => {
+  const children = directChildren(node)
+  return [
+    node.kind,
+    children.length === 0 ? node.getText(sourceFile) : null,
+    children.map((child) => ownerAstShape(child, sourceFile))
+  ]
+}
+
+const ownerPrinter = ts.createPrinter({
+  removeComments: true,
+  newLine: ts.NewLineKind.LineFeed
+})
+
+const descriptorOwnerFingerprint = (owner, checker, sourceRoot) => {
+  const sourceFile = owner.getSourceFile()
+  const ownerIdentity = functionOwnerDeclaration(owner)
+  if (ownerIdentity === null || !functionDeclarationIdentityIsExact(owner, checker)) return null
+  const declarationPath = structuralNodePath(sourceFile, ownerIdentity.declaration)
+  if (declarationPath === null) return null
+  const resolvedIdentities = []
+  let valid = true
+  const visit = (node) => {
+    if (!valid) return
+    if (ts.isIdentifier(node)) {
+      const symbol = resolvedSymbol(checker, node)
+      if (symbol !== undefined) {
+        const identity = fingerprintSymbolIdentity(symbol, sourceRoot)
+        const path = structuralContractPath(owner, node)
+        if (path === null) {
+          valid = false
+          return
+        }
+        resolvedIdentities.push(
+          `identifier:${path}:${identity ?? `guarded-unresolved:${symbol.flags}`}`
+        )
+      }
+    }
+    if (
+      ts.isCallExpression(node) || ts.isNewExpression(node) ||
+      ts.isTaggedTemplateExpression(node)
+    ) {
+      const expression = ts.isTaggedTemplateExpression(node) ? node.tag : node.expression
+      const symbolNode = callableSymbolNode(expression)
+      const identity = symbolNode === null
+        ? null
+        : fingerprintSymbolIdentity(resolvedSymbol(checker, symbolNode), sourceRoot)
+      const path = structuralContractPath(owner, node)
+      if (identity === null || path === null) {
+        valid = false
+        return
+      }
+      resolvedIdentities.push(`callable:${path}:${identity}`)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(owner)
+  if (!valid) return null
+  const material = JSON.stringify({
+    version: 1,
+    owner: `${ts.SyntaxKind[owner.kind]}@${declarationPath}`,
+    syntax: ownerPrinter.printNode(ts.EmitHint.Unspecified, owner, sourceFile),
+    shape: ownerAstShape(owner, sourceFile),
+    identities: resolvedIdentities.sort()
+  })
+  return `sha256:${createHash('sha256').update(material, 'utf8').digest('hex')}`
 }
 
 const expressionProvenanceContract = (
@@ -1158,80 +1480,6 @@ const outerExpression = (node) => {
   return current
 }
 
-const descriptorUseContract = (reference, owner, checker, sourceRoot) => {
-  const path = structuralContractPath(owner, reference)
-  if (path === null) return null
-  const flow = []
-  let current = reference
-  while (current !== owner) {
-    const parent = current.parent
-    if (parent === undefined) return null
-    if (
-      (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
-      parent.expression === current
-    ) {
-      const key = ts.isPropertyAccessExpression(parent)
-        ? parent.name.text
-        : constantString(parent.argumentExpression, checker)
-      if (key === null) return null
-      flow.push(`member:${JSON.stringify(key)}`)
-    } else if (ts.isAsExpression(parent) || ts.isTypeAssertionExpression(parent)) {
-      flow.push(`assert:${ts.SyntaxKind[parent.type.kind]}`)
-    } else if (ts.isParenthesizedExpression(parent)) {
-      flow.push('paren')
-    } else if (ts.isNonNullExpression(parent)) {
-      flow.push('non-null')
-    } else if (ts.isBinaryExpression(parent)) {
-      const side = parent.left === current ? 'left' : parent.right === current ? 'right' : null
-      if (side === null) return null
-      flow.push(`binary:${ts.SyntaxKind[parent.operatorToken.kind]}:${side}`)
-    } else if (ts.isCallExpression(parent)) {
-      const argumentIndex = parent.arguments.indexOf(current)
-      if (argumentIndex < 0) return null
-      const expression = unwrapExpression(parent.expression)
-      const symbolNode = ts.isPropertyAccessExpression(expression)
-        ? expression.name
-        : ts.isElementAccessExpression(expression)
-          ? expression.argumentExpression
-          : expression
-      const target = sourceDeclarationIdentity(resolvedSymbol(checker, symbolNode), sourceRoot)
-      if (target === null) return null
-      flow.push(`call-argument:${argumentIndex}:${target}`)
-    } else if (ts.isVariableDeclaration(parent) && parent.initializer === current) {
-      const declarationPath = declarationPathContract(owner, parent)
-      if (declarationPath === null) return null
-      flow.push(`variable-initializer:${declarationPath}`)
-    }
-    current = parent
-  }
-  return path === null ? null : flow.join('>')
-}
-
-const descriptorResultFlowContract = (declaration, owner, checker, sourceRoot) => {
-  if (!ts.isIdentifier(declaration.name)) return null
-  const symbol = resolvedSymbol(checker, declaration.name)
-  if (symbol === undefined || exactSingleDeclaration(symbol) !== declaration) return null
-  const references = []
-  let valid = true
-  const visit = (node) => {
-    if (!valid) return
-    if (ts.isIdentifier(node) && resolvedSymbol(checker, node) === symbol) {
-      if (node === declaration.name) return
-      if (!declarationInside(node, owner)) {
-        valid = false
-        return
-      }
-      const contract = descriptorUseContract(node, owner, checker, sourceRoot)
-      if (contract === null) valid = false
-      else references.push(contract)
-      return
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(owner)
-  return valid ? JSON.stringify(references.sort()) : null
-}
-
 const isDescriptorAcquisition = (node, checker) =>
   expressionOriginatesFromLibMember(
     node.expression,
@@ -1276,17 +1524,17 @@ const descriptorSiteContract = (node, checker, sourceRoot) => {
     node.arguments[0], owner, checker, sourceRoot
   )
   const key = expressionProvenanceContract(node.arguments[1], owner, checker, sourceRoot)
-  const resultFlow = descriptorResultFlowContract(declaration, owner, checker, sourceRoot)
+  const ownerFingerprint = descriptorOwnerFingerprint(owner, checker, sourceRoot)
   if (
     namespaceIdentity === null || memberIdentity === null || receiver === null || key === null ||
-    resultFlow === null
+    ownerFingerprint === null
   ) return null
   return Object.freeze({
     site: fingerprint,
     callee: `${namespaceIdentity}/${memberIdentity}`,
     receiver,
     key,
-    resultFlow
+    ownerFingerprint
   })
 }
 
@@ -1299,8 +1547,8 @@ const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
   if (observed.receiver !== expected.receiver) return false
   /* guard:descriptor-key-contract */
   if (observed.key !== expected.key) return false
-  /* guard:descriptor-result-flow-contract */
-  if (observed.resultFlow !== expected.resultFlow) return false
+  /* guard:descriptor-owner-contract */
+  if (observed.ownerFingerprint !== expected.ownerFingerprint) return false
   return true
 }
 
@@ -1472,13 +1720,22 @@ const registeredModuleSurfaceMatches = (file, tree) =>
   JSON.stringify(moduleExportSurface(tree)) ===
   JSON.stringify(registeredModuleExportSurfaces[file] ?? null)
 
-const symbolHasAuditedNobleDeclaration = (symbol) =>
-  symbol !== undefined &&
-  auditedNobleCalls.has(symbol.getName()) &&
-  symbol.declarations?.some((declaration) =>
-    /[/\\]@noble\+hashes@[^/\\]+[/\\]node_modules[/\\]@noble[/\\]hashes[/\\]/u.test(
-      declaration.getSourceFile().fileName
-    )) === true
+const exactAuditedNobleSymbolIdentity = (symbol, root) => {
+  if (symbol === undefined || !auditedNobleCalls.has(symbol.getName())) return null
+  const declarations = symbol.declarations ?? []
+  if (declarations.length === 0) return null
+  const trust = auditedDependencyTrust(root)
+  const identities = declarations.map((declaration) => {
+    const identity = trustedRootInputIdentity(declaration.getSourceFile().fileName, trust)
+    return identity === null ? null : `${identity}:${ts.SyntaxKind[declaration.kind]}`
+  })
+  return identities.some((identity) => identity === null)
+    ? null
+    : `${symbol.getName()}|${identities.sort().join(',')}`
+}
+
+const symbolHasAuditedNobleDeclaration = (symbol, root) =>
+  exactAuditedNobleSymbolIdentity(symbol, root) !== null
 
 const callHasAuditedIdentity = (node, checker, sourceRoot) => {
   const expression = unwrapExpression(node.expression)
@@ -1490,7 +1747,7 @@ const callHasAuditedIdentity = (node, checker, sourceRoot) => {
       : expression
   const symbol = resolvedSymbol(checker, symbolNode)
   if (symbolHasAuditedLibDeclaration(symbol, auditedLibCallNames)) return true
-  if (symbolHasAuditedNobleDeclaration(symbol)) return true
+  if (symbolHasAuditedNobleDeclaration(symbol, resolve(sourceRoot, '../../..'))) return true
   if (symbol?.declarations?.some((declaration) => declarationIsLocalCallable(declaration, sourceRoot))) {
     return true
   }
@@ -1527,14 +1784,7 @@ const moduleSpecifierFailure = (file, specifier, sourceSet) => {
 
 const programForDomainSources = (root, sourceFiles) => ts.createProgram({
   rootNames: sourceFiles.map((file) => resolve(root, 'packages/domain/src', file)),
-  options: {
-    noEmit: true,
-    strict: true,
-    target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    types: []
-  }
+  options: domainCompilerOptions
 })
 
 export const inspectDescriptorSiteContracts = (root = repositoryRoot) => {
@@ -1557,24 +1807,86 @@ export const inspectDescriptorSiteContracts = (root = repositoryRoot) => {
   return contracts.sort((left, right) => left.site < right.site ? -1 : left.site > right.site ? 1 : 0)
 }
 
-const compilerInputIdentity = (root, tree) => {
-  const fileName = tree.fileName
-  if (/[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u.test(fileName)) return null
-  if (/[/\\]node_modules[/\\]/u.test(fileName)) return null
-  const identity = relative(root, fileName).replaceAll('\\', '/')
-  return identity === '..' || identity.startsWith('../') || /^[A-Za-z]:\//u.test(identity)
-    ? '<external>'
-    : identity
+export const registeredProgramInputManifest = Object.freeze({
+  repository: frozenStrings(
+    manifests.sources.map((file) => `repository:packages/domain/src/${file}`)
+  ),
+  typescriptLib: frozenStrings(
+    registeredTypescriptLibInputs.map((file) =>
+      `typescript@${registeredTypescriptVersion}:${file}`)
+  ),
+  auditedDependency: frozenStrings(
+    registeredAuditedDependencyInputs[`@noble/hashes@${registeredNobleHashesVersion}`]
+      .map((file) => `@noble/hashes@${registeredNobleHashesVersion}:${file}`)
+  )
+})
+
+const registeredRepositoryInputIdentity = (root, fileName, sourceFiles) => {
+  const lexical = resolve(fileName)
+  const canonical = safeRealpath(lexical)
+  if (canonical === null) return null
+  for (const file of sourceFiles) {
+    const expectedLexical = resolve(root, 'packages/domain/src', file)
+    const expectedCanonical = safeRealpath(expectedLexical)
+    if (
+      expectedCanonical !== null && lexical === expectedLexical && canonical === expectedCanonical
+    ) return `repository:packages/domain/src/${file}`
+  }
+  return null
 }
 
-const compilerInputsEqualRegisteredManifest = (root, program, sourceFiles) => {
-  const observed = program.getSourceFiles()
-    .map((tree) => compilerInputIdentity(root, tree))
-    .filter((identity) => identity !== null)
-    .sort()
-  const expected = sourceFiles.map((file) => `packages/domain/src/${file}`).sort()
-  return JSON.stringify(observed) === JSON.stringify(expected)
+const compilerInputIdentity = (root, tree, sourceFiles) => {
+  /* Ownership is computed before any external trust-root classification. */
+  const ownership = repositoryInputOwnership(root, tree.fileName)
+  const repositoryIdentity = registeredRepositoryInputIdentity(root, tree.fileName, sourceFiles)
+  if (repositoryIdentity !== null) return repositoryIdentity
+
+  const typescriptIdentity = trustedRootInputIdentity(tree.fileName, fixedTypescriptTrust)
+  if (typescriptIdentity !== null) return typescriptIdentity
+  const dependencyIdentity = trustedRootInputIdentity(
+    tree.fileName,
+    auditedDependencyTrust(root)
+  )
+  if (dependencyIdentity !== null) return dependencyIdentity
+
+  if (ownership.lexicalOwned || ownership.canonicalOwned) return null
+  return null
 }
+
+const registeredProgramInputIdentities = (sourceFiles) => frozenStrings([
+  ...sourceFiles.map((file) => `repository:packages/domain/src/${file}`),
+  ...registeredProgramInputManifest.typescriptLib,
+  ...registeredProgramInputManifest.auditedDependency
+])
+
+const inspectProgramInputs = (root, program, sourceFiles) => {
+  const identities = program.getSourceFiles().map((tree) =>
+    compilerInputIdentity(root, tree, sourceFiles)
+  )
+  const counts = {
+    repository: identities.filter((identity) => identity?.startsWith('repository:')).length,
+    typescriptLib: identities.filter((identity) => identity?.startsWith('typescript@')).length,
+    auditedDependency: identities.filter((identity) => identity?.startsWith('@noble/hashes@')).length,
+    rejected: identities.filter((identity) => identity === null).length
+  }
+  const expected = registeredProgramInputIdentities(sourceFiles)
+  const observed = identities.every((identity) => identity !== null)
+    ? frozenStrings(identities)
+    : Object.freeze([])
+  return Object.freeze({
+    counts: Object.freeze(counts),
+    exact: identities.every((identity) => identity !== null) &&
+      JSON.stringify(observed) === JSON.stringify(expected)
+  })
+}
+
+export const programInputTrustStats = (root = repositoryRoot) => {
+  const program = programForDomainSources(root, manifests.sources)
+  return inspectProgramInputs(root, program, manifests.sources)
+}
+
+const compilerInputsEqualRegisteredManifest = (root, program, sourceFiles) =>
+  inspectProgramInputs(root, program, sourceFiles).exact
 
 const treeContainsDeclarationAugmentation = (tree) => {
   let found = false
@@ -1661,6 +1973,16 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
   if (program !== undefined) {
     const checker = program.getTypeChecker()
     const observedDescriptorCallSites = []
+    const expectedDescriptorOwners = frozenStrings([
+      ...new Set(registeredDescriptorCallSites.map(descriptorOwnerIdentity))
+    ])
+    if (
+      JSON.stringify(Object.keys(registeredDescriptorOwnerFingerprints).sort()) !==
+        JSON.stringify(expectedDescriptorOwners) ||
+      Object.values(registeredDescriptorOwnerFingerprints).some(
+        (value) => !/^sha256:[0-9a-f]{64}$/u.test(value)
+      )
+    ) recordDescriptorCallSiteFailure(failures)
     /* guard:program-diagnostics */
     try {
       if (program.getSyntacticDiagnostics().length > 0) {
@@ -2779,6 +3101,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const stringStats = governanceStringEvidenceStats()
     const stringLayerStats = governanceStringLayerStats()
     const extensionStats = schemaExtensionExecutionStats()
+    const inputStats = programInputTrustStats()
     process.stdout.write(
       `Stage 09P M0 scope check PASS (${manifests.valid.length} valid, ` +
       `${manifests.invalid.length} exclusive invalid, ${manifests.schemas.length} compiled schemas, ` +
@@ -2796,7 +3119,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `text=${stringLayerStats.differences.ajvTextVsDecoderJson}, ` +
       `schema/final=${stringLayerStats.differences.ajvRawVsFinalValidator}; schema extension executions ` +
       `unicode=${extensionStats.unicodeScalar}, utc=${extensionStats.canonicalInstant}, ` +
-      `negative-zero=${extensionStats.notNegativeZero})\n`
+      `negative-zero=${extensionStats.notNegativeZero}; Program inputs ` +
+      `repository=${inputStats.counts.repository}, TypeScript-lib=${inputStats.counts.typescriptLib}, ` +
+      `audited-dependency=${inputStats.counts.auditedDependency}, rejected=${inputStats.counts.rejected}, ` +
+      `exact=${inputStats.exact}; descriptor sites=${registeredDescriptorCallSites.length}, ` +
+      `reviewed owners=${Object.keys(registeredDescriptorOwnerFingerprints).length})\n`
     )
   }
 }
