@@ -92,16 +92,22 @@ registration 分开，总计六轴，并为每个 guard 执行独立删除 witne
 receiver。Round 5.2 把 Reflect namespace/member 与 Object/Reflect descriptor member 的
 取得本身建模为 capability event，因此 return/store/pass/export 等 forwarding-only 也会
 fail closed。七个 production module 各有固定 value/type/alias/re-export surface，不能靠
-只保护 `index.ts` 隐藏内部新增出口。property descriptor 读取只放行七个登记 call-site：
-callee 必须解析到真实 TypeScript lib declaration，owner 必须是唯一真实 symbol，参数/key/
-result flow 必须符合审核形状，且 source-file owner path 与 function 内 call path 的结构指纹
-都精确匹配。syntactic/options/semantic diagnostics 以固定安全理由失败，不回显 compiler
-原始文本。动态模块、未审核反射取得、类型擦除冒充、原型链能力、未批准 global、敏感
+只保护 `index.ts` 隐藏内部新增出口。Round 5.3 将 `{ Reflect }` shorthand 也作为
+reference-time acquisition；TypeScript Program 的 repo-owned 输入必须精确等于七个登记
+模块，relative/global augmentation 与外部 declaration merge 均 fail closed。property
+descriptor 读取只放行七个登记的 singular `Object.getOwnPropertyDescriptor` call-site：
+callee 必须解析到 exact TypeScript lib declaration，owner 必须是唯一真实 symbol，每个
+site 的 receiver declaration provenance、key expression/provenance 与 `.value`/`.enumerable`
+完整 result-flow 都分别匹配固定契约，且 source-file owner path 与 function 内 call path 的
+结构指纹精确匹配。plural `Object.getOwnPropertyDescriptors` 不在当前登记边界内。
+syntactic/options/semantic diagnostics 以固定安全理由失败，不回显 compiler 原始文本；
+options diagnostics 也有常驻 deletion witness。动态模块、未审核反射取得、类型擦除冒充、
+原型链能力、未批准 global、敏感
 computed key、未登记 export/re-export 与无法归类的 call/new/tagged template 均 fail
 closed；字符串、注释、`Reflect.ownKeys`、`Object.getPrototypeOf`、`as const` 和纯类型位置
 不会造成假判。该静态 checker 是有明确正反例的工程护栏，不是形式化安全证明。
 
-当前状态仅为 **M0 Round 5.2 implementation complete, pending total-control review**；M0
+当前状态仅为 **M0 Round 5.3 implementation complete, pending total-control review**；M0
 未 Accepted，09P 保持 In Progress，M1 未开始。
 
 ```bash

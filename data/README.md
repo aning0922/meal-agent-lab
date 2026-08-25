@@ -22,7 +22,7 @@
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 已于 2026-08-23 Accepted，但只接受治理与架构方向。09P-M0 治理内核当前为
-**M0 Round 5.2 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
+**M0 Round 5.3 implementation complete, pending total-control review**，不是 Accepted；真实知识数据 release
 仍未开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 必须共用
 以下治理信封：
 

@@ -25,12 +25,14 @@ PostgreSQL 18.4 工具；同一个 `pnpm stage09a:check` 明确输出 **14/14 PA
 
 [阶段 09P“安全知识治理与确定性产品核心闭环”](docs/plans/2026-08-stage-09p-safe-deterministic-product-core.md)
 规划已于 2026-08-23 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；
-delivery 保持 **In Progress**。09P-M0 Round 5.2 在既有 total strict decode → validation →
-validated catalog index 信任链和冻结的 51-case ordered ID registry 上，把 `Reflect` / property
-descriptor 的成员取得本身纳入 capability event；七个 production module 各自使用固定
-value/type export surface，七个合法 descriptor 调用则以真实声明身份和结构化 call-site
-指纹登记。TypeScript syntactic/options/semantic diagnostics 均固定 fail closed。该 checker
-是工程护栏，不是形式化安全证明。当前仅为 **M0 Round 5.2 implementation complete,
+delivery 保持 **In Progress**。09P-M0 Round 5.3 在既有 total strict decode → validation →
+validated catalog index 信任链和冻结的 51-case ordered ID registry 上，将 `{ Reflect }`
+shorthand 也视为 reference-time capability acquisition；TypeScript Program 的 repo-owned
+输入与 declaration augmentation 必须精确等于七模块 manifest。七个合法 singular
+`Object.getOwnPropertyDescriptor` 调用分别绑定真实 lib declaration、receiver、key 与完整
+result-flow 契约；syntactic/options/semantic diagnostics 均固定 fail closed。plural
+`Object.getOwnPropertyDescriptors` 不属于本轮已登记边界。该 checker 是工程护栏，不是
+形式化安全证明。当前仅为 **M0 Round 5.3 implementation complete,
 pending total-control review**，不是 Accepted/Pass。阶段 09B“私有测试服务器”是 P1
 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、
 审核和发布继续 Deferred。产品能力 `25%–35%` 只能作为管理估算，不是验收指标。
@@ -67,7 +69,7 @@ pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<can
 - [`services/api`](services/api/)：Fastify 模块化单体 API；
 - [`packages/contracts`](packages/contracts/)：跨端唯一契约与规则 manifest；
 - [`packages/domain`](packages/domain/)：09P-M0 的纯 TypeScript 治理解码、摘要、
-  validated catalog index 与 fail-closed 引用解析边界，Round 5.2 等待总控复验；
+  validated catalog index 与 fail-closed 引用解析边界，Round 5.3 等待总控复验；
 - [`docs`](docs/)：产品、架构、安全、计划和状态事实源；
 - [`tests`](tests/)：跨模块和安全回归；
 - [`security`](security/)：机器可读安全例外；
