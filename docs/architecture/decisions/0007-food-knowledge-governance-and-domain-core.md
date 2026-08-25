@@ -17,7 +17,10 @@
 > 递归 Schema closure、capability provenance/public exports 和 51-case 治理字符串证据
 > 建立独立 fail-closed 门禁；Round 5.1 再按 declaration/provenance 闭合 assertion、
 > Reflect alias 与 descriptor result flow，并以固定 ordered registry 将治理 ID 唯一性与
-> 稳定登记拆为独立门。当前仍仅为 **implementation complete, pending
+> 稳定登记拆为独立门；Round 5.2 将 Reflect/descriptor 成员取得本身建模为 capability
+> event，以七模块固定 export surface、真实 declaration identity、结构化 AST call-site
+> 指纹和 fail-closed TypeScript diagnostics 闭合静态证据。该 checker 仍只是工程护栏，
+> 不是形式化安全证明。当前仍仅为 **implementation complete, pending
 > total-control review**，不改变本 ADR 的 Accepted 范围，也不表示 M0 Accepted。
 
 ## 背景

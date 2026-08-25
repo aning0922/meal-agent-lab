@@ -87,13 +87,22 @@ distinct、material-input distinct、声明的 layering policy 和 oracle comple
 registration 分开，总计六轴，并为每个 guard 执行独立删除 witness。Schema closure
 递归覆盖对象与数组中的 `$ref`、`allOf`、`oneOf`、`items`、
 `additionalProperties`、`propertyNames`、string `const` 与 string `enum`，八类各有固定理由。
-生产源码能力检查使用 TypeScript declaration identity、值来源/provenance 与精确 public
-export registry，只允许静态模块和已盘点纯计算调用；`any`/`unknown`/不兼容 assertion
-不能伪装审核过的 lib receiver，Reflect 的直接/别名/element access 均按声明来源识别，
-property descriptor 读取仅放行 decoder/canonicalizer 中精确登记的调用位置、参数来源、
-key 和 result consumption。动态模块、未审核反射取得、类型擦除冒充、
-原型链能力、未批准 global、敏感 computed key、未登记 re-export 与无法归类的
-call/new/tagged template 均 fail closed，字符串和注释中的敏感词不会造成假判。
+生产源码能力检查使用 TypeScript declaration identity 与值来源/provenance，只允许静态
+模块和已盘点纯计算调用；`any`/`unknown`/不兼容 assertion 不能伪装审核过的 lib
+receiver。Round 5.2 把 Reflect namespace/member 与 Object/Reflect descriptor member 的
+取得本身建模为 capability event，因此 return/store/pass/export 等 forwarding-only 也会
+fail closed。七个 production module 各有固定 value/type/alias/re-export surface，不能靠
+只保护 `index.ts` 隐藏内部新增出口。property descriptor 读取只放行七个登记 call-site：
+callee 必须解析到真实 TypeScript lib declaration，owner 必须是唯一真实 symbol，参数/key/
+result flow 必须符合审核形状，且 source-file owner path 与 function 内 call path 的结构指纹
+都精确匹配。syntactic/options/semantic diagnostics 以固定安全理由失败，不回显 compiler
+原始文本。动态模块、未审核反射取得、类型擦除冒充、原型链能力、未批准 global、敏感
+computed key、未登记 export/re-export 与无法归类的 call/new/tagged template 均 fail
+closed；字符串、注释、`Reflect.ownKeys`、`Object.getPrototypeOf`、`as const` 和纯类型位置
+不会造成假判。该静态 checker 是有明确正反例的工程护栏，不是形式化安全证明。
+
+当前状态仅为 **M0 Round 5.2 implementation complete, pending total-control review**；M0
+未 Accepted，09P 保持 In Progress，M1 未开始。
 
 ```bash
 PATH=/Users/aipuli/.nvm/versions/node/v24.18.0/bin:$PATH \
