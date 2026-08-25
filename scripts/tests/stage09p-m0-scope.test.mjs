@@ -32,6 +32,8 @@ import {
   governanceStringReasons,
   jsonBoundaryCases,
   jsonBoundaryReasons,
+  registeredDescriptorCallSites,
+  registeredModuleExportSurfaces,
   repositoryRoot,
   schemaClosureReasons,
   schemaExtensionExecutionStats
@@ -98,7 +100,8 @@ const runScopeCheckerMutation = ({
   mutateChecker,
   witness,
   productionAppend = '',
-  productionFile = 'types.ts'
+  productionFile = 'types.ts',
+  mutateProduction = null
 }) => {
   const root = fixtureRoot(
     'data/samples/stage09p-m0',
@@ -125,6 +128,13 @@ const runScopeCheckerMutation = ({
     const productionPath = resolve(root, 'packages/domain/src', productionFile)
     writeFileSync(productionPath, `${readFileSync(productionPath, 'utf8')}\n${productionAppend}\n`)
   }
+  if (mutateProduction !== null) {
+    const productionPath = resolve(root, 'packages/domain/src', productionFile)
+    const productionSource = readFileSync(productionPath, 'utf8')
+    const productionMutant = mutateProduction(productionSource)
+    assert.notEqual(productionMutant, productionSource, 'production mutation anchor disappeared')
+    writeFileSync(productionPath, productionMutant)
+  }
   const witnessPath = resolve(root, 'round4-mutation-witness.mjs')
   writeFileSync(
     witnessPath,
@@ -149,6 +159,43 @@ const assertTargetedMutationFailure = (outcome, reason) => {
     output,
     /ENOENT|ERR_MODULE_NOT_FOUND|Cannot find package|TypeError|timed out|timeout/i
   )
+}
+
+const capabilityFixtureFailures = (source, file = 'types.ts') => {
+  const root = fixtureRoot(
+    'packages/domain/package.json',
+    'packages/domain/src',
+    'packages/domain/tests',
+    'scripts/tests/stage09p-m0-scope.test.mjs'
+  )
+  symlinkSync(
+    resolve(repositoryRoot, 'packages/domain/node_modules'),
+    resolve(root, 'packages/domain/node_modules'),
+    'dir'
+  )
+  const path = resolve(root, 'packages/domain/src', file)
+  writeFileSync(path, `${readFileSync(path, 'utf8')}\n${source}\n`)
+  return collectCapabilityFailures(root)
+}
+
+const capabilityMutatedFileFailures = (file, mutate) => {
+  const root = fixtureRoot(
+    'packages/domain/package.json',
+    'packages/domain/src',
+    'packages/domain/tests',
+    'scripts/tests/stage09p-m0-scope.test.mjs'
+  )
+  symlinkSync(
+    resolve(repositoryRoot, 'packages/domain/node_modules'),
+    resolve(root, 'packages/domain/node_modules'),
+    'dir'
+  )
+  const path = resolve(root, 'packages/domain/src', file)
+  const source = readFileSync(path, 'utf8')
+  const mutant = mutate(source)
+  assert.notEqual(mutant, source, `capability mutation anchor disappeared: ${file}`)
+  writeFileSync(path, mutant)
+  return collectCapabilityFailures(root)
 }
 
 const deleteCheckerGuard = (source, marker, statement, replacement) => {
@@ -264,7 +311,7 @@ test('capability grammar closes declaration identity, value flow, members, and m
       id: 'descriptor-object-direct',
       name: 'unaudited Object descriptor result forwarding',
       source: 'const descriptor = Object.getOwnPropertyDescriptor(() => undefined, "constructor"); export const leaked = descriptor?.value',
-      reason: capabilityReasons.descriptorAcquisition
+      reason: capabilityReasons.descriptorCallSite
     },
     {
       id: 'descriptor-method-alias',
@@ -282,19 +329,19 @@ test('capability grammar closes declaration identity, value flow, members, and m
       id: 'descriptor-reflect',
       name: 'Reflect descriptor acquisition',
       source: 'export const leaked = Reflect.getOwnPropertyDescriptor(() => undefined, "constructor")',
-      reason: capabilityReasons.descriptorAcquisition
+      reason: capabilityReasons.descriptorCallSite
     },
     {
       id: 'descriptor-dynamic-key',
       name: 'descriptor acquisition with unproved dynamic target key',
       source: 'declare const runtimeKey: PropertyKey; export const leaked = Object.getOwnPropertyDescriptor({}, runtimeKey)',
-      reason: capabilityReasons.descriptorAcquisition
+      reason: capabilityReasons.descriptorCallSite
     },
     {
       id: 'descriptor-unregistered-site',
       name: 'non-sensitive descriptor acquisition outside the audited decoder site',
       source: 'export const leaked = Object.getOwnPropertyDescriptor({}, "value")',
-      reason: capabilityReasons.descriptorAcquisition
+      reason: capabilityReasons.descriptorCallSite
     }
   ]
   assert.equal(provenanceMatrix.length, 15)
@@ -457,6 +504,130 @@ export const leakedDynamicCapability = () => erasedCallable[erasedKey]`,
   mkdirSync(dirname(nestedPath), { recursive: true })
   writeFileSync(nestedPath, 'export { decodeGovernanceRelease } from "@escape/domain"\n')
   assert.ok(collectCapabilityFailures(nestedRoot).includes(capabilityReasons.moduleGrammar))
+})
+
+test('Round 5.2 capability acquisition is rejected at reference and forwarding time', () => {
+  const reflectCases = [
+    ['namespace-direct', 'const leaked = Reflect; void leaked'],
+    ['member-direct', 'const leaked = Reflect.get; void leaked'],
+    ['namespace-alias', 'const first = Reflect; const leaked = first; void leaked'],
+    ['member-alias', 'const first = Reflect.get; const leaked = first; void leaked'],
+    ['destructured-member', 'const { get: leaked } = Reflect; void leaked'],
+    ['element-member', 'const leaked = Reflect["get"]; void leaked'],
+    ['return-forward', 'const leaked = () => Reflect; void leaked'],
+    ['store-forward', 'const leaked = { value: Reflect }; void leaked'],
+    ['pass-forward', 'const sink = (value: unknown) => value; sink(Reflect)'],
+    ['export-forward', 'export const leakedRound52Reflect = Reflect.get']
+  ]
+  const descriptorCases = [
+    ['object-member-direct', 'const leaked = Object.getOwnPropertyDescriptor; void leaked'],
+    ['receiver-alias', 'const receiver = Object; const leaked = receiver.getOwnPropertyDescriptor; void leaked'],
+    ['member-alias', 'const first = Object.getOwnPropertyDescriptor; const leaked = first; void leaked'],
+    ['destructured-member', 'const { getOwnPropertyDescriptor: leaked } = Object; void leaked'],
+    ['reflect-variant', 'const leaked = Reflect.getOwnPropertyDescriptor; void leaked'],
+    ['element-member', 'const leaked = Object["getOwnPropertyDescriptor"]; void leaked'],
+    ['return-forward', 'const leaked = () => Object.getOwnPropertyDescriptor; void leaked'],
+    ['store-forward', 'const leaked = { value: Object.getOwnPropertyDescriptor }; void leaked'],
+    ['pass-forward', 'const sink = (value: unknown) => value; sink(Object.getOwnPropertyDescriptor)'],
+    ['export-forward', 'export const leakedRound52Descriptor = Object.getOwnPropertyDescriptor']
+  ]
+  assert.equal(reflectCases.length, 10)
+  assert.equal(descriptorCases.length, 10)
+  assert.equal(new Set(reflectCases.map(([id]) => id)).size, 10)
+  assert.equal(new Set(descriptorCases.map(([id]) => id)).size, 10)
+  for (const [id, source] of reflectCases) {
+    assert.ok(
+      capabilityFixtureFailures(source).includes(capabilityReasons.reflectiveAcquisition),
+      `Reflect acquisition case: ${id}`
+    )
+  }
+  for (const [id, source] of descriptorCases) {
+    assert.ok(
+      capabilityFixtureFailures(source).includes(capabilityReasons.descriptorAcquisition),
+      `descriptor acquisition case: ${id}`
+    )
+  }
+  assert.deepEqual(capabilityFixtureFailures(`
+const safeOwnKeys = (value: object) => Reflect.ownKeys(value)
+const safePrototype = Object.getPrototypeOf({ synthetic: true })
+type SafeOwnKeys = typeof Reflect.ownKeys
+const safeLiteral = { mode: "SYNTHETIC" } as const
+void safeOwnKeys({})
+void safePrototype
+void safeLiteral
+`), [])
+})
+
+test('all seven production modules have an exact fixed export-surface registry', () => {
+  const modules = Object.keys(registeredModuleExportSurfaces).sort()
+  assert.deepEqual(modules, [
+    'canonical.ts', 'catalog.ts', 'decode.ts', 'index.ts', 'resolution.ts', 'types.ts',
+    'validation.ts'
+  ])
+  assert.equal(modules.every((file) => registeredModuleExportSurfaces[file].length > 0), true)
+  for (const [index, file] of modules.entries()) {
+    const failures = capabilityFixtureFailures(
+      `export const round52Unregistered${index} = "SYNTHETIC"`,
+      file
+    )
+    assert.ok(failures.includes(capabilityReasons.moduleSurface), file)
+  }
+  assert.ok(
+    capabilityFixtureFailures('export type Round52UnregisteredType = "SYNTHETIC"')
+      .includes(capabilityReasons.moduleSurface)
+  )
+  assert.ok(
+    capabilityFixtureFailures(
+      'const round52LocalAlias = "SYNTHETIC"; export { round52LocalAlias as round52Alias }'
+    ).includes(capabilityReasons.moduleSurface)
+  )
+})
+
+test('descriptor calls require real declaration identity and seven exact structural sites', () => {
+  assert.equal(registeredDescriptorCallSites.length, 7)
+  assert.equal(new Set(registeredDescriptorCallSites).size, 7)
+  assert.deepEqual(collectCapabilityFailures(), [])
+
+  const sameNamedSpoof = capabilityFixtureFailures(`
+const canonicalValue = (value: object, key: PropertyKey) => {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key)
+  return descriptor === undefined ? undefined : descriptor.value
+}
+void canonicalValue
+`)
+  assert.ok(sameNamedSpoof.includes(capabilityReasons.descriptorCallSite))
+
+  const declarationIdentitySpoof = capabilityMutatedFileFailures('canonical.ts', (source) =>
+    `${source.replace('const canonicalValue =', 'var canonicalValue =')}
+var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
+`
+  )
+  assert.ok(declarationIdentitySpoof.includes(capabilityReasons.descriptorCallSite))
+
+  const duplicateDeclaration = capabilityFixtureFailures(
+    'const canonicalValue = () => "SYNTHETIC_DUPLICATE"',
+    'canonical.ts'
+  )
+  assert.ok(duplicateDeclaration.includes(capabilityReasons.semanticDiagnostics))
+
+  const copiedCall = capabilityMutatedFileFailures('canonical.ts', (source) => source.replace(
+    '      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");',
+    `      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      const copiedDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (copiedDescriptor === undefined || !("value" in copiedDescriptor)) {
+        throw new TypeError("INVALID_SHAPE");
+      }`
+  ))
+  assert.ok(copiedCall.includes(capabilityReasons.descriptorCallSite))
+
+  assert.ok(
+    capabilityFixtureFailures('const unresolvedRound52: MissingRound52Type = "SYNTHETIC"')
+      .includes(capabilityReasons.semanticDiagnostics)
+  )
+  assert.ok(
+    capabilityFixtureFailures('const syntacticallyBrokenRound52 =')
+      .includes(capabilityReasons.syntaxDiagnostics)
+  )
 })
 
 test('schema mutation witness executes the same compiled 2020-12 contract checks', () => {
@@ -1042,7 +1213,7 @@ test('capability grammar guard families have executable deletion witnesses', () 
       productionFile: 'index.ts',
       productionAppend: 'export { createValidatedCatalogIndex } from "./catalog.js"',
       mutateChecker: (source) => source.replace(
-        '  failures.push(capabilityReasons.publicSurface)',
+        '  failures.push(capabilityReasons.moduleSurface)',
         '  void failures'
       )
     }
@@ -1060,6 +1231,104 @@ test('capability grammar guard families have executable deletion witnesses', () 
 assert.deepEqual(
   collectCapabilityFailures(repositoryRoot),
   [${JSON.stringify(current.reason)}],
+  ${JSON.stringify(current.reason)}
+)`
+    })
+    assertTargetedMutationFailure(outcome, current.reason)
+  }
+})
+
+test('Round 5.2 acquisition, module, declaration, diagnostics, and call-site guards have targeted witnesses', () => {
+  const copiedDescriptorMutation = (source) => source.replace(
+    '      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");',
+    `      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      const copiedDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+      if (copiedDescriptor === undefined || !("value" in copiedDescriptor)) {
+        throw new TypeError("INVALID_SHAPE");
+      }`
+  )
+  const descriptorDeclarationSpoof = (source) =>
+    `${source.replace('const canonicalValue =', 'var canonicalValue =')}
+var canonicalValue: (value: unknown, ancestors: Set<object>) => string;
+`
+  const witnesses = [
+    {
+      reason: capabilityReasons.reflectiveAcquisition,
+      productionAppend: 'const round52ReflectForward = Reflect.get; void round52ReflectForward',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.reflectiveAcquisition)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.descriptorAcquisition,
+      productionAppend: 'const round52DescriptorForward = Object.getOwnPropertyDescriptor; void round52DescriptorForward',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.descriptorAcquisition)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.moduleSurface,
+      productionAppend: 'export const round52UnregisteredSurface = "SYNTHETIC"',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.moduleSurface)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.descriptorCallSite,
+      productionFile: 'canonical.ts',
+      mutateProduction: descriptorDeclarationSpoof,
+      mutateChecker: (source) => source.replace(
+        `  return symbol !== undefined && symbol.declarations?.length === 1 &&
+    symbol.declarations[0] === declaration`,
+        '  return true'
+      )
+    },
+    {
+      reason: capabilityReasons.semanticDiagnostics,
+      productionAppend: 'const round52SemanticFailure: string = 42',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.semanticDiagnostics)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.descriptorCallSite,
+      productionFile: 'canonical.ts',
+      mutateProduction: copiedDescriptorMutation,
+      mutateChecker: (source) => source
+        .replace(
+          '  if (fingerprint === null || !registeredDescriptorCallSites.includes(fingerprint)) return false',
+          '  if (fingerprint === null) return false'
+        )
+        .replace(
+          `    /* guard:descriptor-call-site-exactness */
+    if (
+      JSON.stringify(observedDescriptorCallSites.sort()) !==
+      JSON.stringify(registeredDescriptorCallSites)
+    ) recordDescriptorCallSiteFailure(failures)`,
+          '    /* guard:descriptor-call-site-exactness:weakened */\n    void observedDescriptorCallSites'
+        )
+    }
+  ]
+  assert.equal(witnesses.length, 6)
+  for (const current of witnesses) {
+    const outcome = runScopeCheckerMutation({
+      mutateChecker: current.mutateChecker,
+      productionAppend: current.productionAppend,
+      productionFile: current.productionFile,
+      mutateProduction: current.mutateProduction,
+      witness: `import {
+  capabilityReasons,
+  collectCapabilityFailures,
+  repositoryRoot
+} from './scripts/check-stage09p-m0-scope.mjs'
+const failures = collectCapabilityFailures(repositoryRoot)
+assert.equal(
+  failures.includes(${JSON.stringify(current.reason)}),
+  true,
   ${JSON.stringify(current.reason)}
 )`
     })

@@ -468,43 +468,118 @@ const auditedParameterCalls = new Set([
   'decode.ts#result:operation'
 ])
 
-const registeredPublicReexports = Object.freeze({
-  './canonical.js': Object.freeze({
-    values: Object.freeze([
-      'canonicalJson', 'canonicalReleaseDigest', 'canonicalReleaseText', 'compareUtf8'
-    ]),
-    types: Object.freeze([])
-  }),
-  './decode.js': Object.freeze({
-    values: Object.freeze([
-      'decodeGovernanceCatalog', 'decodeGovernanceCatalogJson', 'decodeGovernanceRelease',
-      'decodeGovernanceReleaseJson', 'decodeGovernedReference'
-    ]),
-    types: Object.freeze([])
-  }),
-  './resolution.js': Object.freeze({
-    values: Object.freeze(['resolveGovernedReference']),
-    types: Object.freeze([])
-  }),
-  './validation.js': Object.freeze({
-    values: Object.freeze(['validateGovernanceCatalog', 'validateGovernanceRelease']),
-    types: Object.freeze([])
-  }),
-  './types.js': Object.freeze({
-    values: Object.freeze([
-      'datasetKinds', 'licenseStatuses', 'lifecycleStatuses', 'mappingStatuses',
-      'sourceTiers', 'withdrawalStates'
-    ]),
-    types: Object.freeze([
-      'CatalogValidationResult', 'DatasetKind', 'DecodeResult', 'DecodedGovernanceCatalog',
-      'DecodedGovernanceRelease', 'GovernanceActor', 'GovernanceAlias', 'GovernanceCatalog',
-      'GovernanceEnvelope', 'GovernanceRelease', 'GovernedReference', 'HardMapping',
-      'JsonPrimitive', 'JsonValue', 'LicenseStatus', 'LifecycleStatus', 'MappingResolution',
-      'MappingStatus', 'ReleaseValidationResult', 'SourceReference', 'SourceSnapshot',
-      'SourceTier', 'SyntheticEvidence', 'ValidatedCatalogIndex', 'ValidationIssue',
-      'ValidationIssueCode', 'ValidationResult', 'WithdrawalState'
-    ])
-  })
+const frozenStrings = (values) => Object.freeze([...values].sort())
+
+export const registeredModuleExportSurfaces = Object.freeze({
+  'canonical.ts': frozenStrings([
+    'declaration:value:variable:canonicalJson',
+    'declaration:value:variable:canonicalReleaseDigest',
+    'declaration:value:variable:canonicalReleaseText',
+    'declaration:value:variable:compareUtf8'
+  ]),
+  'catalog.ts': frozenStrings([
+    'declaration:value:variable:createValidatedCatalogIndex',
+    'declaration:value:variable:isValidatedCatalogIndex',
+    'declaration:value:variable:resolveValidatedReference'
+  ]),
+  'decode.ts': frozenStrings([
+    'declaration:value:variable:decodeGovernanceCatalog',
+    'declaration:value:variable:decodeGovernanceCatalogJson',
+    'declaration:value:variable:decodeGovernanceRelease',
+    'declaration:value:variable:decodeGovernanceReleaseJson',
+    'declaration:value:variable:decodeGovernedReference'
+  ]),
+  'index.ts': frozenStrings([
+    'reexport:type:CatalogValidationResult<-CatalogValidationResult@./types.js',
+    'reexport:type:DatasetKind<-DatasetKind@./types.js',
+    'reexport:type:DecodeResult<-DecodeResult@./types.js',
+    'reexport:type:DecodedGovernanceCatalog<-DecodedGovernanceCatalog@./types.js',
+    'reexport:type:DecodedGovernanceRelease<-DecodedGovernanceRelease@./types.js',
+    'reexport:type:GovernanceActor<-GovernanceActor@./types.js',
+    'reexport:type:GovernanceAlias<-GovernanceAlias@./types.js',
+    'reexport:type:GovernanceCatalog<-GovernanceCatalog@./types.js',
+    'reexport:type:GovernanceEnvelope<-GovernanceEnvelope@./types.js',
+    'reexport:type:GovernanceRelease<-GovernanceRelease@./types.js',
+    'reexport:type:GovernedReference<-GovernedReference@./types.js',
+    'reexport:type:HardMapping<-HardMapping@./types.js',
+    'reexport:type:JsonPrimitive<-JsonPrimitive@./types.js',
+    'reexport:type:JsonValue<-JsonValue@./types.js',
+    'reexport:type:LicenseStatus<-LicenseStatus@./types.js',
+    'reexport:type:LifecycleStatus<-LifecycleStatus@./types.js',
+    'reexport:type:MappingResolution<-MappingResolution@./types.js',
+    'reexport:type:MappingStatus<-MappingStatus@./types.js',
+    'reexport:type:ReleaseValidationResult<-ReleaseValidationResult@./types.js',
+    'reexport:type:SourceReference<-SourceReference@./types.js',
+    'reexport:type:SourceSnapshot<-SourceSnapshot@./types.js',
+    'reexport:type:SourceTier<-SourceTier@./types.js',
+    'reexport:type:SyntheticEvidence<-SyntheticEvidence@./types.js',
+    'reexport:type:ValidatedCatalogIndex<-ValidatedCatalogIndex@./types.js',
+    'reexport:type:ValidationIssue<-ValidationIssue@./types.js',
+    'reexport:type:ValidationIssueCode<-ValidationIssueCode@./types.js',
+    'reexport:type:ValidationResult<-ValidationResult@./types.js',
+    'reexport:type:WithdrawalState<-WithdrawalState@./types.js',
+    'reexport:value:canonicalJson<-canonicalJson@./canonical.js',
+    'reexport:value:canonicalReleaseDigest<-canonicalReleaseDigest@./canonical.js',
+    'reexport:value:canonicalReleaseText<-canonicalReleaseText@./canonical.js',
+    'reexport:value:compareUtf8<-compareUtf8@./canonical.js',
+    'reexport:value:datasetKinds<-datasetKinds@./types.js',
+    'reexport:value:decodeGovernanceCatalog<-decodeGovernanceCatalog@./decode.js',
+    'reexport:value:decodeGovernanceCatalogJson<-decodeGovernanceCatalogJson@./decode.js',
+    'reexport:value:decodeGovernanceRelease<-decodeGovernanceRelease@./decode.js',
+    'reexport:value:decodeGovernanceReleaseJson<-decodeGovernanceReleaseJson@./decode.js',
+    'reexport:value:decodeGovernedReference<-decodeGovernedReference@./decode.js',
+    'reexport:value:licenseStatuses<-licenseStatuses@./types.js',
+    'reexport:value:lifecycleStatuses<-lifecycleStatuses@./types.js',
+    'reexport:value:mappingStatuses<-mappingStatuses@./types.js',
+    'reexport:value:resolveGovernedReference<-resolveGovernedReference@./resolution.js',
+    'reexport:value:sourceTiers<-sourceTiers@./types.js',
+    'reexport:value:validateGovernanceCatalog<-validateGovernanceCatalog@./validation.js',
+    'reexport:value:validateGovernanceRelease<-validateGovernanceRelease@./validation.js',
+    'reexport:value:withdrawalStates<-withdrawalStates@./types.js'
+  ]),
+  'resolution.ts': frozenStrings([
+    'declaration:value:variable:resolveGovernedReference'
+  ]),
+  'types.ts': frozenStrings([
+    'declaration:type:interface:GovernanceActor',
+    'declaration:type:interface:GovernanceAlias',
+    'declaration:type:interface:GovernanceCatalog',
+    'declaration:type:interface:GovernanceEnvelope',
+    'declaration:type:interface:GovernanceRelease',
+    'declaration:type:interface:GovernedReference',
+    'declaration:type:interface:HardMapping',
+    'declaration:type:interface:SourceReference',
+    'declaration:type:interface:SourceSnapshot',
+    'declaration:type:interface:SyntheticEvidence',
+    'declaration:type:interface:ValidatedCatalogIndex',
+    'declaration:type:interface:ValidationIssue',
+    'declaration:type:type:CatalogValidationResult',
+    'declaration:type:type:DatasetKind',
+    'declaration:type:type:DecodeResult',
+    'declaration:type:type:DecodedGovernanceCatalog',
+    'declaration:type:type:DecodedGovernanceRelease',
+    'declaration:type:type:JsonPrimitive',
+    'declaration:type:type:JsonValue',
+    'declaration:type:type:LicenseStatus',
+    'declaration:type:type:LifecycleStatus',
+    'declaration:type:type:MappingResolution',
+    'declaration:type:type:MappingStatus',
+    'declaration:type:type:ReleaseValidationResult',
+    'declaration:type:type:SourceTier',
+    'declaration:type:type:ValidationIssueCode',
+    'declaration:type:type:ValidationResult',
+    'declaration:type:type:WithdrawalState',
+    'declaration:value:variable:datasetKinds',
+    'declaration:value:variable:licenseStatuses',
+    'declaration:value:variable:lifecycleStatuses',
+    'declaration:value:variable:mappingStatuses',
+    'declaration:value:variable:sourceTiers',
+    'declaration:value:variable:withdrawalStates'
+  ]),
+  'validation.ts': frozenStrings([
+    'declaration:value:variable:validateGovernanceCatalog',
+    'declaration:value:variable:validateGovernanceRelease'
+  ])
 })
 
 export const capabilityReasons = Object.freeze({
@@ -516,7 +591,12 @@ export const capabilityReasons = Object.freeze({
   valueProvenance: 'domain capability values must retain an audited declaration and acquisition provenance',
   reflectiveAcquisition: 'domain source cannot acquire capabilities through reflective lookup or aliases',
   descriptorAcquisition: 'domain property descriptor acquisition and result flow must equal the audited decoder boundary',
-  publicSurface: 'domain public exports and re-exports must equal the registered package surface'
+  descriptorCallSite: 'domain descriptor call sites must equal the registered declaration-identity structural fingerprints',
+  moduleSurface: 'domain module export surfaces must equal the seven-module registered declarations',
+  publicSurface: 'domain module export surfaces must equal the seven-module registered declarations',
+  syntaxDiagnostics: 'domain TypeScript program must have zero syntactic diagnostics',
+  optionsDiagnostics: 'domain TypeScript program must have zero options diagnostics',
+  semanticDiagnostics: 'domain TypeScript program must have zero semantic diagnostics'
 })
 
 const resolvedSymbol = (checker, node) => {
@@ -587,6 +667,15 @@ const isNonReferenceIdentifier = (node) => {
     ts.isPropertyAccessExpression(parent) && parent.name === node ||
     ts.isPropertyAssignment(parent) && parent.name === node ||
     ts.isShorthandPropertyAssignment(parent)
+}
+
+const nodeIsInTypePosition = (node) => {
+  let current = node.parent
+  while (current !== undefined && !ts.isSourceFile(current)) {
+    if (ts.isTypeNode(current)) return true
+    current = current.parent
+  }
+  return false
 }
 
 const relativeSourcePath = (sourceRoot, fileName) =>
@@ -772,25 +861,75 @@ const nearestFunctionLike = (node) => {
   return null
 }
 
-const functionIdentity = (node, sourceRoot) => {
-  const owner = nearestFunctionLike(node)
-  if (owner === null) return null
-  const file = relativeSourcePath(sourceRoot, owner.getSourceFile().fileName)
-  const name = ts.isFunctionDeclaration(owner) && owner.name !== undefined
-    ? owner.name.text
-    : (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
-        ts.isVariableDeclaration(owner.parent) && ts.isIdentifier(owner.parent.name)
-      ? owner.parent.name.text
-      : null
-  return file === null || name === null ? null : `${file}#${name}`
+export const registeredDescriptorCallSites = frozenStrings([
+  'canonical.ts|owner=FirstStatement@7/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=2|call=Block@4/TryStatement@7/Block@0/IfStatement@0/Block@1/FirstStatement@2/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1',
+  'canonical.ts|owner=FirstStatement@7/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=2|call=Block@4/TryStatement@7/Block@0/IfStatement@0/Block@1/ForStatement@7/Block@3/FirstStatement@0/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1',
+  'canonical.ts|owner=FirstStatement@7/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=2|call=Block@4/TryStatement@7/Block@0/ForOfStatement@8/Block@2/FirstStatement@1/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1',
+  'decode.ts|owner=FirstStatement@11/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=4|call=Block@6/ForOfStatement@7/Block@2/FirstStatement@2/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1',
+  'decode.ts|owner=FirstStatement@12/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=3|call=Block@6/FirstStatement@3/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1',
+  'decode.ts|owner=FirstStatement@12/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=3|call=Block@6/ForStatement@9/Block@3/FirstStatement@0/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1',
+  'decode.ts|owner=FirstStatement@13/VariableDeclarationList@0/VariableDeclaration@0|ArrowFunction|params=3|call=Block@5/TryStatement@7/Block@0/ForOfStatement@4/Block@2/FirstStatement@2/VariableDeclarationList@0/VariableDeclaration@0/CallExpression@1'
+])
+
+const directChildren = (node) => {
+  const children = []
+  node.forEachChild((child) => { children.push(child) })
+  return children
 }
 
-const auditedDescriptorFunctionCounts = Object.freeze({
-  'canonical.ts#canonicalValue': 3,
-  'decode.ts#dataObject': 1,
-  'decode.ts#dataArray': 2,
-  'decode.ts#decodeJsonValue': 1
-})
+const structuralNodePath = (owner, node) => {
+  const parts = []
+  let current = node
+  while (current !== owner) {
+    const parent = current.parent
+    if (parent === undefined) return null
+    const siblings = directChildren(parent)
+    const index = siblings.indexOf(current)
+    if (index < 0) return null
+    parts.unshift(`${ts.SyntaxKind[current.kind]}@${index}`)
+    current = parent
+  }
+  return parts.join('/')
+}
+
+const functionOwnerDeclaration = (owner) => {
+  let declaration
+  let name
+  if (ts.isFunctionDeclaration(owner) && owner.name !== undefined) {
+    declaration = owner
+    name = owner.name
+  } else if (
+    (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+    ts.isVariableDeclaration(owner.parent) && ts.isIdentifier(owner.parent.name)
+  ) {
+    declaration = owner.parent
+    name = owner.parent.name
+  } else {
+    return null
+  }
+  return { declaration, name }
+}
+
+const functionDeclarationIdentityIsExact = (owner, checker) => {
+  const identity = functionOwnerDeclaration(owner)
+  if (identity === null) return false
+  const { declaration, name } = identity
+  const symbol = resolvedSymbol(checker, name)
+  return symbol !== undefined && symbol.declarations?.length === 1 &&
+    symbol.declarations[0] === declaration
+}
+
+const descriptorCallSiteFingerprint = (node, checker, sourceRoot) => {
+  const owner = nearestFunctionLike(node)
+  if (owner === null || !functionDeclarationIdentityIsExact(owner, checker)) return null
+  const ownerIdentity = functionOwnerDeclaration(owner)
+  if (ownerIdentity === null) return null
+  const file = relativeSourcePath(sourceRoot, owner.getSourceFile().fileName)
+  const ownerPath = structuralNodePath(owner.getSourceFile(), ownerIdentity.declaration)
+  const callPath = structuralNodePath(owner, node)
+  if (file === null || ownerPath === null || callPath === null) return null
+  return `${file}|owner=${ownerPath}|${ts.SyntaxKind[owner.kind]}|params=${owner.parameters.length}|call=${callPath}`
+}
 
 const declarationInside = (declaration, owner) =>
   declaration.getSourceFile() === owner.getSourceFile() &&
@@ -935,13 +1074,14 @@ const isDescriptorAcquisition = (node, checker) =>
   )
 
 const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
-  const identity = functionIdentity(node, sourceRoot)
-  if (identity === null || auditedDescriptorFunctionCounts[identity] === undefined) return false
+  const fingerprint = descriptorCallSiteFingerprint(node, checker, sourceRoot)
+  if (fingerprint === null || !registeredDescriptorCallSites.includes(fingerprint)) return false
   const expression = unwrapExpression(node.expression)
   if (
     !ts.isPropertyAccessExpression(expression) || expression.name.text !== 'getOwnPropertyDescriptor' ||
     !ts.isIdentifier(expression.expression) ||
     !symbolHasTypescriptLibName(resolvedSymbol(checker, expression.expression), 'Object') ||
+    !symbolHasTypescriptLibName(resolvedSymbol(checker, expression.name), 'getOwnPropertyDescriptor') ||
     node.arguments.length !== 2
   ) return false
   const owner = nearestFunctionLike(node)
@@ -958,52 +1098,173 @@ const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
   return descriptorResultFlowIsAudited(declaration, owner, checker)
 }
 
-const publicReexportSurface = (tree) => {
-  const surface = {}
-  let invalidDeclaration = false
-  for (const statement of tree.statements) {
-    if (!ts.isExportDeclaration(statement)) {
-      if (statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
-        invalidDeclaration = true
-      }
-      continue
-    }
-    if (
-      statement.moduleSpecifier === undefined || !ts.isStringLiteral(statement.moduleSpecifier) ||
-      statement.exportClause === undefined || !ts.isNamedExports(statement.exportClause)
-    ) {
-      invalidDeclaration = true
-      continue
-    }
-    const specifier = statement.moduleSpecifier.text
-    const current = surface[specifier] ?? { values: [], types: [] }
-    for (const element of statement.exportClause.elements) {
-      if (element.propertyName !== undefined && element.propertyName.text !== element.name.text) {
-        invalidDeclaration = true
-      }
-      const target = statement.isTypeOnly || element.isTypeOnly ? current.types : current.values
-      target.push(element.name.text)
-    }
-    surface[specifier] = current
-  }
-  for (const current of Object.values(surface)) {
-    current.values.sort()
-    current.types.sort()
-  }
-  return { invalidDeclaration, surface }
+const memberKey = (node, checker) => ts.isPropertyAccessExpression(node)
+  ? node.name.text
+  : ts.isElementAccessExpression(node)
+    ? constantString(node.argumentExpression, checker)
+    : null
+
+const memberIsDirectCallCallee = (node) => {
+  const expression = outerExpression(node)
+  return ts.isCallExpression(expression.parent) && expression.parent.expression === expression
 }
 
-const registeredPublicSurfaceMatches = (tree) => {
-  const actual = publicReexportSurface(tree)
-  if (actual.invalidDeclaration) return false
-  const expected = Object.fromEntries(Object.entries(registeredPublicReexports).map(
-    ([specifier, current]) => [specifier, {
-      values: [...current.values].sort(),
-      types: [...current.types].sort()
-    }]
-  ))
-  return JSON.stringify(actual.surface) === JSON.stringify(expected)
+const directLibMemberIdentity = (node, checker, namespaceName, memberName) => {
+  const current = unwrapExpression(node)
+  if (
+    current === undefined ||
+    (!ts.isPropertyAccessExpression(current) && !ts.isElementAccessExpression(current)) ||
+    memberKey(current, checker) !== memberName ||
+    !expressionOriginatesFromLibNamespace(current.expression, checker, namespaceName)
+  ) return false
+  const symbolNode = ts.isPropertyAccessExpression(current)
+    ? current.name
+    : current.argumentExpression
+  return symbolHasTypescriptLibName(resolvedSymbol(checker, symbolNode), memberName)
 }
+
+const directDescriptorCallIdentity = (node, checker) => {
+  if (!ts.isCallExpression(node)) return false
+  const expression = unwrapExpression(node.expression)
+  if (
+    expression === undefined || !ts.isPropertyAccessExpression(expression) ||
+    !ts.isIdentifier(expression.expression) || expression.name.text !== 'getOwnPropertyDescriptor'
+  ) return false
+  const namespace = resolvedSymbol(checker, expression.expression)
+  return (
+    symbolHasTypescriptLibName(namespace, 'Object') ||
+    symbolHasTypescriptLibName(namespace, 'Reflect')
+  ) && symbolHasTypescriptLibName(
+    resolvedSymbol(checker, expression.name),
+    'getOwnPropertyDescriptor'
+  )
+}
+
+const bindingElementSource = (node) => {
+  if (!ts.isBindingElement(node) || !ts.isObjectBindingPattern(node.parent)) return null
+  const declaration = node.parent.parent
+  return ts.isVariableDeclaration(declaration) ? declaration.initializer ?? null : null
+}
+
+const bindingElementKey = (node, checker) => {
+  if (!ts.isBindingElement(node)) return null
+  const property = node.propertyName ?? node.name
+  if (ts.isIdentifier(property) || ts.isStringLiteralLike(property)) return property.text
+  return ts.isComputedPropertyName(property) ? constantString(property.expression, checker) : null
+}
+
+const reflectNamespaceReferenceIsAudited = (node, checker) => {
+  const reference = outerExpression(node)
+  const parent = reference.parent
+  if (
+    (!ts.isPropertyAccessExpression(parent) && !ts.isElementAccessExpression(parent)) ||
+    parent.expression !== reference
+  ) return false
+  const key = memberKey(parent, checker)
+  if (key === 'get' || key === 'getOwnPropertyDescriptor') return true
+  return key === 'ownKeys' && memberIsDirectCallCallee(parent) &&
+    directLibMemberIdentity(parent, checker, 'Reflect', 'ownKeys')
+}
+
+const referenceAcquisitionFailures = (node, checker, sourceRoot) => {
+  const reasons = []
+  if (nodeIsInTypePosition(node)) return reasons
+  if (
+    ts.isIdentifier(node) && !isNonReferenceIdentifier(node) &&
+    expressionOriginatesFromLibNamespace(node, checker, 'Reflect') &&
+    !reflectNamespaceReferenceIsAudited(node, checker)
+  ) reasons.push(capabilityReasons.reflectiveAcquisition)
+
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+    if (expressionOriginatesFromLibMember(node, checker, 'Reflect', 'get')) {
+      reasons.push(capabilityReasons.reflectiveAcquisition)
+    }
+    if (
+      expressionOriginatesFromLibMember(node, checker, 'Object', 'getOwnPropertyDescriptor') ||
+      expressionOriginatesFromLibMember(node, checker, 'Reflect', 'getOwnPropertyDescriptor')
+    ) {
+      const call = memberIsDirectCallCallee(node) ? outerExpression(node).parent : null
+      if (
+        call === null || !ts.isCallExpression(call) ||
+        (!isAuditedDescriptorAcquisition(call, checker, sourceRoot) &&
+          directDescriptorCallIdentity(call, checker) === false)
+      ) reasons.push(capabilityReasons.descriptorAcquisition)
+    }
+  }
+
+  if (ts.isBindingElement(node)) {
+    const source = bindingElementSource(node)
+    const key = bindingElementKey(node, checker)
+    if (source !== null && key === 'get' &&
+      expressionOriginatesFromLibNamespace(source, checker, 'Reflect')) {
+      reasons.push(capabilityReasons.reflectiveAcquisition)
+    }
+    if (
+      source !== null && key === 'getOwnPropertyDescriptor' &&
+      (expressionOriginatesFromLibNamespace(source, checker, 'Object') ||
+        expressionOriginatesFromLibNamespace(source, checker, 'Reflect'))
+    ) reasons.push(capabilityReasons.descriptorAcquisition)
+  }
+  return reasons
+}
+
+const exportModifiers = (node) => ({
+  exported: node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) === true,
+  defaulted: node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword) === true
+})
+
+const moduleExportSurface = (tree) => {
+  const surface = []
+  for (const statement of tree.statements) {
+    const modifiers = exportModifiers(statement)
+    if (modifiers.exported) {
+      const prefix = modifiers.defaulted ? 'declaration:default' : 'declaration'
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          surface.push(`${prefix}:value:variable:${declaration.name.getText()}`)
+        }
+      } else if (ts.isFunctionDeclaration(statement)) {
+        surface.push(`${prefix}:value:function:${statement.name?.text ?? '<anonymous>'}`)
+      } else if (ts.isClassDeclaration(statement)) {
+        surface.push(`${prefix}:both:class:${statement.name?.text ?? '<anonymous>'}`)
+      } else if (ts.isEnumDeclaration(statement)) {
+        surface.push(`${prefix}:both:enum:${statement.name.text}`)
+      } else if (ts.isInterfaceDeclaration(statement)) {
+        surface.push(`${prefix}:type:interface:${statement.name.text}`)
+      } else if (ts.isTypeAliasDeclaration(statement)) {
+        surface.push(`${prefix}:type:type:${statement.name.text}`)
+      } else {
+        surface.push(`${prefix}:unsupported:${ts.SyntaxKind[statement.kind]}`)
+      }
+    }
+    if (ts.isExportAssignment(statement)) {
+      surface.push(statement.isExportEquals ? 'export-assignment:equals' : 'export-assignment:default')
+      continue
+    }
+    if (!ts.isExportDeclaration(statement)) continue
+    const specifier = statement.moduleSpecifier !== undefined && ts.isStringLiteral(statement.moduleSpecifier)
+      ? statement.moduleSpecifier.text
+      : '<local>'
+    if (statement.exportClause === undefined) {
+      surface.push(`${statement.isTypeOnly ? 'star:type' : 'star:value'}:${specifier}`)
+      continue
+    }
+    if (ts.isNamespaceExport(statement.exportClause)) {
+      surface.push(`${statement.isTypeOnly ? 'namespace:type' : 'namespace:value'}:${statement.exportClause.name.text}@${specifier}`)
+      continue
+    }
+    for (const element of statement.exportClause.elements) {
+      const family = statement.moduleSpecifier === undefined ? 'alias' : 'reexport'
+      const kind = statement.isTypeOnly || element.isTypeOnly ? 'type' : 'value'
+      surface.push(`${family}:${kind}:${element.name.text}<-${element.propertyName?.text ?? element.name.text}@${specifier}`)
+    }
+  }
+  return surface.sort()
+}
+
+const registeredModuleSurfaceMatches = (file, tree) =>
+  JSON.stringify(moduleExportSurface(tree)) ===
+  JSON.stringify(registeredModuleExportSurfaces[file] ?? null)
 
 const symbolHasAuditedNobleDeclaration = (symbol) =>
   symbol !== undefined &&
@@ -1098,9 +1359,25 @@ const recordDescriptorAcquisitionFailure = (failures) => {
   /* guard:descriptor-acquisition */
   failures.push(capabilityReasons.descriptorAcquisition)
 }
+const recordDescriptorCallSiteFailure = (failures) => {
+  /* guard:descriptor-call-site */
+  failures.push(capabilityReasons.descriptorCallSite)
+}
 const recordPublicSurfaceFailure = (failures) => {
-  /* guard:public-surface */
-  failures.push(capabilityReasons.publicSurface)
+  /* guard:module-export-surface */
+  failures.push(capabilityReasons.moduleSurface)
+}
+const recordSyntacticDiagnosticsFailure = (failures) => {
+  /* guard:syntactic-diagnostics */
+  failures.push(capabilityReasons.syntaxDiagnostics)
+}
+const recordOptionsDiagnosticsFailure = (failures) => {
+  /* guard:options-diagnostics */
+  failures.push(capabilityReasons.optionsDiagnostics)
+}
+const recordSemanticDiagnosticsFailure = (failures) => {
+  /* guard:semantic-diagnostics */
+  failures.push(capabilityReasons.semanticDiagnostics)
 }
 
 export const collectCapabilityFailures = (root = repositoryRoot, surfaces = collectM0Surfaces(root)) => {
@@ -1124,21 +1401,40 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
   }
   if (program !== undefined) {
     const checker = program.getTypeChecker()
-    const descriptorCounts = Object.fromEntries(
-      Object.keys(auditedDescriptorFunctionCounts).map((identity) => [identity, 0])
-    )
-    if (program.getSyntacticDiagnostics().length > 0) {
-      failures.push('domain source must parse as TypeScript')
+    const observedDescriptorCallSites = []
+    /* guard:program-diagnostics */
+    try {
+      if (program.getSyntacticDiagnostics().length > 0) {
+        recordSyntacticDiagnosticsFailure(failures)
+      }
+    } catch {
+      recordSyntacticDiagnosticsFailure(failures)
     }
+    try {
+      if (program.getOptionsDiagnostics().length > 0) {
+        recordOptionsDiagnosticsFailure(failures)
+      }
+    } catch {
+      recordOptionsDiagnosticsFailure(failures)
+    }
+    try {
+      if (program.getSemanticDiagnostics().length > 0) {
+        recordSemanticDiagnosticsFailure(failures)
+      }
+    } catch {
+      recordSemanticDiagnosticsFailure(failures)
+    }
+    if (
+      JSON.stringify(Object.keys(registeredModuleExportSurfaces).sort()) !==
+      JSON.stringify([...sourceFiles].sort())
+    ) recordPublicSurfaceFailure(failures)
     for (const file of sourceFiles) {
       const tree = program.getSourceFile(resolve(sourceRoot, file))
       if (tree === undefined) {
         failures.push('domain source must be readable for AST capability analysis')
         continue
       }
-    if (file === 'index.ts' && !registeredPublicSurfaceMatches(tree)) {
-      recordPublicSurfaceFailure(failures)
-    }
+    if (!registeredModuleSurfaceMatches(file, tree)) recordPublicSurfaceFailure(failures)
     const visit = (node) => {
       if (
         ts.isImportDeclaration(node) ||
@@ -1201,15 +1497,29 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
       }
       if (
         ts.isIdentifier(node) && forbiddenCapabilityNames.has(node.text) &&
-        !isNonReferenceIdentifier(node)
+        !isNonReferenceIdentifier(node) && !nodeIsInTypePosition(node)
       ) {
         failures.push(capabilityReasons.capabilitySource)
+      }
+      /* guard:reference-acquisition */
+      for (const reason of referenceAcquisitionFailures(node, checker, sourceRoot)) {
+        if (reason === capabilityReasons.reflectiveAcquisition) {
+          recordReflectiveAcquisitionFailure(failures)
+        } else {
+          recordDescriptorAcquisitionFailure(failures)
+        }
       }
       if (ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
         if (isDescriptorAcquisition(node, checker)) {
           if (isAuditedDescriptorAcquisition(node, checker, sourceRoot)) {
-            const identity = functionIdentity(node, sourceRoot)
-            descriptorCounts[identity] += 1
+            const fingerprint = descriptorCallSiteFingerprint(node, checker, sourceRoot)
+            if (fingerprint === null) {
+              recordDescriptorCallSiteFailure(failures)
+            } else {
+              observedDescriptorCallSites.push(fingerprint)
+            }
+          } else if (directDescriptorCallIdentity(node, checker)) {
+            recordDescriptorCallSiteFailure(failures)
           } else {
             recordDescriptorAcquisitionFailure(failures)
           }
@@ -1235,9 +1545,11 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
     }
     visit(tree)
     }
-    if (Object.entries(auditedDescriptorFunctionCounts).some(
-      ([identity, count]) => descriptorCounts[identity] !== count
-    )) recordDescriptorAcquisitionFailure(failures)
+    /* guard:descriptor-call-site-exactness */
+    if (
+      JSON.stringify(observedDescriptorCallSites.sort()) !==
+      JSON.stringify(registeredDescriptorCallSites)
+    ) recordDescriptorCallSiteFailure(failures)
   }
   if (!surfaces.tests.readable || surfaces.tests.entries.some(({ type }) => type !== 'file')) {
     failures.push('M0 recursive test surface must contain registered ordinary files only')
