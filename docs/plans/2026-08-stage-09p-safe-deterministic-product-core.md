@@ -2,24 +2,26 @@
 
 - 日期：2026-08-23
 - 优先级：P0
-- 状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；delivery In Progress；M0 Round 5.3 implementation complete, pending total-control review**
+- 状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；delivery In Progress；M0 Round 5.4 implementation complete, pending total-control review**
 - 规划基线：`23450a1f3508e8030d753748291d265ad308df05`
 - 关联决策：[ADR-0007：食品知识治理与确定性领域核心](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)（`Accepted`，仅规划/架构方向）
 - 前置阶段：[阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)（`Accepted / Pass`）
 
 本文件固化阶段 09P 的范围、依赖、门禁和实施顺序。规划已由总控 Accepted，ADR-0007
 的规划/架构方向同时被接受；这**不表示阶段 09P 实施、任何里程碑或外部能力已
-Accepted / Pass**。M0 当前只有 Round 5.3 implementation candidate，仍待总控复验。
+Accepted / Pass**。M0 当前只有 Round 5.4 implementation candidate，仍待总控复验。
 
 > 实施事实更新（2026-08-25）：上述 `implementation not started` 是规划验收时状态。
-> 当前 delivery 为 **In Progress**；09P-M0 Round 5.3 保留 decode shape、Schema
-> lexical/structural、final runtime validation、八类递归 Schema closure 与治理字符串
-> 六轴门禁；capability provenance 进一步把 `{ Reflect }` shorthand 纳入 reference-time
-> acquisition，TypeScript Program 的 repo-owned 输入与 augmentation 必须精确匹配七模块
-> manifest。七个合法 singular `Object.getOwnPropertyDescriptor` call-site 分别登记真实
-> declaration identity、receiver、key 与完整 result-flow；plural API 不在本轮证明边界内。
-> TypeScript diagnostics 固定 fail closed。该 checker 是工程护栏，不是形式化安全证明。
-> 状态仅为 **M0 Round 5.3 implementation complete, pending total-control review**，未 Accepted。
+> 当前 delivery 为 **In Progress**；Round 5.3 保留为历史候选。09P-M0 Round 5.4
+> 保留 decode/Schema/final validation 分层、八类递归 Schema closure、治理字符串六轴与
+> reference-time capability 门禁，并把 TypeScript Program 输入改为 repository
+> lexical/canonical ownership-first；固定 TypeScript 实例及显式审计依赖当前形成
+> **7 个仓库模块 + 63 个 TypeScript lib 输入 + 3 个依赖 declaration 输入**的精确集合。
+> 七个合法 singular `Object.getOwnPropertyDescriptor` site 除真实 declaration identity、
+> receiver 与 key 外，还由 4 个完整 reviewed-owner AST SHA-256 指纹冻结控制流和 sink。
+> plural API 与未来未登记语法不在本轮证明边界内。TypeScript diagnostics 固定 fail
+> closed。该 checker 是工程护栏，不是形式化安全证明。状态仅为 **M0 Round 5.4
+> implementation complete, pending total-control review**，未 Accepted；M1 未开始。
 
 ## 1. 事实基线与双轨命名
 

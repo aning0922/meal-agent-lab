@@ -23,9 +23,15 @@
 > `Reflect` 引用、七模块之外的 repo-owned compiler input、relative/global declaration
 > augmentation 与 lib declaration merge 纳入固定失败边界，并把七个 singular
 > `Object.getOwnPropertyDescriptor` site 升级为逐 site 的 receiver/key/result-flow 契约。
-> plural `Object.getOwnPropertyDescriptors` 不属于本轮登记边界。该 checker 仍只是工程
-> 护栏，不是形式化安全证明。当前仍仅为 **implementation complete, pending
-> total-control review**，不改变本 ADR 的 Accepted 范围，也不表示 M0 Accepted。
+> Round 5.4 保留 Round 5.3 为历史候选，并把重复根因替换为两项架构：Program 输入先按
+> repository lexical/canonical ownership 分类，再由固定 TypeScript 实例和显式审计依赖
+> canonical root 构成精确 trust manifest；lib symbol 的全部 declaration 共用同一可信
+> 分类器。七个 singular descriptor site 则以 4 个完整 reviewed-owner AST SHA-256 指纹
+> 冻结控制流和 sink，同时保留真实 declaration、receiver 与 key 契约。plural
+> `Object.getOwnPropertyDescriptors` 与未来未登记语法不属于本轮登记边界。该 checker
+> 仍只是工程护栏，不是形式化安全证明。当前仍仅为 **Round 5.4 implementation complete,
+> pending total-control review**，不改变本 ADR 的 Accepted 范围，也不表示 M0 Accepted；
+> M1 未开始。
 
 ## 背景
 
