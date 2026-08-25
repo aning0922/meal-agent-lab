@@ -25,6 +25,7 @@ import {
   collectSchemaStringClosureFailures,
   collectSyntheticFailures,
   evaluateGovernanceStringLayers,
+  GOVERNANCE_STRING_CASE_IDS,
   governanceStringCases,
   governanceStringEvidenceStats,
   governanceStringLayerStats,
@@ -204,6 +205,101 @@ test('capability grammar closes declaration identity, value flow, members, and m
   writeFileSync(path, `${original}\nconst harmlessText = "fetch process require"\n// fetch("ignored")\n`)
   assert.deepEqual(collectCapabilityFailures(root), [])
 
+  const provenanceMatrix = [
+    {
+      id: 'assertion-unknown-double',
+      name: 'unknown double assertion impersonates an audited lib receiver',
+      source: 'const impostor = { trim: () => "LOCAL" } as unknown as string; export const witness = () => impostor.trim()',
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      id: 'assertion-any-double',
+      name: 'any double assertion impersonates an audited lib receiver',
+      source: 'const impostor = { trim: () => "LOCAL" } as any as string; export const witness = () => impostor.trim()',
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      id: 'assertion-direct',
+      name: 'direct incompatible assertion impersonates an audited lib receiver',
+      source: 'const impostor = { trim: () => "LOCAL" } as string; export const witness = () => impostor.trim()',
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      id: 'assertion-alias-chain',
+      name: 'assertion provenance survives aliases',
+      source: 'const local = { trim: () => "LOCAL" }; const erased = local as any; const impostor = erased as string; export const witness = () => impostor.trim()',
+      reason: capabilityReasons.valueProvenance
+    },
+    {
+      id: 'reflect-direct',
+      name: 'direct Reflect.get capability acquisition',
+      source: 'export const leaked = Reflect.get(() => undefined, "constructor")',
+      reason: capabilityReasons.reflectiveAcquisition
+    },
+    {
+      id: 'reflect-object-alias',
+      name: 'Reflect namespace alias capability acquisition',
+      source: 'const reflectAlias = Reflect; export const leaked = reflectAlias.get(() => undefined, "constructor")',
+      reason: capabilityReasons.reflectiveAcquisition
+    },
+    {
+      id: 'reflect-property-alias',
+      name: 'Reflect.get property alias capability acquisition',
+      source: 'const reflectGet = Reflect.get; export const leaked = reflectGet(() => undefined, "constructor")',
+      reason: capabilityReasons.reflectiveAcquisition
+    },
+    {
+      id: 'reflect-element-direct',
+      name: 'Reflect element access capability acquisition',
+      source: 'export const leaked = Reflect["get"](() => undefined, "constructor")',
+      reason: capabilityReasons.reflectiveAcquisition
+    },
+    {
+      id: 'reflect-element-alias',
+      name: 'Reflect alias element access capability acquisition',
+      source: 'const reflectAlias = Reflect; export const leaked = reflectAlias["get"](() => undefined, "constructor")',
+      reason: capabilityReasons.reflectiveAcquisition
+    },
+    {
+      id: 'descriptor-object-direct',
+      name: 'unaudited Object descriptor result forwarding',
+      source: 'const descriptor = Object.getOwnPropertyDescriptor(() => undefined, "constructor"); export const leaked = descriptor?.value',
+      reason: capabilityReasons.descriptorAcquisition
+    },
+    {
+      id: 'descriptor-method-alias',
+      name: 'descriptor method alias acquisition',
+      source: 'const descriptorLookup = Object.getOwnPropertyDescriptor; export const leaked = descriptorLookup(() => undefined, "constructor")',
+      reason: capabilityReasons.descriptorAcquisition
+    },
+    {
+      id: 'descriptor-receiver-alias',
+      name: 'Object namespace alias descriptor acquisition',
+      source: 'const objectAlias = Object; export const leaked = objectAlias.getOwnPropertyDescriptor(() => undefined, "constructor")',
+      reason: capabilityReasons.descriptorAcquisition
+    },
+    {
+      id: 'descriptor-reflect',
+      name: 'Reflect descriptor acquisition',
+      source: 'export const leaked = Reflect.getOwnPropertyDescriptor(() => undefined, "constructor")',
+      reason: capabilityReasons.descriptorAcquisition
+    },
+    {
+      id: 'descriptor-dynamic-key',
+      name: 'descriptor acquisition with unproved dynamic target key',
+      source: 'declare const runtimeKey: PropertyKey; export const leaked = Object.getOwnPropertyDescriptor({}, runtimeKey)',
+      reason: capabilityReasons.descriptorAcquisition
+    },
+    {
+      id: 'descriptor-unregistered-site',
+      name: 'non-sensitive descriptor acquisition outside the audited decoder site',
+      source: 'export const leaked = Object.getOwnPropertyDescriptor({}, "value")',
+      reason: capabilityReasons.descriptorAcquisition
+    }
+  ]
+  assert.equal(provenanceMatrix.length, 15)
+  assert.equal(new Set(provenanceMatrix.map(({ id }) => id)).size, 15)
+
   const cases = [
     {
       name: 'direct fetch',
@@ -300,21 +396,11 @@ test('capability grammar closes declaration identity, value flow, members, and m
       reason: capabilityReasons.valueProvenance
     },
     {
-      name: 'Reflect.get capability acquisition',
-      source: 'export const leakedConstructorFactory = () => Reflect.get(() => undefined, "constructor")',
-      reason: capabilityReasons.reflectiveAcquisition
-    },
-    {
       name: 'runtime-computed key after type erasure',
       source: `const keyParts = ["con", "structor"]
 const erasedKey = keyParts.join("")
 const erasedCallable = (() => undefined) as unknown as Record<string, unknown>
 export const leakedDynamicCapability = () => erasedCallable[erasedKey]`,
-      reason: capabilityReasons.valueProvenance
-    },
-    {
-      name: 'type-erased local impersonates an audited lib receiver',
-      source: 'const impostor = { trim: () => "LOCAL" } as unknown as string; export const witness = () => impostor.trim()',
       reason: capabilityReasons.valueProvenance
     },
     {
@@ -333,7 +419,8 @@ export const leakedDynamicCapability = () => erasedCallable[erasedKey]`,
       file: 'index.ts',
       source: 'export * from "./catalog.js"',
       reason: capabilityReasons.publicSurface
-    }
+    },
+    ...provenanceMatrix
   ]
   for (const current of cases) {
     const caseRoot = fixtureRoot(
@@ -461,6 +548,7 @@ test('governance string lexical contract is scalar-first across all schema famil
   assert.deepEqual(governanceStringEvidenceStats(), {
     count: 51,
     uniqueIds: 51,
+    registeredIdOrderMatches: true,
     uniqueMaterials: 51,
     expectedDifferences: {
       ajvRawVsDecoderRaw: 6,
@@ -541,15 +629,24 @@ test('governance string lexical contract is scalar-first across all schema famil
   }
 })
 
-test('governance string evidence guards report count, IDs, materials, layering, and oracle independently', () => {
+test('governance string evidence guards report count, unique IDs, registry, materials, layering, and oracle independently', () => {
   const root = fixtureRoot('data/schemas', 'data/samples/stage09p-m0')
   const base = governanceStringCases(root)
+  assert.deepEqual(base.map(({ id }) => id), GOVERNANCE_STRING_CASE_IDS)
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base), [])
   assert.deepEqual(collectGovernanceStringParityFailures(root, base.slice(0, -1)), [
     governanceStringReasons.count
   ])
   assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current) =>
     current.id === 'owner-role:astral' ? { ...current, id: 'owner-actor-id:astral' } : current
   )), [governanceStringReasons.idDistinct])
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current, index) => ({
+    ...current,
+    id: `renamed-${String(index).padStart(2, '0')}`
+  }))), [governanceStringReasons.idRegistry])
+  assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current) =>
+    current.id === 'owner-role:astral' ? { ...current, id: 'owner-role:renamed' } : current
+  )), [governanceStringReasons.idRegistry])
   assert.deepEqual(collectGovernanceStringParityFailures(root, base.map((current) =>
     current.id === 'owner-role:astral'
       ? { ...current, input: base.find(({ id }) => id === 'owner-actor-id:astral').input }
@@ -589,11 +686,29 @@ test('each governance string evidence guard has an executable deletion witness',
       mutateChecker: (source) => deleteCheckerGuard(
         source,
         '/* guard:governance-string-id-distinct */',
-        '  if (stats.uniqueIds !== stats.count) failures.push(governanceStringReasons.idDistinct)',
+        `  if (stats.count === GOVERNANCE_STRING_CASE_COUNT && stats.uniqueIds !== stats.count) {
+    failures.push(governanceStringReasons.idDistinct)
+  }`,
         '  void stats.uniqueIds'
       ),
       cases: `governanceStringCases(repositoryRoot).map((current) =>
   current.id === 'owner-role:astral' ? { ...current, id: 'owner-actor-id:astral' } : current)`
+    },
+    {
+      reason: governanceStringReasons.idRegistry,
+      mutateChecker: (source) => deleteCheckerGuard(
+        source,
+        '/* guard:governance-string-id-registry */',
+        `  if (
+    stats.count === GOVERNANCE_STRING_CASE_COUNT && stats.uniqueIds === stats.count &&
+    !stats.registeredIdOrderMatches
+  ) failures.push(governanceStringReasons.idRegistry)`,
+        '  void stats.registeredIdOrderMatches'
+      ),
+      cases: `governanceStringCases(repositoryRoot).map((current, index) => ({
+  ...current,
+  id: 'renamed-' + String(index).padStart(2, '0')
+}))`
     },
     {
       reason: governanceStringReasons.materialDistinct,
@@ -892,7 +1007,7 @@ test('capability grammar guard families have executable deletion witnesses', () 
     },
     {
       reason: capabilityReasons.valueProvenance,
-      productionAppend: 'const { constructor: leakedConstructor } = (() => undefined); void leakedConstructor',
+      productionAppend: 'const impostor = { trim: () => "LOCAL" } as any as string; export const witness = () => impostor.trim()',
       mutateChecker: (source) => source.replace(
         '  failures.push(capabilityReasons.valueProvenance)',
         '  void failures'
@@ -900,9 +1015,17 @@ test('capability grammar guard families have executable deletion witnesses', () 
     },
     {
       reason: capabilityReasons.reflectiveAcquisition,
-      productionAppend: 'const leakedConstructor = Reflect.get(() => undefined, "constructor"); void leakedConstructor',
+      productionAppend: 'const reflectAlias = Reflect; export const leaked = reflectAlias.get(() => undefined, "constructor")',
       mutateChecker: (source) => source.replace(
         '  failures.push(capabilityReasons.reflectiveAcquisition)',
+        '  void failures'
+      )
+    },
+    {
+      reason: capabilityReasons.descriptorAcquisition,
+      productionAppend: 'const descriptor = Object.getOwnPropertyDescriptor(() => undefined, "constructor"); export const leaked = descriptor?.value',
+      mutateChecker: (source) => source.replace(
+        '  failures.push(capabilityReasons.descriptorAcquisition)',
         '  void failures'
       )
     },

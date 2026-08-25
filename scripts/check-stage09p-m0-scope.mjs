@@ -514,7 +514,8 @@ export const capabilityReasons = Object.freeze({
   computedSensitive: 'domain production source cannot acquire sensitive capability through computed member keys',
   declarationIdentity: 'domain call/new/tagged-template must resolve to an audited declaration identity',
   valueProvenance: 'domain capability values must retain an audited declaration and acquisition provenance',
-  reflectiveAcquisition: 'domain source cannot acquire capabilities through reflective value lookup',
+  reflectiveAcquisition: 'domain source cannot acquire capabilities through reflective lookup or aliases',
+  descriptorAcquisition: 'domain property descriptor acquisition and result flow must equal the audited decoder boundary',
   publicSurface: 'domain public exports and re-exports must equal the registered package surface'
 })
 
@@ -635,33 +636,40 @@ const symbolHasTypescriptLibDeclaration = (symbol) =>
       declaration.getSourceFile().fileName
     )) === true
 
-const nodeContainsTypeErasure = (node) => {
+const assertionChangesValueProvenance = (node, checker) => {
+  if (!ts.isAsExpression(node) && !ts.isTypeAssertionExpression(node)) return false
+  if (node.type.getText() === 'const') return false
+  const source = checker.getTypeAtLocation(node.expression)
+  const target = checker.getTypeAtLocation(node)
+  if (
+    (source.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+    (target.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+  ) return true
+  return !checker.isTypeAssignableTo(source, target) &&
+    !checker.isTypeAssignableTo(target, source)
+}
+
+const nodeContainsTypeErasure = (node, checker) => {
   let found = false
   const visit = (child) => {
-    if (
-      ts.isAsExpression(child) || ts.isTypeAssertionExpression(child)
-    ) {
-      const sourceType = child.expression.getText()
-      const targetType = child.type.getText()
-      if (sourceType.length > 0 && (targetType === 'unknown' || child.expression.getText().includes(' as unknown'))) {
-        found = true
-      }
-    }
+    if (assertionChangesValueProvenance(child, checker)) found = true
     if (!found) ts.forEachChild(child, visit)
   }
   visit(node)
   return found
 }
 
-const expressionHasTypeErasedProvenance = (expression, checker) => {
+const expressionHasTypeErasedProvenance = (expression, checker, seen = new Set()) => {
   const current = unwrapExpression(expression)
   if (current === undefined) return false
-  if (nodeContainsTypeErasure(expression)) return true
+  if (nodeContainsTypeErasure(expression, checker)) return true
   if (!ts.isIdentifier(current)) return false
   const symbol = resolvedSymbol(checker, current)
-  return symbol?.declarations?.some((declaration) =>
+  if (symbol === undefined || seen.has(symbol)) return false
+  seen.add(symbol)
+  return symbol.declarations?.some((declaration) =>
     ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined &&
-    nodeContainsTypeErasure(declaration.initializer)
+    expressionHasTypeErasedProvenance(declaration.initializer, checker, seen)
   ) === true
 }
 
@@ -673,17 +681,281 @@ const callUsesTypeErasedReceiver = (node, checker) => {
   ) && expressionHasTypeErasedProvenance(expression.expression, checker)
 }
 
-const isReflectiveValueLookup = (node, checker) => {
-  const expression = unwrapExpression(node.expression)
-  if (!ts.isPropertyAccessExpression(expression) && !ts.isElementAccessExpression(expression)) {
-    return false
+const symbolHasTypescriptLibName = (symbol, expectedName, filePattern = /[/\\]typescript[/\\]lib[/\\]lib\.[^/\\]+\.d\.ts$/u) =>
+  symbol !== undefined && symbol.getName() === expectedName &&
+  symbol.declarations?.some((declaration) =>
+    filePattern.test(declaration.getSourceFile().fileName)
+  ) === true
+
+const expressionOriginatesFromLibNamespace = (
+  expression,
+  checker,
+  expectedName,
+  seen = new Set()
+) => {
+  const current = unwrapExpression(expression)
+  if (current === undefined || !ts.isIdentifier(current)) return false
+  const symbol = resolvedSymbol(checker, current)
+  if (symbol === undefined || seen.has(symbol)) return false
+  if (symbolHasTypescriptLibName(symbol, expectedName)) return true
+  seen.add(symbol)
+  return symbol.declarations?.some((declaration) =>
+    ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined &&
+    expressionOriginatesFromLibNamespace(
+      declaration.initializer,
+      checker,
+      expectedName,
+      seen
+    )
+  ) === true
+}
+
+const expressionOriginatesFromLibMember = (
+  expression,
+  checker,
+  namespaceName,
+  memberName,
+  seen = new Set()
+) => {
+  const current = unwrapExpression(expression)
+  if (current === undefined) return false
+  if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+    const key = ts.isPropertyAccessExpression(current)
+      ? current.name.text
+      : constantString(current.argumentExpression, checker)
+    return key === memberName && expressionOriginatesFromLibNamespace(
+      current.expression,
+      checker,
+      namespaceName
+    )
   }
-  const key = ts.isPropertyAccessExpression(expression)
-    ? expression.name.text
-    : constantString(expression.argumentExpression, checker)
-  const receiver = unwrapExpression(expression.expression)
-  return key === 'get' && ts.isIdentifier(receiver) && receiver.text === 'Reflect' &&
-    symbolHasTypescriptLibDeclaration(resolvedSymbol(checker, receiver))
+  if (!ts.isIdentifier(current)) return false
+  const symbol = resolvedSymbol(checker, current)
+  if (symbol === undefined || seen.has(symbol)) return false
+  seen.add(symbol)
+  return symbol.declarations?.some((declaration) => {
+    if (ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined) {
+      return expressionOriginatesFromLibMember(
+        declaration.initializer,
+        checker,
+        namespaceName,
+        memberName,
+        seen
+      )
+    }
+    if (!ts.isBindingElement(declaration)) return false
+    const property = declaration.propertyName ?? declaration.name
+    const key = ts.isIdentifier(property) || ts.isStringLiteralLike(property)
+      ? property.text
+      : ts.isComputedPropertyName(property)
+        ? constantString(property.expression, checker)
+        : null
+    const variable = declaration.parent.parent
+    return key === memberName && ts.isVariableDeclaration(variable) &&
+      variable.initializer !== undefined && expressionOriginatesFromLibNamespace(
+        variable.initializer,
+        checker,
+        namespaceName
+      )
+  }) === true
+}
+
+const isReflectiveValueLookup = (node, checker) =>
+  expressionOriginatesFromLibMember(node.expression, checker, 'Reflect', 'get')
+
+const nearestFunctionLike = (node) => {
+  let current = node.parent
+  while (current !== undefined) {
+    if (ts.isFunctionLike(current)) return current
+    current = current.parent
+  }
+  return null
+}
+
+const functionIdentity = (node, sourceRoot) => {
+  const owner = nearestFunctionLike(node)
+  if (owner === null) return null
+  const file = relativeSourcePath(sourceRoot, owner.getSourceFile().fileName)
+  const name = ts.isFunctionDeclaration(owner) && owner.name !== undefined
+    ? owner.name.text
+    : (ts.isArrowFunction(owner) || ts.isFunctionExpression(owner)) &&
+        ts.isVariableDeclaration(owner.parent) && ts.isIdentifier(owner.parent.name)
+      ? owner.parent.name.text
+      : null
+  return file === null || name === null ? null : `${file}#${name}`
+}
+
+const auditedDescriptorFunctionCounts = Object.freeze({
+  'canonical.ts#canonicalValue': 3,
+  'decode.ts#dataObject': 1,
+  'decode.ts#dataArray': 2,
+  'decode.ts#decodeJsonValue': 1
+})
+
+const declarationInside = (declaration, owner) =>
+  declaration.getSourceFile() === owner.getSourceFile() &&
+  declaration.pos >= owner.pos && declaration.end <= owner.end
+
+const expressionOriginatesFromFunctionParameter = (
+  expression,
+  owner,
+  checker,
+  seen = new Set()
+) => {
+  const current = unwrapExpression(expression)
+  if (current === undefined || !ts.isIdentifier(current)) return false
+  const symbol = resolvedSymbol(checker, current)
+  if (symbol === undefined || seen.has(symbol)) return false
+  if (symbol.declarations?.some((declaration) =>
+    ts.isParameter(declaration) && declaration.parent === owner
+  )) return true
+  seen.add(symbol)
+  return symbol.declarations?.some((declaration) =>
+    ts.isVariableDeclaration(declaration) && declarationInside(declaration, owner) &&
+    declaration.initializer !== undefined && expressionOriginatesFromFunctionParameter(
+      declaration.initializer,
+      owner,
+      checker,
+      seen
+    )
+  ) === true
+}
+
+const expressionIsFunctionLocalKey = (expression, owner, checker) => {
+  const constant = constantString(expression, checker)
+  if (constant !== null) return constant === 'length'
+  const current = unwrapExpression(expression)
+  if (current === undefined) return false
+  if (ts.isIdentifier(current)) {
+    const symbol = resolvedSymbol(checker, current)
+    return symbol?.declarations?.some((declaration) => {
+      if (!ts.isVariableDeclaration(declaration) || !declarationInside(declaration, owner)) {
+        return false
+      }
+      const list = declaration.parent
+      const statement = ts.isVariableDeclarationList(list) ? list.parent : null
+      if (statement !== null && (ts.isForOfStatement(statement) || ts.isForStatement(statement))) {
+        return true
+      }
+      return declaration.initializer !== undefined && expressionIsFunctionLocalKey(
+        declaration.initializer,
+        owner,
+        checker
+      )
+    }) === true
+  }
+  if (
+    ts.isCallExpression(current) && current.arguments.length === 1 &&
+    symbolHasAuditedLibDeclaration(
+      resolvedSymbol(checker, unwrapExpression(current.expression)),
+      new Set(['String'])
+    )
+  ) return expressionIsFunctionLocalKey(current.arguments[0], owner, checker)
+  return false
+}
+
+const outerExpression = (node) => {
+  let current = node
+  while (
+    ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent) ||
+    ts.isTypeAssertionExpression(current.parent) || ts.isNonNullExpression(current.parent)
+  ) current = current.parent
+  return current
+}
+
+const descriptorPropertyUseIsAudited = (access) => {
+  const use = outerExpression(access)
+  const parent = use.parent
+  if (ts.isBinaryExpression(parent)) return true
+  if (ts.isVariableDeclaration(parent) && parent.initializer === use) return true
+  if (ts.isCallExpression(parent) && parent.arguments.includes(use)) return true
+  return false
+}
+
+const descriptorResultFlowIsAudited = (declaration, owner, checker) => {
+  if (!ts.isIdentifier(declaration.name)) return false
+  const symbol = resolvedSymbol(checker, declaration.name)
+  if (symbol === undefined) return false
+  let valid = true
+  const visit = (node) => {
+    if (!valid) return
+    if (ts.isIdentifier(node) && resolvedSymbol(checker, node) === symbol) {
+      if (node === declaration.name) return
+      if (!declarationInside(node, owner)) {
+        valid = false
+        return
+      }
+      const reference = outerExpression(node)
+      const parent = reference.parent
+      const isGlobalUndefined = (candidate) => {
+        if (!ts.isIdentifier(candidate) || candidate.text !== 'undefined') return false
+        const symbol = resolvedSymbol(checker, candidate)
+        return symbol?.getName() === 'undefined' && (symbol.declarations?.length ?? 0) === 0
+      }
+      if (
+        ts.isBinaryExpression(parent) && (
+          parent.operatorToken.kind === ts.SyntaxKind.InKeyword && parent.right === reference ||
+          parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+            (parent.left === reference && isGlobalUndefined(parent.right) ||
+              parent.right === reference && isGlobalUndefined(parent.left))
+        )
+      ) return
+      if (
+        (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+        parent.expression === reference
+      ) {
+        const key = ts.isPropertyAccessExpression(parent)
+          ? parent.name.text
+          : constantString(parent.argumentExpression, checker)
+        if (
+          (key === 'value' || key === 'enumerable') &&
+          descriptorPropertyUseIsAudited(parent)
+        ) return
+      }
+      valid = false
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(owner)
+  return valid
+}
+
+const isDescriptorAcquisition = (node, checker) =>
+  expressionOriginatesFromLibMember(
+    node.expression,
+    checker,
+    'Object',
+    'getOwnPropertyDescriptor'
+  ) || expressionOriginatesFromLibMember(
+    node.expression,
+    checker,
+    'Reflect',
+    'getOwnPropertyDescriptor'
+  )
+
+const isAuditedDescriptorAcquisition = (node, checker, sourceRoot) => {
+  const identity = functionIdentity(node, sourceRoot)
+  if (identity === null || auditedDescriptorFunctionCounts[identity] === undefined) return false
+  const expression = unwrapExpression(node.expression)
+  if (
+    !ts.isPropertyAccessExpression(expression) || expression.name.text !== 'getOwnPropertyDescriptor' ||
+    !ts.isIdentifier(expression.expression) ||
+    !symbolHasTypescriptLibName(resolvedSymbol(checker, expression.expression), 'Object') ||
+    node.arguments.length !== 2
+  ) return false
+  const owner = nearestFunctionLike(node)
+  if (
+    owner === null || !expressionOriginatesFromFunctionParameter(node.arguments[0], owner, checker) ||
+    !expressionIsFunctionLocalKey(node.arguments[1], owner, checker)
+  ) return false
+  const declaration = node.parent
+  if (
+    !ts.isVariableDeclaration(declaration) || declaration.initializer !== node ||
+    !ts.isVariableDeclarationList(declaration.parent) ||
+    (declaration.parent.flags & ts.NodeFlags.Const) === 0
+  ) return false
+  return descriptorResultFlowIsAudited(declaration, owner, checker)
 }
 
 const publicReexportSurface = (tree) => {
@@ -822,6 +1094,10 @@ const recordReflectiveAcquisitionFailure = (failures) => {
   /* guard:reflective-acquisition */
   failures.push(capabilityReasons.reflectiveAcquisition)
 }
+const recordDescriptorAcquisitionFailure = (failures) => {
+  /* guard:descriptor-acquisition */
+  failures.push(capabilityReasons.descriptorAcquisition)
+}
 const recordPublicSurfaceFailure = (failures) => {
   /* guard:public-surface */
   failures.push(capabilityReasons.publicSurface)
@@ -848,6 +1124,9 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
   }
   if (program !== undefined) {
     const checker = program.getTypeChecker()
+    const descriptorCounts = Object.fromEntries(
+      Object.keys(auditedDescriptorFunctionCounts).map((identity) => [identity, 0])
+    )
     if (program.getSyntacticDiagnostics().length > 0) {
       failures.push('domain source must parse as TypeScript')
     }
@@ -899,7 +1178,10 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
             (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
             type.getCallSignatures().length > 0 || type.getConstructSignatures().length > 0
           ) recordComputedSensitiveFailure(failures)
-          if (expressionHasTypeErasedProvenance(node.expression, checker)) {
+          const assignmentTarget = ts.isBinaryExpression(node.parent) &&
+            node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            node.parent.left === node
+          if (!assignmentTarget && expressionHasTypeErasedProvenance(node.expression, checker)) {
             recordValueProvenanceFailure(failures)
           }
         }
@@ -924,7 +1206,14 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
         failures.push(capabilityReasons.capabilitySource)
       }
       if (ts.isCallExpression(node) && node.expression.kind !== ts.SyntaxKind.ImportKeyword) {
-        if (isReflectiveValueLookup(node, checker)) {
+        if (isDescriptorAcquisition(node, checker)) {
+          if (isAuditedDescriptorAcquisition(node, checker, sourceRoot)) {
+            const identity = functionIdentity(node, sourceRoot)
+            descriptorCounts[identity] += 1
+          } else {
+            recordDescriptorAcquisitionFailure(failures)
+          }
+        } else if (isReflectiveValueLookup(node, checker)) {
           recordReflectiveAcquisitionFailure(failures)
         } else if (callUsesTypeErasedReceiver(node, checker)) {
           recordValueProvenanceFailure(failures)
@@ -946,6 +1235,9 @@ export const collectCapabilityFailures = (root = repositoryRoot, surfaces = coll
     }
     visit(tree)
     }
+    if (Object.entries(auditedDescriptorFunctionCounts).some(
+      ([identity, count]) => descriptorCounts[identity] !== count
+    )) recordDescriptorAcquisitionFailure(failures)
   }
   if (!surfaces.tests.readable || surfaces.tests.entries.some(({ type }) => type !== 'file')) {
     failures.push('M0 recursive test surface must contain registered ordinary files only')
@@ -1322,6 +1614,59 @@ const validMappingFixture = () => ({
 })
 
 export const GOVERNANCE_STRING_CASE_COUNT = 51
+export const GOVERNANCE_STRING_CASE_IDS = Object.freeze([
+  'root-schema:lone-high',
+  'root-schema:empty',
+  'root-schema:astral',
+  'dataset-id:lone-high',
+  'dataset-id:null',
+  'dataset-id:astral',
+  'release-id:lone-high',
+  'release-id:lone-low',
+  'release-id:astral',
+  'owner-actor-id:lone-high',
+  'owner-actor-id:lone-low',
+  'owner-actor-id:astral',
+  'owner-role:lone-high',
+  'owner-role:lone-low',
+  'owner-role:astral',
+  'source-locator:lone-high',
+  'source-locator:lone-low',
+  'source-locator:astral',
+  'alias-value:lone-high',
+  'alias-value:lone-low',
+  'alias-value:astral',
+  'region-array-item:lone-high',
+  'region-array-item:lone-low',
+  'region-array-item:astral',
+  'language-array-item:lone-high',
+  'language-array-item:lone-low',
+  'language-array-item:astral',
+  'nullable-license-reference:lone-high',
+  'nullable-license-reference:lone-low',
+  'nullable-license-reference:astral',
+  'enum-dataset-kind:invalid-enum',
+  'enum-dataset-kind:lone-low',
+  'enum-dataset-kind:valid-enum',
+  'uuid-entity-id:invalid-uuid',
+  'uuid-entity-id:lone-low',
+  'uuid-entity-id:valid-uuid',
+  'digest-content-digest:invalid-digest',
+  'digest-content-digest:lone-low',
+  'digest-content-digest:valid-digest',
+  'timestamp-reviewed-at:invalid-timestamp',
+  'timestamp-reviewed-at:lone-low',
+  'timestamp-reviewed-at:valid-timestamp',
+  'mapping-id:lone-high',
+  'mapping-id:invalid-pattern',
+  'mapping-id:valid-family-control',
+  'mapping-dataset-id:lone-high',
+  'mapping-dataset-id:invalid-pattern',
+  'mapping-dataset-id:valid-family-control',
+  'mapping-entity-id:lone-high',
+  'mapping-entity-id:invalid-uuid',
+  'mapping-entity-id:valid-family-control'
+])
 export const governanceStringCases = (root = repositoryRoot) => {
   const baseText = readFileSync(
     resolve(fixtureRoot(root), 'valid/food-concept.json'),
@@ -1437,7 +1782,8 @@ export const governanceStringCases = (root = repositoryRoot) => {
 
 export const governanceStringReasons = Object.freeze({
   count: 'governance string evidence case count must remain exactly 51',
-  idDistinct: 'governance string evidence case IDs must remain unique and stable',
+  idDistinct: 'governance string evidence case IDs must remain unique',
+  idRegistry: 'governance string evidence case IDs must equal the registered order',
   materialDistinct: 'governance string evidence input materials must remain distinct',
   layering: 'governance string declared schema/decode/final-validator layering policy must match',
   oracle: 'governance string evidence oracle must execute every declared layer successfully'
@@ -1464,6 +1810,8 @@ export const governanceStringEvidenceStats = (cases = governanceStringCases()) =
   return Object.freeze({
     count: cases.length,
     uniqueIds: new Set(cases.map(({ id }) => id)).size,
+    registeredIdOrderMatches: cases.length === GOVERNANCE_STRING_CASE_IDS.length &&
+      cases.every(({ id }, index) => id === GOVERNANCE_STRING_CASE_IDS[index]),
     uniqueMaterials: new Set(cases.map(({ kind, input }) =>
       boundaryIdentity(ownJsonObject([['kind', kind], ['input', input]])))).size,
     expectedDifferences: Object.freeze(expectedDifferences),
@@ -1560,7 +1908,14 @@ export const collectGovernanceStringParityFailures = (
   /* guard:governance-string-count */
   if (stats.count !== GOVERNANCE_STRING_CASE_COUNT) failures.push(governanceStringReasons.count)
   /* guard:governance-string-id-distinct */
-  if (stats.uniqueIds !== stats.count) failures.push(governanceStringReasons.idDistinct)
+  if (stats.count === GOVERNANCE_STRING_CASE_COUNT && stats.uniqueIds !== stats.count) {
+    failures.push(governanceStringReasons.idDistinct)
+  }
+  /* guard:governance-string-id-registry */
+  if (
+    stats.count === GOVERNANCE_STRING_CASE_COUNT && stats.uniqueIds === stats.count &&
+    !stats.registeredIdOrderMatches
+  ) failures.push(governanceStringReasons.idRegistry)
   /* guard:governance-string-material-distinct */
   if (stats.uniqueMaterials !== stats.count) failures.push(governanceStringReasons.materialDistinct)
   if (cases.some((current) => !validGovernancePolicy(current.expected))) {
@@ -1857,6 +2212,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       `${boundaryStats.count} JSON boundary parity cases / ${boundaryStats.uniqueIds} unique IDs / ` +
       `${boundaryStats.uniqueMaterials} unique material inputs + ${stringStats.count} governance ` +
       `string layered cases / ${stringStats.uniqueIds} unique IDs / ` +
+      `registered ID order=${stringStats.registeredIdOrderMatches ? 'match' : 'mismatch'} / ` +
       `${stringStats.uniqueMaterials} unique material inputs / ${stringLayerStats.executed} complete ` +
       `layer oracles; layer accepts ajv-raw=${stringLayerStats.accepts.ajvRaw}, ` +
       `ajv-text=${stringLayerStats.accepts.ajvText}, decoder-raw=${stringLayerStats.accepts.decoderRaw}, ` +
