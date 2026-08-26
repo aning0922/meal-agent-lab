@@ -1,7 +1,7 @@
 # ADR-0008：Stage 09P-M0 产品证据边界
 
 - 状态：Proposed
-- 设计修订：Revision 1（关闭 Design Review A 的四项 P1）
+- 设计修订：Revision 2（最后一次 bounded revision）
 - 日期：2026-08-26
 - 负责人：产品负责人、领域架构、食品安全与数据治理
 - 基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
@@ -54,6 +54,10 @@ layered defense 允许同一 compound invalid input 产生多个 issue；issue �
 `code → path` 的 UTF-8 字节序稳定排序。测试可以隔离单一不变量，但不要求删除单一
 predicate 后绕过其他防御，更不以整条 pipeline 变绿作为 meta-proof。
 
+`ValidationIssue` 的 exact sorted own keys 是 `code,path`；`path` 必须是 RFC 6901
+JSON Pointer string，issue 与数组均冻结。同一输出禁止重复的 `(code,path)` pair，排序
+唯一为 UTF-8 `code`、再 UTF-8 `path`，因此没有第三排序键。
+
 ### 3. Resolver 固定公开签名与完整结果
 
 M0-R2 冻结以下 public value signatures；不得增加 overload、可选参数、callback 或第二种
@@ -101,7 +105,8 @@ type HardMappingResolution =
       | 'hard_mapping_target_withdrawn' }
   | { status: 'version_mismatch'; reason: 'hard_mapping_source_version_mismatch'
       | 'hard_mapping_target_version_mismatch' }
-  | { status: 'unapproved'; reason: HardMappingContextFailureReason }
+  | { status: 'unapproved'; reason: 'hard_mapping_source_lifecycle_not_active'
+      | 'hard_mapping_target_lifecycle_not_active' | HardMappingContextFailureReason }
 
 type HardMappingContextFailureReason =
   | 'hard_mapping_source_region_not_applicable'
@@ -114,7 +119,8 @@ type HardMappingContextFailureReason =
   | 'hard_mapping_target_review_expired'
 ```
 
-上述八个 literal 是完整集合，source precedence 先于 target。reference mapped 的 exact
+上述八个 context literal 是完整集合；两个 lifecycle literal 与它们共同构成 hard
+endpoint 的 unapproved vocabulary。reference mapped 的 exact
 sorted own keys 为 `envelope,reason,status`，hard mapped 为
 `mappingId,reason,source,status,target`，所有 failure 均为 `reason,status`。每个分支固定
 字段类型、冻结状态和 precedence；whole-object 直接 `deepStrictEqual`，不得用
@@ -122,9 +128,37 @@ projection/tag 代替。
 public failure 只返回固定 status/reason；不得返回 catalog、context、
 reference、mapping、mappingId、raw input、异常 message 或其片段。missing/forged context
 对两个 resolver 都唯一返回冻结的
-`{status:'unmapped',reason:'invalid_activation_context'}`。只有 mapping 数量异常、compound
-catalog issues 或 issue 与 query 无关时统一安全降级为 `invalid_catalog`，不能挑一个
-看似相关的细分 reason。
+`{status:'unmapped',reason:'invalid_activation_context'}`。同 mappingId 多于一条、
+structural/global validation issue 或任何 query-unrelated validation issue 统一安全降级为
+`invalid_catalog`，不能挑一个看似相关的细分 reason；region/language/review 是 resolver
+endpoint condition，不属于该总括句。
+
+#### Resolver 唯一总序
+
+union 的书写顺序不构成规则。两个 API 共同使用层级总序：**activation-context identity →
+query input shape → catalog safe sink → query existence/cardinality → entity/reference
+status/context → mapped**，命中第一项即返回：
+
+- reference：① invalid context；② invalid reference；③ catalog safe-sink decision；
+  ④ unknown identity；⑤ unknown revision；⑥ revision 不是 latest；⑦ latest withdrawn；
+  ⑧ lifecycle not active；⑨ region；⑩ language；⑪ review not effective；⑫ review expired；
+  ⑬ mapped。
+- hard：① invalid context；② invalid primitive/pattern mappingId；③ catalog safe sink；
+  ④ mappingId cardinality（0 条=`hard_mapping_unknown`，大于 1 条=`invalid_catalog`）；
+  ⑤完整评估 source endpoint；⑥仅在 source usable 时完整评估 target endpoint；⑦ mapped。
+
+catalog safe sink 对 structural/global、query-unrelated 或多于一个 query-local
+`ValidationIssue` 返回 `invalid_catalog`；只有 decoded catalog 无 issue，或唯一 issue 是
+queried mappingId cardinality / 唯一 query-local endpoint defect，才能继续到
+cardinality/endpoint 分类，且在完整安全评估前绝不 mapped。每个 reference/hard endpoint
+内部唯一顺序是：unknown identity/unresolved → unknown 或 non-latest revision → withdrawn →
+lifecycle not active → region → language → review not effective → review expired → usable。
+hard 的整条 source endpoint 先于整条 target endpoint。
+
+因此一个 active reference 同时 region/language 不适用且 review expired 时唯一返回
+`region_not_applicable`；hard source 出现同样 compound failure（即使 target 也失败）时唯一
+返回 `hard_mapping_source_region_not_applicable`。两者均是冻结的 whole object，failure
+own keys 仍精确为 `reason,status` 且零 raw。
 
 ### 4. Source identity 与 entity history 使用显式 canonical projection
 
@@ -164,6 +198,8 @@ material 的 reference 路径，reverse equivocation 总是指向后出现 mater
 `contentDigest` 与 fixture-only evidence；它们明确不进入 entity history material，因此
 full snapshot 重复相同 entity revision 时不会被 release-scoped metadata 污染。相同
 entity revision 的上述 material 必须逐字节相同；变更 entity-local 内容必须提升 revision。
+`releaseRevision` 只要求严格递增，不要求连续；例如 `1 → 3` 在 digest、full-snapshot
+history 和全部治理不变量有效时合法，不产生 gap issue。
 
 ### 5. Lifecycle 使用 literal 6×6 oracle
 
@@ -230,7 +266,7 @@ compiler callback、不修改源代码执行 mutation，也不登记逐 predicat
 ## 验证与接受边界
 
 实施候选按 Recovery 计划分 M0-R1/R2/R3。最终同一精确 SHA 必须完成 domain
-check/build/tests、`pnpm stage09p:m0:check`、范围要求时的 `pnpm check`、文档链接、
+check/build/tests、`pnpm stage09p:m0:check`、无条件 `pnpm check`、文档链接、
 完整 `pnpm stage09a:check` 14/14、diff/status/零残留；再由独立 Audit A 静态审查和
 Audit B 纯 domain 动态审查。实施者只能交付候选并请求复核，不能把本 ADR、M0 或 09P
 写成 Accepted / Pass。

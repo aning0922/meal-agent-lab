@@ -1,7 +1,7 @@
 # Stage 09P-M0 Recovery：Evidence Boundary 实施计划
 
 - 状态：Proposed / recovery design candidate；未实施、未 Accepted
-- 设计修订：Revision 1（关闭 Design Review A 的四项 P1）
+- 设计修订：Revision 2（最后一次 bounded revision）
 - 日期：2026-08-26
 - 恢复基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
 - 设计分支：`codex/stage-09p-m0-recovery`
@@ -49,8 +49,8 @@ deletion meta-proof，以及把多个 API 归一化成 projection/tag 的 oracle
 
 1. 每条产品不变量按 ADR-0008 映射到唯一 owning layer；layered defense 可以重复拒绝。
 2. public 证据直接调用公开 API，比较完整 structured value、exact own keys 和冻结状态。
-3. validation 对 compound invalid input 返回按 `code → path` UTF-8 字节序排序的多个 issue；
-   普通测试断言完整数组，不强迫 issue singleton。
+3. validation issue exact own keys 为 `code,path`，path 是 RFC 6901 string，重复 pair 禁止；
+   compound input 按 UTF-8 `code → path` 返回冻结的完整数组，不强迫 issue singleton。
 4. catalog graph 的 source pairing、`SourceKey`/`ForwardSourceMaterial`/
    `ReverseSnapshotMaterial`、entity history、ADR literal lifecycle 表与 supersession 分别写
    普通 regression；既有正向可满足历史，也有组合反例。
@@ -75,7 +75,13 @@ deletion meta-proof，以及把多个 API 归一化成 projection/tag 的 oracle
 
 - 七模块中的 `types.ts`、`decode.ts`、`canonical.ts`、最小 `index.ts`；
 - governance release/catalog schema；5 valid + 与 R1 有关的 invalid synthetic fixtures；
-- ordinary decode/schema/digest unit/property/regression；domain package build/check/test。
+- workspace 登记、lockfile domain importer 与全部明确依赖边；domain runtime import 只来自
+  自身 `dependencies`，Ajv/TypeScript/test tool 只来自自身 `devDependencies`；
+- root `check/build/test/typecheck` 从本提交起全部包含 `@meal-agent/domain`；
+- ordinary decode/schema/digest unit/property/regression 与标准 Ajv schema regression。
+
+R1 提交后必须在 clean checkout 依次通过 `pnpm install --frozen-lockfile`、domain
+check/build/test、domain `test:schema` 和 root `pnpm check`，再进入 R2。
 
 **关键反例**
 
@@ -86,9 +92,12 @@ deletion meta-proof，以及把多个 API 归一化成 projection/tag 的 oracle
 **允许文件**
 
 ```text
+package.json
+pnpm-workspace.yaml
+pnpm-lock.yaml
 packages/domain/{package.json,tsconfig.json,tsconfig.build.json,README.md}
 packages/domain/src/{types.ts,decode.ts,canonical.ts,index.ts}
-packages/domain/tests/{decode.test.ts,canonical.test.ts}
+packages/domain/tests/{decode.test.ts,canonical.test.ts,schema.test.ts}
 data/schemas/{governance-release.schema.json,governance-catalog.schema.json}
 data/samples/stage09p-m0/**
 ```
@@ -97,6 +106,8 @@ data/samples/stage09p-m0/**
 
 - schema/custom keyword、独立 raw `-0` scanner 或第二 runtime validator 与 `decode.ts`
   scalar closure 争夺 `-0` authority；
+- clean checkout 的 frozen install 缺 domain importer/依赖，root 四个脚本漏 domain，或需要
+  临时安装、未声明依赖、借用 sibling package/tool 或 non-frozen 路径；
 - canonical bytes 依赖 object insertion order、locale、clock 或 entropy；
 - 任一 invalid fixture 含真实食品事实/用户数据；
 - 为使测试通过需要 loader/compiler mutation、custom keyword 自证或新增依赖。
@@ -105,7 +116,8 @@ data/samples/stage09p-m0/**
 
 **输入**
 
-- 已 review 的 R1 types/decoded values/digest；ADR-0008 exact projections、三个 source
+- 已在 R1 精确提交 clean/frozen 通过的 workspace/domain package、types/decoded values/
+  digest；ADR-0008 exact projections、三个 source
   material、literal 6×6 lifecycle oracle 与 resolver signatures；source graph、三条合法
   history、supersession 和 unknown mapping 反例。
 
@@ -118,7 +130,7 @@ data/samples/stage09p-m0/**
 **关键反例**
 
 - reference/snapshot mismatch；同 SourceKey 的 locator/snapshotId/digest/retrievedAt 单字段
-  forward 漂移；不同 SourceKey 复用 snapshotId；same-release duplicate entity、release
+  forward 漂移；不同 SourceKey 复用 snapshotId；same-release duplicate entity、合法 release
   revision gap、same entity revision equivocation；ADR 36 格与三条合法 history；missing/
   historical/unusable/cross-dataset/self/cycle supersession；reference/hard forged context；
   query mapping 0/2 条、unrelated/compound issue、unknown/withdrawn/unapproved mapping。
@@ -152,7 +164,7 @@ data/samples/stage09p-m0/**
 **输出**
 
 - 一个短小、只读、fail-closed 的 M0 scope/gate script 及普通 script tests；
-- workspace/package scripts 与必要 lockfile 变化；package/data/docs/status 同步；
+- root `package.json` 只追加 M0 聚合命令；package/data/docs/status 同步；
 - `pnpm stage09p:m0:check` 只串联 domain build/check/tests、schema/fixtures 和 scope checks。
 
 **允许文件**
@@ -161,8 +173,6 @@ data/samples/stage09p-m0/**
 scripts/{check-stage09p-m0-scope.mjs,run-stage09p-m0-check.mjs}
 scripts/tests/{stage09p-m0-scope.test.mjs,stage09p-m0-check.test.mjs}
 package.json
-pnpm-workspace.yaml
-pnpm-lock.yaml
 packages/README.md
 data/README.md
 docs/{README.md,project-status.md}
@@ -174,13 +184,15 @@ docs/plans/{2026-08-stage-09p-m0-recovery.md,README.md}
 
 - checker 接近产品实现规模或需要 guard/material/mutant registry；
 - gate 解析 compiler callback、注入 preload/loader/worker 或按 test event 数自证；
-- root 依赖变化不是七模块实现所必需；
+- R3 首次建立或修改 domain workspace identity、lockfile importer、依赖边或 root
+  check/build/test/typecheck 接线；
 - 需要修改 contracts、services、apps、migration、OpenAPI、09A 冻结面或 M1 内容。
 
 ## 5. 普通 inert 反例矩阵
 
 下表是合同内产品反例，不是 mutation registry。每行是普通 unit/property/regression；
-compound case 允许多个确定性 issue。
+compound case 允许多个确定性 issue。source 行的数组是完整、已排序的 exact
+`[{code,path},…]`，不是 `includes` 断言。
 
 | 组 | ID | inert 变换 | 直接预期 |
 | --- | --- | --- | --- |
@@ -198,15 +210,16 @@ compound case 允许多个确定性 issue。
 | Provenance | P01 | source 缺失 | `MISSING_SOURCE` |
 | Provenance | P02 | license 缺失/pending | `MISSING_LICENSE` |
 | Provenance | P03 | region 或 language 缺失 | 对应两个稳定 issue |
-| Source identity | S01 | reference rev1 配 snapshot rev2 | `SOURCE_SNAPSHOT_MISMATCH` + ADR pairing pointer |
-| Source identity | S02a | 同 SourceKey 仅改 locator | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
-| Source identity | S02b | 同 SourceKey 仅改 snapshotId | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
-| Source identity | S02c | 同 SourceKey 仅改 snapshot digest | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
-| Source identity | S02d | 同 SourceKey 仅改 retrievedAt | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
-| Source identity | S03 | 不同 SourceKey 复用 snapshotId | `SOURCE_SNAPSHOT_ID_EQUIVOCATION` + 后出现 snapshot pointer |
+| Source identity | S01 | release 0 的 reference rev1 配 snapshot rev2 | `[{code:'SOURCE_SNAPSHOT_MISMATCH',path:'/releases/0/envelopes/0/sourceReferences/0'},{code:'SOURCE_SNAPSHOT_MISMATCH',path:'/releases/0/envelopes/0/sourceSnapshots/0'}]` |
+| Source identity | S02a | 同 SourceKey 仅改 locator，后 occurrence 在 release 1 | `[{code:'SOURCE_REFERENCE_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceReferences/0'},{code:'SOURCE_SNAPSHOT_ID_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceSnapshots/0'}]` |
+| Source identity | S02b | 同 SourceKey 仅改 snapshotId，后 occurrence 在 release 1 | `[{code:'SOURCE_REFERENCE_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceReferences/0'}]` |
+| Source identity | S02c | 同 SourceKey 仅改 snapshot digest，后 occurrence 在 release 1 | `[{code:'SOURCE_REFERENCE_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceReferences/0'},{code:'SOURCE_SNAPSHOT_ID_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceSnapshots/0'}]` |
+| Source identity | S02d | 同 SourceKey 仅改 retrievedAt，后 occurrence 在 release 1 | `[{code:'SOURCE_REFERENCE_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceReferences/0'},{code:'SOURCE_SNAPSHOT_ID_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceSnapshots/0'}]` |
+| Source identity | S03 | 不同 SourceKey 复用 snapshotId，后 occurrence 在 release 1 | `[{code:'SOURCE_SNAPSHOT_ID_EQUIVOCATION',path:'/releases/1/envelopes/0/sourceSnapshots/0'}]` |
 | Entity history | E01 | same release 重复 entityId | duplicate entity issue |
 | Entity history | E02 | same revision 改 entity-local content | entity equivocation |
 | Entity history | E03 | same entity material 仅换 release metadata | 合法，history bytes 相同 |
+| Revision | V01 | releaseRevision `1 → 3`，digest/history 均有效 | 合法；只要求严格递增，不要求连续 |
 | Lifecycle | L00 | 相邻、严格递增 revision 的全部 36 格 | 逐格等于 ADR literal A/R 表 |
 | Lifecycle | L01 | `draft → under_review → approved → active` | whole-release 历史合法 |
 | Lifecycle | L02 | `active → superseded` 指向同 dataset/kind latest active target | whole-release 历史合法 |
@@ -217,9 +230,12 @@ compound case 允许多个确定性 issue。
 | Resolver | R01 | valid mapping + exact context | exact frozen `mapped` whole object |
 | Resolver | R02a | reference forged/missing context | frozen `{status:'unmapped',reason:'invalid_activation_context'}`；own keys=`reason,status`，零 raw |
 | Resolver | R02b | hard forged/missing context | frozen `{status:'unmapped',reason:'invalid_activation_context'}`；own keys=`reason,status`，零 raw |
-| Resolver | R03 | mappingId 为 0 条或 2 条 | exact `invalid_catalog` |
+| Resolver | R03a | 合法 catalog 中 mappingId 命中 0 条 | frozen `{status:'unmapped',reason:'hard_mapping_unknown'}` |
+| Resolver | R03b | decoded catalog 中同 mappingId 命中 2 条 | frozen `{status:'unmapped',reason:'invalid_catalog'}` |
 | Resolver | R04 | endpoint issue + unrelated issue | exact `invalid_catalog`，不挑 issue |
 | Resolver | R05 | unknown/withdrawn/unapproved target | 对应封闭 reason，不泄露 envelope |
+| Resolver | R06 | active reference 同时 region/language 不适用且 review expired | frozen `{status:'unapproved',reason:'region_not_applicable'}`，exact failure keys，零 raw |
+| Resolver | R07 | hard source 同时 region/language 不适用且 review expired，target 也失败 | frozen `{status:'unapproved',reason:'hard_mapping_source_region_not_applicable'}`，exact failure keys，零 raw |
 | Synthetic | Y01 | valid fixture 深层嵌入 external fact 标记 | synthetic proof 固定失败 |
 | Hard constraint | H01 | required hard mapping unresolved | fail closed，不产生 mapped |
 | Layering | C01 | pairing + forward + reverse 同时失效 | 完整多 issue 数组与稳定排序 |
@@ -249,7 +265,7 @@ pnpm --filter @meal-agent/domain check
 pnpm --filter @meal-agent/domain build
 pnpm --filter @meal-agent/domain test
 pnpm stage09p:m0:check
-pnpm check                                          # workspace/范围要求时必须
+pnpm check                                          # 无条件；从 R1 起包含 domain
 pnpm docs:links:check
 pnpm stage09a:check                                 # 完整 14/14
 git diff --check
