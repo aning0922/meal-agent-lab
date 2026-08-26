@@ -23,3 +23,4 @@ ADR 用于记录影响范围大、迁移成本高或存在明显权衡的技术�
 - [ADR-0005：本地与私有测试部署基线](0005-local-private-deployment-baseline.md) — `Accepted`，2026-08-11
 - [ADR-0006：阶段 09A 外部证据与资源所有权协议](0006-stage09a-evidence-ownership-protocol.md) — `Accepted`，2026-08-22
 - [ADR-0007：食品知识治理与确定性领域核心](0007-food-knowledge-governance-and-domain-core.md) — `Accepted`（仅规划/架构方向），2026-08-23
+- [ADR-0008：Stage 09P-M0 产品证据边界](0008-stage09p-m0-evidence-boundary.md) — `Proposed`，2026-08-26
