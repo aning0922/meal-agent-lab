@@ -16,7 +16,7 @@ ADR 用于记录影响范围大、迁移成本高或存在明显权衡的技术�
 
 ## 当前决策
 
-Stage 09P-M0 的完整 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`，ADR-0008 与 M0 已由总控 Accepted；09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。其七模块纯 domain 候选与数据保持完全合成，不包含权威真实 release、真实用户/食品事实或外部能力；Route A TCB 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计承担，M0 checker 不自证 loader/compiler/runner/worker/supply-chain。
+Stage 09P-M0 的完整 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`，ADR-0008 与 M0 已由总控 Accepted；09P 仍为 `In Progress`。M1 当前仅形成 preparation-only 的 ADR-0009 design candidate，所有真实 authority/source 槽位仍为 `UNASSIGNED / PENDING_EXTERNAL_CONFIRMATION`，尚未 Implemented、Accepted 或激活。M0 七模块与数据保持完全合成；其 TCB 边界不变。
 
 - [ADR-0001：首发客户端平台与跨端框架](0001-client-platform-and-cross-platform-framework.md) — `Accepted`，2026-07-23
 - [ADR-0002：后端运行时、Web 框架与持久化基线](0002-backend-runtime-framework-and-persistence.md) — `Accepted`，2026-07-23
@@ -26,3 +26,4 @@ Stage 09P-M0 的完整 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6
 - [ADR-0006：阶段 09A 外部证据与资源所有权协议](0006-stage09a-evidence-ownership-protocol.md) — `Accepted`，2026-08-22
 - [ADR-0007：食品知识治理与确定性领域核心](0007-food-knowledge-governance-and-domain-core.md) — `Accepted`（仅规划/架构方向），2026-08-23
 - [ADR-0008：Stage 09P-M0 产品证据边界](0008-stage09p-m0-evidence-boundary.md) — `Accepted`（M0 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`），2026-08-27
+- [ADR-0009：Stage 09P-M1 发布权限与外部审核边界](0009-stage09p-m1-release-authority-boundary.md) — `Proposed`（preparation design candidate；等待独立 M1 Design Review），2026-08-27

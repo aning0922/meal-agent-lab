@@ -4,7 +4,7 @@
 
 **当前阶段 09A Accepted 事实（2026-08-22，覆盖下方历史轮次）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证；PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次输出 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由总控记为 **Accepted / Pass**；ADR-0005、ADR-0006 均保持 `Accepted`。
 
-**当前下一阶段状态（2026-08-27）**：[阶段 09P](plans/2026-08-stage-09p-safe-deterministic-product-core.md)采用“安全知识治理与确定性产品核心闭环”P0 workstream；规划已 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`。完整 M0 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`，ADR-0008 与 M0 已由总控 Accepted；09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。M0 固定七个纯 domain 模块，数据与 fixtures 完全合成，不包含权威真实 release、真实用户/食品事实或外部能力；食品安全、过敏与用户声明的宗教/伦理 hard constraint、unknown mapping fail closed，以及来源/许可/地区/语言/版本/撤回边界不变。Route A TCB 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计承担，M0 checker 不自证 loader/compiler/runner/worker/supply-chain。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)保持 `Accepted` 的规划/架构方向，但不授权真实数据或外部能力。阶段 09B“私有测试服务器”为 P1 conditional；云、公网、真实微信、合法域名、真机、体验版和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
+**当前下一阶段状态（2026-08-27）**：[阶段 09P](plans/2026-08-stage-09p-safe-deterministic-product-core.md)采用“安全知识治理与确定性产品核心闭环”P0 workstream；规划已 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`。完整 M0 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`，ADR-0008 与 M0 已由总控 Accepted；09P 仍为 `In Progress`。M1 当前只形成 [ADR-0009](architecture/decisions/0009-stage09p-m1-release-authority-boundary.md) 与 [外部审核/首发就绪计划](plans/2026-08-stage-09p-m1-release-readiness.md) 的 preparation design candidate；所有真实 authority/source 槽位保持 `UNASSIGNED / PENDING_EXTERNAL_CONFIRMATION`，未 Implemented、Accepted 或激活。M0 固定七个纯 domain 模块，数据与 fixtures 完全合成，不包含权威真实 release、真实用户/食品事实或外部能力；食品安全、过敏与用户声明的宗教/伦理 hard constraint、unknown mapping fail closed，以及来源/许可/地区/语言/版本/撤回边界不变。Proposed `24/4/8/8/12`、首发地区与 `zh-CN` 范围仍待外部确认。阶段 09B“私有测试服务器”为 P1 conditional；云、公网、真实微信、合法域名、真机、体验版和发布继续 Deferred。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -82,6 +82,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [阶段 09A 本地可部署性计划](plans/2026-07-stage-09a-local-deployability-baseline.md)
 - [阶段 09P 安全知识治理与确定性产品核心闭环（Planning Accepted）](plans/2026-08-stage-09p-safe-deterministic-product-core.md)
 - [Stage 09P-M0 Recovery：Evidence Boundary 实施计划（M0 Accepted；09P In Progress）](plans/2026-08-stage-09p-m0-recovery.md)
+- [Stage 09P-M1 外部审核与首发就绪计划（Preparation design candidate）](plans/2026-08-stage-09p-m1-release-readiness.md)
 - [阶段 09A M5.4 最终状态、信号交付与生产 guard 收敛](plans/2026-08-m5-4-final-state-signal-guard-convergence.md)
 - [阶段 09A M5.5 最终结算与活生产消费者 guard 收敛](plans/2026-08-m5-5-final-settlement-and-live-consumer-guards.md)
 - [阶段 09A M5.6 结构化退出与生产消费者收敛](plans/2026-08-m5-6-structural-exit-and-consumer-convergence.md)
@@ -119,6 +120,7 @@ inspect/image/history；resolved Compose config helper 只证明命令成功且 
 - [ADR-0006：阶段 09A 外部证据与资源所有权协议](architecture/decisions/0006-stage09a-evidence-ownership-protocol.md)
 - [ADR-0007：食品知识治理与确定性领域核心（Accepted）](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 - [ADR-0008：Stage 09P-M0 产品证据边界（Accepted）](architecture/decisions/0008-stage09p-m0-evidence-boundary.md)
+- [ADR-0009：Stage 09P-M1 发布权限与外部审核边界（Proposed）](architecture/decisions/0009-stage09p-m1-release-authority-boundary.md)
 - [领域数据模型](domain/data-model.md)
 - [信息架构](design/information-architecture.md)
 - [P0 页面状态基线](design/p0-page-state-baseline.md)
