@@ -1,6 +1,7 @@
 # ADR-0008：Stage 09P-M0 产品证据边界
 
 - 状态：Proposed
+- 设计修订：Revision 1（关闭 Design Review A 的四项 P1）
 - 日期：2026-08-26
 - 负责人：产品负责人、领域架构、食品安全与数据治理
 - 基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
@@ -40,7 +41,7 @@ runner、pnpm 或依赖字节自身正确。它们属于由精确 lockfile、已
 
 | 产品不变量 | 唯一 owning layer | 直接行为证据 | 稳定安全输出 | 剩余 TCB |
 | --- | --- | --- | --- | --- |
-| raw JSON 无歧义、资源有界、`-0` 拒绝 | strict raw decoder | unit/property 边界测试 | `decode_failed` + 固定 code/path | Node 字符串、loader |
+| raw JSON 无歧义、资源有界、`-0` 拒绝 | `decode.ts` recursive scalar-closure decoder | raw/object unit/property 边界测试 | `decode_failed` + 固定 code/path | Node 字符串、loader |
 | schema 可表达的 shape/scalar closure | 标准 JSON Schema + Ajv | valid/invalid schema regression | 标准 validation errors 仅作内部证据 | Ajv/compiler/lockfile |
 | canonical bytes 与 digest 确定 | canonicalizer | 重排/重复运行/字段变换关系测试 | digest 或固定 `digest_mismatch` | UTF-8/SHA 实现、runtime |
 | release/entity/source identity | catalog validator | 普通 graph regression | 排序后的 `ValidationIssue[]` | TypeScript/runtime |
@@ -101,31 +102,42 @@ type HardMappingResolution =
   | { status: 'version_mismatch'; reason: 'hard_mapping_source_version_mismatch'
       | 'hard_mapping_target_version_mismatch' }
   | { status: 'unapproved'; reason: HardMappingContextFailureReason }
+
+type HardMappingContextFailureReason =
+  | 'hard_mapping_source_region_not_applicable'
+  | 'hard_mapping_source_language_not_applicable'
+  | 'hard_mapping_source_review_not_effective'
+  | 'hard_mapping_source_review_expired'
+  | 'hard_mapping_target_region_not_applicable'
+  | 'hard_mapping_target_language_not_applicable'
+  | 'hard_mapping_target_review_not_effective'
+  | 'hard_mapping_target_review_expired'
 ```
 
-`HardMappingContextFailureReason` 是 source/target × region/language/review-not-effective/
-review-expired 的封闭八值 union，source precedence 先于 target。reference mapped 的 exact
+上述八个 literal 是完整集合，source precedence 先于 target。reference mapped 的 exact
 sorted own keys 为 `envelope,reason,status`，hard mapped 为
 `mappingId,reason,source,status,target`，所有 failure 均为 `reason,status`。每个分支固定
 字段类型、冻结状态和 precedence；whole-object 直接 `deepStrictEqual`，不得用
 projection/tag 代替。
-public failure 只返回固定 status/reason/code 和必要的安全 ID；不得返回 catalog、context、
-reference、mapping、mappingId、raw input、异常 message 或其片段。missing/forged context、mapping
-数量异常、compound catalog issues 或 issue 与 query 无关时统一安全降级为
-`invalid_catalog`，不能挑一个看似相关的细分 reason。
+public failure 只返回固定 status/reason；不得返回 catalog、context、
+reference、mapping、mappingId、raw input、异常 message 或其片段。missing/forged context
+对两个 resolver 都唯一返回冻结的
+`{status:'unmapped',reason:'invalid_activation_context'}`。只有 mapping 数量异常、compound
+catalog issues 或 issue 与 query 无关时统一安全降级为 `invalid_catalog`，不能挑一个
+看似相关的细分 reason。
 
 ### 4. Source identity 与 entity history 使用显式 canonical projection
 
-reference/snapshot 必须一一配对，`referenceId + referenceRevision` 双向指向匹配的
-snapshot；同一 SourceKey 的 forward material 和同一 `snapshotId` 的 reverse material
-都不得 equivocate。一个 compound input 可同时报告 pairing、forward 和 reverse issues。
-
-固定 projection：
+reference/snapshot 必须一一配对：每个 reference 恰有一个相同 SourceKey 的 snapshot，
+每个 snapshot 也恰有一个相同 SourceKey 的 reference。三类 source material 与 entity
+history projection 的 exact own keys 和顺序固定为：
 
 ```text
-CanonicalSourceReference = { referenceId, referenceRevision, locator }
-CanonicalSourceSnapshot  = { snapshotId, referenceId, referenceRevision,
-                             contentDigest, retrievedAt }
+SourceKey = { referenceId, referenceRevision }
+ForwardSourceMaterial = { locator, snapshotId, contentDigest, retrievedAt }
+ReverseSnapshotMaterial = {
+  referenceId, referenceRevision, locator, contentDigest, retrievedAt
+}
 CanonicalEntityHistoryMaterial = {
   schemaVersion, datasetId, datasetKind, entityId, entityRevision,
   lifecycleStatus, owner, approvers, sourceTier, sourceReferences,
@@ -135,20 +147,63 @@ CanonicalEntityHistoryMaterial = {
 }
 ```
 
-上述 own keys 和顺序是完整集合。release root 拥有 `releaseId`、`releaseRevision`、release
+同一 SourceKey 的 `locator`、`snapshotId`、snapshot `contentDigest` 或 `retrievedAt` 任一
+单字段漂移都产生 `SOURCE_REFERENCE_EQUIVOCATION`。不同 SourceKey 复用同一 `snapshotId`
+且 reverse material 不同产生 `SOURCE_SNAPSHOT_ID_EQUIVOCATION`。pairing 不匹配独立产生
+`SOURCE_SNAPSHOT_MISMATCH`；compound input 可以同时产生多个 issue，不要求 singleton。
+
+JSON Pointer 路径按 RFC 6901 固定：未配对 reference 指向
+`/releases/{r}/envelopes/{e}/sourceReferences/{i}`，未配对或错配 snapshot 指向
+`/releases/{r}/envelopes/{e}/sourceSnapshots/{j}`；forward equivocation 总是指向后出现
+material 的 reference 路径，reverse equivocation 总是指向后出现 material 的 snapshot
+路径。`r/e/i/j` 是 catalog array 的十进制索引；第一次出现建立 material，后续不同 material
+逐个报告。以上 code/path 是唯一规则。
+
+`CanonicalEntityHistoryMaterial` 的 own keys 和顺序也是完整集合。release root 拥有
+`releaseId`、`releaseRevision`、release
 `contentDigest` 与 fixture-only evidence；它们明确不进入 entity history material，因此
 full snapshot 重复相同 entity revision 时不会被 release-scoped metadata 污染。相同
 entity revision 的上述 material 必须逐字节相同；变更 entity-local 内容必须提升 revision。
-生命周期 36 格、终态、supersession target/dataset/kind/revision/cycle 必须存在至少一条
-合法正向历史，不能只证明拒绝路径。
 
-### 5. Schema 对 `-0` 的能力必须诚实分层
+### 5. Lifecycle 使用 literal 6×6 oracle
 
-标准 JSON Schema/Ajv 若不能把 `-0` 与 `0` 区分，该不变量由 strict raw decoder 或
-runtime validator 唯一拥有，schema manifest 标成 `runtime-owned`。禁止新增 custom
-keyword 后再用同一 Ajv/compiler 路径证明 keyword 自身；schema 只声明和测试标准能力。
+下表只适用于相邻 full-snapshot release 中同一 entity 的**不同** `entityRevision`，且 next
+revision 必须严格大于 previous；`A` 接受，`R` 拒绝：
 
-### 6. 使用普通测试，不建立自证合同
+| previous → next | draft | under_review | approved | active | superseded | withdrawn |
+| --- | --- | --- | --- | --- | --- | --- |
+| draft | A | A | R | R | R | R |
+| under_review | R | A | A | R | R | R |
+| approved | R | R | A | A | A | A |
+| active | R | R | R | A | A | A |
+| superseded | R | R | R | R | R | R |
+| withdrawn | R | R | R | A | R | A |
+
+相同 `entityRevision` 跨 full-snapshot release 不是 transition，只允许
+`CanonicalEntityHistoryMaterial` 逐字节相同。M0-R2 必须直接以本表 36 格逐格运行普通
+table test，不得在测试或实现中维护第二张表。以下三条 whole-release 历史必须合法，所有
+未列治理字段均有效、source pairing/identity 合法且每次 release digest 重签：
+
+1. 普通激活：同一 entity 在 release/entity revision `1/1 draft → 2/2 under_review →
+   3/3 approved → 4/4 active`。
+2. supersession：source 在 `4/3 active → 5/4 superseded`；`supersededBy` 精确指向同
+   dataset/kind、非自身、在 release 5 中 latest 且 active 的 target revision，target 同时
+   出现在该 full snapshot。
+3. 撤回后恢复：同一 entity 在 `5/5 active → 6/6 withdrawn → 7/7 active`；恢复是带新
+   source/review evidence 的更高 entity/release revision，不得静默重激活旧 revision。
+
+supersession 的 target/dataset/kind/revision/self/cycle 判据继续 fail closed；上述正向历史
+证明状态机可满足，而非只证明拒绝路径。
+
+### 6. Schema 对 `-0` 的能力必须诚实分层
+
+`-0` 的唯一 owner 是 `decode.ts` 的 recursive scalar-closure decoder。它对 raw JSON
+解析后的整棵值和 intentional object input 运行同一递归闭包；number 分支使用
+`Object.is(value, -0)` 语义拒绝 object `-0`，不存在第二个 runtime validator authority。
+schema manifest 只标 `runtime-owned: decode.ts scalar closure`。标准 JSON Schema/Ajv
+不冒领该能力，也不新增 custom keyword 后用同一 Ajv/compiler 路径自证。
+
+### 7. 使用普通测试，不建立自证合同
 
 M0 使用 unit、seeded property、table-driven lifecycle 和 regression tests。scope gate
 只检查允许文件、七模块、synthetic-only、依赖和禁止 imports，保持短小可读；它不扫描

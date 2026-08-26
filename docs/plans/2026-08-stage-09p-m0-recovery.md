@@ -1,6 +1,7 @@
 # Stage 09P-M0 Recovery：Evidence Boundary 实施计划
 
 - 状态：Proposed / recovery design candidate；未实施、未 Accepted
+- 设计修订：Revision 1（关闭 Design Review A 的四项 P1）
 - 日期：2026-08-26
 - 恢复基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
 - 设计分支：`codex/stage-09p-m0-recovery`
@@ -50,9 +51,11 @@ deletion meta-proof，以及把多个 API 归一化成 projection/tag 的 oracle
 2. public 证据直接调用公开 API，比较完整 structured value、exact own keys 和冻结状态。
 3. validation 对 compound invalid input 返回按 `code → path` UTF-8 字节序排序的多个 issue；
    普通测试断言完整数组，不强迫 issue singleton。
-4. catalog graph 的 source pairing、forward/reverse identity、entity history、lifecycle 与
-   supersession 分别写普通 regression；既有正向可满足历史，也有组合反例。
-5. standard schema 只证明标准能力；`-0` 明确交给 raw/runtime owner。
+4. catalog graph 的 source pairing、`SourceKey`/`ForwardSourceMaterial`/
+   `ReverseSnapshotMaterial`、entity history、ADR literal lifecycle 表与 supersession 分别写
+   普通 regression；既有正向可满足历史，也有组合反例。
+5. standard schema 只证明标准能力；`-0` 唯一交给 `decode.ts` recursive scalar closure，
+   同时覆盖 raw JSON 解析结果与 intentional object input。
 6. property tests 使用固定 seed，并在失败时打印最小安全 case ID；不打印 raw fixture。
 7. scope gate 只做 surface 检查和命令聚合，不维护 guard registry，不修改 compiler 回调。
 
@@ -76,8 +79,9 @@ deletion meta-proof，以及把多个 API 归一化成 projection/tag 的 oracle
 
 **关键反例**
 
-- duplicate key、trailing input、raw/lone surrogate、non-finite/unsafe integer、`-0`、accessor/
-  sparse/cycle/depth/budget、unknown own key、canonical reorder、digest field mutation。
+- duplicate key、trailing input、raw/lone surrogate、non-finite/unsafe integer、raw `-0`、
+  object `-0`、accessor/sparse/cycle/depth/budget、unknown own key、canonical reorder、digest
+  field mutation。
 
 **允许文件**
 
@@ -91,7 +95,8 @@ data/samples/stage09p-m0/**
 
 **停止条件**
 
-- schema 与 raw/runtime owner 对同一不变量声称双重权威；
+- schema/custom keyword、独立 raw `-0` scanner 或第二 runtime validator 与 `decode.ts`
+  scalar closure 争夺 `-0` authority；
 - canonical bytes 依赖 object insertion order、locale、clock 或 entropy；
 - 任一 invalid fixture 含真实食品事实/用户数据；
 - 为使测试通过需要 loader/compiler mutation、custom keyword 自证或新增依赖。
@@ -100,20 +105,22 @@ data/samples/stage09p-m0/**
 
 **输入**
 
-- 已 review 的 R1 types/decoded values/digest；ADR-0008 exact projections 与 resolver
-  signatures；36 格 lifecycle、source graph、supersession、unknown mapping 反例。
+- 已 review 的 R1 types/decoded values/digest；ADR-0008 exact projections、三个 source
+  material、literal 6×6 lifecycle oracle 与 resolver signatures；source graph、三条合法
+  history、supersession 和 unknown mapping 反例。
 
 **输出**
 
 - `validation.ts`、`catalog.ts`、`resolution.ts` 与相应 `types.ts/index.ts` 扩展；
-- 全部 10 个 invalid synthetic fixtures；普通 catalog/lifecycle/resolver tests；
+- 全部 10 个 invalid synthetic fixtures；逐格 lifecycle 与普通 catalog/resolver tests；
 - exact union、whole-object + exact own-key/frozen assertions、安全失败零 raw input。
 
 **关键反例**
 
-- reference/snapshot mismatch、forward/reverse equivocation、same-release duplicate entity、
-  release revision gap、same entity revision equivocation、合法跨 release history、36 格
-  lifecycle、missing/historical/unusable/cross-dataset/self/cycle supersession、forged context、
+- reference/snapshot mismatch；同 SourceKey 的 locator/snapshotId/digest/retrievedAt 单字段
+  forward 漂移；不同 SourceKey 复用 snapshotId；same-release duplicate entity、release
+  revision gap、same entity revision equivocation；ADR 36 格与三条合法 history；missing/
+  historical/unusable/cross-dataset/self/cycle supersession；reference/hard forged context；
   query mapping 0/2 条、unrelated/compound issue、unknown/withdrawn/unapproved mapping。
 
 **允许文件**
@@ -130,7 +137,7 @@ data/samples/stage09p-m0/**
   boundary 外，resolver 新增 compatibility overload、旁路、第二 authority、raw catalog
   或 exception text；
 - entity history projection 未精确排除 release-scoped metadata；
-- 合法 lifecycle/supersession 历史无法构造；
+- source material/code/path 偏离 ADR exact 定义，或合法 lifecycle/supersession 历史无法构造；
 - compound invalid input 的排序不确定，或只能靠有损 tag/projection 测试；
 - 需要放宽食品安全、hard constraint、unknown、provenance/license/region/language/version/
   withdrawal 任一边界。
@@ -180,7 +187,8 @@ compound case 允许多个确定性 issue。
 | Decode/schema | D01 | raw JSON 重复 own key | decode 固定失败 |
 | Decode/schema | D02 | 合法值后 trailing token | decode 固定失败 |
 | Decode/schema | D03 | escaped lone surrogate | scalar closure 失败 |
-| Decode/schema | D04 | raw `-0` | raw/runtime owner 拒绝；schema 不冒领 |
+| Decode/schema | D04a | raw JSON 中的 `-0` | `decode.ts` scalar closure 在 parse 后拒绝 |
+| Decode/schema | D04b | intentional object input 中的 `-0` | 同一 owner 以 `Object.is(value,-0)` 拒绝 |
 | Decode/schema | D05 | unsafe integer | decode 固定失败 |
 | Decode/schema | D06 | sparse/accessor/cycle object 入口 | 不执行 getter；固定失败 |
 | Decode/schema | D07 | B/B+1 depth 或 input budget | B 接受、B+1 固定失败 |
@@ -190,19 +198,25 @@ compound case 允许多个确定性 issue。
 | Provenance | P01 | source 缺失 | `MISSING_SOURCE` |
 | Provenance | P02 | license 缺失/pending | `MISSING_LICENSE` |
 | Provenance | P03 | region 或 language 缺失 | 对应两个稳定 issue |
-| Source identity | S01 | reference rev1 配 snapshot rev2 | `SOURCE_SNAPSHOT_MISMATCH` |
-| Source identity | S02 | 同 SourceKey 改 locator/snapshot | forward issue；可伴随其他 issue |
-| Source identity | S03 | 不同 SourceKey 复用 snapshotId | reverse equivocation |
+| Source identity | S01 | reference rev1 配 snapshot rev2 | `SOURCE_SNAPSHOT_MISMATCH` + ADR pairing pointer |
+| Source identity | S02a | 同 SourceKey 仅改 locator | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
+| Source identity | S02b | 同 SourceKey 仅改 snapshotId | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
+| Source identity | S02c | 同 SourceKey 仅改 snapshot digest | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
+| Source identity | S02d | 同 SourceKey 仅改 retrievedAt | `SOURCE_REFERENCE_EQUIVOCATION` + 后出现 reference pointer |
+| Source identity | S03 | 不同 SourceKey 复用 snapshotId | `SOURCE_SNAPSHOT_ID_EQUIVOCATION` + 后出现 snapshot pointer |
 | Entity history | E01 | same release 重复 entityId | duplicate entity issue |
 | Entity history | E02 | same revision 改 entity-local content | entity equivocation |
 | Entity history | E03 | same entity material 仅换 release metadata | 合法，history bytes 相同 |
-| Lifecycle | L01 | `active → draft` | 稳定拒绝 |
-| Lifecycle | L02 | `withdrawn → active` 且 revision 提升 | 合法恢复历史 |
+| Lifecycle | L00 | 相邻、严格递增 revision 的全部 36 格 | 逐格等于 ADR literal A/R 表 |
+| Lifecycle | L01 | `draft → under_review → approved → active` | whole-release 历史合法 |
+| Lifecycle | L02 | `active → superseded` 指向同 dataset/kind latest active target | whole-release 历史合法 |
+| Lifecycle | L03 | `active → withdrawn → active` 且 entity/release revision 提升 | 新 evidence 恢复合法 |
 | Supersession | U01 | target 不存在或是历史 revision | unknown/version issues |
 | Supersession | U02 | target 为 draft 或 self/cycle | unusable，cycle 按 path 排序 |
 | Supersession | U03 | same-kind cross-dataset target | dataset mismatch |
 | Resolver | R01 | valid mapping + exact context | exact frozen `mapped` whole object |
-| Resolver | R02 | forged/missing context | exact `invalid_activation_context`，零 raw |
+| Resolver | R02a | reference forged/missing context | frozen `{status:'unmapped',reason:'invalid_activation_context'}`；own keys=`reason,status`，零 raw |
+| Resolver | R02b | hard forged/missing context | frozen `{status:'unmapped',reason:'invalid_activation_context'}`；own keys=`reason,status`，零 raw |
 | Resolver | R03 | mappingId 为 0 条或 2 条 | exact `invalid_catalog` |
 | Resolver | R04 | endpoint issue + unrelated issue | exact `invalid_catalog`，不挑 issue |
 | Resolver | R05 | unknown/withdrawn/unapproved target | 对应封闭 reason，不泄露 envelope |
