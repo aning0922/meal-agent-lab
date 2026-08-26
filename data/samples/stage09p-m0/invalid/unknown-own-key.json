@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "syn:release:invalid-extra:1",
+  "releaseRevision": 1,
+  "contentDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "envelopes": [],
+  "unexpected": "SYNTHETIC_EXTRA"
+}

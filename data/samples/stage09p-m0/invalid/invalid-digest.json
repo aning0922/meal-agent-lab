@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "syn:release:invalid-digest:1",
+  "releaseRevision": 1,
+  "contentDigest": "sha256:SYNTHETIC_INVALID_DIGEST",
+  "envelopes": []
+}

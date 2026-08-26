@@ -1,0 +1,36 @@
+{
+  "$schema": "../../../schemas/governance-release.schema.json",
+  "schemaVersion": 1,
+  "releaseId": "syn:release:food-safety:1",
+  "releaseRevision": 1,
+  "contentDigest": "sha256:3e3b09a7756873c410811a93a6b8d1c99f12d6d936954cf950b94a97edc530c7",
+  "envelopes": [
+    {
+      "schemaVersion": 1,
+      "datasetId": "syn:dataset:food-safety",
+      "datasetKind": "food_safety",
+      "entityId": "01900000-7000-7000-8000-000000000004",
+      "entityRevision": 1,
+      "lifecycleStatus": "active",
+      "owner": { "actorId": "syn:actor:food-safety-owner", "role": "safety-steward" },
+      "approvers": [{ "actorId": "syn:actor:food-safety-reviewer", "role": "safety-reviewer" }],
+      "sourceTier": "L3",
+      "sourceReferences": [{ "referenceId": "syn:source:food-safety", "referenceRevision": "syn-revision-1", "locator": "synthetic://stage09p-m0/food-safety" }],
+      "sourceSnapshots": [{ "snapshotId": "syn:snapshot:food-safety:1", "referenceId": "syn:source:food-safety", "referenceRevision": "syn-revision-1", "locator": "synthetic://stage09p-m0/food-safety", "contentDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444", "retrievedAt": "2000-01-01T00:00:00.000Z" }],
+      "applicableRegions": ["SYNTHETIC-REGION-1"],
+      "languages": ["x-synthetic"],
+      "licenseStatus": "approved",
+      "licenseReference": "synthetic-license://stage09p-m0/internal-original",
+      "retrievedAt": "2000-01-01T00:00:00.000Z",
+      "reviewedAt": "2000-01-02T00:00:00.000Z",
+      "reviewDueAt": "2099-01-01T00:00:00.000Z",
+      "aliases": [{ "value": "SYNTHETIC_FOOD_SAFETY_ALPHA", "region": "SYNTHETIC-REGION-1", "language": "x-synthetic", "sourceReferenceId": "syn:source:food-safety", "sourceReferenceRevision": "syn-revision-1" }],
+      "supersededBy": null,
+      "withdrawalState": "not_withdrawn",
+      "withdrawalReason": null,
+      "withdrawnAt": null,
+      "content": { "syntheticToken": "SYNTHETIC_FOOD_SAFETY_ALPHA" },
+      "syntheticEvidence": { "classification": "fully_synthetic", "generator": "stage09p-m0-fixture-v1", "containsRealUserData": false, "containsRealFoodFacts": false, "purpose": "governance-format-and-fail-closed-testing-only" }
+    }
+  ]
+}

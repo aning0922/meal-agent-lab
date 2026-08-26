@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "synthetic://meal-agent/stage09p-m0/governance-catalog.schema.json",
+  "$comment": "runtime-owned: decode.ts scalar closure; standard JSON Schema/Ajv does not claim negative-zero distinction",
+  "title": "Stage 09P M0 governance catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "releases", "hardMappings"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "releases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "$ref": "synthetic://meal-agent/stage09p-m0/governance-release.schema.json"
+      }
+    },
+    "hardMappings": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": { "$ref": "#/$defs/hardMapping" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:[^\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$"
+    },
+    "positiveRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "governedReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datasetId", "entityId", "entityRevision"],
+      "properties": {
+        "datasetId": { "$ref": "#/$defs/nonEmptyString" },
+        "entityId": { "$ref": "#/$defs/nonEmptyString" },
+        "entityRevision": { "$ref": "#/$defs/positiveRevision" }
+      }
+    },
+    "hardMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mappingId", "source", "target", "required"],
+      "properties": {
+        "mappingId": { "$ref": "#/$defs/nonEmptyString" },
+        "source": { "$ref": "#/$defs/governedReference" },
+        "target": { "$ref": "#/$defs/governedReference" },
+        "required": { "type": "boolean" }
+      }
+    }
+  }
+}

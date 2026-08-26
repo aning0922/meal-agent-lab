@@ -1,0 +1,36 @@
+{
+  "$schema": "../../../schemas/governance-release.schema.json",
+  "schemaVersion": 1,
+  "releaseId": "syn:release:cooking-technique:1",
+  "releaseRevision": 1,
+  "contentDigest": "sha256:06b034fb7e9b924bbe32ed95a4596676fcffdebb7f7bdb224396eff87082b432",
+  "envelopes": [
+    {
+      "schemaVersion": 1,
+      "datasetId": "syn:dataset:cooking-technique",
+      "datasetKind": "cooking_technique",
+      "entityId": "01900000-7000-7000-8000-000000000005",
+      "entityRevision": 1,
+      "lifecycleStatus": "active",
+      "owner": { "actorId": "syn:actor:cooking-technique-owner", "role": "content-steward" },
+      "approvers": [{ "actorId": "syn:actor:cooking-technique-reviewer", "role": "content-reviewer" }],
+      "sourceTier": "L3",
+      "sourceReferences": [{ "referenceId": "syn:source:cooking-technique", "referenceRevision": "syn-revision-1", "locator": "synthetic://stage09p-m0/cooking-technique" }],
+      "sourceSnapshots": [{ "snapshotId": "syn:snapshot:cooking-technique:1", "referenceId": "syn:source:cooking-technique", "referenceRevision": "syn-revision-1", "locator": "synthetic://stage09p-m0/cooking-technique", "contentDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555", "retrievedAt": "2000-01-01T00:00:00.000Z" }],
+      "applicableRegions": ["SYNTHETIC-REGION-1"],
+      "languages": ["x-synthetic"],
+      "licenseStatus": "approved",
+      "licenseReference": "synthetic-license://stage09p-m0/internal-original",
+      "retrievedAt": "2000-01-01T00:00:00.000Z",
+      "reviewedAt": "2000-01-02T00:00:00.000Z",
+      "reviewDueAt": "2099-01-01T00:00:00.000Z",
+      "aliases": [{ "value": "SYNTHETIC_COOKING_TECHNIQUE_ALPHA", "region": "SYNTHETIC-REGION-1", "language": "x-synthetic", "sourceReferenceId": "syn:source:cooking-technique", "sourceReferenceRevision": "syn-revision-1" }],
+      "supersededBy": null,
+      "withdrawalState": "not_withdrawn",
+      "withdrawalReason": null,
+      "withdrawnAt": null,
+      "content": { "syntheticToken": "SYNTHETIC_COOKING_TECHNIQUE_ALPHA" },
+      "syntheticEvidence": { "classification": "fully_synthetic", "generator": "stage09p-m0-fixture-v1", "containsRealUserData": false, "containsRealFoodFacts": false, "purpose": "governance-format-and-fail-closed-testing-only" }
+    }
+  ]
+}
