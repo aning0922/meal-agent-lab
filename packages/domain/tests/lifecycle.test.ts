@@ -511,15 +511,22 @@ seTest(
 );
 
 seTest(
-  "SE08 same-value clone and object insertion order are source-equivalent",
+  "SE08 length-two clone, object, and Map insertion order are source-equivalent",
   (previous, current) => {
-    copySourceGraph(previous, current);
+    const pairs = [
+      sourcePair("se08-a", "syn:snapshot:se08-x", "8"),
+      sourcePair("se08-b", "syn:snapshot:se08-y", "9"),
+    ];
+    setSourceGraph(previous, pairs);
+    setSourceGraph(current, pairs);
     current.sourceReferences = current.sourceReferences.map((reference) =>
       Object.fromEntries(Object.entries(reference).reverse()) as unknown as Mutable<SourceReference>,
     );
-    current.sourceSnapshots = current.sourceSnapshots.map((snapshot) =>
-      Object.fromEntries(Object.entries(snapshot).reverse()) as unknown as Mutable<SourceSnapshot>,
-    );
+    current.sourceSnapshots = current.sourceSnapshots
+      .map((snapshot) =>
+        Object.fromEntries(Object.entries(snapshot).reverse()) as unknown as Mutable<SourceSnapshot>,
+      )
+      .reverse();
   },
   [L],
 );
