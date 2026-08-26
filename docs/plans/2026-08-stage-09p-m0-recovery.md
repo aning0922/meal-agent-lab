@@ -126,7 +126,9 @@ data/samples/stage09p-m0/**
 
 **停止条件**
 
-- resolver 需要 `unknown` compatibility input、overload、raw catalog 或 exception text；
+- 除 ADR 三个固定 public signatures 为 strict decode 明确声明的 intentional `unknown`
+  boundary 外，resolver 新增 compatibility overload、旁路、第二 authority、raw catalog
+  或 exception text；
 - entity history projection 未精确排除 release-scoped metadata；
 - 合法 lifecycle/supersession 历史无法构造；
 - compound invalid input 的排序不确定，或只能靠有损 tag/projection 测试；
@@ -200,7 +202,7 @@ compound case 允许多个确定性 issue。
 | Supersession | U02 | target 为 draft 或 self/cycle | unusable，cycle 按 path 排序 |
 | Supersession | U03 | same-kind cross-dataset target | dataset mismatch |
 | Resolver | R01 | valid mapping + exact context | exact frozen `mapped` whole object |
-| Resolver | R02 | forged/missing context | exact `missing_context`，零 raw |
+| Resolver | R02 | forged/missing context | exact `invalid_activation_context`，零 raw |
 | Resolver | R03 | mappingId 为 0 条或 2 条 | exact `invalid_catalog` |
 | Resolver | R04 | endpoint issue + unrelated issue | exact `invalid_catalog`，不挑 issue |
 | Resolver | R05 | unknown/withdrawn/unapproved target | 对应封闭 reason，不泄露 envelope |
