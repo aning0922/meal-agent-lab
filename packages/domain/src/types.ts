@@ -202,6 +202,131 @@ export type ValidationIssueCode =
   | "SOURCE_SNAPSHOT_ID_EQUIVOCATION"
   | "SOURCE_SNAPSHOT_MISMATCH";
 
+export const m1ReadinessRoles = frozenLiterals(
+  "knowledge_data_steward",
+  "allergen_safety_data_steward",
+  "product_policy_steward",
+  "food_safety_steward",
+  "culinary_content_steward",
+  "domain_owner",
+  "product_owner",
+  "external_food_safety_reviewer",
+  "safety_approver",
+  "legal_compliance_license_reviewer",
+  "cultural_ethical_reviewer",
+  "recipe_qa",
+);
+export const m1ReadinessReasons = frozenLiterals(
+  "FORGED_OR_REVOKED_AUTHORITY",
+  "UNASSIGNED_OR_UNACCEPTED_AUTHORITY",
+  "CONFLICTED_OR_DUPLICATE_APPROVER",
+  "SOURCE_WITHDRAWN",
+  "SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT",
+  "LICENSE_NOT_APPROVED",
+  "REGION_NOT_APPLICABLE",
+  "LANGUAGE_NOT_APPLICABLE",
+  "DOMAIN_REVIEW_MISSING_OR_EXPIRED",
+  "READINESS_GATE_FAILED",
+  "INDEPENDENT_A_B_NOT_CLEAN",
+  "TOTAL_CONTROL_NOT_ACCEPTED",
+);
+export type M1ReadinessRole = (typeof m1ReadinessRoles)[number]; export type M1ReadinessReason = (typeof m1ReadinessReasons)[number];
+export interface M1AuthorityEvidence {
+  readonly authorityRecordId: string;
+  readonly assignmentRevision: number;
+  readonly assignmentDigest: string;
+  readonly role: M1ReadinessRole;
+  readonly naturalPersonIdentity: string;
+  readonly identityVerified: boolean;
+  readonly acceptedResponsibilities: boolean;
+  readonly acceptanceEvidenceDigest: string;
+  readonly independent: boolean;
+  readonly disclosedConflicts: readonly string[];
+  readonly assignmentKind: "primary" | "substitute";
+  readonly substitutesFor: string;
+  readonly equivalentQualification: boolean;
+  readonly status: "confirmed" | "pending_external_confirmation" | "revoked" | "unassigned";
+}
+export interface M1SourceEvidence {
+  readonly sourceInventoryId: string;
+  readonly datasetId: string;
+  readonly releaseId: string;
+  readonly releaseRevision: number;
+  readonly releaseContentDigest: string;
+  readonly entityId: string;
+  readonly entityRevision: number;
+  readonly factOrRuleId: string;
+  readonly referenceId: string;
+  readonly referenceRevision: string;
+  readonly snapshotId: string;
+  readonly sourceSnapshotContentDigest: string;
+  readonly sourceOrganization: string;
+  readonly sourceLocator: string;
+  readonly sourceVersion: string;
+  readonly publicationDate: string;
+  readonly retrievedAt: string;
+  readonly minimalSnapshotDigest: string;
+  readonly applicableRegions: readonly string[];
+  readonly sourceLanguage: string;
+  readonly candidateSourceTier: SourceTier;
+  readonly licenseStatus: "approved" | "pending" | "rejected" | "restricted" | "unknown";
+  readonly copyPermitted: boolean;
+  readonly transformationPermitted: boolean;
+  readonly redistributionPermitted: boolean;
+  readonly provenanceReviewStatus: "approved" | "pending" | "rejected" | "revoked" | "unreviewed";
+  readonly licenseReviewStatus: "approved" | "pending" | "rejected" | "revoked" | "unreviewed";
+  readonly domainReviewStatus: "approved" | "pending" | "rejected" | "revoked" | "unreviewed";
+  readonly monitoringState: "current" | "overdue" | "unknown" | "withdrawn";
+  readonly monitoringNextDueAt: string;
+}
+export interface M1ReviewDecisionEvidence {
+  readonly reviewDecisionId: string;
+  readonly authorityRecordId: string;
+  readonly authorityAssignmentRevision: number;
+  readonly authorityAssignmentDigest: string;
+  readonly assignmentAcceptanceDigest: string;
+  readonly role: M1ReadinessRole;
+  readonly releaseId: string;
+  readonly releaseRevision: number;
+  readonly releaseContentDigest: string;
+  readonly entityRevisions: readonly string[];
+  readonly factOrRuleIds: readonly string[];
+  readonly sourceInventoryIds: readonly string[];
+  readonly sourceKeys: readonly string[];
+  readonly applicableRegions: readonly string[];
+  readonly languages: readonly string[];
+  readonly decision: "approve" | "reject";
+  readonly decidedAt: string;
+  readonly evidenceDigest: string;
+  readonly independenceEvidenceDigest: string;
+  readonly conflictDisclosureDigest: string;
+  readonly revokedAt: string;
+}
+export interface M1ReadinessEvidence {
+  readonly schemaVersion: 1;
+  readonly classification: "fully_synthetic" | "fully_synthetic_empty_template";
+  readonly target: {
+    readonly releaseId: string;
+    readonly releaseRevision: number;
+    readonly releaseContentDigest: string;
+    readonly region: string;
+    readonly language: string;
+    readonly asOf: string;
+  };
+  readonly authorities: readonly M1AuthorityEvidence[];
+  readonly sources: readonly M1SourceEvidence[];
+  readonly reviewDecisions: readonly M1ReviewDecisionEvidence[];
+  readonly readinessGatePassed: boolean;
+  readonly auditAResult: "CLEAN" | "PENDING" | "BLOCK";
+  readonly auditBResult: "CLEAN" | "PENDING" | "BLOCK";
+  readonly totalControlAccepted: boolean;
+}
+export interface M1ReadinessAssessment {
+  readonly status: "BLOCKED" | "ACTIVATION_ELIGIBLE";
+  readonly primaryReason: M1ReadinessReason | null;
+  readonly reasons: readonly M1ReadinessReason[];
+}
+
 declare const activationContextBrand: unique symbol;
 
 export interface DecodedActivationContext {

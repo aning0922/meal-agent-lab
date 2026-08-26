@@ -8,7 +8,7 @@
 
 **阶段 09P-M0 Accepted（2026-08-27）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划保持 Accepted。Recovery 依次完成 R1/R2/R3、09A tracked-file baseline reconciliation、Contract R4 source-equivalence remediation 与 SE08 独立 length-2/Map insertion-order regression；完整 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 获 Cycle 2 独立 Audit A/B 双 CLEAN，并重新通过 scope 15/15、domain check、M0 6/6（direct 91/91）、docs 85 files / 346 links、diff/status；同一精确代码候选已有 fresh `stage09a:check` 14/14。总控据此将 ADR-0008 与 M0 记为 Accepted。production 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，数据仍只有 5 valid + 10 invalid 完全合成 fixtures，无权威真实 release、真实用户/食品事实或外部能力。09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。Node loader/compiler/runner/worker/supply-chain 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计组成的 TCB 承担，不由 M0 checker 自证。阶段 09B 保持 P1 conditional；云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
 
-**阶段 09P-M1 preparation design candidate（2026-08-27）**：已从 M0 最终 closeout baseline `1a66015e63ac84c6257be46a36c5c5967ee53f20` 在独立分支/工作树形成 [ADR-0009](architecture/decisions/0009-stage09p-m1-release-authority-boundary.md) 与 [M1 外部审核/首发就绪计划](plans/2026-08-stage-09p-m1-release-readiness.md) 的 docs-only 候选，当前等待独立 M1 Design Review。readiness 与真实 activation 已分层；五类 owner、Domain Owner、外部食品安全审核人、Safety Approver、法律/合规/许可、文化/伦理和 Recipe QA 的具体身份均为 `UNASSIGNED / PENDING_EXTERNAL_CONFIRMATION`，真实 source/license inventory 也未建立。Proposed `24/4/8/8/12`、首发地区与 `zh-CN` 范围仍未 Accepted。本轮没有写 `data/**`、scripts/tests/product，没有导入真实事实、批准许可或创建 active release；M1 未 Implemented、未 Accepted、未激活，M2 未开始。09P 保持 `In Progress`，M0 保持 `Accepted`；09B、云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
+**阶段 09P-M1 preparation S1-R1 candidate（2026-08-27）**：独立 Design Review 已对 exact anchor `07839f11ba3466bcc9fd1981df844df5359b4887` 报告 CLEAN，仅解锁 synthetic-only/empty-template preparation。当前候选以既有七个 production module 内的小型纯派生 assessment 消费 M0 catalog/source/digest/literal lifecycle authority，并配套 targeted synthetic tests、一个空模板与短 scope/runner；不执行 transition 或生成 active successor。H01—H05/K01—K06 内容矩阵留给 S2。五类 owner、Domain Owner、Product Owner、全部外部审核人与真实 source/license/scope 仍为 `UNASSIGNED / PENDING_EXTERNAL_CONFIRMATION`；Proposed `24/4/8/8/12`、首发地区与 `zh-CN` 仍未 Accepted。S1-R1 仅等待 tracked-file 总控复核；09A baseline 仍冻结为 417，提交态 423 的机械更新须另签 R2，不能把预期 registry fail closed 写成 PASS。M1 未 Implemented、未 Accepted、未激活，M2 未开始。09P 保持 `In Progress`，M0 保持 `Accepted`；09B、云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -996,15 +996,15 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 ## 阶段 09P 规划 Accepted
 
 - 正式名称：阶段 09P“安全知识治理与确定性产品核心闭环”，P0。
-- 当前状态：**Planning Accepted；M0/ADR-0008 Accepted；09P In Progress；M1 仅 preparation design candidate，等待独立 Design Review，未 Implemented/Accepted/激活**。规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；M0 验收落点为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`。
+- 当前状态：**Planning Accepted；M0/ADR-0008 Accepted；09P In Progress；M1 仅 preparation S1-R1 candidate，等待 tracked-file 总控复核，未 Implemented/Accepted/激活**。独立 Design Review 只对 exact S1 anchor 给出 CLEAN；规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；M0 验收落点为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`。
 - ADR：[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
   的规划/架构方向已 `Accepted`；[ADR-0008](architecture/decisions/0008-stage09p-m0-evidence-boundary.md)
   与 M0 已由总控在完整 acceptance candidate 上 Accepted，但不授权权威真实 release、
   migration、外部能力或 M1。
 - 首个里程碑 09P-M0“数据治理契约与合成 fail-closed 内核”已完成 Recovery R1/R2/R3
   与 bounded remediation，Cycle 2 独立 Audit A/B 双 CLEAN并通过总控验收。M1 当前仅
-  有 release-authority/readiness docs-only design candidate；真实 authority/source、
-  synthetic implementation、真实数据、activation 与 Accepted 均未发生。
+  有 release-authority/readiness contract 与 synthetic-only S1-R1 preparation candidate；H/K
+  内容矩阵、真实 authority/source、真实数据、activation 与 Accepted 均未发生。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
 - `packages/domain` M0 已固定为七个纯 production module；M0 scope gate 只核对边界和

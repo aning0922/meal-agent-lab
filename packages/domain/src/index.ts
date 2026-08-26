@@ -21,6 +21,7 @@ export {
   datasetKinds,
   licenseStatuses,
   lifecycleStatuses,
+  m1ReadinessReasons, m1ReadinessRoles,
   sourceTiers,
   withdrawalStates,
   type DatasetKind,
@@ -44,6 +45,9 @@ export {
   type JsonValue,
   type LicenseStatus,
   type LifecycleStatus,
+  type M1AuthorityEvidence, type M1ReadinessAssessment, type M1ReadinessEvidence,
+  type M1ReadinessReason, type M1ReadinessRole, type M1ReviewDecisionEvidence,
+  type M1SourceEvidence,
   type ReleaseDigestResult,
   type ReferenceResolution,
   type SourceReference,
@@ -52,3 +56,4 @@ export {
   type SyntheticEvidence,
   type WithdrawalState,
 } from "./types.js";
+export { assessM1Readiness } from "./validation.js";

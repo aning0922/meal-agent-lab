@@ -14,6 +14,12 @@ import {
   type GovernanceEnvelope,
   type GovernedReference,
   type LifecycleStatus,
+  type M1AuthorityEvidence,
+  type M1ReadinessAssessment,
+  type M1ReadinessEvidence,
+  type M1ReadinessReason,
+  m1ReadinessReasons,
+  m1ReadinessRoles,
   type ValidationIssue,
   type ValidationIssueCode,
 } from "./types.js";
@@ -547,4 +553,166 @@ export const lifecycleOracleCardinality = (): Readonly<{ accepted: number; rejec
     }
   }
   return Object.freeze({ accepted, rejected: 36 - accepted });
+};
+
+const sortedSetEquals = (left: readonly string[], right: readonly string[]): boolean => {
+  const normalize = (values: readonly string[]): string[] => [...new Set(values)].sort(compareUtf8);
+  return canonicalJson(normalize(left)) === canonicalJson(normalize(right));
+};
+const hasSyntheticPrefix = (value: string): boolean => value.startsWith("syn:");
+/** S1-only derived gate. It never mutates M0 input or performs a lifecycle transition. */
+export const assessM1Readiness = (
+  catalogInput: unknown,
+  evidenceInput: unknown,
+): M1ReadinessAssessment => {
+  const reasons = new Set<M1ReadinessReason>();
+  const add = (reason: M1ReadinessReason): void => void reasons.add(reason);
+  const evidence = evidenceInput as Partial<M1ReadinessEvidence>;
+  const target = evidence.target;
+  const authorities = Array.isArray(evidence.authorities) ? evidence.authorities : [];
+  const sources = Array.isArray(evidence.sources) ? evidence.sources : [];
+  const decisions = Array.isArray(evidence.reviewDecisions) ? evidence.reviewDecisions : [];
+  const analysis = analyzeGovernanceCatalog(catalogInput);
+  if (analysis.catalog === null || analysis.issues.length > 0) {
+    add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+  }
+  const release = analysis.catalog?.releases.find(
+    (candidate) =>
+      candidate.releaseId === target?.releaseId &&
+      candidate.releaseRevision === target.releaseRevision &&
+      candidate.contentDigest === target.releaseContentDigest,
+  );
+  if (release === undefined) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+  for (const envelope of release?.envelopes ?? []) {
+    if (envelope.lifecycleStatus === "withdrawn") add("SOURCE_WITHDRAWN");
+    else if (envelope.lifecycleStatus !== "approved") add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+    if (!canonicalTimestamp(envelope.reviewDueAt) || Date.parse(envelope.reviewDueAt) <= Date.parse(target?.asOf ?? "")) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+  }
+  const authorityByRole = new Map<string, M1AuthorityEvidence[]>();
+  const identities = new Set<string>();
+  const acceptanceDigests = new Set<string>();
+  for (const authority of authorities) {
+    const grouped = authorityByRole.get(authority.role) ?? [];
+    grouped.push(authority);
+    authorityByRole.set(authority.role, grouped);
+    if (
+      authority.status === "revoked" ||
+      (authority.naturalPersonIdentity.length > 0 &&
+        (!authority.identityVerified || !hasSyntheticPrefix(authority.naturalPersonIdentity)))
+    ) add("FORGED_OR_REVOKED_AUTHORITY");
+    if (
+      authority.status !== "confirmed" || authority.naturalPersonIdentity.length === 0 ||
+      !authority.acceptedResponsibilities || !hasSyntheticPrefix(authority.authorityRecordId) ||
+      !hasSyntheticPrefix(authority.assignmentDigest) ||
+      !hasSyntheticPrefix(authority.acceptanceEvidenceDigest) ||
+      (authority.assignmentKind === "substitute" &&
+        (!authority.equivalentQualification || !hasSyntheticPrefix(authority.substitutesFor)))
+    ) add("UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
+    if (
+      !authority.independent || authority.disclosedConflicts.length > 0 ||
+      identities.has(authority.naturalPersonIdentity) ||
+      acceptanceDigests.has(authority.acceptanceEvidenceDigest)
+    ) add("CONFLICTED_OR_DUPLICATE_APPROVER");
+    if (authority.naturalPersonIdentity.length > 0) identities.add(authority.naturalPersonIdentity);
+    if (authority.acceptanceEvidenceDigest.length > 0) {
+      acceptanceDigests.add(authority.acceptanceEvidenceDigest);
+    }
+  }
+  for (const role of m1ReadinessRoles) {
+    const count = authorityByRole.get(role)?.length ?? 0;
+    if (count !== 1) add(count > 1
+      ? "CONFLICTED_OR_DUPLICATE_APPROVER"
+      : "UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
+  }
+  const expectedEntityRevisions = (release?.envelopes ?? []).map(
+    ({ entityId, entityRevision }) => `${entityId}@${entityRevision}`,
+  );
+  const expectedSourceKeys = (release?.envelopes ?? []).flatMap(({ sourceReferences }) =>
+    sourceReferences.map(sourceKeyText));
+  if (sources.length !== expectedSourceKeys.length || sources.length === 0 || !sortedSetEquals(
+    sources.map(({ referenceId, referenceRevision }) => canonicalJson({ referenceId, referenceRevision })), expectedSourceKeys)) {
+    add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+  }
+  for (const source of sources) {
+    const envelope = release?.envelopes.find(
+      (candidate) => candidate.datasetId === source.datasetId &&
+        candidate.entityId === source.entityId && candidate.entityRevision === source.entityRevision,
+    );
+    const reference = envelope?.sourceReferences.find(
+      (candidate) => candidate.referenceId === source.referenceId &&
+        candidate.referenceRevision === source.referenceRevision,
+    );
+    const snapshot = envelope?.sourceSnapshots.find(
+      (candidate) => candidate.referenceId === source.referenceId &&
+        candidate.referenceRevision === source.referenceRevision,
+    );
+    if (
+      envelope === undefined || reference === undefined || snapshot === undefined ||
+      source.releaseId !== release?.releaseId || source.releaseRevision !== release?.releaseRevision ||
+      source.releaseContentDigest !== release?.contentDigest || source.snapshotId !== snapshot.snapshotId ||
+      source.sourceSnapshotContentDigest !== snapshot.contentDigest ||
+      source.sourceLocator !== reference.locator || source.retrievedAt !== snapshot.retrievedAt ||
+      !hasSyntheticPrefix(source.sourceInventoryId) || !hasSyntheticPrefix(source.factOrRuleId) ||
+      !hasSyntheticPrefix(source.referenceId) || !hasSyntheticPrefix(source.sourceOrganization) ||
+      source.candidateSourceTier !== envelope?.sourceTier || source.candidateSourceTier === "L4" ||
+      source.sourceVersion.length === 0 || !canonicalTimestamp(source.publicationDate) || Date.parse(source.publicationDate) > Date.parse(source.retrievedAt) ||
+      !hasSyntheticPrefix(source.minimalSnapshotDigest)
+    ) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+    if (
+      source.monitoringState !== "current" || !canonicalTimestamp(source.monitoringNextDueAt) ||
+      !canonicalTimestamp(target?.asOf ?? "") ||
+      Date.parse(source.monitoringNextDueAt) <= Date.parse(target?.asOf ?? "")
+    ) add("SOURCE_WITHDRAWN");
+    if (
+      source.licenseStatus !== "approved" || source.licenseReviewStatus !== "approved" ||
+      !source.copyPermitted || !source.transformationPermitted || !source.redistributionPermitted
+    ) add("LICENSE_NOT_APPROVED");
+    if (!source.applicableRegions.includes(target?.region ?? "")) add("REGION_NOT_APPLICABLE");
+    if (source.sourceLanguage !== target?.language) add("LANGUAGE_NOT_APPLICABLE");
+    if (source.provenanceReviewStatus !== "approved" || source.domainReviewStatus !== "approved") {
+      add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+    }
+  }
+  const expectedFacts = sources.map(({ factOrRuleId }) => factOrRuleId);
+  const expectedInventories = sources.map(({ sourceInventoryId }) => sourceInventoryId);
+  for (const role of m1ReadinessRoles) {
+    const roleDecisions = decisions.filter((decision) => decision.role === role);
+    if (roleDecisions.length !== 1) {
+      add(roleDecisions.length > 1
+        ? "CONFLICTED_OR_DUPLICATE_APPROVER"
+        : "DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+      continue;
+    }
+    const decision = roleDecisions[0]!;
+    const authority = authorityByRole.get(role)?.[0];
+    if (
+      authority === undefined || decision.authorityRecordId !== authority.authorityRecordId ||
+      decision.authorityAssignmentRevision !== authority.assignmentRevision ||
+      decision.authorityAssignmentDigest !== authority.assignmentDigest ||
+      decision.assignmentAcceptanceDigest !== authority.acceptanceEvidenceDigest ||
+      decision.releaseId !== target?.releaseId || decision.releaseRevision !== target?.releaseRevision ||
+      decision.releaseContentDigest !== target?.releaseContentDigest || decision.decision !== "approve" || !canonicalTimestamp(decision.decidedAt) || Date.parse(decision.decidedAt) > Date.parse(target?.asOf ?? "") ||
+      decision.revokedAt.length > 0 || !hasSyntheticPrefix(decision.reviewDecisionId) ||
+      !hasSyntheticPrefix(decision.evidenceDigest) ||
+      !hasSyntheticPrefix(decision.independenceEvidenceDigest) ||
+      !hasSyntheticPrefix(decision.conflictDisclosureDigest) ||
+      !sortedSetEquals(decision.entityRevisions, expectedEntityRevisions) ||
+      !sortedSetEquals(decision.factOrRuleIds, expectedFacts) ||
+      !sortedSetEquals(decision.sourceInventoryIds, expectedInventories) ||
+      !sortedSetEquals(decision.sourceKeys, expectedSourceKeys) ||
+      !sortedSetEquals(decision.applicableRegions, [target?.region ?? ""]) ||
+      !sortedSetEquals(decision.languages, [target?.language ?? ""])
+    ) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+  }
+  if (!evidence.readinessGatePassed) add("READINESS_GATE_FAILED");
+  if (evidence.auditAResult !== "CLEAN" || evidence.auditBResult !== "CLEAN") {
+    add("INDEPENDENT_A_B_NOT_CLEAN");
+  }
+  if (!evidence.totalControlAccepted) add("TOTAL_CONTROL_NOT_ACCEPTED");
+  const ordered = Object.freeze(m1ReadinessReasons.filter((reason) => reasons.has(reason)));
+  return Object.freeze({
+    status: ordered.length === 0 ? "ACTIVATION_ELIGIBLE" : "BLOCKED",
+    primaryReason: ordered[0] ?? null,
+    reasons: ordered,
+  });
 };

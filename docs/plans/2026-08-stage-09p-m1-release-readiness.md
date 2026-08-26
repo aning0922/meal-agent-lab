@@ -1,6 +1,7 @@
 # Stage 09P-M1：外部审核与首发就绪计划
 
-- 状态：Preparation design candidate；等待独立 M1 Design Review
+- 状态：Preparation S1-R1 candidate；独立 Design Review 已对 exact anchor
+  `07839f11ba3466bcc9fd1981df844df5359b4887` 报告 CLEAN，等待 tracked-file 总控复核
 - 日期：2026-08-27
 - 冻结基线：`1a66015e63ac84c6257be46a36c5c5967ee53f20`
 - 有界修订 anchor：`915f8bf5a207211155aecda448be52b36bd0072a`
@@ -40,6 +41,11 @@ docs/plans/2026-08-stage-09p-m1-release-readiness.md
 domain、API、DB、migration、client、OpenAPI、lockfile、09A 冻结面或看板；不得建立真实
 authority/source record、`licenseStatus=approved` 记录、active release 或 M2 资产。
 对本次有界修订，上述 6 文件中的其余 4 个索引/状态文件也 frozen，不得写入。
+
+Design Review CLEAN 后的 S1-R1 由单独 authority 精确允许 11 个文件：根脚本入口；domain
+既有 `types/validation/index` 三模块；一份 targeted test；一份 empty template；两支短脚本；
+ADR、本计划与项目状态。其余文件仍 frozen，production 仍严格只有七模块。S1-R1 不改变
+上述历史 docs-only 两轮的范围事实，也不授权 09A baseline、真实内容或 activation。
 
 禁止网络搜索/抓取、Docker/Compose、凭据、云/公网/真实微信、付费资源、push/merge/PR，
 也不得用模型/搜索结果升级 source tier。命中范围扩大、需要不同 docs-only 文件集合或
@@ -182,30 +188,31 @@ A/B。
 
 ## 5. 固定工具链、门禁与 TCB
 
-本 preparation docs 候选固定：
+S1-R1 preparation candidate 固定：
 
 ```text
 PATH=/Users/aipuli/.nvm/versions/node/v24.18.0/bin:$PATH
 node --version                         # 必须为 v24.18.0
+pnpm install --frozen-lockfile
+pnpm stage09p:m1:readiness:check       # typecheck/build/target test/M0/scope
+pnpm --filter @meal-agent/domain check
+pnpm stage09p:m0:check
 pnpm docs:links:check
+pnpm check
+node infra/docker/check-m3b-registry-integrity.mjs
+                                      # 仅允许 423 != frozen 417 的预期 fail closed
 git diff --check
-git diff --name-only 915f8bf5a207211155aecda448be52b36bd0072a..HEAD
-                                      # 本次有界修订精确为 2 文件
-git diff --name-only 1a66015e63ac84c6257be46a36c5c5967ee53f20..HEAD
-                                      # 累计仍精确为首轮 6 文件
-git rev-list --count 915f8bf5a207211155aecda448be52b36bd0072a..HEAD
-                                      # 必须为 1
-git rev-list --count 1a66015e63ac84c6257be46a36c5c5967ee53f20..HEAD
-                                      # 必须为 2
+git diff --name-status 07839f11ba3466bcc9fd1981df844df5359b4887..HEAD
 git status --short --branch
 ```
 
-本轮不得运行 Docker/Compose、网络、凭据、`pnpm stage09a:check` 或 `pnpm check`。固定
-Node、frozen lockfile、Git review、既有 CI/09A、独立 Design Review，以及未来具体外部
-authority 与 A/B 共同构成外部 TCB。docs links 或未来小型 runner 只传播普通命令失败，
+S1-R1 不运行 Docker/Compose 或完整 `stage09a:check`，不得使用网络抓取、凭据或外部写入；
+09A baseline 保持 frozen，待总控核验 423 后另签机械 R2。固定 Node、frozen lockfile、Git
+review、既有 CI/09A、独立 Design Review，以及未来具体外部 authority 与 A/B 共同构成
+外部 TCB。短 runner 只传播普通命令失败，
 不自证 Node、compiler、test runner、lockfile、reviewer、外部来源或 supply chain。
 
-未来 synthetic gate 应保持小而可读：普通 unit/table/regression + 一个短聚合入口即可；
+S1 synthetic gate 保持小而可读：普通 unit/table/regression + 一个短聚合入口；
 若需要约 1:1 复制产品规则的 checker、mutation registry、网络抓取或“自证 reviewer”，
 立即 `ARCHITECTURE BLOCKED`，回到独立设计审查。
 
@@ -217,6 +224,6 @@ Owner 及其对 FoodConcept、宗教/伦理的必需 per-release 批准关系；
 逐事实/规则真实来源 inventory；首发地区、`zh-CN` 适用性和 Proposed `24/4/8/8/12`
 是否采用。全部为 `PENDING_EXTERNAL_CONFIRMATION`。
 
-09P 保持 `In Progress`；M0 保持 `Accepted`；M1 本轮只有 preparation/design candidate，
-未 Implemented、未 Accepted、未激活。阶段 09B、云、公网、真实微信、合法域名、真机、
+09P 保持 `In Progress`；M0 保持 `Accepted`；M1 本轮只有 preparation S1-R1 candidate，
+H01—H05/K01—K06 留给 S2，M1 未 Implemented、未 Accepted、未激活。阶段 09B、云、公网、真实微信、合法域名、真机、
 体验版、审核和发布继续 `Deferred — 外部依赖`，不得由本地文档或合成门禁替代。

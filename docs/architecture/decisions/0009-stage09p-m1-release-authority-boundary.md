@@ -1,6 +1,7 @@
 # ADR-0009：Stage 09P-M1 发布权限与外部审核边界
 
-- 状态：Proposed（M1 preparation design candidate；等待独立 M1 Design Review）
+- 状态：Proposed（独立 Design Review 已对 `07839f11ba3466bcc9fd1981df844df5359b4887`
+  报告 CLEAN；S1 synthetic-only preparation candidate 待 tracked-file 总控复核）
 - 日期：2026-08-27
 - 基线：`1a66015e63ac84c6257be46a36c5c5967ee53f20`
 - 有界修订 anchor：`915f8bf5a207211155aecda448be52b36bd0072a`
@@ -301,6 +302,13 @@ FORGED_OR_REVOKED_AUTHORITY
 法律或许可事实。
 
 ## 6. 影响与接受边界
+
+S1 在 Design Review CLEAN 后只把本 ADR 的 authority/provenance/license/lifecycle/review
+decision 总序实现为小型纯派生 assessment：它消费 M0 完整 catalog analysis、SourceKey、
+snapshot、release digest 与 literal lifecycle 结果，输出 deep-frozen 的完整 reasons 和唯一
+primary reason。它不写回 M0、不执行 transition、不生成 active successor；空模板和正向
+结构都完全合成。H01—H05 与 K01—K06 的 Recipe/hard/safety 内容矩阵明确留给 S2，S1
+通过不代表这些矩阵已实现，也不解锁真实 authority、来源、许可、内容、Accepted 或 activation。
 
 - Proposed 规模 `24 FoodConcept / 4 allergen 类别 / 8 safety 规则族 / 8 techniques /
   12 recipes` 仍未 Accepted；首发地区与 `zh-CN` 范围仍为
