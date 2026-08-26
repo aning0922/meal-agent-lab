@@ -555,81 +555,77 @@ export const lifecycleOracleCardinality = (): Readonly<{ accepted: number; rejec
   return Object.freeze({ accepted, rejected: 36 - accepted });
 };
 
-const sortedSetEquals = (left: readonly string[], right: readonly string[]): boolean => {
-  const normalize = (values: readonly string[]): string[] => [...new Set(values)].sort(compareUtf8);
-  return canonicalJson(normalize(left)) === canonicalJson(normalize(right));
+const ordinary = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+const stringList = (value: unknown): value is string[] => Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && value.every((item) => typeof item === "string");
+const objectList = (value: unknown, check: (item: unknown) => boolean): boolean => Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && value.every(check);
+const shaped = (value: unknown, strings: readonly string[], integers: readonly string[],
+  booleans: readonly string[], arrays: readonly string[], nested: readonly string[] = []): boolean => {
+  if (!ordinary(value)) return false;
+  const keys = [...strings, ...integers, ...booleans, ...arrays, ...nested];
+  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)) && strings.every((key) => typeof value[key] === "string") &&
+    integers.every((key) => Number.isSafeInteger(value[key])) && booleans.every((key) => typeof value[key] === "boolean") && arrays.every((key) => stringList(value[key]));
 };
+const authorityStrings = ["authorityRecordId", "assignmentDigest", "role", "naturalPersonIdentity", "acceptanceEvidenceDigest", "assignmentKind", "substitutesFor", "status"];
+const sourceStrings = ["sourceInventoryId", "datasetId", "releaseId", "releaseContentDigest", "entityId", "factOrRuleId", "referenceId", "referenceRevision", "snapshotId", "sourceSnapshotContentDigest", "sourceOrganization", "sourceLocator", "sourceVersion", "publicationDate", "retrievedAt", "minimalSnapshotDigest", "sourceLanguage", "candidateSourceTier", "licenseStatus", "provenanceReviewStatus", "licenseReviewStatus", "domainReviewStatus", "monitoringState", "monitoringNextDueAt"];
+const decisionStrings = ["reviewDecisionId", "authorityRecordId", "authorityAssignmentDigest", "assignmentAcceptanceDigest", "role", "releaseId", "releaseContentDigest", "decision", "decidedAt", "evidenceDigest", "independenceEvidenceDigest", "conflictDisclosureDigest", "revokedAt"];
+const evidenceShape = (input: unknown): input is M1ReadinessEvidence => {
+  if (!shaped(input, ["classification", "auditAResult", "auditBResult"], ["schemaVersion"], ["readinessGatePassed", "totalControlAccepted"], [], ["target", "authorities", "sources", "reviewDecisions"])) return false;
+  const value = input as Record<string, unknown>;
+  return shaped(value["target"], ["releaseId", "releaseContentDigest", "region", "language", "asOf"], ["releaseRevision"], [], []) &&
+    objectList(value["authorities"], (item) => shaped(item, authorityStrings, ["assignmentRevision"], ["identityVerified", "acceptedResponsibilities", "independent", "equivalentQualification"], ["disclosedConflicts"])) &&
+    objectList(value["sources"], (item) => shaped(item, sourceStrings, ["releaseRevision", "entityRevision"], ["copyPermitted", "transformationPermitted", "redistributionPermitted"], ["applicableRegions"])) &&
+    objectList(value["reviewDecisions"], (item) => shaped(item, decisionStrings, ["authorityAssignmentRevision", "releaseRevision"], [], ["entityRevisions", "factOrRuleIds", "sourceInventoryIds", "sourceKeys", "applicableRegions", "languages"]));
+};
+const invalidEvidenceAssessment = Object.freeze({ status: "BLOCKED" as const, primaryReason: "SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT" as const, reasons: Object.freeze(["SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT" as const]) });
+const exactSetEquals = (left: readonly string[], right: readonly string[]): boolean =>
+  new Set(left).size === left.length && canonicalJson([...left].sort(compareUtf8)) === canonicalJson([...new Set(right)].sort(compareUtf8));
 const hasSyntheticPrefix = (value: string): boolean => value.startsWith("syn:");
 /** S1-only derived gate. It never mutates M0 input or performs a lifecycle transition. */
-export const assessM1Readiness = (
-  catalogInput: unknown,
-  evidenceInput: unknown,
-): M1ReadinessAssessment => {
+export const assessM1Readiness = (catalogInput: unknown, evidenceInput: unknown): M1ReadinessAssessment => {
+  try { if (!evidenceShape(evidenceInput)) return invalidEvidenceAssessment;
   const reasons = new Set<M1ReadinessReason>();
   const add = (reason: M1ReadinessReason): void => void reasons.add(reason);
-  const evidence = evidenceInput as Partial<M1ReadinessEvidence>;
+  const evidence = evidenceInput;
   const target = evidence.target;
-  const authorities = Array.isArray(evidence.authorities) ? evidence.authorities : [];
-  const sources = Array.isArray(evidence.sources) ? evidence.sources : [];
-  const decisions = Array.isArray(evidence.reviewDecisions) ? evidence.reviewDecisions : [];
+  const { authorities, sources, reviewDecisions: decisions } = evidence;
+  if (evidence.schemaVersion !== 1 || evidence.classification !== "fully_synthetic") add("READINESS_GATE_FAILED");
   const analysis = analyzeGovernanceCatalog(catalogInput);
-  if (analysis.catalog === null || analysis.issues.length > 0) {
-    add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
-  }
-  const release = analysis.catalog?.releases.find(
-    (candidate) =>
-      candidate.releaseId === target?.releaseId &&
-      candidate.releaseRevision === target.releaseRevision &&
-      candidate.contentDigest === target.releaseContentDigest,
-  );
+  if (analysis.catalog === null || analysis.issues.length > 0) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+  const release = analysis.catalog?.releases.find((candidate) => candidate.releaseId === target.releaseId &&
+    candidate.releaseRevision === target.releaseRevision && candidate.contentDigest === target.releaseContentDigest);
   if (release === undefined) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
   for (const envelope of release?.envelopes ?? []) {
     if (envelope.lifecycleStatus === "withdrawn") add("SOURCE_WITHDRAWN");
     else if (envelope.lifecycleStatus !== "approved") add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
     if (!canonicalTimestamp(envelope.reviewDueAt) || Date.parse(envelope.reviewDueAt) <= Date.parse(target?.asOf ?? "")) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
   }
-  const authorityByRole = new Map<string, M1AuthorityEvidence[]>();
-  const identities = new Set<string>();
-  const acceptanceDigests = new Set<string>();
+  const authorityByRole = new Map<string, M1AuthorityEvidence[]>(), identities = new Set<string>(), acceptanceDigests = new Set<string>();
   for (const authority of authorities) {
     const grouped = authorityByRole.get(authority.role) ?? [];
-    grouped.push(authority);
-    authorityByRole.set(authority.role, grouped);
+    grouped.push(authority); authorityByRole.set(authority.role, grouped);
+    if (authority.status === "revoked" || (authority.naturalPersonIdentity.length > 0 &&
+      (!authority.identityVerified || !hasSyntheticPrefix(authority.naturalPersonIdentity)))) add("FORGED_OR_REVOKED_AUTHORITY");
     if (
-      authority.status === "revoked" ||
-      (authority.naturalPersonIdentity.length > 0 &&
-        (!authority.identityVerified || !hasSyntheticPrefix(authority.naturalPersonIdentity)))
-    ) add("FORGED_OR_REVOKED_AUTHORITY");
-    if (
-      authority.status !== "confirmed" || authority.naturalPersonIdentity.length === 0 ||
-      !authority.acceptedResponsibilities || !hasSyntheticPrefix(authority.authorityRecordId) ||
-      !hasSyntheticPrefix(authority.assignmentDigest) ||
-      !hasSyntheticPrefix(authority.acceptanceEvidenceDigest) ||
+      authority.status !== "confirmed" || !m1ReadinessRoles.includes(authority.role) ||
+      !["primary", "substitute"].includes(authority.assignmentKind) || authority.naturalPersonIdentity.length === 0 ||
+      !authority.acceptedResponsibilities || !hasSyntheticPrefix(authority.authorityRecordId) || !hasSyntheticPrefix(authority.assignmentDigest) || !hasSyntheticPrefix(authority.acceptanceEvidenceDigest) ||
       (authority.assignmentKind === "substitute" &&
         (!authority.equivalentQualification || !hasSyntheticPrefix(authority.substitutesFor)))
     ) add("UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
-    if (
-      !authority.independent || authority.disclosedConflicts.length > 0 ||
-      identities.has(authority.naturalPersonIdentity) ||
-      acceptanceDigests.has(authority.acceptanceEvidenceDigest)
-    ) add("CONFLICTED_OR_DUPLICATE_APPROVER");
+    if (!authority.independent || authority.disclosedConflicts.length > 0 || identities.has(authority.naturalPersonIdentity) || acceptanceDigests.has(authority.acceptanceEvidenceDigest)) add("CONFLICTED_OR_DUPLICATE_APPROVER");
     if (authority.naturalPersonIdentity.length > 0) identities.add(authority.naturalPersonIdentity);
-    if (authority.acceptanceEvidenceDigest.length > 0) {
-      acceptanceDigests.add(authority.acceptanceEvidenceDigest);
-    }
+    if (authority.acceptanceEvidenceDigest.length > 0) acceptanceDigests.add(authority.acceptanceEvidenceDigest);
   }
   for (const role of m1ReadinessRoles) {
     const count = authorityByRole.get(role)?.length ?? 0;
-    if (count !== 1) add(count > 1
-      ? "CONFLICTED_OR_DUPLICATE_APPROVER"
-      : "UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
+    if (count !== 1) add(count > 1 ? "CONFLICTED_OR_DUPLICATE_APPROVER" : "UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
   }
   const expectedEntityRevisions = (release?.envelopes ?? []).map(
     ({ entityId, entityRevision }) => `${entityId}@${entityRevision}`,
   );
   const expectedSourceKeys = (release?.envelopes ?? []).flatMap(({ sourceReferences }) =>
     sourceReferences.map(sourceKeyText));
-  if (sources.length !== expectedSourceKeys.length || sources.length === 0 || !sortedSetEquals(
+  if (sources.length !== expectedSourceKeys.length || sources.length === 0 || !exactSetEquals(
     sources.map(({ referenceId, referenceRevision }) => canonicalJson({ referenceId, referenceRevision })), expectedSourceKeys)) {
     add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
   }
@@ -675,6 +671,8 @@ export const assessM1Readiness = (
   }
   const expectedFacts = sources.map(({ factOrRuleId }) => factOrRuleId);
   const expectedInventories = sources.map(({ sourceInventoryId }) => sourceInventoryId);
+  if (decisions.some(({ role, decision }) => !m1ReadinessRoles.includes(role) ||
+    !["approve", "reject"].includes(decision))) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
   for (const role of m1ReadinessRoles) {
     const roleDecisions = decisions.filter((decision) => decision.role === role);
     if (roleDecisions.length !== 1) {
@@ -691,17 +689,19 @@ export const assessM1Readiness = (
       decision.authorityAssignmentDigest !== authority.assignmentDigest ||
       decision.assignmentAcceptanceDigest !== authority.acceptanceEvidenceDigest ||
       decision.releaseId !== target?.releaseId || decision.releaseRevision !== target?.releaseRevision ||
-      decision.releaseContentDigest !== target?.releaseContentDigest || decision.decision !== "approve" || !canonicalTimestamp(decision.decidedAt) || Date.parse(decision.decidedAt) > Date.parse(target?.asOf ?? "") ||
+      decision.releaseContentDigest !== target.releaseContentDigest || decision.decision !== "approve" ||
+      !canonicalTimestamp(decision.decidedAt) || decision.decidedAt > target.asOf ||
+      sources.some((source) => decision.decidedAt < source.publicationDate || decision.decidedAt < source.retrievedAt) ||
       decision.revokedAt.length > 0 || !hasSyntheticPrefix(decision.reviewDecisionId) ||
       !hasSyntheticPrefix(decision.evidenceDigest) ||
       !hasSyntheticPrefix(decision.independenceEvidenceDigest) ||
       !hasSyntheticPrefix(decision.conflictDisclosureDigest) ||
-      !sortedSetEquals(decision.entityRevisions, expectedEntityRevisions) ||
-      !sortedSetEquals(decision.factOrRuleIds, expectedFacts) ||
-      !sortedSetEquals(decision.sourceInventoryIds, expectedInventories) ||
-      !sortedSetEquals(decision.sourceKeys, expectedSourceKeys) ||
-      !sortedSetEquals(decision.applicableRegions, [target?.region ?? ""]) ||
-      !sortedSetEquals(decision.languages, [target?.language ?? ""])
+      !exactSetEquals(decision.entityRevisions, expectedEntityRevisions) ||
+      !exactSetEquals(decision.factOrRuleIds, expectedFacts) ||
+      !exactSetEquals(decision.sourceInventoryIds, expectedInventories) ||
+      !exactSetEquals(decision.sourceKeys, expectedSourceKeys) ||
+      !exactSetEquals(decision.applicableRegions, [target.region]) ||
+      !exactSetEquals(decision.languages, [target.language])
     ) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
   }
   if (!evidence.readinessGatePassed) add("READINESS_GATE_FAILED");
@@ -715,4 +715,5 @@ export const assessM1Readiness = (
     primaryReason: ordered[0] ?? null,
     reasons: ordered,
   });
+  } catch { return invalidEvidenceAssessment; }
 };

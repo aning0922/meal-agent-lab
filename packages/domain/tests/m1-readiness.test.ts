@@ -136,6 +136,9 @@ const primary = (mutate: (value: ReturnType<typeof candidate>) => void) => {
   mutate(value);
   return assessM1Readiness(value.catalog, value.evidence).primaryReason;
 };
+const setUnknown = (value: object, key: string, replacement: unknown): void => {
+  (value as Record<string, unknown>)[key] = replacement;
+};
 
 test("L02 fully synthetic exact approved predecessor is derived eligible and deep-frozen", () => {
   const { catalog, evidence } = candidate();
@@ -230,6 +233,73 @@ test("input array/key order is irrelevant and empty preparation template is bloc
   const blocked = assessM1Readiness(catalog, empty);
   assert.equal(blocked.status, "BLOCKED");
   assert.equal(blocked.primaryReason, "UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
+});
+
+test("malformed unknown evidence is stable, frozen, blocked and zero-raw", () => {
+  const { catalog, evidence } = candidate();
+  setUnknown(evidence, "readinessGatePassed", "true");
+  const malformed: unknown[] = [null, undefined, [], new Date(0), new Proxy({}, { getPrototypeOf: () => { throw new Error("syn:hostile"); } }), evidence];
+  for (const input of malformed) {
+    let result: ReturnType<typeof assessM1Readiness> | undefined;
+    assert.doesNotThrow(() => { result = assessM1Readiness(catalog, input); });
+    assert.deepStrictEqual(result, {
+      status: "BLOCKED", primaryReason: "SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT",
+      reasons: ["SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT"],
+    });
+    assert.equal(Object.isFrozen(result), true);
+    assert.equal(Object.isFrozen(result!.reasons), true);
+    assert.equal(JSON.stringify(result).includes("syn:"), false);
+  }
+});
+
+test("schema v1 and fully-synthetic classification are mandatory", () => {
+  assert.equal(primary(({ evidence }) => { setUnknown(evidence, "schemaVersion", 2); }), "READINESS_GATE_FAILED");
+  assert.equal(primary(({ evidence }) => {
+    setUnknown(evidence, "classification", "fully_synthetic_empty_template");
+  }), "READINESS_GATE_FAILED");
+});
+
+test("every readiness enum family is closed under one-field unknown mutations", () => {
+  const cases: readonly [string, (evidence: Mutable<M1ReadinessEvidence>) => void][] = [
+    ["role", (e) => { setUnknown(e.authorities[0]!, "role", "unknown"); }],
+    ["authority status", (e) => { setUnknown(e.authorities[0]!, "status", "unknown"); }],
+    ["assignment kind", (e) => { setUnknown(e.authorities[0]!, "assignmentKind", "unknown"); }],
+    ["source tier", (e) => { setUnknown(e.sources[0]!, "candidateSourceTier", "unknown"); }],
+    ["license", (e) => { setUnknown(e.sources[0]!, "licenseStatus", "unknown-enum"); }],
+    ["provenance review", (e) => { setUnknown(e.sources[0]!, "provenanceReviewStatus", "unknown"); }],
+    ["license review", (e) => { setUnknown(e.sources[0]!, "licenseReviewStatus", "unknown"); }],
+    ["domain review", (e) => { setUnknown(e.sources[0]!, "domainReviewStatus", "unknown"); }],
+    ["monitoring", (e) => { setUnknown(e.sources[0]!, "monitoringState", "unknown-enum"); }],
+    ["decision role", (e) => { setUnknown(e.reviewDecisions[0]!, "role", "unknown"); }],
+    ["decision", (e) => { setUnknown(e.reviewDecisions[0]!, "decision", "unknown"); }],
+    ["audit A", (e) => { setUnknown(e, "auditAResult", "unknown"); }],
+    ["audit B", (e) => { setUnknown(e, "auditBResult", "unknown"); }],
+  ];
+  for (const [label, mutate] of cases) {
+    const { catalog, evidence } = candidate(); mutate(evidence);
+    assert.equal(assessM1Readiness(catalog, evidence).status, "BLOCKED", label);
+  }
+});
+
+test("every exact decision scope array rejects a duplicate", () => {
+  for (const field of ["entityRevisions", "factOrRuleIds", "sourceInventoryIds", "sourceKeys", "applicableRegions", "languages"] as const) {
+    const { catalog, evidence } = candidate();
+    const entries = evidence.reviewDecisions[0]![field]; entries.push(entries[0]!);
+    assert.equal(assessM1Readiness(catalog, evidence).status, "BLOCKED", field);
+  }
+});
+
+test("decision time covers source publication/retrieval and never exceeds asOf", () => {
+  assert.equal(primary(({ evidence }) => {
+    evidence.sources[0]!.publicationDate = "1999-12-30T00:00:00.000Z";
+    evidence.reviewDecisions[0]!.decidedAt = "1999-12-31T00:00:00.000Z";
+  }), "DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+  assert.equal(primary(({ evidence }) => {
+    evidence.reviewDecisions[0]!.decidedAt = "2002-01-01T00:00:00.000Z";
+  }), "DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+  const { catalog, evidence } = candidate();
+  evidence.sources[0]!.publicationDate = "2000-01-04T00:00:00.000Z";
+  assert.equal(assessM1Readiness(catalog, evidence).reasons.includes("DOMAIN_REVIEW_MISSING_OR_EXPIRED"), true);
 });
 
 test("H01-H05 and K01-K06 content matrices are intentionally deferred to S2", () => {
