@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "releases": [
+    {
+      "$schema": "../../../schemas/governance-release.schema.json",
+      "schemaVersion": 1,
+      "releaseId": "syn:release:food-concept:1",
+      "releaseRevision": 1,
+      "contentDigest": "sha256:d210ee41b5d73e20ee506fa0b84a2e5137c9161263dd6708823f59249ee57e5c",
+      "envelopes": [
+        {
+          "schemaVersion": 1,
+          "datasetId": "syn:dataset:food-concept",
+          "datasetKind": "food_concept",
+          "entityId": "01900000-7000-7000-8000-000000000001",
+          "entityRevision": 1,
+          "lifecycleStatus": "active",
+          "owner": { "actorId": "syn:actor:food-concept-owner", "role": "data-steward" },
+          "approvers": [{ "actorId": "syn:actor:food-concept-reviewer", "role": "product-reviewer" }],
+          "sourceTier": "L3",
+          "sourceReferences": [{ "referenceId": "syn:source:food-concept", "referenceRevision": "syn-revision-1", "locator": "synthetic://stage09p-m0/food-concept" }],
+          "sourceSnapshots": [{ "snapshotId": "syn:snapshot:food-concept:1", "referenceId": "syn:source:food-concept", "referenceRevision": "syn-revision-1", "locator": "synthetic://stage09p-m0/food-concept", "contentDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "retrievedAt": "2000-01-01T00:00:00.000Z" }],
+          "applicableRegions": ["SYNTHETIC-REGION-1"],
+          "languages": ["x-synthetic"],
+          "licenseStatus": "approved",
+          "licenseReference": "synthetic-license://stage09p-m0/internal-original",
+          "retrievedAt": "2000-01-01T00:00:00.000Z",
+          "reviewedAt": "2000-01-02T00:00:00.000Z",
+          "reviewDueAt": "2099-01-01T00:00:00.000Z",
+          "aliases": [{ "value": "SYNTHETIC_FOOD_CONCEPT_ALPHA", "region": "SYNTHETIC-REGION-1", "language": "x-synthetic", "sourceReferenceId": "syn:source:food-concept", "sourceReferenceRevision": "syn-revision-1" }],
+          "supersededBy": null,
+          "withdrawalState": "not_withdrawn",
+          "withdrawalReason": null,
+          "withdrawnAt": null,
+          "content": { "syntheticToken": "SYNTHETIC_FOOD_CONCEPT_ALPHA" },
+          "syntheticEvidence": { "classification": "fully_synthetic", "generator": "stage09p-m0-fixture-v1", "containsRealUserData": false, "containsRealFoodFacts": false, "purpose": "governance-format-and-fail-closed-testing-only" }
+        }
+      ]
+    }
+  ],
+  "hardMappings": [
+    {
+      "mappingId": "syn:mapping:unresolved-target",
+      "source": { "datasetId": "syn:dataset:food-concept", "entityId": "01900000-7000-7000-8000-000000000001", "entityRevision": 1 },
+      "target": { "datasetId": "syn:dataset:food-concept", "entityId": "syn:entity:missing-target", "entityRevision": 1 },
+      "required": true
+    }
+  ]
+}

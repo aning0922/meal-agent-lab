@@ -161,3 +161,128 @@ export type ReleaseDigestResult =
       readonly ok: false;
       readonly code: "INVALID_SHAPE" | "RELEASE_DIGEST_MISMATCH";
     };
+
+export interface ValidationIssue {
+  readonly code: ValidationIssueCode;
+  readonly path: string;
+}
+
+export type ValidationIssueCode =
+  | "DUPLICATE_ENTITY"
+  | "DUPLICATE_HARD_MAPPING"
+  | "DUPLICATE_RELEASE"
+  | "ENTITY_MISSING_FROM_SNAPSHOT"
+  | "ENTITY_REVISION_EQUIVOCATION"
+  | "ENTITY_REVISION_REGRESSION"
+  | "HARD_MAPPING_SOURCE_UNRESOLVED"
+  | "HARD_MAPPING_TARGET_UNRESOLVED"
+  | "INVALID_LIFECYCLE_TRANSITION"
+  | "INVALID_SHAPE"
+  | "INVALID_SUPERSESSION_CYCLE"
+  | "INVALID_SUPERSESSION_DATASET"
+  | "INVALID_SUPERSESSION_KIND"
+  | "INVALID_SUPERSESSION_SELF"
+  | "INVALID_SUPERSESSION_TARGET"
+  | "INVALID_SUPERSESSION_TARGET_LIFECYCLE"
+  | "INVALID_SUPERSESSION_TARGET_REVISION"
+  | "INVALID_SYNTHETIC_EVIDENCE"
+  | "INVALID_WITHDRAWAL_STATE"
+  | "MISSING_APPROVER"
+  | "MISSING_LANGUAGE"
+  | "MISSING_LICENSE"
+  | "MISSING_OWNER"
+  | "MISSING_REGION"
+  | "MISSING_SOURCE"
+  | "RELEASE_DIGEST_MISMATCH"
+  | "RELEASE_REVISION_NOT_INCREASING"
+  | "SOURCE_REFERENCE_EQUIVOCATION"
+  | "SOURCE_SNAPSHOT_ID_EQUIVOCATION"
+  | "SOURCE_SNAPSHOT_MISMATCH";
+
+declare const activationContextBrand: unique symbol;
+
+export interface DecodedActivationContext {
+  readonly asOf: string;
+  readonly language: string;
+  readonly region: string;
+  readonly [activationContextBrand]: true;
+}
+
+export type ContextDecodeResult =
+  | { readonly ok: true; readonly value: DecodedActivationContext }
+  | { readonly ok: false; readonly code: "INVALID_ACTIVATION_CONTEXT" };
+
+export type ReferenceResolution =
+  | {
+      readonly envelope: GovernanceEnvelope;
+      readonly reason: "mapped";
+      readonly status: "mapped";
+    }
+  | {
+      readonly reason:
+        | "invalid_activation_context"
+        | "invalid_catalog"
+        | "invalid_reference"
+        | "unknown_identity";
+      readonly status: "unmapped";
+    }
+  | { readonly reason: "current_revision_withdrawn"; readonly status: "withdrawn" }
+  | {
+      readonly reason: "not_latest_revision" | "unknown_revision";
+      readonly status: "version_mismatch";
+    }
+  | {
+      readonly reason:
+        | "language_not_applicable"
+        | "lifecycle_not_active"
+        | "region_not_applicable"
+        | "review_expired"
+        | "review_not_effective";
+      readonly status: "unapproved";
+    };
+
+export type HardMappingContextFailureReason =
+  | "hard_mapping_source_region_not_applicable"
+  | "hard_mapping_source_language_not_applicable"
+  | "hard_mapping_source_review_not_effective"
+  | "hard_mapping_source_review_expired"
+  | "hard_mapping_target_region_not_applicable"
+  | "hard_mapping_target_language_not_applicable"
+  | "hard_mapping_target_review_not_effective"
+  | "hard_mapping_target_review_expired";
+
+export type HardMappingResolution =
+  | {
+      readonly mappingId: string;
+      readonly reason: "mapped";
+      readonly source: GovernanceEnvelope;
+      readonly status: "mapped";
+      readonly target: GovernanceEnvelope;
+    }
+  | {
+      readonly reason:
+        | "hard_mapping_source_unmapped"
+        | "hard_mapping_target_unmapped"
+        | "hard_mapping_unknown"
+        | "invalid_activation_context"
+        | "invalid_catalog"
+        | "invalid_mapping_id";
+      readonly status: "unmapped";
+    }
+  | {
+      readonly reason: "hard_mapping_source_withdrawn" | "hard_mapping_target_withdrawn";
+      readonly status: "withdrawn";
+    }
+  | {
+      readonly reason:
+        | "hard_mapping_source_version_mismatch"
+        | "hard_mapping_target_version_mismatch";
+      readonly status: "version_mismatch";
+    }
+  | {
+      readonly reason:
+        | "hard_mapping_source_lifecycle_not_active"
+        | "hard_mapping_target_lifecycle_not_active"
+        | HardMappingContextFailureReason;
+      readonly status: "unapproved";
+    };
