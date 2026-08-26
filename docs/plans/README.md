@@ -11,13 +11,15 @@
 
 ## 当前记录
 
+Stage 09P-M0 的完整 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`，ADR-0008 与 M0 已由总控 Accepted；09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。当前七模块纯 domain 候选与数据完全合成，不包含权威真实 release、真实用户/食品事实或外部能力；食品安全 hard constraint、unknown mapping fail closed 与来源治理边界不变。Route A TCB 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计承担，M0 checker 不自证 loader/compiler/runner/worker/supply-chain。
+
 - [阶段 06：最小服务端纵切](2026-07-stage-06-backend-vertical-slice.md)
 - [阶段 07：正式客户端纵切](2026-07-stage-07-client-vertical-slice.md)
 - [阶段 08：家庭成员与硬约束原始实施记录](2026-07-stage-08-members-and-constraints.md)
 - [阶段 08：审计整改与架构收口实施记录](2026-07-stage-08-audit-closeout.md)
 - [阶段 09A：本地可部署性与私有测试基线](2026-07-stage-09a-local-deployability-baseline.md)
 - [阶段 09P：安全知识治理与确定性产品核心闭环（Planning Accepted）](2026-08-stage-09p-safe-deterministic-product-core.md)
-- [Stage 09P-M0 Recovery：Evidence Boundary 实施计划（R3 audit candidate；M0 未 Accepted）](2026-08-stage-09p-m0-recovery.md)
+- [Stage 09P-M0 Recovery：Evidence Boundary 实施计划（M0 Accepted；09P In Progress）](2026-08-stage-09p-m0-recovery.md)
 - [阶段 09A M5：架构收缩与收敛任务书](2026-08-m5-architecture-convergence.md)
 - [阶段 09A M5.1：架构级证据协议整改任务书](2026-08-m5-1-evidence-protocol-remediation.md)
 - [阶段 09A M5.2：发布与收场协议整改任务书](2026-08-m5-2-publication-settlement-remediation.md)
