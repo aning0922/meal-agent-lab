@@ -1,9 +1,10 @@
 # `@meal-agent/domain`
 
-这是 Stage 09P-M0 Recovery 的纯 TypeScript 领域包。当前是固定七模块的 **M0-R3 audit
-candidate**；ADR-0008 与 M0 尚未 Accepted，09P 仍为 `In Progress`，M1 未开始。
+这是 Stage 09P-M0 Recovery 的纯 TypeScript 领域包。完整 acceptance candidate
+`186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，
+ADR-0008 与 M0 已由总控 Accepted；09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。
 
-## M0-R3 候选边界
+## M0 Accepted 边界
 
 - production 精确为 `types.ts`、`decode.ts`、`canonical.ts`、`validation.ts`、
   `catalog.ts`、`resolution.ts`、`index.ts`；
@@ -19,7 +20,7 @@ candidate**；ADR-0008 与 M0 尚未 Accepted，09P 仍为 `In Progress`，M1 �
 五份 valid 与十份 invalid fixture 都是显式标记的合成测试材料，不是权威真实 release、真实
 食品事实或用户数据。机器检查不能在一般
 意义上证明任意自由文本都不是现实食品事实；synthetic-only 的剩余责任仍属于 Git review、
-固定 lockfile 和后续独立审计 TCB。
+固定 lockfile 和独立审计 TCB。
 
 ## 命令
 
@@ -30,5 +31,6 @@ pnpm --filter @meal-agent/domain test:schema
 pnpm --filter @meal-agent/domain build
 ```
 
-本包当前只是等待完整同一 SHA 门禁与全新独立 Audit A/B 的候选；writer 自测不等于 Audit
-CLEAN。M0/ADR-0008 未 Accepted，09P 未 Pass，M1 未开始。
+M0 checker 只聚合普通命令并传播失败，不自证 loader/compiler/runner/worker/supply-chain；
+这些能力继续由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计组成的 TCB 承担。
+M0 Accepted 不改变 09P 的 `In Progress` 状态，也不启动 M1。

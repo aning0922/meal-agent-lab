@@ -1,8 +1,8 @@
 # 领域数据模型
 
-- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted；当前为完全合成的 M0-R3 audit candidate，M0/ADR-0008 未 Accepted，09P In Progress，M1 未开始
+- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted；M0 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，M0/ADR-0008 已由总控 Accepted；09P In Progress，本次 M0 收口时 M1 尚未开始
 - 代码事实源：[`packages/contracts`](../../packages/contracts/)
-- 领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md) 的规划/架构方向已 Accepted；当前 [`packages/domain`](../../packages/domain/) 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块候选，不含权威真实 release、真实数据或外部能力
+- 领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md) 的规划/架构方向已 Accepted；当前 [`packages/domain`](../../packages/domain/) 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，不含权威真实 release、真实用户/食品事实或外部能力；M0 checker 的执行载体与 supply-chain 仍属于 frozen lockfile、Git review、CI/09A、固定 Node 和独立审计组成的 TCB
 
 ## 核心实体
 

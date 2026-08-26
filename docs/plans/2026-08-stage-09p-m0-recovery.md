@@ -1,6 +1,7 @@
 # Stage 09P-M0 Recovery：Evidence Boundary 实施计划
 
-- 状态：R3 audit candidate；R1/R2 总控复核通过；M0 未 Accepted
+- 状态：M0 Accepted
+- 验收落点：`186bd2f43695e1136a3a1fc43faa6d6088d9ce54`
 - 设计修订：Revision 2（最后一次 bounded revision）
 - 日期：2026-08-26
 - 恢复基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
@@ -8,10 +9,12 @@
 - 关联决策：[ADR-0008：Stage 09P-M0 产品证据边界](../architecture/decisions/0008-stage09p-m0-evidence-boundary.md)
 - 上位规划：[阶段 09P：安全知识治理与确定性产品核心闭环](2026-08-stage-09p-safe-deterministic-product-core.md)
 
-Recovery 已按本计划完成 R1/R2 总控复核，并进入最小 R3 scope gate/docs 候选；这只是
-等待独立 Audit A/B 的实施证据，不是 M0 Accepted。旧候选
+Recovery 已按本计划完成 R1/R2/R3 与 bounded remediation；完整 acceptance candidate
+`186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，ADR-0008
+与 M0 已由总控 Accepted。旧候选
 `5f7caa437de379dbb2db5706549198b052f210cf` 及其 23 个提交仍仅为只读研究证据；不得
-reset、rebase、cherry-pick 或覆盖本恢复分支。09P 仍为 In Progress，M1 未开始。
+reset、rebase、cherry-pick 或覆盖本恢复分支。09P 仍为 In Progress，本次 M0 收口时 M1
+尚未开始。
 
 ## 1. 目标与非目标
 
@@ -302,15 +305,21 @@ Docker/Compose/project/volume/container/image/scoped process 残留。命令失�
 重新执行 A/B；相同根因再次出现则停止，不再补第四层 checker。只有总控可决定 ADR/M0/
 09P 状态；实施者与审计者不得写 Accepted / Pass。
 
-## 7. 当前 Recovery 候选的完成边界
+## 7. M0 Recovery 收口
 
 独立 Design Review C 已给出 CLEAN，R1/R2 已由总控复核。原始 R3 increment `b396ecb` 只增加
 短小 scope/runner、普通 script tests、root 聚合命令与状态文档，当时没有修改 domain、schema、
 fixtures、lock/workspace 或 09A 冻结面；随后 `8f7ad0a` 只完成 09A tracked-file baseline
-reconciliation，anchor `0a43020f28185ab799c1e68d00edcdfbdc3353d4` 再追加 bounded domain
-production/tests 修正。本追加提交依据已获独立 Design Review CLEAN 的 Contract R4，只收紧
-`validation.ts` source-equivalence、增加 `lifecycle.test.ts` ordinary regressions 并同步当前事实，
-不扩产品范围。当前 HEAD 仍只能称为 M0-R3 audit candidate：必须在同一精确 SHA 完成 frozen
-install、scope/domain/M0/docs、无条件 `pnpm check`、完整 `pnpm stage09a:check` 14/14、
-diff/status/零残留，再由总控发起全新独立 Audit A/B。writer 自测不等于 Audit CLEAN；
-ADR-0008 与 M0 均未 Accepted，09P 仍为 In Progress，M1 未开始。
+reconciliation，`0a43020f28185ab799c1e68d00edcdfbdc3353d4` 追加 bounded domain production/tests
+修正，`0868ff6547cc3f46149cc091be9fc972bdabb80c` 按 Contract R4 收紧 source-equivalence 并同步
+current-fact 文档，`186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 再补齐 SE08 独立 length-2/Map
+insertion-order ordinary regression。完整 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`
+获 Cycle 2 独立 Audit A/B 双 CLEAN，并由总控重新确认 scope 15/15、domain check、M0 6/6
+（direct 91/91）、docs 85 files / 346 links、diff/status；同一精确代码候选已有 fresh
+`pnpm stage09a:check` 14/14。总控据此 Accepted ADR-0008 与 M0。
+
+M0 仍只有完全合成数据，无权威真实 release、真实用户/食品事实或外部能力；食品安全、过敏及
+用户声明的宗教/伦理 hard constraint、unknown mapping fail closed、来源/许可/地区/语言/版本/
+撤回、deterministic digest、纯 domain 与固定七模块边界均保持。M0 checker 不自证 loader/
+compiler/runner/worker/supply-chain；TCB 继续由 frozen lockfile、Git review、CI/09A、固定 Node
+与独立审计承担。09P 仍为 In Progress，本次 M0 收口时 M1 尚未开始。

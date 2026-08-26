@@ -5,9 +5,13 @@
 阶段 09P 规划已于 2026-08-23 Accepted，规划验收落点为
 `cff32929916592fa79d40c980564d3cc9a93fbeb`；关联
 [ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-的规划/架构方向已 `Accepted`。当前固定七模块只形成完全合成、无外部能力的 M0-R3 audit
-candidate；M0/ADR-0008 未 Accepted，09P In Progress，M1 未开始。尚未发布任何权威食品安全、
-allergen、宗教/伦理或 cooking-technique 数据 release，也未导入真实食品或用户数据。
+的规划/架构方向已 `Accepted`。固定七模块 M0 acceptance candidate
+`186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，
+M0/ADR-0008 已由总控 Accepted；09P 仍为 In Progress，本次 M0 收口时 M1 尚未开始。
+M0 数据仍完全合成且无外部能力；尚未发布任何权威食品安全、allergen、宗教/伦理或
+cooking-technique 数据 release，也未导入真实食品事实或用户数据。M0 checker 不自证
+loader/compiler/runner/worker/supply-chain，其 TCB 仍由 frozen lockfile、Git review、CI/09A、
+固定 Node 与独立审计承担。
 
 ## 数据治理与审核
 

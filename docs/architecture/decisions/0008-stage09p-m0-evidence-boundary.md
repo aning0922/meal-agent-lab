@@ -1,16 +1,19 @@
 # ADR-0008：Stage 09P-M0 产品证据边界
 
-- 状态：Proposed
-- 实施证据：独立 Design Review C = CLEAN；R1/R2 已通过总控复核；当前为 R3 audit candidate
+- 状态：Accepted
+- Accepted 日期：2026-08-27
+- 验收落点：`186bd2f43695e1136a3a1fc43faa6d6088d9ce54`
+- 实施证据：Cycle 2 独立 Audit A/B 双 CLEAN；总控验收门禁通过
 - 设计修订：Revision 2（最后一次 bounded revision）
 - 日期：2026-08-26
 - 负责人：产品负责人、领域架构、食品安全与数据治理
 - 基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
 - 上位决策：[ADR-0007：食品知识治理与确定性领域核心](0007-food-knowledge-governance-and-domain-core.md)
-- 实施候选：[Stage 09P-M0 Recovery 实施计划](../../plans/2026-08-stage-09p-m0-recovery.md)
+- 实施记录：[Stage 09P-M0 Recovery 实施计划](../../plans/2026-08-stage-09p-m0-recovery.md)
 
-本 ADR 仍为 Proposed。R3 候选不表示 ADR 或 M0 已 Accepted / Pass；09P 仍为
-In Progress，独立 Audit A/B 尚未创建，M1 未开始。
+本 ADR 与 M0 已由总控在完整 acceptance candidate
+`186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 上 Accepted。该状态不代表 09P 完成：
+09P 仍为 In Progress，本次 M0 收口时 M1 尚未开始。
 
 ## 背景
 
@@ -245,9 +248,9 @@ schema manifest 只标 `runtime-owned: decode.ts scalar closure`。标准 JSON S
 M0 使用 unit、seeded property、table-driven lifecycle 和 regression tests。scope gate
 只检查允许文件、七模块、synthetic-only、依赖和禁止 imports，保持短小可读；它不扫描
 compiler callback、不修改源代码执行 mutation，也不登记逐 predicate guard registry。
-当前 R3 gate 只传播普通命令失败并核对这些静态边界；loader、compiler、runner、pnpm、
-Ajv 与依赖字节继续由 frozen lockfile、Git review、CI/09A 和独立 Audit A/B 构成的 TCB
-承担，writer 自测不能称为独立 CLEAN。
+已接受的 M0 gate 只传播普通命令失败并核对这些静态边界；loader、compiler、runner、pnpm、
+Ajv 与依赖字节继续由 frozen lockfile、Git review、CI/09A、固定 Node 和独立 Audit A/B
+构成的 TCB 承担，M0 checker 不自证这些执行载体或 supply-chain。
 
 ## 不采用的方案
 
@@ -265,12 +268,14 @@ Ajv 与依赖字节继续由 frozen lockfile、Git review、CI/09A 和独立 Aud
 - 多 issue 是合法的 defense-in-depth 结果，但顺序、code 和 path 必须确定。
 - 工具链风险不会消失；它被诚实留在 TCB，由 lockfile、09A/CI、Git review 与独立 A/B
   审计覆盖。
-- 本 ADR 不授权实现、真实数据、migration、contracts/API/client 变化或 M1。
+- 本 ADR/M0 的 Accepted 状态不授权权威真实 release、真实用户/食品数据、migration、
+  contracts/API/client 变化、外部能力或 M1。
 
 ## 验证与接受边界
 
-实施候选按 Recovery 计划分 M0-R1/R2/R3。最终同一精确 SHA 必须完成 domain
-check/build/tests、`pnpm stage09p:m0:check`、无条件 `pnpm check`、文档链接、
-完整 `pnpm stage09a:check` 14/14、diff/status/零残留；再由独立 Audit A 静态审查和
-Audit B 纯 domain 动态审查。实施者只能交付候选并请求复核，不能把本 ADR、M0 或 09P
-写成 Accepted / Pass。
+Recovery 已按 M0-R1/R2/R3 与 bounded remediation 完成。acceptance candidate
+`186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 在同一代码候选上完成 domain
+check/build/tests、`pnpm stage09p:m0:check`、无条件 `pnpm check`、文档链接、完整
+`pnpm stage09a:check` 14/14、diff/status/零残留，并获得 Cycle 2 独立 Audit A 静态审查与
+Audit B 纯 domain 动态审查双 CLEAN；总控据此 Accepted ADR-0008 与 M0。09P 仍为
+In Progress，本次收口时 M1 尚未开始。
