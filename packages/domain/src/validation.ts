@@ -276,6 +276,16 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
         const indexes = snapshotIndexes.get(key) ?? [];
         indexes.push(snapshotIndex);
         snapshotIndexes.set(key, indexes);
+        const reverse = canonicalJson(reverseSnapshotMaterial(snapshot));
+        const priorReverse = reverseBySnapshotId.get(snapshot.snapshotId);
+        if (priorReverse !== undefined && priorReverse !== reverse) {
+          add(
+            "SOURCE_SNAPSHOT_ID_EQUIVOCATION",
+            `${envelopePath}/sourceSnapshots/${snapshotIndex}`,
+          );
+        } else if (priorReverse === undefined) {
+          reverseBySnapshotId.set(snapshot.snapshotId, reverse);
+        }
       }
       const referenceIndexes = new Map<string, number[]>();
       for (let referenceIndex = 0; referenceIndex < envelope.sourceReferences.length; referenceIndex += 1) {
@@ -289,33 +299,24 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
         const referencePath = `${envelopePath}/sourceReferences/${referenceIndex}`;
         if (matchingSnapshots.length !== 1) {
           add("SOURCE_SNAPSHOT_MISMATCH", referencePath);
-          continue;
-        }
-        const snapshotIndex = matchingSnapshots[0];
-        const snapshot = envelope.sourceSnapshots[snapshotIndex ?? -1];
-        if (snapshot === undefined || snapshot.locator !== reference.locator) {
-          add("SOURCE_SNAPSHOT_MISMATCH", referencePath);
-          if (snapshotIndex !== undefined) {
-            add("SOURCE_SNAPSHOT_MISMATCH", `${envelopePath}/sourceSnapshots/${snapshotIndex}`);
+        } else {
+          const snapshotIndex = matchingSnapshots[0];
+          const snapshot = envelope.sourceSnapshots[snapshotIndex ?? -1];
+          if (snapshot === undefined) {
+            add("SOURCE_SNAPSHOT_MISMATCH", referencePath);
+          } else {
+            if (snapshot.locator !== reference.locator) {
+              add("SOURCE_SNAPSHOT_MISMATCH", referencePath);
+              add("SOURCE_SNAPSHOT_MISMATCH", `${envelopePath}/sourceSnapshots/${snapshotIndex}`);
+            }
+            const forward = canonicalJson(forwardSourceMaterial(reference, snapshot));
+            const priorForward = forwardByKey.get(key);
+            if (priorForward !== undefined && priorForward !== forward) {
+              add("SOURCE_REFERENCE_EQUIVOCATION", referencePath);
+            } else if (priorForward === undefined) {
+              forwardByKey.set(key, forward);
+            }
           }
-          continue;
-        }
-        const forward = canonicalJson(forwardSourceMaterial(reference, snapshot));
-        const priorForward = forwardByKey.get(key);
-        if (priorForward !== undefined && priorForward !== forward) {
-          add("SOURCE_REFERENCE_EQUIVOCATION", referencePath);
-        } else if (priorForward === undefined) {
-          forwardByKey.set(key, forward);
-        }
-        const reverse = canonicalJson(reverseSnapshotMaterial(snapshot));
-        const priorReverse = reverseBySnapshotId.get(snapshot.snapshotId);
-        if (priorReverse !== undefined && priorReverse !== reverse) {
-          add(
-            "SOURCE_SNAPSHOT_ID_EQUIVOCATION",
-            `${envelopePath}/sourceSnapshots/${snapshotIndex}`,
-          );
-        } else if (priorReverse === undefined) {
-          reverseBySnapshotId.set(snapshot.snapshotId, reverse);
         }
       }
       for (let snapshotIndex = 0; snapshotIndex < envelope.sourceSnapshots.length; snapshotIndex += 1) {
@@ -352,7 +353,20 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
           !isLifecycleTransitionAllowed(
             previous.envelope.lifecycleStatus,
             envelope.lifecycleStatus,
-          )
+          ) ||
+          (previous.envelope.lifecycleStatus === "withdrawn" &&
+            envelope.lifecycleStatus === "active" &&
+            (canonicalJson({
+              sourceReferences: previous.envelope.sourceReferences,
+              sourceSnapshots: previous.envelope.sourceSnapshots,
+              retrievedAt: previous.envelope.retrievedAt,
+            }) ===
+              canonicalJson({
+                sourceReferences: envelope.sourceReferences,
+                sourceSnapshots: envelope.sourceSnapshots,
+                retrievedAt: envelope.retrievedAt,
+              }) ||
+              envelope.reviewedAt <= previous.envelope.reviewedAt))
         ) {
           add("INVALID_LIFECYCLE_TRANSITION", `${envelopePath}/lifecycleStatus`);
         }
@@ -376,8 +390,13 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
     const edgeByIdentity = new Map<string, string>();
     for (let envelopeIndex = 0; envelopeIndex < release.envelopes.length; envelopeIndex += 1) {
       const envelope = release.envelopes[envelopeIndex];
-      if (envelope === undefined || envelope.supersededBy === null) continue;
+      if (envelope === undefined) continue;
       const path = `${releasePath}/envelopes/${envelopeIndex}/supersededBy`;
+      if (envelope.lifecycleStatus === "superseded" && envelope.supersededBy === null) {
+        add("INVALID_SUPERSESSION_TARGET", path);
+        continue;
+      }
+      if (envelope.supersededBy === null) continue;
       const sourceIdentity = entityIdentityText(envelope);
       const targetIdentity = entityIdentityText(envelope.supersededBy);
       edgeByIdentity.set(sourceIdentity, targetIdentity);

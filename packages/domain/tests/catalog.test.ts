@@ -161,6 +161,53 @@ test("S03 reverse identity rejects one snapshotId shared by different SourceKeys
   ]);
 });
 
+test("pairing mismatch still exposes forward identity drift on the same occurrence", () => {
+  const later = cloneRelease();
+  later.releaseId = "syn:release:pairing-forward:2";
+  later.releaseRevision = 2;
+  later.envelopes[0]!.entityRevision = 2;
+  later.envelopes[0]!.sourceReferences[0]!.locator += "/drift";
+  const issues = validateGovernanceCatalog(catalog([baseRelease, sign(later)]));
+  assert.deepStrictEqual(issues, [
+    { code: "SOURCE_REFERENCE_EQUIVOCATION", path: "/releases/1/envelopes/0/sourceReferences/0" },
+    { code: "SOURCE_SNAPSHOT_MISMATCH", path: "/releases/1/envelopes/0/sourceReferences/0" },
+    { code: "SOURCE_SNAPSHOT_MISMATCH", path: "/releases/1/envelopes/0/sourceSnapshots/0" },
+  ]);
+  assert.equal(Object.isFrozen(issues), true);
+  for (const issue of issues) {
+    assert.deepStrictEqual(Object.keys(issue), ["code", "path"]);
+    assert.equal(Object.isFrozen(issue), true);
+  }
+});
+
+test("unmatched reused snapshotId still exposes reverse identity drift", () => {
+  const later = cloneRelease();
+  later.releaseId = "syn:release:pairing-reverse:2";
+  later.releaseRevision = 2;
+  later.envelopes[0]!.entityRevision = 2;
+  later.envelopes[0]!.sourceSnapshots.push({
+    snapshotId: baseRelease.envelopes[0]!.sourceSnapshots[0]!.snapshotId,
+    referenceId: "syn:source:unmatched-reused-snapshot",
+    referenceRevision: "syn-revision-unmatched",
+    locator: "synthetic://stage09p-m0/unmatched-reused-snapshot",
+    contentDigest: `sha256:${"7".repeat(64)}`,
+    retrievedAt: "2000-01-03T00:00:00.000Z",
+  });
+  const issues = validateGovernanceCatalog(catalog([baseRelease, sign(later)]));
+  assert.deepStrictEqual(issues, [
+    {
+      code: "SOURCE_SNAPSHOT_ID_EQUIVOCATION",
+      path: "/releases/1/envelopes/0/sourceSnapshots/1",
+    },
+    { code: "SOURCE_SNAPSHOT_MISMATCH", path: "/releases/1/envelopes/0/sourceSnapshots/1" },
+  ]);
+  assert.equal(Object.isFrozen(issues), true);
+  for (const issue of issues) {
+    assert.deepStrictEqual(Object.keys(issue), ["code", "path"]);
+    assert.equal(Object.isFrozen(issue), true);
+  }
+});
+
 test("E01-E03 and V01 distinguish duplicate/equivocation from release metadata gaps", () => {
   const duplicate = cloneRelease();
   duplicate.envelopes.push(structuredClone(duplicate.envelopes[0]!));
@@ -211,6 +258,13 @@ const supersessionRelease = (): Mutable<GovernanceRelease> => {
 };
 
 test("U01-U03 supersession target/revision/lifecycle/self/cycle/dataset fail closed", () => {
+  const missingLineage = cloneRelease();
+  missingLineage.envelopes[0]!.lifecycleStatus = "superseded";
+  missingLineage.envelopes[0]!.supersededBy = null;
+  assert.deepStrictEqual(validateGovernanceCatalog(catalog([sign(missingLineage)])), [
+    { code: "INVALID_SUPERSESSION_TARGET", path: "/releases/0/envelopes/0/supersededBy" },
+  ]);
+
   const missing = supersessionRelease();
   missing.envelopes.pop();
   assert.deepStrictEqual(validateGovernanceCatalog(catalog([sign(missing)])), [

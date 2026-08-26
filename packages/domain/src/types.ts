@@ -4,24 +4,27 @@ export type JsonValue =
   | readonly JsonValue[]
   | { readonly [key: string]: JsonValue };
 
-export const datasetKinds = [
+const frozenLiterals = <const T extends string[]>(...values: T): Readonly<T> =>
+  Object.freeze(values);
+
+export const datasetKinds = frozenLiterals(
   "food_concept",
   "allergen",
   "religious_ethical",
   "food_safety",
   "cooking_technique",
-] as const;
-export const sourceTiers = ["L1", "L2", "L3", "L4"] as const;
-export const licenseStatuses = ["approved", "restricted", "pending", "rejected"] as const;
-export const lifecycleStatuses = [
+);
+export const sourceTiers = frozenLiterals("L1", "L2", "L3", "L4");
+export const licenseStatuses = frozenLiterals("approved", "restricted", "pending", "rejected");
+export const lifecycleStatuses = frozenLiterals(
   "draft",
   "under_review",
   "approved",
   "active",
   "superseded",
   "withdrawn",
-] as const;
-export const withdrawalStates = ["not_withdrawn", "withdrawn"] as const;
+);
+export const withdrawalStates = frozenLiterals("not_withdrawn", "withdrawn");
 
 export type DatasetKind = (typeof datasetKinds)[number];
 export type SourceTier = (typeof sourceTiers)[number];

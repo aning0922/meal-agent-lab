@@ -5,10 +5,15 @@ import test from "node:test";
 
 import {
   DECODE_LIMITS,
+  datasetKinds,
   decodeGovernanceCatalog,
   decodeGovernanceCatalogJson,
   decodeGovernanceRelease,
   decodeGovernanceReleaseJson,
+  licenseStatuses,
+  lifecycleStatuses,
+  sourceTiers,
+  withdrawalStates,
   type DecodeIssueCode,
 } from "../src/index.js";
 
@@ -56,6 +61,39 @@ test("object and raw release entry points return the same deep-frozen value", ()
   assert.deepEqual(objectResult.value, rawResult.value);
   assertDeepFrozen(objectResult.value);
   assertDeepFrozen(rawResult.value);
+});
+
+test("public enum authorities are frozen and unknown literals remain rejected", () => {
+  const authorities = [
+    datasetKinds,
+    lifecycleStatuses,
+    sourceTiers,
+    licenseStatuses,
+    withdrawalStates,
+  ] as const;
+  for (const authority of authorities) {
+    const before = [...authority];
+    assert.equal(Object.isFrozen(authority), true);
+    assert.throws(
+      () => (authority as unknown as string[]).push("SYNTHETIC_UNKNOWN_LITERAL"),
+      TypeError,
+    );
+    assert.deepStrictEqual(authority, before);
+  }
+
+  const cases = [
+    ["datasetKind", "/envelopes/0/datasetKind"],
+    ["lifecycleStatus", "/envelopes/0/lifecycleStatus"],
+    ["sourceTier", "/envelopes/0/sourceTier"],
+    ["licenseStatus", "/envelopes/0/licenseStatus"],
+    ["withdrawalState", "/envelopes/0/withdrawalState"],
+  ] as const;
+  for (const [field, path] of cases) {
+    const release = validRelease();
+    const envelope = (release["envelopes"] as Array<Record<string, unknown>>)[0]!;
+    envelope[field] = "SYNTHETIC_UNKNOWN_LITERAL";
+    expectFailure(decodeGovernanceRelease(release), "INVALID_SHAPE", path);
+  }
 });
 
 test("raw parser rejects duplicate decoded keys and trailing input deterministically", () => {

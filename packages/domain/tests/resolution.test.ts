@@ -4,6 +4,7 @@ import test from "node:test";
 
 import { canonicalReleaseDigest } from "../src/canonical.js";
 import { decodeGovernanceCatalog } from "../src/decode.js";
+import { sourceTiers } from "../src/index.js";
 import {
   decodeActivationContext,
   resolveGovernedReference,
@@ -134,6 +135,18 @@ test("R01 reference and hard mapping return exact frozen mapped whole objects", 
   });
   assert.deepStrictEqual(Object.keys(hardResult), ["mappingId", "reason", "source", "status", "target"]);
   assertFrozenDeep(hardResult);
+});
+
+test("public enum mutation cannot extend resolver authority", () => {
+  assert.equal(Object.isFrozen(sourceTiers), true);
+  assert.throws(() => (sourceTiers as unknown as string[]).push("L5"), TypeError);
+  const input = structuredClone(makeCatalog()) as Mutable<GovernanceCatalog>;
+  input.releases[0]!.envelopes[0]!.sourceTier = "L5" as never;
+  assert.equal(decodeGovernanceCatalog(input).ok, false);
+  assert.deepStrictEqual(resolveGovernedReference(input, sourceReference(input), decodeContext()), {
+    reason: "invalid_catalog",
+    status: "unmapped",
+  });
 });
 
 test("R02 forged and missing context have one exact zero-raw failure for both APIs", () => {

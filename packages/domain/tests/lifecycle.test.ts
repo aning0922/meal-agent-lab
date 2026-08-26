@@ -7,7 +7,6 @@ import { lifecycleStatuses, type GovernanceCatalog, type GovernanceRelease, type
 import {
   isLifecycleTransitionAllowed,
   lifecycleOracleCardinality,
-  lifecycleTransitionOracle,
   validateGovernanceCatalog,
 } from "../src/validation.js";
 
@@ -63,12 +62,41 @@ const historyRelease = (
   return sign(release);
 };
 
+const expectedLifecycleOracle: Readonly<
+  Record<LifecycleStatus, Readonly<Record<LifecycleStatus, boolean>>>
+> = {
+  draft: {
+    draft: true, under_review: true, approved: false, active: false,
+    superseded: false, withdrawn: false,
+  },
+  under_review: {
+    draft: false, under_review: true, approved: true, active: false,
+    superseded: false, withdrawn: false,
+  },
+  approved: {
+    draft: false, under_review: false, approved: true, active: true,
+    superseded: true, withdrawn: true,
+  },
+  active: {
+    draft: false, under_review: false, approved: false, active: true,
+    superseded: true, withdrawn: true,
+  },
+  superseded: {
+    draft: false, under_review: false, approved: false, active: false,
+    superseded: false, withdrawn: false,
+  },
+  withdrawn: {
+    draft: false, under_review: false, approved: false, active: true,
+    superseded: false, withdrawn: true,
+  },
+};
+
 for (const previous of lifecycleStatuses) {
   for (const next of lifecycleStatuses) {
     test(`L00 oracle cell ${previous} -> ${next}`, () => {
       assert.equal(
         isLifecycleTransitionAllowed(previous, next),
-        lifecycleTransitionOracle[previous][next],
+        expectedLifecycleOracle[previous][next],
       );
     });
   }
@@ -125,4 +153,52 @@ test("L03 whole-release active -> withdrawn -> active recovery uses higher revis
     historyRelease(7, 7, "active"),
   ];
   assert.deepStrictEqual(validateGovernanceCatalog(asCatalog(releases)), []);
+});
+
+test("withdrawn -> active requires fresh source and strictly newer review evidence", () => {
+  const previous = historyRelease(6, 6, "withdrawn");
+  const previousEnvelope = previous.envelopes[0]!;
+  const invalidCases = [
+    {
+      name: "neither source nor review is fresh",
+      keepSource: true,
+      keepReview: true,
+    },
+    {
+      name: "only review is fresh",
+      keepSource: true,
+      keepReview: false,
+    },
+    {
+      name: "only source is fresh",
+      keepSource: false,
+      keepReview: true,
+    },
+  ] as const;
+
+  for (const item of invalidCases) {
+    const next = structuredClone(historyRelease(7, 7, "active")) as Mutable<GovernanceRelease>;
+    const nextEnvelope = next.envelopes[0]!;
+    if (item.keepSource) {
+      nextEnvelope.sourceReferences = previousEnvelope.sourceReferences.map((reference) => ({
+        ...reference,
+      }));
+      nextEnvelope.sourceSnapshots = previousEnvelope.sourceSnapshots.map((snapshot) => ({
+        ...snapshot,
+      }));
+      nextEnvelope.retrievedAt = previousEnvelope.retrievedAt;
+      nextEnvelope.aliases = previousEnvelope.aliases.map((alias) => ({ ...alias }));
+    }
+    if (item.keepReview) nextEnvelope.reviewedAt = previousEnvelope.reviewedAt;
+    assert.deepStrictEqual(
+      validateGovernanceCatalog(asCatalog([previous, sign(next)])),
+      [
+        {
+          code: "INVALID_LIFECYCLE_TRANSITION",
+          path: "/releases/1/envelopes/0/lifecycleStatus",
+        },
+      ],
+      item.name,
+    );
+  }
 });
