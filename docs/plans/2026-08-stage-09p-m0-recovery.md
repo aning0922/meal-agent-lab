@@ -1,6 +1,6 @@
 # Stage 09P-M0 Recovery：Evidence Boundary 实施计划
 
-- 状态：Proposed / recovery design candidate；未实施、未 Accepted
+- 状态：R3 audit candidate；R1/R2 总控复核通过；M0 未 Accepted
 - 设计修订：Revision 2（最后一次 bounded revision）
 - 日期：2026-08-26
 - 恢复基线：`2c2ccd9015268fe44db4bb5446f3340e551914be`
@@ -8,9 +8,10 @@
 - 关联决策：[ADR-0008：Stage 09P-M0 产品证据边界](../architecture/decisions/0008-stage09p-m0-evidence-boundary.md)
 - 上位规划：[阶段 09P：安全知识治理与确定性产品核心闭环](2026-08-stage-09p-safe-deterministic-product-core.md)
 
-本计划只设计 M0 恢复实施，不创建 `packages/domain`、schema、fixtures、scripts/tests、
-依赖或产品实现。旧候选 `5f7caa437de379dbb2db5706549198b052f210cf` 及其 23 个提交
-仅为只读研究证据；不得 reset、rebase、cherry-pick 或覆盖本恢复分支。M1 未开始。
+Recovery 已按本计划完成 R1/R2 总控复核，并进入最小 R3 scope gate/docs 候选；这只是
+等待独立 Audit A/B 的实施证据，不是 M0 Accepted。旧候选
+`5f7caa437de379dbb2db5706549198b052f210cf` 及其 23 个提交仍仅为只读研究证据；不得
+reset、rebase、cherry-pick 或覆盖本恢复分支。09P 仍为 In Progress，M1 未开始。
 
 ## 1. 目标与非目标
 
@@ -167,6 +168,12 @@ data/samples/stage09p-m0/**
 - root `package.json` 只追加 M0 聚合命令；package/data/docs/status 同步；
 - `pnpm stage09p:m0:check` 只串联 domain build/check/tests、schema/fixtures 和 scope checks。
 
+当前实现保持该窄边界：scope checker 机械核对七模块、production import/副作用表面、
+R1 workspace/package/lock 接线、标准 Schema 与 `decode.ts` 的 `-0` ownership、5 valid +
+10 invalid fixture 库存及旧 meta-attestation 不回流；它不复制 validation/resolver 规则。
+runner 只顺序执行 domain typecheck/build、R1 tests、schema tests、R2 四个 direct tests 与
+scope check，不解析 TAP、统计 test event 或检查自身 source hash。
+
 **允许文件**
 
 ```text
@@ -261,9 +268,15 @@ compound case 允许多个确定性 issue。source 行的数组是完整、已�
 ```text
 node --version                                      # v24.18.0
 command -v node                                    # 固定绝对路径
+pnpm install --frozen-lockfile
+node --test scripts/tests/stage09p-m0-scope.test.mjs
+node --test scripts/tests/stage09p-m0-check.test.mjs
+pnpm --filter @meal-agent/domain typecheck
 pnpm --filter @meal-agent/domain check
 pnpm --filter @meal-agent/domain build
 pnpm --filter @meal-agent/domain test
+pnpm --filter @meal-agent/domain test:schema
+pnpm --filter @meal-agent/domain exec node --import tsx --test tests/catalog.test.ts tests/lifecycle.test.ts tests/resolution.test.ts tests/fixtures.test.ts
 pnpm stage09p:m0:check
 pnpm check                                          # 无条件；从 R1 起包含 domain
 pnpm docs:links:check
@@ -289,8 +302,9 @@ Docker/Compose/project/volume/container/image/scoped process 残留。命令失�
 重新执行 A/B；相同根因再次出现则停止，不再补第四层 checker。只有总控可决定 ADR/M0/
 09P 状态；实施者与审计者不得写 Accepted / Pass。
 
-## 7. 本设计批次的完成边界
+## 7. 当前 Recovery 候选的完成边界
 
-本批次只交付 ADR-0008 与本 Recovery 计划及必要索引。没有创建/修改 `packages/domain`、
-scripts/tests、schema、fixtures、依赖或产品实现；没有运行实施门禁；没有创建 Design
-Review 或 Audit；没有实施、没有 Accepted，M1 未开始。下一步仅是等待总控独立设计复核。
+独立 Design Review C 已给出 CLEAN，R1/R2 已由总控复核；R3 只增加短小 scope/runner、普通 script
+tests、root 聚合命令与状态文档，没有修改 domain、schema、fixtures、lock/workspace 或
+09A 冻结面。当前 HEAD 只能称为 R3 audit candidate：尚未创建 Audit A/B，ADR-0008 与
+M0 均未 Accepted，09P 未 Pass，M1 未开始。下一步仅由总控在冻结 SHA 上发起两路独立审计。

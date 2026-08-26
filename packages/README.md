@@ -2,7 +2,9 @@
 
 跨应用共享模块：
 
-- `domain/`：纯领域类型和确定性业务规则。
+- `domain/`：Stage 09P-M0 Recovery 候选的纯领域类型与确定性规则；production 固定为
+  `types/decode/canonical/validation/catalog/resolution/index` 七模块。当前是 R3 audit
+  candidate，M0 尚未 Accepted，M1 未开始。
 - [`contracts/`](contracts/README.md)：正式 API、实体快照、事件和校验契约；同时提供 Zod schema 与推导的 TypeScript 类型。
 - `ui/`：设计令牌和可跨端复用的 UI 约定。
 - `config/`：共享构建、格式化、静态检查和测试配置。

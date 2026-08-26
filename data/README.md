@@ -19,9 +19,10 @@
 ## 阶段 09P 已接受的治理边界
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-已于 2026-08-23 Accepted，但只接受治理与架构方向；真实数据内容、release 和实现均未
-开始。FoodConcept、allergen、宗教/伦理、食品安全和 cooking-technique 未来必须共用
-以下治理信封：
+已于 2026-08-23 Accepted，但只接受治理与架构方向。M0 Recovery 当前只有 R3 audit
+candidate：`samples/stage09p-m0/` 固定为 5 个 valid 与 10 个 invalid 完全合成 fixtures，
+不构成真实数据 release，也不表示 M0 Accepted。FoodConcept、allergen、宗教/伦理、
+食品安全和 cooking-technique 未来必须共用以下治理信封：
 
 - dataset/release ID、单调 revision 和 canonical content digest；
 - stable entity ID、entity revision、alias、`supersededBy`；

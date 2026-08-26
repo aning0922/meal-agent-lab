@@ -1,12 +1,12 @@
 # 项目状态
 
-最后更新：2026-08-23
+最后更新：2026-08-26
 
 ## 当前结论
 
 **当前阶段 09A Accepted 事实（2026-08-22，覆盖本文所有旧 M5/09A “当前”段落）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与最终动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main push run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 `stage09a:check` 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由项目总控记为 **Accepted / Pass**，冻结面不因 09P 规划而改变。ADR-0005 与 ADR-0006 均保持 `Accepted`。
 
-**阶段 09P 规划 Accepted（2026-08-23）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)为 P0；规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`，implementation not started，09P-M0 为 `Not started`。[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向已 `Accepted`，但不授权真实数据、M0、migration 或外部能力。阶段 09B“私有测试服务器”为 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 25%—35% 仅为管理估算，不是验收指标。
+**阶段 09P-M0 Recovery 候选（2026-08-26）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划保持 Accepted。Recovery 设计已通过独立 Design Review C；M0-R1 与 M0-R2 已由总控复核通过，当前 M0-R3 只增加短小只读 scope/gate 与文档，形成 **audit candidate**。产品 production 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，数据仍只有 5 valid + 10 invalid 完全合成 fixtures。09P 仍为 `In Progress`；ADR-0008 与 M0 尚未 Accepted，独立静态 Audit A 和纯 domain 动态 Audit B 尚未创建，M1 未开始。Node loader/compiler/runner/supply-chain 仍由 frozen lockfile、Git review、CI/09A 与独立审计组成的 TCB 承担，不由 M0 checker 自证。阶段 09B 保持 P1 conditional；云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -994,15 +994,16 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 ## 阶段 09P 规划 Accepted
 
 - 正式名称：阶段 09P“安全知识治理与确定性产品核心闭环”，P0。
-- 当前状态：**Planning Accepted（2026-08-23），规划验收落点 `cff32929916592fa79d40c980564d3cc9a93fbeb`；implementation not started**。
+- 当前状态：**Planning Accepted；09P In Progress；M0-R3 audit candidate（2026-08-26），M0 未 Accepted**。规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`。
 - ADR：[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
   的规划/架构方向已 `Accepted`，不授权真实数据、M0、migration 或外部能力。
-- 首个未来里程碑：09P-M0“数据治理契约与合成 fail-closed 内核”，`Not started`；
-  由总控在新建 M0 会话时以状态收口后的精确 HEAD 重新签发实施基线。
+- 首个里程碑 09P-M0“数据治理契约与合成 fail-closed 内核”已完成 Recovery R1/R2
+  总控复核；R3 仅为等待独立 Audit A/B 的候选，不是 Accepted / Pass。M1 未开始。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
-- `packages/domain` 是已接受的目标架构方向，但当前尚未创建；本规划及状态收口没有修改
-  packages、workspace、migration、API 或客户端。
+- `packages/domain` 候选已经固定为七个纯 production module；M0 scope gate 只核对边界和
+  依赖表面，不复制产品校验，也不证明 loader/compiler/runner/supply-chain。migration、
+  API、客户端和 09A 冻结面未被 Recovery 实现修改。
 - 24 concepts、4 allergen 类别、8 safety 规则族、8 techniques、12 recipes 只是
   Proposed 候选覆盖规模，M1 外部审查前不构成正式数据范围；M0 只使用完全合成数据。
 - 本地总控看板需要在后续单独授权后使用独立仓库、独立提交链更新；本规划及状态收口

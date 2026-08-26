@@ -1,6 +1,7 @@
 # ADR-0008：Stage 09P-M0 产品证据边界
 
 - 状态：Proposed
+- 实施证据：独立 Design Review C = CLEAN；R1/R2 已通过总控复核；当前为 R3 audit candidate
 - 设计修订：Revision 2（最后一次 bounded revision）
 - 日期：2026-08-26
 - 负责人：产品负责人、领域架构、食品安全与数据治理
@@ -8,8 +9,8 @@
 - 上位决策：[ADR-0007：食品知识治理与确定性领域核心](0007-food-knowledge-governance-and-domain-core.md)
 - 实施候选：[Stage 09P-M0 Recovery 实施计划](../../plans/2026-08-stage-09p-m0-recovery.md)
 
-本 ADR 是恢复设计候选，不表示 ADR 已 Accepted，也不表示 M0、09P 或任何实现已
-Implemented / Accepted / Pass。M1 未开始。
+本 ADR 仍为 Proposed。R3 候选不表示 ADR 或 M0 已 Accepted / Pass；09P 仍为
+In Progress，独立 Audit A/B 尚未创建，M1 未开始。
 
 ## 背景
 
@@ -244,6 +245,9 @@ schema manifest 只标 `runtime-owned: decode.ts scalar closure`。标准 JSON S
 M0 使用 unit、seeded property、table-driven lifecycle 和 regression tests。scope gate
 只检查允许文件、七模块、synthetic-only、依赖和禁止 imports，保持短小可读；它不扫描
 compiler callback、不修改源代码执行 mutation，也不登记逐 predicate guard registry。
+当前 R3 gate 只传播普通命令失败并核对这些静态边界；loader、compiler、runner、pnpm、
+Ajv 与依赖字节继续由 frozen lockfile、Git review、CI/09A 和独立 Audit A/B 构成的 TCB
+承担，writer 自测不能称为独立 CLEAN。
 
 ## 不采用的方案
 
