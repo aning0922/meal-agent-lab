@@ -4,7 +4,7 @@
 
 阶段 08 最终审计整改已于 2026-07-26 通过 fast-forward 合并至 `main`（实现落点 `df8107c`）；阶段 09A 已于 2026-08-22 记为 `Accepted / Pass`。当前 `main/origin/main` 的事实源收口提交为 `23450a1f3508e8030d753748291d265ad308df05`；`8b77ce3` 只是 PR #1 的普通 merge 集成落点。系统当前只有家庭、成员/用餐档案、硬约束和最小 exact 库存纵切；没有菜单推荐、菜谱、采购、完整做饭或 Agent。
 
-[阶段 09P](../plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划已于 2026-08-23 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`，implementation not started；[ADR-0007](decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向已 `Accepted`，`packages/domain` 仍只是目标架构且当前不存在。阶段 09B 私有测试服务器为 P1 conditional，触发条件未满足前不实施。
+[阶段 09P](../plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划已于 2026-08-23 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；[ADR-0007](decisions/0007-food-knowledge-governance-and-domain-core.md)的规划/架构方向保持 `Accepted`。当前 `packages/domain` 是固定 `types/decode/canonical/validation/catalog/resolution/index` 七模块的 M0-R3 audit candidate，只含完全合成治理数据；ADR-0008 与 M0 未 Accepted，09P 仍为 `In Progress`，M1 未开始。阶段 09B 私有测试服务器为 P1 conditional，触发条件未满足前不实施。
 
 ## 逻辑边界
 
@@ -38,7 +38,7 @@ PostgreSQL 18
 受治理的 data release
         │
         ▼
-packages/domain（未来新增；纯确定性规则，无 I/O）
+packages/domain（M0-R3 七模块候选；纯确定性规则，无 I/O）
         ▲
         │ explicit mapper
 packages/contracts ←→ services/api application/persistence
@@ -98,4 +98,4 @@ HTTP 层先验证 session、家庭上下文和 capability。数据库层再用 F
 
 本地 `stage08:check` 覆盖 contracts、API unit/HTTP、PostgreSQL migration/RLS/concurrency、客户端页面测试、双用户 E2E、OpenAPI、weapp build、依赖例外和文档链接。开发者工具 GUI 证据见[阶段 08 走查记录](../evidence/stage-08-gui/README.md)。
 
-依赖审计当前有一个截至 2026-11-08 的 local/weapp-only 例外；官方 HTTPS relay 不跟随 redirect，并分别限制原始和解压响应流为 16 MiB。H5、外部测试、体验版和发布被阻断。阶段 09A 已有精确 HEAD 的远端 CI 证据；阶段 09P 尚未实施，因而没有 09P Remote CI Pass。真实微信、合法域名、真机、云平台和原生三端仍无 Pass 证据，详见[项目状态](../project-status.md)。
+依赖审计当前有一个截至 2026-11-08 的 local/weapp-only 例外；官方 HTTPS relay 不跟随 redirect，并分别限制原始和解压响应流为 16 MiB。H5、外部测试、体验版和发布被阻断。阶段 09A 已有精确 HEAD 的远端 CI 证据；阶段 09P 当前只有完全合成、无外部能力的 M0-R3 audit candidate，尚无 M0 Accepted、全新 Audit A/B 或 09P Remote CI Pass。真实微信、合法域名、真机、云平台和原生三端仍无 Pass 证据，详见[项目状态](../project-status.md)。

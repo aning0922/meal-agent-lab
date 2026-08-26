@@ -130,6 +130,63 @@ const canonicalTimestamp = (value: string): boolean => {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
 };
 
+const sourceGraphToken = (envelope: GovernanceEnvelope): string | null => {
+  if (envelope.sourceReferences.length === 0 || envelope.sourceSnapshots.length === 0) {
+    return null;
+  }
+
+  const snapshotsBySourceKey = new Map<
+    string,
+    GovernanceEnvelope["sourceSnapshots"][number]
+  >();
+  const snapshotIds = new Set<string>();
+  for (const snapshot of envelope.sourceSnapshots) {
+    const key = sourceKeyText(snapshot);
+    if (
+      snapshotsBySourceKey.has(key) ||
+      snapshotIds.has(snapshot.snapshotId) ||
+      !canonicalTimestamp(snapshot.retrievedAt)
+    ) {
+      return null;
+    }
+    snapshotsBySourceKey.set(key, snapshot);
+    snapshotIds.add(snapshot.snapshotId);
+  }
+
+  const referenceKeys = new Set<string>();
+  const forward = [];
+  for (const reference of envelope.sourceReferences) {
+    const key = sourceKeyText(reference);
+    if (referenceKeys.has(key)) return null;
+    referenceKeys.add(key);
+    const pairedSnapshot = snapshotsBySourceKey.get(key);
+    if (pairedSnapshot === undefined || pairedSnapshot.locator !== reference.locator) {
+      return null;
+    }
+    forward.push({
+      sourceKey: sourceKeyText(reference),
+      material: forwardSourceMaterial(reference, pairedSnapshot),
+    });
+  }
+
+  if (
+    referenceKeys.size !== snapshotsBySourceKey.size ||
+    [...snapshotsBySourceKey.keys()].some((key) => !referenceKeys.has(key))
+  ) {
+    return null;
+  }
+
+  forward.sort((left, right) => compareUtf8(left.sourceKey, right.sourceKey));
+  const reverse = envelope.sourceSnapshots
+    .map((snapshot) => ({
+      snapshotId: snapshot.snapshotId,
+      material: reverseSnapshotMaterial(snapshot),
+    }))
+    .sort((left, right) => compareUtf8(left.snapshotId, right.snapshotId));
+
+  return canonicalJson({ forward, reverse });
+};
+
 const envelopeUsableWithoutContext = (envelope: GovernanceEnvelope): boolean =>
   envelope.owner.actorId.length > 0 &&
   envelope.approvers.length > 0 &&
@@ -349,26 +406,35 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
           if (material !== previous.material) {
             add("ENTITY_REVISION_EQUIVOCATION", `${envelopePath}/entityRevision`);
           }
-        } else if (
-          !isLifecycleTransitionAllowed(
+        } else {
+          const oracleAllows = isLifecycleTransitionAllowed(
             previous.envelope.lifecycleStatus,
             envelope.lifecycleStatus,
-          ) ||
-          (previous.envelope.lifecycleStatus === "withdrawn" &&
-            envelope.lifecycleStatus === "active" &&
-            (canonicalJson({
-              sourceReferences: previous.envelope.sourceReferences,
-              sourceSnapshots: previous.envelope.sourceSnapshots,
-              retrievedAt: previous.envelope.retrievedAt,
-            }) ===
-              canonicalJson({
-                sourceReferences: envelope.sourceReferences,
-                sourceSnapshots: envelope.sourceSnapshots,
-                retrievedAt: envelope.retrievedAt,
-              }) ||
-              envelope.reviewedAt <= previous.envelope.reviewedAt))
-        ) {
-          add("INVALID_LIFECYCLE_TRANSITION", `${envelopePath}/lifecycleStatus`);
+          );
+          const isReactivation =
+            previous.envelope.lifecycleStatus === "withdrawn" &&
+            envelope.lifecycleStatus === "active";
+          let reactivationFresh = true;
+          if (isReactivation) {
+            const previousToken = sourceGraphToken(previous.envelope);
+            const currentToken = sourceGraphToken(envelope);
+            const graphFresh =
+              previousToken !== null &&
+              currentToken !== null &&
+              previousToken !== currentToken;
+            const retrievalFresh =
+              canonicalTimestamp(previous.envelope.retrievedAt) &&
+              canonicalTimestamp(envelope.retrievedAt) &&
+              envelope.retrievedAt > previous.envelope.retrievedAt;
+            const reviewFresh =
+              canonicalTimestamp(previous.envelope.reviewedAt) &&
+              canonicalTimestamp(envelope.reviewedAt) &&
+              envelope.reviewedAt > previous.envelope.reviewedAt;
+            reactivationFresh = graphFresh && retrievalFresh && reviewFresh;
+          }
+          if (!oracleAllows || !reactivationFresh) {
+            add("INVALID_LIFECYCLE_TRANSITION", `${envelopePath}/lifecycleStatus`);
+          }
         }
       }
       history.set(identity, { envelope, material });

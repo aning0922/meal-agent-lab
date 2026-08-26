@@ -5,8 +5,9 @@
 阶段 09P 规划已于 2026-08-23 Accepted，规划验收落点为
 `cff32929916592fa79d40c980564d3cc9a93fbeb`；关联
 [ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-的规划/架构方向已 `Accepted`，但 implementation not started；尚未发布任何权威
-食品安全、allergen、宗教/伦理或 cooking-technique 数据 release。
+的规划/架构方向已 `Accepted`。当前固定七模块只形成完全合成、无外部能力的 M0-R3 audit
+candidate；M0/ADR-0008 未 Accepted，09P In Progress，M1 未开始。尚未发布任何权威食品安全、
+allergen、宗教/伦理或 cooking-technique 数据 release，也未导入真实食品或用户数据。
 
 ## 数据治理与审核
 

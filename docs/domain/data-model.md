@@ -1,8 +1,8 @@
 # 领域数据模型
 
-- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted，implementation not started
+- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted；当前为完全合成的 M0-R3 audit candidate，M0/ADR-0008 未 Accepted，09P In Progress，M1 未开始
 - 代码事实源：[`packages/contracts`](../../packages/contracts/)
-- 目标领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md) 的规划/架构方向已 Accepted；`packages/domain` 当前尚未创建
+- 领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md) 的规划/架构方向已 Accepted；当前 [`packages/domain`](../../packages/domain/) 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块候选，不含权威真实 release、真实数据或外部能力
 
 ## 核心实体
 

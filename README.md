@@ -25,9 +25,12 @@ PostgreSQL 18.4 工具；同一个 `pnpm stage09a:check` 明确输出 **14/14 PA
 
 [阶段 09P“安全知识治理与确定性产品核心闭环”](docs/plans/2026-08-stage-09p-safe-deterministic-product-core.md)
 规划已于 2026-08-23 Accepted，规划验收落点为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；
-implementation not started，首个未来里程碑 09P-M0 为 `Not started`。阶段 09B“私有测试服务器”
-是 P1 conditional，触发条件未满足前不实施。云、公网、真实微信、合法域名、真机、
-体验版、审核和发布继续 Deferred。产品能力 `25%–35%` 只能作为管理估算，不是验收指标。
+当前已形成 `types/decode/canonical/validation/catalog/resolution/index` 固定七模块的
+**M0-R3 audit candidate**，数据与测试仍完全合成，不含权威真实 release、真实数据或外部能力。
+ADR-0008 与 M0 均未 Accepted，09P 仍为 `In Progress`，全新独立 Audit A/B 尚未完成，M1
+未开始。阶段 09B“私有测试服务器”是 P1 conditional，触发条件未满足前不实施。云、公网、
+真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。产品能力 `25%–35%` 只能作为
+管理估算，不是验收指标。
 
 当前纵切覆盖：
 
@@ -60,7 +63,7 @@ pnpm stage09a:audit-b -- --expected-head <40-hex-candidate-sha> --report m5-<can
 - [`apps/client`](apps/client/)：Taro/React 正式客户端；
 - [`services/api`](services/api/)：Fastify 模块化单体 API；
 - [`packages/contracts`](packages/contracts/)：跨端唯一契约与规则 manifest；
-- `packages/domain`：阶段 09P 已接受的目标架构方向，当前尚未创建；
+- [`packages/domain`](packages/domain/)：阶段 09P-M0 的纯 TypeScript 七模块 audit candidate；
 - [`docs`](docs/)：产品、架构、安全、计划和状态事实源；
 - [`tests`](tests/)：跨模块和安全回归；
 - [`security`](security/)：机器可读安全例外；

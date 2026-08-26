@@ -304,7 +304,13 @@ Docker/Compose/project/volume/container/image/scoped process 残留。命令失�
 
 ## 7. 当前 Recovery 候选的完成边界
 
-独立 Design Review C 已给出 CLEAN，R1/R2 已由总控复核；R3 只增加短小 scope/runner、普通 script
-tests、root 聚合命令与状态文档，没有修改 domain、schema、fixtures、lock/workspace 或
-09A 冻结面。当前 HEAD 只能称为 R3 audit candidate：尚未创建 Audit A/B，ADR-0008 与
-M0 均未 Accepted，09P 未 Pass，M1 未开始。下一步仅由总控在冻结 SHA 上发起两路独立审计。
+独立 Design Review C 已给出 CLEAN，R1/R2 已由总控复核。原始 R3 increment `b396ecb` 只增加
+短小 scope/runner、普通 script tests、root 聚合命令与状态文档，当时没有修改 domain、schema、
+fixtures、lock/workspace 或 09A 冻结面；随后 `8f7ad0a` 只完成 09A tracked-file baseline
+reconciliation，anchor `0a43020f28185ab799c1e68d00edcdfbdc3353d4` 再追加 bounded domain
+production/tests 修正。本追加提交依据已获独立 Design Review CLEAN 的 Contract R4，只收紧
+`validation.ts` source-equivalence、增加 `lifecycle.test.ts` ordinary regressions 并同步当前事实，
+不扩产品范围。当前 HEAD 仍只能称为 M0-R3 audit candidate：必须在同一精确 SHA 完成 frozen
+install、scope/domain/M0/docs、无条件 `pnpm check`、完整 `pnpm stage09a:check` 14/14、
+diff/status/零残留，再由总控发起全新独立 Audit A/B。writer 自测不等于 Audit CLEAN；
+ADR-0008 与 M0 均未 Accepted，09P 仍为 In Progress，M1 未开始。
