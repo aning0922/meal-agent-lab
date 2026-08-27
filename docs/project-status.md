@@ -8,7 +8,22 @@
 
 **阶段 09P-M0 Accepted（2026-08-27）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划保持 Accepted。Recovery 依次完成 R1/R2/R3、09A tracked-file baseline reconciliation、Contract R4 source-equivalence remediation 与 SE08 独立 length-2/Map insertion-order regression；完整 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 获 Cycle 2 独立 Audit A/B 双 CLEAN，并重新通过 scope 15/15、domain check、M0 6/6（direct 91/91）、docs 85 files / 346 links、diff/status；同一精确代码候选已有 fresh `stage09a:check` 14/14。总控据此将 ADR-0008 与 M0 记为 Accepted。production 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，数据仍只有 5 valid + 10 invalid 完全合成 fixtures，无权威真实 release、真实用户/食品事实或外部能力。09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。Node loader/compiler/runner/worker/supply-chain 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计组成的 TCB 承担，不由 M0 checker 自证。阶段 09B 保持 P1 conditional；云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
 
-**阶段 09P-M1 preparation S1-R1 candidate（2026-08-27）**：独立 Design Review 已对 exact anchor `07839f11ba3466bcc9fd1981df844df5359b4887` 报告 CLEAN，仅解锁 synthetic-only/empty-template preparation。当前候选以既有七个 production module 内的小型纯派生 assessment 消费 M0 catalog/source/digest/literal lifecycle authority，并配套 targeted synthetic tests、一个空模板与短 scope/runner；不执行 transition 或生成 active successor。H01—H05/K01—K06 内容矩阵留给 S2。五类 owner、Domain Owner、Product Owner、全部外部审核人与真实 source/license/scope 仍为 `UNASSIGNED / PENDING_EXTERNAL_CONFIRMATION`；Proposed `24/4/8/8/12`、首发地区与 `zh-CN` 仍未 Accepted。S1-R1 仅等待 tracked-file 总控复核；09A baseline 仍冻结为 417，提交态 423 的机械更新须另签 R2，不能把预期 registry fail closed 写成 PASS。M1 未 Implemented、未 Accepted、未激活，M2 未开始。09P 保持 `In Progress`，M0 保持 `Accepted`；09B、云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
+### 阶段 09P-M0→M1 当前看板（2026-08-27，08:00 终态后更新）
+
+| 看板列 | 工作项 | 当前事实 / 下一门禁 |
+| --- | --- | --- |
+| **已完成** | M0 合同、实现、完整门禁与验收收口 | `Accepted`；acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`；closeout HEAD / M1 baseline `1a66015e63ac84c6257be46a36c5c5967ee53f20`。 |
+| **已独立复核 / BLOCK** | M1 Preparation S1 Contract R3-R1 | 报告绑定 exact anchor `0f27f59fb68f5b8cb89f5da0c284ccfc2be2fbc5`，SHA-256 `2719543e8d2a5d6b5ef3043d27837a1983ca33a64383e71febaf5618da1e291b`；独立 task `01a04133` 已给出 `BLOCK`，review SHA-256 `9e1c8f8787593de9f771dbf77c630719b0a3b2ccbf84effaf460a0d414767318`。总控独立确认六组 P1（canonical/head closure、reviewed-material binding、跨 revision currentness、owner/reviewer/person 模型、trusted time、outer witness ownership）和一项 P2（exact budget baseline/计量公式），因此不得签发 R4。 |
+| **阻断** | 当前 S1-R1 implementation anchor | `0f27f59fb68f5b8cb89f5da0c284ccfc2be2fbc5` 仍为 **BLOCKED**；不得把旧门禁通过记录解释为当前合同已通过，不得开始 R4 实现、官方 M1 A/B、真实内容或 activation。 |
+| **下一步** | M1 preparation 收敛链 | 由同一 single writer 先交付 contract-only R3-R2，再对其 exact anchor/report SHA 发起 fresh independent contract review。只有 R3-R2 获得 `CLEAN` 后，总控才可另行判断是否签发 exact append-only R4 authority；本状态提交与合同报告均不授权 R4。 |
+| **外部前置** | 责任人、来源与首发范围 | 七组事项全部为 `PENDING_EXTERNAL_CONFIRMATION`：具名 data owners / Domain Owner、外部 food-safety reviewer / Safety Approver、逐 release Product Owner、legal/license/region reviewer、cultural/ethical reviewer 与 Recipe QA、逐事实/规则 source-license inventory、首发地区/`zh-CN`/`24/4/8/8/12` 范围决策。用户授权不替代这些外部责任。 |
+| **边界保持** | 内容、发布与后续阶段 | 仍无真实食品事实、H01—H05/K01—K06 S2 内容、官方真实内容 M1 A/B、M1 Accepted、activation 或 M2；09P 为 `In Progress`，M1 仅 `preparation-only`。 |
+| **夜间总控** | `stage-09p-m0-m1-overnight` | 已在 `2026-08-27T08:00:06+08:00` 按时限写入 terminal report、将唯一状态设为 `stopped` 并删除自动化；停止点为 `preparation-s1-contract-r3-r1-ready-unreviewed-stopped`，当前没有遗留运行中的 writer/review/audit/gate。 |
+
+本看板覆盖此前“仅等待 423 tracked-file 总控复核”的旧口径。M1 的当前精确门禁是
+same-writer Contract R3-R2 与其 fresh independent review；在此之前，M1 未 Implemented、未 Accepted、
+未激活，M2 未开始。09B、云、公网、真实微信、合法域名、真机、体验版、审核和发布继续
+Deferred。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -996,15 +1011,17 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 ## 阶段 09P 规划 Accepted
 
 - 正式名称：阶段 09P“安全知识治理与确定性产品核心闭环”，P0。
-- 当前状态：**Planning Accepted；M0/ADR-0008 Accepted；09P In Progress；M1 仅 preparation S1-R1 candidate，等待 tracked-file 总控复核，未 Implemented/Accepted/激活**。独立 Design Review 只对 exact S1 anchor 给出 CLEAN；规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；M0 验收落点为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`。
+- 当前状态：**Planning Accepted；M0/ADR-0008 Accepted；09P In Progress；M1 为 preparation-only，Contract R3-R1 已由独立 task `01a04133` BLOCK，下一门是 same-writer R3-R2 + fresh independent review，未 Implemented/Accepted/激活**。当前 implementation anchor `0f27f59fb68f5b8cb89f5da0c284ccfc2be2fbc5` 仍为 BLOCKED；规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`，M0 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`，M0 closeout / M1 budget baseline 为 `1a66015e63ac84c6257be46a36c5c5967ee53f20`。
 - ADR：[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
   的规划/架构方向已 `Accepted`；[ADR-0008](architecture/decisions/0008-stage09p-m0-evidence-boundary.md)
   与 M0 已由总控在完整 acceptance candidate 上 Accepted，但不授权权威真实 release、
   migration、外部能力或 M1。
 - 首个里程碑 09P-M0“数据治理契约与合成 fail-closed 内核”已完成 Recovery R1/R2/R3
-  与 bounded remediation，Cycle 2 独立 Audit A/B 双 CLEAN并通过总控验收。M1 当前仅
-  有 release-authority/readiness contract 与 synthetic-only S1-R1 preparation candidate；H/K
-  内容矩阵、真实 authority/source、真实数据、activation 与 Accepted 均未发生。
+  与 bounded remediation，Cycle 2 独立 Audit A/B 双 CLEAN 并通过总控验收。M1 已完成
+  R3-R1 合同重设计和本地预算闭合，但其 fresh independent review 已 BLOCK，且总控确认六组
+  P1 与一项 P2；当前只允许 same-writer R3-R2 合同修订及其 fresh independent review。只有
+  后续 exact contract 获 `CLEAN` 后才能另行判断 R4 implementation authority。H/K 内容矩阵、真实 authority/source、
+  真实数据、官方 M1 A/B、activation 与 Accepted 均未发生。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
 - `packages/domain` M0 已固定为七个纯 production module；M0 scope gate 只核对边界和
@@ -1013,8 +1030,9 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   reconciliation，其他冻结面未改。
 - 24 concepts、4 allergen 类别、8 safety 规则族、8 techniques、12 recipes 只是
   Proposed 候选覆盖规模，M1 外部审查前不构成正式数据范围；M0 只使用完全合成数据。
-- 本地总控看板需要在后续单独授权后使用独立仓库、独立提交链更新；本规划及状态收口
-  未修改看板。
+- 夜间总控已在 2026-08-27 08:00 边界完成终态记录并删除自动化；日间 fresh Contract R3-R1
+  independent review 与总控裁定现已覆盖当时“READY unreviewed”停止点。后续必须从本页指定的
+  same-writer R3-R2 + fresh independent review 重新起步，不得复用旧 review/audit 结论。
 
 阶段 09B“私有测试服务器”为 P1 conditional，当前 `Not started`。只有 09P-M6 本地
 Accepted、精确 HEAD Remote CI、外部测试依赖审计边界、测试计划、预算、IAM/网络/
