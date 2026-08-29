@@ -2,18 +2,17 @@
   "schemaVersion": 1,
   "classification": "fully_synthetic_empty_template",
   "target": {
+    "candidateCommitSha": "",
+    "datasetId": "",
     "releaseId": "",
     "releaseRevision": 0,
     "releaseContentDigest": "",
     "region": "",
     "language": "",
-    "asOf": ""
+    "evaluationTime": ""
   },
   "authorities": [],
   "sources": [],
   "reviewDecisions": [],
-  "readinessGatePassed": false,
-  "auditAResult": "PENDING",
-  "auditBResult": "PENDING",
-  "totalControlAccepted": false
+  "receipts": []
 }

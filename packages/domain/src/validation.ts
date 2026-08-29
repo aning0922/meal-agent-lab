@@ -1,4 +1,9 @@
-import { canonicalJson, compareUtf8, verifyGovernanceReleaseDigest } from "./canonical.js";
+import {
+  canonicalJson,
+  canonicalJsonDigest,
+  compareUtf8,
+  verifyGovernanceReleaseDigest,
+} from "./canonical.js";
 import {
   canonicalEntityHistoryText,
   entityIdentityText,
@@ -7,18 +12,24 @@ import {
   reverseSnapshotMaterial,
   sourceKeyText,
 } from "./catalog.js";
-import { decodeGovernanceCatalog } from "./decode.js";
+import { DECODE_LIMITS, decodeGovernanceCatalog, decodeJsonScalarClosure } from "./decode.js";
 import {
   lifecycleStatuses,
   type DecodedGovernanceCatalog,
   type GovernanceEnvelope,
   type GovernedReference,
+  type JsonValue,
   type LifecycleStatus,
   type M1AuthorityEvidence,
+  type M1BoundReceipt,
   type M1ReadinessAssessment,
   type M1ReadinessEvidence,
   type M1ReadinessReason,
+  type M1ReadinessTarget,
+  type M1ReviewDecisionEvidence,
+  type M1SourceEvidence,
   m1ReadinessReasons,
+  m1ReceiptKinds,
   m1ReadinessRoles,
   type ValidationIssue,
   type ValidationIssueCode,
@@ -555,165 +566,634 @@ export const lifecycleOracleCardinality = (): Readonly<{ accepted: number; rejec
   return Object.freeze({ accepted, rejected: 36 - accepted });
 };
 
-const ordinary = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
-const stringList = (value: unknown): value is string[] => Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && value.every((item) => typeof item === "string");
-const objectList = (value: unknown, check: (item: unknown) => boolean): boolean => Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && value.every(check);
-const shaped = (value: unknown, strings: readonly string[], integers: readonly string[],
-  booleans: readonly string[], arrays: readonly string[], nested: readonly string[] = []): boolean => {
-  if (!ordinary(value)) return false;
-  const keys = [...strings, ...integers, ...booleans, ...arrays, ...nested];
-  return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)) && strings.every((key) => typeof value[key] === "string") &&
-    integers.every((key) => Number.isSafeInteger(value[key])) && booleans.every((key) => typeof value[key] === "boolean") && arrays.every((key) => stringList(value[key]));
+type M1JsonRecord = Readonly<Record<string, JsonValue>>;
+
+const exactRecordValue = (value: JsonValue | undefined, keys: readonly string[]): M1JsonRecord | null => {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as M1JsonRecord;
+  const ownKeys = Object.keys(record).sort(compareUtf8);
+  const expected = [...keys].sort(compareUtf8);
+  return ownKeys.length === expected.length && ownKeys.every((key, index) => key === expected[index])
+    ? record
+    : null;
 };
-const authorityStrings = ["authorityRecordId", "assignmentDigest", "role", "naturalPersonIdentity", "acceptanceEvidenceDigest", "assignmentKind", "substitutesFor", "status"];
-const sourceStrings = ["sourceInventoryId", "datasetId", "releaseId", "releaseContentDigest", "entityId", "factOrRuleId", "referenceId", "referenceRevision", "snapshotId", "sourceSnapshotContentDigest", "sourceOrganization", "sourceLocator", "sourceVersion", "publicationDate", "retrievedAt", "minimalSnapshotDigest", "sourceLanguage", "candidateSourceTier", "licenseStatus", "provenanceReviewStatus", "licenseReviewStatus", "domainReviewStatus", "monitoringState", "monitoringNextDueAt"];
-const decisionStrings = ["reviewDecisionId", "authorityRecordId", "authorityAssignmentDigest", "assignmentAcceptanceDigest", "role", "releaseId", "releaseContentDigest", "decision", "decidedAt", "evidenceDigest", "independenceEvidenceDigest", "conflictDisclosureDigest", "revokedAt"];
-const evidenceShape = (input: unknown): input is M1ReadinessEvidence => {
-  if (!shaped(input, ["classification", "auditAResult", "auditBResult"], ["schemaVersion"], ["readinessGatePassed", "totalControlAccepted"], [], ["target", "authorities", "sources", "reviewDecisions"])) return false;
-  const value = input as Record<string, unknown>;
-  return shaped(value["target"], ["releaseId", "releaseContentDigest", "region", "language", "asOf"], ["releaseRevision"], [], []) &&
-    objectList(value["authorities"], (item) => shaped(item, authorityStrings, ["assignmentRevision"], ["identityVerified", "acceptedResponsibilities", "independent", "equivalentQualification"], ["disclosedConflicts"])) &&
-    objectList(value["sources"], (item) => shaped(item, sourceStrings, ["releaseRevision", "entityRevision"], ["copyPermitted", "transformationPermitted", "redistributionPermitted"], ["applicableRegions"])) &&
-    objectList(value["reviewDecisions"], (item) => shaped(item, decisionStrings, ["authorityAssignmentRevision", "releaseRevision"], [], ["entityRevisions", "factOrRuleIds", "sourceInventoryIds", "sourceKeys", "applicableRegions", "languages"]));
+
+const fieldsAreStrings = (record: M1JsonRecord, keys: readonly string[]): boolean =>
+  keys.every((key) => typeof record[key] === "string");
+const fieldsAreIntegers = (record: M1JsonRecord, keys: readonly string[]): boolean =>
+  keys.every((key) => Number.isSafeInteger(record[key]));
+const fieldsAreBooleans = (record: M1JsonRecord, keys: readonly string[]): boolean =>
+  keys.every((key) => typeof record[key] === "boolean");
+const stringListValue = (value: JsonValue | undefined): boolean =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+const recordListValue = (
+  value: JsonValue | undefined,
+  check: (item: JsonValue) => boolean,
+): boolean => Array.isArray(value) && value.every(check);
+
+const sourceKeyShape = (value: JsonValue | undefined): boolean => {
+  const record = exactRecordValue(value, ["referenceId", "referenceRevision"]);
+  return record !== null && fieldsAreStrings(record, ["referenceId", "referenceRevision"]);
 };
-const invalidEvidenceAssessment = Object.freeze({ status: "BLOCKED" as const, primaryReason: "SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT" as const, reasons: Object.freeze(["SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT" as const]) });
-const exactSetEquals = (left: readonly string[], right: readonly string[]): boolean =>
-  new Set(left).size === left.length && canonicalJson([...left].sort(compareUtf8)) === canonicalJson([...new Set(right)].sort(compareUtf8));
+
+const targetShape = (value: JsonValue | undefined): boolean => {
+  const record = exactRecordValue(value, [
+    "candidateCommitSha", "datasetId", "releaseId", "releaseRevision",
+    "releaseContentDigest", "region", "language", "evaluationTime",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "candidateCommitSha", "datasetId", "releaseId", "releaseContentDigest",
+    "region", "language", "evaluationTime",
+  ]) && fieldsAreIntegers(record, ["releaseRevision"]);
+};
+
+const authorityShape = (value: JsonValue): boolean => {
+  const record = exactRecordValue(value, [
+    "authorityRecordId", "assignmentRevision", "assignmentDigest", "role", "dataKinds",
+    "naturalPersonIdentity", "affiliation", "identityVerificationReference", "jurisdictions",
+    "languages", "qualificationReference", "acceptedResponsibilities", "acceptedAt",
+    "acceptanceEvidenceDigest", "independent", "independenceDeclaration", "disclosedConflicts",
+    "assignmentKind", "substitutesFor", "equivalentQualification", "status", "revokedAt",
+    "revocationReason",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "authorityRecordId", "assignmentDigest", "role", "naturalPersonIdentity", "affiliation",
+    "identityVerificationReference", "qualificationReference", "acceptedAt",
+    "acceptanceEvidenceDigest", "independenceDeclaration", "assignmentKind", "substitutesFor",
+    "status", "revokedAt", "revocationReason",
+  ]) && fieldsAreIntegers(record, ["assignmentRevision"]) &&
+    fieldsAreBooleans(record, ["independent", "equivalentQualification"]) &&
+    ["dataKinds", "jurisdictions", "languages", "acceptedResponsibilities", "disclosedConflicts"]
+      .every((key) => stringListValue(record[key]));
+};
+
+const minimalSnapshotShape = (value: JsonValue | undefined): boolean => {
+  const record = exactRecordValue(value, [
+    "locator", "mediaType", "byteLength", "hashAlgorithm", "contentHash", "capturedAt",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "locator", "mediaType", "hashAlgorithm", "contentHash", "capturedAt",
+  ]) && fieldsAreIntegers(record, ["byteLength"]);
+};
+
+const monitoringShape = (value: JsonValue | undefined): boolean => {
+  const record = exactRecordValue(value, [
+    "accountableRole", "method", "cadence", "lastCheckedAt", "nextDueAt", "state",
+    "evidenceReference",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "accountableRole", "method", "cadence", "lastCheckedAt", "nextDueAt", "state",
+    "evidenceReference",
+  ]);
+};
+
+const sourceShape = (value: JsonValue): boolean => {
+  const record = exactRecordValue(value, [
+    "sourceInventoryId", "materialDigest", "datasetKind", "datasetId", "releaseId",
+    "releaseRevision", "releaseContentDigest", "entityId", "entityRevision", "factOrRuleId",
+    "sourceKey", "snapshotId", "sourceSnapshotContentDigest", "sourceOrganization",
+    "sourceLocator", "sourceVersion", "publicationDate", "retrievedAt", "minimalSnapshot",
+    "applicableRegions", "sourceLanguage", "candidateSourceTier", "licenseTermsLocator",
+    "rightsHolder", "licenseStatus", "copyConclusion", "transformationConclusion",
+    "redistributionConclusion", "attributionRequirements", "provenanceReviewStatus",
+    "licenseReviewStatus", "domainReviewStatus", "reviewEvidenceReferences",
+    "withdrawalMonitoring",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "sourceInventoryId", "materialDigest", "datasetKind", "datasetId", "releaseId",
+    "releaseContentDigest", "entityId", "factOrRuleId", "snapshotId",
+    "sourceSnapshotContentDigest", "sourceOrganization", "sourceLocator", "sourceVersion",
+    "publicationDate", "retrievedAt", "sourceLanguage", "candidateSourceTier",
+    "licenseTermsLocator", "rightsHolder", "licenseStatus", "copyConclusion",
+    "transformationConclusion", "redistributionConclusion", "provenanceReviewStatus",
+    "licenseReviewStatus", "domainReviewStatus",
+  ]) && fieldsAreIntegers(record, ["releaseRevision", "entityRevision"]) &&
+    sourceKeyShape(record["sourceKey"]) && minimalSnapshotShape(record["minimalSnapshot"]) &&
+    monitoringShape(record["withdrawalMonitoring"]) &&
+    ["applicableRegions", "attributionRequirements", "reviewEvidenceReferences"]
+      .every((key) => stringListValue(record[key]));
+};
+
+const entityRevisionShape = (value: JsonValue): boolean => {
+  const record = exactRecordValue(value, ["entityId", "entityRevision"]);
+  return record !== null && fieldsAreStrings(record, ["entityId"]) &&
+    fieldsAreIntegers(record, ["entityRevision"]);
+};
+
+const inventoryBindingShape = (value: JsonValue): boolean => {
+  const record = exactRecordValue(value, ["sourceInventoryId", "materialDigest"]);
+  return record !== null && fieldsAreStrings(record, ["sourceInventoryId", "materialDigest"]);
+};
+
+const reviewScopeShape = (value: JsonValue | undefined): boolean => {
+  const record = exactRecordValue(value, [
+    "entityRevisions", "factOrRuleIds", "sourceInventoryBindings", "sourceKeys",
+    "applicableRegions", "languages",
+  ]);
+  return record !== null && recordListValue(record["entityRevisions"], entityRevisionShape) &&
+    stringListValue(record["factOrRuleIds"]) &&
+    recordListValue(record["sourceInventoryBindings"], inventoryBindingShape) &&
+    recordListValue(record["sourceKeys"], sourceKeyShape) &&
+    stringListValue(record["applicableRegions"]) && stringListValue(record["languages"]);
+};
+
+const reviewDecisionShape = (value: JsonValue): boolean => {
+  const record = exactRecordValue(value, [
+    "reviewDecisionId", "authorityRecordId", "authorityAssignmentRevision",
+    "authorityAssignmentDigest", "assignmentAcceptanceDigest", "role", "datasetId",
+    "releaseId", "releaseRevision", "releaseContentDigest", "scope", "decision", "decidedAt",
+    "evidenceDigest", "independenceEvidenceDigest", "conflictDisclosureDigest",
+    "supersedesReviewDecisionId", "revokedAt", "revocationReason",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "reviewDecisionId", "authorityRecordId", "authorityAssignmentDigest",
+    "assignmentAcceptanceDigest", "role", "datasetId", "releaseId", "releaseContentDigest",
+    "decision", "decidedAt", "evidenceDigest", "independenceEvidenceDigest",
+    "conflictDisclosureDigest", "supersedesReviewDecisionId", "revokedAt", "revocationReason",
+  ]) && fieldsAreIntegers(record, ["authorityAssignmentRevision", "releaseRevision"]) &&
+    reviewScopeShape(record["scope"]);
+};
+
+const receiptShape = (value: JsonValue): boolean => {
+  const record = exactRecordValue(value, [
+    "receiptId", "receiptDigest", "kind", "candidateCommitSha", "datasetId", "releaseId",
+    "releaseRevision", "releaseContentDigest", "evaluationTime", "observedAt", "result",
+    "reportDigest", "upstreamReceiptDigests",
+  ]);
+  return record !== null && fieldsAreStrings(record, [
+    "receiptId", "receiptDigest", "kind", "candidateCommitSha", "datasetId", "releaseId",
+    "releaseContentDigest", "evaluationTime", "observedAt", "result", "reportDigest",
+  ]) && fieldsAreIntegers(record, ["releaseRevision"]) &&
+    stringListValue(record["upstreamReceiptDigests"]);
+};
+
+const decodeM1EvidenceText = (input: unknown): M1ReadinessEvidence | null => {
+  if (typeof input !== "string" || input.length > DECODE_LIMITS.maxTextLength) return null;
+  try {
+    const scalar = decodeJsonScalarClosure(JSON.parse(input) as unknown);
+    if (!scalar.ok) return null;
+    const record = exactRecordValue(scalar.value, [
+      "schemaVersion", "classification", "target", "authorities", "sources",
+      "reviewDecisions", "receipts",
+    ]);
+    if (record === null || !fieldsAreIntegers(record, ["schemaVersion"]) ||
+      !fieldsAreStrings(record, ["classification"]) || !targetShape(record["target"]) ||
+      !recordListValue(record["authorities"], authorityShape) ||
+      !recordListValue(record["sources"], sourceShape) ||
+      !recordListValue(record["reviewDecisions"], reviewDecisionShape) ||
+      !recordListValue(record["receipts"], receiptShape)) return null;
+    return scalar.value as unknown as M1ReadinessEvidence;
+  } catch {
+    return null;
+  }
+};
+
+const invalidEvidenceAssessment = Object.freeze({
+  status: "BLOCKED" as const,
+  primaryReason: "SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT" as const,
+  reasons: Object.freeze(["SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT" as const]),
+});
+const digestPattern = /^sha256:[0-9a-f]{64}$/;
+const commitPattern = /^[0-9a-f]{40}$/;
 const hasSyntheticPrefix = (value: string): boolean => value.startsWith("syn:");
-/** S1-only derived gate. It never mutates M0 input or performs a lifecycle transition. */
-export const assessM1Readiness = (catalogInput: unknown, evidenceInput: unknown): M1ReadinessAssessment => {
-  try { if (!evidenceShape(evidenceInput)) return invalidEvidenceAssessment;
-  const reasons = new Set<M1ReadinessReason>();
-  const add = (reason: M1ReadinessReason): void => void reasons.add(reason);
-  const evidence = evidenceInput;
-  const target = evidence.target;
-  const { authorities, sources, reviewDecisions: decisions } = evidence;
-  if (evidence.schemaVersion !== 1 || evidence.classification !== "fully_synthetic") add("READINESS_GATE_FAILED");
-  const analysis = analyzeGovernanceCatalog(catalogInput);
-  if (analysis.catalog === null || analysis.issues.length > 0) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
-  const release = analysis.catalog?.releases.find((candidate) => candidate.releaseId === target.releaseId &&
-    candidate.releaseRevision === target.releaseRevision && candidate.contentDigest === target.releaseContentDigest);
-  if (release === undefined) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
-  for (const envelope of release?.envelopes ?? []) {
-    if (envelope.lifecycleStatus === "withdrawn") add("SOURCE_WITHDRAWN");
-    else if (envelope.lifecycleStatus !== "approved") add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
-    if (!canonicalTimestamp(envelope.reviewDueAt) || Date.parse(envelope.reviewDueAt) <= Date.parse(target?.asOf ?? "")) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
-  }
-  const authorityByRole = new Map<string, M1AuthorityEvidence[]>(), identities = new Set<string>(), acceptanceDigests = new Set<string>();
-  for (const authority of authorities) {
-    const grouped = authorityByRole.get(authority.role) ?? [];
-    grouped.push(authority); authorityByRole.set(authority.role, grouped);
-    if (authority.status === "revoked" || (authority.naturalPersonIdentity.length > 0 &&
-      (!authority.identityVerified || !hasSyntheticPrefix(authority.naturalPersonIdentity)))) add("FORGED_OR_REVOKED_AUTHORITY");
-    if (
-      authority.status !== "confirmed" || !m1ReadinessRoles.includes(authority.role) ||
-      !["primary", "substitute"].includes(authority.assignmentKind) || authority.naturalPersonIdentity.length === 0 ||
-      !authority.acceptedResponsibilities || !hasSyntheticPrefix(authority.authorityRecordId) || !hasSyntheticPrefix(authority.assignmentDigest) || !hasSyntheticPrefix(authority.acceptanceEvidenceDigest) ||
-      (authority.assignmentKind === "substitute" &&
-        (!authority.equivalentQualification || !hasSyntheticPrefix(authority.substitutesFor)))
-    ) add("UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
-    if (!authority.independent || authority.disclosedConflicts.length > 0 || identities.has(authority.naturalPersonIdentity) || acceptanceDigests.has(authority.acceptanceEvidenceDigest)) add("CONFLICTED_OR_DUPLICATE_APPROVER");
-    if (authority.naturalPersonIdentity.length > 0) identities.add(authority.naturalPersonIdentity);
-    if (authority.acceptanceEvidenceDigest.length > 0) acceptanceDigests.add(authority.acceptanceEvidenceDigest);
-  }
-  for (const role of m1ReadinessRoles) {
-    const count = authorityByRole.get(role)?.length ?? 0;
-    if (count !== 1) add(count > 1 ? "CONFLICTED_OR_DUPLICATE_APPROVER" : "UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
-  }
-  const expectedEntityRevisions = (release?.envelopes ?? []).map(
-    ({ entityId, entityRevision }) => `${entityId}@${entityRevision}`,
-  );
-  const expectedSourceKeys = (release?.envelopes ?? []).flatMap(({ sourceReferences }) =>
-    sourceReferences.map(sourceKeyText));
-  if (sources.length !== expectedSourceKeys.length || sources.length === 0 || !exactSetEquals(
-    sources.map(({ referenceId, referenceRevision }) => canonicalJson({ referenceId, referenceRevision })), expectedSourceKeys)) {
-    add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
-  }
-  for (const source of sources) {
-    const envelope = release?.envelopes.find(
-      (candidate) => candidate.datasetId === source.datasetId &&
-        candidate.entityId === source.entityId && candidate.entityRevision === source.entityRevision,
-    );
-    const reference = envelope?.sourceReferences.find(
-      (candidate) => candidate.referenceId === source.referenceId &&
-        candidate.referenceRevision === source.referenceRevision,
-    );
-    const snapshot = envelope?.sourceSnapshots.find(
-      (candidate) => candidate.referenceId === source.referenceId &&
-        candidate.referenceRevision === source.referenceRevision,
-    );
-    if (
-      envelope === undefined || reference === undefined || snapshot === undefined ||
-      source.releaseId !== release?.releaseId || source.releaseRevision !== release?.releaseRevision ||
-      source.releaseContentDigest !== release?.contentDigest || source.snapshotId !== snapshot.snapshotId ||
-      source.sourceSnapshotContentDigest !== snapshot.contentDigest ||
-      source.sourceLocator !== reference.locator || source.retrievedAt !== snapshot.retrievedAt ||
-      !hasSyntheticPrefix(source.sourceInventoryId) || !hasSyntheticPrefix(source.factOrRuleId) ||
-      !hasSyntheticPrefix(source.referenceId) || !hasSyntheticPrefix(source.sourceOrganization) ||
-      source.candidateSourceTier !== envelope?.sourceTier || source.candidateSourceTier === "L4" ||
-      source.sourceVersion.length === 0 || !canonicalTimestamp(source.publicationDate) || Date.parse(source.publicationDate) > Date.parse(source.retrievedAt) ||
-      !hasSyntheticPrefix(source.minimalSnapshotDigest)
-    ) add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
-    if (
-      source.monitoringState !== "current" || !canonicalTimestamp(source.monitoringNextDueAt) ||
-      !canonicalTimestamp(target?.asOf ?? "") ||
-      Date.parse(source.monitoringNextDueAt) <= Date.parse(target?.asOf ?? "")
-    ) add("SOURCE_WITHDRAWN");
-    if (
-      source.licenseStatus !== "approved" || source.licenseReviewStatus !== "approved" ||
-      !source.copyPermitted || !source.transformationPermitted || !source.redistributionPermitted
-    ) add("LICENSE_NOT_APPROVED");
-    if (!source.applicableRegions.includes(target?.region ?? "")) add("REGION_NOT_APPLICABLE");
-    if (source.sourceLanguage !== target?.language) add("LANGUAGE_NOT_APPLICABLE");
-    if (source.provenanceReviewStatus !== "approved" || source.domainReviewStatus !== "approved") {
-      add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
-    }
-  }
-  const expectedFacts = sources.map(({ factOrRuleId }) => factOrRuleId);
-  const expectedInventories = sources.map(({ sourceInventoryId }) => sourceInventoryId);
-  if (decisions.some(({ role, decision }) => !m1ReadinessRoles.includes(role) ||
-    !["approve", "reject"].includes(decision))) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
-  for (const role of m1ReadinessRoles) {
-    const roleDecisions = decisions.filter((decision) => decision.role === role);
-    if (roleDecisions.length !== 1) {
-      add(roleDecisions.length > 1
-        ? "CONFLICTED_OR_DUPLICATE_APPROVER"
-        : "DOMAIN_REVIEW_MISSING_OR_EXPIRED");
-      continue;
-    }
-    const decision = roleDecisions[0]!;
-    const authority = authorityByRole.get(role)?.[0];
-    if (
-      authority === undefined || decision.authorityRecordId !== authority.authorityRecordId ||
-      decision.authorityAssignmentRevision !== authority.assignmentRevision ||
-      decision.authorityAssignmentDigest !== authority.assignmentDigest ||
-      decision.assignmentAcceptanceDigest !== authority.acceptanceEvidenceDigest ||
-      decision.releaseId !== target?.releaseId || decision.releaseRevision !== target?.releaseRevision ||
-      decision.releaseContentDigest !== target.releaseContentDigest || decision.decision !== "approve" ||
-      !canonicalTimestamp(decision.decidedAt) || decision.decidedAt > target.asOf ||
-      sources.some((source) => decision.decidedAt < source.publicationDate || decision.decidedAt < source.retrievedAt) ||
-      decision.revokedAt.length > 0 || !hasSyntheticPrefix(decision.reviewDecisionId) ||
-      !hasSyntheticPrefix(decision.evidenceDigest) ||
-      !hasSyntheticPrefix(decision.independenceEvidenceDigest) ||
-      !hasSyntheticPrefix(decision.conflictDisclosureDigest) ||
-      !exactSetEquals(decision.entityRevisions, expectedEntityRevisions) ||
-      !exactSetEquals(decision.factOrRuleIds, expectedFacts) ||
-      !exactSetEquals(decision.sourceInventoryIds, expectedInventories) ||
-      !exactSetEquals(decision.sourceKeys, expectedSourceKeys) ||
-      !exactSetEquals(decision.applicableRegions, [target.region]) ||
-      !exactSetEquals(decision.languages, [target.language])
-    ) add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
-  }
-  if (!evidence.readinessGatePassed) add("READINESS_GATE_FAILED");
-  if (evidence.auditAResult !== "CLEAN" || evidence.auditBResult !== "CLEAN") {
-    add("INDEPENDENT_A_B_NOT_CLEAN");
-  }
-  if (!evidence.totalControlAccepted) add("TOTAL_CONTROL_NOT_ACCEPTED");
-  const ordered = Object.freeze(m1ReadinessReasons.filter((reason) => reasons.has(reason)));
-  return Object.freeze({
-    status: ordered.length === 0 ? "ACTIVATION_ELIGIBLE" : "BLOCKED",
-    primaryReason: ordered[0] ?? null,
-    reasons: ordered,
+const hasCanonicalDigest = (value: string): boolean => digestPattern.test(value);
+const exactSetEquals = (left: readonly unknown[], right: readonly unknown[]): boolean => {
+  const leftValues = left.map(canonicalJson).sort(compareUtf8);
+  const rightValues = right.map(canonicalJson).sort(compareUtf8);
+  return new Set(leftValues).size === leftValues.length &&
+    new Set(rightValues).size === rightValues.length &&
+    canonicalJson(leftValues) === canonicalJson(rightValues);
+};
+const uniqueValues = <T>(values: readonly T[]): readonly T[] => {
+  const unique = new Map<string, T>();
+  for (const value of values) unique.set(canonicalJson(value), value);
+  return Object.freeze([...unique.values()]);
+};
+const duplicated = (values: readonly string[]): ReadonlySet<string> => {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) (seen.has(value) ? duplicates : seen).add(value);
+  return duplicates;
+};
+
+export const m1SourceInventoryDigest = (source: M1SourceEvidence): string => {
+  const { materialDigest: _materialDigest, ...material } = source;
+  return canonicalJsonDigest({ domain: "M1_SOURCE_INVENTORY_V1", material });
+};
+
+const authorityDigestMaterial = (authority: M1AuthorityEvidence): unknown => {
+  const {
+    assignmentDigest: _assignmentDigest,
+    acceptanceEvidenceDigest: _acceptanceEvidenceDigest,
+    ...material
+  } = authority;
+  return material;
+};
+
+export const m1AuthorityAssignmentDigest = (authority: M1AuthorityEvidence): string =>
+  canonicalJsonDigest({
+    domain: "M1_AUTHORITY_ASSIGNMENT_V1",
+    material: authorityDigestMaterial(authority),
   });
-  } catch { return invalidEvidenceAssessment; }
+
+export const m1AuthorityAcceptanceDigest = (authority: M1AuthorityEvidence): string =>
+  canonicalJsonDigest({
+    domain: "M1_AUTHORITY_ACCEPTANCE_V1",
+    material: authorityDigestMaterial(authority),
+  });
+
+export const m1ReviewDecisionDigests = (
+  decision: M1ReviewDecisionEvidence,
+  authority: M1AuthorityEvidence,
+): Readonly<{
+  evidenceDigest: string;
+  independenceEvidenceDigest: string;
+  conflictDisclosureDigest: string;
+}> => {
+  const {
+    evidenceDigest: _evidenceDigest,
+    independenceEvidenceDigest: _independenceEvidenceDigest,
+    conflictDisclosureDigest: _conflictDisclosureDigest,
+    ...material
+  } = decision;
+  return Object.freeze({
+    evidenceDigest: canonicalJsonDigest({ domain: "M1_REVIEW_DECISION_V1", material }),
+    independenceEvidenceDigest: canonicalJsonDigest({
+      domain: "M1_REVIEW_INDEPENDENCE_V1",
+      reviewDecisionId: decision.reviewDecisionId,
+      authorityRecordId: authority.authorityRecordId,
+      role: authority.role,
+      naturalPersonIdentity: authority.naturalPersonIdentity,
+      independent: authority.independent,
+      independenceDeclaration: authority.independenceDeclaration,
+    }),
+    conflictDisclosureDigest: canonicalJsonDigest({
+      domain: "M1_REVIEW_CONFLICT_V1",
+      reviewDecisionId: decision.reviewDecisionId,
+      authorityRecordId: authority.authorityRecordId,
+      disclosedConflicts: authority.disclosedConflicts,
+    }),
+  });
+};
+
+export const m1ReceiptDigest = (receipt: M1BoundReceipt): string => {
+  const { receiptDigest: _receiptDigest, ...material } = receipt;
+  return canonicalJsonDigest({ domain: "M1_BOUND_RECEIPT_V1", material });
+};
+
+interface M1SourceOccurrence {
+  readonly envelope: GovernanceEnvelope;
+  readonly reference: GovernanceEnvelope["sourceReferences"][number];
+  readonly snapshot: GovernanceEnvelope["sourceSnapshots"][number] | undefined;
+}
+
+const occurrenceMatches = (source: M1SourceEvidence, occurrence: M1SourceOccurrence): boolean =>
+  source.datasetId === occurrence.envelope.datasetId &&
+  source.entityId === occurrence.envelope.entityId &&
+  source.entityRevision === occurrence.envelope.entityRevision &&
+  source.sourceKey.referenceId === occurrence.reference.referenceId &&
+  source.sourceKey.referenceRevision === occurrence.reference.referenceRevision;
+
+const receiptReason = (kind: string): M1ReadinessReason => {
+  if (kind === "audit_a" || kind === "audit_b") return "INDEPENDENT_A_B_NOT_CLEAN";
+  if (kind === "total_control") return "TOTAL_CONTROL_NOT_ACCEPTED";
+  return "READINESS_GATE_FAILED";
+};
+
+const receiptTargetMatches = (receipt: M1BoundReceipt, target: M1ReadinessTarget): boolean =>
+  receipt.candidateCommitSha === target.candidateCommitSha &&
+  receipt.datasetId === target.datasetId && receipt.releaseId === target.releaseId &&
+  receipt.releaseRevision === target.releaseRevision &&
+  receipt.releaseContentDigest === target.releaseContentDigest &&
+  receipt.evaluationTime === target.evaluationTime;
+
+/**
+ * S1-only derived gate. Evidence is accepted only as raw JSON text, so hostile objects, accessors,
+ * and proxies are rejected before any property/meta-object operation. It never mutates M0 input.
+ */
+export const assessM1Readiness = (
+  catalogInput: unknown,
+  evidenceInput: unknown,
+): M1ReadinessAssessment => {
+  try {
+    const evidence = decodeM1EvidenceText(evidenceInput);
+    if (evidence === null) return invalidEvidenceAssessment;
+    const reasons = new Set<M1ReadinessReason>();
+    const add = (reason: M1ReadinessReason): void => void reasons.add(reason);
+    const { target, authorities, sources, reviewDecisions: decisions, receipts } = evidence;
+    const evaluationTimeValid = canonicalTimestamp(target.evaluationTime);
+    if (evidence.schemaVersion !== 1 || evidence.classification !== "fully_synthetic" ||
+      !commitPattern.test(target.candidateCommitSha) || !evaluationTimeValid) {
+      add("READINESS_GATE_FAILED");
+    }
+
+    const analysis = analyzeGovernanceCatalog(catalogInput);
+    if (analysis.catalog === null || analysis.issues.length > 0) {
+      add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+    }
+    const release = analysis.catalog?.releases.find((candidate) =>
+      candidate.releaseId === target.releaseId &&
+      candidate.releaseRevision === target.releaseRevision &&
+      candidate.contentDigest === target.releaseContentDigest);
+    const relevantEnvelopes = (release?.envelopes ?? []).filter(
+      (envelope) => envelope.datasetId === target.datasetId,
+    );
+    if (release === undefined || relevantEnvelopes.length === 0) {
+      add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+    }
+    for (const envelope of relevantEnvelopes) {
+      const identity = entityIdentityText(envelope);
+      const revisions = analysis.catalog?.releases.flatMap((candidate) =>
+        candidate.envelopes.filter((item) => entityIdentityText(item) === identity)) ?? [];
+      const latestRevision = revisions.length === 0
+        ? -1
+        : Math.max(...revisions.map(({ entityRevision }) => entityRevision));
+      if (envelope.entityRevision !== latestRevision) {
+        add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+      }
+      if (envelope.lifecycleStatus === "withdrawn" || envelope.withdrawalState === "withdrawn") {
+        add("SOURCE_WITHDRAWN");
+      } else if (envelope.lifecycleStatus !== "approved") {
+        add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+      }
+      if (!envelope.applicableRegions.includes(target.region)) add("REGION_NOT_APPLICABLE");
+      if (!envelope.languages.includes(target.language)) add("LANGUAGE_NOT_APPLICABLE");
+      if (!evaluationTimeValid || !canonicalTimestamp(envelope.reviewedAt) ||
+        !canonicalTimestamp(envelope.reviewDueAt) || target.evaluationTime < envelope.reviewedAt ||
+        target.evaluationTime >= envelope.reviewDueAt) {
+        add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+      }
+    }
+
+    const authorityByRole = new Map<string, M1AuthorityEvidence[]>();
+    const duplicateAuthorityIds = duplicated(authorities.map(({ authorityRecordId }) => authorityRecordId));
+    const duplicateAssignmentDigests = duplicated(authorities.map(({ assignmentDigest }) => assignmentDigest));
+    const duplicatePeople = duplicated(authorities.map(({ naturalPersonIdentity }) => naturalPersonIdentity));
+    const duplicateAcceptanceDigests = duplicated(
+      authorities.map(({ acceptanceEvidenceDigest }) => acceptanceEvidenceDigest),
+    );
+    const datasetKind = relevantEnvelopes[0]?.datasetKind;
+    for (const authority of authorities) {
+      const grouped = authorityByRole.get(authority.role) ?? [];
+      grouped.push(authority);
+      authorityByRole.set(authority.role, grouped);
+      if (authority.status === "revoked" || authority.status === "suspended" ||
+        !hasSyntheticPrefix(authority.naturalPersonIdentity) ||
+        !hasSyntheticPrefix(authority.identityVerificationReference)) {
+        add("FORGED_OR_REVOKED_AUTHORITY");
+      }
+      if (authority.status !== "confirmed" || !m1ReadinessRoles.includes(authority.role) ||
+        !["primary", "substitute"].includes(authority.assignmentKind) ||
+        !hasSyntheticPrefix(authority.authorityRecordId) || authority.assignmentRevision < 1 ||
+        authority.assignmentDigest !== m1AuthorityAssignmentDigest(authority) ||
+        authority.acceptanceEvidenceDigest !== m1AuthorityAcceptanceDigest(authority) ||
+        !hasSyntheticPrefix(authority.affiliation) ||
+        !hasSyntheticPrefix(authority.qualificationReference) ||
+        authority.acceptedResponsibilities.length === 0 ||
+        authority.acceptedResponsibilities.some((item) => !hasSyntheticPrefix(item)) ||
+        !canonicalTimestamp(authority.acceptedAt) ||
+        (evaluationTimeValid && authority.acceptedAt > target.evaluationTime) ||
+        datasetKind === undefined || !exactSetEquals(authority.dataKinds, [datasetKind]) ||
+        !exactSetEquals(authority.jurisdictions, [target.region]) ||
+        !exactSetEquals(authority.languages, [target.language]) ||
+        (authority.assignmentKind === "substitute" &&
+          (!authority.equivalentQualification || !hasSyntheticPrefix(authority.substitutesFor)))) {
+        add("UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
+      }
+      if (!authority.independent || !hasSyntheticPrefix(authority.independenceDeclaration) ||
+        authority.disclosedConflicts.length > 0 ||
+        duplicateAuthorityIds.has(authority.authorityRecordId) ||
+        duplicateAssignmentDigests.has(authority.assignmentDigest) ||
+        duplicatePeople.has(authority.naturalPersonIdentity) ||
+        duplicateAcceptanceDigests.has(authority.acceptanceEvidenceDigest)) {
+        add("CONFLICTED_OR_DUPLICATE_APPROVER");
+      }
+    }
+    for (const role of m1ReadinessRoles) {
+      const count = authorityByRole.get(role)?.length ?? 0;
+      if (count !== 1) {
+        add(count > 1
+          ? "CONFLICTED_OR_DUPLICATE_APPROVER"
+          : "UNASSIGNED_OR_UNACCEPTED_AUTHORITY");
+      }
+    }
+
+    const occurrences: M1SourceOccurrence[] = relevantEnvelopes.flatMap((envelope) =>
+      envelope.sourceReferences.map((reference) => ({
+        envelope,
+        reference,
+        snapshot: envelope.sourceSnapshots.find((candidate) =>
+          candidate.referenceId === reference.referenceId &&
+          candidate.referenceRevision === reference.referenceRevision),
+      })));
+    if (occurrences.length === 0 || sources.length === 0 ||
+      occurrences.some((occurrence) => !sources.some((source) => occurrenceMatches(source, occurrence))) ||
+      sources.some((source) => !occurrences.some((occurrence) => occurrenceMatches(source, occurrence)))) {
+      add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+    }
+    const duplicateInventoryIds = duplicated(sources.map(({ sourceInventoryId }) => sourceInventoryId));
+    const duplicateMaterialDigests = duplicated(sources.map(({ materialDigest }) => materialDigest));
+    const occurrenceFacts = duplicated(sources.map((source) => canonicalJson({
+      datasetId: source.datasetId,
+      entityId: source.entityId,
+      entityRevision: source.entityRevision,
+      sourceKey: source.sourceKey,
+      factOrRuleId: source.factOrRuleId,
+    })));
+    for (const source of sources) {
+      const occurrence = occurrences.find((candidate) => occurrenceMatches(source, candidate));
+      const { envelope, reference, snapshot } = occurrence ?? {};
+      const occurrenceFact = canonicalJson({
+        datasetId: source.datasetId,
+        entityId: source.entityId,
+        entityRevision: source.entityRevision,
+        sourceKey: source.sourceKey,
+        factOrRuleId: source.factOrRuleId,
+      });
+      if (envelope === undefined || reference === undefined || snapshot === undefined ||
+        source.datasetKind !== envelope.datasetKind || source.releaseId !== release?.releaseId ||
+        source.releaseRevision !== release?.releaseRevision ||
+        source.releaseContentDigest !== release?.contentDigest ||
+        source.snapshotId !== snapshot.snapshotId ||
+        source.sourceSnapshotContentDigest !== snapshot.contentDigest ||
+        source.sourceLocator !== reference.locator || source.retrievedAt !== snapshot.retrievedAt ||
+        source.minimalSnapshot.locator !== reference.locator ||
+        source.minimalSnapshot.contentHash !== snapshot.contentDigest ||
+        source.minimalSnapshot.capturedAt !== snapshot.retrievedAt ||
+        source.minimalSnapshot.hashAlgorithm !== "sha256" ||
+        source.minimalSnapshot.byteLength < 1 || source.minimalSnapshot.mediaType.length === 0 ||
+        !hasSyntheticPrefix(source.sourceInventoryId) || !hasSyntheticPrefix(source.factOrRuleId) ||
+        !hasSyntheticPrefix(source.sourceOrganization) || !hasSyntheticPrefix(source.sourceVersion) ||
+        !hasSyntheticPrefix(source.licenseTermsLocator) || !hasSyntheticPrefix(source.rightsHolder) ||
+        source.attributionRequirements.length === 0 ||
+        source.attributionRequirements.some((item) => !hasSyntheticPrefix(item)) ||
+        source.reviewEvidenceReferences.length === 0 ||
+        source.reviewEvidenceReferences.some((item) => !hasSyntheticPrefix(item)) ||
+        source.candidateSourceTier !== envelope?.sourceTier || source.candidateSourceTier === "L4" ||
+        !canonicalTimestamp(source.publicationDate) ||
+        source.publicationDate > source.retrievedAt ||
+        source.materialDigest !== m1SourceInventoryDigest(source) ||
+        duplicateInventoryIds.has(source.sourceInventoryId) ||
+        duplicateMaterialDigests.has(source.materialDigest) || occurrenceFacts.has(occurrenceFact)) {
+        add("SOURCE_MISSING_OR_SNAPSHOT_VERSION_DRIFT");
+      }
+      const monitoring = source.withdrawalMonitoring;
+      if (monitoring.state !== "current" || !m1ReadinessRoles.includes(monitoring.accountableRole) ||
+        !hasSyntheticPrefix(monitoring.method) || !hasSyntheticPrefix(monitoring.cadence) ||
+        !hasSyntheticPrefix(monitoring.evidenceReference) ||
+        !canonicalTimestamp(monitoring.lastCheckedAt) || !canonicalTimestamp(monitoring.nextDueAt) ||
+        !evaluationTimeValid || monitoring.lastCheckedAt > target.evaluationTime ||
+        monitoring.nextDueAt <= target.evaluationTime) {
+        add("SOURCE_WITHDRAWN");
+      }
+      if (source.licenseStatus !== "approved" || source.licenseReviewStatus !== "approved" ||
+        source.copyConclusion !== "permitted" ||
+        source.transformationConclusion !== "permitted" ||
+        source.redistributionConclusion !== "permitted") {
+        add("LICENSE_NOT_APPROVED");
+      }
+      if (!source.applicableRegions.includes(target.region)) add("REGION_NOT_APPLICABLE");
+      if (source.sourceLanguage !== target.language) add("LANGUAGE_NOT_APPLICABLE");
+      if (source.provenanceReviewStatus !== "approved" || source.domainReviewStatus !== "approved") {
+        add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+      }
+    }
+
+    const expectedEntityRevisions = uniqueValues(relevantEnvelopes.map(
+      ({ entityId, entityRevision }) => ({ entityId, entityRevision }),
+    ));
+    const expectedFacts = uniqueValues(sources.map(({ factOrRuleId }) => factOrRuleId));
+    const expectedInventoryBindings = uniqueValues(sources.map(
+      ({ sourceInventoryId, materialDigest }) => ({ sourceInventoryId, materialDigest }),
+    ));
+    const expectedSourceKeys = uniqueValues(occurrences.map(({ reference }) => ({
+      referenceId: reference.referenceId,
+      referenceRevision: reference.referenceRevision,
+    })));
+    const duplicateDecisionIds = duplicated(decisions.map(({ reviewDecisionId }) => reviewDecisionId));
+    const duplicateEvidenceDigests = duplicated(decisions.map(({ evidenceDigest }) => evidenceDigest));
+    const duplicateIndependenceDigests = duplicated(
+      decisions.map(({ independenceEvidenceDigest }) => independenceEvidenceDigest),
+    );
+    const duplicateConflictDigests = duplicated(
+      decisions.map(({ conflictDisclosureDigest }) => conflictDisclosureDigest),
+    );
+    for (const role of m1ReadinessRoles) {
+      const roleDecisions = decisions.filter((decision) => decision.role === role);
+      if (roleDecisions.length !== 1) {
+        add(roleDecisions.length > 1
+          ? "CONFLICTED_OR_DUPLICATE_APPROVER"
+          : "DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+        continue;
+      }
+      const decision = roleDecisions[0]!;
+      const authority = authorityByRole.get(role)?.[0];
+      if (duplicateDecisionIds.has(decision.reviewDecisionId) ||
+        duplicateEvidenceDigests.has(decision.evidenceDigest) ||
+        duplicateIndependenceDigests.has(decision.independenceEvidenceDigest) ||
+        duplicateConflictDigests.has(decision.conflictDisclosureDigest)) {
+        add("CONFLICTED_OR_DUPLICATE_APPROVER");
+      }
+      const expectedDigests = authority === undefined
+        ? null
+        : m1ReviewDecisionDigests(decision, authority);
+      if (authority === undefined || decision.authorityRecordId !== authority.authorityRecordId ||
+        decision.authorityAssignmentRevision !== authority.assignmentRevision ||
+        decision.authorityAssignmentDigest !== authority.assignmentDigest ||
+        decision.assignmentAcceptanceDigest !== authority.acceptanceEvidenceDigest ||
+        decision.datasetId !== target.datasetId || decision.releaseId !== target.releaseId ||
+        decision.releaseRevision !== target.releaseRevision ||
+        decision.releaseContentDigest !== target.releaseContentDigest ||
+        decision.decision !== "approve" || !canonicalTimestamp(decision.decidedAt) ||
+        !evaluationTimeValid || decision.decidedAt > target.evaluationTime ||
+        decision.decidedAt < authority.acceptedAt ||
+        sources.some((source) => decision.decidedAt < source.publicationDate ||
+          decision.decidedAt < source.retrievedAt) ||
+        decision.revokedAt.length > 0 || decision.revocationReason.length > 0 ||
+        decision.supersedesReviewDecisionId.length > 0 ||
+        !hasSyntheticPrefix(decision.reviewDecisionId) || expectedDigests === null ||
+        decision.evidenceDigest !== expectedDigests.evidenceDigest ||
+        decision.independenceEvidenceDigest !== expectedDigests.independenceEvidenceDigest ||
+        decision.conflictDisclosureDigest !== expectedDigests.conflictDisclosureDigest ||
+        !exactSetEquals(decision.scope.entityRevisions, expectedEntityRevisions) ||
+        !exactSetEquals(decision.scope.factOrRuleIds, expectedFacts) ||
+        !exactSetEquals(decision.scope.sourceInventoryBindings, expectedInventoryBindings) ||
+        !exactSetEquals(decision.scope.sourceKeys, expectedSourceKeys) ||
+        !exactSetEquals(decision.scope.applicableRegions, [target.region]) ||
+        !exactSetEquals(decision.scope.languages, [target.language])) {
+        add("DOMAIN_REVIEW_MISSING_OR_EXPIRED");
+      }
+    }
+
+    const receiptGroups = new Map<string, M1BoundReceipt[]>();
+    for (const receipt of receipts) {
+      const grouped = receiptGroups.get(receipt.kind) ?? [];
+      grouped.push(receipt);
+      receiptGroups.set(receipt.kind, grouped);
+    }
+    const duplicateReceiptIds = duplicated(receipts.map(({ receiptId }) => receiptId));
+    const duplicateReceiptDigests = duplicated(receipts.map(({ receiptDigest }) => receiptDigest));
+    const duplicateReportDigests = duplicated(receipts.map(({ reportDigest }) => reportDigest));
+    for (const kind of m1ReceiptKinds) {
+      const grouped = receiptGroups.get(kind) ?? [];
+      if (grouped.length !== 1) add(receiptReason(kind));
+    }
+    const evaluationReceipt = receiptGroups.get("evaluation_time")?.[0];
+    const readinessReceipt = receiptGroups.get("readiness_gate")?.[0];
+    const auditAReceipt = receiptGroups.get("audit_a")?.[0];
+    const auditBReceipt = receiptGroups.get("audit_b")?.[0];
+    const totalControlReceipt = receiptGroups.get("total_control")?.[0];
+    const expectedResults = new Map<string, string>([
+      ["evaluation_time", "BOUND"], ["readiness_gate", "PASS"],
+      ["audit_a", "CLEAN"], ["audit_b", "CLEAN"], ["total_control", "ACCEPTED"],
+    ]);
+    const expectedUpstreams = new Map<string, readonly string[]>([
+      ["evaluation_time", []],
+      ["readiness_gate", evaluationReceipt === undefined ? [] : [evaluationReceipt.receiptDigest]],
+      ["audit_a", readinessReceipt === undefined ? [] : [readinessReceipt.receiptDigest]],
+      ["audit_b", readinessReceipt === undefined ? [] : [readinessReceipt.receiptDigest]],
+      ["total_control", [evaluationReceipt, readinessReceipt, auditAReceipt, auditBReceipt]
+        .filter((receipt): receipt is M1BoundReceipt => receipt !== undefined)
+        .map(({ receiptDigest }) => receiptDigest)],
+    ]);
+    for (const receipt of receipts) {
+      const knownKind = m1ReceiptKinds.includes(receipt.kind);
+      const reason = receiptReason(receipt.kind);
+      if (!knownKind || !receiptTargetMatches(receipt, target) ||
+        !hasSyntheticPrefix(receipt.receiptId) || !hasCanonicalDigest(receipt.reportDigest) ||
+        receipt.receiptDigest !== m1ReceiptDigest(receipt) ||
+        duplicateReceiptIds.has(receipt.receiptId) ||
+        duplicateReceiptDigests.has(receipt.receiptDigest) ||
+        duplicateReportDigests.has(receipt.reportDigest) ||
+        !canonicalTimestamp(receipt.observedAt) || !evaluationTimeValid ||
+        receipt.observedAt > target.evaluationTime ||
+        receipt.result !== expectedResults.get(receipt.kind) ||
+        !exactSetEquals(receipt.upstreamReceiptDigests, expectedUpstreams.get(receipt.kind) ?? [])) {
+        add(reason);
+      }
+    }
+    if (evaluationReceipt === undefined || evaluationReceipt.observedAt !== target.evaluationTime) {
+      add("READINESS_GATE_FAILED");
+    }
+    if (readinessReceipt !== undefined && auditAReceipt !== undefined &&
+      readinessReceipt.observedAt > auditAReceipt.observedAt) add("INDEPENDENT_A_B_NOT_CLEAN");
+    if (readinessReceipt !== undefined && auditBReceipt !== undefined &&
+      readinessReceipt.observedAt > auditBReceipt.observedAt) add("INDEPENDENT_A_B_NOT_CLEAN");
+    if (totalControlReceipt !== undefined &&
+      ((auditAReceipt !== undefined && auditAReceipt.observedAt > totalControlReceipt.observedAt) ||
+        (auditBReceipt !== undefined && auditBReceipt.observedAt > totalControlReceipt.observedAt))) {
+      add("TOTAL_CONTROL_NOT_ACCEPTED");
+    }
+
+    const ordered = Object.freeze(m1ReadinessReasons.filter((reason) => reasons.has(reason)));
+    return Object.freeze({
+      status: ordered.length === 0 ? "ACTIVATION_ELIGIBLE" : "BLOCKED",
+      primaryReason: ordered[0] ?? null,
+      reasons: ordered,
+    });
+  } catch {
+    return invalidEvidenceAssessment;
+  }
 };

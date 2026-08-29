@@ -230,25 +230,87 @@ export const m1ReadinessReasons = frozenLiterals(
   "INDEPENDENT_A_B_NOT_CLEAN",
   "TOTAL_CONTROL_NOT_ACCEPTED",
 );
-export type M1ReadinessRole = (typeof m1ReadinessRoles)[number]; export type M1ReadinessReason = (typeof m1ReadinessReasons)[number];
+export const m1ReceiptKinds = frozenLiterals(
+  "evaluation_time",
+  "readiness_gate",
+  "audit_a",
+  "audit_b",
+  "total_control",
+);
+export type M1ReadinessRole = (typeof m1ReadinessRoles)[number];
+export type M1ReadinessReason = (typeof m1ReadinessReasons)[number];
+export type M1ReceiptKind = (typeof m1ReceiptKinds)[number];
+
+export interface M1ReadinessTarget {
+  readonly candidateCommitSha: string;
+  readonly datasetId: string;
+  readonly releaseId: string;
+  readonly releaseRevision: number;
+  readonly releaseContentDigest: string;
+  readonly region: string;
+  readonly language: string;
+  readonly evaluationTime: string;
+}
+
 export interface M1AuthorityEvidence {
   readonly authorityRecordId: string;
   readonly assignmentRevision: number;
   readonly assignmentDigest: string;
   readonly role: M1ReadinessRole;
+  readonly dataKinds: readonly DatasetKind[];
   readonly naturalPersonIdentity: string;
-  readonly identityVerified: boolean;
-  readonly acceptedResponsibilities: boolean;
+  readonly affiliation: string;
+  readonly identityVerificationReference: string;
+  readonly jurisdictions: readonly string[];
+  readonly languages: readonly string[];
+  readonly qualificationReference: string;
+  readonly acceptedResponsibilities: readonly string[];
+  readonly acceptedAt: string;
   readonly acceptanceEvidenceDigest: string;
   readonly independent: boolean;
+  readonly independenceDeclaration: string;
   readonly disclosedConflicts: readonly string[];
   readonly assignmentKind: "primary" | "substitute";
   readonly substitutesFor: string;
   readonly equivalentQualification: boolean;
-  readonly status: "confirmed" | "pending_external_confirmation" | "revoked" | "unassigned";
+  readonly status:
+    | "confirmed"
+    | "pending_external_confirmation"
+    | "revoked"
+    | "suspended"
+    | "unassigned";
+  readonly revokedAt: string;
+  readonly revocationReason: string;
 }
+
+export interface M1SourceKeyEvidence {
+  readonly referenceId: string;
+  readonly referenceRevision: string;
+}
+
+export interface M1MinimalSnapshotEvidence {
+  readonly locator: string;
+  readonly mediaType: string;
+  readonly byteLength: number;
+  readonly hashAlgorithm: "sha256";
+  readonly contentHash: string;
+  readonly capturedAt: string;
+}
+
+export interface M1WithdrawalMonitoringEvidence {
+  readonly accountableRole: M1ReadinessRole;
+  readonly method: string;
+  readonly cadence: string;
+  readonly lastCheckedAt: string;
+  readonly nextDueAt: string;
+  readonly state: "unknown" | "current" | "overdue" | "withdrawn";
+  readonly evidenceReference: string;
+}
+
 export interface M1SourceEvidence {
   readonly sourceInventoryId: string;
+  readonly materialDigest: string;
+  readonly datasetKind: DatasetKind;
   readonly datasetId: string;
   readonly releaseId: string;
   readonly releaseRevision: number;
@@ -256,8 +318,7 @@ export interface M1SourceEvidence {
   readonly entityId: string;
   readonly entityRevision: number;
   readonly factOrRuleId: string;
-  readonly referenceId: string;
-  readonly referenceRevision: string;
+  readonly sourceKey: M1SourceKeyEvidence;
   readonly snapshotId: string;
   readonly sourceSnapshotContentDigest: string;
   readonly sourceOrganization: string;
@@ -265,20 +326,43 @@ export interface M1SourceEvidence {
   readonly sourceVersion: string;
   readonly publicationDate: string;
   readonly retrievedAt: string;
-  readonly minimalSnapshotDigest: string;
+  readonly minimalSnapshot: M1MinimalSnapshotEvidence;
   readonly applicableRegions: readonly string[];
   readonly sourceLanguage: string;
   readonly candidateSourceTier: SourceTier;
+  readonly licenseTermsLocator: string;
+  readonly rightsHolder: string;
   readonly licenseStatus: "approved" | "pending" | "rejected" | "restricted" | "unknown";
-  readonly copyPermitted: boolean;
-  readonly transformationPermitted: boolean;
-  readonly redistributionPermitted: boolean;
+  readonly copyConclusion: "unknown" | "permitted" | "conditional" | "prohibited";
+  readonly transformationConclusion: "unknown" | "permitted" | "conditional" | "prohibited";
+  readonly redistributionConclusion: "unknown" | "permitted" | "conditional" | "prohibited";
+  readonly attributionRequirements: readonly string[];
   readonly provenanceReviewStatus: "approved" | "pending" | "rejected" | "revoked" | "unreviewed";
   readonly licenseReviewStatus: "approved" | "pending" | "rejected" | "revoked" | "unreviewed";
   readonly domainReviewStatus: "approved" | "pending" | "rejected" | "revoked" | "unreviewed";
-  readonly monitoringState: "current" | "overdue" | "unknown" | "withdrawn";
-  readonly monitoringNextDueAt: string;
+  readonly reviewEvidenceReferences: readonly string[];
+  readonly withdrawalMonitoring: M1WithdrawalMonitoringEvidence;
 }
+
+export interface M1EntityRevisionEvidence {
+  readonly entityId: string;
+  readonly entityRevision: number;
+}
+
+export interface M1SourceInventoryBinding {
+  readonly sourceInventoryId: string;
+  readonly materialDigest: string;
+}
+
+export interface M1ReviewScope {
+  readonly entityRevisions: readonly M1EntityRevisionEvidence[];
+  readonly factOrRuleIds: readonly string[];
+  readonly sourceInventoryBindings: readonly M1SourceInventoryBinding[];
+  readonly sourceKeys: readonly M1SourceKeyEvidence[];
+  readonly applicableRegions: readonly string[];
+  readonly languages: readonly string[];
+}
+
 export interface M1ReviewDecisionEvidence {
   readonly reviewDecisionId: string;
   readonly authorityRecordId: string;
@@ -286,40 +370,45 @@ export interface M1ReviewDecisionEvidence {
   readonly authorityAssignmentDigest: string;
   readonly assignmentAcceptanceDigest: string;
   readonly role: M1ReadinessRole;
+  readonly datasetId: string;
   readonly releaseId: string;
   readonly releaseRevision: number;
   readonly releaseContentDigest: string;
-  readonly entityRevisions: readonly string[];
-  readonly factOrRuleIds: readonly string[];
-  readonly sourceInventoryIds: readonly string[];
-  readonly sourceKeys: readonly string[];
-  readonly applicableRegions: readonly string[];
-  readonly languages: readonly string[];
+  readonly scope: M1ReviewScope;
   readonly decision: "approve" | "reject";
   readonly decidedAt: string;
   readonly evidenceDigest: string;
   readonly independenceEvidenceDigest: string;
   readonly conflictDisclosureDigest: string;
+  readonly supersedesReviewDecisionId: string;
   readonly revokedAt: string;
+  readonly revocationReason: string;
 }
+
+export interface M1BoundReceipt {
+  readonly receiptId: string;
+  readonly receiptDigest: string;
+  readonly kind: M1ReceiptKind;
+  readonly candidateCommitSha: string;
+  readonly datasetId: string;
+  readonly releaseId: string;
+  readonly releaseRevision: number;
+  readonly releaseContentDigest: string;
+  readonly evaluationTime: string;
+  readonly observedAt: string;
+  readonly result: "BOUND" | "PASS" | "CLEAN" | "ACCEPTED";
+  readonly reportDigest: string;
+  readonly upstreamReceiptDigests: readonly string[];
+}
+
 export interface M1ReadinessEvidence {
   readonly schemaVersion: 1;
   readonly classification: "fully_synthetic" | "fully_synthetic_empty_template";
-  readonly target: {
-    readonly releaseId: string;
-    readonly releaseRevision: number;
-    readonly releaseContentDigest: string;
-    readonly region: string;
-    readonly language: string;
-    readonly asOf: string;
-  };
+  readonly target: M1ReadinessTarget;
   readonly authorities: readonly M1AuthorityEvidence[];
   readonly sources: readonly M1SourceEvidence[];
   readonly reviewDecisions: readonly M1ReviewDecisionEvidence[];
-  readonly readinessGatePassed: boolean;
-  readonly auditAResult: "CLEAN" | "PENDING" | "BLOCK";
-  readonly auditBResult: "CLEAN" | "PENDING" | "BLOCK";
-  readonly totalControlAccepted: boolean;
+  readonly receipts: readonly M1BoundReceipt[];
 }
 export interface M1ReadinessAssessment {
   readonly status: "BLOCKED" | "ACTIVATION_ELIGIBLE";

@@ -11,6 +11,7 @@ const allowed = Object.freeze([
   "docs/plans/2026-08-stage-09p-m1-release-readiness.md",
   "docs/project-status.md",
   "package.json",
+  "packages/domain/src/canonical.ts",
   "packages/domain/src/index.ts",
   "packages/domain/src/types.ts",
   "packages/domain/src/validation.ts",
@@ -39,10 +40,10 @@ const additions = new Map(git("diff", "--numstat", anchor).split("\n").filter(Bo
   .map((line) => { const [added, , path] = line.split("\t"); return [path, Number(added)]; }));
 const added = (path) => additions.get(path) ??
   readFileSync(resolve(root, path), "utf8").split("\n").length - 1;
-const productionDelta = ["types.ts", "validation.ts", "index.ts"]
+const productionDelta = ["canonical.ts", "types.ts", "validation.ts", "index.ts"]
   .reduce((sum, name) => sum + added(`packages/domain/src/${name}`), 0);
-if (productionDelta > 300) fail("production-line-budget");
-if (added("packages/domain/tests/m1-readiness.test.ts") > 420) fail("test-line-budget");
+if (productionDelta > 900) fail("production-line-budget");
+if (added("packages/domain/tests/m1-readiness.test.ts") > 900) fail("test-line-budget");
 for (const name of ["check-stage09p-m1-readiness-scope.mjs", "run-stage09p-m1-readiness-check.mjs"]) {
   if (added(`scripts/${name}`) > 140) fail("script-line-budget");
 }
@@ -54,10 +55,11 @@ const template = JSON.parse(readFileSync(resolve(root,
   "data/samples/stage09p-m1/readiness-empty-template.json"), "utf8"));
 if (template.classification !== "fully_synthetic_empty_template" ||
   template.authorities.length !== 0 || template.sources.length !== 0 ||
-  template.reviewDecisions.length !== 0 || Object.values(template.target).some(Boolean)) {
+  template.reviewDecisions.length !== 0 || template.receipts.length !== 0 ||
+  Object.values(template.target).some(Boolean)) {
   fail("empty-template");
 }
-const production = ["types.ts", "validation.ts", "index.ts"]
+const production = ["canonical.ts", "types.ts", "validation.ts", "index.ts"]
   .map((name) => readFileSync(resolve(root, `packages/domain/src/${name}`), "utf8")).join("\n");
 if (/from ["'](?:node:|https?:)|\bfetch\s*\(|child_process|ACTIVATION_ELIGIBLE\s*->\s*active/.test(production)) {
   fail("forbidden-production-capability");

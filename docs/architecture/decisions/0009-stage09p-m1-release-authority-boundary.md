@@ -1,7 +1,7 @@
 # ADR-0009：Stage 09P-M1 发布权限与外部审核边界
 
-- 状态：Proposed（独立 Design Review 已对 `07839f11ba3466bcc9fd1981df844df5359b4887`
-  报告 CLEAN；S1 synthetic-only preparation candidate 待 tracked-file 总控复核）
+- 状态：Proposed（`e6431fbd47328ca785b614fbd2586f285ec3241e` 已被五小时总控裁决
+  `BLOCK_CONFIRMED / P1=7`；当前仅有界 evidence-graph repair candidate，待完整门禁和全新 A/B）
 - 日期：2026-08-27
 - 基线：`1a66015e63ac84c6257be46a36c5c5967ee53f20`
 - 有界修订 anchor：`915f8bf5a207211155aecda448be52b36bd0072a`
@@ -302,6 +302,37 @@ FORGED_OR_REVOKED_AUTHORITY
 法律或许可事实。
 
 ## 6. 影响与接受边界
+
+### 6.1 S1 evidence graph 的有界实现合同
+
+五小时总控裁决使先前绑定压缩式 caller assertions 的 architecture CLEAN 对当前修复路径失效。
+S1 的本地输入边界现固定只接受 raw JSON text：先解析成 assessment 自己拥有的普通 data
+property tree，再做 exact-key/type/material validation；传入 object、getter、accessor 或 Proxy 时，
+assessment 在任何 property/meta-object 操作前 fail closed，外部 accessor/trap 调用数必须为零。
+
+M1 不重建 M0 owner。它只消费完整 `CatalogAnalysis`，并对目标 dataset 的每个 release entity
+检查 catalog-wide latest revision、literal `approved`、non-withdrawn、region、language，以及
+`reviewedAt <= evaluationTime < reviewDueAt`。目标绑定 exact synthetic candidate SHA、dataset、
+release revision/digest；已有更高 successor 时旧 approved revision 不可重放。
+
+Source inventory 实现 §3 的完整结构，并增加 canonical `materialDigest`。覆盖单位是
+`(datasetId, entityId, entityRevision, SourceKey)` occurrence；每个 M0 occurrence 至少有一条
+逐 fact/rule inventory，同一 SourceKey 与逐字节相同 M0 material 可跨 occurrence 合法复用，
+同 key 异 material 仍只由 M0 validator 拒绝。Review decision 绑定 exact inventory ID +
+material digest 集合以及 dataset/release/entity/fact/source/scope；version、snapshot、许可、
+review 或 withdrawal-monitoring material 任一变化都会使旧 decision 失效。
+
+Authority assignment、acceptance 与 review decision 使用 domain-separated canonical digest；
+authority record、assignment/person/acceptance、decision ID 及三类 review digest 均关闭跨独立
+槽位复用。Readiness gate、Audit A、Audit B、total control 和 evaluation time 不再是 bare
+boolean/string，而是五份 deep-bound synthetic receipt；每份绑定相同 candidate/dataset/release/
+digest/evaluation time、自己的 report/receipt digest 与规定 upstream receipt 集合。S1 只核对
+本地 shape、canonical digest 和 exact binding，不核验 Git、文件系统、网络、真人资格、真实
+签名或时间权威，不因此获得外部 activation authority。
+
+以上实现只允许产生 synthetic preparation assessment。候选变化使旧 Audit A/B 立即失效；
+只有完整固定门禁通过后，才可由总控另行派发一对全新 A/B。Writer、测试、receipt 与本 ADR
+均不得把该候选升级为 CLEAN、Accepted、real-content release 或 activation。
 
 S1 在 Design Review CLEAN 后只把本 ADR 的 authority/provenance/license/lifecycle/review
 decision 总序实现为小型纯派生 assessment：它消费 M0 完整 catalog analysis、SourceKey、

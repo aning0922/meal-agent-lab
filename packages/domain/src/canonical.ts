@@ -48,6 +48,10 @@ export const canonicalJson = (value: unknown): string => {
   return canonicalValue(decoded.value);
 };
 
+/** Domain-separated callers may bind any accepted scalar-closure material without hidden state. */
+export const canonicalJsonDigest = (value: unknown): string =>
+  `sha256:${bytesToHex(sha256(utf8ToBytes(canonicalJson(value))))}`;
+
 const releaseMaterial = (release: DecodedGovernanceRelease): JsonValue =>
   ({
     ...(release.$schema === undefined ? {} : { $schema: release.$schema }),

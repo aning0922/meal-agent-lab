@@ -1,5 +1,6 @@
 export {
   canonicalJson,
+  canonicalJsonDigest,
   canonicalReleaseDigest,
   canonicalReleaseText,
   compareUtf8,
@@ -22,6 +23,7 @@ export {
   licenseStatuses,
   lifecycleStatuses,
   m1ReadinessReasons, m1ReadinessRoles,
+  m1ReceiptKinds,
   sourceTiers,
   withdrawalStates,
   type DatasetKind,
@@ -46,8 +48,11 @@ export {
   type LicenseStatus,
   type LifecycleStatus,
   type M1AuthorityEvidence, type M1ReadinessAssessment, type M1ReadinessEvidence,
-  type M1ReadinessReason, type M1ReadinessRole, type M1ReviewDecisionEvidence,
-  type M1SourceEvidence,
+  type M1BoundReceipt, type M1EntityRevisionEvidence, type M1MinimalSnapshotEvidence,
+  type M1ReadinessReason, type M1ReadinessRole, type M1ReadinessTarget,
+  type M1ReceiptKind, type M1ReviewDecisionEvidence, type M1ReviewScope,
+  type M1SourceEvidence, type M1SourceInventoryBinding, type M1SourceKeyEvidence,
+  type M1WithdrawalMonitoringEvidence,
   type ReleaseDigestResult,
   type ReferenceResolution,
   type SourceReference,
@@ -56,4 +61,11 @@ export {
   type SyntheticEvidence,
   type WithdrawalState,
 } from "./types.js";
-export { assessM1Readiness } from "./validation.js";
+export {
+  assessM1Readiness,
+  m1AuthorityAcceptanceDigest,
+  m1AuthorityAssignmentDigest,
+  m1ReceiptDigest,
+  m1ReviewDecisionDigests,
+  m1SourceInventoryDigest,
+} from "./validation.js";

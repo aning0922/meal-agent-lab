@@ -1,7 +1,8 @@
 # Stage 09P-M1：外部审核与首发就绪计划
 
-- 状态：Preparation S1-R1 candidate；独立 Design Review 已对 exact anchor
-  `07839f11ba3466bcc9fd1981df844df5359b4887` 报告 CLEAN，等待 tracked-file 总控复核
+- 状态：Preparation evidence-graph repair candidate；parent
+  `e6431fbd47328ca785b614fbd2586f285ec3241e` 已由五小时总控裁决 `BLOCK_CONFIRMED / P1=7`；
+  当前修复尚未获得新 A/B CLEAN、Accepted 或 activation authority
 - 日期：2026-08-27
 - 冻结基线：`1a66015e63ac84c6257be46a36c5c5967ee53f20`
 - 有界修订 anchor：`915f8bf5a207211155aecda448be52b36bd0072a`
@@ -158,6 +159,29 @@ guard registry、source mutation 自证或 compiler/runner/supply-chain 自证�
 每行必须对同一结构化状态运行，而不是只搜索错误文案。compound case 证明 ADR-0009
 总序，不能用 projection/tag 丢失其他阻断。测试日志只输出合成 case ID 和稳定 reason，
 不回显未来真实来源片段、个人身份或许可材料。
+
+### 3.3 Evidence-graph repair 与结构化 receipt
+
+本轮唯一有界 repair 把 S1 从 caller assertions 改为显式 evidence graph：
+
+- evidence wire input 只接受 raw JSON text；assessment 自有 decoder 只消费普通 data property，
+  object/getter/accessor/Proxy 在读取前 fail closed，外部调用计数为零；
+- target 绑定 synthetic candidate SHA、dataset、release revision/digest 与 evaluation time；每个
+  相关 M0 endpoint 必须是 catalog-wide latest、literal approved、non-withdrawn、region/language
+  applicable 且 review 已生效未过期；
+- source inventory 使用 ADR-0009 §3 完整字段和 canonical material digest，并按
+  `(datasetId,entityId,entityRevision,SourceKey)` occurrence 覆盖；相同 key/material 可复用，
+  不同 material 继续由 M0 fail closed；
+- review decision 绑定 exact inventory ID/material digest 与完整 scope；authority/review ID、
+  assignment/acceptance/person identity 和三类 review digest 关闭独立槽位 equivocation；
+- evaluation time、readiness gate、Audit A/B 与 total control 使用五份结构化 synthetic receipt，
+  精确绑定 candidate/release/report/time/upstream digest。这里只验证本地结构和 binding，不验证
+  外部报告真实性、Git 身份、真人资格、签名或可信时间。
+
+Targeted tests 必须逐案保留五小时总控的 11 个 controller witness，直接比较完整 `reasons`
+与 `primaryReason`；另证 positive、permutation、zero-accessor、各类 duplicate、合法 repeated
+material、M0 differing-material issue/path、source material replay 和 receipt drift。本测试通过
+仍只说明 fully-synthetic shape 可满足，旧 A/B 已失效且不得复用。
 
 ## 4. M1 后续最小增量与签发顺序
 

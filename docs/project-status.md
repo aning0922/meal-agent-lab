@@ -8,6 +8,17 @@
 
 **阶段 09P-M0 Accepted（2026-08-27）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划保持 Accepted。Recovery 依次完成 R1/R2/R3、09A tracked-file baseline reconciliation、Contract R4 source-equivalence remediation 与 SE08 独立 length-2/Map insertion-order regression；完整 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 获 Cycle 2 独立 Audit A/B 双 CLEAN，并重新通过 scope 15/15、domain check、M0 6/6（direct 91/91）、docs 85 files / 346 links、diff/status；同一精确代码候选已有 fresh `stage09a:check` 14/14。总控据此将 ADR-0008 与 M0 记为 Accepted。production 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，数据仍只有 5 valid + 10 invalid 完全合成 fixtures，无权威真实 release、真实用户/食品事实或外部能力。09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。Node loader/compiler/runner/worker/supply-chain 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计组成的 TCB 承担，不由 M0 checker 自证。阶段 09B 保持 P1 conditional；云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
 
+**阶段 09P-M1 当前 BLOCK 与有界修复（2026-08-29，覆盖下方旧 M1 看板口径）**：
+exact candidate `e6431fbd47328ca785b614fbd2586f285ec3241e` 已由五小时总控裁决
+`BLOCK_CONFIRMED / P0=0 / P1=7`。七组根因是 unknown boundary accessor、M0 endpoint
+消费不完整、旧 approved replay、source inventory/material 有损、authority/review equivocation、
+gate/A/B/total-control/time bare assertions，以及 SourceKey set/occurrence 语义错误。当前唯一
+single writer 只在允许面形成 evidence-graph repair candidate：raw JSON data-property boundary、
+完整 M0 endpoint、occurrence inventory + canonical material digest、exact review binding、全局
+identity/digest 约束和五类结构化 synthetic receipt。它仍是 preparation-only，完整门禁与一对
+全新 Audit A/B 尚未成立；旧 A/B 已因候选变化失效。M1 未 CLEAN、未 Accepted、未激活，
+外部 authority/source/scope 七组前置仍全部 `PENDING_EXTERNAL_CONFIRMATION`。
+
 ### 阶段 09P-M0→M1 当前看板（2026-08-27，08:00 终态后更新）
 
 | 看板列 | 工作项 | 当前事实 / 下一门禁 |
