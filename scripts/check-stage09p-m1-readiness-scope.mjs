@@ -5,13 +5,11 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const anchor = "07839f11ba3466bcc9fd1981df844df5359b4887";
-const baselineR2Parent = "6247960045344e9427ac40df0e4b9b1414086a4d";
 const allowed = Object.freeze([
   "data/samples/stage09p-m1/readiness-empty-template.json",
   "docs/architecture/decisions/0009-stage09p-m1-release-authority-boundary.md",
   "docs/plans/2026-08-stage-09p-m1-release-readiness.md",
   "docs/project-status.md",
-  "infra/docker/m3b-evidence-baseline.json",
   "package.json",
   "packages/domain/src/index.ts",
   "packages/domain/src/types.ts",
@@ -30,24 +28,6 @@ const changed = [...new Set([
   ...git("ls-files", "--others", "--exclude-standard").split("\n"),
 ])].filter(Boolean).sort();
 if (JSON.stringify(changed) !== JSON.stringify([...allowed].sort())) fail("changed-files");
-
-const baselineR2Matches = () => {
-  try {
-    const path = "infra/docker/m3b-evidence-baseline.json";
-    const before = execFileSync("git", ["show", `${baselineR2Parent}:${path}`], { cwd: root });
-    const from = Buffer.from('"trackedFileCount": 417');
-    const to = Buffer.from('"trackedFileCount": 423');
-    const offset = before.indexOf(from);
-    if (offset < 0 || before.indexOf(from, offset + from.length) >= 0) return false;
-    const expected = Buffer.concat([
-      before.subarray(0, offset), to, before.subarray(offset + from.length),
-    ]);
-    return expected.equals(readFileSync(resolve(root, path)));
-  } catch {
-    return false;
-  }
-};
-if (!baselineR2Matches()) fail("baseline-r2");
 
 const modules = readdirSync(resolve(root, "packages/domain/src"))
   .filter((name) => name.endsWith(".ts")).sort();
