@@ -1,6 +1,8 @@
 import { canonicalJson, compareUtf8, verifyGovernanceReleaseDigest } from "./canonical.js";
 import {
   canonicalEntityHistoryText,
+  canonicalOfficialEntityHistoryText,
+  canonicalRelationHistoryText,
   entityIdentityText,
   forwardSourceMaterial,
   governedReferenceText,
@@ -12,6 +14,8 @@ import {
   lifecycleStatuses,
   type DecodedGovernanceCatalog,
   type GovernanceEnvelope,
+  type GovernanceCatalog,
+  type HouseholdSafetySourcePack,
   type GovernedReference,
   type LifecycleStatus,
   type ValidationIssue,
@@ -242,7 +246,11 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
   const priorIdentitiesByDataset = new Map<string, ReadonlySet<string>>();
   const history = new Map<
     string,
-    { readonly envelope: GovernanceEnvelope; readonly material: string }
+    {
+      readonly envelope: GovernanceEnvelope;
+      readonly material: string;
+      readonly officialMaterial: string | null;
+    }
   >();
   const forwardByKey = new Map<string, string>();
   const reverseBySnapshotId = new Map<string, string>();
@@ -307,11 +315,19 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
       if (!canonicalTimestamp(envelope.reviewDueAt) || envelope.reviewDueAt < envelope.reviewedAt) {
         add("INVALID_SHAPE", `${envelopePath}/reviewDueAt`);
       }
-      if (envelope.syntheticEvidence === undefined) {
+      if (
+        envelope.syntheticEvidence === undefined &&
+        envelope.officialEvidence === undefined
+      ) {
         add("INVALID_SYNTHETIC_EVIDENCE", `${envelopePath}/syntheticEvidence`);
       }
-      const externalFactPath = containsExternalFactMarker(envelope.content, `${envelopePath}/content`);
-      if (externalFactPath !== null) add("INVALID_SYNTHETIC_EVIDENCE", externalFactPath);
+      if (envelope.syntheticEvidence !== undefined) {
+        const externalFactPath = containsExternalFactMarker(
+          envelope.content,
+          `${envelopePath}/content`,
+        );
+        if (externalFactPath !== null) add("INVALID_SYNTHETIC_EVIDENCE", externalFactPath);
+      }
 
       const isWithdrawn = envelope.lifecycleStatus === "withdrawn";
       const hasWithdrawal =
@@ -396,6 +412,10 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
       }
 
       const material = canonicalEntityHistoryText(envelope);
+      const officialMaterial =
+        envelope.officialEvidence === undefined
+          ? null
+          : canonicalOfficialEntityHistoryText(envelope);
       const previous = history.get(identity);
       if (previous !== undefined) {
         if (envelope.datasetKind !== previous.envelope.datasetKind) {
@@ -403,7 +423,9 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
         } else if (envelope.entityRevision < previous.envelope.entityRevision) {
           add("ENTITY_REVISION_REGRESSION", `${envelopePath}/entityRevision`);
         } else if (envelope.entityRevision === previous.envelope.entityRevision) {
-          if (material !== previous.material) {
+          if (officialMaterial !== previous.officialMaterial) {
+            add("INVALID_OFFICIAL_EVIDENCE", `${envelopePath}/officialEvidence`);
+          } else if (material !== previous.material) {
             add("ENTITY_REVISION_EQUIVOCATION", `${envelopePath}/entityRevision`);
           }
         } else {
@@ -437,7 +459,7 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
           }
         }
       }
-      history.set(identity, { envelope, material });
+      history.set(identity, { envelope, material, officialMaterial });
     }
 
     for (const [datasetId, currentIdentities] of currentIdentitiesByDataset) {
@@ -534,6 +556,222 @@ export const analyzeGovernanceCatalog = (input: unknown): CatalogAnalysis => {
     findings: frozenFindings,
     issues: Object.freeze(frozenFindings.map(({ issue }) => issue)),
   });
+};
+
+export function analyzeHouseholdSafetyOfficialCatalogFindings(
+  lifecycleStatus: LifecycleStatus,
+  catalog: GovernanceCatalog,
+): {
+  readonly deferredFindings: readonly {
+    readonly classification:
+      | "deferred_official_license"
+      | "deferred_official_approver";
+    readonly issue: ValidationIssue;
+  }[];
+  readonly fatalFindings: readonly ValidationIssue[];
+  readonly mappingFindings: readonly CatalogFinding[];
+  readonly sourceLicenseNotApproved: boolean;
+} {
+  const analysis = analyzeGovernanceCatalog(catalog);
+  const deferredFindings: {
+    readonly classification:
+      | "deferred_official_license"
+      | "deferred_official_approver";
+    readonly issue: ValidationIssue;
+  }[] = [];
+  const fatalFindings: ValidationIssue[] = [];
+  const mappingFindings: CatalogFinding[] = [];
+  let sourceLicenseNotApproved =
+    lifecycleStatus === "active" &&
+    catalog.releases.some((release) =>
+      release.envelopes.some(
+        (envelope) =>
+          envelope.officialEvidence !== undefined &&
+          envelope.officialEvidence.usageStatus === "pending",
+      ),
+    );
+
+  for (const finding of analysis.findings) {
+    if (finding.issue.code === "INVALID_OFFICIAL_EVIDENCE") {
+      fatalFindings.push(finding.issue);
+      continue;
+    }
+    if (finding.scope === "mapping") {
+      mappingFindings.push(finding);
+      continue;
+    }
+    const match = /^\/releases\/(\d+)\/envelopes\/(\d+)\/(approvers|licenseStatus)$/.exec(
+      finding.issue.path,
+    );
+    const releaseIndex = match === null ? -1 : Number(match[1]);
+    const envelopeIndex = match === null ? -1 : Number(match[2]);
+    const envelope = catalog.releases[releaseIndex]?.envelopes[envelopeIndex];
+    const official = envelope?.officialEvidence !== undefined;
+    if (
+      official &&
+      lifecycleStatus !== "active" &&
+      finding.issue.code === "MISSING_LICENSE"
+    ) {
+      deferredFindings.push(
+        Object.freeze({
+          classification: "deferred_official_license",
+          issue: finding.issue,
+        }),
+      );
+      continue;
+    }
+    if (
+      official &&
+      lifecycleStatus !== "active" &&
+      finding.issue.code === "MISSING_APPROVER"
+    ) {
+      deferredFindings.push(
+        Object.freeze({
+          classification: "deferred_official_approver",
+          issue: finding.issue,
+        }),
+      );
+      continue;
+    }
+    if (
+      official &&
+      lifecycleStatus === "active" &&
+      finding.issue.code === "MISSING_LICENSE"
+    ) {
+      sourceLicenseNotApproved = true;
+      continue;
+    }
+    fatalFindings.push(finding.issue);
+  }
+
+  return Object.freeze({
+    deferredFindings: Object.freeze(deferredFindings),
+    fatalFindings: Object.freeze(fatalFindings),
+    mappingFindings: Object.freeze(mappingFindings),
+    sourceLicenseNotApproved,
+  });
+}
+
+export const analyzeHouseholdSafetySourcePackStructure = (
+  pack: HouseholdSafetySourcePack,
+): readonly ValidationIssue[] => {
+  const issues: ValidationIssue[] = [];
+  const add = (code: ValidationIssueCode, path: string): void => {
+    issues.push(Object.freeze({ code, path }));
+  };
+  const bindingIdIndexes = new Map<string, number>();
+  const bindingAuthorityIndexes = new Map<string, number>();
+  for (let index = 0; index < pack.releaseBindings.length; index += 1) {
+    const binding = pack.releaseBindings[index]!;
+    const path = `/releaseBindings/${index}`;
+    if (bindingIdIndexes.has(binding.bindingId)) add("INVALID_SHAPE", `${path}/bindingId`);
+    bindingIdIndexes.set(binding.bindingId, index);
+    const authority = canonicalJson({
+      datasetId: binding.datasetId,
+      datasetKind: binding.datasetKind,
+      releaseId: binding.releaseId,
+      releaseRevision: binding.releaseRevision,
+      sourceReferenceId: binding.sourceReferenceId,
+      sourceReferenceRevision: binding.sourceReferenceRevision,
+      sourceVersion: binding.sourceVersion,
+    });
+    if (bindingAuthorityIndexes.has(authority)) add("INVALID_SHAPE", path);
+    bindingAuthorityIndexes.set(authority, index);
+    const release = pack.catalog.releases.find(
+      (candidate) =>
+        candidate.releaseId === binding.releaseId &&
+        candidate.releaseRevision === binding.releaseRevision &&
+        candidate.contentDigest === binding.releaseDigest,
+    );
+    const envelope = release?.envelopes.find(
+      (candidate) =>
+        candidate.datasetId === binding.datasetId &&
+        candidate.datasetKind === binding.datasetKind &&
+        candidate.sourceReferences.some(
+          (reference) =>
+            reference.referenceId === binding.sourceReferenceId &&
+            reference.referenceRevision === binding.sourceReferenceRevision,
+        ) &&
+        candidate.sourceSnapshots.some(
+          (snapshot) =>
+            snapshot.referenceId === binding.sourceReferenceId &&
+            snapshot.referenceRevision === binding.sourceReferenceRevision,
+        ),
+    );
+    if (release === undefined || envelope === undefined) add("INVALID_SHAPE", path);
+  }
+
+  for (let index = 0; index < pack.sourceVersionWindows.length; index += 1) {
+    const window = pack.sourceVersionWindows[index]!;
+    const path = `/sourceVersionWindows/${index}`;
+    const bindingIndex = bindingIdIndexes.get(window.bindingId);
+    const binding =
+      bindingIndex === undefined ? undefined : pack.releaseBindings[bindingIndex];
+    if (binding === undefined) {
+      add("INVALID_SHAPE", `${path}/bindingId`);
+      continue;
+    }
+    const exact2011 =
+      binding.sourceVersion === "2011" &&
+      window.jurisdictionTimeZone === "Asia/Shanghai" &&
+      window.sourceCivilEffectiveDate === "2012-04-20" &&
+      window.effectiveFrom === "2012-04-19T16:00:00.000Z" &&
+      window.effectiveUntil === "2027-03-15T16:00:00.000Z";
+    const exact2025 =
+      binding.sourceVersion === "2025" &&
+      window.jurisdictionTimeZone === "Asia/Shanghai" &&
+      window.sourceCivilEffectiveDate === "2027-03-16" &&
+      window.effectiveFrom === "2027-03-15T16:00:00.000Z" &&
+      window.effectiveUntil === null;
+    if (!exact2011 && !exact2025) add("INVALID_SHAPE", path);
+  }
+
+  const relationHistory = new Map<string, string>();
+  for (let index = 0; index < pack.mappingReviews.length; index += 1) {
+    const review = pack.mappingReviews[index]!;
+    const path = `/mappingReviews/${index}`;
+    const key = `${review.mappingId}\u0000${review.reviewRevision}`;
+    const sourceBindingIndex = bindingIdIndexes.get(review.sourceBindingId);
+    const targetBindingIndex = bindingIdIndexes.get(review.targetBindingId);
+    const sourceBinding =
+      sourceBindingIndex === undefined ? null : (pack.releaseBindings[sourceBindingIndex] ?? null);
+    const targetBinding =
+      targetBindingIndex === undefined ? null : (pack.releaseBindings[targetBindingIndex] ?? null);
+    const sourceWindows = pack.sourceVersionWindows.filter(
+      (window) => window.bindingId === review.sourceBindingId,
+    );
+    const targetWindows = pack.sourceVersionWindows.filter(
+      (window) => window.bindingId === review.targetBindingId,
+    );
+    const material = canonicalRelationHistoryText(
+      review,
+      sourceBinding,
+      targetBinding,
+      sourceWindows,
+      targetWindows,
+    );
+    const priorMaterial = relationHistory.get(key);
+    if (priorMaterial !== undefined) {
+      if (priorMaterial !== material) add("INVALID_OFFICIAL_EVIDENCE", path);
+      else add("INVALID_SHAPE", `${path}/reviewRevision`);
+    }
+    relationHistory.set(key, material);
+    if (
+      (review.reviewStatus === "pending" &&
+        (review.effectiveFrom !== null || review.effectiveUntil !== null)) ||
+      (review.reviewStatus === "reviewed" && review.effectiveFrom === null) ||
+      (review.reviewStatus === "withdrawn" &&
+        (review.effectiveFrom === null || review.effectiveUntil === null)) ||
+      (review.effectiveFrom !== null &&
+        review.effectiveUntil !== null &&
+        review.effectiveUntil <= review.effectiveFrom)
+    ) {
+      add("INVALID_SHAPE", path);
+    }
+  }
+
+  const unique = new Map(issues.map((issue) => [`${issue.code}\u0000${issue.path}`, issue]));
+  return Object.freeze([...unique.values()].sort(issueCompare));
 };
 
 export const validateGovernanceCatalog = (input: unknown): readonly ValidationIssue[] =>

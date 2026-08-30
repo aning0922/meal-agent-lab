@@ -19,9 +19,9 @@
 ## 阶段 09P 已接受的治理边界
 
 [ADR-0007](../docs/architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
-已于 2026-08-23 Accepted，但只接受治理与架构方向。M0 Recovery 当前只有 R3 audit
-candidate：`samples/stage09p-m0/` 固定为 5 个 valid 与 10 个 invalid 完全合成 fixtures，
-不构成真实数据 release，也不表示 M0 Accepted。FoodConcept、allergen、宗教/伦理、
+已于 2026-08-23 Accepted，但只接受治理与架构方向。M0/ADR-0008 已由总控 Accepted；
+`samples/stage09p-m0/` 固定为 5 个 valid 与 10 个 invalid 完全合成 fixtures，
+不构成真实数据 release。FoodConcept、allergen、宗教/伦理、
 食品安全和 cooking-technique 未来必须共用以下治理信封：
 
 - dataset/release ID、单调 revision 和 canonical content digest；
@@ -43,3 +43,17 @@ candidate：`samples/stage09p-m0/` 固定为 5 个 valid 与 10 个 invalid 完�
 
 真实 allergen、食品安全、宗教/伦理预设、外部菜谱和许可内容必须在 M1 取得对应的
 食品安全、文化/伦理、法律/合规和许可证审查，才能从 draft 进入 active。
+
+## Stage 09P-M1 draft source pack
+
+`reference/ingredients/stage09p-m1-household-safety-source-pack.json` 只保存可追溯的最小
+official-source projection，不复制标准全文，也不包含真实用户、家庭、健康或消费数据。
+它固定为 `draft`，所有 envelope 均为 `draft` 或 `under_review`，许可和 usage 均为
+`pending`；hard mappings、mapping reviews、activation-eligible selection 与
+`REVIEWED_CLEAR` 数量均为 0。
+
+2011 与 2025 标准使用不同 dataset/release/binding identity。时间窗按 Asia/Shanghai 的
+民事生效日转换为 UTC 半开区间：2011 从 `2012-04-19T16:00:00.000Z` 起至
+`2027-03-15T16:00:00.000Z` 止，2025 从该时刻起且不得提前作为 current。宗教/伦理条目
+保持 `DRAFT/NOT_ACTIVE`。这些材料只支持 provenance consistency 与 fail-closed engine
+测试，不构成许可批准、source activation、推荐事实或 public trust。

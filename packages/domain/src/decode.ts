@@ -1,13 +1,28 @@
 import {
+  constraintBases,
+  constraintMappingStatuses,
   datasetKinds,
+  dietaryRuleKinds,
+  dishExposureKinds,
+  householdProfileStatuses,
+  householdSafetyReasonCodes,
+  householdSafetyReasonScopes,
   licenseStatuses,
   lifecycleStatuses,
+  mappingReviewStatuses,
   sourceTiers,
+  sourceFactDispositions,
+  subjectKinds,
   withdrawalStates,
+  type CanonicalInstant,
   type DecodeIssueCode,
   type DecodeResult,
   type DecodedGovernanceCatalog,
   type DecodedGovernanceRelease,
+  type DietaryRuleFact,
+  type DishExposure,
+  type DishSafetyFacts,
+  type GuestParticipantSafetyFacts,
   type GovernanceActor,
   type GovernanceAlias,
   type GovernanceCatalog,
@@ -15,9 +30,25 @@ import {
   type GovernanceRelease,
   type GovernedReference,
   type HardMapping,
+  type HouseholdDishSafetyInput,
+  type HouseholdProfileSafetyFacts,
+  type HouseholdSafetyInputDecodeResult,
+  type HouseholdSafetyInputIssueCode,
+  type HouseholdSafetyReason,
+  type HouseholdSafetySourcePack,
+  type InternalSyntheticAnalyzedScenario,
+  type InternalSyntheticEndpointFact,
+  type InternalSyntheticGovernedGraph,
   type JsonValue,
+  type MappingReview,
+  type MappingSelection,
+  type OfficialSourceEvidence,
+  type ReleaseBinding,
+  type SourcePackSnapshotRef,
   type SourceReference,
   type SourceSnapshot,
+  type SourceVersionWindow,
+  type SubjectRef,
   type SyntheticEvidence,
 } from "./types.js";
 
@@ -35,6 +66,7 @@ const invalidUnicodeScalar =
 const arrayIndex = /^(?:0|[1-9][0-9]*)$/;
 const digestPattern = /^sha256:[0-9a-f]{64}$/;
 const timestampPattern = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
+const identifierPattern = /^[a-z0-9](?:[a-z0-9:._-]{0,127})$/;
 
 const pointerToken = (value: string): string => value.replaceAll("~", "~0").replaceAll("/", "~1");
 const childPath = (path: string, token: string | number): string =>
@@ -51,8 +83,23 @@ class DecodeSignal extends Error {
   }
 }
 
+class HouseholdInputSignal extends Error {
+  readonly code: HouseholdSafetyInputIssueCode;
+  readonly path: string;
+
+  constructor(code: HouseholdSafetyInputIssueCode, path: string) {
+    super("decode_failed");
+    this.code = code;
+    this.path = path;
+  }
+}
+
 const fail = (code: DecodeIssueCode, path: string): never => {
   throw new DecodeSignal(code, path);
+};
+
+const failHouseholdInput = (code: HouseholdSafetyInputIssueCode, path: string): never => {
+  throw new HouseholdInputSignal(code, path);
 };
 
 class RawJsonParser {
@@ -334,6 +381,47 @@ const positiveRevision = (value: JsonValue | undefined, path: string): number =>
   return value;
 };
 
+const boundedArray = <T>(
+  value: JsonValue | undefined,
+  path: string,
+  decodeItem: (item: JsonValue, itemPath: string) => T,
+  minimum: number,
+  maximum: number,
+): readonly T[] => {
+  if (!Array.isArray(value) || value.length < minimum) return fail("INVALID_SHAPE", path);
+  if (value.length > maximum) return fail("RESOURCE_LIMIT_EXCEEDED", path);
+  return Object.freeze(
+    (value as readonly JsonValue[]).map((item, index) =>
+      decodeItem(item, childPath(path, index)),
+    ),
+  );
+};
+
+const identifier = (value: JsonValue | undefined, path: string): string =>
+  patternedString(value, path, identifierPattern);
+
+const canonicalInstant = (value: JsonValue | undefined, path: string): CanonicalInstant => {
+  const decoded = patternedString(value, path, timestampPattern);
+  const instant = new Date(decoded);
+  if (!Number.isFinite(instant.valueOf()) || instant.toISOString() !== decoded) {
+    fail("INVALID_SHAPE", path);
+  }
+  return decoded;
+};
+
+const uniqueValues = (
+  values: readonly string[],
+  path: string,
+  code: HouseholdSafetyInputIssueCode,
+): void => {
+  const seen = new Set<string>();
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index]!;
+    if (seen.has(value)) failHouseholdInput(code, childPath(path, index));
+    seen.add(value);
+  }
+};
+
 const booleanValue = (value: JsonValue | undefined, path: string): boolean => {
   if (typeof value !== "boolean") return fail("INVALID_SHAPE", path);
   return value;
@@ -485,6 +573,48 @@ const decodeSyntheticEvidence = (value: JsonValue | undefined, path: string): Sy
   });
 };
 
+const decodeOfficialEvidence = (
+  value: JsonValue | undefined,
+  path: string,
+): OfficialSourceEvidence => {
+  const keys = [
+    "classification",
+    "containsRealFoodFacts",
+    "containsRealUserData",
+    "fullTextCopied",
+    "purpose",
+    "factDisposition",
+    "usageStatus",
+  ];
+  const record = recordValue(value, keys, keys, path);
+  if (
+    record["classification"] !== "official_source_projection" ||
+    record["containsRealFoodFacts"] !== true ||
+    record["containsRealUserData"] !== false ||
+    record["fullTextCopied"] !== false ||
+    record["purpose"] !== "household-safety-provenance-only"
+  ) {
+    fail("INVALID_SHAPE", path);
+  }
+  return Object.freeze({
+    classification: "official_source_projection",
+    containsRealFoodFacts: true,
+    containsRealUserData: false,
+    fullTextCopied: false,
+    purpose: "household-safety-provenance-only",
+    factDisposition: enumValue(
+      record["factDisposition"],
+      sourceFactDispositions,
+      childPath(path, "factDisposition"),
+    ),
+    usageStatus: enumValue(
+      record["usageStatus"],
+      ["pending", "approved"] as const,
+      childPath(path, "usageStatus"),
+    ),
+  });
+};
+
 const envelopeKeys = [
   "schemaVersion",
   "datasetId",
@@ -511,12 +641,20 @@ const envelopeKeys = [
   "withdrawnAt",
   "content",
   "syntheticEvidence",
+  "officialEvidence",
 ] as const;
 
 const decodeEnvelope = (value: JsonValue, path: string): GovernanceEnvelope => {
-  const required = envelopeKeys.filter((key) => key !== "syntheticEvidence");
+  const required = envelopeKeys.filter(
+    (key) => key !== "syntheticEvidence" && key !== "officialEvidence",
+  );
   const record = recordValue(value, envelopeKeys, required, path);
   if (record["schemaVersion"] !== 1) fail("INVALID_SHAPE", childPath(path, "schemaVersion"));
+  const hasSyntheticEvidence = Object.hasOwn(record, "syntheticEvidence");
+  const hasOfficialEvidence = Object.hasOwn(record, "officialEvidence");
+  if (hasSyntheticEvidence === hasOfficialEvidence) {
+    fail("INVALID_SHAPE", childPath(path, "officialEvidence"));
+  }
   const nullableString = (key: "licenseReference" | "withdrawalReason" | "withdrawnAt") =>
     record[key] === null ? null : scalarString(record[key], childPath(path, key));
   return Object.freeze({
@@ -534,7 +672,12 @@ const decodeEnvelope = (value: JsonValue, path: string): GovernanceEnvelope => {
       childPath(path, "lifecycleStatus"),
     ),
     owner: decodeActor(record["owner"], childPath(path, "owner")),
-    approvers: arrayValue(record["approvers"], childPath(path, "approvers"), decodeActor, 1),
+    approvers: arrayValue(
+      record["approvers"],
+      childPath(path, "approvers"),
+      decodeActor,
+      hasOfficialEvidence ? 0 : 1,
+    ),
     sourceTier: enumValue(record["sourceTier"], sourceTiers, childPath(path, "sourceTier")),
     sourceReferences: arrayValue(
       record["sourceReferences"],
@@ -600,6 +743,14 @@ const decodeEnvelope = (value: JsonValue, path: string): GovernanceEnvelope => {
           ),
         }
       : {}),
+    ...(Object.hasOwn(record, "officialEvidence")
+      ? {
+          officialEvidence: decodeOfficialEvidence(
+            record["officialEvidence"],
+            childPath(path, "officialEvidence"),
+          ),
+        }
+      : {}),
   });
 };
 
@@ -647,16 +798,771 @@ const decodeHardMapping = (value: JsonValue, path: string): HardMapping => {
   });
 };
 
-const decodeCatalogValue = (value: JsonValue): DecodedGovernanceCatalog => {
+const decodeCatalogValue = (value: JsonValue, path = ""): DecodedGovernanceCatalog => {
   const keys = ["schemaVersion", "releases", "hardMappings"];
-  const record = recordValue(value, keys, keys, "");
-  if (record["schemaVersion"] !== 1) fail("INVALID_SHAPE", "/schemaVersion");
+  const record = recordValue(value, keys, keys, path);
+  if (record["schemaVersion"] !== 1) {
+    fail("INVALID_SHAPE", childPath(path, "schemaVersion"));
+  }
   const catalog: GovernanceCatalog = {
     schemaVersion: 1,
-    releases: arrayValue(record["releases"], "/releases", decodeReleaseValue, 1),
-    hardMappings: arrayValue(record["hardMappings"], "/hardMappings", decodeHardMapping),
+    releases: arrayValue(
+      record["releases"],
+      childPath(path, "releases"),
+      decodeReleaseValue,
+      1,
+    ),
+    hardMappings: arrayValue(
+      record["hardMappings"],
+      childPath(path, "hardMappings"),
+      decodeHardMapping,
+    ),
   };
   return Object.freeze(catalog) as DecodedGovernanceCatalog;
+};
+
+const decodeMappingSelection = (value: JsonValue | undefined, path: string): MappingSelection => {
+  const probe = recordValue(
+    value,
+    ["status", "mappingIds", "candidateMappingIds"],
+    ["status"],
+    path,
+  );
+  if (
+    typeof probe["status"] !== "string" ||
+    !(constraintMappingStatuses as readonly string[]).includes(probe["status"])
+  ) {
+    failHouseholdInput("UNKNOWN_DISCRIMINATOR", childPath(path, "status"));
+  }
+  if (probe["status"] === "mapped") {
+    const record = recordValue(value, ["status", "mappingIds"], ["status", "mappingIds"], path);
+    const mappingIds = boundedArray(
+      record["mappingIds"],
+      childPath(path, "mappingIds"),
+      identifier,
+      1,
+      64,
+    );
+    uniqueValues(mappingIds, childPath(path, "mappingIds"), "DUPLICATE_MAPPING_ID");
+    return Object.freeze({ status: "mapped", mappingIds });
+  }
+  if (probe["status"] === "ambiguous") {
+    const record = recordValue(
+      value,
+      ["status", "candidateMappingIds"],
+      ["status", "candidateMappingIds"],
+      path,
+    );
+    const candidateMappingIds = boundedArray(
+      record["candidateMappingIds"],
+      childPath(path, "candidateMappingIds"),
+      identifier,
+      2,
+      64,
+    );
+    uniqueValues(
+      candidateMappingIds,
+      childPath(path, "candidateMappingIds"),
+      "DUPLICATE_MAPPING_ID",
+    );
+    return Object.freeze({ status: "ambiguous", candidateMappingIds });
+  }
+  recordValue(value, ["status"], ["status"], path);
+  return Object.freeze({ status: "unknown" });
+};
+
+const decodeDietaryRuleFact = (value: JsonValue, path: string): DietaryRuleFact => {
+  const keys = ["constraintId", "kind", "basis", "mapping"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    constraintId: identifier(record["constraintId"], childPath(path, "constraintId")),
+    kind: enumValue(record["kind"], dietaryRuleKinds, childPath(path, "kind")),
+    basis: enumValue(record["basis"], constraintBases, childPath(path, "basis")),
+    mapping: decodeMappingSelection(record["mapping"], childPath(path, "mapping")),
+  });
+};
+
+const decodeConstraints = (value: JsonValue | undefined, path: string): readonly DietaryRuleFact[] => {
+  const constraints = boundedArray(value, path, decodeDietaryRuleFact, 0, 64);
+  uniqueValues(
+    constraints.map((constraint) => constraint.constraintId),
+    path,
+    "DUPLICATE_CONSTRAINT_ID",
+  );
+  return constraints;
+};
+
+const decodeHouseholdProfile = (
+  value: JsonValue,
+  path: string,
+): HouseholdProfileSafetyFacts => {
+  const keys = ["profileId", "status", "constraints"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    profileId: identifier(record["profileId"], childPath(path, "profileId")),
+    status: enumValue(record["status"], householdProfileStatuses, childPath(path, "status")),
+    constraints: decodeConstraints(record["constraints"], childPath(path, "constraints")),
+  });
+};
+
+const decodeGuest = (value: JsonValue, path: string): GuestParticipantSafetyFacts => {
+  const keys = ["guestId", "constraints"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    guestId: identifier(record["guestId"], childPath(path, "guestId")),
+    constraints: decodeConstraints(record["constraints"], childPath(path, "constraints")),
+  });
+};
+
+const decodeDishExposure = (value: JsonValue, path: string): DishExposure => {
+  const keys = ["exposureId", "kind", "mapping"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    exposureId: identifier(record["exposureId"], childPath(path, "exposureId")),
+    kind: enumValue(record["kind"], dishExposureKinds, childPath(path, "kind")),
+    mapping: decodeMappingSelection(record["mapping"], childPath(path, "mapping")),
+  });
+};
+
+const decodeDish = (value: JsonValue | undefined, path: string): DishSafetyFacts => {
+  const keys = ["dishId", "dishRevision", "contentDigest", "exposures"];
+  const record = recordValue(value, keys, keys, path);
+  const exposures = boundedArray(
+    record["exposures"],
+    childPath(path, "exposures"),
+    decodeDishExposure,
+    0,
+    512,
+  );
+  uniqueValues(
+    exposures.map((exposure) => exposure.exposureId),
+    childPath(path, "exposures"),
+    "DUPLICATE_EXPOSURE_ID",
+  );
+  return Object.freeze({
+    dishId: identifier(record["dishId"], childPath(path, "dishId")),
+    dishRevision: positiveRevision(record["dishRevision"], childPath(path, "dishRevision")),
+    contentDigest: patternedString(
+      record["contentDigest"],
+      childPath(path, "contentDigest"),
+      digestPattern,
+    ),
+    exposures: exposures as DishSafetyFacts["exposures"],
+  });
+};
+
+const decodeSourcePackSnapshotRef = (
+  value: JsonValue | undefined,
+  path: string,
+): SourcePackSnapshotRef => {
+  const keys = ["packId", "packRevision", "contentDigest"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    packId: identifier(record["packId"], childPath(path, "packId")),
+    packRevision: positiveRevision(record["packRevision"], childPath(path, "packRevision")),
+    contentDigest: patternedString(
+      record["contentDigest"],
+      childPath(path, "contentDigest"),
+      digestPattern,
+    ),
+  });
+};
+
+const decodeHouseholdDishSafetyInputValue = (value: JsonValue): HouseholdDishSafetyInput => {
+  const keys = [
+    "schemaVersion",
+    "asOf",
+    "household",
+    "expectedSourcePack",
+    "householdProfiles",
+    "mealParticipantProfileIds",
+    "guestParticipants",
+    "dish",
+  ];
+  const record = recordValue(value, keys, keys, "");
+  if (record["schemaVersion"] !== 2) fail("INVALID_SHAPE", "/schemaVersion");
+  const household = recordValue(
+    record["household"],
+    ["country", "foodRuleRegion"],
+    ["country", "foodRuleRegion"],
+    "/household",
+  );
+  const householdProfiles = boundedArray(
+    record["householdProfiles"],
+    "/householdProfiles",
+    decodeHouseholdProfile,
+    0,
+    64,
+  );
+  uniqueValues(
+    householdProfiles.map((profile) => profile.profileId),
+    "/householdProfiles",
+    "DUPLICATE_PROFILE_ID",
+  );
+  const mealParticipantProfileIds = boundedArray(
+    record["mealParticipantProfileIds"],
+    "/mealParticipantProfileIds",
+    identifier,
+    0,
+    64,
+  );
+  uniqueValues(
+    mealParticipantProfileIds,
+    "/mealParticipantProfileIds",
+    "DUPLICATE_PARTICIPANT_ID",
+  );
+  const guestParticipants = boundedArray(
+    record["guestParticipants"],
+    "/guestParticipants",
+    decodeGuest,
+    0,
+    32,
+  );
+  uniqueValues(
+    guestParticipants.map((guest) => guest.guestId),
+    "/guestParticipants",
+    "DUPLICATE_GUEST_ID",
+  );
+  return Object.freeze({
+    schemaVersion: 2,
+    asOf: canonicalInstant(record["asOf"], "/asOf"),
+    household: Object.freeze({
+      country: enumValue(household["country"], ["CN"] as const, "/household/country"),
+      foodRuleRegion: enumValue(
+        household["foodRuleRegion"],
+        ["CN"] as const,
+        "/household/foodRuleRegion",
+      ),
+    }),
+    expectedSourcePack: decodeSourcePackSnapshotRef(
+      record["expectedSourcePack"],
+      "/expectedSourcePack",
+    ),
+    householdProfiles,
+    mealParticipantProfileIds,
+    guestParticipants,
+    dish: decodeDish(record["dish"], "/dish"),
+  });
+};
+
+const decodeReleaseBinding = (value: JsonValue, path: string): ReleaseBinding => {
+  const keys = [
+    "bindingId",
+    "datasetId",
+    "datasetKind",
+    "releaseId",
+    "releaseRevision",
+    "releaseDigest",
+    "sourceReferenceId",
+    "sourceReferenceRevision",
+    "sourceVersion",
+  ];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    bindingId: identifier(record["bindingId"], childPath(path, "bindingId")),
+    datasetId: identifier(record["datasetId"], childPath(path, "datasetId")),
+    datasetKind: enumValue(
+      record["datasetKind"],
+      ["food_concept", "allergen", "religious_ethical"] as const,
+      childPath(path, "datasetKind"),
+    ),
+    releaseId: identifier(record["releaseId"], childPath(path, "releaseId")),
+    releaseRevision: positiveRevision(
+      record["releaseRevision"],
+      childPath(path, "releaseRevision"),
+    ),
+    releaseDigest: patternedString(
+      record["releaseDigest"],
+      childPath(path, "releaseDigest"),
+      digestPattern,
+    ),
+    sourceReferenceId: identifier(
+      record["sourceReferenceId"],
+      childPath(path, "sourceReferenceId"),
+    ),
+    sourceReferenceRevision: identifier(
+      record["sourceReferenceRevision"],
+      childPath(path, "sourceReferenceRevision"),
+    ),
+    sourceVersion: enumValue(
+      record["sourceVersion"],
+      ["2011", "2025"] as const,
+      childPath(path, "sourceVersion"),
+    ),
+  });
+};
+
+const decodeSourceVersionWindow = (value: JsonValue, path: string): SourceVersionWindow => {
+  const keys = [
+    "bindingId",
+    "jurisdictionTimeZone",
+    "sourceCivilEffectiveDate",
+    "effectiveFrom",
+    "effectiveUntil",
+  ];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    bindingId: identifier(record["bindingId"], childPath(path, "bindingId")),
+    jurisdictionTimeZone: enumValue(
+      record["jurisdictionTimeZone"],
+      ["Asia/Shanghai"] as const,
+      childPath(path, "jurisdictionTimeZone"),
+    ),
+    sourceCivilEffectiveDate: enumValue(
+      record["sourceCivilEffectiveDate"],
+      ["2012-04-20", "2027-03-16"] as const,
+      childPath(path, "sourceCivilEffectiveDate"),
+    ),
+    effectiveFrom: canonicalInstant(record["effectiveFrom"], childPath(path, "effectiveFrom")),
+    effectiveUntil:
+      record["effectiveUntil"] === null
+        ? null
+        : canonicalInstant(record["effectiveUntil"], childPath(path, "effectiveUntil")),
+  });
+};
+
+const decodeMappingReview = (value: JsonValue, path: string): MappingReview => {
+  const keys = [
+    "mappingId",
+    "reviewRevision",
+    "contentDigest",
+    "sourceBindingId",
+    "targetBindingId",
+    "source",
+    "target",
+    "required",
+    "reviewStatus",
+    "effectiveFrom",
+    "effectiveUntil",
+  ];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    mappingId: identifier(record["mappingId"], childPath(path, "mappingId")),
+    reviewRevision: positiveRevision(
+      record["reviewRevision"],
+      childPath(path, "reviewRevision"),
+    ),
+    contentDigest: patternedString(
+      record["contentDigest"],
+      childPath(path, "contentDigest"),
+      digestPattern,
+    ),
+    sourceBindingId: identifier(
+      record["sourceBindingId"],
+      childPath(path, "sourceBindingId"),
+    ),
+    targetBindingId: identifier(
+      record["targetBindingId"],
+      childPath(path, "targetBindingId"),
+    ),
+    source: decodeReference(record["source"], childPath(path, "source")),
+    target: decodeReference(record["target"], childPath(path, "target")),
+    required: booleanValue(record["required"], childPath(path, "required")),
+    reviewStatus: enumValue(
+      record["reviewStatus"],
+      mappingReviewStatuses,
+      childPath(path, "reviewStatus"),
+    ),
+    effectiveFrom:
+      record["effectiveFrom"] === null
+        ? null
+        : canonicalInstant(record["effectiveFrom"], childPath(path, "effectiveFrom")),
+    effectiveUntil:
+      record["effectiveUntil"] === null
+        ? null
+        : canonicalInstant(record["effectiveUntil"], childPath(path, "effectiveUntil")),
+  });
+};
+
+const decodeHouseholdSafetySourcePackValue = (value: JsonValue): HouseholdSafetySourcePack => {
+  const keys = [
+    "schemaVersion",
+    "packId",
+    "packRevision",
+    "contentDigest",
+    "lifecycleStatus",
+    "country",
+    "foodRuleRegion",
+    "ruleLanguage",
+    "releaseBindings",
+    "sourceVersionWindows",
+    "mappingReviews",
+    "catalog",
+  ];
+  const record = recordValue(value, keys, keys, "");
+  if (record["schemaVersion"] !== 2) fail("INVALID_SHAPE", "/schemaVersion");
+  return Object.freeze({
+    schemaVersion: 2,
+    packId: identifier(record["packId"], "/packId"),
+    packRevision: positiveRevision(record["packRevision"], "/packRevision"),
+    contentDigest: patternedString(record["contentDigest"], "/contentDigest", digestPattern),
+    lifecycleStatus: enumValue(record["lifecycleStatus"], lifecycleStatuses, "/lifecycleStatus"),
+    country: enumValue(record["country"], ["CN"] as const, "/country"),
+    foodRuleRegion: enumValue(record["foodRuleRegion"], ["CN"] as const, "/foodRuleRegion"),
+    ruleLanguage: enumValue(record["ruleLanguage"], ["zh-CN"] as const, "/ruleLanguage"),
+    releaseBindings: boundedArray(
+      record["releaseBindings"],
+      "/releaseBindings",
+      decodeReleaseBinding,
+      0,
+      64,
+    ),
+    sourceVersionWindows: boundedArray(
+      record["sourceVersionWindows"],
+      "/sourceVersionWindows",
+      decodeSourceVersionWindow,
+      0,
+      64,
+    ),
+    mappingReviews: boundedArray(
+      record["mappingReviews"],
+      "/mappingReviews",
+      decodeMappingReview,
+      0,
+      1_024,
+    ),
+    catalog: decodeCatalogValue(record["catalog"]!, "/catalog"),
+  });
+};
+
+const nullableIdentifier = (value: JsonValue | undefined, path: string): string | null =>
+  value === null ? null : identifier(value, path);
+
+const decodeSubjectRef = (value: JsonValue | undefined, path: string): SubjectRef => {
+  const keys = ["kind", "id"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    kind: enumValue(record["kind"], subjectKinds, childPath(path, "kind")),
+    id: identifier(record["id"], childPath(path, "id")),
+  });
+};
+
+const decodeHouseholdSafetyReason = (
+  value: JsonValue,
+  path: string,
+): HouseholdSafetyReason => {
+  const keys = [
+    "code",
+    "constraintId",
+    "constraintMappingId",
+    "exposureId",
+    "exposureKind",
+    "exposureMappingId",
+    "mappingEndpoint",
+    "mappingId",
+    "scope",
+    "subject",
+  ];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    code: enumValue(record["code"], householdSafetyReasonCodes, childPath(path, "code")),
+    constraintId: nullableIdentifier(record["constraintId"], childPath(path, "constraintId")),
+    constraintMappingId: nullableIdentifier(
+      record["constraintMappingId"],
+      childPath(path, "constraintMappingId"),
+    ),
+    exposureId: nullableIdentifier(record["exposureId"], childPath(path, "exposureId")),
+    exposureKind:
+      record["exposureKind"] === null
+        ? null
+        : enumValue(record["exposureKind"], dishExposureKinds, childPath(path, "exposureKind")),
+    exposureMappingId: nullableIdentifier(
+      record["exposureMappingId"],
+      childPath(path, "exposureMappingId"),
+    ),
+    mappingEndpoint:
+      record["mappingEndpoint"] === null
+        ? null
+        : enumValue(
+            record["mappingEndpoint"],
+            ["source", "target"] as const,
+            childPath(path, "mappingEndpoint"),
+          ),
+    mappingId: nullableIdentifier(record["mappingId"], childPath(path, "mappingId")),
+    scope: enumValue(
+      record["scope"],
+      householdSafetyReasonScopes,
+      childPath(path, "scope"),
+    ),
+    subject:
+      record["subject"] === null
+        ? null
+        : decodeSubjectRef(record["subject"], childPath(path, "subject")),
+  });
+};
+
+const analyzedScenarioKeys = [
+  "schemaVersion",
+  "subjects",
+  "tableKnownHardReasons",
+  "tableUncertaintyReasons",
+  "subjectKnownHardReasons",
+  "subjectUncertaintyReasons",
+  "softReasons",
+] as const;
+
+const decodeInternalSyntheticAnalyzedScenarioValue = (
+  value: JsonValue,
+  path = "",
+): InternalSyntheticAnalyzedScenario => {
+  const record = recordValue(value, analyzedScenarioKeys, analyzedScenarioKeys, path);
+  if (record["schemaVersion"] !== 1) {
+    fail("INVALID_SHAPE", childPath(path, "schemaVersion"));
+  }
+  const subjectsPath = childPath(path, "subjects");
+  const subjects = boundedArray(record["subjects"], subjectsPath, decodeSubjectRef, 1, 96);
+  const subjectTokens = subjects.map((subject) => `${subject.kind}\u0000${subject.id}`);
+  if (new Set(subjectTokens).size !== subjectTokens.length) fail("INVALID_SHAPE", subjectsPath);
+  const subjectSet = new Set(subjectTokens);
+  const decodeReasonArray = (key: (typeof analyzedScenarioKeys)[number]) =>
+    boundedArray(record[key], childPath(path, key), decodeHouseholdSafetyReason, 0, 4_096);
+  const tableKnownHardReasons = decodeReasonArray("tableKnownHardReasons");
+  const tableUncertaintyReasons = decodeReasonArray("tableUncertaintyReasons");
+  const subjectKnownHardReasons = decodeReasonArray("subjectKnownHardReasons");
+  const subjectUncertaintyReasons = decodeReasonArray("subjectUncertaintyReasons");
+  const softReasons = decodeReasonArray("softReasons");
+  const tableKnownCodes = new Set(["household_allergy_match", "guest_allergy_match"]);
+  const subjectKnownCodes = new Set([
+    "personal_religious_match",
+    "personal_ethical_match",
+    "personal_strict_avoid_match",
+  ]);
+  const softCodes = new Set([
+    "soft_ordinary_avoid_match",
+    "soft_dislike_match",
+    "soft_reduce_match",
+  ]);
+  const uncertaintyCodes = new Set([
+    "source_fact_unknown",
+    "source_fact_candidate_clear",
+    "mapping_unknown",
+    "mapping_ambiguous",
+    "mapping_invalid",
+    "mapping_withdrawn",
+    "mapping_version_mismatch",
+    "mapping_unapproved",
+    "mapping_required_false",
+    "mapping_target_kind_mismatch",
+    "mapping_source_unbound",
+    "mapping_source_multiple_bindings",
+    "mapping_target_unbound",
+    "mapping_target_multiple_bindings",
+    "mapping_endpoint_not_current",
+    "mapping_review_missing",
+    "mapping_review_mismatch",
+    "mapping_review_not_current",
+  ]);
+  const selectorStateCodes = new Set(["mapping_unknown", "mapping_ambiguous"]);
+  const endpointCodes = new Set([
+    "source_fact_unknown",
+    "source_fact_candidate_clear",
+    "mapping_source_unbound",
+    "mapping_source_multiple_bindings",
+    "mapping_target_unbound",
+    "mapping_target_multiple_bindings",
+    "mapping_endpoint_not_current",
+  ]);
+  type AnalyzedArrayName =
+    | "tableKnownHardReasons"
+    | "tableUncertaintyReasons"
+    | "subjectKnownHardReasons"
+    | "subjectUncertaintyReasons"
+    | "softReasons";
+  const validateReasonContext = (
+    arrayName: AnalyzedArrayName,
+    value: HouseholdSafetyReason,
+    index: number,
+  ): void => {
+    const base = childPath(childPath(path, arrayName), index);
+    const isTableKnown = arrayName === "tableKnownHardReasons";
+    const isTableUncertainty = arrayName === "tableUncertaintyReasons";
+    const isSubjectKnown = arrayName === "subjectKnownHardReasons";
+    const isSubjectUncertainty = arrayName === "subjectUncertaintyReasons";
+    const validCode = isTableKnown
+      ? tableKnownCodes.has(value.code)
+      : isSubjectKnown
+        ? subjectKnownCodes.has(value.code)
+        : arrayName === "softReasons"
+          ? softCodes.has(value.code) || uncertaintyCodes.has(value.code)
+          : uncertaintyCodes.has(value.code);
+    if (!validCode) fail("INVALID_SHAPE", childPath(base, "code"));
+    const expectedScope = isTableKnown || isTableUncertainty
+      ? "table"
+      : arrayName === "softReasons"
+        ? "soft"
+        : "subject";
+    if (value.scope !== expectedScope) fail("INVALID_SHAPE", childPath(base, "scope"));
+    const needsSubject = isSubjectKnown || isSubjectUncertainty || arrayName === "softReasons";
+    if (needsSubject && value.subject === null) fail("INVALID_SHAPE", childPath(base, "subject"));
+    if (!needsSubject && value.subject !== null) fail("INVALID_SHAPE", childPath(base, "subject"));
+    if (
+      value.subject !== null &&
+      !subjectSet.has(`${value.subject.kind}\u0000${value.subject.id}`)
+    ) {
+      fail("INVALID_SHAPE", `${childPath(base, "subject")}/id`);
+    }
+
+    const known = isTableKnown || isSubjectKnown || softCodes.has(value.code);
+    const expectConstraintId = isSubjectKnown || isSubjectUncertainty || arrayName === "softReasons";
+    if ((value.constraintId !== null) !== expectConstraintId) {
+      fail("INVALID_SHAPE", childPath(base, "constraintId"));
+    }
+    if ((value.constraintMappingId !== null) !== known) {
+      fail("INVALID_SHAPE", childPath(base, "constraintMappingId"));
+    }
+
+    const tableFailure = isTableUncertainty;
+    const dishOrigin = tableFailure && value.exposureId !== null;
+    const expectExposure = known || dishOrigin;
+    if ((value.exposureId !== null) !== expectExposure) {
+      fail("INVALID_SHAPE", childPath(base, "exposureId"));
+    }
+    if ((value.exposureKind !== null) !== expectExposure) {
+      fail("INVALID_SHAPE", childPath(base, "exposureKind"));
+    }
+    const factCode = value.code === "source_fact_unknown" || value.code === "source_fact_candidate_clear";
+    const expectExposureMapping = known || (dishOrigin && factCode);
+    if ((value.exposureMappingId !== null) !== expectExposureMapping) {
+      fail("INVALID_SHAPE", childPath(base, "exposureMappingId"));
+    }
+
+    const expectEndpoint = !known && endpointCodes.has(value.code);
+    if ((value.mappingEndpoint !== null) !== expectEndpoint) {
+      fail("INVALID_SHAPE", childPath(base, "mappingEndpoint"));
+    }
+    if (
+      value.code === "mapping_source_unbound" ||
+      value.code === "mapping_source_multiple_bindings"
+    ) {
+      if (value.mappingEndpoint !== "source") {
+        fail("INVALID_SHAPE", childPath(base, "mappingEndpoint"));
+      }
+    }
+    if (
+      value.code === "mapping_target_unbound" ||
+      value.code === "mapping_target_multiple_bindings"
+    ) {
+      if (value.mappingEndpoint !== "target") {
+        fail("INVALID_SHAPE", childPath(base, "mappingEndpoint"));
+      }
+    }
+    const expectMappingId =
+      !known && !selectorStateCodes.has(value.code) && !(dishOrigin && factCode);
+    if ((value.mappingId !== null) !== expectMappingId) {
+      fail("INVALID_SHAPE", childPath(base, "mappingId"));
+    }
+  };
+  tableKnownHardReasons.forEach((value, index) =>
+    validateReasonContext("tableKnownHardReasons", value, index));
+  tableUncertaintyReasons.forEach((value, index) =>
+    validateReasonContext("tableUncertaintyReasons", value, index));
+  subjectKnownHardReasons.forEach((value, index) =>
+    validateReasonContext("subjectKnownHardReasons", value, index));
+  subjectUncertaintyReasons.forEach((value, index) =>
+    validateReasonContext("subjectUncertaintyReasons", value, index));
+  softReasons.forEach((value, index) =>
+    validateReasonContext("softReasons", value, index));
+  return Object.freeze({
+    schemaVersion: 1,
+    subjects,
+    tableKnownHardReasons,
+    tableUncertaintyReasons,
+    subjectKnownHardReasons,
+    subjectUncertaintyReasons,
+    softReasons,
+  });
+};
+
+const decodeInternalSyntheticEndpointFact = (
+  value: JsonValue,
+  path: string,
+): InternalSyntheticEndpointFact => {
+  const keys = ["reference", "syntheticDisposition"];
+  const record = recordValue(value, keys, keys, path);
+  return Object.freeze({
+    reference: decodeReference(record["reference"], childPath(path, "reference")),
+    syntheticDisposition: enumValue(
+      record["syntheticDisposition"],
+      sourceFactDispositions,
+      childPath(path, "syntheticDisposition"),
+    ),
+  });
+};
+
+const decodeInternalSyntheticGovernedGraphValue = (
+  value: JsonValue,
+): InternalSyntheticGovernedGraph => {
+  const keys = [
+    "schemaVersion",
+    "packId",
+    "packRevision",
+    "country",
+    "foodRuleRegion",
+    "ruleLanguage",
+    "syntheticSourceUsageStatus",
+    "releaseBindings",
+    "sourceVersionWindows",
+    "mappingReviews",
+    "catalog",
+    "endpointFacts",
+  ];
+  const record = recordValue(value, keys, keys, "");
+  if (record["schemaVersion"] !== 2) fail("INVALID_SHAPE", "/schemaVersion");
+  const catalog = decodeCatalogValue(record["catalog"]!, "/catalog");
+  for (let releaseIndex = 0; releaseIndex < catalog.releases.length; releaseIndex += 1) {
+    const release = catalog.releases[releaseIndex]!;
+    for (let envelopeIndex = 0; envelopeIndex < release.envelopes.length; envelopeIndex += 1) {
+      const envelope = release.envelopes[envelopeIndex]!;
+      if (envelope.syntheticEvidence === undefined || envelope.officialEvidence !== undefined) {
+        fail(
+          "INVALID_SHAPE",
+          `/catalog/releases/${releaseIndex}/envelopes/${envelopeIndex}/syntheticEvidence`,
+        );
+      }
+    }
+  }
+  return Object.freeze({
+    schemaVersion: 2,
+    packId: identifier(record["packId"], "/packId"),
+    packRevision: positiveRevision(record["packRevision"], "/packRevision"),
+    country: enumValue(record["country"], ["CN"] as const, "/country"),
+    foodRuleRegion: enumValue(record["foodRuleRegion"], ["CN"] as const, "/foodRuleRegion"),
+    ruleLanguage: enumValue(record["ruleLanguage"], ["zh-CN"] as const, "/ruleLanguage"),
+    syntheticSourceUsageStatus: enumValue(
+      record["syntheticSourceUsageStatus"],
+      ["pending", "approved"] as const,
+      "/syntheticSourceUsageStatus",
+    ),
+    releaseBindings: boundedArray(
+      record["releaseBindings"],
+      "/releaseBindings",
+      decodeReleaseBinding,
+      0,
+      64,
+    ),
+    sourceVersionWindows: boundedArray(
+      record["sourceVersionWindows"],
+      "/sourceVersionWindows",
+      decodeSourceVersionWindow,
+      0,
+      64,
+    ),
+    mappingReviews: boundedArray(
+      record["mappingReviews"],
+      "/mappingReviews",
+      decodeMappingReview,
+      0,
+      1_024,
+    ),
+    catalog,
+    endpointFacts: boundedArray(
+      record["endpointFacts"],
+      "/endpointFacts",
+      decodeInternalSyntheticEndpointFact,
+      0,
+      1_024,
+    ),
+  });
 };
 
 function capture<T>(operation: () => T): DecodeResult<T> {
@@ -665,6 +1571,28 @@ function capture<T>(operation: () => T): DecodeResult<T> {
   } catch (error: unknown) {
     const code = error instanceof DecodeSignal ? error.code : "INVALID_SHAPE";
     const path = error instanceof DecodeSignal ? error.path : "";
+    return Object.freeze({
+      ok: false,
+      reason: "decode_failed",
+      issue: Object.freeze({ code, path }),
+    });
+  }
+}
+
+function captureHouseholdInput(
+  operation: () => HouseholdDishSafetyInput,
+): HouseholdSafetyInputDecodeResult {
+  try {
+    return Object.freeze({ ok: true, value: operation() });
+  } catch (error: unknown) {
+    const code =
+      error instanceof HouseholdInputSignal
+        ? error.code
+        : error instanceof DecodeSignal
+          ? error.code
+          : "INVALID_SHAPE";
+    const path =
+      error instanceof HouseholdInputSignal || error instanceof DecodeSignal ? error.path : "";
     return Object.freeze({
       ok: false,
       reason: "decode_failed",
@@ -684,6 +1612,29 @@ const prepareRaw = (text: unknown): JsonValue => {
   const parsed = new RawJsonParser(text).parse();
   return prepareObject(parsed);
 };
+
+const prepareHouseholdBoundary = (value: unknown): JsonValue =>
+  typeof value === "string" ? prepareRaw(value) : prepareObject(value);
+
+export const decodeHouseholdDishSafetyInput = (
+  value: unknown,
+): HouseholdSafetyInputDecodeResult =>
+  captureHouseholdInput(() => decodeHouseholdDishSafetyInputValue(prepareHouseholdBoundary(value)));
+
+export const decodeHouseholdSafetySourcePack = (
+  value: unknown,
+): DecodeResult<HouseholdSafetySourcePack> =>
+  capture(() => decodeHouseholdSafetySourcePackValue(prepareHouseholdBoundary(value)));
+
+export const decodeInternalSyntheticAnalyzedScenario = (
+  value: unknown,
+): DecodeResult<InternalSyntheticAnalyzedScenario> =>
+  capture(() => decodeInternalSyntheticAnalyzedScenarioValue(prepareObject(value)));
+
+export const decodeInternalSyntheticGovernedGraph = (
+  value: unknown,
+): DecodeResult<InternalSyntheticGovernedGraph> =>
+  capture(() => decodeInternalSyntheticGovernedGraphValue(prepareObject(value)));
 
 export const decodeGovernanceRelease = (value: unknown): DecodeResult<DecodedGovernanceRelease> =>
   capture(() => decodeReleaseValue(prepareObject(value), ""));

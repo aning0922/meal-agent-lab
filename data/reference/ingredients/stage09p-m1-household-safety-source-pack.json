@@ -1,0 +1,263 @@
+{
+  "schemaVersion": 2,
+  "packId": "stage09p:m1:cn-household-safety",
+  "packRevision": 1,
+  "contentDigest": "sha256:f2b6d3d3fbccd057ca3b68b57a6dde1c4b51fa56febe53a72cfc3bace9e6c0d8",
+  "lifecycleStatus": "draft",
+  "country": "CN",
+  "foodRuleRegion": "CN",
+  "ruleLanguage": "zh-CN",
+  "releaseBindings": [
+    {
+      "bindingId": "binding:gb7718-2011:allergen",
+      "datasetId": "cn:gb7718-2011:allergen",
+      "datasetKind": "allergen",
+      "releaseId": "release:gb7718-2011:allergen",
+      "releaseRevision": 1,
+      "releaseDigest": "sha256:07db5e190c48dfdf2718e46b00b09a30253bedc510d81628ed968665aa2a538d",
+      "sourceReferenceId": "source:gb7718-2011:pdf",
+      "sourceReferenceRevision": "2011",
+      "sourceVersion": "2011"
+    },
+    {
+      "bindingId": "binding:gb7718-2025:allergen",
+      "datasetId": "cn:gb7718-2025:allergen",
+      "datasetKind": "allergen",
+      "releaseId": "release:gb7718-2025:allergen",
+      "releaseRevision": 1,
+      "releaseDigest": "sha256:a58e3feda3bdfa88bfba775161505ef6dff1f7dec535cfccafcf63ce81adf137",
+      "sourceReferenceId": "source:gb7718-2025:pdf",
+      "sourceReferenceRevision": "2025",
+      "sourceVersion": "2025"
+    }
+  ],
+  "sourceVersionWindows": [
+    {
+      "bindingId": "binding:gb7718-2011:allergen",
+      "jurisdictionTimeZone": "Asia/Shanghai",
+      "sourceCivilEffectiveDate": "2012-04-20",
+      "effectiveFrom": "2012-04-19T16:00:00.000Z",
+      "effectiveUntil": "2027-03-15T16:00:00.000Z"
+    },
+    {
+      "bindingId": "binding:gb7718-2025:allergen",
+      "jurisdictionTimeZone": "Asia/Shanghai",
+      "sourceCivilEffectiveDate": "2027-03-16",
+      "effectiveFrom": "2027-03-15T16:00:00.000Z",
+      "effectiveUntil": null
+    }
+  ],
+  "mappingReviews": [],
+  "catalog": {
+    "schemaVersion": 1,
+    "releases": [
+      {
+        "schemaVersion": 1,
+        "releaseId": "release:gb7718-2011:allergen",
+        "releaseRevision": 1,
+        "contentDigest": "sha256:07db5e190c48dfdf2718e46b00b09a30253bedc510d81628ed968665aa2a538d",
+        "envelopes": [
+          {
+            "schemaVersion": 1,
+            "datasetId": "cn:gb7718-2011:allergen",
+            "datasetKind": "allergen",
+            "entityId": "label-allergen-disclosure-2011",
+            "entityRevision": 1,
+            "lifecycleStatus": "under_review",
+            "owner": {
+              "actorId": "institution:meal-agent-lab:data-governance",
+              "role": "institutional_data_steward"
+            },
+            "approvers": [],
+            "sourceTier": "L1",
+            "sourceReferences": [
+              {
+                "referenceId": "source:gb7718-2011:pdf",
+                "referenceRevision": "2011",
+                "locator": "https://www.nhc.gov.cn/zwgkzt/cybz/201106/a054a6affd0e489da150cf2b51a971a7/files/e84256474d1445919246b4a41a87f172.pdf"
+              }
+            ],
+            "sourceSnapshots": [
+              {
+                "snapshotId": "snapshot:gb7718-2011:pdf:2026-08-29",
+                "referenceId": "source:gb7718-2011:pdf",
+                "referenceRevision": "2011",
+                "locator": "https://www.nhc.gov.cn/zwgkzt/cybz/201106/a054a6affd0e489da150cf2b51a971a7/files/e84256474d1445919246b4a41a87f172.pdf",
+                "contentDigest": "sha256:1518746449379575738703de14e0dae148372427d1322c3e70a20047a600e366",
+                "retrievedAt": "2026-08-29T00:00:00.000Z"
+              }
+            ],
+            "applicableRegions": ["CN"],
+            "languages": ["zh-CN"],
+            "licenseStatus": "pending",
+            "licenseReference": null,
+            "retrievedAt": "2026-08-29T00:00:00.000Z",
+            "reviewedAt": "2026-08-29T00:00:00.000Z",
+            "reviewDueAt": "2027-03-15T16:00:00.000Z",
+            "aliases": [],
+            "supersededBy": null,
+            "withdrawalState": "not_withdrawn",
+            "withdrawalReason": null,
+            "withdrawnAt": null,
+            "content": {
+              "standardId": "GB 7718-2011",
+              "title": "食品安全国家标准 预包装食品标签通则",
+              "publishedDate": "2011-04-20",
+              "effectiveDate": "2012-04-20",
+              "futureSupersededDate": "2027-03-16",
+              "stableLocator": "https://www.nhc.gov.cn/zwgkzt/cybz/201106/a054a6affd0e489da150cf2b51a971a7.shtml",
+              "projection": "allergen disclosure is recommendation-scoped; absence cannot establish household safety"
+            },
+            "officialEvidence": {
+              "classification": "official_source_projection",
+              "containsRealFoodFacts": true,
+              "containsRealUserData": false,
+              "fullTextCopied": false,
+              "purpose": "household-safety-provenance-only",
+              "factDisposition": "UNKNOWN_BLOCK",
+              "usageStatus": "pending"
+            }
+          }
+        ]
+      },
+      {
+        "schemaVersion": 1,
+        "releaseId": "release:gb7718-2025:allergen",
+        "releaseRevision": 1,
+        "contentDigest": "sha256:a58e3feda3bdfa88bfba775161505ef6dff1f7dec535cfccafcf63ce81adf137",
+        "envelopes": [
+          {
+            "schemaVersion": 1,
+            "datasetId": "cn:gb7718-2025:allergen",
+            "datasetKind": "allergen",
+            "entityId": "label-allergen-disclosure-2025",
+            "entityRevision": 1,
+            "lifecycleStatus": "draft",
+            "owner": {
+              "actorId": "institution:meal-agent-lab:data-governance",
+              "role": "institutional_data_steward"
+            },
+            "approvers": [],
+            "sourceTier": "L1",
+            "sourceReferences": [
+              {
+                "referenceId": "source:gb7718-2025:pdf",
+                "referenceRevision": "2025",
+                "locator": "https://sppt.cfsa.net.cn:8086/diskFilePath/swfupload1742974306979.pdf"
+              }
+            ],
+            "sourceSnapshots": [
+              {
+                "snapshotId": "snapshot:gb7718-2025:pdf:2026-08-29",
+                "referenceId": "source:gb7718-2025:pdf",
+                "referenceRevision": "2025",
+                "locator": "https://sppt.cfsa.net.cn:8086/diskFilePath/swfupload1742974306979.pdf",
+                "contentDigest": "sha256:54c5d42a02fc86e5bcc365d7a5b19bd0663f89388331f7e4d9e5e2b9ac92e59f",
+                "retrievedAt": "2026-08-29T00:00:00.000Z"
+              }
+            ],
+            "applicableRegions": ["CN"],
+            "languages": ["zh-CN"],
+            "licenseStatus": "pending",
+            "licenseReference": null,
+            "retrievedAt": "2026-08-29T00:00:00.000Z",
+            "reviewedAt": "2026-08-29T00:00:00.000Z",
+            "reviewDueAt": "2027-03-15T16:00:00.000Z",
+            "aliases": [],
+            "supersededBy": null,
+            "withdrawalState": "not_withdrawn",
+            "withdrawalReason": null,
+            "withdrawnAt": null,
+            "content": {
+              "standardId": "GB 7718-2025",
+              "title": "食品安全国家标准 预包装食品标签通则",
+              "publishedDate": "2025-03-16",
+              "effectiveDate": "2027-03-16",
+              "replaces": "GB 7718-2011",
+              "stableLocator": "https://sppt.cfsa.net.cn:8086/db",
+              "projection": "future standard facts are retained for migration only and are not current"
+            },
+            "officialEvidence": {
+              "classification": "official_source_projection",
+              "containsRealFoodFacts": true,
+              "containsRealUserData": false,
+              "fullTextCopied": false,
+              "purpose": "household-safety-provenance-only",
+              "factDisposition": "UNKNOWN_BLOCK",
+              "usageStatus": "pending"
+            }
+          }
+        ]
+      },
+      {
+        "schemaVersion": 1,
+        "releaseId": "release:religious-candidate:blood",
+        "releaseRevision": 1,
+        "contentDigest": "sha256:a9ed1eeb56d41a94abe45d17dfe88943bc99cde91249367f4c8c5c18ff4bfeb8",
+        "envelopes": [
+          {
+            "schemaVersion": 1,
+            "datasetId": "cn:religious-candidate:islamic-diet",
+            "datasetKind": "religious_ethical",
+            "entityId": "candidate:explicit-blood-exclusion",
+            "entityRevision": 1,
+            "lifecycleStatus": "draft",
+            "owner": {
+              "actorId": "institution:meal-agent-lab:cultural-governance",
+              "role": "institutional_candidate_steward"
+            },
+            "approvers": [],
+            "sourceTier": "L1",
+            "sourceReferences": [
+              {
+                "referenceId": "source:chinaislam:blood-candidate",
+                "referenceRevision": "locator-2026-08-29",
+                "locator": "https://www.chinaislam.net.cn/web/jxsx/c/content_4778.shtml"
+              }
+            ],
+            "sourceSnapshots": [
+              {
+                "snapshotId": "snapshot:chinaislam:blocked:2026-08-29",
+                "referenceId": "source:chinaislam:blood-candidate",
+                "referenceRevision": "locator-2026-08-29",
+                "locator": "https://www.chinaislam.net.cn/web/jxsx/c/content_4778.shtml",
+                "contentDigest": "sha256:cda86e07b859ab427d92f6b352dc642249b2dad75d6850e9349ac63d052de0b4",
+                "retrievedAt": "2026-08-29T00:00:00.000Z"
+              }
+            ],
+            "applicableRegions": ["CN"],
+            "languages": ["zh-CN"],
+            "licenseStatus": "pending",
+            "licenseReference": null,
+            "retrievedAt": "2026-08-29T00:00:00.000Z",
+            "reviewedAt": "2026-08-29T00:00:00.000Z",
+            "reviewDueAt": "2027-03-15T16:00:00.000Z",
+            "aliases": [],
+            "supersededBy": null,
+            "withdrawalState": "not_withdrawn",
+            "withdrawalReason": null,
+            "withdrawnAt": null,
+            "content": {
+              "candidateId": "explicit-blood-exclusion",
+              "issuer": "中国伊斯兰教协会",
+              "stableLocator": "https://www.chinaislam.net.cn/web/jxsx/c/content_4778.shtml",
+              "acquisitionStatus": "authenticated_fetch_blocked",
+              "candidateScope": "personal-hard",
+              "activationStatus": "not-active"
+            },
+            "officialEvidence": {
+              "classification": "official_source_projection",
+              "containsRealFoodFacts": true,
+              "containsRealUserData": false,
+              "fullTextCopied": false,
+              "purpose": "household-safety-provenance-only",
+              "factDisposition": "CANDIDATE_CLEAR",
+              "usageStatus": "pending"
+            }
+          }
+        ]
+      }
+    ],
+    "hardMappings": []
+  }
+}

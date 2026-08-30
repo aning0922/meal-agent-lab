@@ -1,6 +1,6 @@
 # 领域数据模型
 
-- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted；M0 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，M0/ADR-0008 已由总控 Accepted；09P In Progress，本次 M0 收口时 M1 尚未开始
+- 状态：阶段 05 共享契约基线已接受；阶段 09P 规划于 2026-08-23 Accepted；M0 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，M0/ADR-0008 已由总控 Accepted；09P In Progress，M1 家庭餐桌安全底层仍是候选实现且没有真实 source activation
 - 代码事实源：[`packages/contracts`](../../packages/contracts/)
 - 领域核心：[ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md) 的规划/架构方向已 Accepted；当前 [`packages/domain`](../../packages/domain/) 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，不含权威真实 release、真实用户/食品事实或外部能力；M0 checker 的执行载体与 supply-chain 仍属于 frozen lockfile、Git review、CI/09A、固定 Node 和独立审计组成的 TCB
 
@@ -64,7 +64,26 @@ immutable 参考数据；每个实体必须绑定 dataset release、entity revis
 [ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)。具体
 真实内容和数量留给阶段 09P-M1 审查；规划中的 24 concepts、4 allergen 类别、8 个
 safety 规则族、8 个 techniques 和 12 recipes 只是 Proposed 覆盖规模，不是 Accepted
-数据范围。09P-M0 只允许完全合成数据。
+数据范围。09P-M0 只允许完全合成数据；M1 新增的 official provenance pack 仍是 zero-active、
+zero-reviewed-clear、license/usage pending 的 draft，不能作为正式推荐事实。
+
+## M1 家庭餐桌安全值对象
+
+M1 在现有七模块中增加纯内存值对象：`HouseholdDishSafetyInput`、非空 `DishSafetyFacts`、
+`ReleaseBinding`、`SourceVersionWindow`、`MappingReview`、`HouseholdSafetySourcePack` 与固定
+八键 `HouseholdDishSafetyEvaluation`。它们不是 HTTP DTO、数据库 row、migration 或持久化
+接口；本阶段不新增 API、SQL、loader、网络或 runtime source authority。
+
+输入以原始 household/profile/guest/dish IDs 和内容 digest 绑定 request digest。source pack
+或 synthetic graph 使用独立 domain tag 与 NUL framing；mapping review、analyzed state 和最终
+evaluation 也各有不同 tag。私有 coverage unit、selector 和 actor identity 不进入 public
+digest 或 table reason；public reason 只保留必要的 subject kind/id 和稳定 mapping/exposure
+context，并按 UTF-8 确定性排序、去重和递归冻结。
+
+同文本 ID 的 household profile 与 guest 是不同 actor；selector key、coverage key、reason
+dedupe/comparator 都必须包含 `SubjectRef.kind`。所有 active household allergy 与 guest allergy
+覆盖全桌；personal hard unit 只覆盖自己的 subject/constraint；soft selector 没有 hard
+coverage unit，不能结算 dish 或 sibling hard unit。
 
 ## Recommendation 快照与历史边界
 

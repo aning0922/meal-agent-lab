@@ -7,7 +7,8 @@
 [ADR-0007](../architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
 的规划/架构方向已 `Accepted`。固定七模块 M0 acceptance candidate
 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 已获 Cycle 2 独立 Audit A/B 双 CLEAN，
-M0/ADR-0008 已由总控 Accepted；09P 仍为 In Progress，本次 M0 收口时 M1 尚未开始。
+M0/ADR-0008 已由总控 Accepted；09P 仍为 In Progress。M1 家庭餐桌安全底层仍是候选实现，
+不代表真实 source 已激活或可发布。
 M0 数据仍完全合成且无外部能力；尚未发布任何权威食品安全、allergen、宗教/伦理或
 cooking-technique 数据 release，也未导入真实食品事实或用户数据。M0 checker 不自证
 loader/compiler/runner/worker/supply-chain，其 TCB 仍由 frozen lockfile、Git review、CI/09A、
@@ -37,10 +38,26 @@ loader/compiler/runner/worker/supply-chain，其 TCB 仍由 frozen lockfile、Gi
 
 ## 过敏与禁忌
 
-- 对每位本餐参与者执行硬约束检查。
-- 菜谱主料、辅料、调味品、替代品和“可能含有”信息都要纳入检查。
+- 所有 active 家庭档案的 allergy 都是全桌硬约束，即使该成员不参加本餐；所有 guest 的
+  allergy 同样是全桌硬约束。
+- 本餐参与者和 guest 的宗教、伦理与 explicit strict avoid 是各自个人硬约束；普通 avoid、
+  dislike 与 reduce 只作为软偏好，不能改变 hard rank 或证明安全。
+- 菜谱 primary、secondary、seasoning、garnish、substitute、contains、may_contain 与
+  cross_contact 八类 exposure 都要纳入同一检查；dish exposure 为空不是“没有风险”，而是
+  input invalid。
 - 发生食材替换或份量调整后重新执行最终校验。
 - 不从历史行为自动推断过敏或疾病信息。
+
+mapping 必须先通过唯一性、binding identity/current half-open window、M0 resolution、review
+和 endpoint fact 闭合，才能贡献 known match 或 reviewed clear。unknown/ambiguous mapping、
+future/expired window、license/usage pending、review 缺失/不一致/非 current、fact unknown/
+candidate clear 或全量 coverage 缺 reviewed clear 均 fail closed。多个 mapping failure 必须
+聚合，不能因先看到一个 known match 或 clear 结论而跳过剩余校验。
+
+public trust allowlist 固定为空，因此 draft pack、任意 caller object 和 raw JSON 都不能得到
+`allowed`。仓库 draft pack 的 2011/2025 来源 identity 与半开时间窗只用于 provenance 和
+机械 future/current 断言；zero active mappings、zero reviews、zero reviewed clear 与 pending
+license/usage 是安全边界，不是待 runtime 猜测的缺省值。
 
 ## 模型行为
 

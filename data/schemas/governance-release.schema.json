@@ -136,9 +136,48 @@
         "purpose": { "const": "governance-format-and-fail-closed-testing-only" }
       }
     },
+    "officialEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "containsRealFoodFacts",
+        "containsRealUserData",
+        "fullTextCopied",
+        "purpose",
+        "factDisposition",
+        "usageStatus"
+      ],
+      "properties": {
+        "classification": { "const": "official_source_projection" },
+        "containsRealFoodFacts": { "const": true },
+        "containsRealUserData": { "const": false },
+        "fullTextCopied": { "const": false },
+        "purpose": { "const": "household-safety-provenance-only" },
+        "factDisposition": {
+          "enum": ["POSITIVE_BLOCK", "UNKNOWN_BLOCK", "CANDIDATE_CLEAR", "REVIEWED_CLEAR"]
+        },
+        "usageStatus": { "enum": ["pending", "approved"] }
+      }
+    },
     "governanceEnvelope": {
       "type": "object",
       "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": ["syntheticEvidence"],
+          "properties": {
+            "approvers": { "type": "array", "minItems": 1 },
+            "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
+          }
+        },
+        {
+          "required": ["officialEvidence"],
+          "properties": {
+            "officialEvidence": { "$ref": "#/$defs/officialEvidence" }
+          }
+        }
+      ],
       "required": [
         "schemaVersion",
         "datasetId",
@@ -185,7 +224,7 @@
         "owner": { "$ref": "#/$defs/actor" },
         "approvers": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "maxItems": 4096,
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/actor" }
@@ -243,7 +282,8 @@
           "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
         },
         "content": { "$ref": "#/$defs/jsonValue" },
-        "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
+        "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" },
+        "officialEvidence": { "$ref": "#/$defs/officialEvidence" }
       }
     },
     "governanceRelease": {

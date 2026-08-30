@@ -18,6 +18,7 @@
     "stage09a:audit-b": "node scripts/run-stage09a-audit-b.mjs",
     "stage09a:check": "node scripts/run-stage09a-check.mjs",
     "stage09p:m0:check": "node scripts/run-stage09p-m0-check.mjs",
+    "stage09p:m1:check": "node scripts/run-stage09p-m1-check.mjs",
     "test": "pnpm --filter @meal-agent/domain test && pnpm --filter @meal-agent/contracts test && pnpm --filter @meal-agent/api test && pnpm --filter @meal-agent/client test",
     "typecheck": "pnpm --filter @meal-agent/domain typecheck && pnpm --filter @meal-agent/contracts typecheck && pnpm --filter @meal-agent/api typecheck && pnpm --filter @meal-agent/client typecheck"
   }

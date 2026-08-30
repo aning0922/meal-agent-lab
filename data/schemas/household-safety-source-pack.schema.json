@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "synthetic://meal-agent/stage09p-m1/household-safety-source-pack.schema.json",
+  "$comment": "runtime-owned: decode.ts scalar closure; standard JSON Schema/Ajv does not claim negative-zero distinction",
+  "title": "Stage 09P M1 household safety source pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "packId",
+    "packRevision",
+    "contentDigest",
+    "lifecycleStatus",
+    "country",
+    "foodRuleRegion",
+    "ruleLanguage",
+    "releaseBindings",
+    "sourceVersionWindows",
+    "mappingReviews",
+    "catalog"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "packId": { "$ref": "#/$defs/identifier" },
+    "packRevision": { "$ref": "#/$defs/positiveRevision" },
+    "contentDigest": { "$ref": "#/$defs/digest" },
+    "lifecycleStatus": {
+      "enum": ["draft", "under_review", "approved", "active", "superseded", "withdrawn"]
+    },
+    "country": { "const": "CN" },
+    "foodRuleRegion": { "const": "CN" },
+    "ruleLanguage": { "const": "zh-CN" },
+    "releaseBindings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/releaseBinding" }
+    },
+    "sourceVersionWindows": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/sourceVersionWindow" }
+    },
+    "mappingReviews": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/mappingReview" }
+    },
+    "catalog": {
+      "$ref": "synthetic://meal-agent/stage09p-m0/governance-catalog.schema.json"
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9:._-]{0,127})$"
+    },
+    "positiveRevision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "governedReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datasetId", "entityId", "entityRevision"],
+      "properties": {
+        "datasetId": { "$ref": "#/$defs/identifier" },
+        "entityId": { "$ref": "#/$defs/identifier" },
+        "entityRevision": { "$ref": "#/$defs/positiveRevision" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindingId",
+        "datasetId",
+        "datasetKind",
+        "releaseId",
+        "releaseRevision",
+        "releaseDigest",
+        "sourceReferenceId",
+        "sourceReferenceRevision",
+        "sourceVersion"
+      ],
+      "properties": {
+        "bindingId": { "$ref": "#/$defs/identifier" },
+        "datasetId": { "$ref": "#/$defs/identifier" },
+        "datasetKind": { "enum": ["food_concept", "allergen", "religious_ethical"] },
+        "releaseId": { "$ref": "#/$defs/identifier" },
+        "releaseRevision": { "$ref": "#/$defs/positiveRevision" },
+        "releaseDigest": { "$ref": "#/$defs/digest" },
+        "sourceReferenceId": { "$ref": "#/$defs/identifier" },
+        "sourceReferenceRevision": { "$ref": "#/$defs/identifier" },
+        "sourceVersion": { "enum": ["2011", "2025"] }
+      }
+    },
+    "sourceVersionWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bindingId",
+        "jurisdictionTimeZone",
+        "sourceCivilEffectiveDate",
+        "effectiveFrom",
+        "effectiveUntil"
+      ],
+      "properties": {
+        "bindingId": { "$ref": "#/$defs/identifier" },
+        "jurisdictionTimeZone": { "const": "Asia/Shanghai" },
+        "sourceCivilEffectiveDate": { "enum": ["2012-04-20", "2027-03-16"] },
+        "effectiveFrom": { "$ref": "#/$defs/timestamp" },
+        "effectiveUntil": {
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+    "mappingReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mappingId",
+        "reviewRevision",
+        "contentDigest",
+        "sourceBindingId",
+        "targetBindingId",
+        "source",
+        "target",
+        "required",
+        "reviewStatus",
+        "effectiveFrom",
+        "effectiveUntil"
+      ],
+      "properties": {
+        "mappingId": { "$ref": "#/$defs/identifier" },
+        "reviewRevision": { "$ref": "#/$defs/positiveRevision" },
+        "contentDigest": { "$ref": "#/$defs/digest" },
+        "sourceBindingId": { "$ref": "#/$defs/identifier" },
+        "targetBindingId": { "$ref": "#/$defs/identifier" },
+        "source": { "$ref": "#/$defs/governedReference" },
+        "target": { "$ref": "#/$defs/governedReference" },
+        "required": { "type": "boolean" },
+        "reviewStatus": { "enum": ["pending", "reviewed", "withdrawn"] },
+        "effectiveFrom": {
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "effectiveUntil": {
+          "oneOf": [{ "$ref": "#/$defs/timestamp" }, { "type": "null" }]
+        }
+      }
+    }
+  }
+}

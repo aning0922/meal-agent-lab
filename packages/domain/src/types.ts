@@ -25,12 +25,133 @@ export const lifecycleStatuses = frozenLiterals(
   "withdrawn",
 );
 export const withdrawalStates = frozenLiterals("not_withdrawn", "withdrawn");
+export const householdProfileStatuses = frozenLiterals("active", "archived");
+export const dietaryRuleKinds = frozenLiterals(
+  "allergy",
+  "religious",
+  "ethical",
+  "explicit_strict_avoid",
+  "ordinary_avoid",
+  "dislike",
+  "reduce",
+);
+export const constraintBases = frozenLiterals("explicit_declaration");
+export const constraintMappingStatuses = frozenLiterals("mapped", "unknown", "ambiguous");
+export const dishExposureKinds = frozenLiterals(
+  "primary",
+  "secondary",
+  "seasoning",
+  "garnish",
+  "substitute",
+  "contains",
+  "may_contain",
+  "cross_contact",
+);
+export const householdTableSafetyStatuses = frozenLiterals("allowed", "blocked");
+export const subjectSuitabilityStatuses = frozenLiterals(
+  "suitable",
+  "indeterminate",
+  "unsuitable",
+);
+export const subjectKinds = frozenLiterals("household_profile", "guest");
+export const householdSafetyReasonScopes = frozenLiterals(
+  "input",
+  "source_pack",
+  "table",
+  "subject",
+  "soft",
+);
+export const sourceFactDispositions = frozenLiterals(
+  "POSITIVE_BLOCK",
+  "UNKNOWN_BLOCK",
+  "CANDIDATE_CLEAR",
+  "REVIEWED_CLEAR",
+);
+export const mappingReviewStatuses = frozenLiterals("pending", "reviewed", "withdrawn");
+export const supportedHouseholdCountries = frozenLiterals("CN");
+export const supportedFoodRuleRegions = frozenLiterals("CN");
+export const supportedRuleLanguages = frozenLiterals("zh-CN");
+
+export const householdSafetyInputIssueCodes = frozenLiterals(
+  "DISH_DIGEST_MISMATCH",
+  "DUPLICATE_CONSTRAINT_ID",
+  "DUPLICATE_EXPOSURE_ID",
+  "DUPLICATE_GUEST_ID",
+  "DUPLICATE_MAPPING_ID",
+  "DUPLICATE_PARTICIPANT_ID",
+  "DUPLICATE_PROFILE_ID",
+  "EMPTY_DISH_EXPOSURES",
+  "EMPTY_PARTICIPANTS",
+  "ARCHIVED_PROFILE_REFERENCE",
+  "UNKNOWN_DISCRIMINATOR",
+  "UNKNOWN_PROFILE_REFERENCE",
+);
+
+export const householdSafetyReasonCodes = frozenLiterals(
+  "input_invalid",
+  "source_pack_missing",
+  "source_pack_invalid",
+  "source_pack_withdrawn",
+  "source_pack_not_active",
+  "source_pack_untrusted",
+  "source_pack_version_drift",
+  "source_pack_region_not_applicable",
+  "source_pack_language_not_applicable",
+  "source_version_window_missing",
+  "source_version_window_ambiguous",
+  "source_license_not_approved",
+  "source_fact_unknown",
+  "source_fact_candidate_clear",
+  "source_reviewed_clear_missing",
+  "mapping_unknown",
+  "mapping_ambiguous",
+  "mapping_invalid",
+  "mapping_withdrawn",
+  "mapping_version_mismatch",
+  "mapping_unapproved",
+  "mapping_required_false",
+  "mapping_target_kind_mismatch",
+  "mapping_source_unbound",
+  "mapping_source_multiple_bindings",
+  "mapping_target_unbound",
+  "mapping_target_multiple_bindings",
+  "mapping_endpoint_not_current",
+  "mapping_review_missing",
+  "mapping_review_mismatch",
+  "mapping_review_not_current",
+  "household_allergy_match",
+  "guest_allergy_match",
+  "personal_religious_match",
+  "personal_ethical_match",
+  "personal_strict_avoid_match",
+  "no_suitable_participant",
+  "soft_ordinary_avoid_match",
+  "soft_dislike_match",
+  "soft_reduce_match",
+);
 
 export type DatasetKind = (typeof datasetKinds)[number];
 export type SourceTier = (typeof sourceTiers)[number];
 export type LicenseStatus = (typeof licenseStatuses)[number];
 export type LifecycleStatus = (typeof lifecycleStatuses)[number];
 export type WithdrawalState = (typeof withdrawalStates)[number];
+export type Identifier = string;
+export type CanonicalInstant = string;
+export type Digest = string;
+export type HouseholdProfileStatus = (typeof householdProfileStatuses)[number];
+export type DietaryRuleKind = (typeof dietaryRuleKinds)[number];
+export type ConstraintBasis = (typeof constraintBases)[number];
+export type ConstraintMappingStatus = (typeof constraintMappingStatuses)[number];
+export type DishExposureKind = (typeof dishExposureKinds)[number];
+export type HouseholdTableSafetyStatus = (typeof householdTableSafetyStatuses)[number];
+export type SubjectSuitabilityStatus = (typeof subjectSuitabilityStatuses)[number];
+export type SubjectKind = (typeof subjectKinds)[number];
+export type HouseholdSafetyReasonScope = (typeof householdSafetyReasonScopes)[number];
+export type SourceFactDisposition = (typeof sourceFactDispositions)[number];
+export type MappingReviewStatus = (typeof mappingReviewStatuses)[number];
+export type HouseholdCountry = (typeof supportedHouseholdCountries)[number];
+export type FoodRuleRegion = (typeof supportedFoodRuleRegions)[number];
+export type RuleLanguage = (typeof supportedRuleLanguages)[number];
 
 export interface GovernanceActor {
   readonly actorId: string;
@@ -74,6 +195,16 @@ export interface SyntheticEvidence {
   readonly purpose: "governance-format-and-fail-closed-testing-only";
 }
 
+export interface OfficialSourceEvidence {
+  readonly classification: "official_source_projection";
+  readonly containsRealFoodFacts: true;
+  readonly containsRealUserData: false;
+  readonly fullTextCopied: false;
+  readonly purpose: "household-safety-provenance-only";
+  readonly factDisposition: SourceFactDisposition;
+  readonly usageStatus: "pending" | "approved";
+}
+
 /** Internal domain value; never an HTTP DTO, database row, or persistence interface. */
 export interface GovernanceEnvelope<TContent extends JsonValue = JsonValue> {
   readonly schemaVersion: 1;
@@ -101,6 +232,7 @@ export interface GovernanceEnvelope<TContent extends JsonValue = JsonValue> {
   readonly withdrawnAt: string | null;
   readonly content: TContent;
   readonly syntheticEvidence?: SyntheticEvidence;
+  readonly officialEvidence?: OfficialSourceEvidence;
 }
 
 export interface GovernanceRelease {
@@ -123,6 +255,117 @@ export interface GovernanceCatalog {
   readonly schemaVersion: 1;
   readonly releases: readonly GovernanceRelease[];
   readonly hardMappings: readonly HardMapping[];
+}
+
+export type MappingSelection =
+  | {
+      readonly status: "mapped";
+      readonly mappingIds: readonly Identifier[];
+    }
+  | { readonly status: "unknown" }
+  | {
+      readonly status: "ambiguous";
+      readonly candidateMappingIds: readonly Identifier[];
+    };
+
+export interface DietaryRuleFact {
+  readonly constraintId: Identifier;
+  readonly kind: DietaryRuleKind;
+  readonly basis: ConstraintBasis;
+  readonly mapping: MappingSelection;
+}
+
+export interface HouseholdProfileSafetyFacts {
+  readonly profileId: Identifier;
+  readonly status: HouseholdProfileStatus;
+  readonly constraints: readonly DietaryRuleFact[];
+}
+
+export interface GuestParticipantSafetyFacts {
+  readonly guestId: Identifier;
+  readonly constraints: readonly DietaryRuleFact[];
+}
+
+export interface DishExposure {
+  readonly exposureId: Identifier;
+  readonly kind: DishExposureKind;
+  readonly mapping: MappingSelection;
+}
+
+export interface DishSafetyFacts {
+  readonly dishId: Identifier;
+  readonly dishRevision: number;
+  readonly contentDigest: Digest;
+  readonly exposures: readonly [DishExposure, ...DishExposure[]];
+}
+
+export interface SourcePackSnapshotRef {
+  readonly packId: Identifier;
+  readonly packRevision: number;
+  readonly contentDigest: Digest;
+}
+
+export interface HouseholdDishSafetyInput {
+  readonly schemaVersion: 2;
+  readonly asOf: CanonicalInstant;
+  readonly household: {
+    readonly country: HouseholdCountry;
+    readonly foodRuleRegion: FoodRuleRegion;
+  };
+  readonly expectedSourcePack: SourcePackSnapshotRef;
+  readonly householdProfiles: readonly HouseholdProfileSafetyFacts[];
+  readonly mealParticipantProfileIds: readonly Identifier[];
+  readonly guestParticipants: readonly GuestParticipantSafetyFacts[];
+  readonly dish: DishSafetyFacts;
+}
+
+export interface ReleaseBinding {
+  readonly bindingId: Identifier;
+  readonly datasetId: Identifier;
+  readonly datasetKind: "food_concept" | "allergen" | "religious_ethical";
+  readonly releaseId: Identifier;
+  readonly releaseRevision: number;
+  readonly releaseDigest: Digest;
+  readonly sourceReferenceId: Identifier;
+  readonly sourceReferenceRevision: Identifier;
+  readonly sourceVersion: "2011" | "2025";
+}
+
+export interface SourceVersionWindow {
+  readonly bindingId: Identifier;
+  readonly jurisdictionTimeZone: "Asia/Shanghai";
+  readonly sourceCivilEffectiveDate: "2012-04-20" | "2027-03-16";
+  readonly effectiveFrom: CanonicalInstant;
+  readonly effectiveUntil: CanonicalInstant | null;
+}
+
+export interface MappingReview {
+  readonly mappingId: Identifier;
+  readonly reviewRevision: number;
+  readonly contentDigest: Digest;
+  readonly sourceBindingId: Identifier;
+  readonly targetBindingId: Identifier;
+  readonly source: GovernedReference;
+  readonly target: GovernedReference;
+  readonly required: boolean;
+  readonly reviewStatus: MappingReviewStatus;
+  readonly effectiveFrom: CanonicalInstant | null;
+  readonly effectiveUntil: CanonicalInstant | null;
+}
+
+export interface HouseholdSafetySourcePack {
+  readonly schemaVersion: 2;
+  readonly packId: Identifier;
+  readonly packRevision: number;
+  readonly contentDigest: Digest;
+  readonly lifecycleStatus: LifecycleStatus;
+  readonly country: HouseholdCountry;
+  readonly foodRuleRegion: FoodRuleRegion;
+  readonly ruleLanguage: RuleLanguage;
+  readonly releaseBindings: readonly ReleaseBinding[];
+  readonly sourceVersionWindows: readonly SourceVersionWindow[];
+  readonly mappingReviews: readonly MappingReview[];
+  readonly catalog: GovernanceCatalog;
 }
 
 declare const decodedReleaseBrand: unique symbol;
@@ -150,6 +393,61 @@ export interface DecodeIssue {
   readonly path: string;
 }
 
+export type HouseholdSafetyInputIssueCode =
+  | DecodeIssueCode
+  | (typeof householdSafetyInputIssueCodes)[number];
+
+export type HouseholdSafetyInputDecodeResult =
+  | { readonly ok: true; readonly value: HouseholdDishSafetyInput }
+  | {
+      readonly ok: false;
+      readonly reason: "decode_failed";
+      readonly issue: {
+        readonly code: HouseholdSafetyInputIssueCode;
+        readonly path: string;
+      };
+    };
+
+export type HouseholdSafetyReasonCode = (typeof householdSafetyReasonCodes)[number];
+
+export interface SubjectRef {
+  readonly kind: SubjectKind;
+  readonly id: Identifier;
+}
+
+export interface HouseholdSafetyReason {
+  readonly code: HouseholdSafetyReasonCode;
+  readonly constraintId: Identifier | null;
+  readonly constraintMappingId: Identifier | null;
+  readonly exposureId: Identifier | null;
+  readonly exposureKind: DishExposureKind | null;
+  readonly exposureMappingId: Identifier | null;
+  readonly mappingEndpoint: "source" | "target" | null;
+  readonly mappingId: Identifier | null;
+  readonly scope: HouseholdSafetyReasonScope;
+  readonly subject: SubjectRef | null;
+}
+
+export interface SubjectSuitability {
+  readonly reasons: readonly HouseholdSafetyReason[];
+  readonly status: SubjectSuitabilityStatus;
+  readonly subject: SubjectRef;
+}
+
+export interface HouseholdDishSafetyEvaluation {
+  readonly evaluationDigest: Digest;
+  readonly inputIssue: {
+    readonly code: HouseholdSafetyInputIssueCode;
+    readonly path: string;
+  } | null;
+  readonly requestDigest: Digest | null;
+  readonly schemaVersion: 2;
+  readonly sourcePackDigest: Digest | null;
+  readonly subjects: readonly SubjectSuitability[];
+  readonly tableReasons: readonly HouseholdSafetyReason[];
+  readonly tableStatus: HouseholdTableSafetyStatus;
+}
+
 export type DecodeResult<T> =
   | { readonly ok: true; readonly value: T }
   | {
@@ -157,6 +455,81 @@ export type DecodeResult<T> =
       readonly reason: "decode_failed";
       readonly issue: DecodeIssue;
     };
+
+export type InternalFactState =
+  | "positive"
+  | "unknown"
+  | "candidate_clear"
+  | "reviewed_clear";
+
+export type InternalM0MappingState =
+  | "mapped"
+  | "unmapped"
+  | "withdrawn"
+  | "version_mismatch"
+  | "unapproved";
+
+export interface InternalNormalizedSourcePair {
+  readonly sourceReferenceId: Identifier;
+  readonly sourceReferenceRevision: Identifier;
+  readonly locator: string;
+  readonly snapshotDigest: Digest;
+}
+
+export interface InternalNormalizedReleaseEnvelope {
+  readonly datasetKind: "food_concept" | "allergen" | "religious_ethical";
+  readonly reference: GovernedReference;
+  readonly applicableRegions: readonly string[];
+  readonly languages: readonly string[];
+  readonly sourcePairs: readonly InternalNormalizedSourcePair[];
+}
+
+export interface InternalNormalizedRelease {
+  readonly releaseId: Identifier;
+  readonly releaseRevision: number;
+  readonly releaseDigest: Digest;
+  readonly envelopes: readonly InternalNormalizedReleaseEnvelope[];
+}
+
+export interface InternalSyntheticAnalyzedScenario {
+  readonly schemaVersion: 1;
+  readonly subjects: readonly SubjectRef[];
+  readonly tableKnownHardReasons: readonly HouseholdSafetyReason[];
+  readonly tableUncertaintyReasons: readonly HouseholdSafetyReason[];
+  readonly subjectKnownHardReasons: readonly HouseholdSafetyReason[];
+  readonly subjectUncertaintyReasons: readonly HouseholdSafetyReason[];
+  readonly softReasons: readonly HouseholdSafetyReason[];
+}
+
+export interface InternalSyntheticEndpointFact {
+  readonly reference: GovernedReference;
+  readonly syntheticDisposition: SourceFactDisposition;
+}
+
+export interface InternalSyntheticGovernedGraph {
+  readonly schemaVersion: 2;
+  readonly packId: Identifier;
+  readonly packRevision: number;
+  readonly country: HouseholdCountry;
+  readonly foodRuleRegion: FoodRuleRegion;
+  readonly ruleLanguage: RuleLanguage;
+  readonly syntheticSourceUsageStatus: "pending" | "approved";
+  readonly releaseBindings: readonly ReleaseBinding[];
+  readonly sourceVersionWindows: readonly SourceVersionWindow[];
+  readonly mappingReviews: readonly MappingReview[];
+  readonly catalog: GovernanceCatalog;
+  readonly endpointFacts: readonly InternalSyntheticEndpointFact[];
+}
+
+export interface InternalAnalyzedHouseholdSafetyState
+  extends InternalSyntheticAnalyzedScenario {
+  readonly requestDigest: Digest;
+  readonly sourcePackDigest: Digest;
+}
+
+export type InternalAnalyzedStateResult =
+  | { readonly ok: true; readonly state: InternalAnalyzedHouseholdSafetyState }
+  | { readonly ok: false; readonly issue: DecodeIssue };
 
 export type ReleaseDigestResult =
   | { readonly ok: true; readonly digest: string }
@@ -188,6 +561,7 @@ export type ValidationIssueCode =
   | "INVALID_SUPERSESSION_TARGET"
   | "INVALID_SUPERSESSION_TARGET_LIFECYCLE"
   | "INVALID_SUPERSESSION_TARGET_REVISION"
+  | "INVALID_OFFICIAL_EVIDENCE"
   | "INVALID_SYNTHETIC_EVIDENCE"
   | "INVALID_WITHDRAWAL_STATE"
   | "MISSING_APPROVER"
