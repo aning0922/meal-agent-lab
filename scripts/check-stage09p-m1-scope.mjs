@@ -7,6 +7,13 @@ export const STAGE09P_M1_BASE_HEAD = "1a66015e63ac84c6257be46a36c5c5967ee53f20";
 export const STAGE09P_M1_BASE_TREE = "3e205fd3dc600ad1d0853ae7c475bbf916f055bd";
 export const STAGE09P_M1_BASE_TRACKED_FILES = 417;
 export const STAGE09P_M1_CANDIDATE_TRACKED_FILES = 426;
+const STAGE09P_M1_FAILED_HEAD = "1da720143c584a2326d640b882bbee75ac494941";
+const STAGE09P_M1_FAILED_TREE = "6d8ab75a0b6f9445f402f74ba23411a387b7eaa0";
+const STAGE09P_M1_REPAIR_PATHS = Object.freeze([
+  "packages/domain/src/resolution.ts",
+  "packages/domain/tests/household-safety.test.ts",
+  "scripts/check-stage09p-m1-scope.mjs",
+]);
 export const STAGE09P_M1_MODIFIED_PATHS = Object.freeze([
   "data/README.md",
   "data/schemas/governance-release.schema.json",
@@ -23,7 +30,6 @@ export const STAGE09P_M1_MODIFIED_PATHS = Object.freeze([
   "packages/domain/src/types.ts",
   "packages/domain/src/validation.ts",
 ]);
-
 export const STAGE09P_M1_ADDED_PATHS = Object.freeze([
   "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json",
   "data/schemas/household-safety-source-pack.schema.json",
@@ -35,11 +41,9 @@ export const STAGE09P_M1_ADDED_PATHS = Object.freeze([
   "scripts/tests/stage09p-m1-scope.test.mjs",
   "scripts/tests/stage09p-m1-source-pack.test.mjs",
 ]);
-
 export const STAGE09P_M1_ALLOWED_PATHS = Object.freeze(
   [...STAGE09P_M1_MODIFIED_PATHS, ...STAGE09P_M1_ADDED_PATHS].sort(),
 );
-
 export const STAGE09P_M1_DOMAIN_MODULES = Object.freeze([
   "canonical.ts",
   "catalog.ts",
@@ -49,7 +53,6 @@ export const STAGE09P_M1_DOMAIN_MODULES = Object.freeze([
   "types.ts",
   "validation.ts",
 ]);
-
 export const STAGE09P_M1_PRODUCTION_IMPORT_SPECIFIERS = Object.freeze([
   "./canonical.js",
   "./catalog.js",
@@ -60,14 +63,12 @@ export const STAGE09P_M1_PRODUCTION_IMPORT_SPECIFIERS = Object.freeze([
   "@noble/hashes/sha2.js",
   "@noble/hashes/utils.js",
 ]);
-
 export const STAGE09P_M1_M0_TCB = Object.freeze({
   "scripts/check-stage09p-m0-scope.mjs": "5ac0c5915ab08170efee63c563fff1f1d68081aa2b8b840e9b01ebed02359766",
   "scripts/run-stage09p-m0-check.mjs": "a35c719f8d0570cc146d524cd8e09a4db7b6d1dc2c02026d527afe360ce6cda5",
   "scripts/tests/stage09p-m0-check.test.mjs": "008e0d25d290e724a5f054f440c45bca3b83b572cf156599eb0f516bdfb7c9c4",
   "scripts/tests/stage09p-m0-scope.test.mjs": "739c85ac412eb54bca0b41836bafbf9d946097dbf2345a17c1405d7f4d16b580",
 });
-
 const NON_REPAIR_SNAPSHOT = Object.freeze({
   "data/README.md": "cc28bba2af1e97c967f755d63093df6b21912afbe0251751222304c8528fe68d",
   "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json": "4ae7b21a1e4f37207e1279e5c1e902390d5998496048f32fe9f5a650870b4959",
@@ -82,23 +83,22 @@ const NON_REPAIR_SNAPSHOT = Object.freeze({
   "packages/domain/src/catalog.ts": "0b95511dfe4b83c7fa5f3c8a7f805886721d63b65942b5d6cfadc795d23eb490",
   "packages/domain/src/decode.ts": "fc6f25179d4feb48b2a4768bb204e7446da17278431edbdb9ab84570e1bd8390",
   "packages/domain/src/index.ts": "3a0a68ac4e0db1ea80eead336bfe58ac192473c6523ccfef648087b64cde51b1",
-  "packages/domain/src/resolution.ts": "02ad21631bea4466a1eb6c10c45effd127526c43e86840c06d068ebef17df5ca",
   "packages/domain/src/types.ts": "a645f28ffcbdb702a6a8263f317337a8448c77575441c4feedab23764c20f7f6",
   "packages/domain/src/validation.ts": "dacfb90f3ca43b52500f1f266119c3972090915cde2e20899a80a41973bda086",
-  "packages/domain/tests/household-safety.test.ts": "2230afe4206b863ffd4d7d91d0d8d5e8bf7cfe46fed6db907c380deba8594d1b",
   "scripts/check-stage09p-m1-source-pack.mjs": "ee9bb4fa478c76bd0f81db0a24036746027a7497efa4a7ece384a9d9afb57407",
   "scripts/run-stage09p-m1-check.mjs": "b88059751348f54b963c8acfe6712d589aba8be35c1180938bfef65fe71bfaa8",
   "scripts/tests/stage09p-m1-check.test.mjs": "1522545ca676bb77d428195488d60e825cf7e12b0fdf0c61a3c6cb5a2cf025a5",
   "scripts/tests/stage09p-m1-source-pack.test.mjs": "98c50bc6440357d9a9bb24f916d40e07aa0437d5dafc22b3abfca7b6e3e4ced0",
 });
-
+const REPAIRED_SHA256 = Object.freeze({
+  "packages/domain/src/resolution.ts": "692fae656154a299c6849fc1b7771aa26c42b0d4a05489ec0ac59ab2e5297dbb",
+  "packages/domain/tests/household-safety.test.ts": "822968278076ad62b839bf28b948b08994ff404377cbd42049470650d0fabb3a",
+});
 export const STAGE09P_M1_PRIVATE_SEAMS = Object.freeze([
   "__test" + "OnlyAnalyzeSyntheticHouseholdSafety",
   "__test" + "OnlyEvaluateAnalyzedHouseholdSafety",
   "__test" + "OnlyEvaluateGovernedHouseholdSafetyScenario",
 ]);
-
-const EXPECTED_STATUS_SHA = "8c466d4f1c4bcb970f835edce4339a29bcd41cee99ee93a50597407f259b5d5c";
 const EXPECTED_PATH_LIST_SHA = "7274395d6904f1761bb881b890d2fe5cec72b20bc096a178c299b0d83fff17b0";
 const SCOPE_TEST_PATH = "scripts/tests/stage09p-m1-scope.test.mjs";
 const SCOPE_CHECKER_PATH = "scripts/check-stage09p-m1-scope.mjs";
@@ -106,14 +106,11 @@ const HOUSEHOLD_TEST_PATH = "packages/domain/tests/household-safety.test.ts";
 const RESOLUTION_PATH = "packages/domain/src/resolution.ts";
 const INDEX_PATH = "packages/domain/src/index.ts";
 const PACK_PATH = "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json";
-
 const fail = (id, detail = "") => {
   throw new Error(detail === "" ? id : id + ": " + detail);
 };
-
 const lines = (value) =>
   value === "" ? [] : value.replace(/\n$/u, "").split("\n");
-
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 const read = (root, path) => readFileSync(join(root, path), "utf8");
@@ -196,14 +193,11 @@ export const assertStage09pM1DiffProjection = (entries) => {
 
 const assertIdentity = (root, expectedBase) => {
   if (expectedBase !== STAGE09P_M1_BASE_HEAD) fail("identity", "base argument");
-  if (git(root, ["rev-parse", expectedBase]).trim() !== expectedBase) {
-    fail("identity", "base commit");
-  }
   if (
-    git(root, ["rev-parse", expectedBase + "^{tree}"]).trim() !==
-    STAGE09P_M1_BASE_TREE
+    git(root, ["rev-parse", expectedBase]).trim() !== expectedBase ||
+    git(root, ["rev-parse", expectedBase + "^{tree}"]).trim() !== STAGE09P_M1_BASE_TREE
   ) {
-    fail("identity", "base tree");
+    fail("identity", "base commit/tree");
   }
   if (
     lines(git(root, ["ls-tree", "-r", "--name-only", expectedBase])).length !==
@@ -214,38 +208,41 @@ const assertIdentity = (root, expectedBase) => {
   if (git(root, ["diff", "--cached", "--name-only"]).trim() !== "") {
     fail("identity", "staged changes");
   }
-
+  if (
+    git(root, ["rev-parse", STAGE09P_M1_FAILED_HEAD + "^{tree}"]).trim() !==
+      STAGE09P_M1_FAILED_TREE ||
+    git(root, ["rev-list", "--parents", "-n", "1", STAGE09P_M1_FAILED_HEAD]).trim() !==
+      STAGE09P_M1_FAILED_HEAD + " " + STAGE09P_M1_BASE_HEAD
+  ) {
+    fail("identity", "failed anchor");
+  }
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   const status = git(root, ["status", "--porcelain=v1", "-uall"]);
   const tracked = lines(git(root, ["ls-files"])).length;
-  if (head === expectedBase) {
-    if (
-      git(root, ["rev-parse", "HEAD^{tree}"]).trim() !==
-        STAGE09P_M1_BASE_TREE ||
-      tracked !== STAGE09P_M1_BASE_TRACKED_FILES ||
-      sha256(Buffer.from(status)) !== EXPECTED_STATUS_SHA
-    ) {
-      fail("identity", "dirty-base projection");
-    }
-    const expectedStatus = [
-      ...STAGE09P_M1_MODIFIED_PATHS.map((path) => " M " + path),
-      ...STAGE09P_M1_ADDED_PATHS.map((path) => "?? " + path),
-    ];
-    if (!sameStrings(lines(status), expectedStatus)) {
-      fail("identity", "dirty status");
-    }
+  if (tracked !== STAGE09P_M1_CANDIDATE_TRACKED_FILES) {
+    fail("identity", "tracked count");
+  }
+  if (head === STAGE09P_M1_FAILED_HEAD) {
+    const expectedStatus = STAGE09P_M1_REPAIR_PATHS.map((path) => " M " + path);
+    if (!sameStrings(lines(status), expectedStatus)) fail("identity", "repair status");
   } else {
     const parents = git(root, ["rev-list", "--parents", "-n", "1", head])
       .trim()
       .split(" ");
+    const repairDiff = lines(
+      git(root, ["diff", "--name-status", "--no-renames", STAGE09P_M1_FAILED_HEAD, head]),
+    );
     if (
       parents.length !== 2 ||
       parents[0] !== head ||
-      parents[1] !== expectedBase ||
+      parents[1] !== STAGE09P_M1_FAILED_HEAD ||
       status !== "" ||
-      tracked !== STAGE09P_M1_CANDIDATE_TRACKED_FILES
+      !sameStrings(
+        repairDiff,
+        STAGE09P_M1_REPAIR_PATHS.map((path) => "M\t" + path),
+      )
     ) {
-      fail("identity", "candidate projection");
+      fail("identity", "repair commit");
     }
   }
 };
@@ -289,10 +286,13 @@ const assertModesAndTypes = (root) => {
   }
 };
 const assertNonRepairSnapshot = (root) => {
-  if (Object.keys(NON_REPAIR_SNAPSHOT).length !== 21) {
+  if (Object.keys(NON_REPAIR_SNAPSHOT).length !== 19) {
     fail("snapshot", "cardinality");
   }
-  for (const [path, expected] of Object.entries(NON_REPAIR_SNAPSHOT)) {
+  for (const [path, expected] of Object.entries({
+    ...NON_REPAIR_SNAPSHOT,
+    ...REPAIRED_SHA256,
+  })) {
     if (sha256(readFileSync(join(root, path))) !== expected) {
       fail("snapshot", path);
     }

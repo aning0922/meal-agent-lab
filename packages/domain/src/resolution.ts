@@ -1087,6 +1087,18 @@ const selectorTargetKindValid = (
   return targetKind === "food_concept";
 };
 
+const mappingLocalCatalogProjection = (
+  catalog: GovernanceCatalog,
+  mappingId: string,
+): GovernanceCatalog =>
+  Object.freeze({
+    schemaVersion: catalog.schemaVersion,
+    releases: catalog.releases,
+    hardMappings: Object.freeze(
+      catalog.hardMappings.filter((mapping) => mapping.mappingId === mappingId),
+    ),
+  });
+
 const mappingFindingIndex = (
   analysis: HouseholdCatalogAnalysis,
 ): ReadonlyMap<string, readonly CatalogFinding[]> | null => {
@@ -1512,7 +1524,11 @@ const evaluateGovernedAnalyzer = (
     }
     m0Resolutions.set(
       mappingId,
-      resolveHardMapping(graph.catalog, mappingId, contextResult.value),
+      resolveHardMapping(
+        mappingLocalCatalogProjection(graph.catalog, mappingId),
+        mappingId,
+        contextResult.value,
+      ),
     );
   }
 

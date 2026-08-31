@@ -549,6 +549,4822 @@ const makePipeFixture = (): {
 
 const PIPE_FIXTURE = makePipeFixture();
 
+type V12RepairFamily =
+  | "lifecycle"
+  | "household_guest"
+  | "personal_hard"
+  | "soft"
+  | "exposure"
+  | "canonical_digest";
+
+type V12RepairDisposition = "POSITIVE_BLOCK" | "REVIEWED_CLEAR";
+type V12RepairTargetKind = "food_concept" | "allergen";
+type V15ReferenceAlias = "R0" | "R1" | "R2" | "R3" | "R4" | "R5";
+type V15EvidenceAlias = "r0" | "r1" | "r2" | "r3" | "r4" | "r5";
+type V15FactPlan = "P3" | "P5-C1" | "P5-C0" | "S5-X" | "K4" | "D2";
+type V15MappingRole = "D" | "C" | "C0" | "C1" | "D-positive" | "D-clear" | "D0" | "D1";
+type V15RawOrder = "canonical" | "k05_reversed";
+
+const V15_AUTHORITY_KEYS = deepFreeze([
+  "v15:life01",
+  "v15:life02",
+  "v15:life03",
+  "v15:life04-religious",
+  "v15:life04-soft",
+  "v15:hh01",
+  "v15:hh02a",
+  "v15:hh02b",
+  "v15:g01",
+  "v15:ph01",
+  "v15:ph02",
+  "v15:ph03",
+  "v15:soft01",
+  "v15:soft02",
+  "v15:soft03",
+  "v15:exp01",
+  "v15:exp02",
+  "v15:exp03",
+  "v15:exp04",
+  "v15:exp05",
+  "v15:exp06",
+  "v15:exp07",
+  "v15:exp08",
+  "v15:k05",
+  "v15:d03a",
+  "v15:d03b",
+] as const);
+
+type V15AuthorityKey = (typeof V15_AUTHORITY_KEYS)[number];
+
+interface V15MappingDescriptor {
+  readonly role: V15MappingRole;
+  readonly mappingId: string;
+  readonly sourceAlias: V15ReferenceAlias;
+  readonly targetAlias: V15ReferenceAlias;
+}
+
+interface V15FactDescriptor {
+  readonly alias: V15ReferenceAlias;
+  readonly datasetKind: V12RepairTargetKind;
+  readonly disposition: V12RepairDisposition;
+}
+
+interface V15RawFactDescriptor {
+  readonly alias: V15ReferenceAlias;
+  readonly disposition: V12RepairDisposition;
+}
+
+interface V12RepairExpectedLiteral {
+  readonly subjects: HouseholdDishSafetyEvaluation["subjects"];
+  readonly tableReasons: HouseholdDishSafetyEvaluation["tableReasons"];
+  readonly tableStatus: HouseholdDishSafetyEvaluation["tableStatus"];
+}
+
+interface V15ScenarioDescriptor {
+  readonly authorityKey: V15AuthorityKey;
+  readonly family: V12RepairFamily;
+  readonly leaf: string;
+  readonly factPlan: V15FactPlan;
+  readonly packId: "pack:synthetic";
+  readonly packRevision: number;
+  readonly dishId: "dish:a";
+  readonly dishRevision: number;
+  readonly rawOrder: V15RawOrder;
+  readonly mappings: readonly V15MappingDescriptor[];
+  readonly facts: readonly V15FactDescriptor[];
+  readonly rawFacts: readonly V15RawFactDescriptor[];
+  readonly sharedTargetAlias: V15ReferenceAlias | null;
+  readonly collisionRoles: readonly V15MappingRole[];
+  readonly noncollisionTargetAliases: readonly V15ReferenceAlias[];
+  readonly profiles: HouseholdDishSafetyInput["householdProfiles"];
+  readonly participants: readonly string[];
+  readonly guests: HouseholdDishSafetyInput["guestParticipants"];
+  readonly exposures: readonly {
+    readonly exposureId: string;
+    readonly kind: HouseholdDishSafetyInput["dish"]["exposures"][number]["kind"];
+    readonly mappingIds: readonly string[];
+  }[];
+  readonly expected: V12RepairExpectedLiteral;
+}
+
+interface V12RepairFixture {
+  readonly descriptor: V15ScenarioDescriptor;
+  readonly family: V12RepairFamily;
+  readonly leaf: string;
+  readonly input: HouseholdDishSafetyInput;
+  readonly graph: InternalSyntheticGovernedGraph;
+  readonly expected: HouseholdDishSafetyEvaluation;
+}
+
+interface V15EndpointAuthority {
+  readonly alias: V15ReferenceAlias;
+  readonly reference: GovernanceCatalog["hardMappings"][number]["source"];
+  readonly release: GovernanceRelease;
+  readonly binding: InternalSyntheticGovernedGraph["releaseBindings"][number];
+  readonly window: InternalSyntheticGovernedGraph["sourceVersionWindows"][number];
+  readonly disposition: V12RepairDisposition;
+}
+
+const V15_REFERENCE_ALIAS_ORDER = deepFreeze([
+  "R0",
+  "R1",
+  "R2",
+  "R3",
+  "R4",
+  "R5",
+] as const);
+
+const V15_REFERENCE_BY_ALIAS = deepFreeze({
+  R0: { datasetId: "dataset:00", entityId: "entity:dish:source", entityRevision: 1 },
+  R1: { datasetId: "dataset:01", entityId: "entity:dish:target", entityRevision: 1 },
+  R2: { datasetId: "dataset:02", entityId: "entity:constraint:a:source", entityRevision: 1 },
+  R3: { datasetId: "dataset:03", entityId: "entity:constraint:a:target", entityRevision: 1 },
+  R4: { datasetId: "dataset:04", entityId: "entity:constraint:b:source", entityRevision: 1 },
+  R5: { datasetId: "dataset:05", entityId: "entity:constraint:b:target", entityRevision: 1 },
+} as const);
+
+const V15_EVIDENCE_ALIAS = deepFreeze({
+  R0: "r0",
+  R1: "r1",
+  R2: "r2",
+  R3: "r3",
+  R4: "r4",
+  R5: "r5",
+} as const);
+
+const v15ReferenceKey = (
+  reference: GovernanceCatalog["hardMappings"][number]["source"],
+): string =>
+  reference.datasetId + "\u0000" + reference.entityId + "\u0000" + reference.entityRevision;
+
+const v15ReferenceAlias = (
+  reference: GovernanceCatalog["hardMappings"][number]["source"],
+): V15ReferenceAlias => {
+  const key = v15ReferenceKey(reference);
+  const alias = V15_REFERENCE_ALIAS_ORDER.find(
+    (candidate) => v15ReferenceKey(V15_REFERENCE_BY_ALIAS[candidate]) === key,
+  );
+  assert.notEqual(alias, undefined);
+  return alias!;
+};
+
+const makeV15EndpointAuthority = (
+  authorityKey: V15AuthorityKey,
+  factDescriptor: V15FactDescriptor,
+): V15EndpointAuthority => {
+  const alias = factDescriptor.alias;
+  const evidenceAlias: V15EvidenceAlias = V15_EVIDENCE_ALIAS[alias];
+  const reference = V15_REFERENCE_BY_ALIAS[alias];
+  const sourceReferenceId = "source:" + authorityKey + ":" + evidenceAlias;
+  const locator = "synthetic://" + authorityKey + "/" + evidenceAlias;
+  const seed = makeEnvelope(
+    reference.datasetId,
+    "food_concept",
+    reference.entityId,
+    authorityKey + ":" + evidenceAlias,
+  );
+  const envelope: GovernanceEnvelope = {
+    ...seed,
+    datasetKind: factDescriptor.datasetKind,
+    sourceReferences: [
+      {
+        ...seed.sourceReferences[0]!,
+        referenceId: sourceReferenceId,
+        locator,
+      },
+    ],
+    sourceSnapshots: [
+      {
+        ...seed.sourceSnapshots[0]!,
+        snapshotId: "snapshot:" + authorityKey + ":" + evidenceAlias,
+        referenceId: sourceReferenceId,
+        locator,
+      },
+    ],
+    content: { syntheticToken: authorityKey + ":" + evidenceAlias },
+  };
+  const release = makeRelease(
+    "release:" + authorityKey + ":" + evidenceAlias,
+    envelope,
+  );
+  const bindingId = "binding:" + authorityKey + ":" + evidenceAlias;
+  const binding = {
+    bindingId,
+    datasetId: reference.datasetId,
+    datasetKind: factDescriptor.datasetKind,
+    releaseId: release.releaseId,
+    releaseRevision: release.releaseRevision,
+    releaseDigest: release.contentDigest,
+    sourceReferenceId,
+    sourceReferenceRevision: "revision:1",
+    sourceVersion: "2011" as const,
+  };
+  const window = {
+    bindingId,
+    jurisdictionTimeZone: "Asia/Shanghai" as const,
+    sourceCivilEffectiveDate: "2012-04-20" as const,
+    effectiveFrom: "2012-04-19T16:00:00.000Z" as const,
+    effectiveUntil: "2027-03-15T16:00:00.000Z" as const,
+  };
+  return deepFreeze({
+    alias,
+    reference,
+    release,
+    binding,
+    window,
+    disposition: factDescriptor.disposition,
+  });
+};
+
+const makeV15Graph = (
+  descriptor: V15ScenarioDescriptor,
+): InternalSyntheticGovernedGraph => {
+  const endpointAuthorities = descriptor.facts.map((factDescriptor) =>
+    makeV15EndpointAuthority(descriptor.authorityKey, factDescriptor),
+  );
+  const endpointByAlias = new Map(
+    endpointAuthorities.map((endpoint) => [endpoint.alias, endpoint] as const),
+  );
+  const hardMappings = descriptor.mappings.map((mappingDescriptor) => ({
+    mappingId: mappingDescriptor.mappingId,
+    source: endpointByAlias.get(mappingDescriptor.sourceAlias)!.reference,
+    target: endpointByAlias.get(mappingDescriptor.targetAlias)!.reference,
+    required: true,
+  }));
+  const canonicalReviews = descriptor.mappings.map((mappingDescriptor, index) => {
+    const mappingValue = hardMappings[index]!;
+    const review: MappingReview = {
+      mappingId: mappingDescriptor.mappingId,
+      reviewRevision: 1,
+      contentDigest: "sha256:" + "0".repeat(64),
+      sourceBindingId: endpointByAlias.get(mappingDescriptor.sourceAlias)!.binding.bindingId,
+      targetBindingId: endpointByAlias.get(mappingDescriptor.targetAlias)!.binding.bindingId,
+      source: mappingValue.source,
+      target: mappingValue.target,
+      required: true,
+      reviewStatus: "reviewed",
+      effectiveFrom: "2020-01-01T00:00:00.000Z",
+      effectiveUntil: null,
+    };
+    return {
+      ...review,
+      contentDigest: framedDigest(
+        "stage09p-m1-household-safety-mapping-review-v1",
+        reviewMaterial(review),
+      ),
+    };
+  });
+  const canonicalBindings = endpointAuthorities.map((endpoint) => endpoint.binding);
+  const reverseEvidence = descriptor.rawOrder === "k05_reversed";
+  return deepFreeze({
+    schemaVersion: 2,
+    packId: descriptor.packId,
+    packRevision: descriptor.packRevision,
+    country: "CN",
+    foodRuleRegion: "CN",
+    ruleLanguage: "zh-CN",
+    syntheticSourceUsageStatus: "approved",
+    releaseBindings: reverseEvidence
+      ? [...canonicalBindings].reverse()
+      : canonicalBindings,
+    sourceVersionWindows: endpointAuthorities.map((endpoint) => endpoint.window),
+    mappingReviews: reverseEvidence
+      ? [...canonicalReviews].reverse()
+      : canonicalReviews,
+    catalog: {
+      schemaVersion: 1,
+      releases: endpointAuthorities.map((endpoint) => endpoint.release),
+      hardMappings,
+    },
+    endpointFacts: descriptor.rawFacts.map((rawFact) => ({
+      reference: endpointByAlias.get(rawFact.alias)!.reference,
+      syntheticDisposition: rawFact.disposition,
+    })),
+  });
+};
+
+const makeV15Input = (
+  descriptor: V15ScenarioDescriptor,
+  graph: InternalSyntheticGovernedGraph,
+): HouseholdDishSafetyInput => {
+  const exposureValues = descriptor.exposures.map((exposureDescriptor) => ({
+    exposureId: exposureDescriptor.exposureId,
+    kind: exposureDescriptor.kind,
+    mapping: {
+      status: "mapped" as const,
+      mappingIds: [...exposureDescriptor.mappingIds],
+    },
+  }));
+  const [firstExposure, ...remainingExposures] = exposureValues;
+  assert.notEqual(firstExposure, undefined);
+  const dish: HouseholdDishSafetyInput["dish"] = {
+    dishId: descriptor.dishId,
+    dishRevision: descriptor.dishRevision,
+    contentDigest: "sha256:" + "0".repeat(64),
+    exposures: [firstExposure!, ...remainingExposures],
+  };
+  Object.assign(dish, { contentDigest: dishDigest(dish) });
+  return deepFreeze({
+    schemaVersion: 2,
+    asOf: "2026-08-29T00:00:00.000Z",
+    household: { country: "CN", foodRuleRegion: "CN" },
+    expectedSourcePack: {
+      packId: graph.packId,
+      packRevision: graph.packRevision,
+      contentDigest: graphDigest(graph),
+    },
+    householdProfiles: clone(descriptor.profiles),
+    mealParticipantProfileIds: [...descriptor.participants],
+    guestParticipants: clone(descriptor.guests),
+    dish,
+  });
+};
+
+const makeV15Expected = (
+  input: HouseholdDishSafetyInput,
+  graph: InternalSyntheticGovernedGraph,
+  literal: V12RepairExpectedLiteral,
+): HouseholdDishSafetyEvaluation =>
+  evaluation({
+    inputIssue: null,
+    requestDigest: requestDigest(input),
+    schemaVersion: 2,
+    sourcePackDigest: graphDigest(graph),
+    subjects: literal.subjects,
+    tableReasons: literal.tableReasons,
+    tableStatus: literal.tableStatus,
+  });
+
+const makeV15RepairFixture = (
+  descriptorValue: V15ScenarioDescriptor,
+  graphOverride?: InternalSyntheticGovernedGraph,
+): V12RepairFixture => {
+  const descriptor = deepFreeze(descriptorValue);
+  const graph = graphOverride ?? makeV15Graph(descriptor);
+  const input = makeV15Input(descriptor, graph);
+  return deepFreeze({
+    descriptor,
+    family: descriptor.family,
+    leaf: descriptor.leaf,
+    input,
+    graph,
+    expected: makeV15Expected(input, graph, descriptor.expected),
+  });
+};
+
+const V12_LIFE_01 = makeV15RepairFixture({
+  "authorityKey": "v15:life01",
+  "family": "lifecycle",
+  "leaf": "LIFE-01:main:001",
+  "factPlan": "S5-X",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D-positive",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D-clear",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "allergen",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D-positive",
+    "C"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    },
+    {
+      "profileId": "profile:b",
+      "status": "archived",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_LIFE_02 = makeV15RepairFixture({
+  "authorityKey": "v15:life02",
+  "family": "lifecycle",
+  "leaf": "LIFE-02:main:001",
+  "factPlan": "P5-C1",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C0",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R2",
+      "targetAlias": "R3"
+    },
+    {
+      "role": "C1",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R4",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "datasetKind": "allergen",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C1"
+  ],
+  "noncollisionTargetAliases": [
+    "R3"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:case"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_LIFE_03 = makeV15RepairFixture({
+  "authorityKey": "v15:life03",
+  "family": "lifecycle",
+  "leaf": "LIFE-03:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [
+    {
+      "guestId": "guest:a",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "guest",
+          "id": "guest:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "guest_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_LIFE_04_RELIGIOUS = makeV15RepairFixture({
+  "authorityKey": "v15:life04-religious",
+  "family": "lifecycle",
+  "leaf": "LIFE-04:nonparticipant_religious:001",
+  "factPlan": "S5-X",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D-positive",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D-clear",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D-positive",
+    "C"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:personal",
+          "kind": "religious",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_LIFE_04_SOFT = makeV15RepairFixture({
+  "authorityKey": "v15:life04-soft",
+  "family": "lifecycle",
+  "leaf": "LIFE-04:nonparticipant_soft:002",
+  "factPlan": "S5-X",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D-positive",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D-clear",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D-positive",
+    "C"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:soft",
+          "kind": "ordinary_avoid",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_HH_01 = makeV15RepairFixture({
+  "authorityKey": "v15:hh01",
+  "family": "household_guest",
+  "leaf": "HH-01:main:001",
+  "factPlan": "P5-C1",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C0",
+      "mappingId": "mapping:constraint:hh01:a",
+      "sourceAlias": "R2",
+      "targetAlias": "R3"
+    },
+    {
+      "role": "C1",
+      "mappingId": "mapping:constraint:hh01:b",
+      "sourceAlias": "R4",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "datasetKind": "allergen",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C1"
+  ],
+  "noncollisionTargetAliases": [
+    "R3"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint:hh01:a"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint:hh01:b"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint:hh01:b",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_HH_02A = makeV15RepairFixture({
+  "authorityKey": "v15:hh02a",
+  "family": "household_guest",
+  "leaf": "HH-02a:main:001",
+  "factPlan": "P5-C0",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C0",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C1",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "allergen",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C0"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:case"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_HH_02B = makeV15RepairFixture({
+  "authorityKey": "v15:hh02b",
+  "family": "household_guest",
+  "leaf": "HH-02b:main:001",
+  "factPlan": "P5-C1",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C0",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R2",
+      "targetAlias": "R3"
+    },
+    {
+      "role": "C1",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R4",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "datasetKind": "allergen",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C1"
+  ],
+  "noncollisionTargetAliases": [
+    "R3"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:case"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_G_01 = makeV15RepairFixture({
+  "authorityKey": "v15:g01",
+  "family": "household_guest",
+  "leaf": "G-01:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [
+    {
+      "guestId": "guest:a",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "guest",
+          "id": "guest:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "guest_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_PH_01 = makeV15RepairFixture({
+  "authorityKey": "v15:ph01",
+  "family": "personal_hard",
+  "leaf": "PH-01:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:personal",
+          "kind": "religious",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a",
+    "profile:b"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [
+          {
+            "code": "personal_religious_match",
+            "constraintId": "constraint:personal",
+            "constraintMappingId": "mapping:constraint",
+            "exposureId": "exposure:primary",
+            "exposureKind": "primary",
+            "exposureMappingId": "mapping:dish",
+            "mappingEndpoint": null,
+            "mappingId": null,
+            "scope": "subject",
+            "subject": {
+              "kind": "household_profile",
+              "id": "profile:a"
+            }
+          }
+        ],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:b"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_PH_02 = makeV15RepairFixture({
+  "authorityKey": "v15:ph02",
+  "family": "personal_hard",
+  "leaf": "PH-02:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:personal",
+          "kind": "ethical",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a",
+    "profile:b"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [
+          {
+            "code": "personal_ethical_match",
+            "constraintId": "constraint:personal",
+            "constraintMappingId": "mapping:constraint",
+            "exposureId": "exposure:primary",
+            "exposureKind": "primary",
+            "exposureMappingId": "mapping:dish",
+            "mappingEndpoint": null,
+            "mappingId": null,
+            "scope": "subject",
+            "subject": {
+              "kind": "household_profile",
+              "id": "profile:a"
+            }
+          }
+        ],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:b"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_PH_03 = makeV15RepairFixture({
+  "authorityKey": "v15:ph03",
+  "family": "personal_hard",
+  "leaf": "PH-03:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:personal",
+          "kind": "explicit_strict_avoid",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a",
+    "profile:b"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [
+          {
+            "code": "personal_strict_avoid_match",
+            "constraintId": "constraint:personal",
+            "constraintMappingId": "mapping:constraint",
+            "exposureId": "exposure:primary",
+            "exposureKind": "primary",
+            "exposureMappingId": "mapping:dish",
+            "mappingEndpoint": null,
+            "mappingId": null,
+            "scope": "subject",
+            "subject": {
+              "kind": "household_profile",
+              "id": "profile:a"
+            }
+          }
+        ],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:b"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_SOFT_01 = makeV15RepairFixture({
+  "authorityKey": "v15:soft01",
+  "family": "soft",
+  "leaf": "SOFT-01:main:001",
+  "factPlan": "S5-X",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D-positive",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D-clear",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D-positive",
+    "C"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:soft",
+          "kind": "ordinary_avoid",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [
+          {
+            "code": "soft_ordinary_avoid_match",
+            "constraintId": "constraint:soft",
+            "constraintMappingId": "mapping:constraint",
+            "exposureId": "exposure:primary",
+            "exposureKind": "primary",
+            "exposureMappingId": "mapping:dish",
+            "mappingEndpoint": null,
+            "mappingId": null,
+            "scope": "soft",
+            "subject": {
+              "kind": "household_profile",
+              "id": "profile:a"
+            }
+          }
+        ],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_SOFT_02 = makeV15RepairFixture({
+  "authorityKey": "v15:soft02",
+  "family": "soft",
+  "leaf": "SOFT-02:main:001",
+  "factPlan": "S5-X",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D-positive",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D-clear",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D-positive",
+    "C"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:soft",
+          "kind": "dislike",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [
+          {
+            "code": "soft_dislike_match",
+            "constraintId": "constraint:soft",
+            "constraintMappingId": "mapping:constraint",
+            "exposureId": "exposure:primary",
+            "exposureKind": "primary",
+            "exposureMappingId": "mapping:dish",
+            "mappingEndpoint": null,
+            "mappingId": null,
+            "scope": "soft",
+            "subject": {
+              "kind": "household_profile",
+              "id": "profile:a"
+            }
+          }
+        ],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_SOFT_03 = makeV15RepairFixture({
+  "authorityKey": "v15:soft03",
+  "family": "soft",
+  "leaf": "SOFT-03:main:001",
+  "factPlan": "S5-X",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D-positive",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D-clear",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R4",
+      "targetAlias": "R5"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R4",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R5",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D-positive",
+    "C"
+  ],
+  "noncollisionTargetAliases": [
+    "R5"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:soft",
+          "kind": "reduce",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [
+          {
+            "code": "soft_reduce_match",
+            "constraintId": "constraint:soft",
+            "constraintMappingId": "mapping:constraint",
+            "exposureId": "exposure:primary",
+            "exposureKind": "primary",
+            "exposureMappingId": "mapping:dish",
+            "mappingEndpoint": null,
+            "mappingId": null,
+            "scope": "soft",
+            "subject": {
+              "kind": "household_profile",
+              "id": "profile:a"
+            }
+          }
+        ],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_EXP_01 = makeV15RepairFixture({
+  "authorityKey": "v15:exp01",
+  "family": "exposure",
+  "leaf": "EXP-01:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "primary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_02 = makeV15RepairFixture({
+  "authorityKey": "v15:exp02",
+  "family": "exposure",
+  "leaf": "EXP-02:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "secondary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "secondary",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_03 = makeV15RepairFixture({
+  "authorityKey": "v15:exp03",
+  "family": "exposure",
+  "leaf": "EXP-03:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "seasoning",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "seasoning",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_04 = makeV15RepairFixture({
+  "authorityKey": "v15:exp04",
+  "family": "exposure",
+  "leaf": "EXP-04:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "garnish",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "garnish",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_05 = makeV15RepairFixture({
+  "authorityKey": "v15:exp05",
+  "family": "exposure",
+  "leaf": "EXP-05:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "substitute",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "substitute",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_06 = makeV15RepairFixture({
+  "authorityKey": "v15:exp06",
+  "family": "exposure",
+  "leaf": "EXP-06:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "contains",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "contains",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_07 = makeV15RepairFixture({
+  "authorityKey": "v15:exp07",
+  "family": "exposure",
+  "leaf": "EXP-07:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "may_contain",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "may_contain",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_EXP_08 = makeV15RepairFixture({
+  "authorityKey": "v15:exp08",
+  "family": "exposure",
+  "leaf": "EXP-08:main:001",
+  "factPlan": "P3",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "C",
+      "mappingId": "mapping:constraint",
+      "sourceAlias": "R2",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "allergen",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "POSITIVE_BLOCK"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": "R1",
+  "collisionRoles": [
+    "D",
+    "C"
+  ],
+  "noncollisionTargetAliases": [],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": [
+        {
+          "constraintId": "constraint:allergy",
+          "kind": "allergy",
+          "basis": "explicit_declaration",
+          "mapping": {
+            "status": "mapped",
+            "mappingIds": [
+              "mapping:constraint"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "cross_contact",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "unsuitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [
+      {
+        "code": "household_allergy_match",
+        "constraintId": null,
+        "constraintMappingId": "mapping:constraint",
+        "exposureId": "exposure:primary",
+        "exposureKind": "cross_contact",
+        "exposureMappingId": "mapping:dish",
+        "mappingEndpoint": null,
+        "mappingId": null,
+        "scope": "table",
+        "subject": null
+      }
+    ],
+    "tableStatus": "blocked"
+  }
+});
+
+const V12_K_05_ORIGINAL = makeV15RepairFixture({
+  "authorityKey": "v15:k05",
+  "family": "canonical_digest",
+  "leaf": "K-05:original:001",
+  "factPlan": "K4",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D0",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D1",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R2",
+      "targetAlias": "R3"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": null,
+  "collisionRoles": [],
+  "noncollisionTargetAliases": [
+    "R1",
+    "R3"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    },
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a",
+    "profile:b"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:b"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_K_05_REORDERED = makeV15RepairFixture({
+  "authorityKey": "v15:k05",
+  "family": "canonical_digest",
+  "leaf": "K-05:reordered:002",
+  "factPlan": "K4",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "k05_reversed",
+  "mappings": [
+    {
+      "role": "D0",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    },
+    {
+      "role": "D1",
+      "mappingId": "mapping:case",
+      "sourceAlias": "R2",
+      "targetAlias": "R3"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R2",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R3",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R3",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R2",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": null,
+  "collisionRoles": [],
+  "noncollisionTargetAliases": [
+    "R1",
+    "R3"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:b",
+      "status": "active",
+      "constraints": []
+    },
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:b",
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish",
+        "mapping:case"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      },
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:b"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_D_03A_BASELINE = makeV15RepairFixture({
+  "authorityKey": "v15:d03a",
+  "family": "canonical_digest",
+  "leaf": "D-03a:baseline:001",
+  "factPlan": "D2",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": null,
+  "collisionRoles": [],
+  "noncollisionTargetAliases": [
+    "R1"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_D_03A_CHANGED = makeV15RepairFixture({
+  "authorityKey": "v15:d03a",
+  "family": "canonical_digest",
+  "leaf": "D-03a:changed:002",
+  "factPlan": "D2",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 2,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": null,
+  "collisionRoles": [],
+  "noncollisionTargetAliases": [
+    "R1"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+}, V12_D_03A_BASELINE.graph);
+
+const V12_D_03B_BASELINE = makeV15RepairFixture({
+  "authorityKey": "v15:d03b",
+  "family": "canonical_digest",
+  "leaf": "D-03b:baseline:001",
+  "factPlan": "D2",
+  "packId": "pack:synthetic",
+  "packRevision": 1,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": null,
+  "collisionRoles": [],
+  "noncollisionTargetAliases": [
+    "R1"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+const V12_D_03B_CHANGED = makeV15RepairFixture({
+  "authorityKey": "v15:d03b",
+  "family": "canonical_digest",
+  "leaf": "D-03b:changed:002",
+  "factPlan": "D2",
+  "packId": "pack:synthetic",
+  "packRevision": 2,
+  "dishId": "dish:a",
+  "dishRevision": 1,
+  "rawOrder": "canonical",
+  "mappings": [
+    {
+      "role": "D",
+      "mappingId": "mapping:dish",
+      "sourceAlias": "R0",
+      "targetAlias": "R1"
+    }
+  ],
+  "facts": [
+    {
+      "alias": "R0",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "datasetKind": "food_concept",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "rawFacts": [
+    {
+      "alias": "R0",
+      "disposition": "REVIEWED_CLEAR"
+    },
+    {
+      "alias": "R1",
+      "disposition": "REVIEWED_CLEAR"
+    }
+  ],
+  "sharedTargetAlias": null,
+  "collisionRoles": [],
+  "noncollisionTargetAliases": [
+    "R1"
+  ],
+  "profiles": [
+    {
+      "profileId": "profile:a",
+      "status": "active",
+      "constraints": []
+    }
+  ],
+  "participants": [
+    "profile:a"
+  ],
+  "guests": [],
+  "exposures": [
+    {
+      "exposureId": "exposure:primary",
+      "kind": "primary",
+      "mappingIds": [
+        "mapping:dish"
+      ]
+    }
+  ],
+  "expected": {
+    "subjects": [
+      {
+        "reasons": [],
+        "status": "suitable",
+        "subject": {
+          "kind": "household_profile",
+          "id": "profile:a"
+        }
+      }
+    ],
+    "tableReasons": [],
+    "tableStatus": "allowed"
+  }
+});
+
+
+const V12_REPAIRED_INVOCATIONS: readonly V12RepairFixture[] = deepFreeze([
+  V12_LIFE_01,
+  V12_LIFE_02,
+  V12_LIFE_03,
+  V12_LIFE_04_RELIGIOUS,
+  V12_LIFE_04_SOFT,
+  V12_HH_01,
+  V12_HH_02A,
+  V12_HH_02B,
+  V12_G_01,
+  V12_PH_01,
+  V12_PH_02,
+  V12_PH_03,
+  V12_SOFT_01,
+  V12_SOFT_02,
+  V12_SOFT_03,
+  V12_EXP_01,
+  V12_EXP_02,
+  V12_EXP_03,
+  V12_EXP_04,
+  V12_EXP_05,
+  V12_EXP_06,
+  V12_EXP_07,
+  V12_EXP_08,
+  V12_K_05_ORIGINAL,
+  V12_K_05_REORDERED,
+  V12_D_03A_BASELINE,
+  V12_D_03A_CHANGED,
+  V12_D_03B_BASELINE,
+  V12_D_03B_CHANGED,
+]);
+
+const V12_REPAIRED_LABELS = deepFreeze([
+  "LIFE-01:main:001",
+  "LIFE-02:main:001",
+  "LIFE-03:main:001",
+  "LIFE-04:nonparticipant_religious:001",
+  "LIFE-04:nonparticipant_soft:002",
+  "HH-01:main:001",
+  "HH-02a:main:001",
+  "HH-02b:main:001",
+  "G-01:main:001",
+  "PH-01:main:001",
+  "PH-02:main:001",
+  "PH-03:main:001",
+  "SOFT-01:main:001",
+  "SOFT-02:main:001",
+  "SOFT-03:main:001",
+  "EXP-01:main:001",
+  "EXP-02:main:001",
+  "EXP-03:main:001",
+  "EXP-04:main:001",
+  "EXP-05:main:001",
+  "EXP-06:main:001",
+  "EXP-07:main:001",
+  "EXP-08:main:001",
+  "K-05:original:001",
+  "K-05:reordered:002",
+  "D-03a:baseline:001",
+  "D-03a:changed:002",
+  "D-03b:baseline:001",
+  "D-03b:changed:002",
+] as const);
+
+const assertV12RepairReasonShape = (expected: HouseholdDishSafetyEvaluation): void => {
+  const reasonKeys = [
+    "code",
+    "constraintId",
+    "constraintMappingId",
+    "exposureId",
+    "exposureKind",
+    "exposureMappingId",
+    "mappingEndpoint",
+    "mappingId",
+    "scope",
+    "subject",
+  ].sort(compareUtf8);
+  const reasons = [
+    ...expected.tableReasons,
+    ...expected.subjects.flatMap((subject) => subject.reasons),
+  ];
+  for (const reason of reasons) {
+    assert.deepStrictEqual(Object.keys(reason).sort(compareUtf8), reasonKeys);
+  }
+};
+
+const v15RawFactProjection = (
+  graph: InternalSyntheticGovernedGraph,
+): readonly V15RawFactDescriptor[] =>
+  graph.endpointFacts.map((factValue) => {
+    const disposition = factValue.syntheticDisposition;
+    assert(disposition === "POSITIVE_BLOCK" || disposition === "REVIEWED_CLEAR");
+    return {
+      alias: v15ReferenceAlias(factValue.reference),
+      disposition,
+    };
+  });
+
+const v15CanonicalFactProjection = (
+  graph: InternalSyntheticGovernedGraph,
+): readonly V15RawFactDescriptor[] =>
+  [...v15RawFactProjection(graph)].sort(
+    (left, right) =>
+      V15_REFERENCE_ALIAS_ORDER.indexOf(left.alias) -
+      V15_REFERENCE_ALIAS_ORDER.indexOf(right.alias),
+  );
+
+const v15EndpointAuthority = (
+  graph: InternalSyntheticGovernedGraph,
+  alias: V15ReferenceAlias,
+) => {
+  const reference = V15_REFERENCE_BY_ALIAS[alias];
+  const releases = graph.catalog.releases.filter((release) =>
+    release.envelopes.some(
+      (envelope) => v15ReferenceKey(envelope) === v15ReferenceKey(reference),
+    ),
+  );
+  assert.equal(releases.length, 1);
+  const release = releases[0]!;
+  assert.equal(release.envelopes.length, 1);
+  const envelope = release.envelopes[0]!;
+  const bindings = graph.releaseBindings.filter(
+    (binding) =>
+      binding.datasetId === reference.datasetId &&
+      binding.releaseId === release.releaseId &&
+      binding.releaseRevision === release.releaseRevision &&
+      binding.releaseDigest === release.contentDigest,
+  );
+  assert.equal(bindings.length, 1);
+  const binding = bindings[0]!;
+  const windows = graph.sourceVersionWindows.filter(
+    (window) => window.bindingId === binding.bindingId,
+  );
+  assert.equal(windows.length, 1);
+  const facts = graph.endpointFacts.filter(
+    (factValue) => v15ReferenceKey(factValue.reference) === v15ReferenceKey(reference),
+  );
+  assert.equal(facts.length, 1);
+  return { binding, envelope, fact: facts[0]!, release, window: windows[0]! };
+};
+
+const v15CollectAuthorityStrings = (
+  value: unknown,
+  authorityKey: V15AuthorityKey,
+  output: string[] = [],
+): string[] => {
+  if (typeof value === "string") {
+    if (value.includes(authorityKey)) output.push(value);
+    return output;
+  }
+  if (value === null || typeof value !== "object") return output;
+  if (Array.isArray(value)) {
+    for (const item of value) v15CollectAuthorityStrings(item, authorityKey, output);
+    return output;
+  }
+  for (const item of Object.values(value as Readonly<Record<string, unknown>>)) {
+    v15CollectAuthorityStrings(item, authorityKey, output);
+  }
+  return output;
+};
+
+const assertV15RequestIdentity = (fixture: V12RepairFixture): void => {
+  const descriptor = fixture.descriptor;
+  assert.equal(fixture.graph.packId, descriptor.packId);
+  assert.equal(fixture.input.expectedSourcePack.packId, descriptor.packId);
+  assert.equal(fixture.input.dish.dishId, descriptor.dishId);
+  assert.deepStrictEqual(fixture.input.householdProfiles, descriptor.profiles);
+  assert.deepStrictEqual(fixture.input.mealParticipantProfileIds, descriptor.participants);
+  assert.deepStrictEqual(fixture.input.guestParticipants, descriptor.guests);
+  assert.deepStrictEqual(
+    fixture.input.dish.exposures.map((exposureValue) => ({
+      exposureId: exposureValue.exposureId,
+      kind: exposureValue.kind,
+      mappingIds:
+        exposureValue.mapping.status === "mapped"
+          ? exposureValue.mapping.mappingIds
+          : [],
+    })),
+    descriptor.exposures,
+  );
+
+  const profileIds = fixture.input.householdProfiles.map((value) => value.profileId);
+  const guestIds = fixture.input.guestParticipants.map((value) => value.guestId);
+  const constraintValues = [
+    ...fixture.input.householdProfiles.flatMap((value) => value.constraints),
+    ...fixture.input.guestParticipants.flatMap((value) => value.constraints),
+  ];
+  const selectionMappingIds = [
+    ...fixture.input.dish.exposures.flatMap((value) =>
+      value.mapping.status === "mapped" ? value.mapping.mappingIds : [],
+    ),
+    ...constraintValues.flatMap((value) =>
+      value.mapping.status === "mapped" ? value.mapping.mappingIds : [],
+    ),
+  ];
+  const hardMappingIds = fixture.graph.catalog.hardMappings.map((value) => value.mappingId);
+  for (const value of profileIds) {
+    assert(["profile:a", "profile:b", "profile:archived"].includes(value));
+  }
+  for (const value of guestIds) assert.equal(value, "guest:a");
+  for (const value of constraintValues.map((constraint) => constraint.constraintId)) {
+    assert(["constraint:allergy", "constraint:personal", "constraint:soft"].includes(value));
+  }
+  const ordinaryMappings = ["mapping:dish", "mapping:constraint", "mapping:case"];
+  const hh01Overrides = ["mapping:constraint:hh01:a", "mapping:constraint:hh01:b"];
+  for (const value of [...selectionMappingIds, ...hardMappingIds]) {
+    assert(
+      ordinaryMappings.includes(value) ||
+        (fixture.leaf === "HH-01:main:001" && hh01Overrides.includes(value)),
+    );
+  }
+  if (fixture.leaf !== "HH-01:main:001") {
+    assert.equal([...selectionMappingIds, ...hardMappingIds].some((value) => hh01Overrides.includes(value)), false);
+  }
+  assert.equal(fixture.input.dish.exposures.every((value) =>
+    ["exposure:primary", "exposure:case"].includes(value.exposureId)), true);
+
+  const reasons = [
+    ...fixture.expected.tableReasons,
+    ...fixture.expected.subjects.flatMap((subjectValue) => subjectValue.reasons),
+  ];
+  for (const reasonValue of reasons) {
+    if (reasonValue.constraintId !== null) {
+      assert(["constraint:allergy", "constraint:personal", "constraint:soft"].includes(reasonValue.constraintId));
+    }
+    if (reasonValue.constraintMappingId !== null) {
+      assert(
+        ordinaryMappings.includes(reasonValue.constraintMappingId) ||
+          (fixture.leaf === "HH-01:main:001" &&
+            reasonValue.constraintMappingId === "mapping:constraint:hh01:b"),
+      );
+    }
+    if (reasonValue.exposureId !== null) assert.equal(reasonValue.exposureId, "exposure:primary");
+    if (reasonValue.exposureMappingId !== null) assert.equal(reasonValue.exposureMappingId, "mapping:dish");
+  }
+  for (const material of [
+    fixture.input,
+    fixture.expected,
+    fixture.graph.catalog.hardMappings,
+    fixture.graph.endpointFacts,
+  ]) {
+    const textValue = canonicalJson(material);
+    assert.equal(textValue.includes(descriptor.authorityKey), false);
+    assert.equal(textValue.includes(descriptor.leaf), false);
+    assert.equal(textValue.includes(":v12:"), false);
+    assert.equal(textValue.includes("dish:v12:"), false);
+    assert.equal(textValue.includes("exposure:v12:"), false);
+    assert.equal(textValue.includes("pack:v12:"), false);
+    assert.equal(textValue.includes("dataset:v12:"), false);
+    assert.equal(textValue.includes("entity:v12:"), false);
+  }
+};
+
+const assertV15AuthorityClosure = (fixture: V12RepairFixture): void => {
+  const descriptor = fixture.descriptor;
+  assert.equal(fixture.graph.catalog.releases.length, descriptor.facts.length);
+  assert.equal(fixture.graph.releaseBindings.length, descriptor.facts.length);
+  assert.equal(fixture.graph.sourceVersionWindows.length, descriptor.facts.length);
+  assert.equal(fixture.graph.endpointFacts.length, descriptor.facts.length);
+  assert.equal(fixture.graph.catalog.hardMappings.length, descriptor.mappings.length);
+  assert.equal(fixture.graph.mappingReviews.length, descriptor.mappings.length);
+
+  const expectedAuthorityStrings: string[] = [];
+  for (const factDescriptor of descriptor.facts) {
+    const alias = factDescriptor.alias;
+    const evidenceAlias = V15_EVIDENCE_ALIAS[alias];
+    const expectedReference = V15_REFERENCE_BY_ALIAS[alias];
+    const authority = v15EndpointAuthority(fixture.graph, alias);
+    const releaseId = "release:" + descriptor.authorityKey + ":" + evidenceAlias;
+    const bindingId = "binding:" + descriptor.authorityKey + ":" + evidenceAlias;
+    const sourceReferenceId = "source:" + descriptor.authorityKey + ":" + evidenceAlias;
+    const locator = "synthetic://" + descriptor.authorityKey + "/" + evidenceAlias;
+    const snapshotId = "snapshot:" + descriptor.authorityKey + ":" + evidenceAlias;
+    const syntheticToken = descriptor.authorityKey + ":" + evidenceAlias;
+
+    assert.deepStrictEqual(
+      {
+        datasetId: authority.envelope.datasetId,
+        entityId: authority.envelope.entityId,
+        entityRevision: authority.envelope.entityRevision,
+      },
+      expectedReference,
+    );
+    assert.equal(authority.envelope.datasetKind, factDescriptor.datasetKind);
+    assert.equal(authority.fact.syntheticDisposition, factDescriptor.disposition);
+    assert.equal(authority.release.releaseId, releaseId);
+    assert.equal(authority.release.contentDigest, releaseDigest(authority.release));
+    assert.equal(authority.envelope.sourceReferences.length, 1);
+    assert.equal(authority.envelope.sourceReferences[0]!.referenceId, sourceReferenceId);
+    assert.equal(authority.envelope.sourceReferences[0]!.referenceRevision, "revision:1");
+    assert.equal(authority.envelope.sourceReferences[0]!.locator, locator);
+    assert.equal(authority.envelope.sourceSnapshots.length, 1);
+    assert.equal(authority.envelope.sourceSnapshots[0]!.snapshotId, snapshotId);
+    assert.equal(authority.envelope.sourceSnapshots[0]!.referenceId, sourceReferenceId);
+    assert.equal(authority.envelope.sourceSnapshots[0]!.referenceRevision, "revision:1");
+    assert.equal(authority.envelope.sourceSnapshots[0]!.locator, locator);
+    assert.equal(authority.envelope.sourceSnapshots[0]!.contentDigest, "sha256:" + "1".repeat(64));
+    assert.deepStrictEqual(authority.envelope.content, { syntheticToken });
+    assert.equal(authority.binding.bindingId, bindingId);
+    assert.equal(authority.binding.sourceReferenceId, sourceReferenceId);
+    assert.equal(authority.binding.releaseId, releaseId);
+    assert.equal(authority.binding.releaseDigest, authority.release.contentDigest);
+    assert.equal(authority.binding.sourceReferenceRevision, "revision:1");
+    assert.equal(authority.binding.sourceVersion, "2011");
+    assert.equal(authority.window.bindingId, bindingId);
+    assert(authority.window.effectiveFrom <= fixture.input.asOf);
+    assert(
+      authority.window.effectiveUntil === null ||
+        fixture.input.asOf < authority.window.effectiveUntil,
+    );
+
+    expectedAuthorityStrings.push(
+      releaseId,
+      releaseId,
+      bindingId,
+      bindingId,
+      sourceReferenceId,
+      sourceReferenceId,
+      sourceReferenceId,
+      locator,
+      locator,
+      snapshotId,
+      syntheticToken,
+    );
+  }
+
+  for (const [index, mappingDescriptor] of descriptor.mappings.entries()) {
+    const mappingValue = fixture.graph.catalog.hardMappings[index]!;
+    assert.deepStrictEqual(mappingValue, {
+      mappingId: mappingDescriptor.mappingId,
+      source: V15_REFERENCE_BY_ALIAS[mappingDescriptor.sourceAlias],
+      target: V15_REFERENCE_BY_ALIAS[mappingDescriptor.targetAlias],
+      required: true,
+    });
+    const reviews = fixture.graph.mappingReviews.filter(
+      (review) => review.mappingId === mappingDescriptor.mappingId,
+    );
+    assert.equal(reviews.length, 1);
+    const review = reviews[0]!;
+    const sourceBinding = v15EndpointAuthority(
+      fixture.graph,
+      mappingDescriptor.sourceAlias,
+    ).binding;
+    const targetBinding = v15EndpointAuthority(
+      fixture.graph,
+      mappingDescriptor.targetAlias,
+    ).binding;
+    assert.deepStrictEqual(review.source, mappingValue.source);
+    assert.deepStrictEqual(review.target, mappingValue.target);
+    assert.equal(review.sourceBindingId, sourceBinding.bindingId);
+    assert.equal(review.targetBindingId, targetBinding.bindingId);
+    assert.equal(review.required, true);
+    assert.equal(review.reviewStatus, "reviewed");
+    assert(review.effectiveFrom !== null && review.effectiveFrom <= fixture.input.asOf);
+    assert(review.effectiveUntil === null || fixture.input.asOf < review.effectiveUntil);
+    assert.equal(
+      review.contentDigest,
+      framedDigest("stage09p-m1-household-safety-mapping-review-v1", reviewMaterial(review)),
+    );
+    expectedAuthorityStrings.push(sourceBinding.bindingId, targetBinding.bindingId);
+  }
+
+  const actualAuthorityStrings = v15CollectAuthorityStrings(
+    fixture.graph,
+    descriptor.authorityKey,
+  ).sort(compareUtf8);
+  assert.deepStrictEqual(actualAuthorityStrings, expectedAuthorityStrings.sort(compareUtf8));
+};
+
+const assertV15FactPlan = (fixture: V12RepairFixture): void => {
+  const descriptor = fixture.descriptor;
+  assert.deepStrictEqual(v15RawFactProjection(fixture.graph), descriptor.rawFacts);
+  const expectedCanonical = descriptor.facts.map((factDescriptor) => ({
+    alias: factDescriptor.alias,
+    disposition: factDescriptor.disposition,
+  }));
+  const canonicalProjection = v15CanonicalFactProjection(fixture.graph);
+  assert.deepStrictEqual(canonicalProjection, expectedCanonical);
+  assert.deepStrictEqual(
+    descriptor.facts.map((value) => value.alias),
+    [...descriptor.facts.map((value) => value.alias)].sort(
+      (left, right) =>
+        V15_REFERENCE_ALIAS_ORDER.indexOf(left) -
+        V15_REFERENCE_ALIAS_ORDER.indexOf(right),
+    ),
+  );
+  if (fixture.leaf === "K-05:reordered:002") {
+    assert.deepStrictEqual(descriptor.rawFacts, [
+      { alias: "R3", disposition: "REVIEWED_CLEAR" },
+      { alias: "R2", disposition: "REVIEWED_CLEAR" },
+      { alias: "R1", disposition: "REVIEWED_CLEAR" },
+      { alias: "R0", disposition: "REVIEWED_CLEAR" },
+    ]);
+    assert.notDeepStrictEqual(descriptor.rawFacts, expectedCanonical);
+  } else {
+    assert.deepStrictEqual(descriptor.rawFacts, expectedCanonical);
+  }
+
+  const endpointKeys = new Set<string>();
+  for (const mappingValue of fixture.graph.catalog.hardMappings) {
+    endpointKeys.add(v15ReferenceKey(mappingValue.source));
+    endpointKeys.add(v15ReferenceKey(mappingValue.target));
+  }
+  const factKeys = fixture.graph.endpointFacts.map((factValue) =>
+    v15ReferenceKey(factValue.reference),
+  );
+  assert.equal(new Set(factKeys).size, factKeys.length);
+  assert.deepStrictEqual([...endpointKeys].sort(compareUtf8), [...factKeys].sort(compareUtf8));
+
+  if (descriptor.sharedTargetAlias !== null) {
+    const sharedAuthority = v15EndpointAuthority(
+      fixture.graph,
+      descriptor.sharedTargetAlias,
+    );
+    for (const role of descriptor.collisionRoles) {
+      const mappingDescriptor = descriptor.mappings.find((value) => value.role === role)!;
+      assert.equal(mappingDescriptor.targetAlias, descriptor.sharedTargetAlias);
+      const review = fixture.graph.mappingReviews.find(
+        (value) => value.mappingId === mappingDescriptor.mappingId,
+      )!;
+      assert.equal(review.targetBindingId, sharedAuthority.binding.bindingId);
+    }
+    for (const alias of descriptor.noncollisionTargetAliases) {
+      assert.notEqual(alias, descriptor.sharedTargetAlias);
+      assert.notDeepStrictEqual(
+        V15_REFERENCE_BY_ALIAS[alias],
+        V15_REFERENCE_BY_ALIAS[descriptor.sharedTargetAlias],
+      );
+    }
+  }
+};
+
+const assertV12RepairFixtureBeforeSut = (fixture: V12RepairFixture): void => {
+  assert(V12_REPAIRED_LABELS.includes(fixture.leaf as (typeof V12_REPAIRED_LABELS)[number]));
+  assert(V15_AUTHORITY_KEYS.includes(fixture.descriptor.authorityKey));
+  assertRecursivelyFrozen(fixture.descriptor);
+  assertRecursivelyFrozen(fixture.input);
+  assertRecursivelyFrozen(fixture.graph);
+  assertRecursivelyFrozen(fixture.expected);
+  assert.equal(fixture.input.expectedSourcePack.contentDigest, graphDigest(fixture.graph));
+  assert.equal(fixture.expected.requestDigest, requestDigest(fixture.input));
+  assert.equal(fixture.expected.sourcePackDigest, graphDigest(fixture.graph));
+  assert.deepStrictEqual(
+    {
+      subjects: fixture.expected.subjects,
+      tableReasons: fixture.expected.tableReasons,
+      tableStatus: fixture.expected.tableStatus,
+    },
+    fixture.descriptor.expected,
+  );
+  assertV12RepairReasonShape(fixture.expected);
+  assertV15RequestIdentity(fixture);
+  assertV15FactPlan(fixture);
+  assertV15AuthorityClosure(fixture);
+};
+
+interface V15LifeCounterfactual {
+  readonly label: string;
+  readonly input: HouseholdDishSafetyInput;
+  readonly graph: InternalSyntheticGovernedGraph;
+  readonly expected: HouseholdDishSafetyEvaluation;
+  readonly delta: "status" | "participants";
+}
+
+const makeV15LifeExpected = (
+  input: HouseholdDishSafetyInput,
+  graph: InternalSyntheticGovernedGraph,
+  literal: V12RepairExpectedLiteral,
+): HouseholdDishSafetyEvaluation =>
+  evaluation({
+    inputIssue: null,
+    requestDigest: requestDigest(input),
+    schemaVersion: 2,
+    sourcePackDigest: graphDigest(graph),
+    subjects: literal.subjects,
+    tableReasons: literal.tableReasons,
+    tableStatus: literal.tableStatus,
+  });
+
+const V15_LIFE_01_COUNTERFACTUAL: V15LifeCounterfactual = (() => {
+  const profiles = clone(V12_LIFE_01.input.householdProfiles);
+  Object.assign(
+    profiles.find((value) => value.profileId === "profile:b")!,
+    { status: "active" as const },
+  );
+  const input = deepFreeze({
+    ...clone(V12_LIFE_01.input),
+    householdProfiles: profiles,
+  });
+  const graph = V12_LIFE_01.graph;
+  const expected = makeV15LifeExpected(input, graph, {
+    subjects: [
+      {
+        reasons: [],
+        status: "unsuitable",
+        subject: { kind: "household_profile", id: "profile:a" },
+      },
+    ],
+    tableReasons: [
+      {
+        code: "household_allergy_match",
+        constraintId: null,
+        constraintMappingId: "mapping:constraint",
+        exposureId: "exposure:primary",
+        exposureKind: "primary",
+        exposureMappingId: "mapping:dish",
+        mappingEndpoint: null,
+        mappingId: null,
+        scope: "table",
+        subject: null,
+      },
+    ],
+    tableStatus: "blocked",
+  });
+  return deepFreeze({
+    label: "LIFE-01:status-only:counterfactual",
+    input,
+    graph,
+    expected,
+    delta: "status",
+  });
+})();
+
+const V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL: V15LifeCounterfactual = (() => {
+  const input = deepFreeze({
+    ...clone(V12_LIFE_04_RELIGIOUS.input),
+    mealParticipantProfileIds: ["profile:a", "profile:b"],
+  });
+  const graph = V12_LIFE_04_RELIGIOUS.graph;
+  const expected = makeV15LifeExpected(input, graph, {
+    subjects: [
+      {
+        reasons: [],
+        status: "suitable",
+        subject: { kind: "household_profile", id: "profile:a" },
+      },
+      {
+        reasons: [
+          {
+            code: "personal_religious_match",
+            constraintId: "constraint:personal",
+            constraintMappingId: "mapping:constraint",
+            exposureId: "exposure:primary",
+            exposureKind: "primary",
+            exposureMappingId: "mapping:dish",
+            mappingEndpoint: null,
+            mappingId: null,
+            scope: "subject",
+            subject: { kind: "household_profile", id: "profile:b" },
+          },
+        ],
+        status: "unsuitable",
+        subject: { kind: "household_profile", id: "profile:b" },
+      },
+    ],
+    tableReasons: [],
+    tableStatus: "allowed",
+  });
+  return deepFreeze({
+    label: "LIFE-04:religious-participant-only:counterfactual",
+    input,
+    graph,
+    expected,
+    delta: "participants",
+  });
+})();
+
+const V15_LIFE_04_SOFT_COUNTERFACTUAL: V15LifeCounterfactual = (() => {
+  const input = deepFreeze({
+    ...clone(V12_LIFE_04_SOFT.input),
+    mealParticipantProfileIds: ["profile:a", "profile:b"],
+  });
+  const graph = V12_LIFE_04_SOFT.graph;
+  const expected = makeV15LifeExpected(input, graph, {
+    subjects: [
+      {
+        reasons: [],
+        status: "suitable",
+        subject: { kind: "household_profile", id: "profile:a" },
+      },
+      {
+        reasons: [
+          {
+            code: "soft_ordinary_avoid_match",
+            constraintId: "constraint:soft",
+            constraintMappingId: "mapping:constraint",
+            exposureId: "exposure:primary",
+            exposureKind: "primary",
+            exposureMappingId: "mapping:dish",
+            mappingEndpoint: null,
+            mappingId: null,
+            scope: "soft",
+            subject: { kind: "household_profile", id: "profile:b" },
+          },
+        ],
+        status: "suitable",
+        subject: { kind: "household_profile", id: "profile:b" },
+      },
+    ],
+    tableReasons: [],
+    tableStatus: "allowed",
+  });
+  return deepFreeze({
+    label: "LIFE-04:soft-participant-only:counterfactual",
+    input,
+    graph,
+    expected,
+    delta: "participants",
+  });
+})();
+
+const assertV15LifeCounterfactualBeforeSut = (
+  baseline: V12RepairFixture,
+  counterfactual: V15LifeCounterfactual,
+): void => {
+  assertV12RepairFixtureBeforeSut(baseline);
+  assert.strictEqual(counterfactual.graph, baseline.graph);
+  assertRecursivelyFrozen(counterfactual.input);
+  assertRecursivelyFrozen(counterfactual.graph);
+  assertRecursivelyFrozen(counterfactual.expected);
+  assert.equal(counterfactual.input.expectedSourcePack.contentDigest, graphDigest(counterfactual.graph));
+  assert.equal(counterfactual.expected.requestDigest, requestDigest(counterfactual.input));
+  assert.equal(counterfactual.expected.sourcePackDigest, graphDigest(counterfactual.graph));
+  assertV12RepairReasonShape(counterfactual.expected);
+  assert.deepStrictEqual(
+    counterfactual.input.dish.exposures[0]!.mapping,
+    { status: "mapped", mappingIds: ["mapping:dish", "mapping:case"] },
+  );
+  const clearMapping = counterfactual.graph.catalog.hardMappings.find(
+    (mappingValue) => mappingValue.mappingId === "mapping:case",
+  )!;
+  assert.equal(
+    v15EndpointAuthority(
+      counterfactual.graph,
+      v15ReferenceAlias(clearMapping.source),
+    ).fact.syntheticDisposition,
+    "REVIEWED_CLEAR",
+  );
+  assert.equal(
+    v15EndpointAuthority(
+      counterfactual.graph,
+      v15ReferenceAlias(clearMapping.target),
+    ).fact.syntheticDisposition,
+    "REVIEWED_CLEAR",
+  );
+  const baselineProfileB = baseline.input.householdProfiles.find(
+    (value) => value.profileId === "profile:b",
+  )!;
+  const counterfactualProfileB = counterfactual.input.householdProfiles.find(
+    (value) => value.profileId === "profile:b",
+  )!;
+  if (counterfactual.delta === "status") {
+    assert.equal(baselineProfileB.status, "archived");
+    assert.equal(counterfactualProfileB.status, "active");
+    const projected = clone(counterfactual.input);
+    Object.assign(
+      projected.householdProfiles.find((value) => value.profileId === "profile:b")!,
+      { status: "archived" as const },
+    );
+    assert.deepStrictEqual(projected, baseline.input);
+  } else {
+    assert.equal(baselineProfileB.status, "active");
+    assert.equal(counterfactualProfileB.status, "active");
+    assert.equal(baseline.input.mealParticipantProfileIds.includes("profile:b"), false);
+    assert.equal(counterfactual.input.mealParticipantProfileIds.includes("profile:b"), true);
+    assert.deepStrictEqual(
+      {
+        ...clone(counterfactual.input),
+        mealParticipantProfileIds: [...baseline.input.mealParticipantProfileIds],
+      },
+      baseline.input,
+    );
+  }
+  assert.equal(
+    [
+      ...baseline.expected.tableReasons,
+      ...baseline.expected.subjects.flatMap((value) => value.reasons),
+      ...counterfactual.expected.tableReasons,
+      ...counterfactual.expected.subjects.flatMap((value) => value.reasons),
+    ].some((value) => value.code === "source_reviewed_clear_missing"),
+    false,
+  );
+};
+
 const M0_02A_CLASSIFIER_CATALOG: GovernanceCatalog = (() => {
   const firstRelease = clone(PIPE_FIXTURE.graph.catalog.releases[0]!);
   const envelope = {
@@ -735,6 +5551,109 @@ const makeM0_03Fixture = (
 const M0_03A_FIXTURE = makeM0_03Fixture("duplicate");
 const M0_03B_FIXTURE = makeM0_03Fixture("source_unresolved");
 const M0_03C_FIXTURE = makeM0_03Fixture("target_unresolved");
+
+type V12MappingIsolationKind = "baseline" | "unrelated_unresolved" | "unrelated_duplicate";
+
+interface V12MappingIsolationFixture {
+  readonly kind: V12MappingIsolationKind;
+  readonly input: HouseholdDishSafetyInput;
+  readonly graph: InternalSyntheticGovernedGraph;
+  readonly expected: HouseholdDishSafetyEvaluation;
+  readonly classifierExpected: ReturnType<
+    typeof analyzeHouseholdSafetyOfficialCatalogFindings
+  >;
+}
+
+const makeV12MappingIsolationFixture = (
+  kind: V12MappingIsolationKind,
+): V12MappingIsolationFixture => {
+  const requested = clone(PIPE_FIXTURE.graph.catalog.hardMappings[0]!);
+  const unrequested = {
+    ...clone(requested),
+    mappingId: "mapping:unrequested",
+  };
+  const missingSource = {
+    datasetId: "dataset:missing",
+    entityId: "entity:missing",
+    entityRevision: 1,
+  };
+  const hardMappings =
+    kind === "baseline"
+      ? [requested]
+      : kind === "unrelated_unresolved"
+        ? [requested, { ...unrequested, source: missingSource }]
+        : [requested, unrequested, clone(unrequested)];
+  const graph: InternalSyntheticGovernedGraph = deepFreeze({
+    ...clone(PIPE_FIXTURE.graph),
+    packId: `pack:v12:isolation:${kind}`,
+    catalog: {
+      ...clone(PIPE_FIXTURE.graph.catalog),
+      hardMappings,
+    },
+  });
+  const input: HouseholdDishSafetyInput = deepFreeze({
+    ...clone(PIPE_FIXTURE.input),
+    expectedSourcePack: {
+      packId: graph.packId,
+      packRevision: graph.packRevision,
+      contentDigest: graphDigest(graph),
+    },
+  });
+  const classifierExpected = deepFreeze(
+    kind === "baseline"
+      ? {
+          deferredFindings: [],
+          fatalFindings: [],
+          mappingFindings: [],
+          sourceLicenseNotApproved: false,
+        }
+      : {
+          deferredFindings: [],
+          fatalFindings: [],
+          mappingFindings: [
+            {
+              issue:
+                kind === "unrelated_unresolved"
+                  ? {
+                      code: "HARD_MAPPING_SOURCE_UNRESOLVED" as const,
+                      path: "/hardMappings/1/source",
+                    }
+                  : {
+                      code: "DUPLICATE_HARD_MAPPING" as const,
+                      path: "/hardMappings/2/mappingId",
+                    },
+              mappingId: "mapping:unrequested",
+              scope: "mapping" as const,
+            },
+          ],
+          sourceLicenseNotApproved: false,
+        },
+  );
+  const expected = evaluation({
+    inputIssue: null,
+    requestDigest: requestDigest(input),
+    schemaVersion: 2,
+    sourcePackDigest: graphDigest(graph),
+    subjects: [
+      {
+        reasons: [],
+        status: "suitable",
+        subject: { kind: "household_profile", id: "profile:a" },
+      },
+    ],
+    tableReasons: [],
+    tableStatus: "allowed",
+  });
+  return deepFreeze({ kind, input, graph, expected, classifierExpected });
+};
+
+const V12_MAPPING_ISOLATION_BASELINE = makeV12MappingIsolationFixture("baseline");
+const V12_MAPPING_ISOLATION_UNRESOLVED = makeV12MappingIsolationFixture(
+  "unrelated_unresolved",
+);
+const V12_MAPPING_ISOLATION_DUPLICATE = makeV12MappingIsolationFixture(
+  "unrelated_duplicate",
+);
 
 const PUBLIC_INPUT = (() => {
   const dish: HouseholdDishSafetyInput["dish"] = {
@@ -9861,9 +14780,9 @@ const assertCONTRACT_REGION_04Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_REGION_04_MAIN_001_PIPE);
 };
 const CONTRACT_REGION_04_CASE: ContractCase = deepFreeze({ id: "REGION-04", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","G:/catalog/hardMappings/0/source","G:/catalog/hardMappings/0/target","G:/mappingReviews/0/sourceBindingId","G:/mappingReviews/0/targetBindingId","G:/releaseBindings/0","G:/releaseBindings/1","G:/catalog"], assertConstructibleBeforeSut: assertCONTRACT_REGION_04Constructible, invocations: [MANIFEST_REGION_04_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_LIFE_01_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_LIFE_01_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_LIFE_01_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_LIFE_01_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_LIFE_01); return V12_LIFE_01.input; })();
+const MANIFEST_LIFE_01_MAIN_001_PIPE_GRAPH = V12_LIFE_01.graph;
+const EXPECTED_E_LIFE_01_MAIN_001_PIPE = V12_LIFE_01.expected;
 const MANIFEST_LIFE_01_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:LIFE-01:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_LIFE_01_MAIN_001_PIPE_INPUT, MANIFEST_LIFE_01_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_LIFE_01_MAIN_001_PIPE });
 const assertCONTRACT_LIFE_01Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_LIFE_01_MAIN_001_PIPE_INPUT);
@@ -9871,9 +14790,9 @@ const assertCONTRACT_LIFE_01Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_LIFE_01_MAIN_001_PIPE);
 };
 const CONTRACT_LIFE_01_CASE: ContractCase = deepFreeze({ id: "LIFE-01", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/householdProfiles/1/profileId","I:/householdProfiles/1/status","I:/householdProfiles/1/constraints/0/kind","I:/householdProfiles/1/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1","G:/catalog/hardMappings/2","G:/mappingReviews/2"], assertConstructibleBeforeSut: assertCONTRACT_LIFE_01Constructible, invocations: [MANIFEST_LIFE_01_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_LIFE_02_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_LIFE_02_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_LIFE_02_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_LIFE_02_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_LIFE_02); return V12_LIFE_02.input; })();
+const MANIFEST_LIFE_02_MAIN_001_PIPE_GRAPH = V12_LIFE_02.graph;
+const EXPECTED_E_LIFE_02_MAIN_001_PIPE = V12_LIFE_02.expected;
 const MANIFEST_LIFE_02_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:LIFE-02:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_LIFE_02_MAIN_001_PIPE_INPUT, MANIFEST_LIFE_02_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_LIFE_02_MAIN_001_PIPE });
 const assertCONTRACT_LIFE_02Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_LIFE_02_MAIN_001_PIPE_INPUT);
@@ -9881,9 +14800,9 @@ const assertCONTRACT_LIFE_02Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_LIFE_02_MAIN_001_PIPE);
 };
 const CONTRACT_LIFE_02_CASE: ContractCase = deepFreeze({ id: "LIFE-02", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/householdProfiles/1/profileId","I:/householdProfiles/1/status","I:/householdProfiles/1/constraints/0/kind","I:/householdProfiles/1/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1","G:/catalog/hardMappings/2","G:/mappingReviews/2"], assertConstructibleBeforeSut: assertCONTRACT_LIFE_02Constructible, invocations: [MANIFEST_LIFE_02_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_LIFE_03_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_LIFE_03_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_LIFE_03_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_LIFE_03_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_LIFE_03); return V12_LIFE_03.input; })();
+const MANIFEST_LIFE_03_MAIN_001_PIPE_GRAPH = V12_LIFE_03.graph;
+const EXPECTED_E_LIFE_03_MAIN_001_PIPE = V12_LIFE_03.expected;
 const MANIFEST_LIFE_03_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:LIFE-03:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_LIFE_03_MAIN_001_PIPE_INPUT, MANIFEST_LIFE_03_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_LIFE_03_MAIN_001_PIPE });
 const assertCONTRACT_LIFE_03Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_LIFE_03_MAIN_001_PIPE_INPUT);
@@ -9891,13 +14810,13 @@ const assertCONTRACT_LIFE_03Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_LIFE_03_MAIN_001_PIPE);
 };
 const CONTRACT_LIFE_03_CASE: ContractCase = deepFreeze({ id: "LIFE-03", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/guestParticipants/0/guestId","I:/guestParticipants/0/constraints/0/kind","I:/guestParticipants/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_LIFE_03Constructible, invocations: [MANIFEST_LIFE_03_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_LIFE_04_RELIGIOUS); return V12_LIFE_04_RELIGIOUS.input; })();
+const MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_GRAPH = V12_LIFE_04_RELIGIOUS.graph;
+const EXPECTED_E_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE = V12_LIFE_04_RELIGIOUS.expected;
 const MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:LIFE-04:nonparticipant_religious:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_INPUT, MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_GRAPH), expected: EXPECTED_E_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE });
-const MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_LIFE_04_SOFT); return V12_LIFE_04_SOFT.input; })();
+const MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_GRAPH = V12_LIFE_04_SOFT.graph;
+const EXPECTED_E_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE = V12_LIFE_04_SOFT.expected;
 const MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:LIFE-04:nonparticipant_soft:002:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_INPUT, MANIFEST_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE_GRAPH), expected: EXPECTED_E_LIFE_04_NONPARTICIPANT_SOFT_002_PIPE });
 const assertCONTRACT_LIFE_04Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_LIFE_04_NONPARTICIPANT_RELIGIOUS_001_PIPE_INPUT);
@@ -11228,9 +16147,9 @@ const assertCONTRACT_SUFF_15Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_SUFF_15_MAIN_001_PIPE);
 };
 const CONTRACT_SUFF_15_CASE: ContractCase = deepFreeze({ id: "SUFF-15", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","I:/dish/exposures/0/exposureId","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping","I:/dish/exposures/1/exposureId","I:/dish/exposures/1/kind","I:/dish/exposures/1/mapping","I:/householdProfiles/0/profileId","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints","I:/householdProfiles/1/profileId","I:/householdProfiles/1/status","I:/householdProfiles/1/constraints","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts"], assertConstructibleBeforeSut: assertCONTRACT_SUFF_15Constructible, invocations: [MANIFEST_SUFF_15_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_HH_01_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_HH_01_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_HH_01_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_HH_01_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_HH_01); return V12_HH_01.input; })();
+const MANIFEST_HH_01_MAIN_001_PIPE_GRAPH = V12_HH_01.graph;
+const EXPECTED_E_HH_01_MAIN_001_PIPE = V12_HH_01.expected;
 const MANIFEST_HH_01_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:HH-01:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_HH_01_MAIN_001_PIPE_INPUT, MANIFEST_HH_01_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_HH_01_MAIN_001_PIPE });
 const assertCONTRACT_HH_01Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_HH_01_MAIN_001_PIPE_INPUT);
@@ -11238,9 +16157,9 @@ const assertCONTRACT_HH_01Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_HH_01_MAIN_001_PIPE);
 };
 const CONTRACT_HH_01_CASE: ContractCase = deepFreeze({ id: "HH-01", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/householdProfiles/1/profileId","I:/householdProfiles/1/status","I:/householdProfiles/1/constraints/0/kind","I:/householdProfiles/1/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1","G:/catalog/hardMappings/2","G:/mappingReviews/2","I:/dish/exposures/0/mapping/mappingIds/0","I:/householdProfiles/0/constraints/0/mapping/mappingIds/0","I:/householdProfiles/1/constraints/0/mapping/mappingIds/0","G:/catalog/hardMappings/0/mappingId","G:/catalog/hardMappings/1/mappingId","G:/catalog/hardMappings/2/mappingId","G:/catalog/hardMappings/0/target","G:/catalog/hardMappings/2/target","G:/catalog/hardMappings/1/target"], assertConstructibleBeforeSut: assertCONTRACT_HH_01Constructible, invocations: [MANIFEST_HH_01_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_HH_02A_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_HH_02A_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_HH_02A_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_HH_02A_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_HH_02A); return V12_HH_02A.input; })();
+const MANIFEST_HH_02A_MAIN_001_PIPE_GRAPH = V12_HH_02A.graph;
+const EXPECTED_E_HH_02A_MAIN_001_PIPE = V12_HH_02A.expected;
 const MANIFEST_HH_02A_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:HH-02a:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_HH_02A_MAIN_001_PIPE_INPUT, MANIFEST_HH_02A_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_HH_02A_MAIN_001_PIPE });
 const assertCONTRACT_HH_02AConstructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_HH_02A_MAIN_001_PIPE_INPUT);
@@ -11248,9 +16167,9 @@ const assertCONTRACT_HH_02AConstructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_HH_02A_MAIN_001_PIPE);
 };
 const CONTRACT_HH_02A_CASE: ContractCase = deepFreeze({ id: "HH-02a", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/householdProfiles/1/profileId","I:/householdProfiles/1/status","I:/householdProfiles/1/constraints/0/kind","I:/householdProfiles/1/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1","G:/catalog/hardMappings/2","G:/mappingReviews/2","I:/householdProfiles/1/constraints/0"], assertConstructibleBeforeSut: assertCONTRACT_HH_02AConstructible, invocations: [MANIFEST_HH_02A_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_HH_02B_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_HH_02B_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_HH_02B_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_HH_02B_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_HH_02B); return V12_HH_02B.input; })();
+const MANIFEST_HH_02B_MAIN_001_PIPE_GRAPH = V12_HH_02B.graph;
+const EXPECTED_E_HH_02B_MAIN_001_PIPE = V12_HH_02B.expected;
 const MANIFEST_HH_02B_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:HH-02b:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_HH_02B_MAIN_001_PIPE_INPUT, MANIFEST_HH_02B_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_HH_02B_MAIN_001_PIPE });
 const assertCONTRACT_HH_02BConstructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_HH_02B_MAIN_001_PIPE_INPUT);
@@ -11258,9 +16177,9 @@ const assertCONTRACT_HH_02BConstructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_HH_02B_MAIN_001_PIPE);
 };
 const CONTRACT_HH_02B_CASE: ContractCase = deepFreeze({ id: "HH-02b", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/householdProfiles/1/profileId","I:/householdProfiles/1/status","I:/householdProfiles/1/constraints/0/kind","I:/householdProfiles/1/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1","G:/catalog/hardMappings/2","G:/mappingReviews/2"], assertConstructibleBeforeSut: assertCONTRACT_HH_02BConstructible, invocations: [MANIFEST_HH_02B_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_G_01_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_G_01_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_G_01_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_G_01_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_G_01); return V12_G_01.input; })();
+const MANIFEST_G_01_MAIN_001_PIPE_GRAPH = V12_G_01.graph;
+const EXPECTED_E_G_01_MAIN_001_PIPE = V12_G_01.expected;
 const MANIFEST_G_01_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:G-01:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_G_01_MAIN_001_PIPE_INPUT, MANIFEST_G_01_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_G_01_MAIN_001_PIPE });
 const assertCONTRACT_G_01Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_G_01_MAIN_001_PIPE_INPUT);
@@ -11268,9 +16187,9 @@ const assertCONTRACT_G_01Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_G_01_MAIN_001_PIPE);
 };
 const CONTRACT_G_01_CASE: ContractCase = deepFreeze({ id: "G-01", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/guestParticipants/0/guestId","I:/guestParticipants/0/constraints/0/kind","I:/guestParticipants/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_G_01Constructible, invocations: [MANIFEST_G_01_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_PH_01_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_PH_01_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_PH_01_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_PH_01_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_PH_01); return V12_PH_01.input; })();
+const MANIFEST_PH_01_MAIN_001_PIPE_GRAPH = V12_PH_01.graph;
+const EXPECTED_E_PH_01_MAIN_001_PIPE = V12_PH_01.expected;
 const MANIFEST_PH_01_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:PH-01:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_PH_01_MAIN_001_PIPE_INPUT, MANIFEST_PH_01_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_PH_01_MAIN_001_PIPE });
 const assertCONTRACT_PH_01Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_PH_01_MAIN_001_PIPE_INPUT);
@@ -11278,9 +16197,9 @@ const assertCONTRACT_PH_01Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_PH_01_MAIN_001_PIPE);
 };
 const CONTRACT_PH_01_CASE: ContractCase = deepFreeze({ id: "PH-01", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/mealParticipantProfileIds/0","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_PH_01Constructible, invocations: [MANIFEST_PH_01_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_PH_02_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_PH_02_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_PH_02_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_PH_02_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_PH_02); return V12_PH_02.input; })();
+const MANIFEST_PH_02_MAIN_001_PIPE_GRAPH = V12_PH_02.graph;
+const EXPECTED_E_PH_02_MAIN_001_PIPE = V12_PH_02.expected;
 const MANIFEST_PH_02_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:PH-02:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_PH_02_MAIN_001_PIPE_INPUT, MANIFEST_PH_02_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_PH_02_MAIN_001_PIPE });
 const assertCONTRACT_PH_02Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_PH_02_MAIN_001_PIPE_INPUT);
@@ -11288,9 +16207,9 @@ const assertCONTRACT_PH_02Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_PH_02_MAIN_001_PIPE);
 };
 const CONTRACT_PH_02_CASE: ContractCase = deepFreeze({ id: "PH-02", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/mealParticipantProfileIds/0","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_PH_02Constructible, invocations: [MANIFEST_PH_02_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_PH_03_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_PH_03_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_PH_03_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_PH_03_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_PH_03); return V12_PH_03.input; })();
+const MANIFEST_PH_03_MAIN_001_PIPE_GRAPH = V12_PH_03.graph;
+const EXPECTED_E_PH_03_MAIN_001_PIPE = V12_PH_03.expected;
 const MANIFEST_PH_03_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:PH-03:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_PH_03_MAIN_001_PIPE_INPUT, MANIFEST_PH_03_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_PH_03_MAIN_001_PIPE });
 const assertCONTRACT_PH_03Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_PH_03_MAIN_001_PIPE_INPUT);
@@ -11298,9 +16217,9 @@ const assertCONTRACT_PH_03Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_PH_03_MAIN_001_PIPE);
 };
 const CONTRACT_PH_03_CASE: ContractCase = deepFreeze({ id: "PH-03", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/mealParticipantProfileIds/0","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_PH_03Constructible, invocations: [MANIFEST_PH_03_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_SOFT_01_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_SOFT_01_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_SOFT_01_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_SOFT_01_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_SOFT_01); return V12_SOFT_01.input; })();
+const MANIFEST_SOFT_01_MAIN_001_PIPE_GRAPH = V12_SOFT_01.graph;
+const EXPECTED_E_SOFT_01_MAIN_001_PIPE = V12_SOFT_01.expected;
 const MANIFEST_SOFT_01_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:SOFT-01:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_SOFT_01_MAIN_001_PIPE_INPUT, MANIFEST_SOFT_01_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_SOFT_01_MAIN_001_PIPE });
 const assertCONTRACT_SOFT_01Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_SOFT_01_MAIN_001_PIPE_INPUT);
@@ -11308,9 +16227,9 @@ const assertCONTRACT_SOFT_01Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_SOFT_01_MAIN_001_PIPE);
 };
 const CONTRACT_SOFT_01_CASE: ContractCase = deepFreeze({ id: "SOFT-01", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/mealParticipantProfileIds/0","G:/catalog/hardMappings/1","G:/mappingReviews/1","I:/householdProfiles/0/constraints/0/basis"], assertConstructibleBeforeSut: assertCONTRACT_SOFT_01Constructible, invocations: [MANIFEST_SOFT_01_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_SOFT_02_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_SOFT_02_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_SOFT_02_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_SOFT_02_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_SOFT_02); return V12_SOFT_02.input; })();
+const MANIFEST_SOFT_02_MAIN_001_PIPE_GRAPH = V12_SOFT_02.graph;
+const EXPECTED_E_SOFT_02_MAIN_001_PIPE = V12_SOFT_02.expected;
 const MANIFEST_SOFT_02_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:SOFT-02:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_SOFT_02_MAIN_001_PIPE_INPUT, MANIFEST_SOFT_02_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_SOFT_02_MAIN_001_PIPE });
 const assertCONTRACT_SOFT_02Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_SOFT_02_MAIN_001_PIPE_INPUT);
@@ -11318,9 +16237,9 @@ const assertCONTRACT_SOFT_02Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_SOFT_02_MAIN_001_PIPE);
 };
 const CONTRACT_SOFT_02_CASE: ContractCase = deepFreeze({ id: "SOFT-02", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/mealParticipantProfileIds/0","G:/catalog/hardMappings/1","G:/mappingReviews/1","I:/householdProfiles/0/constraints/0/basis"], assertConstructibleBeforeSut: assertCONTRACT_SOFT_02Constructible, invocations: [MANIFEST_SOFT_02_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_SOFT_03_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_SOFT_03_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_SOFT_03_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_SOFT_03_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_SOFT_03); return V12_SOFT_03.input; })();
+const MANIFEST_SOFT_03_MAIN_001_PIPE_GRAPH = V12_SOFT_03.graph;
+const EXPECTED_E_SOFT_03_MAIN_001_PIPE = V12_SOFT_03.expected;
 const MANIFEST_SOFT_03_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:SOFT-03:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_SOFT_03_MAIN_001_PIPE_INPUT, MANIFEST_SOFT_03_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_SOFT_03_MAIN_001_PIPE });
 const assertCONTRACT_SOFT_03Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_SOFT_03_MAIN_001_PIPE_INPUT);
@@ -11328,9 +16247,9 @@ const assertCONTRACT_SOFT_03Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_SOFT_03_MAIN_001_PIPE);
 };
 const CONTRACT_SOFT_03_CASE: ContractCase = deepFreeze({ id: "SOFT-03", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","I:/mealParticipantProfileIds/0","G:/catalog/hardMappings/1","G:/mappingReviews/1","I:/householdProfiles/0/constraints/0/basis"], assertConstructibleBeforeSut: assertCONTRACT_SOFT_03Constructible, invocations: [MANIFEST_SOFT_03_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_01_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_01_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_01_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_01_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_01); return V12_EXP_01.input; })();
+const MANIFEST_EXP_01_MAIN_001_PIPE_GRAPH = V12_EXP_01.graph;
+const EXPECTED_E_EXP_01_MAIN_001_PIPE = V12_EXP_01.expected;
 const MANIFEST_EXP_01_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-01:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_01_MAIN_001_PIPE_INPUT, MANIFEST_EXP_01_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_01_MAIN_001_PIPE });
 const assertCONTRACT_EXP_01Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_01_MAIN_001_PIPE_INPUT);
@@ -11338,9 +16257,9 @@ const assertCONTRACT_EXP_01Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_01_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_01_CASE: ContractCase = deepFreeze({ id: "EXP-01", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_01Constructible, invocations: [MANIFEST_EXP_01_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_02_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_02_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_02_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_02_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_02); return V12_EXP_02.input; })();
+const MANIFEST_EXP_02_MAIN_001_PIPE_GRAPH = V12_EXP_02.graph;
+const EXPECTED_E_EXP_02_MAIN_001_PIPE = V12_EXP_02.expected;
 const MANIFEST_EXP_02_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-02:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_02_MAIN_001_PIPE_INPUT, MANIFEST_EXP_02_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_02_MAIN_001_PIPE });
 const assertCONTRACT_EXP_02Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_02_MAIN_001_PIPE_INPUT);
@@ -11348,9 +16267,9 @@ const assertCONTRACT_EXP_02Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_02_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_02_CASE: ContractCase = deepFreeze({ id: "EXP-02", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_02Constructible, invocations: [MANIFEST_EXP_02_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_03_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_03_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_03_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_03_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_03); return V12_EXP_03.input; })();
+const MANIFEST_EXP_03_MAIN_001_PIPE_GRAPH = V12_EXP_03.graph;
+const EXPECTED_E_EXP_03_MAIN_001_PIPE = V12_EXP_03.expected;
 const MANIFEST_EXP_03_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-03:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_03_MAIN_001_PIPE_INPUT, MANIFEST_EXP_03_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_03_MAIN_001_PIPE });
 const assertCONTRACT_EXP_03Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_03_MAIN_001_PIPE_INPUT);
@@ -11358,9 +16277,9 @@ const assertCONTRACT_EXP_03Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_03_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_03_CASE: ContractCase = deepFreeze({ id: "EXP-03", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_03Constructible, invocations: [MANIFEST_EXP_03_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_04_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_04_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_04_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_04_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_04); return V12_EXP_04.input; })();
+const MANIFEST_EXP_04_MAIN_001_PIPE_GRAPH = V12_EXP_04.graph;
+const EXPECTED_E_EXP_04_MAIN_001_PIPE = V12_EXP_04.expected;
 const MANIFEST_EXP_04_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-04:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_04_MAIN_001_PIPE_INPUT, MANIFEST_EXP_04_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_04_MAIN_001_PIPE });
 const assertCONTRACT_EXP_04Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_04_MAIN_001_PIPE_INPUT);
@@ -11368,9 +16287,9 @@ const assertCONTRACT_EXP_04Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_04_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_04_CASE: ContractCase = deepFreeze({ id: "EXP-04", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_04Constructible, invocations: [MANIFEST_EXP_04_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_05_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_05_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_05_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_05_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_05); return V12_EXP_05.input; })();
+const MANIFEST_EXP_05_MAIN_001_PIPE_GRAPH = V12_EXP_05.graph;
+const EXPECTED_E_EXP_05_MAIN_001_PIPE = V12_EXP_05.expected;
 const MANIFEST_EXP_05_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-05:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_05_MAIN_001_PIPE_INPUT, MANIFEST_EXP_05_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_05_MAIN_001_PIPE });
 const assertCONTRACT_EXP_05Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_05_MAIN_001_PIPE_INPUT);
@@ -11378,9 +16297,9 @@ const assertCONTRACT_EXP_05Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_05_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_05_CASE: ContractCase = deepFreeze({ id: "EXP-05", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_05Constructible, invocations: [MANIFEST_EXP_05_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_06_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_06_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_06_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_06_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_06); return V12_EXP_06.input; })();
+const MANIFEST_EXP_06_MAIN_001_PIPE_GRAPH = V12_EXP_06.graph;
+const EXPECTED_E_EXP_06_MAIN_001_PIPE = V12_EXP_06.expected;
 const MANIFEST_EXP_06_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-06:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_06_MAIN_001_PIPE_INPUT, MANIFEST_EXP_06_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_06_MAIN_001_PIPE });
 const assertCONTRACT_EXP_06Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_06_MAIN_001_PIPE_INPUT);
@@ -11388,9 +16307,9 @@ const assertCONTRACT_EXP_06Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_06_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_06_CASE: ContractCase = deepFreeze({ id: "EXP-06", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_06Constructible, invocations: [MANIFEST_EXP_06_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_07_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_07_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_07_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_07_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_07); return V12_EXP_07.input; })();
+const MANIFEST_EXP_07_MAIN_001_PIPE_GRAPH = V12_EXP_07.graph;
+const EXPECTED_E_EXP_07_MAIN_001_PIPE = V12_EXP_07.expected;
 const MANIFEST_EXP_07_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-07:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_07_MAIN_001_PIPE_INPUT, MANIFEST_EXP_07_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_07_MAIN_001_PIPE });
 const assertCONTRACT_EXP_07Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_07_MAIN_001_PIPE_INPUT);
@@ -11398,9 +16317,9 @@ const assertCONTRACT_EXP_07Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_EXP_07_MAIN_001_PIPE);
 };
 const CONTRACT_EXP_07_CASE: ContractCase = deepFreeze({ id: "EXP-07", route: ["PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts","I:/householdProfiles/0/status","I:/householdProfiles/0/constraints/0/kind","I:/householdProfiles/0/constraints/0/mapping","G:/catalog/hardMappings/1","G:/mappingReviews/1"], assertConstructibleBeforeSut: assertCONTRACT_EXP_07Constructible, invocations: [MANIFEST_EXP_07_MAIN_001_PIPE_INVOCATION] });
-const MANIFEST_EXP_08_MAIN_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_EXP_08_MAIN_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_EXP_08_MAIN_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_EXP_08_MAIN_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_EXP_08); return V12_EXP_08.input; })();
+const MANIFEST_EXP_08_MAIN_001_PIPE_GRAPH = V12_EXP_08.graph;
+const EXPECTED_E_EXP_08_MAIN_001_PIPE = V12_EXP_08.expected;
 const MANIFEST_EXP_08_MAIN_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:EXP-08:main:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_EXP_08_MAIN_001_PIPE_INPUT, MANIFEST_EXP_08_MAIN_001_PIPE_GRAPH), expected: EXPECTED_E_EXP_08_MAIN_001_PIPE });
 const assertCONTRACT_EXP_08Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_EXP_08_MAIN_001_PIPE_INPUT);
@@ -12130,13 +17049,13 @@ const assertCONTRACT_K_04Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_K_04_100_101_KERNEL);
 };
 const CONTRACT_K_04_CASE: ContractCase = deepFreeze({ id: "K-04", route: ["ANALYZE","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL","KERNEL"], authoritativeInputFields: ["scenario:/schemaVersion","scenario:/subjects","scenario:/tableKnownHardReasons","scenario:/tableUncertaintyReasons","scenario:/subjectKnownHardReasons","scenario:/subjectUncertaintyReasons","scenario:/softReasons"], assertConstructibleBeforeSut: assertCONTRACT_K_04Constructible, invocations: [MANIFEST_K_04_ANALYZE_ONCE_001_ANALYZE_INVOCATION,MANIFEST_K_04_001_002_KERNEL_INVOCATION,MANIFEST_K_04_002_003_KERNEL_INVOCATION,MANIFEST_K_04_003_004_KERNEL_INVOCATION,MANIFEST_K_04_004_005_KERNEL_INVOCATION,MANIFEST_K_04_005_006_KERNEL_INVOCATION,MANIFEST_K_04_006_007_KERNEL_INVOCATION,MANIFEST_K_04_007_008_KERNEL_INVOCATION,MANIFEST_K_04_008_009_KERNEL_INVOCATION,MANIFEST_K_04_009_010_KERNEL_INVOCATION,MANIFEST_K_04_010_011_KERNEL_INVOCATION,MANIFEST_K_04_011_012_KERNEL_INVOCATION,MANIFEST_K_04_012_013_KERNEL_INVOCATION,MANIFEST_K_04_013_014_KERNEL_INVOCATION,MANIFEST_K_04_014_015_KERNEL_INVOCATION,MANIFEST_K_04_015_016_KERNEL_INVOCATION,MANIFEST_K_04_016_017_KERNEL_INVOCATION,MANIFEST_K_04_017_018_KERNEL_INVOCATION,MANIFEST_K_04_018_019_KERNEL_INVOCATION,MANIFEST_K_04_019_020_KERNEL_INVOCATION,MANIFEST_K_04_020_021_KERNEL_INVOCATION,MANIFEST_K_04_021_022_KERNEL_INVOCATION,MANIFEST_K_04_022_023_KERNEL_INVOCATION,MANIFEST_K_04_023_024_KERNEL_INVOCATION,MANIFEST_K_04_024_025_KERNEL_INVOCATION,MANIFEST_K_04_025_026_KERNEL_INVOCATION,MANIFEST_K_04_026_027_KERNEL_INVOCATION,MANIFEST_K_04_027_028_KERNEL_INVOCATION,MANIFEST_K_04_028_029_KERNEL_INVOCATION,MANIFEST_K_04_029_030_KERNEL_INVOCATION,MANIFEST_K_04_030_031_KERNEL_INVOCATION,MANIFEST_K_04_031_032_KERNEL_INVOCATION,MANIFEST_K_04_032_033_KERNEL_INVOCATION,MANIFEST_K_04_033_034_KERNEL_INVOCATION,MANIFEST_K_04_034_035_KERNEL_INVOCATION,MANIFEST_K_04_035_036_KERNEL_INVOCATION,MANIFEST_K_04_036_037_KERNEL_INVOCATION,MANIFEST_K_04_037_038_KERNEL_INVOCATION,MANIFEST_K_04_038_039_KERNEL_INVOCATION,MANIFEST_K_04_039_040_KERNEL_INVOCATION,MANIFEST_K_04_040_041_KERNEL_INVOCATION,MANIFEST_K_04_041_042_KERNEL_INVOCATION,MANIFEST_K_04_042_043_KERNEL_INVOCATION,MANIFEST_K_04_043_044_KERNEL_INVOCATION,MANIFEST_K_04_044_045_KERNEL_INVOCATION,MANIFEST_K_04_045_046_KERNEL_INVOCATION,MANIFEST_K_04_046_047_KERNEL_INVOCATION,MANIFEST_K_04_047_048_KERNEL_INVOCATION,MANIFEST_K_04_048_049_KERNEL_INVOCATION,MANIFEST_K_04_049_050_KERNEL_INVOCATION,MANIFEST_K_04_050_051_KERNEL_INVOCATION,MANIFEST_K_04_051_052_KERNEL_INVOCATION,MANIFEST_K_04_052_053_KERNEL_INVOCATION,MANIFEST_K_04_053_054_KERNEL_INVOCATION,MANIFEST_K_04_054_055_KERNEL_INVOCATION,MANIFEST_K_04_055_056_KERNEL_INVOCATION,MANIFEST_K_04_056_057_KERNEL_INVOCATION,MANIFEST_K_04_057_058_KERNEL_INVOCATION,MANIFEST_K_04_058_059_KERNEL_INVOCATION,MANIFEST_K_04_059_060_KERNEL_INVOCATION,MANIFEST_K_04_060_061_KERNEL_INVOCATION,MANIFEST_K_04_061_062_KERNEL_INVOCATION,MANIFEST_K_04_062_063_KERNEL_INVOCATION,MANIFEST_K_04_063_064_KERNEL_INVOCATION,MANIFEST_K_04_064_065_KERNEL_INVOCATION,MANIFEST_K_04_065_066_KERNEL_INVOCATION,MANIFEST_K_04_066_067_KERNEL_INVOCATION,MANIFEST_K_04_067_068_KERNEL_INVOCATION,MANIFEST_K_04_068_069_KERNEL_INVOCATION,MANIFEST_K_04_069_070_KERNEL_INVOCATION,MANIFEST_K_04_070_071_KERNEL_INVOCATION,MANIFEST_K_04_071_072_KERNEL_INVOCATION,MANIFEST_K_04_072_073_KERNEL_INVOCATION,MANIFEST_K_04_073_074_KERNEL_INVOCATION,MANIFEST_K_04_074_075_KERNEL_INVOCATION,MANIFEST_K_04_075_076_KERNEL_INVOCATION,MANIFEST_K_04_076_077_KERNEL_INVOCATION,MANIFEST_K_04_077_078_KERNEL_INVOCATION,MANIFEST_K_04_078_079_KERNEL_INVOCATION,MANIFEST_K_04_079_080_KERNEL_INVOCATION,MANIFEST_K_04_080_081_KERNEL_INVOCATION,MANIFEST_K_04_081_082_KERNEL_INVOCATION,MANIFEST_K_04_082_083_KERNEL_INVOCATION,MANIFEST_K_04_083_084_KERNEL_INVOCATION,MANIFEST_K_04_084_085_KERNEL_INVOCATION,MANIFEST_K_04_085_086_KERNEL_INVOCATION,MANIFEST_K_04_086_087_KERNEL_INVOCATION,MANIFEST_K_04_087_088_KERNEL_INVOCATION,MANIFEST_K_04_088_089_KERNEL_INVOCATION,MANIFEST_K_04_089_090_KERNEL_INVOCATION,MANIFEST_K_04_090_091_KERNEL_INVOCATION,MANIFEST_K_04_091_092_KERNEL_INVOCATION,MANIFEST_K_04_092_093_KERNEL_INVOCATION,MANIFEST_K_04_093_094_KERNEL_INVOCATION,MANIFEST_K_04_094_095_KERNEL_INVOCATION,MANIFEST_K_04_095_096_KERNEL_INVOCATION,MANIFEST_K_04_096_097_KERNEL_INVOCATION,MANIFEST_K_04_097_098_KERNEL_INVOCATION,MANIFEST_K_04_098_099_KERNEL_INVOCATION,MANIFEST_K_04_099_100_KERNEL_INVOCATION,MANIFEST_K_04_100_101_KERNEL_INVOCATION] });
-const MANIFEST_K_05_ORIGINAL_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_K_05_ORIGINAL_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_K_05_ORIGINAL_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_K_05_ORIGINAL_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_K_05_ORIGINAL); return V12_K_05_ORIGINAL.input; })();
+const MANIFEST_K_05_ORIGINAL_001_PIPE_GRAPH = V12_K_05_ORIGINAL.graph;
+const EXPECTED_E_K_05_ORIGINAL_001_PIPE = V12_K_05_ORIGINAL.expected;
 const MANIFEST_K_05_ORIGINAL_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:K-05:original:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_K_05_ORIGINAL_001_PIPE_INPUT, MANIFEST_K_05_ORIGINAL_001_PIPE_GRAPH), expected: EXPECTED_E_K_05_ORIGINAL_001_PIPE });
-const MANIFEST_K_05_REORDERED_002_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_K_05_REORDERED_002_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_K_05_REORDERED_002_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_K_05_REORDERED_002_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_K_05_REORDERED); return V12_K_05_REORDERED.input; })();
+const MANIFEST_K_05_REORDERED_002_PIPE_GRAPH = V12_K_05_REORDERED.graph;
+const EXPECTED_E_K_05_REORDERED_002_PIPE = V12_K_05_REORDERED.expected;
 const MANIFEST_K_05_REORDERED_002_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:K-05:reordered:002:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_K_05_REORDERED_002_PIPE_INPUT, MANIFEST_K_05_REORDERED_002_PIPE_GRAPH), expected: EXPECTED_E_K_05_REORDERED_002_PIPE });
 const assertCONTRACT_K_05Constructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_K_05_ORIGINAL_001_PIPE_INPUT);
@@ -12424,13 +17343,13 @@ const assertCONTRACT_D_02Constructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_D_02_MAIN_002_KERNEL);
 };
 const CONTRACT_D_02_CASE: ContractCase = deepFreeze({ id: "D-02", route: ["ANALYZE","KERNEL"], authoritativeInputFields: ["scenario:/schemaVersion","scenario:/subjects","scenario:/tableKnownHardReasons","scenario:/tableUncertaintyReasons","scenario:/subjectKnownHardReasons","scenario:/subjectUncertaintyReasons","scenario:/softReasons"], assertConstructibleBeforeSut: assertCONTRACT_D_02Constructible, invocations: [MANIFEST_D_02_MAIN_001_ANALYZE_INVOCATION,MANIFEST_D_02_MAIN_002_KERNEL_INVOCATION] });
-const MANIFEST_D_03A_BASELINE_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_D_03A_BASELINE_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_D_03A_BASELINE_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_D_03A_BASELINE_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_D_03A_BASELINE); return V12_D_03A_BASELINE.input; })();
+const MANIFEST_D_03A_BASELINE_001_PIPE_GRAPH = V12_D_03A_BASELINE.graph;
+const EXPECTED_E_D_03A_BASELINE_001_PIPE = V12_D_03A_BASELINE.expected;
 const MANIFEST_D_03A_BASELINE_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:D-03a:baseline:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_D_03A_BASELINE_001_PIPE_INPUT, MANIFEST_D_03A_BASELINE_001_PIPE_GRAPH), expected: EXPECTED_E_D_03A_BASELINE_001_PIPE });
-const MANIFEST_D_03A_CHANGED_002_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_D_03A_CHANGED_002_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_D_03A_CHANGED_002_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_D_03A_CHANGED_002_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_D_03A_CHANGED); return V12_D_03A_CHANGED.input; })();
+const MANIFEST_D_03A_CHANGED_002_PIPE_GRAPH = V12_D_03A_CHANGED.graph;
+const EXPECTED_E_D_03A_CHANGED_002_PIPE = V12_D_03A_CHANGED.expected;
 const MANIFEST_D_03A_CHANGED_002_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:D-03a:changed:002:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_D_03A_CHANGED_002_PIPE_INPUT, MANIFEST_D_03A_CHANGED_002_PIPE_GRAPH), expected: EXPECTED_E_D_03A_CHANGED_002_PIPE });
 const assertCONTRACT_D_03AConstructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_D_03A_BASELINE_001_PIPE_INPUT);
@@ -12441,13 +17360,13 @@ const assertCONTRACT_D_03AConstructible = (): void => {
   assertRecursivelyFrozen(EXPECTED_E_D_03A_CHANGED_002_PIPE);
 };
 const CONTRACT_D_03A_CASE: ContractCase = deepFreeze({ id: "D-03a", route: ["PIPE","PIPE"], authoritativeInputFields: ["I:/schemaVersion","I:/asOf","I:/household/country","I:/household/foodRuleRegion","I:/expectedSourcePack/packId","I:/expectedSourcePack/packRevision","I:/expectedSourcePack/contentDigest","I:/householdProfiles","I:/mealParticipantProfileIds","I:/guestParticipants","I:/dish/dishId","I:/dish/dishRevision","I:/dish/contentDigest","I:/dish/exposures","I:/dish/exposures/0/kind","I:/dish/exposures/0/mapping/status","I:/dish/exposures/0/mapping/mappingIds","G:/schemaVersion","G:/packId","G:/packRevision","G:/country","G:/foodRuleRegion","G:/ruleLanguage","G:/syntheticSourceUsageStatus","G:/catalog/releases","G:/catalog/hardMappings","G:/releaseBindings","G:/sourceVersionWindows","G:/mappingReviews","G:/endpointFacts"], assertConstructibleBeforeSut: assertCONTRACT_D_03AConstructible, invocations: [MANIFEST_D_03A_BASELINE_001_PIPE_INVOCATION,MANIFEST_D_03A_CHANGED_002_PIPE_INVOCATION] });
-const MANIFEST_D_03B_BASELINE_001_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_D_03B_BASELINE_001_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_D_03B_BASELINE_001_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_D_03B_BASELINE_001_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_D_03B_BASELINE); return V12_D_03B_BASELINE.input; })();
+const MANIFEST_D_03B_BASELINE_001_PIPE_GRAPH = V12_D_03B_BASELINE.graph;
+const EXPECTED_E_D_03B_BASELINE_001_PIPE = V12_D_03B_BASELINE.expected;
 const MANIFEST_D_03B_BASELINE_001_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:D-03b:baseline:001:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_D_03B_BASELINE_001_PIPE_INPUT, MANIFEST_D_03B_BASELINE_001_PIPE_GRAPH), expected: EXPECTED_E_D_03B_BASELINE_001_PIPE });
-const MANIFEST_D_03B_CHANGED_002_PIPE_INPUT = deepFreeze<HouseholdDishSafetyInput>({"schemaVersion":2,"asOf":"2026-08-29T00:00:00.000Z","household":{"country":"CN","foodRuleRegion":"CN"},"expectedSourcePack":{"packId":"pack:synthetic","packRevision":1,"contentDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e"},"householdProfiles":[{"profileId":"profile:a","status":"active","constraints":[]}],"mealParticipantProfileIds":["profile:a"],"guestParticipants":[],"dish":{"dishId":"dish:a","dishRevision":1,"contentDigest":"sha256:ff55058e2df816af575d059e3648e5d782d1326b9815afd31dd606e2d20d3087","exposures":[{"exposureId":"exposure:a","kind":"primary","mapping":{"status":"mapped","mappingIds":["mapping:case"]}}]}});
-const MANIFEST_D_03B_CHANGED_002_PIPE_GRAPH = deepFreeze({"schemaVersion":2,"packId":"pack:synthetic","packRevision":1,"country":"CN","foodRuleRegion":"CN","ruleLanguage":"zh-CN","syntheticSourceUsageStatus":"approved","releaseBindings":[{"bindingId":"binding:source","datasetId":"dataset:source","datasetKind":"food_concept","releaseId":"release:source","releaseRevision":1,"releaseDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","sourceReferenceId":"source:source","sourceReferenceRevision":"revision:1","sourceVersion":"2011"},{"bindingId":"binding:target","datasetId":"dataset:target","datasetKind":"food_concept","releaseId":"release:target","releaseRevision":1,"releaseDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","sourceReferenceId":"source:target","sourceReferenceRevision":"revision:1","sourceVersion":"2011"}],"sourceVersionWindows":[{"bindingId":"binding:source","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"},{"bindingId":"binding:target","jurisdictionTimeZone":"Asia/Shanghai","sourceCivilEffectiveDate":"2012-04-20","effectiveFrom":"2012-04-19T16:00:00.000Z","effectiveUntil":"2027-03-15T16:00:00.000Z"}],"mappingReviews":[{"mappingId":"mapping:case","reviewRevision":1,"contentDigest":"sha256:9259d2c31f55256b523c245a7196adc907de8d1cdc47fb1dd5543fa696e22b18","sourceBindingId":"binding:source","targetBindingId":"binding:target","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true,"reviewStatus":"reviewed","effectiveFrom":"2020-01-01T00:00:00.000Z","effectiveUntil":null}],"catalog":{"schemaVersion":1,"releases":[{"schemaVersion":1,"releaseId":"release:source","releaseRevision":1,"contentDigest":"sha256:a251455a76e8f7e54f4b0bbfaeb242894e75017f2dfbe3fcc21ef31d6c72686e","envelopes":[{"schemaVersion":1,"datasetId":"dataset:source","datasetKind":"food_concept","entityId":"entity:source","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source"}],"sourceSnapshots":[{"snapshotId":"snapshot:source","referenceId":"source:source","referenceRevision":"revision:1","locator":"synthetic://source","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"source"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:target","releaseRevision":1,"contentDigest":"sha256:23bedfd67e105e0f438fd1d6cc87a5b354e6f4e73bdb20a1bad15a8ee3ee7ff3","envelopes":[{"schemaVersion":1,"datasetId":"dataset:target","datasetKind":"food_concept","entityId":"entity:target","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target"}],"sourceSnapshots":[{"snapshotId":"snapshot:target","referenceId":"source:target","referenceRevision":"revision:1","locator":"synthetic://target","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["CN"],"languages":["zh-CN"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"target"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]},{"schemaVersion":1,"releaseId":"release:unrelated","releaseRevision":1,"contentDigest":"sha256:09201b4c9c3786315d425cedf5e32b4f925099e3f5977acccff0acce8bb56308","envelopes":[{"schemaVersion":1,"datasetId":"dataset:unrelated","datasetKind":"food_concept","entityId":"entity:unrelated","entityRevision":1,"lifecycleStatus":"active","owner":{"actorId":"institution:test-owner","role":"institutional_owner"},"approvers":[{"actorId":"institution:test-approver","role":"institutional_approver"}],"sourceTier":"L1","sourceReferences":[{"referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated"}],"sourceSnapshots":[{"snapshotId":"snapshot:unrelated","referenceId":"source:unrelated","referenceRevision":"revision:1","locator":"synthetic://unrelated","contentDigest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","retrievedAt":"2026-08-28T00:00:00.000Z"}],"applicableRegions":["US"],"languages":["en-US"],"licenseStatus":"approved","licenseReference":"synthetic://license","retrievedAt":"2026-08-28T00:00:00.000Z","reviewedAt":"2026-08-28T00:00:00.000Z","reviewDueAt":"2028-08-28T00:00:00.000Z","aliases":[],"supersededBy":null,"withdrawalState":"not_withdrawn","withdrawalReason":null,"withdrawnAt":null,"content":{"syntheticToken":"unrelated"},"syntheticEvidence":{"classification":"fully_synthetic","generator":"stage09p-m0-fixture-v1","containsRealUserData":false,"containsRealFoodFacts":false,"purpose":"governance-format-and-fail-closed-testing-only"}}]}],"hardMappings":[{"mappingId":"mapping:case","source":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"target":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"required":true}]},"endpointFacts":[{"reference":{"datasetId":"dataset:source","entityId":"entity:source","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"},{"reference":{"datasetId":"dataset:target","entityId":"entity:target","entityRevision":1},"syntheticDisposition":"REVIEWED_CLEAR"}]});
-const EXPECTED_E_D_03B_CHANGED_002_PIPE = deepFreeze<HouseholdDishSafetyEvaluation>({"evaluationDigest":"sha256:d046caeb761ffb929ecdf0f5f408a20c7cce05504bcde2e54a36faf8d910409f","inputIssue":null,"requestDigest":"sha256:634627260e7e772de7c045cfb9230cb26ea8d6b82827d68c342d36ba49ab348c","schemaVersion":2,"sourcePackDigest":"sha256:73ec1f0e6c6050f7dd7661fad2cc91d788291017f6f2348e8a15baef022eae2e","subjects":[{"reasons":[],"status":"suitable","subject":{"kind":"household_profile","id":"profile:a"}}],"tableReasons":[],"tableStatus":"allowed"});
+const MANIFEST_D_03B_CHANGED_002_PIPE_INPUT = (() => { assertV12RepairFixtureBeforeSut(V12_D_03B_CHANGED); return V12_D_03B_CHANGED.input; })();
+const MANIFEST_D_03B_CHANGED_002_PIPE_GRAPH = V12_D_03B_CHANGED.graph;
+const EXPECTED_E_D_03B_CHANGED_002_PIPE = V12_D_03B_CHANGED.expected;
 const MANIFEST_D_03B_CHANGED_002_PIPE_INVOCATION: ContractInvocation = Object.freeze({ route: "PIPE", oracleId: "E:D-03b:changed:002:PIPE", invokeSut: () => __testOnlyEvaluateGovernedHouseholdSafetyScenario(MANIFEST_D_03B_CHANGED_002_PIPE_INPUT, MANIFEST_D_03B_CHANGED_002_PIPE_GRAPH), expected: EXPECTED_E_D_03B_CHANGED_002_PIPE });
 const assertCONTRACT_D_03BConstructible = (): void => {
   assertRecursivelyFrozen(MANIFEST_D_03B_BASELINE_001_PIPE_INPUT);
@@ -12999,6 +17918,314 @@ test("PIPE green uses production input, strict synthetic graph, review and facts
     ),
     PIPE_FIXTURE.expected,
   );
+});
+
+test("v1.5 repaired invocations have exact identity and executable oracle cardinalities", () => {
+  assert.equal(V12_REPAIRED_INVOCATIONS.length, 29);
+  assert.deepStrictEqual(
+    V12_REPAIRED_INVOCATIONS.map((fixture) => fixture.leaf),
+    V12_REPAIRED_LABELS,
+  );
+  const familyCounts = Object.fromEntries(
+    [...new Set(V12_REPAIRED_INVOCATIONS.map((fixture) => fixture.family))]
+      .sort(compareUtf8)
+      .map((family) => [
+        family,
+        V12_REPAIRED_INVOCATIONS.filter((fixture) => fixture.family === family).length,
+      ]),
+  );
+  assert.deepStrictEqual(familyCounts, {
+    canonical_digest: 6,
+    exposure: 8,
+    household_guest: 4,
+    lifecycle: 5,
+    personal_hard: 3,
+    soft: 3,
+  });
+  const authorityKeyCounts = Object.fromEntries(
+    V15_AUTHORITY_KEYS.map((authorityKey) => [
+      authorityKey,
+      V12_REPAIRED_INVOCATIONS.filter(
+        (fixture) => fixture.descriptor.authorityKey === authorityKey,
+      ).length,
+    ]),
+  );
+  assert.deepStrictEqual(authorityKeyCounts, {
+    "v15:life01": 1,
+    "v15:life02": 1,
+    "v15:life03": 1,
+    "v15:life04-religious": 1,
+    "v15:life04-soft": 1,
+    "v15:hh01": 1,
+    "v15:hh02a": 1,
+    "v15:hh02b": 1,
+    "v15:g01": 1,
+    "v15:ph01": 1,
+    "v15:ph02": 1,
+    "v15:ph03": 1,
+    "v15:soft01": 1,
+    "v15:soft02": 1,
+    "v15:soft03": 1,
+    "v15:exp01": 1,
+    "v15:exp02": 1,
+    "v15:exp03": 1,
+    "v15:exp04": 1,
+    "v15:exp05": 1,
+    "v15:exp06": 1,
+    "v15:exp07": 1,
+    "v15:exp08": 1,
+    "v15:k05": 2,
+    "v15:d03a": 2,
+    "v15:d03b": 2,
+  });
+  assert.equal(Object.keys(authorityKeyCounts).length, 26);
+  for (const fixture of V12_REPAIRED_INVOCATIONS) {
+    assertV12RepairFixtureBeforeSut(fixture);
+    const firstActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+      fixture.input,
+      fixture.graph,
+    );
+    assert.deepStrictEqual(firstActual, fixture.expected);
+    assert.deepStrictEqual(
+      __testOnlyEvaluateGovernedHouseholdSafetyScenario(fixture.input, fixture.graph),
+      firstActual,
+    );
+  }
+  const valueHash = (value: unknown): string => sha256(encoder.encode(canonicalJson(value)));
+  const inputHashes = V12_REPAIRED_INVOCATIONS.map((fixture) => valueHash(fixture.input));
+  const pairHashes = V12_REPAIRED_INVOCATIONS.map((fixture) =>
+    valueHash({ input: fixture.input, graph: fixture.graph }),
+  );
+  const graphHashes = V12_REPAIRED_INVOCATIONS.map((fixture) => valueHash(fixture.graph));
+  const expectedHashes = V12_REPAIRED_INVOCATIONS.map((fixture) => valueHash(fixture.expected));
+  assert.equal(new Set(inputHashes).size, 29);
+  assert.equal(new Set(pairHashes).size, 29);
+  assert.equal(new Set(graphHashes).size, 28);
+  assert.equal(new Set(expectedHashes).size, 28);
+  const duplicateLabels = (hashes: readonly string[]): readonly (readonly string[])[] =>
+    [...new Set(hashes)]
+      .map((hash) =>
+        V12_REPAIRED_INVOCATIONS
+          .filter((_, index) => hashes[index] === hash)
+          .map((fixture) => fixture.leaf),
+      )
+      .filter((labels) => labels.length > 1);
+  assert.deepStrictEqual(duplicateLabels(graphHashes), [
+    ["D-03a:baseline:001", "D-03a:changed:002"],
+  ]);
+  assert.deepStrictEqual(duplicateLabels(expectedHashes), [
+    ["K-05:original:001", "K-05:reordered:002"],
+  ]);
+  assert.strictEqual(V12_D_03A_BASELINE.graph, V12_D_03A_CHANGED.graph);
+  assert.notStrictEqual(V12_K_05_ORIGINAL.expected, V12_K_05_REORDERED.expected);
+  assert.deepStrictEqual(V12_K_05_ORIGINAL.expected, V12_K_05_REORDERED.expected);
+
+  assert.deepStrictEqual(V12_K_05_REORDERED.input, {
+    ...clone(V12_K_05_ORIGINAL.input),
+    householdProfiles: [...clone(V12_K_05_ORIGINAL.input.householdProfiles)].reverse(),
+    mealParticipantProfileIds: [...V12_K_05_ORIGINAL.input.mealParticipantProfileIds].reverse(),
+  });
+  assert.deepStrictEqual(V12_K_05_REORDERED.graph, {
+    ...clone(V12_K_05_ORIGINAL.graph),
+    releaseBindings: [...clone(V12_K_05_ORIGINAL.graph.releaseBindings)].reverse(),
+    mappingReviews: [...clone(V12_K_05_ORIGINAL.graph.mappingReviews)].reverse(),
+    endpointFacts: [...clone(V12_K_05_ORIGINAL.graph.endpointFacts)].reverse(),
+  });
+  const projectedD03a = clone(V12_D_03A_CHANGED.input);
+  Object.assign(projectedD03a.dish, {
+    dishRevision: V12_D_03A_BASELINE.input.dish.dishRevision,
+    contentDigest: V12_D_03A_BASELINE.input.dish.contentDigest,
+  });
+  assert.deepStrictEqual(projectedD03a, V12_D_03A_BASELINE.input);
+  assert.equal(
+    V12_D_03A_BASELINE.expected.sourcePackDigest,
+    V12_D_03A_CHANGED.expected.sourcePackDigest,
+  );
+  assert.notEqual(
+    V12_D_03A_BASELINE.expected.requestDigest,
+    V12_D_03A_CHANGED.expected.requestDigest,
+  );
+  assert.notEqual(
+    V12_D_03A_BASELINE.expected.evaluationDigest,
+    V12_D_03A_CHANGED.expected.evaluationDigest,
+  );
+  const projectedD03bGraph = {
+    ...clone(V12_D_03B_CHANGED.graph),
+    packRevision: V12_D_03B_BASELINE.graph.packRevision,
+  };
+  assert.deepStrictEqual(projectedD03bGraph, V12_D_03B_BASELINE.graph);
+  const projectedD03bInput = {
+    ...clone(V12_D_03B_CHANGED.input),
+    expectedSourcePack: clone(V12_D_03B_BASELINE.input.expectedSourcePack),
+  };
+  assert.deepStrictEqual(projectedD03bInput, V12_D_03B_BASELINE.input);
+  assert.notEqual(
+    V12_D_03B_BASELINE.expected.sourcePackDigest,
+    V12_D_03B_CHANGED.expected.sourcePackDigest,
+  );
+  assert.notEqual(
+    V12_D_03B_BASELINE.expected.requestDigest,
+    V12_D_03B_CHANGED.expected.requestDigest,
+  );
+  assert.notEqual(
+    V12_D_03B_BASELINE.expected.evaluationDigest,
+    V12_D_03B_CHANGED.expected.evaluationDigest,
+  );
+});
+
+test("v1.5 LIFE-01 S5-X baseline and status-only counterfactual", () => {
+  assertV15LifeCounterfactualBeforeSut(V12_LIFE_01, V15_LIFE_01_COUNTERFACTUAL);
+  const baselineActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+    V12_LIFE_01.input,
+    V12_LIFE_01.graph,
+  );
+  assert.deepStrictEqual(baselineActual, V12_LIFE_01.expected);
+  assert.deepStrictEqual(
+    __testOnlyEvaluateGovernedHouseholdSafetyScenario(V12_LIFE_01.input, V12_LIFE_01.graph),
+    baselineActual,
+  );
+  const counterfactualActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+    V15_LIFE_01_COUNTERFACTUAL.input,
+    V15_LIFE_01_COUNTERFACTUAL.graph,
+  );
+  assert.deepStrictEqual(counterfactualActual, V15_LIFE_01_COUNTERFACTUAL.expected);
+  assert.deepStrictEqual(
+    __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+      V15_LIFE_01_COUNTERFACTUAL.input,
+      V15_LIFE_01_COUNTERFACTUAL.graph,
+    ),
+    counterfactualActual,
+  );
+});
+
+test("v1.5 LIFE-04 religious S5-X baseline and participant-only counterfactual", () => {
+  assertV15LifeCounterfactualBeforeSut(
+    V12_LIFE_04_RELIGIOUS,
+    V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL,
+  );
+  const baselineActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+    V12_LIFE_04_RELIGIOUS.input,
+    V12_LIFE_04_RELIGIOUS.graph,
+  );
+  assert.deepStrictEqual(baselineActual, V12_LIFE_04_RELIGIOUS.expected);
+  assert.deepStrictEqual(
+    __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+      V12_LIFE_04_RELIGIOUS.input,
+      V12_LIFE_04_RELIGIOUS.graph,
+    ),
+    baselineActual,
+  );
+  const counterfactualActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+    V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL.input,
+    V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL.graph,
+  );
+  assert.deepStrictEqual(counterfactualActual, V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL.expected);
+  assert.deepStrictEqual(
+    __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+      V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL.input,
+      V15_LIFE_04_RELIGIOUS_COUNTERFACTUAL.graph,
+    ),
+    counterfactualActual,
+  );
+});
+
+test("v1.5 LIFE-04 soft S5-X baseline and participant-only counterfactual", () => {
+  assertV15LifeCounterfactualBeforeSut(
+    V12_LIFE_04_SOFT,
+    V15_LIFE_04_SOFT_COUNTERFACTUAL,
+  );
+  const baselineActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+    V12_LIFE_04_SOFT.input,
+    V12_LIFE_04_SOFT.graph,
+  );
+  assert.deepStrictEqual(baselineActual, V12_LIFE_04_SOFT.expected);
+  assert.deepStrictEqual(
+    __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+      V12_LIFE_04_SOFT.input,
+      V12_LIFE_04_SOFT.graph,
+    ),
+    baselineActual,
+  );
+  const counterfactualActual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+    V15_LIFE_04_SOFT_COUNTERFACTUAL.input,
+    V15_LIFE_04_SOFT_COUNTERFACTUAL.graph,
+  );
+  assert.deepStrictEqual(counterfactualActual, V15_LIFE_04_SOFT_COUNTERFACTUAL.expected);
+  assert.deepStrictEqual(
+    __testOnlyEvaluateGovernedHouseholdSafetyScenario(
+      V15_LIFE_04_SOFT_COUNTERFACTUAL.input,
+      V15_LIFE_04_SOFT_COUNTERFACTUAL.graph,
+    ),
+    counterfactualActual,
+  );
+});
+
+test("governed evaluator isolates unrequested mapping defects without weakening M0", () => {
+  const isolationFixtures = [
+    V12_MAPPING_ISOLATION_BASELINE,
+    V12_MAPPING_ISOLATION_UNRESOLVED,
+    V12_MAPPING_ISOLATION_DUPLICATE,
+  ] as const;
+  for (const fixture of isolationFixtures) {
+    assert.deepStrictEqual(
+      analyzeHouseholdSafetyOfficialCatalogFindings("active", fixture.graph.catalog),
+      fixture.classifierExpected,
+    );
+  }
+  const context = decodeActivationContext({
+    asOf: PIPE_FIXTURE.input.asOf,
+    language: PIPE_FIXTURE.graph.ruleLanguage,
+    region: PIPE_FIXTURE.graph.foodRuleRegion,
+  });
+  assert.equal(context.ok, true);
+  if (!context.ok) assert.fail("mapping isolation activation context");
+  assert.deepStrictEqual(
+    resolveHardMapping(
+      V12_MAPPING_ISOLATION_UNRESOLVED.graph.catalog,
+      "mapping:case",
+      context.value,
+    ),
+    { reason: "invalid_catalog", status: "unmapped" },
+  );
+  for (const fixture of isolationFixtures) {
+    assert.deepStrictEqual(
+      __testOnlyEvaluateGovernedHouseholdSafetyScenario(fixture.input, fixture.graph),
+      fixture.expected,
+    );
+  }
+  assert.equal(
+    new Set(isolationFixtures.map((fixture) => fixture.expected.sourcePackDigest)).size,
+    3,
+  );
+  assert.equal(
+    new Set(isolationFixtures.map((fixture) => fixture.expected.requestDigest)).size,
+    3,
+  );
+  assert.equal(
+    new Set(isolationFixtures.map((fixture) => fixture.expected.evaluationDigest)).size,
+    3,
+  );
+  const semanticProjection = (value: HouseholdDishSafetyEvaluation) => ({
+    inputIssue: value.inputIssue,
+    schemaVersion: value.schemaVersion,
+    subjects: value.subjects,
+    tableReasons: value.tableReasons,
+    tableStatus: value.tableStatus,
+  });
+  assert.deepStrictEqual(
+    semanticProjection(V12_MAPPING_ISOLATION_UNRESOLVED.expected),
+    semanticProjection(V12_MAPPING_ISOLATION_BASELINE.expected),
+  );
+  assert.deepStrictEqual(
+    semanticProjection(V12_MAPPING_ISOLATION_DUPLICATE.expected),
+    semanticProjection(V12_MAPPING_ISOLATION_BASELINE.expected),
+  );
+  for (const fixture of [M0_03A_FIXTURE, M0_03B_FIXTURE, M0_03C_FIXTURE]) {
+    assert.deepStrictEqual(
+      __testOnlyEvaluateGovernedHouseholdSafetyScenario(fixture.input, fixture.graph),
+      fixture.pipelineExpected,
+    );
+  }
 });
 
 test("analyzed seam creates the private brand and KERNEL rejects lookalikes", () => {
