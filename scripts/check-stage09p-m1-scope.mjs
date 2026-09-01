@@ -9,10 +9,20 @@ export const STAGE09P_M1_BASE_TRACKED_FILES = 417;
 export const STAGE09P_M1_CANDIDATE_TRACKED_FILES = 426;
 const STAGE09P_M1_FAILED_HEAD = "1da720143c584a2326d640b882bbee75ac494941";
 const STAGE09P_M1_FAILED_TREE = "6d8ab75a0b6f9445f402f74ba23411a387b7eaa0";
+const STAGE09P_M1_EVIDENCE_HEAD = "3bd91a00b953d0949095fc534306fcaa3039d416";
+const STAGE09P_M1_EVIDENCE_TREE = "8239cbef4e370a8ed6cc9ca81543017f6dbec5e8";
+const STAGE09P_M1_FAILED_REPAIR_PATHS = Object.freeze([
+  "packages/domain/src/resolution.ts", "packages/domain/tests/household-safety.test.ts",
+  "scripts/check-stage09p-m1-scope.mjs",
+]);
 const STAGE09P_M1_REPAIR_PATHS = Object.freeze([
-  "packages/domain/src/resolution.ts",
+  "data/schemas/governance-release.schema.json",
+  "packages/domain/tests/schema.test.ts",
   "packages/domain/tests/household-safety.test.ts",
   "scripts/check-stage09p-m1-scope.mjs",
+  "scripts/check-stage09p-m1-source-pack.mjs",
+  "scripts/tests/stage09p-m1-scope.test.mjs",
+  "scripts/tests/stage09p-m1-source-pack.test.mjs",
 ]);
 export const STAGE09P_M1_MODIFIED_PATHS = Object.freeze([
   "data/README.md",
@@ -29,6 +39,7 @@ export const STAGE09P_M1_MODIFIED_PATHS = Object.freeze([
   "packages/domain/src/resolution.ts",
   "packages/domain/src/types.ts",
   "packages/domain/src/validation.ts",
+  "packages/domain/tests/schema.test.ts",
 ]);
 export const STAGE09P_M1_ADDED_PATHS = Object.freeze([
   "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json",
@@ -72,7 +83,6 @@ export const STAGE09P_M1_M0_TCB = Object.freeze({
 const NON_REPAIR_SNAPSHOT = Object.freeze({
   "data/README.md": "cc28bba2af1e97c967f755d63093df6b21912afbe0251751222304c8528fe68d",
   "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json": "4ae7b21a1e4f37207e1279e5c1e902390d5998496048f32fe9f5a650870b4959",
-  "data/schemas/governance-release.schema.json": "8e7ffa985bbfec51b5afc0d24f12a7d06b6cf3916c84de8d86ee5ab702ff85a8",
   "data/schemas/household-safety-source-pack.schema.json": "5fcb2e7d24a37692fbdde603d1ce0bcf32fe8fa818ee71034e12300b9cea5d58",
   "docs/domain/data-model.md": "38dc786d52cd0e125f1fd1d46bfd1150f17d9f38ac5cf2bf04e2422a596c37f0",
   "docs/product/app-functional-spec.md": "dcd5a08ca58d8263a3e2ac8c00701020d2641f1b64e1b6e88753251e5b3e1a3c",
@@ -85,21 +95,23 @@ const NON_REPAIR_SNAPSHOT = Object.freeze({
   "packages/domain/src/index.ts": "3a0a68ac4e0db1ea80eead336bfe58ac192473c6523ccfef648087b64cde51b1",
   "packages/domain/src/types.ts": "a645f28ffcbdb702a6a8263f317337a8448c77575441c4feedab23764c20f7f6",
   "packages/domain/src/validation.ts": "dacfb90f3ca43b52500f1f266119c3972090915cde2e20899a80a41973bda086",
-  "scripts/check-stage09p-m1-source-pack.mjs": "ee9bb4fa478c76bd0f81db0a24036746027a7497efa4a7ece384a9d9afb57407",
   "scripts/run-stage09p-m1-check.mjs": "b88059751348f54b963c8acfe6712d589aba8be35c1180938bfef65fe71bfaa8",
   "scripts/tests/stage09p-m1-check.test.mjs": "1522545ca676bb77d428195488d60e825cf7e12b0fdf0c61a3c6cb5a2cf025a5",
-  "scripts/tests/stage09p-m1-source-pack.test.mjs": "98c50bc6440357d9a9bb24f916d40e07aa0437d5dafc22b3abfca7b6e3e4ced0",
 });
 const REPAIRED_SHA256 = Object.freeze({
+  "data/schemas/governance-release.schema.json": "21c23b6a1041378637d47b435c0d4e716afbcba4fee540da526d0c8c3c51b0f5",
   "packages/domain/src/resolution.ts": "692fae656154a299c6849fc1b7771aa26c42b0d4a05489ec0ac59ab2e5297dbb",
-  "packages/domain/tests/household-safety.test.ts": "822968278076ad62b839bf28b948b08994ff404377cbd42049470650d0fabb3a",
+  "packages/domain/tests/household-safety.test.ts": "2bfcc27dd1b167570fbb736e5c0c8d30bc490e4c45833153d735be2b319ee1a1",
+  "packages/domain/tests/schema.test.ts": "6f5096a8f08b6d9d60205eca8c2626fca5b81fcc46e47e3736c15fca8afa9b11",
+  "scripts/check-stage09p-m1-source-pack.mjs": "db6e2d358bcc653be18c9b6b91ecdb42f4186c2634d5078e0748f74c5fd6f48b",
+  "scripts/tests/stage09p-m1-source-pack.test.mjs": "c9a3d6326e6c24a785b2c87c6d66bbd77e6ce79cc34f69705f2331326477bc0d",
 });
 export const STAGE09P_M1_PRIVATE_SEAMS = Object.freeze([
   "__test" + "OnlyAnalyzeSyntheticHouseholdSafety",
   "__test" + "OnlyEvaluateAnalyzedHouseholdSafety",
   "__test" + "OnlyEvaluateGovernedHouseholdSafetyScenario",
 ]);
-const EXPECTED_PATH_LIST_SHA = "7274395d6904f1761bb881b890d2fe5cec72b20bc096a178c299b0d83fff17b0";
+const EXPECTED_PATH_LIST_SHA = "3cbd274cb9e358e962e193c05f678d3ee54973b8927fe65aa26241984a2bc9c0";
 const SCOPE_TEST_PATH = "scripts/tests/stage09p-m1-scope.test.mjs";
 const SCOPE_CHECKER_PATH = "scripts/check-stage09p-m1-scope.mjs";
 const HOUSEHOLD_TEST_PATH = "packages/domain/tests/household-safety.test.ts";
@@ -112,11 +124,8 @@ const fail = (id, detail = "") => {
 const lines = (value) =>
   value === "" ? [] : value.replace(/\n$/u, "").split("\n");
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
-
 const read = (root, path) => readFileSync(join(root, path), "utf8");
-
 const json = (root, path) => JSON.parse(read(root, path));
-
 const git = (root, args) => {
   const result = spawnSync("git", args, {
     cwd: root,
@@ -128,10 +137,8 @@ const git = (root, args) => {
   }
   return result.stdout;
 };
-
 const sameStrings = (actual, expected) =>
   JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
-
 const stableJson = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
@@ -144,7 +151,6 @@ const stableJson = (value) => {
     "}"
   );
 };
-
 export const collectStage09pM1DiffEntries = (
   root,
   base = STAGE09P_M1_BASE_HEAD,
@@ -164,7 +170,6 @@ export const collectStage09pM1DiffEntries = (
   }
   return Object.freeze(entries);
 };
-
 export const assertStage09pM1DiffProjection = (entries) => {
   const expected = new Map([
     ...STAGE09P_M1_MODIFIED_PATHS.map((path) => [path, "M"]),
@@ -190,7 +195,6 @@ export const assertStage09pM1DiffProjection = (entries) => {
     fail("write-set", "path-list");
   }
 };
-
 const assertIdentity = (root, expectedBase) => {
   if (expectedBase !== STAGE09P_M1_BASE_HEAD) fail("identity", "base argument");
   if (
@@ -216,13 +220,23 @@ const assertIdentity = (root, expectedBase) => {
   ) {
     fail("identity", "failed anchor");
   }
+  const evidenceDiff = lines(git(root, [
+    "diff", "--name-status", "--no-renames", STAGE09P_M1_FAILED_HEAD, STAGE09P_M1_EVIDENCE_HEAD,
+  ]));
+  if (
+    git(root, ["rev-parse", STAGE09P_M1_EVIDENCE_HEAD + "^{tree}"]).trim() !==
+      STAGE09P_M1_EVIDENCE_TREE ||
+    git(root, ["rev-list", "--parents", "-n", "1", STAGE09P_M1_EVIDENCE_HEAD]).trim() !==
+      STAGE09P_M1_EVIDENCE_HEAD + " " + STAGE09P_M1_FAILED_HEAD ||
+    !sameStrings(evidenceDiff, STAGE09P_M1_FAILED_REPAIR_PATHS.map((path) => "M\t" + path))
+  ) fail("identity", "evidence anchor");
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   const status = git(root, ["status", "--porcelain=v1", "-uall"]);
   const tracked = lines(git(root, ["ls-files"])).length;
   if (tracked !== STAGE09P_M1_CANDIDATE_TRACKED_FILES) {
     fail("identity", "tracked count");
   }
-  if (head === STAGE09P_M1_FAILED_HEAD) {
+  if (head === STAGE09P_M1_EVIDENCE_HEAD) {
     const expectedStatus = STAGE09P_M1_REPAIR_PATHS.map((path) => " M " + path);
     if (!sameStrings(lines(status), expectedStatus)) fail("identity", "repair status");
   } else {
@@ -230,12 +244,12 @@ const assertIdentity = (root, expectedBase) => {
       .trim()
       .split(" ");
     const repairDiff = lines(
-      git(root, ["diff", "--name-status", "--no-renames", STAGE09P_M1_FAILED_HEAD, head]),
+      git(root, ["diff", "--name-status", "--no-renames", STAGE09P_M1_EVIDENCE_HEAD, head]),
     );
     if (
       parents.length !== 2 ||
       parents[0] !== head ||
-      parents[1] !== STAGE09P_M1_FAILED_HEAD ||
+      parents[1] !== STAGE09P_M1_EVIDENCE_HEAD ||
       status !== "" ||
       !sameStrings(
         repairDiff,
@@ -246,7 +260,6 @@ const assertIdentity = (root, expectedBase) => {
     }
   }
 };
-
 const parseTree = (text, indexFormat) => {
   const result = new Map();
   for (const line of lines(text)) {
@@ -286,7 +299,7 @@ const assertModesAndTypes = (root) => {
   }
 };
 const assertNonRepairSnapshot = (root) => {
-  if (Object.keys(NON_REPAIR_SNAPSHOT).length !== 19) {
+  if (Object.keys(NON_REPAIR_SNAPSHOT).length !== 16) {
     fail("snapshot", "cardinality");
   }
   for (const [path, expected] of Object.entries({
@@ -322,7 +335,6 @@ export const assertStage09pM1PackageProjection = (baseRaw, currentRaw) => {
     fail("package", "object projection");
   }
 };
-
 export const extractStage09pM1ImportSpecifiers = (source) => {
   const specifiers = [];
   for (const pattern of [
@@ -333,7 +345,6 @@ export const extractStage09pM1ImportSpecifiers = (source) => {
   }
   return Object.freeze(specifiers);
 };
-
 export const assertStage09pM1ProductionImports = (moduleSources) => {
   const combined = [...moduleSources.values()].join("\n");
   const forbidden = [
@@ -364,7 +375,6 @@ export const assertStage09pM1ProductionImports = (moduleSources) => {
     fail("imports", "closed set");
   }
 };
-
 const collectModuleSources = (root) => {
   const directory = join(root, "packages/domain/src");
   const modules = readdirSync(directory)
@@ -377,7 +387,6 @@ const collectModuleSources = (root) => {
     modules.map((module) => [module, readFileSync(join(directory, module), "utf8")]),
   );
 };
-
 const assertM0Tcb = (root) => {
   for (const [path, expected] of Object.entries(STAGE09P_M1_M0_TCB)) {
     if (sha256(readFileSync(join(root, path))) !== expected) {
@@ -385,9 +394,7 @@ const assertM0Tcb = (root) => {
     }
   }
 };
-
 const occurrenceCount = (source, token) => source.split(token).length - 1;
-
 export const assertStage09pM1PublicBoundary = (
   indexSource,
   resolutionSource,
@@ -424,11 +431,9 @@ export const assertStage09pM1PublicBoundary = (
     fail("zero-trust", "allowlist");
   }
 };
-
 const TEXT_EXTENSIONS = new Set([
   ".cjs", ".js", ".json", ".md", ".mjs", ".ts", ".tsx", ".yaml", ".yml",
 ]);
-
 export const collectStage09pM1TextSources = (root) => {
   const paths = new Set([
     ...lines(git(root, ["ls-files"])),
@@ -447,7 +452,6 @@ export const collectStage09pM1TextSources = (root) => {
   }
   return sources;
 };
-
 export const assertStage09pM1PrivateSeamLocations = (sources) => {
   const expectedPaths = [HOUSEHOLD_TEST_PATH, RESOLUTION_PATH];
   for (const seam of STAGE09P_M1_PRIVATE_SEAMS) {
@@ -464,7 +468,6 @@ export const assertStage09pM1PrivateSeamLocations = (sources) => {
     fail("private-seams", "export set");
   }
 };
-
 export const assertStage09pM1DraftBoundary = (pack) => {
   if (
     pack?.schemaVersion !== 2 ||
@@ -498,14 +501,15 @@ export const assertStage09pM1DraftBoundary = (pack) => {
     }
   }
 };
-
 const physicalLines = (source) =>
   source === "" ? 0 : source.split("\n").length - (source.endsWith("\n") ? 1 : 0);
-
 const assertCheckerShape = (root) => {
   const checker = read(root, SCOPE_CHECKER_PATH);
   const dedicatedTest = read(root, SCOPE_TEST_PATH);
-  if (physicalLines(checker) > 600 || physicalLines(dedicatedTest) > 300) {
+  const sourceChecker = read(root, "scripts/check-stage09p-m1-source-pack.mjs");
+  const sourceTest = read(root, "scripts/tests/stage09p-m1-source-pack.test.mjs");
+  if (physicalLines(checker) > 600 || physicalLines(dedicatedTest) > 300 ||
+      physicalLines(sourceChecker) > 430 || physicalLines(sourceTest) > 260) {
     fail("line-caps");
   }
   const forbidden = [
@@ -521,7 +525,6 @@ const assertCheckerShape = (root) => {
     fail("checker-shape");
   }
 };
-
 const assertForbiddenSurfaces = () => {
   const prefixes = [
     ".github/", "apps/", "infra/", "packages/contracts/",
@@ -539,7 +542,6 @@ const assertForbiddenSurfaces = () => {
     fail("forbidden-surfaces");
   }
 };
-
 const RULES = Object.freeze([
   ["identity", (root, options) => assertIdentity(root, options.expectedBase ?? "")],
   ["write-set", (root) => assertStage09pM1DiffProjection(collectStage09pM1DiffEntries(root))],
@@ -561,7 +563,6 @@ const RULES = Object.freeze([
   ["forbidden-surfaces", () => assertForbiddenSurfaces()],
   ["checker-shape", (root) => assertCheckerShape(root)],
 ].map(Object.freeze));
-
 export const checkStage09pM1Scope = (repositoryRoot, options = {}) => {
   const failures = [];
   for (const [id, rule] of RULES) {
@@ -573,7 +574,6 @@ export const checkStage09pM1Scope = (repositoryRoot, options = {}) => {
   }
   return Object.freeze({ failures: Object.freeze(failures), ok: failures.length === 0 });
 };
-
 const scriptPath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
   const prefix = "--expected-base=";

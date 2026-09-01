@@ -163,19 +163,35 @@
     "governanceEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "oneOf": [
+      "allOf": [
         {
-          "required": ["syntheticEvidence"],
-          "properties": {
-            "approvers": { "type": "array", "minItems": 1 },
-            "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
-          }
+          "oneOf": [
+            {
+              "required": ["syntheticEvidence"],
+              "properties": { "syntheticEvidence": {} }
+            },
+            {
+              "required": ["officialEvidence"],
+              "properties": { "officialEvidence": {} }
+            }
+          ]
         },
         {
-          "required": ["officialEvidence"],
-          "properties": {
-            "officialEvidence": { "$ref": "#/$defs/officialEvidence" }
-          }
+          "oneOf": [
+            {
+              "required": ["syntheticEvidence"],
+              "properties": {
+                "approvers": { "type": "array", "minItems": 1 },
+                "syntheticEvidence": { "$ref": "#/$defs/syntheticEvidence" }
+              }
+            },
+            {
+              "required": ["officialEvidence"],
+              "properties": {
+                "officialEvidence": { "$ref": "#/$defs/officialEvidence" }
+              }
+            }
+          ]
         }
       ],
       "required": [

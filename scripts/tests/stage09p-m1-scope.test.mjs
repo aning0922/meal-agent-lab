@@ -48,7 +48,7 @@ const pack = JSON.parse(
   read("data/reference/ingredients/stage09p-m1-household-safety-source-pack.json"),
 );
 
-test("boundary checker accepts the exact dirty-base projection", () => {
+test("boundary checker accepts the exact dirty evidence-base projection", () => {
   const result = checkStage09pM1Scope(repositoryRoot, {
     expectedBase: STAGE09P_M1_BASE_HEAD,
   });
@@ -57,11 +57,11 @@ test("boundary checker accepts the exact dirty-base projection", () => {
   assert.equal(Object.isFrozen(result.failures), true);
 });
 
-test("write set is exactly 14 modified plus 9 added paths", () => {
-  assert.equal(STAGE09P_M1_MODIFIED_PATHS.length, 14);
+test("write set is exactly 15 modified plus 9 added paths", () => {
+  assert.equal(STAGE09P_M1_MODIFIED_PATHS.length, 15);
   assert.equal(STAGE09P_M1_ADDED_PATHS.length, 9);
-  assert.equal(STAGE09P_M1_ALLOWED_PATHS.length, 23);
-  assert.equal(new Set(STAGE09P_M1_ALLOWED_PATHS).size, 23);
+  assert.equal(STAGE09P_M1_ALLOWED_PATHS.length, 24);
+  assert.equal(new Set(STAGE09P_M1_ALLOWED_PATHS).size, 24);
   const entries = collectStage09pM1DiffEntries(repositoryRoot);
   assert.doesNotThrow(() => assertStage09pM1DiffProjection(entries));
   assert.throws(() =>
@@ -225,8 +225,19 @@ test("frozen M0 runner and dedicated tests retain exact hashes", () => {
 test("checker and dedicated test stay readable and mechanism-bounded", () => {
   const checker = read("scripts/check-stage09p-m1-scope.mjs");
   const dedicatedTest = read("scripts/tests/stage09p-m1-scope.test.mjs");
+  const sourceChecker = read("scripts/check-stage09p-m1-source-pack.mjs");
+  const sourceTest = read("scripts/tests/stage09p-m1-source-pack.test.mjs");
   assert(lineCount(checker) <= 600);
   assert(lineCount(dedicatedTest) <= 300);
+  assert(lineCount(sourceChecker) <= 430);
+  assert(lineCount(sourceTest) <= 260);
+  const base = spawnSync("git", ["show", "3bd91a00b953d0949095fc534306fcaa3039d416:packages/domain/tests/household-safety.test.ts"], { cwd: repositoryRoot, maxBuffer: 8 * 1024 * 1024 });
+  const household = readFileSync(join(repositoryRoot, "packages/domain/tests/household-safety.test.ts"));
+  assert.equal(base.status, 0);
+  assert.equal(household.subarray(0, base.stdout.length).equals(base.stdout), true);
+  const suffix = household.subarray(base.stdout.length);
+  assert(suffix.length > 0 && suffix.length <= 20_480);
+  assert.equal(suffix.filter((byte) => byte === 0x0a).length <= 220, true);
   for (const token of [
     "node:" + "module",
     "create" + "Require",

@@ -20598,3 +20598,197 @@ test("DIG-07", () => {
   assert.deepStrictEqual(MANIFEST_DIG_07_MAIN_004_KERNEL_INVOCATION.invokeSut(), MANIFEST_DIG_07_MAIN_004_KERNEL_INVOCATION.expected, MANIFEST_DIG_07_MAIN_004_KERNEL_INVOCATION.oracleId);
 });
 // MANIFEST_EXPLICIT_NAMED_TESTS_END
+
+const RC = "REVIEWED_CLEAR" as const; const BLOCK = "POSITIVE_BLOCK" as const;
+const FOOD = "food_concept" as const; const ALLERGEN = "allergen" as const;
+const R012 = ["R0", "R1", "R2"] as const; const R0123 = [...R012, "R3"] as const;
+const R01234 = [...R0123, "R4"] as const; const R01245 = [...R012, "R4", "R5"] as const;
+const MAP2 = ["mapping:dish", "mapping:constraint"] as const; const MAP3 = [...MAP2, "mapping:case"] as const;
+const FACT_P3 = [["R0", RC], ["R1", BLOCK], ["R2", RC]] as const; const FACT_S5 = [...FACT_P3, ["R4", RC], ["R5", RC]] as const;
+const CORES = deepFreeze({ P3: [[ ["D", "R0", "R1"], ["C", "R2", "R1"] ], FACT_P3, "R1", ["D", "C"], []],
+  "P5-C1": [[ ["D", "R0", "R1"], ["C0", "R2", "R3"], ["C1", "R4", "R1"] ], [...FACT_P3, ["R3", RC], ["R4", RC]], "R1", ["D", "C1"], ["R3"]],
+  "P5-C0": [[ ["D", "R0", "R1"], ["C0", "R2", "R1"], ["C1", "R4", "R5"] ], FACT_S5, "R1", ["D", "C0"], ["R5"]],
+  "S5-X": [[ ["D-positive", "R0", "R1"], ["C", "R2", "R1"], ["D-clear", "R4", "R5"] ], FACT_S5, "R1", ["D-positive", "C"], ["R5"]],
+  K4: [[ ["D0", "R0", "R1"], ["D1", "R2", "R3"] ], R0123.map((alias) => [alias, RC] as const), null, [], ["R1", "R3"]],
+  D2: [[ ["D", "R0", "R1"] ], [["R0", RC], ["R1", RC]], null, [], ["R1"]], } as const); const VARIANTS = deepFreeze({
+  S5A: [MAP3, [FOOD, ALLERGEN, FOOD, FOOD, ALLERGEN], "canonical", R01245],
+  S5F: [MAP3, R01245.map(() => FOOD), "canonical", R01245],
+  P51A: [["mapping:dish", "mapping:case", "mapping:constraint"], [FOOD, ALLERGEN, FOOD, ALLERGEN, FOOD], "canonical", R01234],
+  P51H: [["mapping:dish", "mapping:constraint:hh01:a", "mapping:constraint:hh01:b"], [FOOD, ALLERGEN, FOOD, ALLERGEN, FOOD], "canonical", R01234],
+  P50A: [MAP3, [FOOD, ALLERGEN, FOOD, FOOD, ALLERGEN], "canonical", R01245],
+  P3A: [MAP2, [FOOD, ALLERGEN, FOOD], "canonical", R012], P3F: [MAP2, R012.map(() => FOOD), "canonical", R012],
+  K4C: [["mapping:dish", "mapping:case"], R0123.map(() => FOOD), "canonical", R0123],
+  K4R: [["mapping:dish", "mapping:case"], R0123.map(() => FOOD), "k05_reversed", ["R3", "R2", "R1", "R0"]],
+  D2F: [["mapping:dish"], [FOOD, FOOD], "canonical", ["R0", "R1"]], } as const);
+type PlanName = keyof typeof CORES; type VariantName = keyof typeof VARIANTS;
+interface Row { readonly leaf: string; readonly authorityKey: V15AuthorityKey;
+  readonly plan: PlanName; readonly variant: VariantName } const ROWS = deepFreeze([
+  ["LIFE-01:main:001", "v15:life01", "S5-X", "S5A"], ["LIFE-02:main:001", "v15:life02", "P5-C1", "P51A"],
+  ["LIFE-03:main:001", "v15:life03", "P3", "P3A"],
+  ["LIFE-04:nonparticipant_religious:001", "v15:life04-religious", "S5-X", "S5F"],
+  ["LIFE-04:nonparticipant_soft:002", "v15:life04-soft", "S5-X", "S5F"],
+  ["HH-01:main:001", "v15:hh01", "P5-C1", "P51H"], ["HH-02a:main:001", "v15:hh02a", "P5-C0", "P50A"],
+  ["HH-02b:main:001", "v15:hh02b", "P5-C1", "P51A"], ["G-01:main:001", "v15:g01", "P3", "P3A"],
+  ["PH-01:main:001", "v15:ph01", "P3", "P3F"], ["PH-02:main:001", "v15:ph02", "P3", "P3F"], ["PH-03:main:001", "v15:ph03", "P3", "P3F"],
+  ["SOFT-01:main:001", "v15:soft01", "S5-X", "S5F"], ["SOFT-02:main:001", "v15:soft02", "S5-X", "S5F"],
+  ["SOFT-03:main:001", "v15:soft03", "S5-X", "S5F"], ["EXP-01:main:001", "v15:exp01", "P3", "P3A"],
+  ["EXP-02:main:001", "v15:exp02", "P3", "P3A"], ["EXP-03:main:001", "v15:exp03", "P3", "P3A"], ["EXP-04:main:001", "v15:exp04", "P3", "P3A"],
+  ["EXP-05:main:001", "v15:exp05", "P3", "P3A"], ["EXP-06:main:001", "v15:exp06", "P3", "P3A"], ["EXP-07:main:001", "v15:exp07", "P3", "P3A"],
+  ["EXP-08:main:001", "v15:exp08", "P3", "P3A"],
+  ["K-05:original:001", "v15:k05", "K4", "K4C"], ["K-05:reordered:002", "v15:k05", "K4", "K4R"],
+  ["D-03a:baseline:001", "v15:d03a", "D2", "D2F"], ["D-03a:changed:002", "v15:d03a", "D2", "D2F"],
+  ["D-03b:baseline:001", "v15:d03b", "D2", "D2F"], ["D-03b:changed:002", "v15:d03b", "D2", "D2F"], ] as const);
+const REG: readonly Row[] = deepFreeze(ROWS.map(([leaf, authorityKey, plan, variant]) =>
+  ({ leaf, authorityKey, plan, variant }))); const GOV = deepFreeze({ envelope: {
+    lifecycleStatus: "active", owner: { actorId: "institution:test-owner", role: "institutional_owner" }, approvers: [{ actorId: "institution:test-approver", role: "institutional_approver" }],
+    sourceTier: "L1", applicableRegions: ["CN"], languages: ["zh-CN"], licenseStatus: "approved",
+    licenseReference: "synthetic://license", aliases: [], supersededBy: null,
+    withdrawalState: "not_withdrawn", withdrawalReason: null, withdrawnAt: null, syntheticEvidence,
+  }, snapshotDigest: "sha256:" + "1".repeat(64), retrievedAt: "2026-08-28T00:00:00.000Z", reviewDueAt: "2028-08-28T00:00:00.000Z",
+  window: { jurisdictionTimeZone: "Asia/Shanghai", sourceCivilEffectiveDate: "2012-04-20", effectiveFrom: "2012-04-19T16:00:00.000Z", effectiveUntil: "2027-03-15T16:00:00.000Z" },
+  review: { reviewRevision: 1, required: true, reviewStatus: "reviewed", effectiveFrom: "2020-01-01T00:00:00.000Z", effectiveUntil: null },
+} as const); const v17Plan = (row: Row) => {
+  const [mappings, facts, sharedTargetAlias, collisionRoles, noncollisionTargetAliases] = CORES[row.plan];
+  const [mappingIds, datasetKinds, rawOrder, rawAliases] = VARIANTS[row.variant];
+  const disposition = (alias: V15ReferenceAlias) => {
+    const fact = facts.find(([candidate]) => candidate === alias); assert(fact); return fact[1]; }; return deepFreeze({
+    factPlan: row.plan, mappings: mappings.map(([role, sourceAlias, targetAlias], index) =>
+      ({ role, mappingId: mappingIds[index]!, sourceAlias, targetAlias })),
+    facts: facts.map(([alias, value], index) => ({ alias, datasetKind: datasetKinds[index]!, disposition: value })),
+    rawOrder, rawFacts: rawAliases.map((alias) => ({ alias, disposition: disposition(alias) })),
+    sharedTargetAlias, collisionRoles, noncollisionTargetAliases, }); }; const v17Actual = (fixture: V12RepairFixture) => {
+  const { factPlan, mappings, facts, rawOrder, rawFacts, sharedTargetAlias,
+    collisionRoles, noncollisionTargetAliases } = fixture.descriptor;
+  return { factPlan, mappings, facts, rawOrder, rawFacts, sharedTargetAlias, collisionRoles, noncollisionTargetAliases }; };
+const v17Row = (fixture: V12RepairFixture, row: Row): Row => { assert.deepStrictEqual(v17Actual(fixture), v17Plan(row));
+  return { leaf: fixture.leaf, authorityKey: fixture.descriptor.authorityKey,
+    plan: fixture.descriptor.factPlan, variant: row.variant }; };
+const v17Ids = (key: V15AuthorityKey, alias: V15ReferenceAlias) => { const evidence = V15_EVIDENCE_ALIAS[alias];
+  return { releaseId: `release:${key}:${evidence}`, bindingId: `binding:${key}:${evidence}`,
+    sourceReferenceId: `source:${key}:${evidence}`, locator: `synthetic://${key}/${evidence}`,
+    snapshotId: `snapshot:${key}:${evidence}`, syntheticToken: `${key}:${evidence}` }; };
+type Fact = ReturnType<typeof v17Plan>["facts"][number]; type Dict = Readonly<Record<string, unknown>>;
+const v17Envelope = (row: Row, fact: Fact) => {
+  const { datasetId, entityId, entityRevision } = V15_REFERENCE_BY_ALIAS[fact.alias];
+  const ids = v17Ids(row.authorityKey, fact.alias); return {
+    schemaVersion: 1, datasetId, datasetKind: fact.datasetKind, entityId, entityRevision, ...GOV.envelope,
+    sourceReferences: [{ referenceId: ids.sourceReferenceId, referenceRevision: "revision:1", locator: ids.locator }],
+    sourceSnapshots: [{ snapshotId: ids.snapshotId, referenceId: ids.sourceReferenceId,
+      referenceRevision: "revision:1", locator: ids.locator, contentDigest: GOV.snapshotDigest,
+      retrievedAt: GOV.retrievedAt }], retrievedAt: GOV.retrievedAt, reviewedAt: GOV.retrievedAt,
+    reviewDueAt: GOV.reviewDueAt, content: { syntheticToken: ids.syntheticToken }, }; };
+const v17Endpoint = (row: Row, fact: Fact) => { const { datasetId } = V15_REFERENCE_BY_ALIAS[fact.alias];
+  const ids = v17Ids(row.authorityKey, fact.alias); const envelope = v17Envelope(row, fact); return { alias: fact.alias, envelope,
+    release: { schemaVersion: 1, releaseId: ids.releaseId, releaseRevision: 1, envelopes: [envelope] },
+    binding: { bindingId: ids.bindingId, datasetId, datasetKind: fact.datasetKind,
+      releaseId: ids.releaseId, releaseRevision: 1, sourceReferenceId: ids.sourceReferenceId,
+      sourceReferenceRevision: "revision:1", sourceVersion: "2011" }, window: { bindingId: ids.bindingId, ...GOV.window } }; };
+const v17Gov = (row: Row, plan = v17Plan(row)) => deepFreeze({ endpoints: plan.facts.map((fact) => v17Endpoint(row, fact)),
+  reviews: plan.mappings.map((mapping) => ({ mappingId: mapping.mappingId, ...GOV.review,
+    sourceBindingId: v17Ids(row.authorityKey, mapping.sourceAlias).bindingId,
+    targetBindingId: v17Ids(row.authorityKey, mapping.targetAlias).bindingId,
+    source: V15_REFERENCE_BY_ALIAS[mapping.sourceAlias], target: V15_REFERENCE_BY_ALIAS[mapping.targetAlias] })), });
+const project = (actual: object, expected: object, omitted: readonly string[] = []) => {
+  assert.equal(Object.keys(actual).length, Object.keys(expected).length + omitted.length);
+  assert.deepStrictEqual(Object.fromEntries( Object.entries(actual).filter(([key]) => !omitted.includes(key))), expected); };
+const assertGov = (fixture: V12RepairFixture, row: Row) => { const expected = v17Gov(row);
+  for (const endpoint of expected.endpoints) { const actual = v15EndpointAuthority(fixture.graph, endpoint.alias);
+    project(actual.envelope, endpoint.envelope); project(actual.window, endpoint.window);
+    project(actual.release, endpoint.release, ["contentDigest"]); project(actual.binding, endpoint.binding, ["releaseDigest"]); }
+  assert.equal(fixture.graph.mappingReviews.length, expected.reviews.length); for (const review of expected.reviews) {
+    const actual = fixture.graph.mappingReviews.find(({ mappingId }) => mappingId === review.mappingId)!;
+    project(actual, review, ["contentDigest"]); } }; const OUTCOME = deepFreeze({ guard: "THROW_BEFORE_DECODER_DIGEST_SUT",
+  decoderCalls: 0, digestCalls: 0, sutCalls: 0,
+  expectedSourceForbidden: ["descriptor", "actual", "sut", "digest", "snapshot", "builder"] });
+type Kind = "REGISTRY" | "FACT_PLAN" | "ENVELOPE" | "RELEASE" | "BINDING" | "WINDOW" | "REVIEW";
+type Change = readonly [string, unknown, unknown]; const mutant = ( ordinal: number, literalId: string, owner: Dict,
+  projectionKind: Kind, changes: readonly Change[], allowedDiffPaths = changes.map(([pointer]) => pointer),
+) => deepFreeze({ ordinal, literalId, owner, projectionKind, jsonPointers: changes.map(([pointer]) => pointer),
+  beforeJson: changes.map(([, before]) => JSON.stringify(before)), afterJson: changes.map(([, , after]) => JSON.stringify(after)),
+  allowedDiffPaths, expectedGuardOutcome: "THROW_BEFORE_DECODER_DIGEST_SUT", sutCalls: 0 });
+const field = (ordinal: number, literalId: string, owner: Dict, projectionKind: Kind, ...change: Change) =>
+  mutant(ordinal, literalId, owner, projectionKind, [change]); const OWNER = deepFreeze({
+  life: { registryIndex: 0, leaf: "LIFE-01:main:001" },
+  dish: { registryIndex: 0, leaf: "LIFE-01:main:001", mappingIndex: 0, mappingId: "mapping:dish" },
+  r0: { registryIndex: 0, leaf: "LIFE-01:main:001", alias: "R0" },
+  k05: { registryIndex: 24, leaf: "K-05:reordered:002", rawOrder: "k05_reversed" },
+  review: { registryIndex: 0, leaf: "LIFE-01:main:001", mappingIndex: 0,
+    mappingId: "mapping:dish", sourceAlias: "R0", targetAlias: "R1" }, }); const RAW = deepFreeze({
+  s5: FACT_S5, s5Reversed: [["R5", RC], ["R4", RC], ["R2", RC], ["R1", BLOCK], ["R0", RC]],
+  k4Reversed: [["R3", RC], ["R2", RC], ["R1", RC], ["R0", RC]], k4: R0123.map((alias) => [alias, RC] as const), } as const);
+const v17Raw = (rows: readonly (readonly [V15ReferenceAlias, V12RepairDisposition])[]) => rows.map(([alias, disposition]) => ({ alias, disposition }));
+const PSUT = deepFreeze([ field(1, "PSUT-001-FACTPLAN-NAME", OWNER.life, "FACT_PLAN", "/factPlan", "S5-X", "P5-C1"),
+  mutant(2, "PSUT-002-SINGLETON-AUTHORITY-KEY-SWAP", {
+    registryIndexes: [0, 1], leaves: ["LIFE-01:main:001", "LIFE-02:main:001"] }, "REGISTRY",
+  [["/0/authorityKey", "v15:life01", "v15:life02"], ["/1/authorityKey", "v15:life02", "v15:life01"]]),
+  field(3, "PSUT-003-MAPPING-ROLE", OWNER.dish, "FACT_PLAN", "/mappings/0/role", "D-positive", "C"),
+  field(4, "PSUT-004-MAPPING-SOURCE-ALIAS", OWNER.dish, "FACT_PLAN", "/mappings/0/sourceAlias", "R0", "R2"),
+  field(5, "PSUT-005-MAPPING-TARGET-ALIAS", OWNER.dish, "FACT_PLAN", "/mappings/0/targetAlias", "R1", "R5"),
+  field(6, "PSUT-006-FACT-DATASET-KIND", { ...OWNER.r0, factIndex: 0 }, "FACT_PLAN",
+    "/facts/0/datasetKind", "food_concept", "allergen"),
+  field(7, "PSUT-007-MAPPING-ID", OWNER.dish, "FACT_PLAN", "/mappings/0/mappingId", "mapping:dish", "mapping:constraint"),
+  mutant(8, "PSUT-008-CANONICAL-RAW-ORDER-REVERSE", { ...OWNER.life, rawOrder: "canonical" },
+    "FACT_PLAN", [["/rawFacts", v17Raw(RAW.s5), v17Raw(RAW.s5Reversed)]], [
+    "/rawFacts/0/alias", "/rawFacts/1/alias", "/rawFacts/1/disposition",
+    "/rawFacts/3/alias", "/rawFacts/3/disposition", "/rawFacts/4/alias"]), mutant(9, "PSUT-009-K05-RAW-ORDER-MISMATCH", OWNER.k05,
+    "FACT_PLAN", [["/rawFacts", v17Raw(RAW.k4Reversed), v17Raw(RAW.k4)]], ["/rawFacts/0/alias", "/rawFacts/1/alias",
+      "/rawFacts/2/alias", "/rawFacts/3/alias"]),
+  field(10, "PSUT-010-ENVELOPE-OWNER", OWNER.r0, "ENVELOPE", "/owner/actorId", "institution:test-owner", "institution:test-approver"),
+  field(11, "PSUT-011-ENVELOPE-APPROVER", { ...OWNER.r0, approverIndex: 0 }, "ENVELOPE",
+    "/approvers/0/actorId", "institution:test-approver", "institution:test-owner"),
+  field(12, "PSUT-012-SNAPSHOT-RETRIEVED-AT", { ...OWNER.r0, snapshotIndex: 0 }, "ENVELOPE", "/sourceSnapshots/0/retrievedAt",
+    "2026-08-28T00:00:00.000Z", "2028-08-28T00:00:00.000Z"), field(13, "PSUT-013-RELEASE-REVISION", { ...OWNER.r0,
+    releaseId: "release:v15:life01:r0" }, "RELEASE", "/releaseRevision", 1, 2),
+  field(14, "PSUT-014-BINDING-SOURCE-VERSION", { ...OWNER.r0,
+    bindingId: "binding:v15:life01:r0" }, "BINDING", "/sourceVersion", "2011", "2025"),
+  field(15, "PSUT-015-WINDOW-EFFECTIVE-FROM", { ...OWNER.r0, bindingId: "binding:v15:life01:r0" }, "WINDOW", "/effectiveFrom",
+    "2012-04-19T16:00:00.000Z", "2027-03-15T16:00:00.000Z"),
+  field(16, "PSUT-016-REVIEW-REVISION", OWNER.review, "REVIEW", "/reviewRevision", 1, 2),
+  field(17, "PSUT-017-REVIEW-EFFECTIVE-FROM", OWNER.review, "REVIEW", "/effectiveFrom", "2020-01-01T00:00:00.000Z", "2012-04-19T16:00:00.000Z"),
+]);
+const at = (root: unknown, pointer: string): unknown => pointer.slice(1).split("/").reduce((value, key) => (value as Dict)[key], root);
+const setAt = (root: unknown, pointer: string, value: unknown): void => {
+  const keys = pointer.slice(1).split("/"); const parent = keys.slice(0, -1).reduce(
+    (item, key) => (item as Record<string, unknown>)[key], root); (parent as Record<string, unknown>)[keys.at(-1)!] = value; };
+const diff = (before: unknown, after: unknown, path = ""): string[] => {
+  if (canonicalJson(before) === canonicalJson(after)) return [];
+  if (before === null || after === null || typeof before !== "object" || typeof after !== "object") return [path];
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort(compareUtf8);
+  return keys.flatMap((key) => diff((before as Dict)[key], (after as Dict)[key], `${path}/${key}`)); };
+const without = (value: object, key: string) => Object.fromEntries(Object.entries(value).filter(([candidate]) => candidate !== key));
+
+test("v1.7 literal authority precedes SUT", () => {
+  assert.equal(REG.length, 29); assert.equal(new Set(REG.map((row) => row.leaf)).size, 29);
+  assert.deepStrictEqual(REG.map((row) => row.leaf), V12_REPAIRED_LABELS); REG.forEach((row, index) => {
+    const fixture = V12_REPAIRED_INVOCATIONS[index]!;
+    assert.deepStrictEqual(v17Row(fixture, row), row); assertRecursivelyFrozen(v17Plan(row));
+    assertGov(fixture, row); assertV12RepairFixtureBeforeSut(fixture);
+    const actual = __testOnlyEvaluateGovernedHouseholdSafetyScenario(fixture.input, fixture.graph);
+    assert.deepStrictEqual(actual, fixture.expected); }); });
+
+test("v1.7 pre-SUT mutations stop dispatch", () => {
+  assert.equal(PSUT.length, 17); assertRecursivelyFrozen(PSUT); assertRecursivelyFrozen(OUTCOME);
+  assert.deepStrictEqual(PSUT.map((row) => row.ordinal), Array.from({ length: 17 }, (_, index) => index + 1));
+  const first = V12_REPAIRED_INVOCATIONS[0]!; const k05 = V12_REPAIRED_INVOCATIONS[24]!;
+  const endpoint = v15EndpointAuthority(first.graph, "R0");
+  const firstPlan = v17Plan(REG[0]!); const authority = v17Gov(REG[0]!, firstPlan); const actualRoots = {
+    REGISTRY: REG.map((row, index) => v17Row(V12_REPAIRED_INVOCATIONS[index]!, row)),
+    FACT_PLAN: v17Actual(first), K05_FACT_PLAN: v17Actual(k05),
+    ENVELOPE: endpoint.envelope, RELEASE: without(endpoint.release, "contentDigest"),
+    BINDING: without(endpoint.binding, "releaseDigest"), WINDOW: endpoint.window,
+    REVIEW: without(first.graph.mappingReviews[0]!, "contentDigest"), }; const expectedRoots = {
+    REGISTRY: REG, FACT_PLAN: firstPlan, K05_FACT_PLAN: v17Plan(REG[24]!),
+    ENVELOPE: authority.endpoints[0]!.envelope, RELEASE: authority.endpoints[0]!.release,
+    BINDING: authority.endpoints[0]!.binding, WINDOW: authority.endpoints[0]!.window, REVIEW: authority.reviews[0]!, };
+  for (const mutant of PSUT) { const rootKey = mutant.ordinal === 9 ? "K05_FACT_PLAN" : mutant.projectionKind;
+    const original = clone(actualRoots[rootKey]); const changed = clone(original);
+    const before = mutant.jsonPointers.map((pointer) => JSON.stringify(at(changed, pointer)));
+    assert.deepStrictEqual(before, mutant.beforeJson, mutant.literalId);
+    mutant.jsonPointers.forEach((pointer, index) => setAt(changed, pointer, JSON.parse(mutant.afterJson[index]!)));
+    assert.deepStrictEqual(diff(original, changed).sort(compareUtf8),
+      [...mutant.allowedDiffPaths].sort(compareUtf8), mutant.literalId);
+    const calls = { decoderCalls: 0, digestCalls: 0, sutCalls: 0 }; assert.throws(() => {
+      assert.deepStrictEqual(changed, expectedRoots[rootKey]); calls.decoderCalls += 1;
+      calls.digestCalls += 1; calls.sutCalls += 1; }, mutant.literalId); assert.deepStrictEqual({
+      guard: mutant.expectedGuardOutcome, ...calls, expectedSourceForbidden: OUTCOME.expectedSourceForbidden, }, OUTCOME);
+    assert.equal(mutant.sutCalls, 0); } });

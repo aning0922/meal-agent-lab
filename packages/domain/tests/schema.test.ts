@@ -38,6 +38,16 @@ const fixtureFiles = (section: "valid" | "invalid"): string[] =>
     .sort()
     .map((name) => resolve(fixtureDirectory, section, name));
 
+const officialEvidence = Object.freeze({
+  classification: "official_source_projection",
+  containsRealFoodFacts: true,
+  containsRealUserData: false,
+  fullTextCopied: false,
+  purpose: "household-safety-provenance-only",
+  factDisposition: "UNKNOWN_BLOCK",
+  usageStatus: "pending",
+});
+
 test("schemas use only standard 2020-12 vocabulary and declare decode.ts -0 ownership", () => {
   const releaseText = JSON.stringify(releaseSchema);
   const catalogText = JSON.stringify(catalogSchema);
@@ -81,6 +91,36 @@ test("five synthetic dataset-kind fixtures satisfy schema, strict decode, and di
     [...kinds].sort(),
     ["allergen", "cooking_technique", "food_concept", "food_safety", "religious_ethical"],
   );
+});
+
+test("governance evidence branches are a symmetric exclusive XOR", () => {
+  const release = readJson(fixtureFiles("valid")[0]!) as {
+    envelopes: Array<Record<string, unknown>>;
+  };
+  const synthetic = structuredClone(release);
+  const official = structuredClone(release);
+  official.envelopes[0]!["approvers"] = [];
+  delete official.envelopes[0]!["syntheticEvidence"];
+  official.envelopes[0]!["officialEvidence"] = officialEvidence;
+  const bothEmpty = structuredClone(official);
+  bothEmpty.envelopes[0]!["syntheticEvidence"] = synthetic.envelopes[0]!["syntheticEvidence"];
+  const bothNonempty = structuredClone(synthetic);
+  bothNonempty.envelopes[0]!["officialEvidence"] = officialEvidence;
+  const neither = structuredClone(official);
+  delete neither.envelopes[0]!["officialEvidence"];
+  const syntheticEmpty = structuredClone(synthetic);
+  syntheticEmpty.envelopes[0]!["approvers"] = [];
+  const cases = [
+    ["XOR-SYNTHETIC-POSITIVE", synthetic, true],
+    ["XOR-OFFICIAL-POSITIVE", official, true],
+    ["XOR-BOTH-EMPTY", bothEmpty, false],
+    ["XOR-BOTH-NONEMPTY", bothNonempty, false],
+    ["XOR-NEITHER", neither, false],
+    ["XOR-SYNTHETIC-EMPTY", syntheticEmpty, false],
+  ] as const;
+  for (const [id, value, expected] of cases) {
+    assert.equal(validateRelease(value), expected, `${id}: ${ajv.errorsText(validateRelease.errors)}`);
+  }
 });
 
 test("R1 invalid fixtures fail standard schema or decode at the declared capability boundary", () => {
