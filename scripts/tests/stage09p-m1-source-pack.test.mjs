@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -21,8 +22,7 @@ const canonicalJson = (value) => {
   return "{" + Object.keys(value).sort(compareUtf8)
     .map((key) => JSON.stringify(key) + ":" + canonicalJson(value[key])).join(",") + "}";
 };
-const sha = (value) => "sha256:" + process.getBuiltinModule("node:crypto")
-  .createHash("sha256").update(value).digest("hex");
+const sha = (value) => "sha256:" + createHash("sha256").update(value).digest("hex");
 const RD = (release) => {
   const material = {};
   if (Object.hasOwn(release, "$schema")) material.$schema = release.$schema;

@@ -308,7 +308,18 @@ export const resolveHardMapping = (
   });
 };
 
-const TRUSTED_ACTIVE_HOUSEHOLD_SAFETY_PACK_DIGESTS: readonly Digest[] = Object.freeze([]);
+const TRUSTED_ACTIVE_HOUSEHOLD_SAFETY_PACK_DIGESTS: readonly Digest[] = [];
+
+const isTrustedActiveHouseholdSafetyPackDigest = (
+  candidate: Digest,
+): boolean => {
+  let index = 0;
+  while (index < TRUSTED_ACTIVE_HOUSEHOLD_SAFETY_PACK_DIGESTS.length) {
+    if (TRUSTED_ACTIVE_HOUSEHOLD_SAFETY_PACK_DIGESTS[index] === candidate) return true;
+    index += 1;
+  }
+  return false;
+};
 
 const INTERNAL_SYNTHETIC_CLASSIFIER_LIFECYCLE: LifecycleStatus = "active";
 
@@ -1943,7 +1954,7 @@ export function evaluateHouseholdDishSafety(
       subjects,
     );
   }
-  if (!TRUSTED_ACTIVE_HOUSEHOLD_SAFETY_PACK_DIGESTS.includes(sourcePackDigest)) {
+  if (!isTrustedActiveHouseholdSafetyPackDigest(sourcePackDigest)) {
     return terminalEvaluation(
       "source_pack_untrusted",
       "source_pack",

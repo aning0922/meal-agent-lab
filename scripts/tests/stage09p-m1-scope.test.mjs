@@ -16,6 +16,7 @@ import {
   STAGE09P_M1_PRIVATE_SEAMS,
   STAGE09P_M1_PRODUCTION_IMPORT_SPECIFIERS,
   assertStage09pM1DiffProjection,
+  assertStage09pM1CorrectionSources,
   assertStage09pM1DraftBoundary,
   assertStage09pM1FileMode,
   assertStage09pM1PackageProjection,
@@ -159,16 +160,41 @@ test("public root remains private-seam-free and trust allowlist remains empty", 
     ),
   );
   const trustName = "TRUSTED_ACTIVE_" + "HOUSEHOLD_SAFETY_PACK_DIGESTS";
-  const empty = "const " + trustName + ": readonly Digest[] = Object.freeze([]);";
+  const empty = "const " + trustName + ": readonly Digest[] = [];";
   assert.throws(() =>
     assertStage09pM1PublicBoundary(
       indexSource,
       resolutionSource.replace(
         empty,
-        "const " + trustName + ': readonly Digest[] = Object.freeze(["sha256:bad"]);',
+        "const " + trustName + ': readonly Digest[] = ["sha256:bad"];',
       ),
     ),
   );
+  assert.throws(() => assertStage09pM1PublicBoundary(indexSource, resolutionSource.replace(
+    "!isTrustedActiveHouseholdSafetyPackDigest(sourcePackDigest)",
+    "!" + trustName + ".includes(sourcePackDigest)",
+  )));
+});
+
+test("correction sources reject known loaders and enforce the C1 household suffix", () => {
+  const sourceTest = read("scripts/tests/stage09p-m1-source-pack.test.mjs");
+  const household = read("packages/domain/tests/household-safety.test.ts");
+  const c1 = spawnSync("git", ["show", "0734aa885cb12ffce86a014c8c3dc58cf06d4ed5:" +
+    "packages/domain/tests/household-safety.test.ts"],
+  { cwd: repositoryRoot, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  assert.equal(c1.status, 0);
+  assert.doesNotThrow(() => assertStage09pM1CorrectionSources(sourceTest, c1.stdout, household));
+  const loader = sourceTest.replace('createHash("sha256").update(value)',
+    'process.getBuiltinModule("node:crypto").createHash("sha256").update(value)');
+  assert.throws(() => assertStage09pM1CorrectionSources(loader, c1.stdout, household));
+  assert.throws(() => assertStage09pM1CorrectionSources(sourceTest +
+    '\nimport { createRequire } from "node:module";\n', c1.stdout, household));
+  assert.throws(() => assertStage09pM1CorrectionSources(sourceTest, c1.stdout,
+    (household[0] === "x" ? "y" : "x") + household.slice(1)));
+  assert.throws(() => assertStage09pM1CorrectionSources(sourceTest, c1.stdout,
+    c1.stdout + "x".repeat(4097)));
+  assert.throws(() => assertStage09pM1CorrectionSources(sourceTest, c1.stdout,
+    c1.stdout + "\n".repeat(49)));
 });
 
 test("three private seams are confined to resolution and one household test", () => {
@@ -231,13 +257,13 @@ test("checker and dedicated test stay readable and mechanism-bounded", () => {
   assert(lineCount(dedicatedTest) <= 300);
   assert(lineCount(sourceChecker) <= 430);
   assert(lineCount(sourceTest) <= 260);
-  const base = spawnSync("git", ["show", "3bd91a00b953d0949095fc534306fcaa3039d416:packages/domain/tests/household-safety.test.ts"], { cwd: repositoryRoot, maxBuffer: 8 * 1024 * 1024 });
+  const base = spawnSync("git", ["show", "0734aa885cb12ffce86a014c8c3dc58cf06d4ed5:packages/domain/tests/household-safety.test.ts"], { cwd: repositoryRoot, maxBuffer: 8 * 1024 * 1024 });
   const household = readFileSync(join(repositoryRoot, "packages/domain/tests/household-safety.test.ts"));
   assert.equal(base.status, 0);
   assert.equal(household.subarray(0, base.stdout.length).equals(base.stdout), true);
   const suffix = household.subarray(base.stdout.length);
-  assert(suffix.length > 0 && suffix.length <= 20_480);
-  assert.equal(suffix.filter((byte) => byte === 0x0a).length <= 220, true);
+  assert(suffix.length > 0 && suffix.length <= 4096);
+  assert.equal(suffix.filter((byte) => byte === 0x0a).length <= 48, true);
   for (const token of [
     "node:" + "module",
     "create" + "Require",

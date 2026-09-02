@@ -20792,3 +20792,44 @@ test("v1.7 pre-SUT mutations stop dispatch", () => {
       calls.digestCalls += 1; calls.sutCalls += 1; }, mutant.literalId); assert.deepStrictEqual({
       guard: mutant.expectedGuardOutcome, ...calls, expectedSourceForbidden: OUTCOME.expectedSourceForbidden, }, OUTCOME);
     assert.equal(mutant.sutCalls, 0); } });
+
+test("public active pack stays untrusted when Array.prototype.includes is polluted", () => {
+  const material = {
+    schemaVersion: 2 as const, packId: PIPE_FIXTURE.graph.packId,
+    packRevision: PIPE_FIXTURE.graph.packRevision, lifecycleStatus: "active" as const,
+    country: PIPE_FIXTURE.graph.country, foodRuleRegion: PIPE_FIXTURE.graph.foodRuleRegion,
+    ruleLanguage: PIPE_FIXTURE.graph.ruleLanguage,
+    releaseBindings: PIPE_FIXTURE.graph.releaseBindings,
+    sourceVersionWindows: PIPE_FIXTURE.graph.sourceVersionWindows,
+    mappingReviews: PIPE_FIXTURE.graph.mappingReviews, catalog: PIPE_FIXTURE.graph.catalog,
+  };
+  const pack: HouseholdSafetySourcePack = deepFreeze({ ...material,
+    contentDigest: framedDigest("stage09p-m1-household-safety-official-pack-v2", material) });
+  const input: HouseholdDishSafetyInput = deepFreeze({ ...clone(PIPE_FIXTURE.input),
+    expectedSourcePack: { packId: pack.packId, packRevision: pack.packRevision,
+      contentDigest: pack.contentDigest } });
+  const expected = evaluation({ inputIssue: null, requestDigest: requestDigest(input), schemaVersion: 2,
+    sourcePackDigest: pack.contentDigest,
+    subjects: [{ reasons: [], status: "indeterminate",
+      subject: { kind: "household_profile", id: "profile:a" } }],
+    tableReasons: [fixedReason("source_pack_untrusted", "source_pack")], tableStatus: "blocked" });
+  assert.equal(decodeHouseholdSafetySourcePack(JSON.stringify(pack)).ok, true);
+  assert.deepStrictEqual([...expected.tableReasons, ...expected.subjects.flatMap(({ reasons }) => reasons)]
+    .map(({ code }) => code), ["source_pack_untrusted"]);
+  assert.deepStrictEqual(evaluateHouseholdDishSafety(input, pack), expected);
+  const descriptor = Object.getOwnPropertyDescriptor(Array.prototype, "includes");
+  assert.ok(descriptor); const originalIncludes = Array.prototype.includes; let maliciousHits = 0;
+  try {
+    Object.defineProperty(Array.prototype, "includes", { ...descriptor,
+      value(this: unknown[], candidate: unknown, fromIndex?: number): boolean {
+        if (this.length === 0 && candidate === pack.contentDigest) { maliciousHits += 1; return true; }
+        return originalIncludes.call(this, candidate, fromIndex);
+      } });
+    assert.deepStrictEqual(evaluateHouseholdDishSafety(input, pack), expected);
+    assert.equal(maliciousHits, 0);
+  } finally {
+    Object.defineProperty(Array.prototype, "includes", descriptor);
+  }
+  assert.deepStrictEqual(Object.getOwnPropertyDescriptor(Array.prototype, "includes"), descriptor);
+  assert.deepStrictEqual(evaluateHouseholdDishSafety(input, pack), expected);
+});

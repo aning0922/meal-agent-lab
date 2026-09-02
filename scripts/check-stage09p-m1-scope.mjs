@@ -11,44 +11,38 @@ const STAGE09P_M1_FAILED_HEAD = "1da720143c584a2326d640b882bbee75ac494941";
 const STAGE09P_M1_FAILED_TREE = "6d8ab75a0b6f9445f402f74ba23411a387b7eaa0";
 const STAGE09P_M1_EVIDENCE_HEAD = "3bd91a00b953d0949095fc534306fcaa3039d416";
 const STAGE09P_M1_EVIDENCE_TREE = "8239cbef4e370a8ed6cc9ca81543017f6dbec5e8";
+const STAGE09P_M1_C1_HEAD = "0734aa885cb12ffce86a014c8c3dc58cf06d4ed5";
+const STAGE09P_M1_C1_TREE = "c9261b6fadb5044cdc53d3ac7269946327111946";
 const STAGE09P_M1_FAILED_REPAIR_PATHS = Object.freeze([
   "packages/domain/src/resolution.ts", "packages/domain/tests/household-safety.test.ts",
   "scripts/check-stage09p-m1-scope.mjs",
 ]);
 const STAGE09P_M1_REPAIR_PATHS = Object.freeze([
-  "data/schemas/governance-release.schema.json",
-  "packages/domain/tests/schema.test.ts",
-  "packages/domain/tests/household-safety.test.ts",
-  "scripts/check-stage09p-m1-scope.mjs",
-  "scripts/check-stage09p-m1-source-pack.mjs",
-  "scripts/tests/stage09p-m1-scope.test.mjs",
+  "data/schemas/governance-release.schema.json", "packages/domain/tests/schema.test.ts",
+  "packages/domain/tests/household-safety.test.ts", "scripts/check-stage09p-m1-scope.mjs",
+  "scripts/check-stage09p-m1-source-pack.mjs", "scripts/tests/stage09p-m1-scope.test.mjs",
+  "scripts/tests/stage09p-m1-source-pack.test.mjs",
+]);
+const STAGE09P_M1_CORRECTION_PATHS = Object.freeze([
+  "packages/domain/src/resolution.ts", "packages/domain/tests/household-safety.test.ts",
+  "scripts/check-stage09p-m1-scope.mjs", "scripts/tests/stage09p-m1-scope.test.mjs",
   "scripts/tests/stage09p-m1-source-pack.test.mjs",
 ]);
 export const STAGE09P_M1_MODIFIED_PATHS = Object.freeze([
-  "data/README.md",
-  "data/schemas/governance-release.schema.json",
-  "docs/domain/data-model.md",
-  "docs/product/app-functional-spec.md",
-  "docs/safety/food-safety.md",
-  "package.json",
-  "packages/domain/README.md",
-  "packages/domain/src/canonical.ts",
-  "packages/domain/src/catalog.ts",
-  "packages/domain/src/decode.ts",
-  "packages/domain/src/index.ts",
-  "packages/domain/src/resolution.ts",
-  "packages/domain/src/types.ts",
+  "data/README.md", "data/schemas/governance-release.schema.json",
+  "docs/domain/data-model.md", "docs/product/app-functional-spec.md",
+  "docs/safety/food-safety.md", "package.json", "packages/domain/README.md",
+  "packages/domain/src/canonical.ts", "packages/domain/src/catalog.ts",
+  "packages/domain/src/decode.ts", "packages/domain/src/index.ts",
+  "packages/domain/src/resolution.ts", "packages/domain/src/types.ts",
   "packages/domain/src/validation.ts",
   "packages/domain/tests/schema.test.ts",
 ]);
 export const STAGE09P_M1_ADDED_PATHS = Object.freeze([
   "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json",
-  "data/schemas/household-safety-source-pack.schema.json",
-  "packages/domain/tests/household-safety.test.ts",
-  "scripts/check-stage09p-m1-scope.mjs",
-  "scripts/check-stage09p-m1-source-pack.mjs",
-  "scripts/run-stage09p-m1-check.mjs",
-  "scripts/tests/stage09p-m1-check.test.mjs",
+  "data/schemas/household-safety-source-pack.schema.json", "packages/domain/tests/household-safety.test.ts",
+  "scripts/check-stage09p-m1-scope.mjs", "scripts/check-stage09p-m1-source-pack.mjs",
+  "scripts/run-stage09p-m1-check.mjs", "scripts/tests/stage09p-m1-check.test.mjs",
   "scripts/tests/stage09p-m1-scope.test.mjs",
   "scripts/tests/stage09p-m1-source-pack.test.mjs",
 ]);
@@ -56,23 +50,12 @@ export const STAGE09P_M1_ALLOWED_PATHS = Object.freeze(
   [...STAGE09P_M1_MODIFIED_PATHS, ...STAGE09P_M1_ADDED_PATHS].sort(),
 );
 export const STAGE09P_M1_DOMAIN_MODULES = Object.freeze([
-  "canonical.ts",
-  "catalog.ts",
-  "decode.ts",
-  "index.ts",
-  "resolution.ts",
-  "types.ts",
-  "validation.ts",
+  "canonical.ts", "catalog.ts", "decode.ts", "index.ts",
+  "resolution.ts", "types.ts", "validation.ts",
 ]);
 export const STAGE09P_M1_PRODUCTION_IMPORT_SPECIFIERS = Object.freeze([
-  "./canonical.js",
-  "./catalog.js",
-  "./decode.js",
-  "./resolution.js",
-  "./types.js",
-  "./validation.js",
-  "@noble/hashes/sha2.js",
-  "@noble/hashes/utils.js",
+  "./canonical.js", "./catalog.js", "./decode.js", "./resolution.js",
+  "./types.js", "./validation.js", "@noble/hashes/sha2.js", "@noble/hashes/utils.js",
 ]);
 export const STAGE09P_M1_M0_TCB = Object.freeze({
   "scripts/check-stage09p-m0-scope.mjs": "5ac0c5915ab08170efee63c563fff1f1d68081aa2b8b840e9b01ebed02359766",
@@ -99,16 +82,13 @@ const NON_REPAIR_SNAPSHOT = Object.freeze({
   "scripts/tests/stage09p-m1-check.test.mjs": "1522545ca676bb77d428195488d60e825cf7e12b0fdf0c61a3c6cb5a2cf025a5",
 });
 const REPAIRED_SHA256 = Object.freeze({
-  "data/schemas/governance-release.schema.json": "21c23b6a1041378637d47b435c0d4e716afbcba4fee540da526d0c8c3c51b0f5",
-  "packages/domain/src/resolution.ts": "692fae656154a299c6849fc1b7771aa26c42b0d4a05489ec0ac59ab2e5297dbb",
-  "packages/domain/tests/household-safety.test.ts": "2bfcc27dd1b167570fbb736e5c0c8d30bc490e4c45833153d735be2b319ee1a1",
-  "packages/domain/tests/schema.test.ts": "6f5096a8f08b6d9d60205eca8c2626fca5b81fcc46e47e3736c15fca8afa9b11",
-  "scripts/check-stage09p-m1-source-pack.mjs": "db6e2d358bcc653be18c9b6b91ecdb42f4186c2634d5078e0748f74c5fd6f48b",
-  "scripts/tests/stage09p-m1-source-pack.test.mjs": "c9a3d6326e6c24a785b2c87c6d66bbd77e6ce79cc34f69705f2331326477bc0d",
+  "packages/domain/src/resolution.ts": "1b16173d5aee5290eab17dd12aba63f5f350ca9d910909f07b755cdd9f42f2d0",
+  "packages/domain/tests/household-safety.test.ts": "a4cf28d175d6337d30fec4a15b378054d02ad67caed487888025acd20d2c58dc",
+  "scripts/tests/stage09p-m1-scope.test.mjs": "e8c2443b013467a4dad2181f7fb32c9be9e5c5b2454bf8fc9013fb529ec6ce10",
+  "scripts/tests/stage09p-m1-source-pack.test.mjs": "314db222cbf577983264ec2b73c8491a08d173aeb337f61093f6cb9c625bf9e6",
 });
 export const STAGE09P_M1_PRIVATE_SEAMS = Object.freeze([
-  "__test" + "OnlyAnalyzeSyntheticHouseholdSafety",
-  "__test" + "OnlyEvaluateAnalyzedHouseholdSafety",
+  "__test" + "OnlyAnalyzeSyntheticHouseholdSafety", "__test" + "OnlyEvaluateAnalyzedHouseholdSafety",
   "__test" + "OnlyEvaluateGovernedHouseholdSafetyScenario",
 ]);
 const EXPECTED_PATH_LIST_SHA = "3cbd274cb9e358e962e193c05f678d3ee54973b8927fe65aa26241984a2bc9c0";
@@ -118,11 +98,8 @@ const HOUSEHOLD_TEST_PATH = "packages/domain/tests/household-safety.test.ts";
 const RESOLUTION_PATH = "packages/domain/src/resolution.ts";
 const INDEX_PATH = "packages/domain/src/index.ts";
 const PACK_PATH = "data/reference/ingredients/stage09p-m1-household-safety-source-pack.json";
-const fail = (id, detail = "") => {
-  throw new Error(detail === "" ? id : id + ": " + detail);
-};
-const lines = (value) =>
-  value === "" ? [] : value.replace(/\n$/u, "").split("\n");
+const fail = (id, detail = "") => { throw new Error(detail === "" ? id : id + ": " + detail); };
+const lines = (value) => value === "" ? [] : value.replace(/\n$/u, "").split("\n");
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const read = (root, path) => readFileSync(join(root, path), "utf8");
 const json = (root, path) => JSON.parse(read(root, path));
@@ -131,6 +108,7 @@ const git = (root, args) => {
     cwd: root,
     encoding: "utf8",
     env: process.env,
+    maxBuffer: 8 * 1024 * 1024,
   });
   if (result.error !== undefined || result.signal !== null || result.status !== 0) {
     fail("git", (args.join(" ") + " " + (result.stderr ?? "")).trim());
@@ -142,19 +120,11 @@ const sameStrings = (actual, expected) =>
 const stableJson = (value) => {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return "[" + value.map(stableJson).join(",") + "]";
-  return (
-    "{" +
-    Object.keys(value)
-      .sort()
-      .map((key) => JSON.stringify(key) + ":" + stableJson(value[key]))
-      .join(",") +
-    "}"
-  );
+  const entries = Object.keys(value).sort()
+    .map((key) => JSON.stringify(key) + ":" + stableJson(value[key]));
+  return "{" + entries.join(",") + "}";
 };
-export const collectStage09pM1DiffEntries = (
-  root,
-  base = STAGE09P_M1_BASE_HEAD,
-) => {
+export const collectStage09pM1DiffEntries = (root, base = STAGE09P_M1_BASE_HEAD) => {
   const entries = [];
   for (const line of lines(
     git(root, ["diff", "--name-status", "--no-renames", base, "--"]),
@@ -195,6 +165,15 @@ export const assertStage09pM1DiffProjection = (entries) => {
     fail("write-set", "path-list");
   }
 };
+const assertCommitAnchor = (root, head, tree, parent, paths, detail) => {
+  const nameStatus = paths === undefined ? [] : lines(git(root,
+    ["diff", "--name-status", "--no-renames", parent, head]));
+  if (
+    git(root, ["rev-parse", head + "^{tree}"]).trim() !== tree ||
+    git(root, ["rev-list", "--parents", "-n", "1", head]).trim() !== head + " " + parent ||
+    (paths !== undefined && !sameStrings(nameStatus, paths.map((path) => "M\t" + path)))
+  ) fail("identity", detail);
+};
 const assertIdentity = (root, expectedBase) => {
   if (expectedBase !== STAGE09P_M1_BASE_HEAD) fail("identity", "base argument");
   if (
@@ -212,51 +191,39 @@ const assertIdentity = (root, expectedBase) => {
   if (git(root, ["diff", "--cached", "--name-only"]).trim() !== "") {
     fail("identity", "staged changes");
   }
-  if (
-    git(root, ["rev-parse", STAGE09P_M1_FAILED_HEAD + "^{tree}"]).trim() !==
-      STAGE09P_M1_FAILED_TREE ||
-    git(root, ["rev-list", "--parents", "-n", "1", STAGE09P_M1_FAILED_HEAD]).trim() !==
-      STAGE09P_M1_FAILED_HEAD + " " + STAGE09P_M1_BASE_HEAD
-  ) {
-    fail("identity", "failed anchor");
-  }
-  const evidenceDiff = lines(git(root, [
-    "diff", "--name-status", "--no-renames", STAGE09P_M1_FAILED_HEAD, STAGE09P_M1_EVIDENCE_HEAD,
-  ]));
-  if (
-    git(root, ["rev-parse", STAGE09P_M1_EVIDENCE_HEAD + "^{tree}"]).trim() !==
-      STAGE09P_M1_EVIDENCE_TREE ||
-    git(root, ["rev-list", "--parents", "-n", "1", STAGE09P_M1_EVIDENCE_HEAD]).trim() !==
-      STAGE09P_M1_EVIDENCE_HEAD + " " + STAGE09P_M1_FAILED_HEAD ||
-    !sameStrings(evidenceDiff, STAGE09P_M1_FAILED_REPAIR_PATHS.map((path) => "M\t" + path))
-  ) fail("identity", "evidence anchor");
+  assertCommitAnchor(root, STAGE09P_M1_FAILED_HEAD, STAGE09P_M1_FAILED_TREE,
+    STAGE09P_M1_BASE_HEAD, undefined, "failed anchor");
+  assertCommitAnchor(root, STAGE09P_M1_EVIDENCE_HEAD, STAGE09P_M1_EVIDENCE_TREE,
+    STAGE09P_M1_FAILED_HEAD, STAGE09P_M1_FAILED_REPAIR_PATHS, "evidence anchor");
+  assertCommitAnchor(root, STAGE09P_M1_C1_HEAD, STAGE09P_M1_C1_TREE,
+    STAGE09P_M1_EVIDENCE_HEAD, STAGE09P_M1_REPAIR_PATHS, "C1 anchor");
   const head = git(root, ["rev-parse", "HEAD"]).trim();
   const status = git(root, ["status", "--porcelain=v1", "-uall"]);
   const tracked = lines(git(root, ["ls-files"])).length;
   if (tracked !== STAGE09P_M1_CANDIDATE_TRACKED_FILES) {
     fail("identity", "tracked count");
   }
-  if (head === STAGE09P_M1_EVIDENCE_HEAD) {
-    const expectedStatus = STAGE09P_M1_REPAIR_PATHS.map((path) => " M " + path);
-    if (!sameStrings(lines(status), expectedStatus)) fail("identity", "repair status");
+  if (head === STAGE09P_M1_C1_HEAD) {
+    const expectedStatus = STAGE09P_M1_CORRECTION_PATHS.map((path) => " M " + path);
+    if (!sameStrings(lines(status), expectedStatus)) fail("identity", "correction status");
   } else {
     const parents = git(root, ["rev-list", "--parents", "-n", "1", head])
       .trim()
       .split(" ");
     const repairDiff = lines(
-      git(root, ["diff", "--name-status", "--no-renames", STAGE09P_M1_EVIDENCE_HEAD, head]),
+      git(root, ["diff", "--name-status", "--no-renames", STAGE09P_M1_C1_HEAD, head]),
     );
     if (
       parents.length !== 2 ||
       parents[0] !== head ||
-      parents[1] !== STAGE09P_M1_EVIDENCE_HEAD ||
+      parents[1] !== STAGE09P_M1_C1_HEAD ||
       status !== "" ||
       !sameStrings(
         repairDiff,
-        STAGE09P_M1_REPAIR_PATHS.map((path) => "M\t" + path),
+        STAGE09P_M1_CORRECTION_PATHS.map((path) => "M\t" + path),
       )
     ) {
-      fail("identity", "repair commit");
+      fail("identity", "correction commit");
     }
   }
 };
@@ -276,10 +243,7 @@ export const assertStage09pM1FileMode = ({ isFile, mode, path }) => {
 };
 const assertModesAndTypes = (root) => {
   const head = git(root, ["rev-parse", "HEAD"]).trim();
-  const baseTree = parseTree(
-    git(root, ["ls-tree", "-r", STAGE09P_M1_BASE_HEAD]),
-    false,
-  );
+  const baseTree = parseTree(git(root, ["ls-tree", "-r", STAGE09P_M1_BASE_HEAD]), false);
   const index = parseTree(git(root, ["ls-files", "--stage"]), true);
   for (const path of STAGE09P_M1_ALLOWED_PATHS) {
     const stat = lstatSync(join(root, path));
@@ -299,7 +263,8 @@ const assertModesAndTypes = (root) => {
   }
 };
 const assertNonRepairSnapshot = (root) => {
-  if (Object.keys(NON_REPAIR_SNAPSHOT).length !== 16) {
+  if (Object.keys(NON_REPAIR_SNAPSHOT).length !== 16 ||
+      Object.keys(REPAIRED_SHA256).length !== 4) {
     fail("snapshot", "cardinality");
   }
   for (const [path, expected] of Object.entries({
@@ -395,10 +360,7 @@ const assertM0Tcb = (root) => {
   }
 };
 const occurrenceCount = (source, token) => source.split(token).length - 1;
-export const assertStage09pM1PublicBoundary = (
-  indexSource,
-  resolutionSource,
-) => {
+export const assertStage09pM1PublicBoundary = (indexSource, resolutionSource) => {
   const trustName = "TRUSTED_ACTIVE_" + "HOUSEHOLD_SAFETY_PACK_DIGESTS";
   const privateRootTokens = [
     ...STAGE09P_M1_PRIVATE_SEAMS,
@@ -421,14 +383,48 @@ export const assertStage09pM1PublicBoundary = (
     }
   }
   const emptyDeclaration =
-    "const " + trustName + ": readonly Digest[] = Object.freeze([]);";
+    "const " + trustName + ": readonly Digest[] = [];";
+  const helperName = "isTrustedActiveHouseholdSafetyPackDigest";
+  const helper = [
+    emptyDeclaration, "", "const " + helperName + " = (", "  candidate: Digest,",
+    "): boolean => {", "  let index = 0;",
+    "  while (index < " + trustName + ".length) {",
+    "    if (" + trustName + "[index] === candidate) return true;",
+    "    index += 1;", "  }", "  return false;", "};",
+  ].join("\n");
   if (
-    occurrenceCount(resolutionSource, trustName) !== 2 ||
-    !resolutionSource.includes(emptyDeclaration) ||
-    !resolutionSource.includes(trustName + ".includes(sourcePackDigest)") ||
+    occurrenceCount(resolutionSource, trustName) !== 3 ||
+    occurrenceCount(resolutionSource, helperName) !== 2 ||
+    !resolutionSource.includes(helper) ||
+    !resolutionSource.includes("if (!" + helperName + "(sourcePackDigest)) {") ||
     resolutionSource.includes("export " + emptyDeclaration)
   ) {
     fail("zero-trust", "allowlist");
+  }
+};
+export const assertStage09pM1CorrectionSources = (
+  sourceTest,
+  c1Household,
+  household,
+) => {
+  const staticImport = 'import { createHash } from "node:crypto";';
+  const digestCall = 'createHash("sha256").update(value).digest("hex")';
+  const forbidden = ["process." + "getBuiltinModule", "create" + "Require", "node:" + "module"];
+  if (
+    occurrenceCount(sourceTest, staticImport) !== 1 ||
+    occurrenceCount(sourceTest, digestCall) !== 1 ||
+    forbidden.some((token) => sourceTest.includes(token)) ||
+    /\bimport\s*\(/u.test(sourceTest) || /\brequire\s*\(/u.test(sourceTest) ||
+    /\b(?:eval|Function)\s*\(/u.test(sourceTest)
+  ) fail("correction-source", "loader");
+  const c1 = Buffer.from(c1Household);
+  const current = Buffer.from(household);
+  if (current.length <= c1.length || !current.subarray(0, c1.length).equals(c1)) {
+    fail("correction-source", "household prefix");
+  }
+  const suffix = current.subarray(c1.length);
+  if (suffix.length > 4096 || suffix.filter((byte) => byte === 0x0a).length > 48) {
+    fail("correction-source", "household suffix");
   }
 };
 const TEXT_EXTENSIONS = new Set([
@@ -508,6 +504,11 @@ const assertCheckerShape = (root) => {
   const dedicatedTest = read(root, SCOPE_TEST_PATH);
   const sourceChecker = read(root, "scripts/check-stage09p-m1-source-pack.mjs");
   const sourceTest = read(root, "scripts/tests/stage09p-m1-source-pack.test.mjs");
+  assertStage09pM1CorrectionSources(
+    sourceTest,
+    git(root, ["show", STAGE09P_M1_C1_HEAD + ":" + HOUSEHOLD_TEST_PATH]),
+    read(root, HOUSEHOLD_TEST_PATH),
+  );
   if (physicalLines(checker) > 600 || physicalLines(dedicatedTest) > 300 ||
       physicalLines(sourceChecker) > 430 || physicalLines(sourceTest) > 260) {
     fail("line-caps");
