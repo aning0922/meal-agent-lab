@@ -1,12 +1,14 @@
 # 项目状态
 
-最后更新：2026-08-26
+最后更新：2026-09-05
 
 ## 当前结论
 
 **当前阶段 09A Accepted 事实（2026-08-22，覆盖本文所有旧 M5/09A “当前”段落）**：M1—M5 均已由总控 Accepted，M5 验收落点为 `efd186f`；独立静态审计 A 与最终动态审计 B 均为 **CLEAN**。远端 CI 收口候选 `24be8b3` 已由 run [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712) 完整验证。PR [#1](https://github.com/aning0922/meal-agent-lab/pull/1) 在 PR run [`32579605469`](https://github.com/aning0922/meal-agent-lab/actions/runs/32579605469) 成功后以普通 merge 合入 `main`，集成落点为 `8b77ce3`；main push run [`32581313226`](https://github.com/aning0922/meal-agent-lab/actions/runs/32581313226) 在该精确 merge commit 上再次完成 `stage09a:check` **14/14 PASS**。事实源收口提交 `23450a1f3508e8030d753748291d265ad308df05` 随后由 run [`32583959281`](https://github.com/aning0922/meal-agent-lab/actions/runs/32583959281) 在精确 HEAD 上完成 `stage09a:check` 14/14、scripts tests 222/222 与 docs links 80 files / 318 links；当前本地 `main` 与 `origin/main` 均为 `23450a1…`。阶段 09A 已由项目总控记为 **Accepted / Pass**，冻结面不因 09P 规划而改变。ADR-0005 与 ADR-0006 均保持 `Accepted`。
 
 **阶段 09P-M0 Accepted（2026-08-27）**：[阶段 09P“安全知识治理与确定性产品核心闭环”](plans/2026-08-stage-09p-safe-deterministic-product-core.md)规划保持 Accepted。Recovery 依次完成 R1/R2/R3、09A tracked-file baseline reconciliation、Contract R4 source-equivalence remediation 与 SE08 独立 length-2/Map insertion-order regression；完整 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54` 获 Cycle 2 独立 Audit A/B 双 CLEAN，并重新通过 scope 15/15、domain check、M0 6/6（direct 91/91）、docs 85 files / 346 links、diff/status；同一精确代码候选已有 fresh `stage09a:check` 14/14。总控据此将 ADR-0008 与 M0 记为 Accepted。production 固定为 `types/decode/canonical/validation/catalog/resolution/index` 七模块，数据仍只有 5 valid + 10 invalid 完全合成 fixtures，无权威真实 release、真实用户/食品事实或外部能力。09P 仍为 `In Progress`，本次 M0 收口时 M1 尚未开始。Node loader/compiler/runner/worker/supply-chain 仍由 frozen lockfile、Git review、CI/09A、固定 Node 与独立审计组成的 TCB 承担，不由 M0 checker 自证。阶段 09B 保持 P1 conditional；云、公网、真实微信、合法域名、真机、体验版、审核和发布继续 Deferred。
+
+**阶段 09P-M1/M2 当前事实（2026-09-05，覆盖本文下方所有“M1 尚未开始”旧口径）**：M1 当前仅为 `M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS`，不是 Accepted；fresh Audit A 为 CLEAN，但 household-safety `292/292` 只构成受限动态证据，不能冒充 fresh Audit B CLEAN。B-r1、B-r2、B-r3 均为 BLOCK，尚无 B-r4；`G2_NOT_ADMITTED` 保持不变，source pack 不 active，public trust allowlist 仍为空。M2 已进入 contracts 冻结与准入阶段，但 **M2 整体尚未 Accepted**。R7-A-r6 的独立 Fresh Review 在任务 `01a071dc-6e23-7d62-ba89-bfdf6e45930f` 给出 `CLEAN`，P0/P1/P2=`0/0/0`；项目总控随后把经过 hash 对账的 8 路径 contracts 冻结集成到 `codex/stage-09p-m2-inventory`，R7-A 验收落点为 `63d2a0668df3e1291cb3a863327bd5aeed6dd034`。该落点新增隔离的 Inventory V2 / Seasoning V1 package subpath、caller-claim chunk replay、独立 server checkpoint/result boundary、严格 empty history、深只读/深冻结结果和 scope-local rule registry；根入口保持 legacy `35/34/35` 且不加载或暴露 M2 schema。资源边界固定为单 chunk `1,048,576` UTF-8 bytes、逻辑历史 `10,000` events、Inventory `17` events/chunk、Seasoning `388` events/chunk。隔离集成副本已通过 contracts typecheck/build 与 `72/72` tests、API typecheck/OpenAPI/build 与 `190/190` unit+HTTP tests、client typecheck 与 `129/129` tests。**R7-A Accepted 只冻结 contracts，不代表 M2 Accepted**；R7-B 的跨请求 checkpoint authentication/replay/order/atomic persistence、R7-C 的 request-stream/route integration，以及 migration、DB/RLS、正式 HTTP/client 纵切仍未开始或未准入。
 
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
@@ -994,14 +996,18 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
 ## 阶段 09P 规划 Accepted
 
 - 正式名称：阶段 09P“安全知识治理与确定性产品核心闭环”，P0。
-- 当前状态：**Planning Accepted；M0/ADR-0008 Accepted；09P In Progress；本次 M0 收口时 M1 尚未开始**。规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；M0 验收落点为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`。
+- 当前状态：**Planning Accepted；M0/ADR-0008 Accepted；M1 仅为 `M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS`；M2 In Progress，R7-A contracts Accepted，M2 整体未 Accepted**。规划验收落点仍为 `cff32929916592fa79d40c980564d3cc9a93fbeb`；M0 验收落点为 `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`；R7-A 验收落点为 `63d2a0668df3e1291cb3a863327bd5aeed6dd034`。
 - ADR：[ADR-0007](architecture/decisions/0007-food-knowledge-governance-and-domain-core.md)
   的规划/架构方向已 `Accepted`；[ADR-0008](architecture/decisions/0008-stage09p-m0-evidence-boundary.md)
   与 M0 已由总控在完整 acceptance candidate 上 Accepted，但不授权权威真实 release、
   migration、外部能力或 M1。
 - 首个里程碑 09P-M0“数据治理契约与合成 fail-closed 内核”已完成 Recovery R1/R2/R3
-  与 bounded remediation，Cycle 2 独立 Audit A/B 双 CLEAN并通过总控验收。M1 在本次
-  M0 收口时尚未开始。
+  与 bounded remediation，Cycle 2 独立 Audit A/B 双 CLEAN并通过总控验收。M0 收口当时
+  M1 尚未开始；当前 M1/M2 状态以上方 2026-09-05 当前事实为准。
+- M2 R7-A 已冻结并准入 Inventory V2 / Seasoning V1 contracts、bounded chunk replay、
+  server checkpoint/result、empty history、deep-readonly result 与 scope-local rule registry；
+  根入口继续只暴露 legacy contracts。R7-B、R7-C、migration、DB/API/client 与 M2 总验收
+  均未完成，不得由 R7-A CLEAN/Accepted 外推。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
 - `packages/domain` M0 已固定为七个纯 production module；M0 scope gate 只核对边界和
