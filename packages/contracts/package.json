@@ -10,11 +10,13 @@
     "./dist/contract-rule-schema.js",
     "./dist/identity.js",
     "./dist/inventory.js",
+    "./dist/inventory-v2.js",
     "./dist/meals.js",
     "./dist/members.js",
     "./dist/primitives.js",
     "./dist/refinement-bindings.js",
     "./dist/shopping.js"
+    ,"./dist/seasoning-v1.js"
   ],
   "files": [
     "dist"
@@ -42,6 +44,10 @@
       "types": "./dist/inventory.d.ts",
       "import": "./dist/inventory.js"
     },
+    "./inventory-v2": {
+      "types": "./dist/inventory-v2.d.ts",
+      "import": "./dist/inventory-v2.js"
+    },
     "./members": {
       "types": "./dist/members.d.ts",
       "import": "./dist/members.js"
@@ -53,6 +59,10 @@
     "./shopping": {
       "types": "./dist/shopping.d.ts",
       "import": "./dist/shopping.js"
+    }
+    ,"./seasoning-v1": {
+      "types": "./dist/seasoning-v1.d.ts",
+      "import": "./dist/seasoning-v1.js"
     }
   },
   "engines": {

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
+import { createContractRuleSchemaRegistry } from "../src/contract-rule-registry.js";
 import {
   consumeInventoryLotRequestSchema,
   contractRuleBindings,
@@ -19,11 +22,157 @@ const refinementSources = [
   "api.ts",
   "identity.ts",
   "inventory.ts",
+  "inventory-v2.ts",
   "meals.ts",
   "members.ts",
   "primitives.ts",
   "shopping.ts",
+  "seasoning-v1.ts",
 ] as const;
+
+test("contract rule registry instances do not share registrations", () => {
+  const firstManifest = [
+    {
+      id: "test.first.non-empty.v1",
+      sourceKind: "refinement",
+      enforcement: "runtime-only",
+      description: "first value is non-empty",
+    },
+  ] as const;
+  const secondManifest = [
+    {
+      id: "test.second.non-empty.v1",
+      sourceKind: "refinement",
+      enforcement: "runtime-only",
+      description: "second value is non-empty",
+    },
+  ] as const;
+  const first = createContractRuleSchemaRegistry(firstManifest);
+  const second = createContractRuleSchemaRegistry(secondManifest);
+
+  first.ruleRefine(
+    z.string(),
+    "test.first.non-empty.v1",
+    "firstSchema",
+    (value) => value.length > 0,
+  );
+  second.ruleRefine(
+    z.string(),
+    "test.second.non-empty.v1",
+    "secondSchema",
+    (value) => value.length > 0,
+  );
+
+  const firstBindings = first.getContractRuleSchemaBindings();
+  const secondBindings = second.getContractRuleSchemaBindings();
+  first.validateContractRuleSchemaBindings(firstBindings);
+  second.validateContractRuleSchemaBindings(secondBindings);
+  assert.deepEqual(firstBindings.map(({ boundary }) => boundary), ["firstSchema"]);
+  assert.deepEqual(secondBindings.map(({ boundary }) => boundary), ["secondSchema"]);
+  assert.throws(
+    () =>
+      first.ruleRefine(
+        z.string(),
+        "test.second.non-empty.v1" as never,
+        "crossScopeSchema",
+        () => true,
+      ),
+    /unknown contract rule/,
+  );
+  assert.throws(
+    () =>
+      createContractRuleSchemaRegistry([
+        firstManifest[0],
+        firstManifest[0],
+      ]),
+    /registered more than once in the rule manifest/,
+  );
+});
+
+test("root registration sources do not import or contain M2 registries", async () => {
+  const indexSource = await readFile(
+    new URL("../src/index.ts", import.meta.url),
+    "utf8",
+  );
+  const bindingSource = await readFile(
+    new URL("../src/refinement-bindings.ts", import.meta.url),
+    "utf8",
+  );
+  const manifestSource = await readFile(
+    new URL("../src/refinement-rules.ts", import.meta.url),
+    "utf8",
+  );
+  for (const [name, source] of [
+    ["index.ts", indexSource],
+    ["refinement-bindings.ts", bindingSource],
+  ] as const) {
+    assert.doesNotMatch(source, /["']\.\/(?:inventory-v2|seasoning-v1)\.js["']/u, name);
+  }
+  assert.doesNotMatch(manifestSource, /(?:inventory\.v2|seasoning\.v1)\./u);
+});
+
+test("root registry is invariant when either M2 subpath is imported first", () => {
+  const rootUrl = new URL("../src/index.ts", import.meta.url).href;
+  const inventoryUrl = new URL("../src/inventory-v2.ts", import.meta.url).href;
+  const seasoningUrl = new URL("../src/seasoning-v1.ts", import.meta.url).href;
+  const orders = [
+    [rootUrl],
+    [inventoryUrl, rootUrl],
+    [seasoningUrl, rootUrl],
+    [rootUrl, inventoryUrl],
+    [rootUrl, seasoningUrl],
+    [inventoryUrl, seasoningUrl, rootUrl],
+    [seasoningUrl, inventoryUrl, rootUrl],
+  ] as const;
+
+  for (const order of orders) {
+    const source = `
+      const rootUrl = ${JSON.stringify(rootUrl)};
+      let root;
+      for (const url of ${JSON.stringify(order)}) {
+        const loaded = await import(url);
+        if (url === rootUrl) root = loaded;
+      }
+      root ??= await import(rootUrl);
+      const boundIds = root.contractRuleBindings.flatMap((binding) => binding.ruleIds);
+      process.stdout.write(JSON.stringify({
+        manifest: root.contractRuleManifest.length,
+        bindings: root.contractRuleSchemaBindings.length,
+        boundIds: boundIds.length,
+        hasM2Rule: root.contractRuleManifest.some((rule) => /^(?:inventory\\.v2|seasoning\\.v1)\\./u.test(rule.id)),
+        hasM2Binding: boundIds.some((id) => /^(?:inventory\\.v2|seasoning\\.v1)\\./u.test(id)),
+        hasInventorySchema: "inventoryLotV2Schema" in root,
+        hasSeasoningSchema: "seasoningProjectionV1Schema" in root,
+        hasInventoryRegistry: "inventoryV2ContractRuleManifest" in root,
+        hasSeasoningRegistry: "seasoningV1ContractRuleManifest" in root,
+      }));
+    `;
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--input-type=module", "--eval", source],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        encoding: "utf8",
+      },
+    );
+    assert.equal(
+      child.status,
+      0,
+      `order ${order.join(" -> ")} failed: ${child.stderr}`,
+    );
+    assert.deepEqual(JSON.parse(child.stdout), {
+      manifest: 35,
+      bindings: 34,
+      boundIds: 35,
+      hasM2Rule: false,
+      hasM2Binding: false,
+      hasInventorySchema: false,
+      hasSeasoningSchema: false,
+      hasInventoryRegistry: false,
+      hasSeasoningRegistry: false,
+    });
+  }
+});
 
 test("every public refinement uses the rule helper and actual schema metadata is the only binding source", async () => {
   for (const name of refinementSources) {
@@ -40,6 +189,21 @@ test("every public refinement uses the rule helper and actual schema metadata is
   validateContractRuleSchemaBindings(contractRuleSchemaBindings);
   const boundIds = contractRuleBindings.flatMap((binding) =>
     binding.ruleIds.map((id) => [id, binding.boundary] as const),
+  );
+  assert.equal(contractRuleManifest.length, 35);
+  assert.equal(contractRuleSchemaBindings.length, 34);
+  assert.equal(boundIds.length, 35);
+  assert.equal(
+    contractRuleManifest.some((rule) =>
+      /^(?:inventory\.v2|seasoning\.v1)\./u.test(rule.id)
+    ),
+    false,
+  );
+  assert.equal(
+    boundIds.some(([id]) =>
+      /^(?:inventory\.v2|seasoning\.v1)\./u.test(id)
+    ),
+    false,
   );
   assert.equal(boundIds.length, contractRuleManifest.length);
   assert.equal(new Set(boundIds.map(([id]) => id)).size, boundIds.length);
@@ -106,6 +270,61 @@ test("a deliberately wrong schema-boundary pairing fails closed", () => {
         ...contractRuleSchemaBindings.slice(1),
       ]),
     /does not match schema metadata/,
+  );
+});
+
+test("binding metadata equality rejects extra, missing and reordered IDs", () => {
+  const single = contractRuleSchemaBindings.find((binding) => binding.ruleIds.length === 1);
+  const multiple = contractRuleSchemaBindings.find((binding) => binding.ruleIds.length > 1);
+  assert.notEqual(single, undefined);
+  assert.notEqual(multiple, undefined);
+  if (single === undefined || multiple === undefined) return;
+
+  const alternate = contractRuleManifest.find((rule) => rule.id !== single.ruleIds[0]);
+  assert.notEqual(alternate, undefined);
+  if (alternate === undefined) return;
+
+  const replace = (
+    target: typeof single,
+    schema: typeof single.schema,
+  ) => contractRuleSchemaBindings.map((binding) =>
+    binding.boundary === target.boundary ? { ...binding, schema } : binding,
+  );
+
+  const extra = single.schema.meta({
+    ...(single.schema.meta() ?? {}),
+    "x-meal-agent-contract-rule-ids": [single.ruleIds[0], alternate.id],
+  });
+  assert.throws(
+    () => validateContractRuleSchemaBindings(replace(single, extra)),
+    /metadata rule IDs do not exactly match its binding/,
+  );
+
+  const missing = single.schema.meta({
+    ...(single.schema.meta() ?? {}),
+    "x-meal-agent-contract-rule-ids": [],
+  });
+  assert.throws(
+    () => validateContractRuleSchemaBindings(replace(single, missing)),
+    /metadata rule IDs do not exactly match its binding/,
+  );
+
+  const duplicated = single.schema.meta({
+    ...(single.schema.meta() ?? {}),
+    "x-meal-agent-contract-rule-ids": [single.ruleIds[0], single.ruleIds[0]],
+  });
+  assert.throws(
+    () => validateContractRuleSchemaBindings(replace(single, duplicated)),
+    /metadata rule IDs do not exactly match its binding/,
+  );
+
+  const reordered = multiple.schema.meta({
+    ...(multiple.schema.meta() ?? {}),
+    "x-meal-agent-contract-rule-ids": [...multiple.ruleIds].reverse(),
+  });
+  assert.throws(
+    () => validateContractRuleSchemaBindings(replace(multiple, reordered)),
+    /metadata rule IDs do not exactly match its binding/,
   );
 });
 
