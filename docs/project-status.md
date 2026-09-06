@@ -18,6 +18,8 @@
 
 **阶段 09P-M2 WP-O1 outcome evidence scope 设计准备收口（2026-09-06）**：Post-R7 Gap Gate 任务 `01a075a6-05db-7961-89a2-11972ee4ba25` 判定 `M2_POST_R7_GAP_GATE: DESIGN_ONLY_NEXT_AVAILABLE`，建议在实现准入前先界定原始命令 outcome evidence。WP-O1 Designer 任务 `01a075cd-6a4c-7171-bb62-fd0ae963df4f` 的有效第二轮交付为 363 行 / 63,296 bytes，SHA-256 `68945d9f1566687d7d57c7cc9b7411e74a7f7d7bb46ba71ef1e9dcf54bd90eca`，结论 `WP-O1_OUTCOME_EVIDENCE_SCOPE: READY_FOR_REVIEW`；Fresh Review 任务 `01a07643-3a88-7bf3-8b22-67f3b63d408f` 对该精确候选给出 `WP-O1_FRESH_REVIEW: CLEAN`，P0/P1/P2=`0/0/0`，报告 SHA-256 `fe8e1b7045ee973a1e8df26f970ae1f493a94dec4aac53192647c8de7ad0f6ab`。总控据此将精确 WP-O1 接纳为**后续冻结问题的设计准备材料**：19 类证据 E01–E19、N/U/C/F × 7 的 28 行矩阵、O01–O16 反例和 Q01–Q12 正式冻结问题可作为下一阶段输入；只有原始命令的权威 commit receipt/replay，或覆盖全部相关尝试且证明现在和未来均不会提交的权威 command-final no-effect，才可结束 unknown。该接纳不等于 `CONTRACT_FROZEN`，不关闭 G-OUT，不冻结 public DTO/status/reason、DB schema、算法或 HTTP/client 行为，也不授权实现；Q01–Q12 仍全部开放且未执行。Gap Gate、WP-O1 与 Fresh Review 三份原件已按原字节归档到 [Stage 09P-M2 设计与审查证据归档](evidence/stage-09p-m2/README.md)。M1 limited、G2 not admitted、R7-B/R7-C implementation blocked、十个 G-* gate 开放及 M2 In Progress 均保持不变。
 
+**阶段 09P-M2 WP-O2 command boundary / entitlement 逻辑决策收口（2026-09-06，覆盖上段“Q01–Q12 仍全部开放”的当前口径）**：总控任务 `01a065a2-45d8-7570-a284-9c3a668b319b` 在精确基线 `41c2e7b5013051201c10365b9f41af00b643fae8` 上形成 WP-O2 decision pack 与 evidence，分别为 438 行 / 29,516 bytes / SHA-256 `239e82c2a800cbff7e3044b41d09f41bed305b1f072cc759527197c9ac25bd1d`，以及 142 行 / 8,435 bytes / SHA-256 `33c98949913b8cdce3a9ddbb0e62d9312d469c8ac9f5fead77bf9f7f6e9fb92f`。独立 Fresh Review 任务 `01a076e2-fb96-7523-bfff-ef08db7d139c` 给出 `WP-O2_FRESH_REVIEW: CLEAN`，P0/P1/P2=`0/0/0`，report 为 255 行 / 18,127 bytes / SHA-256 `e0e8656a558dfb2288e499eaf48c882f8d57685d24b3af08ee0beb25d5a7f25f`。总控据此将精确 WP-O2 接纳为 **Q01/Q02/Q08 的逻辑决策基线**：command key namespace 绑定 stable `User.id`、household、operation 与 idempotency key，request binding 保持 exact entity-body octets 与无 alias semantic policy/parser；body 改变只能 conflict，不能移动 namespace；只有满足 L01–L08 的纯本地未 handoff 准备可取消，handoff 后只有 E01/E02/E03 可终结 logical command；execute entitlement、receipt entitlement 与 callback generation 分轴，每次与 revocation 建立可审查顺序，owner/同户成员不自动取得他人 receipt。该逻辑接纳不等于 `CONTRACT_FROZEN`，不关闭 G-ID/G-ROUTE/G-CLIENT/G-AUTH/G-OUT/G-BACKEND 或其他 G-*，不冻结 public DTO/status/reason/route、DB/SQL/RLS/lock/retention、client storage/API，也不授权实现。Q03/Q04/Q05/Q06/Q07/Q09/Q10/Q11/Q12 继续开放；下一设计组为 Q03/Q04/Q06/Q09。三份 WP-O2 原件已按原字节归档到 [Stage 09P-M2 设计与审查证据归档](evidence/stage-09p-m2/README.md)。M1 limited、G2 not admitted、R7-B/R7-C implementation blocked、T01–T50=0、十个 G-* 开放及 M2 In Progress 均保持不变。
+
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
 在精确 HEAD `24be8b35b8a115524f7eeb36f90f693bfed59d87` 上成功完成；job
@@ -1018,11 +1020,11 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   shadow design，状态均为 `SHADOW_DESIGN_ACCEPTED / IMPLEMENTATION_BLOCKED`；R7-C 的
   T01–T50 尚未执行，migration、DB/API/client 与 M2 总验收均未完成，不得由 R7-A 或
   两份 shadow design 结论外推。
-- R7-A/R7-B/R7-C 十二份冻结设计与审查材料，以及 Post-R7 Gap Gate、WP-O1 与其
-  Fresh Review 三份设计准备材料，已按原 SHA-256 持久归档至
+- R7-A/R7-B/R7-C 十二份冻结设计与审查材料，以及 Post-R7 Gap Gate、WP-O1、WP-O2
+  与对应 Fresh Review 共六份设计准备/逻辑决策材料，已按原 SHA-256 持久归档至
   [`docs/evidence/stage-09p-m2`](evidence/stage-09p-m2/README.md)；后续任务不得继续依赖
   会被系统清理的历史 `/private/tmp` 路径。WP-O1 的归档与接纳不代表 contract frozen、
-  G-OUT 关闭或实现准入。
+  G-OUT 关闭或实现准入；WP-O2 只接纳 Q01/Q02/Q08 的逻辑基线，所有 G-* 仍开放。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
 - `packages/domain` M0 已固定为七个纯 production module；M0 scope gate 只核对边界和

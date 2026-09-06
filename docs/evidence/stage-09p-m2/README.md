@@ -2,8 +2,9 @@
 
 状态：**字节级归档副本**。本目录保存 R7-A、R7-B 与 R7-C 在准入/设计收口时使用的
 十二份材料，以及 Post-R7 Gap Gate、WP-O1 outcome evidence scope 决策包与其 Fresh
-Review 三份材料，解决原始 `/private/tmp` 目录会被系统清理、后续任务无法重新执行
-hash stopline 的问题。归档动作不生成新的实现授权。
+Review、WP-O2 command boundary/entitlement 决策包、evidence 与 Fresh Review 六份材料，
+解决原始 `/private/tmp` 目录会被系统清理、后续任务无法重新执行 hash stopline 的问题。
+归档动作不生成新的实现授权。
 
 2026-09-06，原临时目录在 R7-C Entry Gate 完成后被系统清理。六份内容随后从对应
 Codex 任务日志中的结构化 `FileChange` 事件恢复：先重放 `add` 的完整内容，再按原顺序
@@ -46,11 +47,28 @@ Fresh Review 任务 `01a07643-3a88-7bf3-8b22-67f3b63d408f` 对该精确候选给
 | [WP-O1 outcome evidence scope decision pack](wp-o1-outcome-evidence-scope-decision-pack.md.raw) | Designer `01a075cd-6a4c-7171-bb62-fd0ae963df4f` | `WP-O1-outcome-evidence-scope-decision-pack.md` | 363 | 63,296 | `68945d9f1566687d7d57c7cc9b7411e74a7f7d7bb46ba71ef1e9dcf54bd90eca` |
 | [WP-O1 Fresh Review — CLEAN](wp-o1-fresh-review.md) | Reviewer `01a07643-3a88-7bf3-8b22-67f3b63d408f` | `WP-O1-fresh-review.md` | 285 | 25,102 | `fe8e1b7045ee973a1e8df26f970ae1f493a94dec4aac53192647c8de7ad0f6ab` |
 
+## WP-O2 command boundary 与 entitlement
+
+WP-O2 由总控任务 `01a065a2-45d8-7570-a284-9c3a668b319b` 在精确基线
+`41c2e7b5013051201c10365b9f41af00b643fae8` 上形成，结论为
+`READY_FOR_FRESH_REVIEW`。独立 Fresh Review 任务
+`01a076e2-fb96-7523-bfff-ef08db7d139c` 对精确候选和 evidence 给出
+`WP-O2_FRESH_REVIEW: CLEAN`，P0/P1/P2=`0/0/0`。Reviewer 自己的 worktree 与权威
+source baseline 分开核验，最终再次证明 source branch/HEAD/ref/tree/parent/clean 和两份候选
+身份全部保持不变。三份原件均在临时目录仍存在时由总控直接复制，复制后重新核对
+lines、bytes、SHA-256，并与原件逐字节比较。
+
+| 持久归档 | 来源任务 | 原临时文件 | Lines | Bytes | SHA-256 |
+| --- | --- | --- | ---: | ---: | --- |
+| [WP-O2 command boundary / entitlement decision pack](wp-o2-command-boundary-entitlement-decision-pack.md) | 总控 `01a065a2-45d8-7570-a284-9c3a668b319b` | `WP-O2-command-boundary-entitlement-decision-pack.md` | 438 | 29,516 | `239e82c2a800cbff7e3044b41d09f41bed305b1f072cc759527197c9ac25bd1d` |
+| [WP-O2 command boundary / entitlement evidence](wp-o2-command-boundary-entitlement-evidence.md) | 总控 `01a065a2-45d8-7570-a284-9c3a668b319b` | `WP-O2-command-boundary-entitlement-evidence.md` | 142 | 8,435 | `33c98949913b8cdce3a9ddbb0e62d9312d469c8ac9f5fead77bf9f7f6e9fb92f` |
+| [WP-O2 Fresh Review — CLEAN](wp-o2-fresh-review.md) | Reviewer `01a076e2-fb96-7523-bfff-ef08db7d139c` | `WP-O2-fresh-review.md` | 255 | 18,127 | `e0e8656a558dfb2288e499eaf48c882f8d57685d24b3af08ee0beb25d5a7f25f` |
+
 归档文件保留原始字节，因此正文中历史性的绝对 `/private/tmp` 或 worktree 链接也原样
 保留；它们不再是当前导航入口。WP-O1 决策包使用 `.md.raw` 后缀，使其九个历史绝对
 worktree 链接不进入当前仓库 Markdown 链接门禁；这只隔离不可改写的归档原件，不给
 普通 Markdown 文件增加忽略规则。R7-A/R7-B 六份文件来自结构化事件恢复，R7-C 六份
-文件及本轮三份文件来自仍存在原件的逐字节复制；两种路径都以表中 SHA-256 为身份。
+文件及 WP-O1/WP-O2 六份文件来自仍存在原件的逐字节复制；两种路径都以表中 SHA-256 为身份。
 后续任务应从本索引进入持久文件，并在新的任务书中使用当前 Git commit/tree 重新签发
 PRE stopline。
 
@@ -64,7 +82,12 @@ PRE stopline。
   G-BACKEND 十个实施阻断均未解除。
 - WP-O1 的精确候选经 Fresh Review `CLEAN` 后由总控接纳为**后续冻结问题的设计准备
   材料**。该接纳不等于 `CONTRACT_FROZEN`，不关闭 G-OUT，不批准 public DTO/status/
-  reason、DB schema、算法、HTTP/client 行为或实现准入；Q01–Q12 仍全部开放且未执行。
+  reason、DB schema、算法、HTTP/client 行为或实现准入；在该收口时 Q01–Q12 均开放。
+- WP-O2 的精确候选经独立 Fresh Review `CLEAN` 后由总控接纳为 Q01/Q02/Q08 的**逻辑
+  决策基线**：原 command namespace 与 exact-body request binding 分开，handoff 后只有
+  E01/E02/E03 可终结 command，execute entitlement 与 receipt entitlement 独立重验并与
+  revocation 建立可审查顺序。该接纳不关闭任何 G-*，不冻结 public wire、DB/SQL/RLS/
+  lock/retention、client storage/API 或实现；Q03/Q04/Q05/Q06/Q07/Q09/Q10/Q11/Q12 继续开放。
 - M1 仍是 `M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS`，G2 仍是
   `G2_NOT_ADMITTED`。
 - M2 仍为 `In Progress`；R7-C 的设计接受不构成 R7-C implementation admission 或 M2
