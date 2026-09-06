@@ -1,8 +1,9 @@
 # Stage 09P-M2 设计与审查证据归档
 
 状态：**字节级归档副本**。本目录保存 R7-A、R7-B 与 R7-C 在准入/设计收口时使用的
-十二份材料，解决原始 `/private/tmp` 目录会被系统清理、后续任务无法重新执行 hash
-stopline 的问题。归档动作不生成新的设计结论、审查结论或实现授权。
+十二份材料，以及 Post-R7 Gap Gate、WP-O1 outcome evidence scope 决策包与其 Fresh
+Review 三份材料，解决原始 `/private/tmp` 目录会被系统清理、后续任务无法重新执行
+hash stopline 的问题。归档动作不生成新的实现授权。
 
 2026-09-06，原临时目录在 R7-C Entry Gate 完成后被系统清理。六份内容随后从对应
 Codex 任务日志中的结构化 `FileChange` 事件恢复：先重放 `add` 的完整内容，再按原顺序
@@ -29,10 +30,29 @@ R7-C 的六份材料在对应临时目录仍存在时由总控直接复制；复
 | [R7-C r1 shadow evidence](r7c-shadow-evidence-r1.md) | Designer `01a07544-750c-7c63-93ff-509aec093337` | `R7-C-shadow-evidence-r1.md` | 159 | 18,891 | `b592d6aefb17a952b636d5812cd7a01351c78f33d1de2e46ee2a36946b1b1580` |
 | [R7-C r1 Fresh Design Re-review — CLEAN](r7c-r1-fresh-review.md) | Reviewer `01a0758c-b51c-79b1-9351-a2b97ad4f2b9` | `R7-C-r1-fresh-review.md` | 216 | 25,473 | `ca6535848a1bb8d88c9e80ba3eff1f5047d900eeb9fc8889cde37ca94efbec4f` |
 
-归档文件保留原始字节，因此正文中历史性的绝对 `/private/tmp` 链接也原样保留；它们
-不再是当前导航入口。R7-A/R7-B 六份文件来自结构化事件恢复，R7-C 六份文件来自仍存在
-原件的逐字节复制；两种路径都以表中 SHA-256 为身份。后续任务应从本索引进入持久文件，
-并在新的任务书中使用当前 Git commit/tree 重新签发 PRE stopline。
+## Post-R7 Gap Gate 与 WP-O1
+
+R7-C 设计收口后，Post-R7 Gap Gate 任务 `01a075a6-05db-7961-89a2-11972ee4ba25`
+判定 `M2_POST_R7_GAP_GATE: DESIGN_ONLY_NEXT_AVAILABLE`，并建议先完成原始命令 outcome
+evidence scope 的设计准备。WP-O1 Designer 任务 `01a075cd-6a4c-7171-bb62-fd0ae963df4f`
+交付精确候选；其有效第二轮结论为 `WP-O1_OUTCOME_EVIDENCE_SCOPE: READY_FOR_REVIEW`。
+Fresh Review 任务 `01a07643-3a88-7bf3-8b22-67f3b63d408f` 对该精确候选给出
+`WP-O1_FRESH_REVIEW: CLEAN`，P0/P1/P2=`0/0/0`。三份原件均在临时目录仍存在时由总控
+直接复制，复制后重新核对 lines、bytes、SHA-256，并与原件执行逐字节比较。
+
+| 持久归档 | 来源任务 | 原临时文件 | Lines | Bytes | SHA-256 |
+| --- | --- | --- | ---: | ---: | --- |
+| [M2 Post-R7 Gap Gate](m2-post-r7-gap-gate.md) | Gate `01a075a6-05db-7961-89a2-11972ee4ba25` | `M2-post-r7-gap-gate.md` | 323 | 45,917 | `0fc31a5787689f1b1683b07fb9aa19eff4ceb81deaa155e4d5ad7e415b17f535` |
+| [WP-O1 outcome evidence scope decision pack](wp-o1-outcome-evidence-scope-decision-pack.md.raw) | Designer `01a075cd-6a4c-7171-bb62-fd0ae963df4f` | `WP-O1-outcome-evidence-scope-decision-pack.md` | 363 | 63,296 | `68945d9f1566687d7d57c7cc9b7411e74a7f7d7bb46ba71ef1e9dcf54bd90eca` |
+| [WP-O1 Fresh Review — CLEAN](wp-o1-fresh-review.md) | Reviewer `01a07643-3a88-7bf3-8b22-67f3b63d408f` | `WP-O1-fresh-review.md` | 285 | 25,102 | `fe8e1b7045ee973a1e8df26f970ae1f493a94dec4aac53192647c8de7ad0f6ab` |
+
+归档文件保留原始字节，因此正文中历史性的绝对 `/private/tmp` 或 worktree 链接也原样
+保留；它们不再是当前导航入口。WP-O1 决策包使用 `.md.raw` 后缀，使其九个历史绝对
+worktree 链接不进入当前仓库 Markdown 链接门禁；这只隔离不可改写的归档原件，不给
+普通 Markdown 文件增加忽略规则。R7-A/R7-B 六份文件来自结构化事件恢复，R7-C 六份
+文件及本轮三份文件来自仍存在原件的逐字节复制；两种路径都以表中 SHA-256 为身份。
+后续任务应从本索引进入持久文件，并在新的任务书中使用当前 Git commit/tree 重新签发
+PRE stopline。
 
 状态上限保持不变：
 
@@ -42,6 +62,9 @@ R7-C 的六份材料在对应临时目录仍存在时由总控直接复制；复
   将 R7-C 记为 `SHADOW_DESIGN_ACCEPTED / IMPLEMENTATION_BLOCKED`。该接受只覆盖设计，
   T01–T50 均未执行，G-ROUTE/G-ENV/G-OUT/G-ID/G-CLIENT/G-AUTH/G-LIFE/G-BUDGET/G-LOG/
   G-BACKEND 十个实施阻断均未解除。
+- WP-O1 的精确候选经 Fresh Review `CLEAN` 后由总控接纳为**后续冻结问题的设计准备
+  材料**。该接纳不等于 `CONTRACT_FROZEN`，不关闭 G-OUT，不批准 public DTO/status/
+  reason、DB schema、算法、HTTP/client 行为或实现准入；Q01–Q12 仍全部开放且未执行。
 - M1 仍是 `M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS`，G2 仍是
   `G2_NOT_ADMITTED`。
 - M2 仍为 `In Progress`；R7-C 的设计接受不构成 R7-C implementation admission 或 M2

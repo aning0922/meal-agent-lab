@@ -1,0 +1,363 @@
+WP-O1_OUTCOME_EVIDENCE_SCOPE: READY_FOR_REVIEW
+
+# Stage 09P-M2 / WP-O1：原逻辑命令结果证据覆盖范围决策准备包
+
+日期：2026-09-06，Asia/Shanghai。工作模式：DESIGN_ONLY。角色：本工作包单一 HTTP contract design owner；未创建子任务、未委派。本文件是供独立审查的自然语言决策准备材料，不是独立 review 结论。
+
+## 1. Scope、authority 与结论上限
+
+本包回答客户端凭什么可以结束原逻辑命令的未决状态，覆盖首次 attempt、unknown 后 retry、无响应、取消未确认、历史 receipt、身份/版本/权限变化和结果保留能力变化。首选建议是：终结原 unknown 必须取得对应原命令的权威 commit receipt/commit proof，或权威覆盖全部相关 attempts、证明原命令没有已提交效果且不再可能 commit 的 command-final no-effect；后一次请求的局部拒绝不能清除前一次 unknown。
+
+这里的“推荐/必须/禁止”分别表示本包建议、继承的设计不变量及其推论，不表示新增合同已冻结。文中状态缩写、证据类别编号、问题编号和 oracle 编号仅供自然语言审查，不是 DTO、field、enum、reason、ordinal、HTTP status 或 gate 脚本。
+
+权威层级依次为：当前任务书及 PRE 纠正 → 固定 Git tree 中当前 project-status 和证据索引所登记的接受范围 → 精确 hash 的 B/C 设计与独立 review → 计划/ADR 的适用范围 → 当前源码的静态事实。历史测试数字只有其原任务、原候选和原层级的含义。源码注释中的“authority”或 schema 名称不自动证明真实来源、授权或提交。
+
+本文件即使被后续 review 接受，也最多是 accepted design-preparation material。它不关闭 G-OUT 或任何 G-*，不构成正式 contract freeze、implementation admission、Implemented、M1/M2 Accepted 或 G2 admission。当前没有足够的已冻结公开载体或 B/runtime 证据来直接实现这些规则。
+
+任务书的唯一写入许可优先于 AGENTS.md 的阶段结束更新项目状态通则；因此本轮不修改 docs/project-status.md。没有选择产品路线、持久化机制或新的公开协议。
+
+## 2. PRE、输入身份与实际阅读范围
+
+### 2.1 Git PRE
+
+仓库：`/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab`。
+已在任何文件写入前完整阅读根 AGENTS.md、README.md、docs/README.md。最初将 detached HEAD 误判为阻断，随后任务方明确纠正：独立 Codex worktree 的 detached HEAD 是允许的环境事实；branch 表示必须单独核对的源分支命名 ref，不要求 symbolic HEAD 检出该分支。原 BASELINE_BLOCK 因判据误读无效，不计为本包阻断，也不放宽以下五项 stopline。没有 checkout、switch 或任何 Git 修复。
+
+| 有效判据 | PRE 实际观察，等于任务期望 | 结果 |
+| --- | --- | --- |
+| status --porcelain=v1 --untracked-files=all | 空输出；写入前再次只读核对仍为空 | PASS |
+| HEAD | 062fc9c5007b9bbf866b6dfa3b1e14309314a451 | PASS |
+| HEAD tree | 290d90036a2436623009f5cb090702424e798f77 | PASS |
+| HEAD parents | 恰好一个：261f0e3307f4fd9b5134e24b01ae6f461a61b727 | PASS |
+| refs/heads/codex/stage-09p-m2-inventory | 062fc9c5007b9bbf866b6dfa3b1e14309314a451 | PASS |
+
+### 2.2 十二份持久材料 stopline
+
+从 [持久证据索引](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/evidence/stage-09p-m2/README.md) 进入，先完整阅读索引，再用 shasum 对以下文件逐一读取全文计算 SHA-256；全部等于任务期望。索引记录的归档/恢复 provenance 不被本包扩大成新证据。
+
+| 文件（均在 docs/evidence/stage-09p-m2） | PRE SHA-256，等于 expected | 结果 |
+| --- | --- | --- |
+| r7a-r6-design.md | 179b4b7066e6bc82d3d99518abe595c6348bb6f26c23b248bc6df2182351e825 | PASS |
+| r7a-r6-evidence.md | d9c2b1e41bd87ca9236c5a41c6f29a1350713d304852ba83463152afc996f339 | PASS |
+| r7a-r6-fresh-review.md | 1ad22c7258159e2ceba4aa398acf16c62422f17e8536717ab30988ca731c0ebe | PASS |
+| r7b-shadow-design.md | 24e1f2496df347a0215041835f45d79ba577256d13d1d6f8e7557e2b53d98d3f | PASS |
+| r7b-shadow-evidence.md | 93605e6893e53d8472ccde8a6213f258b7769c22b4a0fbb4e6d4ddb624136b68 | PASS |
+| r7b-shadow-fresh-review.md | 7e77977e86cf4b03483f04efb1810c37a4357cc46f97eff54689b4a6b65b1b57 | PASS |
+| r7c-shadow-design-r0.md | 51bf086ce3b8df727f96bb45c3e4724dbb6a12ad1e418079d4c56786306d556e | PASS |
+| r7c-shadow-evidence-r0.md | e7550b9f3120e59957ec02605244011e0d28ed95dc65843a8bcb117c6c2860b9 | PASS |
+| r7c-r0-fresh-review-block.md | 6cacf04593bced1b878a6145590fbe7be7e0d306e1a04f00cba70195bbb7d9d1 | PASS |
+| r7c-shadow-design-r1.md | 4884b06081d009d84461b263e03bfe5c90e82035e325788fcd5b25bb53ad0627 | PASS |
+| r7c-shadow-evidence-r1.md | b592d6aefb17a952b636d5812cd7a01351c78f33d1de2e46ee2a36946b1b1580 | PASS |
+| r7c-r1-fresh-review.md | ca6535848a1bb8d88c9e80ba3eff1f5047d900eeb9fc8889cde37ca94efbec4f | PASS |
+
+可选排序材料 `/private/tmp/meal-agent-m2-post-r7-gap-gate.u2cG1m/M2-post-r7-gap-gate.md` 实际存在；wc 为 45,917 bytes / 323 lines，SHA-256 为 0fc31a5787689f1b1683b07fb9aa19eff4ceb81deaa155e4d5ad7e415b17f535，与任务一致。本包仅核对其 identity，没有以其正文或聊天摘要作为语义依据；决策准备完全依靠持久输入。
+
+### 2.3 语义阅读与定位
+
+必读四份已完整逐段读取，工具输出分段覆盖全文：B design 1–424 行、B Fresh Review 1–139 行、C r1 design 1–409 行、C r1 Fresh Review 1–216 行。其余材料按任务允许定向阅读：A design 的 schema/empty/隔离范围、A evidence 的历史验证与剩余职责、A review 的 claim ceiling；B evidence 的覆盖与未执行说明；C r0 的历史边界、r0 evidence 的 provenance、r0 BLOCK review 的 P1 反例与最小要求、C r1 evidence 的修订范围与未执行说明。hash 全文读取不冒充十二份全部语义重审。
+
+| 持久事实源 | 本包使用的段落及含义 |
+| --- | --- |
+| [project-status](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/project-status.md:11) | 当前 09P-M1/M2/R7-A/B/C 段（11–17 行）、末部阶段 09P 与内部发布阻断；覆盖 README/计划历史的“M1 尚未开始” |
+| [阶段 09P 计划](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/plans/2026-08-stage-09p-safe-deterministic-product-core.md:345) | §5.5 事务/幂等/原 snapshot 恢复，§6 migration 前置，§7 M1/M2 prerequisites，§10–12 分层 gate 与证据口径 |
+| [ADR-0003](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/architecture/decisions/0003-identity-tenancy-and-api-semantics.md:24) | 身份、事务内家庭授权、HTTP problem/success、幂等作用域与原 key；这是 legacy 语义，不是 M2 raw identity freeze |
+| [ADR-0004](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/architecture/decisions/0004-stage-08-pre-release-audit-closeout.md:23) | 安全 receipt/nonReplayable；69–98 行的已提交失败、unknown/GET、principal/generation、CAS、local recovery、restart 边界 |
+| [B design](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/evidence/stage-09p-m2/r7b-shadow-design.md:80) | §4 authority/identity；§5 I02/I12/I13；§6 commit；§7–9 replay、crash、失败范围；§10–12 retention 和未决机制 |
+| [B review](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/evidence/stage-09p-m2/r7b-shadow-fresh-review.md:17) | authority、历史 receipt、未知 commit、GC fence、授权撤回与 Proposed 上限 |
+| [C r1 design](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/evidence/stage-09p-m2/r7c-shadow-design-r1.md:114) | §8 四轴与 attempt/command 区分；§9 取消阶梯；§11 unknown latch；§12 十 gate；§15 T29–T50 |
+| [C r1 review](/Users/aipuli/.codex/worktrees/53e5/meal-agent-lab/docs/evidence/stage-09p-m2/r7c-r1-fresh-review.md:113) | no-query 跨 client/B/runtime 联合链、unknown 保持、网络 query 与内部 bundle oracle 分离 |
+
+源码只在任务允许范围内按相关段只读核验；未加载产品模块、未执行测试。platform 文件实际位于 apps/client/src/platform，最初尝试 core/platform 的 wc 返回不存在，随后通过 rg --files 定位到真实路径；这不构成材料缺失或产品失败。
+
+| 当前源码定位 | 已观察的静态事实 | 不可外推 |
+| --- | --- | --- |
+| packages/contracts/src/api.ts:9–133；http.ts 的 imports/success exports | problem 具有既有 code/status 一致性及 retryable；success 为 ok/data/meta，idempotency metadata 仅是既有形状；http.ts 接的是 legacy schemas | 未定义覆盖原命令的证据范围；metadata、ok 或 retryable 不自带 outcome authority |
+| packages/contracts/src/inventory-v2.ts:689–760；seasoning-v1.ts:282–343 | parser ok:true 是深冻结 caller input；chunk result 有 accepted_chunk/finalized/rejected，checkpoint 状态形状受校验；域 reason 边界独立 | parser 成功不是 command commit；result schema 合法不是服务端来源证明；rejected 不是 command-final no-effect |
+| services/api/src/errors.ts；routes.ts:128–186、库存 handler 相关段 | AppError 由 code 映射 status；problemFromError 产生 problem；handler 取得 operation 返回值后 reply.code/send | 错误类别、send 调用、路由 schema 不证明 DB 结果或客户端收到；没有 M2 接入证据 |
+| services/api/src/database/pool.ts:30–49 | callback 后 COMMIT；异常路径尝试 ROLLBACK，再 release | catch 中的 ROLLBACK 尝试不证明此前 COMMIT 未发生；Promise reject 不是已回滚证明 |
+| services/api/src/database/repository.ts:522–618、690–932 | 当前认证 helper 锁 session 并更新 last_seen/idle expiry；legacy replay 依主体/户/method/route/key 查记录，比较目标/payload hash，区分 completed error/nonReplayable/成功；写 receipt 在事务 callback 内 | 不可当无副作用 pre-B auth；旧 ledger、30 天 expires_at 或 tombstone 不自动成为 M2 的机制/保留政策/终局载体 |
+| services/api/src/utils.ts:13–34 | 排序对象后 JSON.stringify，再 requestHash | 不证明 exact raw-body identity；本包不选择其替代算法 |
+| apps/client/src/core/api-client.ts（全文） | 每次 call 再 JSON.stringify(body)，可拼 query；HTTP 2xx shape 成功、problem、transport/malformed 分流 | 没有 frozen M2 evidence correlation；把 raw string 放 body 会再次被序列化；Taro exact wire 未证 |
+| apps/client/src/core/idempotency.ts（全文） | 内存 pending、canonicalize snapshot、commandId CAS、auth suspension/换 principal 清敏感 envelope；beginRetry 变为 in-flight；generic 4xx 和未知默认分支归 definite-failure | 这些当前分支不满足 M2 跨 attempt unknown latch；commandId 检查本身也不证明全部 late-generation 场景已满足新边界 |
+| apps/client/src/core/command-dispatcher.ts（全文）；command-registry.ts 的 snapshot、dispatch、reconcile/local transition 段 | typed registry 执行后先 settle，再做本地 reconciliation；本地失败不重发写；recovery 绑定 principal | 不能沿用 generic disposition 接 M2；本地失败不是后端 outcome unknown |
+| apps/client/src/platform/ports.ts:6–25；taro-adapter.ts:15–33、66–77 | NetworkPort Promise：无状态码传输失败 reject，HTTP 状态 resolve；Taro 配置 15,000ms | resolve 不等于成功，reject 不等于无效果；无 abort confirmation、总 retry deadline 或 exact bytes 实证 |
+
+以上全部 PRE 完成后，才运行 `umask 077` 和任务指定的 `mktemp -d /private/tmp/meal-agent-wp-o1-outcome-scope.XXXXXX`，得到本文件所在唯一新目录。未运行任何产品 checker/generator 来补 PRE。
+
+## 3. 固定事实与历史语义边界
+
+- M1 = M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS，不是 Accepted。Fresh Audit A = CLEAN；household-safety 292/292 仅 LIMITED dynamic evidence，不是 Fresh Audit B。B-r1/r2/r3 = BLOCK；B-r4 未运行。
+- G2 = G2_NOT_ADMITTED；source pack draft/inactive；public trust allowlist empty。
+- M2 = In Progress，整体未 Accepted。R7-A contracts Accepted，实施 commit 为 63d2a0668df3e1291cb3a863327bd5aeed6dd034。
+- R7-B 与 R7-C 均为 SHADOW_DESIGN_ACCEPTED / IMPLEMENTATION_BLOCKED；C r0 的 BLOCK 保持历史事实，r1 的 CLEAN 只覆盖精确设计候选。
+- R7-C T01–T50 全部未执行。G-ROUTE/G-ENV/G-OUT/G-ID/G-CLIENT/G-AUTH/G-LIFE/G-BUDGET/G-LOG/G-BACKEND 十个实施阻断全部未解除。
+- 已接受 R7-A 边界仍为 1,048,576 UTF-8 bytes/chunk、10,000 logical events、Inventory 17/chunk、Seasoning 388/chunk。本包不调整任何值；这些数值也不证明网络、存储或全命令恢复预算。
+
+ADR-0004 曾为特定 legacy Members 操作规定 400/403/404/409 释放命令；该历史范围不授权 M2 采用“任意 4xx 清 pending”。同一 ADR 还存在“终态业务拒绝已持久提交、HTTP 返回 409”的安全失败 receipt，因此 HTTP 失败与数据库未写入本来就不能等同。B shadow 对新失败要求本请求零持久写入、不缓存新失败 receipt；本包不把 legacy committed-error 机制移植到 B，也不把这些已提交的业务失败记录称作纯零效果。
+
+C r1 已接受设计层 no-query 不变量，包含裸问号且覆盖首次/retry/recovery；原始 target 的可信可见性、内部 proof 表示、operation/policy/version 取值与正式 HTTP/client 合同仍待 freeze。raw-byte 身份仍是 Proposed。B 的 persisted lookup、per-chunk staging、锁/取消/保留实现均未批准。
+
+## 4. 术语、模型范围与不可破坏不变量
+
+### 4.1 清晰术语
+
+| 术语 | 本包含义 |
+| --- | --- |
+| transport attempt | 一次 HTTP/network 尝试；一次 body/response/timeout/abort 生命周期。服务端是否收到或 dispatch，必须另有事实证明 |
+| logical command | 由尚待正式冻结的原 identity/binding 关联的一组 attempts；不等于 key 字符串，不等于当前页面 action，也不等于整个 replay session |
+| attempt-local evidence | 只证明特定 attempt 在某线性化点前未 dispatch、被拒绝，或其工作已无效果且不会再 commit；对其他 attempt 没有排除力 |
+| command-final evidence | 经认证、授权、相关性与完整性检查的权威事实，覆盖原 logical command 所有相关 attempts，足以终结为已提交成功或 terminal no-effect |
+| outcome unknown | 存在已 dispatch/可能 commit 的窗口，却没有权威 commit 或 command-final no-effect；客户端没有收到能排除窗口的证据时也必须保守 unknown |
+| response delivery | 分开记录：服务端生成/序列化、开始 send、服务端 finish、客户端实际 receive/解析/关联。任一步不等于 DB outcome，finish 不证明 client receive |
+| local completion | 页面状态、导航或本地持久化完成；与 command completion 分离。后端结果结算后本地失败只产生本地恢复工作 |
+| current-attempt known-no-effect | 当前事务或处理已知不生效，未来可重新发起的同身份尝试仍可能成功；因此它通常不是 terminal no-effect |
+| terminal no-effect | 对这个已关闭原命令没有业务接受/提交效果，所有相关执行窗口已排除，不再存在可使其成功提交的原命令路径；不是“现在查不到”或“本次可以重试” |
+| pending | 客户端尚未结算原命令时保存的身份/恢复约束；“清 pending 为完成”与为跨 principal 隔离销毁敏感本地 envelope 是不同事件 |
+
+“相关 attempts”必须包含已知及可能存在的原身份历史尝试、在途/排队/恢复执行，以及已经发出但客户端不再观察的请求。其集合边界及关闭条件由 identity/B/client owners 共同证明，不能由“当前内存列表只有一项”自行确定。command-final no-effect 还须排除已提交但 receipt 不可读的情形，并关闭原命令后续自动调度/迟到提交路径；若同 identity 仍可作为原命令重新执行而成功，就应称可重试的 attempt-local no-effect，不能叫终局。
+
+对于本包的 chunk 场景，一个成功接受 chunk 的 logical command 可以终局成功，而 replay session 仍 open；accepted_chunk receipt 不表示整个 history finalized，更不表示 live 库存已物化。finalized/严格 empty 的意义只限于原获准 operation 及 receipt。全历史、下一个 chunk、live aggregate 另有条件。
+
+### 4.2 不变量 ledger（继承并推荐为后续 freeze 判据）
+
+| 编号 | 不变量及依据 |
+| --- | --- |
+| I-01 | 原身份不可变：原 key、完整 body、scope、operation/domain、binding/解析与身份版本保留；不能从 GET、最新 checkpoint、registry 或 draft 重建。B §4.3、C §11；编码/版本具体规则待裁定 |
+| I-02 | unknown 是跨 attempt 的独立事实。retry in-flight、局部 rejection、auth suspension、deadline 到期均不能删除它。C §11、T41/T47 |
+| I-03 | 终局单调：已接受 commit 不降为 failure，已接受 terminal no-effect 不升为 success。冲突终局候选触发一致性异常与自动推进暂停，不能 last-response-wins |
+| I-04 | 证据先验来源、entitlement、原命令相关性及允许消费的 generation，再决定 settlement；schema/pass、UUID、digest、replayed 标志和 status 都不自证。B §4、C §11 |
+| I-05 | B commit 是接受事实；response 与 local completion 不改变它。commit 后 serialize/send/finish/client receive 失败，客户端仍可能 unknown。B §6/8、C §8/9 |
+| I-06 | receipt replay 返回原不可变结果；不能用 current checkpoint 改写历史，也不能让旧 receipt 回退当前聚合。B §4.2/7、C T29 |
+| I-07 | receipt absence、GET、deadline、abort 请求、取消未确认、retryable、Promise、错误码无 command-final authority。B §8/9、C §9/11/12 |
+| I-08 | unknown chunk 不允许 next chunk、新 key alias、替换 body/version 或补造 checkpoint；恢复只在原身份下经获准通路执行。C §11、T31/T40/T41 |
+| I-09 | 401 暂停披露与执行，同 principal 获准重认证后恢复；换 principal 不得读取/执行旧 payload/key。销毁本地敏感状态不证明服务器无效果。ADR-0004、C §11 |
+| I-10 | 不把 B internal categories 塞进 public problem/reason/fieldErrors；不把 R7-A rejection 当 B 终局，也不把 HTTP ok 当域接受。B §9、C §12 |
+| I-11 | query 变体在 C 前置拒绝，B call=0；证明范围是变体 attempt。直接向 B 注入非法 bundle 是另一 oracle，B 入口可被调用，但业务处理/效果必须为零。C T47–T50 |
+| I-12 | 结果可恢复性与身份可复用性分开；retention/GC 不允许旧 identity 因失忆变新。具体保留与表示未决。B §8/10/12 |
+
+## 5. 完整证据覆盖 taxonomy
+
+下表的“可结算”以客户端真正持有并验证证据为前提。仅 B 内部知道并不等于客户端已经知道；表中“权威”不是建议新增 attestation/token/field。
+
+| 类别 | authority 与覆盖范围 | 可结算性 | 禁止推断 |
+| --- | --- | --- | --- |
+| E01 authenticated authoritative command commit receipt | B/获准结果 owner 对原命令原子接受的证据，经当前 receipt entitlement 与完整 identity/binding 校验；同命令其他 attempts 不可另改结果 | 可 resolve success，限原 chunk/operation；公开载体待 G-ENV/G-OUT freeze | HTTP 2xx、合法 checkpoint、内存 receipt、caller server_verified 不足；commit 不自动等于整个 session/live success |
+| E02 authenticated replay of original immutable receipt | 权威恢复原身份的已完成 receipt，保持历史 payload/结果语义；此次 delivery metadata 与原结果的边界待 G-ENV | 与 E01 同等结算力；replay 本身不能追加效果 | replayed=true 不是证明；current checkpoint 不能代替原 receipt；不能扩大历史读取权限 |
+| E03 authoritative command-final no-effect | 权威证明原命令无已提交业务效果，覆盖全部相关 attempts，所有在途/可能恢复提交窗口关闭，原命令不再可能 commit | 可 resolve terminal no-effect；必须先满足完整范围与关闭证明，载体/能力未决 | 单次 rollback、所有当前可见请求失败、无 receipt、可重试 flag 均不等于全命令关闭；不能仅说“本事务结束” |
+| E04 current-attempt known-no-effect | B 确认本 attempt 未产生持久业务效果且其执行已终止；只覆盖该 attempt | 结束该 attempt；允许条件成立时按原身份恢复/重试；不能解除既有 unknown | B 的 Z 零写入含本次 marker/TTL/quota，不否定先前已提交记录；TRANSACTION_ABORT 类名不能替代证据 |
+| E05 trusted server predispatch rejection | C 可信同 attempt 的 route/input/auth/admission 边界证明未 dispatch，且关掉该 attempt 的后续 gate | 只结算 attempt；首次完整集合处理见 §6.2；旧 unknown 保留 | B call=0 不证明同 key 的旧 B call/commit=0；也不保证客户端收到此拒绝 |
+| E06 client-local rejection | 客户端自己掌握的当前 request 未交 network/dispatch 的事实，关闭本 attempt 的所有本地发送分支 | 可展示“这次未发送”；证明是全新且从未交付任何 transport 的本地动作可结束本地准备；否则保留原 pending | 单次网络调用计数0、本地 guard 或页面状态不能证明同 identity 无历史请求；取消 Promise 不等于未发出 |
+| E07 timeout / abort requested / cancel unconfirmed / reset / no response | transport、client 或 C 的交付/时间事实；可能在 dispatch 前或后发生，客户端通常无法排除 commit | 无额外证明时 keep pending unknown；不得产生 success 或 definite failure | timeout、request.abort 被调用、socket close、promise reject 不证明 rollback；无 HTTP body 不是一个可猜测的 error enum |
+| E08 receipt temporarily not found | 一次指定查找未命中，可能有在途提交、可见性限制、查找范围/时点错误或恢复延迟 | inconclusive；保留 unknown，仅走获准原身份恢复 | absence 不是终局无效果；不能立即重做写、新 key 或新 session |
+| E09 backend unavailable | 当前恢复或事务状态无法取得；没有可信正/负命令证明 | inconclusive；保留 unknown，可受预算约束停止自动恢复 | 5xx、断 DB 或查询失败不是没提交；C 不补造 B 结果 |
+| E10 retention/GC 后结果不可恢复 | 在被授权范围内，authority 至多证明旧结果的可恢复能力已失效；若仅普通404甚至不能证明这一点 | 无先前终局时为 unresolved 且恢复受阻，不是 terminal no-effect；有先前终局保持它 | 不可恢复不等于从未完成；也不等于旧 key/session 可复用；当前不设保留值或清理机制 |
+| E11 malformed / unknown branch / unrelated / wrong principal/scope/key/body/version/operation | 未通过完整关联或 shape/来源校验的响应，无本命令 settlement authority | 丢弃该响应的结算与页面副作用；若本次期待的权威响应缺失且有执行窗口，进入/保留 unknown | 合法 JSON、合法同域 schema、HTTP success、相似业务内容不能补相关性；不把错 scope 内容作为诊断披露 |
+| E12 old-generation / stale command callback | 过期 callback 没有当前会话/命令消费权限；即使携真实旧 receipt 也不能直接改新状态 | ignore stale/unrelated callback；原命令如仍未决，另走当前获准身份恢复 | action 同名、同 principal 或同 key 文本不充分；不能重绑新 generation 后直接接受旧页面回调 |
+| E13 current GET / checkpoint / latest aggregate | 当前资源查询的授权快照，仅说明查询时的资源状态 | 可供展示或已结算后的下一步重新规划；不结算原命令 | 数量/version“看起来对”、资源消失、checkpoint 已推进，都不能归因某命令；不能回退原 receipt |
+| E14 navigation / page / local storage success or failure | local completion 的事实，不是后端证据 | 后端已终局时只恢复本地工作；未终局时仍按原 pending 状态 | 导航成功不代表业务成功；storage/导航失败不把已提交命令重新置 unknown 或重发 |
+| E15 R7-A parser accepted | 局部 canonical/shape/resource 合法的深冻结 caller DTO；尚无 B 接受事实 | 只能进入后续授权/执行资格判断，无 settlement | parser accepted 不等于 accepted_chunk receipt，不证明真实性/食品安全/live effect |
+| E16 R7-A parser rejected / domain result rejected | 局部 reason 的来源与范围；如 C 确认未 dispatch，则并有 E05；仅 result 形状甚至不证明执行阶段 | 本 attempt 拒绝信息；既有 unknown 不清除 | 不能因在2xx envelope中就结算 success，也不能因 kind=rejected 就结算全命令 failure |
+| E17 HTTP 4xx/5xx、ApiErrorCode、retryable、Promise outcome | 传输/接口层分类及建议，不是全命令事实 | 必须回到 E01–E16 校验证据范围；没有合适证据就不结算 | 400/413/415/429/query拒绝、auth拒绝、普通409/5xx不能清旧unknown；retryable=false≠terminal，true≠可安全重做 |
+| E18 B internal category / 未冻结 public projection | B 内部诊断标签；只有伴随可验证的执行/提交事实才增加证据 | known-commit 按 E01，attempt abort 按 E04，unknown 按 E07；缺 public projection 就是 gate gap | R7B.OUTCOME_UNKNOWN/TRANSACTION_ABORT/ALREADY_FINALIZED 等不能原样塞入 public reason/problem/fieldErrors，也不能类别→终局 |
+| E19 已提交业务拒绝或仅剩完成标识的 legacy receipt/tombstone | ADR-0004 特定旧操作可能已写终态失败/完成标识；零效果范围不能跨操作假设 | 对 M2 不作投射；如未来要支持“已完成但安全内容不可恢复/业务未达成”，必须另行冻结结果语义 | generic CONFLICT 不能充当原命令 completion proof；“有 commit”不自动是用户意图成功，业务失败也不自动是无 DB 写入 |
+
+## 6. 有限状态与 settlement 矩阵
+
+### 6.1 状态轴、观察资格与动作约定
+
+逻辑结果轴采用四个审查缩写：N=此前无已记录 unknown、尚无终局；U=已有 unknown；C=已有 authoritative committed success；F=已有 command-final no-effect。N 包含首次等待和已有局部拒绝，并不自动证明“全新且仅此一次”。C/F 为相互排斥的终局事实。auth 可用/暂停、attempt 活跃/结束、恢复可用/受阻、local completion 另设正交状态；这是分析模型，不新增公开状态类型。
+
+先做来源、entitlement、原命令完整关联和 callback 消费资格检查，再把观察纳入表。错 principal/scope/key/body/version/operation/generation 不得落入 commit 列。过期 response callback 不能直接结算；若未来允许把同原命令历史 attempt 的真 receipt 交给当前安全 verifier，须按 Q07/Q08 重新验证消费资格，不能让旧页面回调自行继续副作用。
+
+矩阵里的“原身份恢复”只指经 future frozen B/C 通路恢复原 key/body/binding/version；不代表客户端可在 receipt miss 时任意再执行写。U 情况先恢复权威结果；重新执行前必须由 B 的获准幂等/执行控制排除旧提交竞态。没有该能力就保持 U。retry 总 deadline 停止自动尝试，既不清 U，也不授权无限重试。
+
+下表“新身份：条件新动作”统一表示：禁止改变原命令 key/body/version 或把原动作重做；只有原命令已终局、另一个独立获准业务意图经重新校验/必要确认后，才可以创建新 command。原 identity 的再次使用/兼容规则仍由 Q01/Q09 裁定。不会因清 pending 自动放行任何新业务写入。
+
+### 6.2 首次/no-unknown 的窄边界（Q02，待正式 freeze）
+
+必须区分三个事实，不能以“此前无 unknown”替代证明：
+
+1. 全新本地动作，在任何 transport handoff 前被拒绝，已证明没有同 identity 的历史/其他执行者、没有排队/自动发送/迟到发送路径。推荐允许结束本地准备或释放尚未提交的本地 envelope，并展示“这次未发送”。这不是一份 server command-final receipt，不声称历史命令 no-effect；所有条件缺一即不能用此分支。identity 新鲜性与本地关闭判据必须由 Q01/Q02/Q07 冻结后才能接入。
+2. 首次请求已交 transport，可信 C/B 仅证实本 attempt 未 dispatch/已 rollback。推荐记录 attempt-no-effect，保留原身份待获准恢复/重试；不得把它自动提升为原命令 terminal。即使此刻没有 unknown，是否穷尽全部 attempts、未来同身份执行是否被关闭，仍是 Q02/Q03。若 owners 能证明全命令范围及关闭，观察应重新归 E03/F；不是为任意4xx设置例外。
+3. 重启、身份重绑或记录缺失导致看不到旧 unknown。不能当作首次。执行可能性无法排除时进入 U，并标恢复能力 gap；本地“没有 pending”也不证明服务端 absent。
+
+### 6.3 完整 4×7 settlement 表
+
+“清 pending=已清”表示保持先前终局后的释放，不再执行一次 settlement；“不得清”指不得按业务完成清除。auth 隔离销毁敏感状态另见 §6.4。
+
+| 先前状态 | 新观察 | 客户端逻辑状态 / 动作 | 清 pending | 新 key/body/version | 下一 chunk | 业务展示 / 未决 owner |
+| --- | --- | --- | --- | --- | --- | --- |
+| N | attempt-local rejection/no-effect | N：结束本 attempt；原身份 retry/recover；只有 §6.2(1) 的全本地未提交分支可结束本地准备 | 默认不得清；纯本地特例待 Q02 | 原命令不得改；本地特例重新准备待 Q01/Q02 | 否 | 仅“本次未发送/被拒绝”，不称原命令终局失败；Q02/Q03 |
+| N | authoritative commit receipt | C：resolve success，按原命令范围一次结算 | 可 | 条件新动作 | 有条件：原 receipt 为获准可续 chunk，当前前缀/权限/版本及 next 条件另成立 | 原 chunk/operation 成功；非整段历史自动成功 |
+| N | command-final no-effect | F：resolve terminal no-effect | 可 | 条件新动作 | 否；缺失 chunk 不可跳过，修正须另立合法命令 | 原命令终局无业务效果；不夸大成全 session 清空 |
+| N | inconclusive/unknown | 有 dispatch/交付不明窗口则 U，keep pending unknown；若能完整证明从未 handoff 则回 §6.2 | 不得清 | 否 | 否 | “结果尚未确认”；不展示完成/确定失败 |
+| N | malformed/unrelated response | ignore 该响应；本命令等待权威响应，若执行窗口不能排除则 U；完全未交付才维持 N | 不得清 | 否 | 否 | 无响应业务内容披露；Q05/Q07 |
+| N | auth suspension | suspend without disclosure；N 的无 dispatch 证明保留，否则 U；同 principal 获准重认证后原身份恢复 | 不得按完成清 | 否 | 否 | 仅登录/恢复提示，不猜业务成败；Q08 |
+| N | retention-unavailable | 恢复受阻；N 不能作为无历史证明，可能已执行则 U；需 owner 鉴别原身份历史 | 不得清 | 否 | 否 | “原结果无法恢复/仍未确认”，不是确定失败；Q09 |
+| U | attempt-local rejection/no-effect | U：keep pending unknown；可结束当前 attempt，仍按原身份恢复 | 不得清 | 否 | 否 | 可说本次拒绝并明确原结果未确认；不能业务失败 |
+| U | authoritative commit receipt | C：resolve success；原 unknown 一次结算 | 可 | 条件新动作 | 与 N→C 相同的条件许可；历史 receipt 不自动给当前 next 权限 | 原 chunk/operation 成功 |
+| U | command-final no-effect | F：resolve terminal no-effect；必须覆盖全部相关 attempts | 可 | 条件新动作 | 否；不跨过未接受前缀 | 原命令已确定无效果 |
+| U | inconclusive/unknown | U：keep pending unknown；原身份恢复；到 deadline 仅停止自动尝试 | 不得清 | 否 | 否 | 未确认/恢复暂不可用 |
+| U | malformed/unrelated response | U：ignore stale/unrelated callback 的结算和副作用；原身份恢复 | 不得清 | 否 | 否 | 不显示伪/跨 scope success；Q05/Q07 |
+| U | auth suspension | suspend without disclosure，U latch 不变；同 principal 获准重认证后原身份恢复 | 不得按完成清 | 否 | 否 | 不披露旧 payload/receipt；Q08 |
+| U | retention-unavailable | U 且恢复受阻；停止不能完成的自动恢复，不假装已有终局 | 不得清 | 否；旧 identity 非复用边界维持 | 否 | “结果不可恢复，原命令未结算”；Q09 |
+| C | attempt-local rejection/no-effect | 保持 C；忽略较弱结果对原命令的降级，attempt 可结束 | 已清 | 条件新动作 | 原 C 的条件许可仍成立才可；拒绝不会回退 receipt | 保持原成功；可单独显示本次恢复失败 |
+| C | authoritative commit receipt | 同一原 receipt 则 C/no-op，不重复业务副作用；声称不同结果则一致性异常 | 已清 | 一致时条件新动作；矛盾时暂停 | 一致时有条件；矛盾时否 | 原成功不重复提示；不同 receipt 交 Q04 |
+| C | command-final no-effect | 保持 C，矛盾终局候选隔离；暂停本流程自动推进，owner 处理证据冲突 | 已清，不重置 U | 否，待冲突解决 | 否 | 不将已提交显示为 failure；Q04 阻断 |
+| C | inconclusive/unknown | 保持 C，后续恢复/交付故障不重置原结果 | 已清 | 条件新动作 | 条件许可；本地/权限故障可独立阻止 | 原成功；本地/交付问题单独说明 |
+| C | malformed/unrelated response | 保持 C；ignore stale/unrelated callback，不应用其内容 | 已清 | 条件新动作 | 条件许可；无效响应不授予任何新权限 | 原成功，仅以已授权安全内容展示 |
+| C | auth suspension | 保持 C；suspend without disclosure，暂停受保护后续操作 | 已清，不因认证再建 pending | 当前否；重认证后按新动作条件 | 当前否 | 是否仍可展示安全历史由 auth owner 定；Q08 |
+| C | retention-unavailable | 保持已验证 C；当前原 receipt 获取受阻不会抹除已知事实 | 已清 | 条件新动作；不能把旧动作重做 | 缺所需 checkpoint/当前授权时否；否则按独立条件 | 可展示已有获准结果；不补造丢失 receipt 内容；Q09 |
+| F | attempt-local rejection/no-effect | 保持 F；较弱后续信息 no-op | 已清 | 条件新动作 | 否 | 原命令终局无效果 |
+| F | authoritative commit receipt | 保持 F，矛盾终局候选隔离；暂停本流程自动推进，不能升级 success | 已清，不重置 U | 否，待冲突解决 | 否 | 不展示新 success；Q04 阻断 |
+| F | command-final no-effect | 同一终局则 F/no-op；不同范围/矛盾内容先隔离，不能用更弱证据改写 | 已清 | 一致时条件新动作；矛盾时否 | 否 | 终局无效果不重复副作用；Q04 |
+| F | inconclusive/unknown | 保持 F；后续交付/恢复不明不重开已关闭命令 | 已清 | 条件新动作 | 否 | 原终局无效果，不重新 unknown |
+| F | malformed/unrelated response | 保持 F；ignore stale/unrelated callback | 已清 | 条件新动作 | 否 | 不显示不相关成功或内容 |
+| F | auth suspension | 保持 F；suspend without disclosure，禁止受保护重试/后续写入 | 已清 | 当前否；重认证后按新动作条件 | 否 | 仅 auth 提示；终局内容可见性待 Q08 |
+| F | retention-unavailable | 保持已知 F，不能因记录不可读而重新执行原命令 | 已清 | 条件新动作；旧 identity 仍不得默认为可复用 | 否 | 已知终局与不可恢复能力分别说明；Q09 |
+
+表中的真正 command-final commit 与真正 command-final no-effect 不应同时成立。冲突不是一个正常的新业务结局，也不由“更晚收到”决定真伪；保持此前已验证结果的单调性，同时阻断该流程新写入及依赖证据的消费。查明此前某候选不具 authority 时，如何人工/治理处置属于 Q04，不能在客户端自动改写事实；本文不设计新的公开异常码。
+
+### 6.4 正交状态、清理与恢复许可
+
+- 同 principal 重新认证只恢复获准消费/查询能力，不改变原 body/key/operation/身份版本。当前 auth generation 可以改变；它是 callback 消费权限轴，不是偷偷替换原逻辑命令身份的理由。重新认证不自动恢复已被撤回的 household/receipt entitlement。
+- 换 principal 必须 fail closed 销毁或隔离旧敏感 payload/key，不能让新 principal 看见、重发或结算旧命令；按现有 ADR 的销毁要求，不在当前进程设计跨账号秘密保留。服务器原命令仍可能 U/C/F，本地删除不是 terminal no-effect、不是 key 可复用证据。旧 principal 日后如何安全找回仅用获准非敏感 locator/receipt，仍是未完成发布阻断。
+- 401 来自当前相关 attempt 才触发相应认证处理；旧 generation 的迟到401不能把新认证会话重新暂停。旧 success 也不能执行导航、释放新 pending 或设置新账户家庭上下文。
+- 逻辑已终局而某 transport/B 回调尚未清理时，终局事实与资源 owner 分开。清 pending 不意味着可以提前归还仍被使用的资源、取消另一个 attempt 或重用身份；迟到回调必须失去发起业务副作用的权限。
+- local persistence/导航失败发生在 C/F 之后，只允许绑定原 principal 的本地恢复，不发写命令、不重新标 U。若缺原 receipt 所需信息，本地恢复暂停，不从最新 GET 补造原结果。一般 GET 可刷新资源展示，不能重新结算原命令。
+- 首次 attempt 未收到 response，即使服务端实际 predispatch 拒绝，客户端也不能借服务端内部事实清 pending；必须有客户端实际可验证的证据。与“本地可证明从未调用 transport”的特例严格区分。
+
+## 7. 首选最小逻辑决策与替代方向
+
+### 7.1 首选（本包推荐，非正式 freeze）
+
+先验证 evidence authority、原命令完整 binding、receipt entitlement 和当前消费资格，再判断覆盖范围。U 只有 E01/E02 或 E03 可终结；attempt 的数量、状态码、错误码、retryable 和 Promise 结果都不能替代范围证明。
+
+commit proof 至少要证明“这是原命令实际接受的结果”，且与原不可变 receipt/获准 operation 一致；只知道某 DB 事务 COMMIT、某 marker completed 或某 session finalized 不足以宣称用户业务成功。command-final no-effect 必须同时排除历史已提交、在途提交和原命令还能 commit 的路径；只停止当前 attempt 不够。证据责任足够明确即可提出规则，但在载体未冻结、B 不能证明时，client/C 没有一个自行制造的 fallback 终局。
+
+当前 attempt 本地未 dispatch 的事实只能描述当前 attempt。unknown 后的 400/413/415/429、query 拒绝、R7-A parser/auth rejection、普通 4xx/5xx、timeout/abort/no response，一律不得清除已有 unknown。未命中 receipt 只能继续原身份的获准恢复；即使确认某一事务已回滚，仍须区分安全恢复/重新执行与终局 no-effect。retry deadline 耗尽只停止自动恢复。
+
+对 N 的纯本地未提交动作保留 §6.2 的窄候选，避免把输入纠正错误显示为网络未知；但不能把“客户端没记过 unknown”泛化成历史穷尽证明。不能安全决定的首次服务端拒绝结算能力明确留给 Q02，不发明 wire 字段填表。
+
+### 7.2 替代方案比较
+
+| 方向 | 好处/成本 | 满足 B/C 不变量？ | 本包建议 |
+| --- | --- | --- | --- |
+| 首选：按权威证据与全命令范围结算，U latch 独立 | 把安全必要条件固定，HTTP/client 可共用判断；代价是 B 无法恢复或 auth/retention 受阻时长期未决 | 是，前提所有证明与消费边界正式冻结并取得实证 | 推荐作为下一轮语义决策依据，当前仅准备材料 |
+| 替代 A：沿 legacy status/code/最后一次响应决定成败 | 客户端分支少，容易接现有 generic disposition | 否：原 commit 丢响应后 retry 413/429/query拒绝会错误清 pending；也无法解释已提交409 | 排除作为 M2 规则，不修改 legacy 产品 |
+| 替代 B：receipt miss、GET/current checkpoint 或 deadline 后推定失败并换 key | 恢复路径短、表面上解除 pending | 否：读不到不排除 commit，GET 无命令归因，retention 失忆可重复效果 | 排除；不能把有限等待转换为确定知识 |
+| 替代 C：unknown 永远只接受 original commit receipt，不支持任何 terminal no-effect | 安全上不会用局部失败清 U，公开语义较少 | 能保住安全性，但已确认从未生效且永远不能完成的命令可能无法释放；不满足可用恢复目标 | 可作为能力缺失时的保守行为上限，不能当完整 G-OUT 解决方案；是否只读恢复支持由正式 owner 裁定 |
+| 替代 D：累积多个 attempt-local no-effect，由 client 自行拼出全命令失败 | 似乎可少要一种 B 证明 | 只有能权威穷尽集合、排除旧 commit 并关闭所有执行路径才安全；当前 client 无此证据，布尔聚合不足 | 不采纳为默认；若未来给出完整证明，实质已满足 E03，不是弱证据例外 |
+
+本包选择的是逻辑证据规则，不选择 original receipt 通过哪条 HTTP 路由或哪种 body/status 携带，也不选择 no-effect 证明的持久记录、锁、fence 或 token 机制。
+
+## 8. HTTP/client/B/identity/auth responsibility projection
+
+| Owner | 未来必须冻结或证明的责任 | 不得从其他 owner 的局部事实推导 |
+| --- | --- | --- |
+| HTTP contract owner（G-OUT/G-ENV，与 C 配合） | 明确哪些语义可公开：原命令接受、原 receipt replay、attempt 局部拒绝、全命令终局无效果、未确认/恢复受阻/无 response；规定 problem 与域 result/receipt 的关系、拒绝表达和相关性义务；无响应让 client 保持 unknown；无已批准载体时不接 route | 不能因 B 内部类名就增加 public reason；不能用 2xx/4xx/5xx 代替 evidence scope；不能因 reply.finish 推定 client 收到；不能把 raw parser rejection 包装成 command-final |
+| Client owner（G-CLIENT） | 首次形成不可变 key/body/binding/version；原身份恢复、跨 attempt latch、single-flight、command/attempt/generation 消费资格、晚到 callback、retry deadline、pending 清理与 local reconciliation；明确纯本地未提交特例；真实 adapter 与 restart 能力取证 | 不能把 local guard/network reject/timeout 视为旧命令未执行；不能从 GET/导航/最新版本重建原 body；不能利用 auth 销毁/retention 清理产生新 key 重做 |
+| B owner（G-BACKEND） | 为 commit、attempt no-effect、command-final no-effect、unknown 给出可审查权威含义与覆盖范围；原不可变 receipt；取消已确认与仍在途的界限；恢复 lookup 的时点/可见性/资格；retention 后结果与非复用保证；真实事务及竞态证据 | 不能把 C predispatch 的一次零调用扩大成历史零调用；不能把原始 claim/digest/shape 当服务端事实；不能由 C cancel signal 推定 DB 回滚；不能把当前 checkpoint 当旧 receipt |
+| Identity owner（G-ID，联动 G-ROUTE） | 什么 attempts 属于同一个原命令；principal/scope/operation/domain/key/full body/binding 的关系、raw-byte 与 semantic 候选取舍、版本兼容、属性顺序、no-query 前置与命名空间；定义历史/在途集合闭包及兼容恢复资格 | 不能因 key 相同就认定原命令，不能因 body 合法就允许替换；不能以 normalized route 或 body hash 自动证明无 query；不能把 auth generation 变化随意变成新业务 identity |
+| Auth owner（G-AUTH，与 G-OUT/G-CLIENT 协作） | 当前 receipt entitlement、同 principal 重认证、换 principal 隔离、撤权后允许披露什么、授权变化与 receipt 交付的决策点；C 的无副作用调度认证和 B 决策授权分开 | 不能由已有 commit 推定现在仍可披露；不能由401/403/404推定未commit；同principal≠仍有家庭权限；知道key/UUID≠获准读取 |
+| C/runtime owner（支撑 G-LIFE/G-ROUTE/G-BUDGET/G-LOG） | 同 attempt 不可混搭的接入/dispatch/no-query/取消与 response 事实，预算和 cleanup；保持无 response 分支；给 HTTP/B/client 可验证的局部事实 | 不做 DB outcome 判定；不提前归还仍被 B 使用的资源；不从“server看见 no-query”推定上游从未删 query；不记录 raw/derived 私有内容证明问题 |
+
+责任连接的最小顺序：identity 定义原命令范围 → auth 定义谁可取得何种事实 → B 说明可提供的覆盖/关闭与恢复能力 → HTTP G-OUT 定义语义、G-ENV 定义获准载体 → client 对相同语义给 disposition 与关联保证 → 获准 runtime/adapter/B 证据验证整条链。前几项可以迭代，但公开 freeze 不得跳过任一前置；G-OUT 与 G-ENV 的相互校准不能变成 client 猜一个默认失败分支。
+
+no-query 的联合链仍为原 target → 最早受信拒绝/absent 证明 → 同源 C bundle → B 受限入口 → client 首次/retry/recovery binding，同一 policy/version、candidate、operation 集合；G-LIFE/G-LOG/G-BUDGET 共同支持。WP-O1 只说明其 outcome 义务，不能单独关闭任何连接。
+
+## 9. 反例与书面审查 oracle
+
+以下 O01–O16 均为自然语言反例/未来审查判据，执行数为 0；没有脚本、fixture 或测试生成。括号内 T 编号只定位 C r1 既有未来矩阵，不是本轮测试结果。未来实证必须在新授权、精确 candidate/runtime 上完成；计数/事件证据应使用合成数据并由获准观察面提供，不能用 SQL 方案或自报 Boolean 代替。
+
+| 反例 | 必须处置 | Review oracle / 失败判据 |
+| --- | --- | --- |
+| O01 原 attempt 已 commit，响应丢失；retry 在 header/collector/parser/admission 得400/413/415/429，或query拒绝（T41/T47） | 原 U 保持；本次拒绝可见但不得说原命令失败；保留原无query binding/body/key/version，仅原身份恢复到 receipt | 原命令最多一次接受/事件效果；无 key 变化、无下一 chunk、pending 不清；换成任一局部错误均同结论。generic 4xx 清 pending 即失败 |
+| O02 cancel 与 commit 竞态，receipt 暂时查不到（T33） | cancel requested/unconfirmed+miss 仍 U；B 若证实 commit 则原 receipt；若仅当前 rollback则E04；全命令关闭才E03 | 覆盖 commit先/取消先/确认丢失/查询先于commit；观察执行事实、取消确认和 receipt 分开；miss后立即重做写即失败 |
+| O03 B 已 commit，HTTP serialize/send/finish/client receive 任一点失败（T18/T20/T21/T34） | B 成功保持；客户端未实际验收则 U，经原 receipt 恢复；不能发第二个确定失败覆盖事实 | 每个窗口独立，finish成功且client未收也必须U；无二次效果/二次响应竞争/当前 checkpoint替代；B成功不能因网络异常回滚叙述 |
+| O04 旧 accepted_chunk receipt 的 checkpoint 与已推进 current/session aggregate 不同（T29） | 验证并返回原 receipt，原 chunk C；不把 current 填进历史，不回退当前状态；是否可继续由独立 current/权限/次序条件决定 | 历史结果语义不变、重放零写；旧open receipt不等于当前session仍open；原命令结算与下一步准入分别评审 |
+| O05 same key 只改 JSON 属性顺序、body内容、expectedVersion、parser/identity版本或 operation（T30/T36） | 不默认视为同命令，不改原 snapshot；raw-byte候选会把顺序变化视为异body但未正式选择；任何变体拒绝保留旧U | 两份都parser合法也不构成identity等价；新registry不能重绑旧命令；Q01/Q10未决不以发明hash/新namespace补齐 |
+| O06 401 后同 principal 恢复，随后或直接换 principal（T34/T40） | 同principal只在新generation+entitlement获准后恢复原身份；换principal销毁/隔离敏感payload/key，不能执行/显示旧结果；服务器结果未变 | 旧callback不得清新pending、设置新户、撤销新会话；403/撤权仍不证明未commit。隔离删除被描述为业务failure即失败 |
+| O07 retry deadline 耗尽（T40） | 停止自动尝试，保持U和获准恢复约束；没有无限轮询承诺，没有“已失败可重做” | 时间推进本身不能改变逻辑结果、key、chunk进度或产生success/failure；deadline数值不在本包选择 |
+| O08 retention 后 receipt 不可恢复，旧 identity 能否复用尚未裁定 | 区分可恢复结果丢失与不可复用约束；无终局则U且恢复受阻，有C/F则保持；旧identity不因absence放行 | 删除恢复payload不形成absent新命令；不能泛化既有30天或legacy tombstone为M2政策。Q09不闭合继续阻断实施 |
+| O09 malformed、不相关、跨 scope、wrong key/body/version/operation 或旧 generation success（T39） | 未验证者无settlement权；ignore callback副作用，原U保持；可能需要当前获准恢复重新取得权威证据 | 正确shape但错误相关性必须失败；不披露跨scope内容；不按HTTP2xx/ok/replayed默认成功 |
+| O10 后端已C/F，本地storage/导航失败（ADR-0004；T40） | 保持后端终局，提供不发送写请求且绑定principal的本地恢复；缺信息就暂停本地恢复 | 不重建原pending、不再发送原写、不重新置U；新principal不执行旧context transition；本地成功也不结算尚U命令 |
+| O11 query变体在C最早边界拒绝且B调用0（T42–T48/T50） | 解码/R7-A/认证调度/B dispatch均0；客户端本地guard拦截则network也0；旧无query命令U保留 | 裸?、普通/重复/编码query、baseUrl/path/adapter误追加均覆盖；不得删query再发送或补proof；原/derived值日志零泄漏 |
+| O12 绕过网络直接向B注入非法bundle（T49） | B受限入口被调用是负例的前提；缺proof、wrong version、mixed attempt、caller boolean均在业务处理/identity或receipt lookup前拒绝 | B业务处理/效果0；不能要求“直接调用B”的该负例B入口调用0，也不能把它当O11网络早拒绝证据；两套oracle分开 |
+| O13 首次纯client-local拒绝与首次发送后无response的对照 | 前者只有满足§6.2(1)所有条件可结束本地准备；后者若执行窗口不明则U，即使server实际拒绝 | 本地network0不是同identity历史B0；缺新鲜性/闭包证明即不适用特例；Q02不得用“未记录unknown”填空 |
+| O14 已C收到E03，或已F收到貌似权威commit | 保持此前终局，不自动降级/升级；隔离矛盾证据，暂停后续写/next，交Q04 | 不能last-response-wins、重开U后换key或用多数响应投票；证明矛盾来源未查清不得通过联合准入 |
+| O15 R7-A accepted/rejected 与2xx/4xx/5xx组合 | A accepted仅DTO资格；rejected只按实际覆盖处理；2xx含rejected不能走generic success；普通409可能为legacy已提交业务失败 | HTTP、domain verdict、B outcome三轴逐项核验；未知public分支默认definite-failure即失败；不扩R7-A reason承载B内部类别 |
+| O16 进程重启清空内存、重认证/版本升级后用新key恢复旧业务动作 | 不能把本地空状态当原命令不存在；保留现有内部发布阻断，原身份的非敏感locator/receipt恢复能力另freeze | 普通GET、最新资源version或重启时间不能形成终局；不把未实现恢复写成已支持；不得持久化敏感原body作为临时补救 |
+
+用于独立审查的统一判据：对每个反例标明“谁知道什么、覆盖哪一个或哪些 attempts、何时不再可能 commit、谁获准消费”。任一项只有 status/code/Boolean/日志文案而无实际 authority 链，就不能授予原命令 settlement。观察者知道的 DB 结果不能偷偷替代客户端实际取得的证明。
+
+## 10. 正式 freeze 未决问题、先后关系与阻断条件
+
+这些问题不会因 WP-O1 READY 而关闭。表内问题编号只是审查导航，不创建新 G-*。
+
+| 问题 / owner | 下一轮必须回答的具体问题 | 前置与未满足时的阻断 |
+| --- | --- | --- |
+| Q01 原命令 identity / G-ID、ROUTE、client、B | 精确哪些 attempts属于同命令？principal/scope/operation/domain/key/fullbody/解析与身份版本如何绑定？raw-byte还是其他等价关系？属性顺序/旧版本恢复如何判定？no-query policy与operation别名如何一致？ | 在任何全命令覆盖声明及HTTP/client freeze前；未定不得比较旧新body、建立alias或启用route。本文不选算法/namespace/version值 |
+| Q02 首次与尝试全集 / CLIENT、OUT、ID、B | “全新且没有任何历史/其他执行者”的证明是什么？纯本地关闭与服务器全命令terminal如何区分？首次C拒绝何时可释放命令，怎样排除自动重发/在途请求？ | 依Q01；不能证明就只记attempt-local，不按generic4xx终结；§6.2只推荐窄候选，不能直接实施 |
+| Q03 command-final no-effect / BACKEND、OUT | B能否证明无历史commit、所有相关attempt已结束、原命令以后不再可能commit？已知rollback但允许same-identity重试与terminal如何划界？取消确认何种证据足够？ | 依Q01/Q02及auth可见性；没有真实闭包/线性化能力就不发布全命令no-effect承诺，不设临时DTO或SQL |
+| Q04 commit receipt与终局矛盾 / BACKEND、OUT、ENV | 哪些原子接受事实足以证明原operation成功？original receipt哪些结果语义不可变、与delivery metadata怎样区分？冲突C/F或不同原receipt如何隔离并治理？ | 依Q01/Q03；只知COMMIT或marker completed不足；矛盾无法解释继续阻断依赖流程与实施 |
+| Q05 公开语义与载体 / OUT→ENV，HTTP/client/B共同 | 如何向获准client准确表达attempt局部与command终局、恢复暂不可用、结果不可恢复？域result rejected放何种获准envelope？problem与receipt关联如何证实？无response如何约束consumer？ | 先语义覆盖再载体，再consumer对账；不冻结DTO/status/field，不把B internal category放public字段。无可靠载体route不准入 |
+| Q06 same-identity恢复与重新执行 / BACKEND、OUT、CLIENT | receipt miss、backend unavailable、known abort之后，何种能力只查询、何时允许原身份重新执行而保证旧attempt不会再提交？取消与commit谁先线性化如何证明？ | 依Q01/Q03/Q04/Q08；不得凭miss或timeout重做写；具体persisted lookup/锁/隔离/取消机制另行授权 |
+| Q07 client状态与callback消费 / CLIENT、ID、AUTH | once-serialized body如何跨首次/retry保持？unknown latch独立于in-flight；command/attempt/generation如何检查？晚到同命令真receipt是否可经当前verifier消费、旧callback如何无副作用？deadline及pending清理如何与资源/local恢复分开？ | 依Q01/Q05/Q08；当前generic disposition/再次JSON.stringify不足，真实adapter取证前不准入；不新增client port |
+| Q08 entitlement与重认证 / AUTH、OUT、BACKEND、CLIENT | 谁可读历史receipt？同principal重新认证但membership已撤回时可披露什么？权限变更与receipt生成/发送之间的线性化规则？换principal后旧命令如何隔离/日后恢复？ | 在任何向外receipt disclosure前；当前self-exit特例不得普遍外推；不能证明时暂停且不披露，不以拒绝推断no-effect；不设计SQL/RLS |
+| Q09 retention与non-reuse / BACKEND、ID、AUTH、CLIENT、OUT | 原结果不可恢复时还保有哪些不可复用保证、可公开知道哪些事实？旧identity究竟如何保持不被当新命令、不同版本/重新登录如何恢复？ | 依Q01/Q04/Q08；本包不裁定复用策略或TTL/GC数值。未定必须fail closed，不由GC/absence开放重做；retry deadline≠retention |
+| Q10 版本与运行期兼容 / ID、ENV、CLIENT、ROUTE | 旧解析/identity/operation版本还能否恢复原receipt，何时仅拒绝当前attempt？新registry/serializer不得改变旧unknown；future query政策变化如何独立重审？ | Q01/Q05后；恢复兼容不成立仍保留U或授权隔离，不能用版本拒绝结算旧命令 |
+| Q11 真实 B/runtime 证据 / BACKEND、LIFE、CLIENT，联合ROUTE/LOG/BUDGET | 精确runtime/adapter/candidate的commit-loss、cancel-race、early query rejection、无response、exact发送/关联、latecallback、预算/日志/权限变化证据怎样联合获得？ | 先新任务授权和正式范围；目前T01–T50=0，本包oracle=0。不能用源码/旧测试/本报告代替真实B/网络证据 |
+| Q12 项目准入与发布 / 总控及全部owner | M1/G2、M2 prerequisites、migration首次确认、真实权限/N-1及独立审计等何时满足？restart恢复内部发布阻断如何关闭？ | 计划§6/7/12及现有十gate全部继续约束；本包不运行B-r4/G2，不授予任何实施资格 |
+
+推荐的推进顺序为 Q01/Q02 与 Q08 共同确定命令边界和可见性 → Q03/Q04/Q06/Q09 形成 B 能力及证明义务 → Q05 定义 G-OUT 语义并与 G-ENV 表达互校 → Q07/Q10 对齐 client/版本 → 获新授权后 Q11 取得真实联合证据 → 总控按 Q12 独立判断准入。B/runtime 的可实现性若反证前面的候选，必须回到对应 owner 修订，不能靠 HTTP 映射掩盖。所有 G-* 在这一过程中仍须分别且联合满足原有解除条件。
+
+### 10.1 已决定、推荐、候选和待真实验证
+
+| 层级 | 本包如何使用 |
+| --- | --- |
+| 已决定/已接受的既有范围 | R7-A contracts与资源边界；B/C shadow不变量；C no-query逻辑裁定；原unknown不得被后一次局部拒绝清除；权限/receipt/local completion分离；状态上限 |
+| 本包推荐的最小逻辑决定 | E01/E02或E03才终结U；C/F单调；证据相关性/entitlement先行；N不自动代表全集已知；retention不可恢复与non-reuse分开；完整矩阵和owner证明义务 |
+| 只能作为候选 | 首次纯本地未提交动作释放的具体判据；晚到同命令receipt进入当前verifier的消费途径；公开表达/载体、raw-byte选择与版本、恢复/取消能力细化。未新增协议 |
+| 必须等待真实B/runtime证据 | commit/rollback与取消竞态、全attempt关闭保证、持久恢复/retention不失忆、权限撤回、原始target/adapter字节、latecallback与资源/日志链；当前均无本轮动态结果 |
+
+## 11. 风险与未执行事项
+
+长期 U 是本推荐的真实可用性风险：auth撤回、backend不可用、receipt保留能力消失或restart恢复缺失都可能使用户无法安全继续。风险必须由正式恢复/可见性策略解决，不能转换成虚假的 definite failure。结果已知但无权披露也可能限制用户体验；它不是允许越权返回receipt的理由。
+
+全命令“没有效果”的证明比“有一次commit”的证明更强，不能靠穷举当前页面attempt完成。B若无法证明集合闭包和排除迟到commit，就只提供attempt-local或unknown；需要保持G-OUT/G-BACKEND阻断。现有client默认分支、legacy semantic hash及auth helper都不能承担尚未冻结的新语义。
+
+历史receipt与当前状态并存要求consumer避免两种误用：把旧结果当当前进度，以及拿当前进度替换旧结果。安全receipt最小化、entitlement变化和retention又可能使某些信息无法恢复；本包不补造。哈希对账只验证所读字节身份，Git clean只验证所观察tracked/untracked状态，不证明整个机器、ignored内容或工具链安全。
+
+本轮明确未执行：
+
+- 未修改仓库、Git、十二份持久材料、docs/project-status.md 或任何既有文件；未commit/checkout/switch/branch/stash/reset/clean/push/merge/PR/创建worktree。
+- 未运行 Node/pnpm、产品/静态测试、Fastify/socket/Taro 实验、typecheck/build、generator、checker、gate、DB、SQL、migration、Docker、B-r4、G2、联网验证或外部服务。
+- 未新增/修改 public DTO、field、enum、reason、ordinal、HTTP status、route、operationId、OpenAPI、client port 或数据库结构。
+- 未选择 raw-byte hash/algorithm、namespace/version value、MAC、persisted lookup、staging、lock/isolation/timeout、TTL/GC/retention 数值、配额或source policy。
+- 未创建 evidence/manifest/第二报告/脚本/fixture/模板或产品文件；未使用子代理、创建子任务、委派或联系他人。
+- 未激活source pack、添加public trust、引入真实用户/健康/儿童/家庭/消费/食品事实；未改变M1/M2/G2或R7-B/C状态。所有书面oracle未执行。
+
+## 12. POST 与交付 identity
+
+POST：PASS。本节定稿补记前已实际完成同组只读检查，结果如下。补记后仅再次执行最终只读POST及wc/shasum，原始全文identity记录在工具输出与最终交付消息；不再修改报告。
+
+| POST检查 | 实际结果 | 结论 |
+| --- | --- | --- |
+| Git status（含所有untracked） | porcelain为空 | PASS |
+| HEAD | 062fc9c5007b9bbf866b6dfa3b1e14309314a451 | 与PRE/expected一致 |
+| HEAD tree | 290d90036a2436623009f5cb090702424e798f77 | 与PRE/expected一致 |
+| unique parent | 恰好一个：261f0e3307f4fd9b5134e24b01ae6f461a61b727 | 与PRE/expected一致 |
+| refs/heads/codex/stage-09p-m2-inventory | 062fc9c5007b9bbf866b6dfa3b1e14309314a451 | 与PRE/expected一致；detached HEAD允许 |
+| 十二份持久材料 | 逐文件shasum输出全部等于§2.2列出的十二个PRE/expected SHA-256 | 12/12一致，无MATERIAL_BLOCK |
+| 输出目录权限 | stat显示drwx------ / 700 | PASS |
+| 输出目录内容 | ls -la除`.`/`..`外只有本报告一个普通文件 | PASS |
+| 报告首行 | WP-O1_OUTCOME_EVIDENCE_SCOPE: READY_FOR_REVIEW | 精确符合指定值 |
+
+实际操作仅包括只读pwd/cat/sed/rg/rg --files/wc/shasum/git查询/stat/ls/head、创建目录用umask+mktemp，以及仅针对本报告的apply_patch；没有将工具输出重定向为第二份文件，也没有运行产品模块或测试。定稿前人工核对本报告所列4×7矩阵的28个组合与必需交付项；这只是写作自查，不是独立Fresh Review或动态验证。
+
+交付路径：`/private/tmp/meal-agent-wp-o1-outcome-scope.NZiL03/WP-O1-outcome-evidence-scope-decision-pack.md`。
+输出目录：`/private/tmp/meal-agent-wp-o1-outcome-scope.NZiL03`，要求0700且恰好本报告一个普通文件。
+最终raw bytes、换行数与全文SHA-256在封口后的只读工具输出及最终交付消息登记；不将全文hash写入其自身字节流，不虚构自引用固定点。文件路径、固定Git identity与十二份输入hash已在本文件中明确。
+
+本包没有有效BASELINE_BLOCK或MATERIAL_BLOCK；未决freeze问题是下一轮正式合同/实现阻断，不是本次DESIGN_ONLY准备材料无法交付的原因。READY_FOR_REVIEW不自称CLEAN，也不关闭任何gate。
