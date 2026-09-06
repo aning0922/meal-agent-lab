@@ -12,6 +12,8 @@
 
 **阶段 09P-M2 R7-B shadow design 收口（2026-09-06）**：Entry Gate 任务 `01a07230-0bb2-7332-aec8-f5ba7824908d` 判定 `R7-B_ENTRY_GATE: DESIGN_ONLY`，明确 M1 未 Accepted 与 `G2_NOT_ADMITTED` 继续阻断正式实现；项目总控据此只授权临时目录设计。Designer 任务 `01a07243-c177-7c80-a809-81d41c478968` 交付 424 行设计和 152 行 evidence，SHA-256 分别为 `24e1f2496df347a0215041835f45d79ba577256d13d1d6f8e7557e2b53d98d3f`、`93605e6893e53d8472ccde8a6213f258b7769c22b4a0fbb4e6d4ddb624136b68`；独立 Fresh Design Review 任务 `01a07270-f6c5-7152-b122-c59e143a2788` 给出 `CLEAN`，P0/P1/P2=`0/0/0`，review report SHA-256 为 `7e77977e86cf4b03483f04efb1810c37a4357cc46f97eff54689b4a6b65b1b57`。总控据此将精确材料记为 **`R7-B_SHADOW_DESIGN_ACCEPTED / IMPLEMENTATION_BLOCKED`**：接受其 authority/threat model、12 格状态机、15 条 invariant ledger、事务/锁总序、并发与崩溃恢复矩阵、failure category 和资源职责拆分作为后续设计基线；persisted lookup、per-chunk staging、raw-byte body identity 等仍只是 Proposed 选择，不构成机制批准。DB schema、SQL/migration、RLS、锁 key/isolation/timeout、TTL/GC、public reason、API/stream/client、真实持久化与任何 admission 均未授权，也未运行产品 gate。M1 limited、G2 not admitted、M2 In Progress 保持不变；R7-C Entry Gate 尚未开始。
 
+**阶段 09P-M2 设计证据耐久性收口（2026-09-06）**：R7-C Entry Gate 任务 `01a07283-f43f-7831-a87c-c52a5b997f71` 判定 `R7-C_ENTRY_GATE: DESIGN_ONLY`，但其完成后原 R7-A/R7-B `/private/tmp` 材料被系统清理。总控没有用摘要替代原文，而是从对应任务日志的结构化 `FileChange` 事件按 `add` + 全部 `update` 顺序重放六份材料；最终 byte/line count 与既有 SHA-256 全部一致。持久入口与逐文件 provenance 见 [Stage 09P-M2 设计与审查证据归档](evidence/stage-09p-m2/README.md)。原材料的设计/审查 claim ceiling 不变；本归档只修复证据可达性，不改变 R7-C `DESIGN_ONLY`、R7-B `IMPLEMENTATION_BLOCKED`、M1 limited、G2 not admitted 或 M2 In Progress。
+
 **远端 CI 收口进度（2026-08-22）**：第八条真实 run
 [`32577003712`](https://github.com/aning0922/meal-agent-lab/actions/runs/32577003712)
 在精确 HEAD `24be8b35b8a115524f7eeb36f90f693bfed59d87` 上成功完成；job
@@ -1011,6 +1013,9 @@ phase]`，Node 与 PostgreSQL 现场逐字节相同。排序语义只有一份�
   根入口继续只暴露 legacy contracts。R7-B 仅有经过独立 CLEAN review 的 shadow design，
   状态为 `SHADOW_DESIGN_ACCEPTED / IMPLEMENTATION_BLOCKED`；R7-C、migration、DB/API/client
   与 M2 总验收均未完成，不得由 R7-A 或 R7-B design 结论外推。
+- R7-A/R7-B 六份冻结设计与审查材料已按原 SHA-256 持久归档至
+  [`docs/evidence/stage-09p-m2`](evidence/stage-09p-m2/README.md)；后续 R7-C 任务不得继续
+  依赖会被系统清理的历史 `/private/tmp` 路径。
 - 目标顺序：治理契约 → 首批经审查 release → 完整库存批次/事件 → 确定性菜单 →
   Meal/Shopping → 做饭/消耗/剩菜 → 完整本地 E2E。
 - `packages/domain` M0 已固定为七个纯 production module；M0 scope gate 只核对边界和
