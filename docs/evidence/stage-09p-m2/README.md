@@ -2,7 +2,8 @@
 
 状态：**字节级归档副本**。本目录保存 R7-A、R7-B 与 R7-C 在准入/设计收口时使用的
 十二份材料，以及 Post-R7 Gap Gate、WP-O1 outcome evidence scope 决策包与其 Fresh
-Review、WP-O2 command boundary/entitlement 决策包、evidence 与 Fresh Review 六份材料，
+Review、WP-O2 command boundary/entitlement 决策包、evidence 与 Fresh Review 六份材料，以及
+WP-O3 command record/authority 决策包、evidence、Fresh Review 与 r0–r2 评审谱系四份材料，
 解决原始 `/private/tmp` 目录会被系统清理、后续任务无法重新执行 hash stopline 的问题。
 归档动作不生成新的实现授权。
 
@@ -72,6 +73,26 @@ worktree 链接不进入当前仓库 Markdown 链接门禁；这只隔离不可�
 后续任务应从本索引进入持久文件，并在新的任务书中使用当前 Git commit/tree 重新签发
 PRE stopline。
 
+## WP-O3 command record 与 authority
+
+WP-O3 由项目总控在 `codex/stage-09p-m2-inventory` 的接受落点（tip `41d47eb`）之上、以
+`.local/wp-o3/` 临时目录形成，回答 WP-O1 §10 指定的下一设计组 **Q03/Q04/Q06/Q09**：B 侧
+command-final no-effect 的能力与证明义务、commit receipt 的原子权威与终局矛盾治理、
+same-identity 恢复与重新执行的线性化、retention 后的 non-reuse 与不可恢复事实。候选先经 r0、r1
+两轮独立评审 **BLOCK**（分别命中「same-identity 重执行自相矛盾」与「Q09 假成功披露」两条真实
+fail-open），再经 r2 修订达到三 lens 全 `CLEAN`（残余 5 个 P2），最后经 r3 修订达到三 lens 全
+`CLEAN` 且 `P0/P1/P2 = 0/0/0`。四轮均以三个**互盲** lens（fail-closed / authority /
+adversarial）只读执行，未运行 Docker、产品测试、DB、Node 或 gate。设计包与 evidence 在临时目录
+仍存在时由总控逐字节复制，复制后重新核对 lines、bytes、SHA-256 并与原件比较；两份评审记录由总控
+按四轮实际评审结论写成，历史 `BLOCK` 一律原样保留。
+
+| 持久归档 | 来源 | 原临时文件 | Lines | Bytes | SHA-256 |
+| --- | --- | --- | ---: | ---: | --- |
+| [WP-O3 command record / authority decision pack](wp-o3-command-record-authority-decision-pack.md) | 总控 `.local/wp-o3/` | `wp-o3-command-record-authority-decision-pack.md` | 793 | 83,548 | `6e2775f4cceef14e83f73ce44ed3b4c4ca52ce91d7522260114fd663b5f5d754` |
+| [WP-O3 command record / authority evidence](wp-o3-command-record-authority-evidence.md) | 总控 `.local/wp-o3/` | `wp-o3-command-record-authority-evidence.md` | 291 | 22,456 | `1bc922786ae16bb9f4c72230ab11c464a75297ab535e16d8418122c6b62047cb` |
+| [WP-O3 Fresh Review（r3）— CLEAN](wp-o3-fresh-review.md) | 三个互盲 lens | — | 119 | 10,000 | `d6bed0651495147647a603219113bae21f34c7b8e54041c3af7feaae6d37e416` |
+| [WP-O3 评审谱系 r0–r2](wp-o3-review-history-r0-r2.md) | 三个互盲 lens | — | 72 | 6,135 | `5a7c29c36b9b1a3e2057839fa3615a934abe103e689ac33104a0f5ae29470e87` |
+
 状态上限保持不变：
 
 - R7-A contracts 已 Accepted，实施落点为 `63d2a0668df3e1291cb3a863327bd5aeed6dd034`。
@@ -87,7 +108,17 @@ PRE stopline。
   决策基线**：原 command namespace 与 exact-body request binding 分开，handoff 后只有
   E01/E02/E03 可终结 command，execute entitlement 与 receipt entitlement 独立重验并与
   revocation 建立可审查顺序。该接纳不关闭任何 G-*，不冻结 public wire、DB/SQL/RLS/
-  lock/retention、client storage/API 或实现；Q03/Q04/Q05/Q06/Q07/Q09/Q10/Q11/Q12 继续开放。
+  lock/retention、client storage/API 或实现；该接纳时 Q03/Q04/Q05/Q06/Q07/Q09/Q10/Q11/Q12
+  仍开放（其中 Q03/Q04/Q06/Q09 已由下方 WP-O3 收口）。
+- WP-O3 的精确候选经三个互盲 lens 的 r3 Fresh Review `CLEAN`（`P0/P1/P2=0/0/0`）后由总控接纳为
+  **Q03/Q04/Q06/Q09 的逻辑决策基线**：command-final no-effect 须在 commit 线性化点上由
+  P-a ∧ P-b ∧ P-c 三个合取谓词同时证明，取消 ack 或单次 rollback 均不构成；commit receipt 的
+  原子权威唯一，delivery metadata 不构成真伪证据，C/F 冲突必须隔离并暂停而非择一；handoff 之后
+  receipt miss / backend unavailable / known abort 一律只查不写，重执行仅 (a) 原命令仍为 N 且
+  有被证明的 fence（P-a ∧ P-b），或 (b) 已由 E03 终局；retention 后的 non-reuse landmark 覆盖全部
+  曾越过 handoff 的身份，不以「曾 commit」为条件，且不得静默依赖 namespace 相等（O9-5，Q10
+  关闭前保持 admission blocker）。该接纳不关闭任何 G-*，不冻结 public wire、DB/SQL/RLS/lock/
+  retention、client storage/API 或实现；Q05/Q07/Q10/Q11/Q12 继续开放。
 - M1 仍是 `M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS`，G2 仍是
   `G2_NOT_ADMITTED`。
 - M2 仍为 `In Progress`；R7-C 的设计接受不构成 R7-C implementation admission 或 M2
