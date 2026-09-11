@@ -93,6 +93,31 @@ adversarial）只读执行，未运行 Docker、产品测试、DB、Node 或 gat
 | [WP-O3 Fresh Review（r3）— CLEAN](wp-o3-fresh-review.md) | 三个互盲 lens | — | 119 | 10,000 | `d6bed0651495147647a603219113bae21f34c7b8e54041c3af7feaae6d37e416` |
 | [WP-O3 评审谱系 r0–r2](wp-o3-review-history-r0-r2.md) | 三个互盲 lens | — | 72 | 6,135 | `5a7c29c36b9b1a3e2057839fa3615a934abe103e689ac33104a0f5ae29470e87` |
 
+## WP-O4 public semantics 与 carrier
+
+WP-O4 回答 WP-O1 §10 指定的下一设计组 **Q05（公开语义与载体）**：如何向获准 client 准确表达
+attempt 局部与 command 终局、恢复暂不可用、结果不可恢复；域 result rejected 放何种获准 envelope；
+problem 与 receipt 的关联如何被**证明**而非假定；无 response 如何约束 consumer。四问均按
+「先语义覆盖、再载体、再 consumer 对账」展开，**不冻结**任何 public DTO/字段名/状态码/reason/
+ordinal/route。
+
+候选经**五轮**全新、独立、只读的三 lens（fail-closed / authority / adversarial）评审：**全程
+P0=0、P1=0**（无任何阻断级 finding）；r0 残余 11 个 P2 → r2 6 → r3 7 → r4 6（收敛为 3 个不同问题）
+→ **r5 2 个**。r5 中 fail-closed 与 adversarial 均达 `0/0/0`，authority 残余 2 项为**文档自身记账**
+问题（§17 修订记录的行号不精确、§2 表头声称有 Lines/Bytes 而六个源码行只给 SHA），**不涉及任何
+设计主张**。三个 lens 均明确判定候选可作为 `DESIGN_ONLY` 设计基线采纳。按预先声明的收敛规则，
+候选以**被评审的精确字节**采纳，这 2 项**如实登记为 fix-forward**，未通过改写抹平（改写会使评审
+不再逐字节覆盖交付件）。设计包与 evidence 由总控逐字节复制并复核；四份评审记录按各轮实际结论写成，
+历史轮次结论原样保留。
+
+| 持久归档 | 来源 | 原临时文件 | Lines | Bytes | SHA-256 |
+| --- | --- | --- | ---: | ---: | --- |
+| [WP-O4 public semantics / carrier decision pack](wp-o4-public-semantics-and-carrier-decision-pack.md) | 总控 `.local/wp-o4/` | `wp-o4-public-semantics-and-carrier-decision-pack.md` | 821 | 103,587 | `1bbca74b56b7aa5969c77357d5718fa7cef86a41b54b72313f87f7c0d7680f6e` |
+| [WP-O4 public semantics / carrier evidence](wp-o4-public-semantics-and-carrier-evidence.md) | 总控 `.local/wp-o4/` | `wp-o4-public-semantics-and-carrier-evidence.md` | 336 | 28,641 | `9e3f19414d396feff32c3589fd3b53799098da4d721c09d4ba4862ccad5f592f` |
+| [WP-O4 Fresh Review（r5）— CLEAN](wp-o4-fresh-review.md) | 三个互盲 lens | — | 76 | 5,697 | `3c72287f18781e8c6a7f326a19154a46f61b388dac953c9d6bfcf6e390b88b74` |
+| [WP-O4 评审谱系 r0–r4](wp-o4-review-history-r0-r4.md) | 三个互盲 lens | — | 62 | 4,998 | `8185ce7c2b323d9dc532bf46c3a3e0aaa11fd3f27a605336d52fb392d7204d96` |
+| [WP-O4 r0 对抗 lens 报告](wp-o4-review-r0-adversarial-lens.md) | 对抗 lens | `wp-o4-fresh-review-r0.md` | 85 | 10,160 | `6d681362904967e60aae2dffa293b79af45581fdc93ce9b1a6ab2929553db6f5` |
+
 状态上限保持不变：
 
 - R7-A contracts 已 Accepted，实施落点为 `63d2a0668df3e1291cb3a863327bd5aeed6dd034`。
@@ -119,6 +144,15 @@ adversarial）只读执行，未运行 Docker、产品测试、DB、Node 或 gat
   曾越过 handoff 的身份，不以「曾 commit」为条件，且不得静默依赖 namespace 相等（O9-5，Q10
   关闭前保持 admission blocker）。该接纳不关闭任何 G-*，不冻结 public wire、DB/SQL/RLS/lock/
   retention、client storage/API 或实现；Q05/Q07/Q10/Q11/Q12 继续开放。
+- WP-O4 的精确候选经三个互盲 lens 的 r5 Fresh Review `CLEAN`（fail-closed `0/0/0`、
+  adversarial `0/0/0`、authority `0/0/2`，全程 P0=0/P1=0，三者均判定可作为 `DESIGN_ONLY`
+  设计基线采纳）后由总控接纳为 **Q05 的逻辑决策基线**：公开表达按「语义覆盖 → 载体 → consumer
+  对账」推进；载体义务以 CB-1…CB-10 表达、**不冻结**任何 public DTO/字段/状态码/reason/route；
+  problem 与 receipt 的关联必须被证明而非假定；无 response 一律保持 unknown 且不得据以推断
+  命令命运；本地完成（E14）不得顶替命令结算。该接纳**带 2 个已登记的残余 P2**（均为文档自身记账，
+  见 [WP-O4 Fresh Review（r5）](wp-o4-fresh-review.md) §3），二者不构成阻断、按 fix-forward 处理。
+  该接纳不关闭任何 G-*，不冻结 public wire、DB/SQL/RLS/lock/retention、client storage/API 或实现；
+  Q07/Q10/Q11/Q12 继续开放，下一设计组按 WP-O1 §10 为 **Q07/Q10**。
 - M1 仍是 `M1_LIMITED_TECHNICAL_ACCEPTANCE_WITH_EXCEPTIONS`，G2 仍是
   `G2_NOT_ADMITTED`。
 - M2 仍为 `In Progress`；R7-C 的设计接受不构成 R7-C implementation admission 或 M2
