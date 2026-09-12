@@ -48,6 +48,10 @@ import {
   type CreateProfileDraft,
   type UpdateProfileDraft
 } from './profile-flow'
+import {
+  generateRecommendation,
+  type RecommendationDraft
+} from './recommendation-flow'
 
 /**
  * 所有客户端写命令的单一 typed registry。pending envelope 保存的是此
@@ -169,6 +173,13 @@ export interface ClientCommandDefinitions {
     readonly outcome: Awaited<
       ReturnType<AppServices['api']['confirmPersonProfileLinkRequest']>
     >
+  }
+  readonly 'recommendation.generate': {
+    readonly payload: {
+      readonly householdId: HouseholdId
+      readonly draft: RecommendationDraft
+    }
+    readonly outcome: Awaited<ReturnType<typeof generateRecommendation>>
   }
 }
 
@@ -315,6 +326,13 @@ const commandRegistry: {
       payload.householdId,
       payload.requestId,
       payload.request,
+      key
+    ),
+  'recommendation.generate': (services, payload, key) =>
+    generateRecommendation(
+      services,
+      payload.householdId,
+      payload.draft,
       key
     )
 }
@@ -468,7 +486,19 @@ const commandReconciliationRegistry: {
   'profile.link-confirm': (_payload, outcome) =>
     outcome.kind === 'success'
       ? success('档案关联已确认，请重新加载最新档案。')
-      : failure(outcome)
+      : failure(outcome),
+  'recommendation.generate': (_payload, outcome) => {
+    if (outcome.kind !== 'generated') return failure(outcome)
+    return outcome.recommendation.outcome === 'no_feasible_option'
+      ? {
+          tone: 'warning',
+          message:
+            '在全部硬约束下本餐没有可行候选；这是安全结果，不是故障。'
+        }
+      : outcome.recommendation.candidates.length > 0
+        ? success('已生成候选菜单，请查看候选与缺少项。')
+        : success('推荐已生成。')
+  }
 }
 
 export const registeredCommandKinds = Object.freeze(
@@ -550,5 +580,6 @@ export const commandLabel = (kind: ClientCommandKind): string =>
     'constraint.add': '登记饮食约束',
     'constraint.remove': '移除饮食约束',
     'profile.link-request': '发起档案关联',
-    'profile.link-confirm': '确认档案关联'
+    'profile.link-confirm': '确认档案关联',
+    'recommendation.generate': '生成推荐'
   })[kind]

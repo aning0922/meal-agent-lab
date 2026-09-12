@@ -25,6 +25,10 @@ import type {
   PersonProfileStatusFilter,
   RemoveDietaryConstraintRequest
 } from '@meal-agent/contracts/members'
+import type {
+  CreateMealRequest,
+  GenerateRecommendationRequest
+} from '@meal-agent/contracts/meals'
 import {
   confirmPersonProfileLinkSuccessSchema,
   consumeInventoryLotSuccessSchema,
@@ -38,10 +42,12 @@ import {
   joinHouseholdSuccessSchema,
   listHouseholdMembersSuccessSchema,
   listPersonProfilesSuccessSchema,
+  mealSuccessSchema,
   meSuccessSchema,
   personProfileLinkRequestListSuccessSchema,
   personProfileLinkRequestSuccessSchema,
   personProfileMutationSuccessSchema,
+  recommendationSuccessSchema,
   removeMembershipSuccessSchema,
   revokeHouseholdInviteSuccessSchema,
   sessionRevokedSuccessSchema,
@@ -317,6 +323,33 @@ export const createApiEndpoints = (client: ApiClient) => ({
       method: 'POST',
       path: `/api/v1/households/${householdId}/person-profile-link-requests/${requestId}/confirm`,
       envelope: confirmPersonProfileLinkSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  // 阶段 09P M-4b：推荐生成与菜单确认。
+  generateRecommendation: (
+    householdId: HouseholdId,
+    body: GenerateRecommendationRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/recommendations`,
+      envelope: recommendationSuccessSchema,
+      body,
+      idempotencyKey
+    }),
+
+  confirmMeal: (
+    householdId: HouseholdId,
+    body: CreateMealRequest,
+    idempotencyKey: IdempotencyKey
+  ) =>
+    client.call({
+      method: 'POST',
+      path: `/api/v1/households/${householdId}/meals`,
+      envelope: mealSuccessSchema,
       body,
       idempotencyKey
     })

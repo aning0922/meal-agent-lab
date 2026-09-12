@@ -46,6 +46,7 @@ import {
 type ApiOperations = Pick<
   ApiRepository,
   | "addDietaryConstraint"
+  | "confirmMeal"
   | "confirmPersonProfileLinkRequest"
   | "consumeInventoryLot"
   | "createHousehold"
@@ -54,6 +55,7 @@ type ApiOperations = Pick<
   | "createPersonProfileLinkRequest"
   | "createPersonProfile"
   | "exchangeWechatCode"
+  | "generateRecommendation"
   | "getMe"
   | "getPersonProfile"
   | "joinHousehold"

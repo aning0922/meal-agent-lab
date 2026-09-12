@@ -126,13 +126,16 @@ test("findDuplicateKeys 抓到同一对象内的重复键，且放过合法原�
   assert.deepEqual(findDuplicateKeys(`{"${ESC}":1,"b":{"a":2}}`).duplicates, []);
 });
 
-test("确权：带真实到期日的条目恰为 audit-exceptions 与四条 m4a 递延", () => {
+test("确权：带真实到期日的条目恰为 audit-exceptions 与七条 m4a 递延", () => {
   const expiring = realRegister.entries.filter((entry) => !isUnassigned(entry.expiry));
   assert.deepEqual(
     expiring.map((entry) => entry.id).sort(),
     [
       "AUDIT-EXCEPTION-2026-11-08",
+      "m4a-confirm-resegment-reverification",
       "m4a-guest-participants",
+      "m4a-hard-constraint-kind-closure",
+      "m4a-m1-scope-pin-updates",
       "m4a-meal-confirm-client-wiring",
       "m4a-recipe-serving-substitution",
       "m4a-recommendation-entitlement",
@@ -145,8 +148,18 @@ test("确权：带真实到期日的条目恰为 audit-exceptions 与四条 m4a 
   for (const entry of expiring) {
     if (entry.id === "AUDIT-EXCEPTION-2026-11-08") continue;
     assert.equal(entry.expiry, "2026-12-31T23:59:59+08:00");
-    assert.equal(entry.admissionBasis, "open-design-question");
   }
+  // 内容准入类别：除门禁 pin 记账（bookkeeping）一笔外，其余 m4a 均为开放设计问题。
+  const basis = Object.fromEntries(
+    expiring.map((entry) => [entry.id, entry.admissionBasis]),
+  );
+  assert.equal(basis["m4a-confirm-resegment-reverification"], "open-design-question");
+  assert.equal(basis["m4a-hard-constraint-kind-closure"], "open-design-question");
+  assert.equal(basis["m4a-m1-scope-pin-updates"], "bookkeeping");
+  assert.equal(basis["m4a-guest-participants"], "open-design-question");
+  assert.equal(basis["m4a-meal-confirm-client-wiring"], "open-design-question");
+  assert.equal(basis["m4a-recipe-serving-substitution"], "open-design-question");
+  assert.equal(basis["m4a-recommendation-entitlement"], "open-design-question");
 });
 
 test("确权：每笔 unassigned 都带非空理由，且身份/namespace 条目按证据义务登记", () => {

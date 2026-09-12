@@ -24,7 +24,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "pnpm run typecheck && pnpm run test && pnpm run test:schema && pnpm run build",
-    "test": "node --import tsx --test tests/decode.test.ts tests/canonical.test.ts",
+    "test": "node --import tsx --test tests/decode.test.ts tests/canonical.test.ts tests/menu.test.ts",
     "test:schema": "node --import tsx --test tests/schema.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -7,6 +7,7 @@ const MODULES = Object.freeze([
   "catalog.ts",
   "decode.ts",
   "index.ts",
+  "menu.ts",
   "resolution.ts",
   "types.ts",
   "validation.ts",
@@ -61,7 +62,7 @@ const SCHEMA_KEYWORDS = new Set([
 const EXPECTED_DOMAIN_SCRIPTS = Object.freeze({
   build: "tsc -p tsconfig.build.json",
   check: "pnpm run typecheck && pnpm run test && pnpm run test:schema && pnpm run build",
-  test: "node --import tsx --test tests/decode.test.ts tests/canonical.test.ts",
+  test: "node --import tsx --test tests/decode.test.ts tests/canonical.test.ts tests/menu.test.ts",
   "test:schema": "node --import tsx --test tests/schema.test.ts",
   typecheck: "tsc -p tsconfig.json --noEmit",
 });

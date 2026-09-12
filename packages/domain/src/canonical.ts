@@ -73,6 +73,15 @@ export const canonicalJson = (value: unknown): string => {
   return canonicalValue(decoded.value);
 };
 
+/**
+ * `canonicalJson` 结果的小写十六进制 SHA-256，带 `sha256:` 前缀。这是 §3.4
+ * 四段快照的规范化摘要口径：只由规范化字节决定，不承载任何原文，也不另造
+ * canonical 规则。放在 canonical.ts，因为本仓库只允许 canonical.ts 引入
+ * `@noble/hashes`（见 `scripts/check-stage09p-m0-scope.mjs` 的 import 白名单）。
+ */
+export const canonicalSha256Digest = (value: unknown): Digest =>
+  digestText(canonicalJson(value));
+
 const releaseMaterial = (release: DecodedGovernanceRelease): JsonValue =>
   ({
     ...(release.$schema === undefined ? {} : { $schema: release.$schema }),

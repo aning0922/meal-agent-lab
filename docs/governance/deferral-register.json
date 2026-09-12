@@ -3,7 +3,7 @@
   "registerId": "stage09p-m2-deferrals",
   "asOf": "2026-09-12",
   "reviewByMilestone": "M2",
-  "expectedEntryCount": 26,
+  "expectedEntryCount": 29,
   "unassignedExpiryCount": 21,
   "entries": [
     {
@@ -205,11 +205,11 @@
       "admissionBasis": "evidence-obligation"
     },
     {
-      "id": "m4a-recommendation-entitlement",
-      "owner": "auth / HTTP contract owner",
-      "closesAtModule": "m4a/entitlement",
-      "evidenceNeeded": "是否需专用 `recommendation:write` capability（vs 复用 `meal:write`）的显式裁定；须在 WP-O2 command boundary/entitlement 落定后，据其结论确定该 capability 的存在与语义。",
-      "closeTrigger": "WP-O2 command boundary/entitlement 落定；`m4a/entitlement` 关闭时一并结清。",
+      "id": "m4a-confirm-resegment-reverification",
+      "owner": "domain / API owner（confirm 路径）",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "§3.2 要求确认时四段 revision 与当前事实一致，但未规定机制：需一次冻结修订给出现行事实的重导读取集合、比较基准与稳定 mismatch 语义。实现当前只做 digest 相等的一半（expectedSnapshotDigest === 已持久化 snapshotDigest），事实在 generate 与 confirm 之间变化不被察觉；不得由本实现发明重导机制。",
+      "closeTrigger": "m4a 合成纵切设计冻结的修订批次（§3.2 补入重导机制与读取集合）；修订落地并回读对齐前保持未决。",
       "expiry": "2026-12-31T23:59:59+08:00",
       "admissionBasis": "open-design-question"
     },
@@ -223,6 +223,33 @@
       "admissionBasis": "open-design-question"
     },
     {
+      "id": "m4a-hard-constraint-kind-closure",
+      "owner": "食品安全 / domain owner",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "落在冻结所枚举两个 scope 之外的 hard 约束（如 enforcement: hard、kind: preference）的规范处置：freeze 的 blocker 闭集无对应 code，须由冻结修订补入稳定 code 或明确其 scope，方存在可实现的规范规则。当前该 kind 在引擎中被静默忽略，不 fail closed。",
+      "closeTrigger": "m4a 合成纵切设计冻结的修订批次（§5.5/§5.6 blocker 闭集补入该 kind 的 fail-closed code 或 scope）；修订落地前该 kind 仍被静默忽略。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "open-design-question"
+    },
+    {
+      "id": "m4a-m1-scope-pin-updates",
+      "owner": "总控 / 门禁（TCB pin）负责人",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "按 §5.1 应用门禁 pin 更新：scripts/check-stage09p-m0-scope.mjs 的 MODULES 与 EXPECTED_DOMAIN_SCRIPTS 已改，但 scripts/check-stage09p-m1-scope.mjs 的 NON_REPAIR_SNAPSHOT 中 index.ts（钉 3a0a68…，实测 471a5c…）与 canonical.ts（钉 db9064…，实测 44abec…）及 STAGE09P_M1_M0_TCB[check-stage09p-m0-scope.mjs]（钉 5ac0c5…，实测 6a8f06…）均未随动；需在正确 expected-base 下取得 stage09p:m1 scope COMPLETE。",
+      "closeTrigger": "一次获批的 pin 更新批次（§5.1 门禁义务）；任何 stage09p:m1 check 运行（含 09P 回归）都会暴露其仍为红。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "bookkeeping"
+    },
+    {
+      "id": "m4a-meal-confirm-client-wiring",
+      "owner": "client / API owner",
+      "closesAtModule": "m4a/client-meal-confirm",
+      "evidenceNeeded": "`POST .../meals` 的 typed 客户端命令与页面接线裁定；M-4 采购/确认闭环开始时据此关闭。",
+      "closeTrigger": "M-4 采购/确认闭环开始（`m4a/client-meal-confirm` 落定）。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "open-design-question"
+    },
+    {
       "id": "m4a-recipe-serving-substitution",
       "owner": "culinary/domain owner",
       "closesAtModule": "m4a/serving-substitution",
@@ -232,11 +259,11 @@
       "admissionBasis": "open-design-question"
     },
     {
-      "id": "m4a-meal-confirm-client-wiring",
-      "owner": "client / API owner",
-      "closesAtModule": "m4a/client-meal-confirm",
-      "evidenceNeeded": "`POST .../meals` 的 typed 客户端命令与页面接线裁定；M-4 采购/确认闭环开始时据此关闭。",
-      "closeTrigger": "M-4 采购/确认闭环开始（`m4a/client-meal-confirm` 落定）。",
+      "id": "m4a-recommendation-entitlement",
+      "owner": "auth / HTTP contract owner",
+      "closesAtModule": "m4a/entitlement",
+      "evidenceNeeded": "是否需专用 `recommendation:write` capability（vs 复用 `meal:write`）的显式裁定；须在 WP-O2 command boundary/entitlement 落定后，据其结论确定该 capability 的存在与语义。",
+      "closeTrigger": "WP-O2 command boundary/entitlement 落定；`m4a/entitlement` 关闭时一并结清。",
       "expiry": "2026-12-31T23:59:59+08:00",
       "admissionBasis": "open-design-question"
     }

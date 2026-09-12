@@ -60,6 +60,27 @@ import {
   type IdempotencyKey,
   type RequestId,
 } from "@meal-agent/contracts";
+import {
+  mealSchema,
+  recommendationSchema,
+  type CreateMealRequest,
+  type GenerateRecommendationRequest,
+  type Meal,
+  type Recommendation,
+} from "@meal-agent/contracts/meals";
+import {
+  RECOMMENDATION_ENGINE_VERSION,
+  asUnredactedProfileConstraints,
+  canonicalSha256Digest,
+  generateMenuCandidates,
+  type MenuConstraintFact,
+  type MenuGenerationInput,
+  type MenuInventoryLot,
+  type MenuProfileConstraintFacts,
+  type MenuQuantity,
+  type MenuRecipe,
+  type MenuRecipeIngredient,
+} from "@meal-agent/domain";
 import type { PoolClient } from "pg";
 
 import type { AppConfig } from "../config.js";
@@ -250,6 +271,8 @@ const normalizedRoutes = {
     "/api/v1/households/{id}/person-profiles/{profileId}/link-requests",
   confirmPersonProfileLinkRequest:
     "/api/v1/households/{id}/person-profile-link-requests/{requestId}/confirm",
+  generateRecommendation: "/api/v1/households/{id}/recommendations",
+  confirmMeal: "/api/v1/households/{id}/meals",
 } as const;
 
 type NormalizedRoute =
@@ -286,6 +309,10 @@ const idempotencyPolicies: Record<NormalizedRoute, IdempotencyPolicy> = {
   [normalizedRoutes.addDietaryConstraint]: { kind: "receipt" },
   [normalizedRoutes.createPersonProfileLinkRequest]: { kind: "full" },
   [normalizedRoutes.confirmPersonProfileLinkRequest]: { kind: "full" },
+  // 推荐/菜单响应不含成员私密约束原文，只含 digest 与 blocker code，
+  // 因此安全重放即可（§3.5 第 1 条）。
+  [normalizedRoutes.generateRecommendation]: { kind: "full" },
+  [normalizedRoutes.confirmMeal]: { kind: "full" },
 };
 
 const plusDays = (date: Date, days: number): Date =>
@@ -365,6 +392,173 @@ const safeCursorId = (cursor: string | undefined): string | undefined => {
     throw new AppError("VALIDATION_FAILED", "cursor is invalid");
   }
   return id;
+};
+
+// ---------------------------------------------------------------------------
+// M-4b：推荐纵切的合成 release 标识与读/映射构件。
+//
+// 本纵切是**纯合成**的：release 标识是本地常量，不指向任何真实词表或 source
+// activation（冻结 §1.2、§7）。
+// ---------------------------------------------------------------------------
+
+const M4A_SYNTHETIC_RELEASES = {
+  foodConceptReleaseId: "synthetic-m4a-food-concepts-v1",
+  allergenReleaseId: "synthetic-m4a-allergens-v1",
+  religiousEthicalReleaseId: "synthetic-m4a-religious-ethical-v1",
+  foodSafetyReleaseId: "synthetic-m4a-food-safety-v1",
+  techniqueReleaseId: "synthetic-m4a-techniques-v1",
+  recipeDatasetReleaseId: "synthetic-m4a-recipes-v1",
+  constraintMappingReleaseId: "synthetic-m4a-constraint-mapping-v1",
+} as const;
+
+const RECOMMENDATION_TTL_MINUTES = 10;
+
+interface MenuProfileReadRow {
+  readonly id: string;
+  readonly version: number;
+  readonly status: string;
+  readonly dietary_constraints: unknown;
+  readonly cooking_skill: string | null;
+}
+
+interface MenuInventoryLotReadRow extends InventoryLotRow {
+  readonly food_concept_revision: number | null;
+}
+
+interface MenuRecipeReadRow {
+  readonly id: string;
+  readonly version: number;
+  readonly title: string;
+  readonly description: string | null;
+  readonly servings: string | number;
+  readonly dish_role: string;
+  readonly active_minutes: number;
+  readonly total_minutes: number;
+  readonly difficulty: string;
+}
+
+interface MenuRecipeIngredientReadRow {
+  readonly recipe_id: string;
+  readonly recipe_version: number;
+  readonly food_concept_id: string;
+  readonly display_name: string;
+  readonly optional: boolean;
+  readonly allergen_codes: unknown;
+  readonly may_contain_allergen_codes: unknown;
+  readonly position: number;
+}
+
+const isString = (value: unknown): value is string => typeof value === "string";
+
+const stringArray = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter(isString) : [];
+
+/**
+ * 把仓库里的**未脱敏** diet constraint 行原样投影成引擎事实（不过滤
+ * `visibility`）。这一步是「约束读路径」的唯一边界：脱敏投影
+ * （`mapRedactedPersonProfile`）绝不参与此路径。
+ */
+const toMenuConstraintFact = (value: unknown): MenuConstraintFact => {
+  const record =
+    value !== null && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  return {
+    kind:
+      typeof record["kind"] === "string"
+        ? (record["kind"] as MenuConstraintFact["kind"])
+        : "preference",
+    enforcement: record["enforcement"] === "hard" ? "hard" : "soft",
+    mappingStatus:
+      typeof record["mappingStatus"] === "string"
+        ? record["mappingStatus"]
+        : "",
+    allergenCodes: stringArray(record["allergenCodes"]),
+    foodConceptIds: stringArray(record["foodConceptIds"]),
+  };
+};
+
+const toMenuQuantity = (row: InventoryLotRow): MenuQuantity => {
+  if (row.current_quantity_kind === "qualitative") {
+    return {
+      kind: "qualitative",
+      amount: null,
+      level: (row.current_quantity_level as MenuQuantity["level"]) ?? "unknown",
+    };
+  }
+  return {
+    kind:
+      row.current_quantity_kind === "approximate" ? "approximate" : "exact",
+    amount:
+      row.current_quantity_amount === null
+        ? null
+        : Number(row.current_quantity_amount),
+    level: null,
+  };
+};
+
+const MENU_SAFETY_STATUSES = new Set(["eligible", "blocked", "unknown"]);
+
+const toMenuInventoryLot = (row: MenuInventoryLotReadRow): MenuInventoryLot => ({
+  lotId: row.id,
+  foodConceptId: row.food_concept_id,
+  quantity: toMenuQuantity(row),
+  safetyStatus: MENU_SAFETY_STATUSES.has(row.safety_status)
+    ? (row.safety_status as MenuInventoryLot["safetyStatus"])
+    : "unknown",
+  version: row.version,
+  foodConceptRevision: row.food_concept_revision ?? 0,
+  safetyAssessmentRevision: row.version,
+  safetyPolicyVersion: row.safety_policy_version,
+});
+
+const toMenuRecipeIngredient = (
+  row: MenuRecipeIngredientReadRow,
+): MenuRecipeIngredient => ({
+  foodConceptId: row.food_concept_id,
+  displayName: row.display_name,
+  optional: row.optional,
+  allergenCodes: stringArray(row.allergen_codes),
+  mayContainAllergenCodes: stringArray(row.may_contain_allergen_codes),
+});
+
+const toMenuRecipe = (
+  row: MenuRecipeReadRow,
+  ingredients: readonly MenuRecipeIngredientReadRow[],
+): MenuRecipe => {
+  const mapped = ingredients.map(toMenuRecipeIngredient);
+  const material = {
+    recipeId: row.id,
+    recipeVersion: row.version,
+    title: row.title,
+    description: row.description,
+    servings: Number(row.servings),
+    dishRole: row.dish_role,
+    activeMinutes: row.active_minutes,
+    totalMinutes: row.total_minutes,
+    difficulty: row.difficulty,
+    ingredients: ingredients.map((ingredient) => ({
+      foodConceptId: ingredient.food_concept_id,
+      displayName: ingredient.display_name,
+      optional: ingredient.optional,
+      allergenCodes: [...stringArray(ingredient.allergen_codes)].sort(),
+      mayContainAllergenCodes: [
+        ...stringArray(ingredient.may_contain_allergen_codes),
+      ].sort(),
+      position: ingredient.position,
+    })),
+  };
+  return {
+    recipeId: row.id,
+    recipeVersion: row.version,
+    totalMinutes: row.total_minutes,
+    activeMinutes: row.active_minutes,
+    difficulty: row.difficulty as MenuRecipe["difficulty"],
+    servings: Number(row.servings),
+    dishRole: row.dish_role as MenuRecipe["dishRole"],
+    contentDigest: canonicalSha256Digest(material),
+    ingredients: mapped,
+  };
 };
 
 export class ApiRepository {
@@ -2899,6 +3093,394 @@ export class ApiRepository {
               resultingVersion: outcome.out_version,
               constraintId: request.constraintId,
             });
+          },
+        );
+      },
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // M-4b：推荐纵切的两条写路由与约束读路径。
+  // -------------------------------------------------------------------------
+
+  /**
+   * §6(a) 的**唯一**允许约束来源：按 `meal:write` 授权、返回**全部 active
+   * 档案未脱敏约束**的批量读。它直接投影 `dietary_constraints` 原文，绝不经过
+   * `mapRedactedPersonProfile` / 成员脱敏投影——脱敏投影在类型层被
+   * `UnredactedProfileConstraints` 的类型商标挡在引擎之外。
+   */
+  async #loadUnredactedProfileFacts(
+    client: PoolClient,
+    householdId: string,
+  ): Promise<{
+    readonly facts: readonly MenuProfileConstraintFacts[];
+    readonly cookingSkillByProfileId: ReadonlyMap<string, string | null>;
+  }> {
+    const result = await client.query<MenuProfileReadRow>(
+      `SELECT id, version, status, dietary_constraints, cooking_skill
+       FROM person_profiles
+       WHERE household_id = $1
+         AND status = 'active'
+       ORDER BY id`,
+      [householdId],
+    );
+    const cookingSkillByProfileId = new Map<string, string | null>();
+    const facts = result.rows.map<MenuProfileConstraintFacts>((row) => {
+      cookingSkillByProfileId.set(row.id, row.cooking_skill);
+      const raw = row.dietary_constraints;
+      return {
+        profileId: row.id,
+        profileVersion: row.version,
+        status: row.status === "active" ? "active" : "archived",
+        // 非数组原样透传：引擎对「缺失/非数组的 constraints」做
+        // menu.blocked.input_invalid fail closed（返回结构化 blocker，不抛异常），
+        // 不得当作「无约束」放行。
+        constraints: Array.isArray(raw)
+          ? raw.map(toMenuConstraintFact)
+          : (raw as unknown as readonly MenuConstraintFact[]),
+      };
+    });
+    return { facts, cookingSkillByProfileId };
+  }
+
+  async #loadMenuInventoryLots(
+    client: PoolClient,
+    householdId: string,
+  ): Promise<readonly MenuInventoryLot[]> {
+    const result = await client.query<MenuInventoryLotReadRow>(
+      `SELECT l.*, fc.revision AS food_concept_revision
+       FROM inventory_lots l
+       LEFT JOIN food_concepts fc ON fc.id = l.food_concept_id
+       WHERE l.household_id = $1
+         AND l.state = 'active'
+       ORDER BY l.id`,
+      [householdId],
+    );
+    return result.rows.map(toMenuInventoryLot);
+  }
+
+  async #loadMenuRecipes(
+    client: PoolClient,
+    householdId: string,
+  ): Promise<readonly MenuRecipe[]> {
+    const recipeResult = await client.query<MenuRecipeReadRow>(
+      // 冻结 §4.3：只有 **reviewed** 的 recipe revision 可成为候选。'draft'
+      // 是未评审修订，'retired' 是退役修订，二者都不得进入引擎读集。
+      `SELECT id, version, title, description, servings, dish_role,
+              active_minutes, total_minutes, difficulty
+       FROM recipes
+       WHERE status = 'reviewed'
+       ORDER BY id, version`,
+    );
+    const ingredientResult = await client.query<MenuRecipeIngredientReadRow>(
+      `SELECT recipe_id, recipe_version, food_concept_id, display_name,
+              optional, allergen_codes, may_contain_allergen_codes, position
+       FROM recipe_ingredients
+       ORDER BY recipe_id, recipe_version, position`,
+    );
+    const byRecipe = new Map<string, MenuRecipeIngredientReadRow[]>();
+    for (const row of ingredientResult.rows) {
+      const key = `${row.recipe_id}:${row.recipe_version}`;
+      const bucket = byRecipe.get(key);
+      if (bucket === undefined) byRecipe.set(key, [row]);
+      else bucket.push(row);
+    }
+    return recipeResult.rows.map((row) =>
+      toMenuRecipe(
+        row,
+        byRecipe.get(`${row.id}:${row.version}`) ?? [],
+      ),
+    );
+  }
+
+  public async generateRecommendation(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    idempotencyKey: string,
+    request: GenerateRecommendationRequest,
+  ): Promise<IdempotentResponse<Recommendation>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+          "meal:write",
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute: normalizedRoutes.generateRecommendation,
+            key: idempotencyKey,
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            const now = new Date();
+            const { facts, cookingSkillByProfileId } =
+              await this.#loadUnredactedProfileFacts(client, householdId);
+            const inventoryLots = await this.#loadMenuInventoryLots(
+              client,
+              householdId,
+            );
+            const recipes = await this.#loadMenuRecipes(client, householdId);
+
+            const input: MenuGenerationInput = {
+              participantProfileIds: [...request.participantProfileIds],
+              cookProfileId: request.cookProfileId,
+              cookSkill: (cookingSkillByProfileId.get(
+                request.cookProfileId,
+              ) ?? null) as MenuGenerationInput["cookSkill"],
+              maximumTotalMinutes: request.maximumTotalMinutes,
+              purchaseTolerance: request.purchaseTolerance,
+              suggestedDishCount: request.suggestedDishCount,
+              inventoryLots,
+              recipes,
+              profileConstraints: asUnredactedProfileConstraints(facts),
+              candidateIds: recipes.map(() => newEntityId()),
+              recommendationEngineVersion: RECOMMENDATION_ENGINE_VERSION,
+              policyReleases: M4A_SYNTHETIC_RELEASES,
+              evaluatedAt: now.toISOString(),
+            };
+            const result = generateMenuCandidates(input);
+
+            const recommendationId = newEntityId();
+            const createdAt = now.toISOString();
+            const expiresAt = new Date(
+              now.getTime() + RECOMMENDATION_TTL_MINUTES * 60 * 1_000,
+            ).toISOString();
+            const recommendation = recommendationSchema.parse({
+              id: recommendationId,
+              householdId,
+              outcome: result.outcome,
+              participantProfileIds: [...result.participantProfileIds],
+              cookProfileId: result.cookProfileId,
+              maximumTotalMinutes: result.maximumTotalMinutes,
+              purchaseTolerance: result.purchaseTolerance,
+              suggestedDishCount: result.suggestedDishCount,
+              candidates: result.candidates.map((candidate) => ({
+                id: candidate.id,
+                recipeId: candidate.recipeId,
+                recipeVersion: candidate.recipeVersion,
+                servings: candidate.servings,
+                dishRole: candidate.dishRole,
+                activeMinutes: candidate.activeMinutes,
+                totalMinutes: candidate.totalMinutes,
+                missingFoodConceptIds: [...candidate.missingFoodConceptIds],
+                plannedInventoryLotIds: [...candidate.plannedInventoryLotIds],
+                reasonCodes: [...candidate.reasonCodes],
+                assumptions: [...candidate.assumptions],
+                hardConstraintCheck: {
+                  status: candidate.hardConstraintCheck.status,
+                  policyVersion: candidate.hardConstraintCheck.policyVersion,
+                  checkedAt: candidate.hardConstraintCheck.checkedAt,
+                },
+              })),
+              preselectedCandidateIds: [...result.preselectedCandidateIds],
+              blockerCodes: [...result.blockerCodes],
+              assumptions: [...result.assumptions],
+              snapshot: result.snapshot,
+              recommendationPolicyVersion: result.recommendationPolicyVersion,
+              createdAt,
+              expiresAt,
+            });
+
+            await client.query(
+              `INSERT INTO recommendations (
+                 id, household_id, outcome, participant_profile_ids,
+                 cook_profile_id, maximum_total_minutes, purchase_tolerance,
+                 suggested_dish_count, blocker_codes, assumptions,
+                 preselected_candidate_ids, snapshot,
+                 recommendation_policy_version, created_at, expires_at, version
+               ) VALUES (
+                 $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9::jsonb,
+                 $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15, 0
+               )`,
+              [
+                recommendation.id,
+                householdId,
+                recommendation.outcome,
+                JSON.stringify(recommendation.participantProfileIds),
+                recommendation.cookProfileId,
+                recommendation.maximumTotalMinutes,
+                recommendation.purchaseTolerance,
+                recommendation.suggestedDishCount,
+                JSON.stringify(recommendation.blockerCodes),
+                JSON.stringify(recommendation.assumptions),
+                JSON.stringify(recommendation.preselectedCandidateIds),
+                JSON.stringify(recommendation.snapshot),
+                recommendation.recommendationPolicyVersion,
+                now,
+                new Date(expiresAt),
+              ],
+            );
+
+            for (const [position, candidate] of recommendation.candidates.entries()) {
+              await client.query(
+                `INSERT INTO recommendation_candidates (
+                   id, household_id, recommendation_id, recipe_id,
+                   recipe_version, servings, dish_role, active_minutes,
+                   total_minutes, missing_food_concept_ids,
+                   planned_inventory_lot_ids, reason_codes, assumptions,
+                   hard_constraint_check, position
+                 ) VALUES (
+                   $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+                   $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15
+                 )`,
+                [
+                  candidate.id,
+                  householdId,
+                  recommendation.id,
+                  candidate.recipeId,
+                  candidate.recipeVersion,
+                  candidate.servings,
+                  candidate.dishRole,
+                  candidate.activeMinutes,
+                  candidate.totalMinutes,
+                  JSON.stringify(candidate.missingFoodConceptIds),
+                  JSON.stringify(candidate.plannedInventoryLotIds),
+                  JSON.stringify(candidate.reasonCodes),
+                  JSON.stringify(candidate.assumptions),
+                  JSON.stringify(candidate.hardConstraintCheck),
+                  position,
+                ],
+              );
+            }
+
+            return recommendation;
+          },
+        );
+      },
+    );
+  }
+
+  public async confirmMeal(
+    accessToken: string | undefined,
+    requestId: RequestId,
+    householdId: string,
+    idempotencyKey: string,
+    request: CreateMealRequest,
+  ): Promise<IdempotentResponse<Meal>> {
+    return this.#withAuthenticated(
+      accessToken,
+      requestId,
+      async (client, authenticatedContext) => {
+        const context = await this.#bootstrapHousehold(
+          client,
+          authenticatedContext,
+          householdId,
+          "meal:write",
+        );
+        return this.#runIdempotent(
+          client,
+          {
+            scope: "household",
+            userId: context.userId,
+            householdId,
+            method: "POST",
+            normalizedRoute: normalizedRoutes.confirmMeal,
+            key: idempotencyKey,
+            resourceTarget: { recommendationId: request.recommendationId },
+            payload: request,
+            requestId,
+            statusCode: 201,
+          },
+          async () => {
+            const recommendationResult = await client.query<{
+              id: string;
+              snapshot: unknown;
+            }>(
+              `SELECT id, snapshot
+               FROM recommendations
+               WHERE household_id = $1 AND id = $2`,
+              [householdId, request.recommendationId],
+            );
+            const stored = recommendationResult.rows[0];
+            if (stored === undefined) {
+              throw new AppError(
+                "RESOURCE_NOT_FOUND",
+                "Recommendation was not found",
+              );
+            }
+            const snapshotDigest = (
+              stored.snapshot as { readonly snapshotDigest?: unknown }
+            ).snapshotDigest;
+            if (snapshotDigest !== request.expectedSnapshotDigest) {
+              throw new AppError(
+                "CONFLICT",
+                "The recommendation snapshot has changed since it was generated",
+              );
+            }
+
+            const now = new Date();
+            const mealId = newEntityId();
+            const createdAt = now.toISOString();
+            const meal = mealSchema.parse({
+              id: mealId,
+              householdId,
+              recommendationId: request.recommendationId,
+              participantProfileIds: [...request.participantProfileIds],
+              cookProfileId: request.cookProfileId,
+              recipes: request.recipes.map((recipe) => ({
+                recipeId: recipe.recipeId,
+                recipeVersion: recipe.recipeVersion,
+                servings: recipe.servings,
+              })),
+              status: "confirmed",
+              scheduledFor: request.scheduledFor,
+              createdAt,
+              updatedAt: createdAt,
+              version: 0,
+            });
+
+            await client.query(
+              `INSERT INTO meals (
+                 id, household_id, recommendation_id, participant_profile_ids,
+                 cook_profile_id, status, scheduled_for, snapshot, created_at,
+                 updated_at, version
+               ) VALUES (
+                 $1, $2, $3, $4::jsonb, $5, $6, $7, $8::jsonb, $9, $9, 0
+               )`,
+              [
+                meal.id,
+                householdId,
+                request.recommendationId,
+                JSON.stringify(meal.participantProfileIds),
+                meal.cookProfileId,
+                meal.status,
+                new Date(meal.scheduledFor),
+                JSON.stringify(stored.snapshot),
+                now,
+              ],
+            );
+
+            for (const [position, recipe] of meal.recipes.entries()) {
+              await client.query(
+                `INSERT INTO meal_recipes (
+                   id, household_id, meal_id, recipe_id, recipe_version,
+                   servings, position
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [
+                  newEntityId(),
+                  householdId,
+                  meal.id,
+                  recipe.recipeId,
+                  recipe.recipeVersion,
+                  recipe.servings,
+                  position,
+                ],
+              );
+            }
+
+            return meal;
           },
         );
       },

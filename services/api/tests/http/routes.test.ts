@@ -55,6 +55,7 @@ const unavailable = async (): Promise<never> => {
 
 const operations = {
   addDietaryConstraint: unavailable,
+  confirmMeal: unavailable,
   confirmPersonProfileLinkRequest: unavailable,
   consumeInventoryLot: unavailable,
   createHousehold: unavailable,
@@ -63,6 +64,7 @@ const operations = {
   createPersonProfile: unavailable,
   createPersonProfileLinkRequest: unavailable,
   exchangeWechatCode: async () => login,
+  generateRecommendation: unavailable,
   getMe: unavailable,
   getPersonProfile: unavailable,
   joinHousehold: unavailable,

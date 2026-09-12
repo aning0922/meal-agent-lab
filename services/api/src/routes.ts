@@ -33,6 +33,10 @@ import {
   removeDietaryConstraintRequestSchema,
 } from "@meal-agent/contracts/members";
 import {
+  createMealRequestSchema,
+  generateRecommendationRequestSchema,
+} from "@meal-agent/contracts/meals";
+import {
   confirmPersonProfileLinkSuccessSchema,
   consumeInventoryLotSuccessSchema,
   createHouseholdInviteSuccessSchema,
@@ -45,10 +49,12 @@ import {
   joinHouseholdSuccessSchema,
   listHouseholdMembersSuccessSchema,
   listPersonProfilesSuccessSchema,
+  mealSuccessSchema,
   meSuccessSchema,
   personProfileLinkRequestListSuccessSchema,
   personProfileLinkRequestSuccessSchema,
   personProfileMutationSuccessSchema,
+  recommendationSuccessSchema,
   removeMembershipSuccessSchema,
   revokeHouseholdInviteSuccessSchema,
   serviceLivenessSuccessSchema,
@@ -67,6 +73,7 @@ import type { ApiRepository } from "./database/repository.js";
 type ApiOperations = Pick<
   ApiRepository,
   | "addDietaryConstraint"
+  | "confirmMeal"
   | "confirmPersonProfileLinkRequest"
   | "consumeInventoryLot"
   | "createHousehold"
@@ -75,6 +82,7 @@ type ApiOperations = Pick<
   | "createPersonProfileLinkRequest"
   | "createPersonProfile"
   | "exchangeWechatCode"
+  | "generateRecommendation"
   | "getMe"
   | "getPersonProfile"
   | "joinHousehold"
@@ -856,6 +864,62 @@ export const registerRoutes = async (
         request.body,
       );
       return reply.code(result.statusCode as 200).send(result.body);
+    },
+  );
+
+  app.post(
+    "/api/v1/households/:id/recommendations",
+    {
+      schema: {
+        operationId: "generateRecommendation",
+        tags: ["meals"],
+        ...protectedRoute,
+        params: householdParamsSchema,
+        headers: idempotencyHeadersSchema,
+        body: generateRecommendationRequestSchema,
+        response: {
+          201: recommendationSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await operations.generateRecommendation(
+        bearerToken(request),
+        requestIdOf(request),
+        request.params["id"],
+        request.headers["idempotency-key"],
+        request.body,
+      );
+      return reply.code(result.statusCode as 201).send(result.body);
+    },
+  );
+
+  app.post(
+    "/api/v1/households/:id/meals",
+    {
+      schema: {
+        operationId: "confirmMeal",
+        tags: ["meals"],
+        ...protectedRoute,
+        params: householdParamsSchema,
+        headers: idempotencyHeadersSchema,
+        body: createMealRequestSchema,
+        response: {
+          201: mealSuccessSchema,
+          ...commonErrorResponses,
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await operations.confirmMeal(
+        bearerToken(request),
+        requestIdOf(request),
+        request.params["id"],
+        request.headers["idempotency-key"],
+        request.body,
+      );
+      return reply.code(result.statusCode as 201).send(result.body);
     },
   );
 };

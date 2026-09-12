@@ -4,7 +4,8 @@ export default defineAppConfig({
     'pages/households/index',
     'pages/inventory/index',
     'pages/members/index',
-    'pages/profile/index'
+    'pages/profile/index',
+    'pages/meals/index'
   ],
   window: {
     backgroundColor: '#f4f6f1',

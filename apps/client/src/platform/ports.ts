@@ -41,6 +41,7 @@ export const HOUSEHOLDS_ROUTE = '/pages/households/index'
 export const INVENTORY_ROUTE = '/pages/inventory/index'
 export const MEMBERS_ROUTE = '/pages/members/index'
 export const PROFILE_ROUTE = '/pages/profile/index'
+export const MEALS_ROUTE = '/pages/meals/index'
 
 export type AppRoute =
   | typeof LOGIN_ROUTE
@@ -48,6 +49,7 @@ export type AppRoute =
   | typeof INVENTORY_ROUTE
   | typeof MEMBERS_ROUTE
   | typeof PROFILE_ROUTE
+  | typeof MEALS_ROUTE
 
 export interface NavigationPort {
   /** 清空页面栈并跳转（用于登录态变化）。 */

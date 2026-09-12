@@ -402,7 +402,8 @@ export const dispositionForOutcome = (
     outcome.kind === 'archived' ||
     outcome.kind === 'restored' ||
     outcome.kind === 'removed' ||
-    outcome.kind === 'revoked'
+    outcome.kind === 'revoked' ||
+    outcome.kind === 'generated'
   ) {
     return 'completed'
   }
