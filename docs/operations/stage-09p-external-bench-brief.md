@@ -2,7 +2,7 @@
 
 - 文档编号：09P-OPS-BENCH-M3
 - 日期：2026-09-12
-- 上位依据：[阶段 09P 计划](../../plans/2026-08-stage-09p-safe-deterministic-product-core.md) §3.4、§4.1、§4.2、§4.3、§4.4、§4.5；
+- 上位依据：[阶段 09P 计划](../plans/2026-08-stage-09p-safe-deterministic-product-core.md) §3.4、§4.1、§4.2、§4.3、§4.4、§4.5；
   ADR-0009；冻结的 M1 就绪契约 `stage09p-m1-minimal-deterministic-readiness-contract-r4`
   （版本 `M1-MINIMAL-1R4`）§3.3 的十二角色闭字面量、§5.1 角色队列、§5.3 身份互异
   （§5.1/§5.3 只存在于 r4 修订版：无版本后缀的基础版 `M1-MINIMAL-1` §5 为

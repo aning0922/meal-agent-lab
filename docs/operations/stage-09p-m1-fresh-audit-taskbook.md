@@ -2,8 +2,8 @@
 
 - 文档编号：09P-OPS-M1D1
 - 日期：2026-09-12
-- 上位依据：[ADR-0009：设计门禁的停止谓词与延迟项纪律](../../architecture/decisions/0009-review-acceptance-and-deferral-discipline.md)、
-  [阶段 09P 计划](../../plans/2026-08-stage-09p-safe-deterministic-product-core.md) §12.1
+- 上位依据：[ADR-0009：设计门禁的停止谓词与延迟项纪律](../architecture/decisions/0009-review-acceptance-and-deferral-discipline.md)、
+  [阶段 09P 计划](../plans/2026-08-stage-09p-safe-deterministic-product-core.md) §12.1
 - 对象：同一 M1 C2 候选（`codex/stage-09p-m1-household-safety`）的**纯 domain 动态**独立审计
 - 状态：待产品负责人签发（本任务书不自行授权执行）
 
