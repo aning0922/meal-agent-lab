@@ -26,3 +26,4 @@ Stage 09P-M0 的完整 acceptance candidate 为 `186bd2f43695e1136a3a1fc43faa6d6
 - [ADR-0006：阶段 09A 外部证据与资源所有权协议](0006-stage09a-evidence-ownership-protocol.md) — `Accepted`，2026-08-22
 - [ADR-0007：食品知识治理与确定性领域核心](0007-food-knowledge-governance-and-domain-core.md) — `Accepted`（仅规划/架构方向），2026-08-23
 - [ADR-0008：Stage 09P-M0 产品证据边界](0008-stage09p-m0-evidence-boundary.md) — `Accepted`（M0 acceptance candidate `186bd2f43695e1136a3a1fc43faa6d6088d9ce54`），2026-08-27
+- [ADR-0009：设计门禁的停止谓词与延迟项纪律](0009-review-acceptance-and-deferral-discipline.md) — `Accepted`（停止谓词、内容制延迟准入、里程碑级轮次上限 3 轮/设计线/里程碑、延迟项登记表 `docs/governance/deferral-register.json`），2026-09-12

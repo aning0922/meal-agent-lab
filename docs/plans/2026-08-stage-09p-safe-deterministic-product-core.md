@@ -579,6 +579,33 @@ M0 至少需要一次独立静态 A。若 M0 扩大到运行时安全决策，�
 | Remote CI Pass | 真实 run ID、head SHA、job conclusion 和日志；不能由本地 gate 推断 |
 | 外部能力 Pass | 云、网络、域名、微信、真机、体验版等分别提供真实外部证据；本地/CI 不能替代 |
 
+### 12.3 设计门禁的停止谓词与延迟项纪律
+
+设计准备阶段（decision pack、evidence、shadow design）的停止谓词、修订回读、里程碑级
+轮次上限与延迟项登记，统一由 [ADR-0009：设计门禁的停止谓词与延迟项纪律](../architecture/decisions/0009-review-acceptance-and-deferral-discipline.md)
+规定。本节不重复其规则，只固定与计划相关的约束：
+
+- 一轮设计门禁可以停止，当且仅当 `P0 = 0`、`P1 = 0`，且每条残余 P2 非本轮修复即登记
+  入延迟项登记表；不得以「复审者剩余发现为零」为停止条件。「本轮修复」须经一条独立
+  lens 对修订后文本的确认性回读，不得自证。
+- 延迟准入按内容判定，且每笔须显式声明内容准入类别 `admissionBasis`，只允许三类：
+  `bookkeeping`（纯记账：行号、字节/行计数、表头，以及不误导读者的出处/交叉引用更正）、
+  `open-design-question`（尚未作出设计决定的开放问题）、`evidence-obligation`（语义修复
+  已落地、仅余真实证据的义务，且保持 admission blocker）。**硬边界**：三类类别都不得用来
+  递延一处**已知的、未修复的**规范性缺陷——任何触碰规范性句子（must / shall / only /
+  never、invariant、fail-closed、identity、namespace、authority、key、binding、
+  entitlement）的已知缺陷，无论其 P 标签为何，必须本轮修复。
+- 被登记的延迟项必须有 `owner`、`closesAtModule`、`evidenceNeeded`、`closeTrigger`、
+  `expiry`、`admissionBasis` 六个字段（键名 camelCase）；`expiry` 只有两种合法取值——
+  带回时区偏移的 ISO 8601，或带**非空理由**的 `unassigned:<理由>`（裸 `unassigned` 判为
+  缺陷）。登记表顶层以 `reviewByMilestone`（当前 `M2`）声明下一里程碑收口，
+  `unassigned:<理由>` 条目不得跨过该收口仍不转期或关闭。登记不等于闭合。
+- 轮次上限为 **3 轮**（同一设计线在同一里程碑内至多 3 轮），按里程碑身份（M0—M6）计数，
+  **不按任务、阶段或子里程碑重置**；到达上限时携带未闭合发现升级至产品负责人，不得静默
+  弃线。**到达上限不构成接受**，也不把未闭合的规范性发现移出阻断态。该上限的数值写于
+  ADR-0009 与本节，属版本化规则；ADR-0009 不声称存在自动计数脚本，计数以门禁收口记录中
+  的逐轮登记为准。
+
 ## 13. 本地总控看板的后续独立更新映射
 
 看板事实源位于主工作树 `.local/project-progress-dashboard/`，是独立本地 Git 仓库，

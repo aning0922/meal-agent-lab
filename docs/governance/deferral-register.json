@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "registerId": "stage09p-m2-deferrals",
+  "asOf": "2026-09-12",
+  "reviewByMilestone": "M2",
+  "expectedEntryCount": 22,
+  "unassignedExpiryCount": 21,
+  "entries": [
+    {
+      "id": "O9-5",
+      "owner": "Identity / G-ID（机制属 Q10）",
+      "closesAtModule": "identity/G-ID",
+      "evidenceNeeded": "W37 动态证据：namespace 迁移/重新登录后 non-reuse landmark 跨身份与版本重绑仍存活；或 Q10 给出显式边界约束旧 unknown。",
+      "closeTrigger": "Q10 关闭 / G-ID 版本边界冻结；未关闭前保持 admission blocker，不得写成 gate closed。",
+      "expiry": "unassigned:Q10 未关闭前保持 admission blocker",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "AUTH-R5-01",
+      "owner": "WP-O4 决策包维护者 / HTTP-Out（本次登记为 doc 记账）",
+      "closesAtModule": "wp-o4/maintainer",
+      "evidenceNeeded": "按精确字节回读修订后的行号（§2.1 L130/L132、§5.2(2) L346–347），纠正原属『投递』措辞的错误落点。",
+      "closeTrigger": "WP-O4 下一次 fix-forward 或 Q05/G-ENV 正式 contract freeze 批次；下次触碰该文件。",
+      "expiry": "unassigned:doc 记账，待 WP-O4 下次 fix-forward",
+      "admissionBasis": "bookkeeping"
+    },
+    {
+      "id": "AUTH-R5-02",
+      "owner": "WP-O4 决策包维护者",
+      "closesAtModule": "wp-o4/maintainer",
+      "evidenceNeeded": "补齐 §2 读取清单六行的 lines/bytes（所列 SHA 均实算且正确）。",
+      "closeTrigger": "同 AUTH-R5-01 的 fix-forward 批次；下次修订。",
+      "expiry": "unassigned:doc 记账，待 WP-O4 下次 fix-forward",
+      "admissionBasis": "bookkeeping"
+    },
+    {
+      "id": "app-restart-command-recovery",
+      "owner": "Client / G-CLIENT（+Q07）",
+      "closesAtModule": "client/G-CLIENT",
+      "evidenceNeeded": "non-sensitive durable locator + 服务端 command status/receipt（或原子 fence）的实现，以及真实 Taro/adapter 动态证据；普通 GET 不能证明命令结果。",
+      "closeTrigger": "任何 release/发布检查；G-CLIENT 实现准入 / M6；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待真实 Taro/adapter 动态证据",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "AUDIT-EXCEPTION-2026-11-08",
+      "owner": "依赖/安全治理（ADR-0004 记录）+ 总控",
+      "closesAtModule": "security/ADR-0004",
+      "evidenceNeeded": "9 条 advisory 逐条零漂移对账后的显式续期/关闭决议（禁止静默续期）。",
+      "closeTrigger": "2026-11-08 到期，或 advisory 集合漂移（任何新增/变化/过期/已消失未清理均 fail）；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "2026-11-08T23:59:59+08:00",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "stage09a-step9-tracked-count",
+      "owner": "migration/DB owner 或 09A 证据维护者（总控确认）",
+      "closesAtModule": "migration/DB",
+      "evidenceNeeded": "重跑 stage09a:check 14/14 在精确 HEAD 通过。",
+      "closeTrigger": "一次获批的 tracked-file baseline reconciliation（把 417 更新到当前实际计数）；任何 stage09a:check 运行（含 09P 回归）。",
+      "expiry": "unassigned:待获批的 tracked baseline reconciliation",
+      "admissionBasis": "bookkeeping"
+    },
+    {
+      "id": "Q07",
+      "owner": "Client / G-CLIENT",
+      "closesAtModule": "client/G-CLIENT",
+      "evidenceNeeded": "client 状态与 callback 消费（durable client state、once-serialized 跨首次/retry、unknown latch 独立于 in-flight、late callback 消费与 deadline/pending 清理）的真实 Taro/获准 adapter/重启动态证据。",
+      "closeTrigger": "Q07 设计组 + G-CLIENT；README 记下一设计组为 Q07/Q10；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待真实 Taro/重启动态证据",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "Q10",
+      "owner": "Identity / G-ID",
+      "closesAtModule": "identity/G-ID",
+      "evidenceNeeded": "版本/重新登录场景下旧 identity 不被当新命令（W33/W37 类）动态证据 + 版本边界冻结。",
+      "closeTrigger": "Q10 关闭，直接解除 O9-5 blocker。",
+      "expiry": "unassigned:待版本边界冻结",
+      "admissionBasis": "open-design-question"
+    },
+    {
+      "id": "Q11",
+      "owner": "B / G-BACKEND + 总控授权",
+      "closesAtModule": "backend/G-BACKEND",
+      "evidenceNeeded": "T01–T50（当前执行数=0）与 W01–W52 oracle 的真实执行证据。",
+      "closeTrigger": "总控另签精确实验 gate；获新授权后的真实 B/runtime 联合实测；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控另签实验 gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "Q12",
+      "owner": "总控",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "M1 Accepted 或明确替代裁定、G2 admission、0005 总控正式确认、独立审计 CLEAN。",
+      "closeTrigger": "M2 正式实施/发布前；M2 Accepted / 发布准入。",
+      "expiry": "unassigned:待 M1 收口或替代裁定",
+      "admissionBasis": "open-design-question"
+    },
+    {
+      "id": "plan-4.3-named-roles",
+      "owner": "总控 / 产品负责人",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "12 个不同角色（Knowledge Data Steward、Domain Owner、Product Owner、Safety Approver、Allergen/Safety Data Steward、外部食品安全审核人、法律/合规、Product Policy Steward、文化/伦理审核人、Food Safety Steward、Culinary Content Steward、Recipe QA）落到具名责任人 + §4.5 外部高准确性审查结论。",
+      "closeTrigger": "M1 准入（需外部审核角色/来源确认）；角色名本身不构成审核证据；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待具名责任人与外部审核结论",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "P-M1",
+      "owner": "M1 总控 / 独立审计（非 Gate Analyst）",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "M1 Accepted / Fresh Audit B CLEAN（当前替代裁定不存在，不能从 R7-A 特批推导通用豁免）。",
+      "closeTrigger": "M1 Accepted 或总控明确替代裁定；M2 正式实施仍等待它；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待 M1 Accepted / Fresh Audit B CLEAN",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "P-G2",
+      "owner": "source governance / G2 总控及具名审核责任人",
+      "closesAtModule": "source/G2",
+      "evidenceNeeded": "真实 source 治理/许可/版本/激活的正式批准事实（不只是把 allowlist 写非空）。",
+      "closeTrigger": "正式 G2 admission；M2 source 面实施前；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待正式 G2 admission",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B01",
+      "owner": "B security/application",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "checkpoint authority 选择的真实 PostgreSQL 并发/crash/rollback/恢复证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B02",
+      "owner": "product/domain",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "replay 用途/target base 的真实证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B03",
+      "owner": "persistence/domain",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "candidate 持久化选择的真实证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B04",
+      "owner": "DB/authorization",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "物理锁与撤回/GC 相容的真实证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B05",
+      "owner": "B lifecycle",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "retention/GC/recovery 边界的真实证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B06",
+      "owner": "B storage/resource",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "持久配额/最终计算容量的真实证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B07",
+      "owner": "domain",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "全历史确定性验证的真实证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "B08",
+      "owner": "migration/DB owner",
+      "closesAtModule": "governance/总控",
+      "evidenceNeeded": "DB/0005/N-1 实现证据。",
+      "closeTrigger": "总控签发精确 B/DB implementation gate；M2 实施准入；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待总控签发 B/DB implementation gate",
+      "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "G8",
+      "owner": "Identity / G-ID（+Q10）",
+      "closesAtModule": "identity/G-ID",
+      "evidenceNeeded": "W37 动态证据或 Q10 边界：non-reuse 不静默依赖 namespace 相等。",
+      "closeTrigger": "route 准入判定；Q10 关闭 / G-ENV·G-OUT freeze；未取得上述证据并解除前保持 admission blocker。",
+      "expiry": "unassigned:待 W37 动态证据或 Q10 边界",
+      "admissionBasis": "evidence-obligation"
+    }
+  ]
+}
