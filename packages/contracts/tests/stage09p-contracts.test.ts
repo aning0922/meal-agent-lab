@@ -259,7 +259,7 @@ test("reason identities are globally unique", () => {
 
 test("legacy and M2 contract-rule registries are isolated and exactly covered", () => {
   const scopes = [
-    { prefix: null, manifest: contractRuleManifest, schemas: contractRuleSchemaBindings, bindings: contractRuleBindings, expected: [35, 34, 35] },
+    { prefix: null, manifest: contractRuleManifest, schemas: contractRuleSchemaBindings, bindings: contractRuleBindings, expected: [37, 36, 37] },
     { prefix: "inventory.v2.", manifest: inventoryV2ContractRuleManifest, schemas: inventoryV2ContractRuleSchemaBindings, bindings: inventoryV2ContractRuleBindings, expected: [15, 15, 15] },
     { prefix: "seasoning.v1.", manifest: seasoningV1ContractRuleManifest, schemas: seasoningV1ContractRuleSchemaBindings, bindings: seasoningV1ContractRuleBindings, expected: [11, 11, 11] },
   ] as const;
@@ -285,10 +285,10 @@ test("legacy and M2 contract-rule registries are isolated and exactly covered", 
   const allRules = scopes.flatMap((scope) => [...scope.manifest]);
   const allBindings = scopes.flatMap((scope) => [...scope.schemas]);
   const allBoundIds = allBindings.flatMap((binding) => binding.ruleIds);
-  assert.deepEqual([allRules.length, allBindings.length, allBoundIds.length], [61, 60, 61]);
-  assert.equal(new Set(allRules.map((rule) => rule.id)).size, 61);
-  assert.equal(new Set(allBindings.map((binding) => binding.boundary)).size, 60);
-  assert.equal(new Set(allBoundIds).size, 61);
+  assert.deepEqual([allRules.length, allBindings.length, allBoundIds.length], [63, 62, 63]);
+  assert.equal(new Set(allRules.map((rule) => rule.id)).size, 63);
+  assert.equal(new Set(allBindings.map((binding) => binding.boundary)).size, 62);
+  assert.equal(new Set(allBoundIds).size, 63);
 });
 
 test("each M2 replay binding is the exact final public schema object", () => {

@@ -161,9 +161,9 @@ test("root registry is invariant when either M2 subpath is imported first", () =
       `order ${order.join(" -> ")} failed: ${child.stderr}`,
     );
     assert.deepEqual(JSON.parse(child.stdout), {
-      manifest: 35,
-      bindings: 34,
-      boundIds: 35,
+      manifest: 37,
+      bindings: 36,
+      boundIds: 37,
       hasM2Rule: false,
       hasM2Binding: false,
       hasInventorySchema: false,
@@ -190,9 +190,9 @@ test("every public refinement uses the rule helper and actual schema metadata is
   const boundIds = contractRuleBindings.flatMap((binding) =>
     binding.ruleIds.map((id) => [id, binding.boundary] as const),
   );
-  assert.equal(contractRuleManifest.length, 35);
-  assert.equal(contractRuleSchemaBindings.length, 34);
-  assert.equal(boundIds.length, 35);
+  assert.equal(contractRuleManifest.length, 37);
+  assert.equal(contractRuleSchemaBindings.length, 36);
+  assert.equal(boundIds.length, 37);
   assert.equal(
     contractRuleManifest.some((rule) =>
       /^(?:inventory\.v2|seasoning\.v1)\./u.test(rule.id)

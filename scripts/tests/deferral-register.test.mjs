@@ -29,8 +29,14 @@ test("真实的递延项登记表通过，且计数与声明一致", () => {
   assert.equal(result.ok, true, JSON.stringify(result.failures));
   assert.equal(result.summary.entries, realRegister.entries.length);
   assert.equal(result.summary.entries, realRegister.expectedEntryCount);
-  assert.equal(result.summary.withExpiry, 1);
-  assert.equal(result.summary.unassignedExpiry, realRegister.entries.length - 1);
+  assert.equal(
+    result.summary.withExpiry,
+    realRegister.entries.length - realRegister.unassignedExpiryCount,
+  );
+  assert.equal(
+    result.summary.withExpiry + result.summary.unassignedExpiry,
+    realRegister.entries.length,
+  );
   assert.equal(result.summary.unassignedExpiry, realRegister.unassignedExpiryCount);
   assert.equal(result.summary.unassignedIds.length, realRegister.unassignedExpiryCount);
   assert.equal(result.summary.externalSentinelEntries, 0);
@@ -120,11 +126,27 @@ test("findDuplicateKeys 抓到同一对象内的重复键，且放过合法原�
   assert.deepEqual(findDuplicateKeys(`{"${ESC}":1,"b":{"a":2}}`).duplicates, []);
 });
 
-test("确权：真实登记表里唯一带真实到期日的是 audit-exceptions 那笔", () => {
+test("确权：带真实到期日的条目恰为 audit-exceptions 与四条 m4a 递延", () => {
   const expiring = realRegister.entries.filter((entry) => !isUnassigned(entry.expiry));
-  assert.equal(expiring.length, 1);
-  assert.equal(expiring[0].id, "AUDIT-EXCEPTION-2026-11-08");
-  assert.equal(expiring[0].expiry, "2026-11-08T23:59:59+08:00");
+  assert.deepEqual(
+    expiring.map((entry) => entry.id).sort(),
+    [
+      "AUDIT-EXCEPTION-2026-11-08",
+      "m4a-guest-participants",
+      "m4a-meal-confirm-client-wiring",
+      "m4a-recipe-serving-substitution",
+      "m4a-recommendation-entitlement",
+    ],
+  );
+  const auditException = expiring.find(
+    (entry) => entry.id === "AUDIT-EXCEPTION-2026-11-08",
+  );
+  assert.equal(auditException.expiry, "2026-11-08T23:59:59+08:00");
+  for (const entry of expiring) {
+    if (entry.id === "AUDIT-EXCEPTION-2026-11-08") continue;
+    assert.equal(entry.expiry, "2026-12-31T23:59:59+08:00");
+    assert.equal(entry.admissionBasis, "open-design-question");
+  }
 });
 
 test("确权：每笔 unassigned 都带非空理由，且身份/namespace 条目按证据义务登记", () => {

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ruleSuperRefine } from "./contract-rule-schema.js";
 import {
+  canonicalSha256DigestSchema,
   foodConceptIdSchema,
   householdIdSchema,
   inventoryLotIdSchema,
@@ -135,6 +136,37 @@ export const mealSchema = ruleSuperRefine(
 );
 export type Meal = z.infer<typeof mealSchema>;
 
+/**
+ * 确认本餐的请求。它是既有实体 schema 的薄组合，不引入新实体。
+ * `expectedSnapshotDigest` 由服务端在确认时与已持久化 Recommendation 的
+ * `snapshot.snapshotDigest` 逐字节比对；不相容即稳定 409，**不**创建 Meal。
+ */
+export const createMealRequestSchema = ruleSuperRefine(
+  z.strictObject({
+    recommendationId: recommendationIdSchema,
+    participantProfileIds: z.array(personProfileIdSchema).min(1),
+    cookProfileId: personProfileIdSchema,
+    recipes: z.array(mealRecipeSelectionSchema).min(1).max(3),
+    scheduledFor: utcDateTimeSchema,
+    expectedSnapshotDigest: canonicalSha256DigestSchema,
+  }),
+  "meal.create-request.participants-unique.v1",
+  "createMealRequestSchema",
+  (request, context) => {
+    if (
+      new Set(request.participantProfileIds).size !==
+      request.participantProfileIds.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["participantProfileIds"],
+        message: "meal request participants must be unique",
+      });
+    }
+  },
+);
+export type CreateMealRequest = z.infer<typeof createMealRequestSchema>;
+
 export const recommendationCandidateSchema = z.strictObject({
   id: recommendationCandidateIdSchema,
   recipeId: recipeIdSchema,
@@ -157,6 +189,63 @@ export type RecommendationCandidate = z.infer<
   typeof recommendationCandidateSchema
 >;
 
+/**
+ * 统一四段快照（of record §5.4）：库存 / 约束 / 食谱 / 策略，各段带自己的
+ * 规范化摘要，外加一个覆盖**全部四段**的 `snapshotDigest`。每一段内数组按
+ * 其键升序（`canonicalJson` 只定义对象键序，段内顺序由本契约固定为升序），
+ * 规范化一律复用既有 `canonicalJson`，不另造规则。
+ *
+ * `constraintSetDigest` 绑定**未脱敏**约束集，因此只承载摘要、绝不承载原文。
+ */
+export const recommendationSnapshotSchema = z.strictObject({
+  inventory: z.strictObject({
+    lots: z.array(
+      z.strictObject({
+        lotId: inventoryLotIdSchema,
+        lotVersion: versionSchema,
+        foodConceptRevision: versionSchema,
+        safetyAssessmentRevision: versionSchema,
+      }),
+    ),
+    inventoryDigest: canonicalSha256DigestSchema,
+  }),
+  constraints: z.strictObject({
+    profiles: z.array(
+      z.strictObject({
+        participantProfileId: personProfileIdSchema,
+        profileVersion: versionSchema,
+        constraintSetDigest: canonicalSha256DigestSchema,
+      }),
+    ),
+    mappingReleaseId: z.string().min(1).max(100),
+    constraintDigest: canonicalSha256DigestSchema,
+  }),
+  recipes: z.strictObject({
+    recipes: z.array(
+      z.strictObject({
+        recipeId: recipeIdSchema,
+        recipeVersion: z.int().positive(),
+        contentDigest: canonicalSha256DigestSchema,
+        datasetReleaseId: z.string().min(1).max(100),
+      }),
+    ),
+    recipeDigest: canonicalSha256DigestSchema,
+  }),
+  policies: z.strictObject({
+    foodConceptReleaseId: z.string().min(1).max(100),
+    allergenReleaseId: z.string().min(1).max(100),
+    religiousEthicalReleaseId: z.string().min(1).max(100),
+    foodSafetyReleaseId: z.string().min(1).max(100),
+    techniqueReleaseId: z.string().min(1).max(100),
+    recommendationEngineVersion: z.string().min(1).max(100),
+    policyDigest: canonicalSha256DigestSchema,
+  }),
+  snapshotDigest: canonicalSha256DigestSchema,
+});
+export type RecommendationSnapshot = z.infer<
+  typeof recommendationSnapshotSchema
+>;
+
 export const recommendationSchema = ruleSuperRefine(
   z.strictObject({
     id: recommendationIdSchema,
@@ -173,8 +262,7 @@ export const recommendationSchema = ruleSuperRefine(
       .max(3),
     blockerCodes: z.array(z.string().min(1).max(80)),
     assumptions: z.array(z.string().min(1).max(300)),
-    inventorySnapshotVersion: versionSchema,
-    constraintSnapshotVersion: versionSchema,
+    snapshot: recommendationSnapshotSchema,
     recommendationPolicyVersion: z.string().min(1).max(100),
     createdAt: utcDateTimeSchema,
     expiresAt: utcDateTimeSchema,
@@ -266,3 +354,35 @@ export const recommendationSchema = ruleSuperRefine(
   },
 );
 export type Recommendation = z.infer<typeof recommendationSchema>;
+
+/**
+ * 生成推荐的请求。字段与 `recommendationSchema` 的同名输入面逐一同形，
+ * 刻意**不**新增字段——尤其没有客户端快照断言：快照由服务端在生成时读取
+ * 当前事实并冻结进 `recommendationSchema.snapshot`。
+ */
+export const generateRecommendationRequestSchema = ruleSuperRefine(
+  z.strictObject({
+    participantProfileIds: z.array(personProfileIdSchema).min(1),
+    cookProfileId: personProfileIdSchema,
+    maximumTotalMinutes: z.int().positive(),
+    purchaseTolerance: z.enum(["none", "limited", "allowed"]),
+    suggestedDishCount: z.int().min(1).max(3),
+  }),
+  "meal.recommendation-request.participants-unique.v1",
+  "generateRecommendationRequestSchema",
+  (request, context) => {
+    if (
+      new Set(request.participantProfileIds).size !==
+      request.participantProfileIds.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["participantProfileIds"],
+        message: "recommendation request participants must be unique",
+      });
+    }
+  },
+);
+export type GenerateRecommendationRequest = z.infer<
+  typeof generateRecommendationRequestSchema
+>;

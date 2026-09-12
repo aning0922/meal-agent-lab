@@ -1,4 +1,5 @@
 import {
+  boolean,
   char,
   check,
   foreignKey,
@@ -782,6 +783,378 @@ export const idempotencyRecords = pgTable(
   ],
 );
 
+export const foodConcepts = pgTable(
+  "food_concepts",
+  {
+    id: uuid("id").primaryKey(),
+    displayName: varchar("display_name", { length: 120 }).notNull(),
+    revision: integer("revision").notNull().default(1),
+    allergenCodes: jsonb("allergen_codes")
+      .$type<readonly string[]>()
+      .notNull(),
+    mayContainAllergenCodes: jsonb("may_contain_allergen_codes")
+      .$type<readonly string[]>()
+      .notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    check(
+      "food_concepts_id_check",
+      sql`${table.id}::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check("food_concepts_revision_check", sql`${table.revision} >= 1`),
+    check(
+      "food_concepts_allergen_codes_check",
+      sql`jsonb_typeof(${table.allergenCodes}) = 'array'`,
+    ),
+    check(
+      "food_concepts_may_contain_allergen_codes_check",
+      sql`jsonb_typeof(${table.mayContainAllergenCodes}) = 'array'`,
+    ),
+  ],
+);
+
+export const recipes = pgTable(
+  "recipes",
+  {
+    id: uuid("id").primaryKey(),
+    version: integer("version").notNull(),
+    status: varchar("status", { length: 32 }).notNull(),
+    title: varchar("title", { length: 160 }).notNull(),
+    description: varchar("description", { length: 1000 }),
+    servings: numeric("servings").notNull(),
+    dishRole: varchar("dish_role", { length: 32 }).notNull(),
+    steps: jsonb("steps").$type<readonly unknown[]>().notNull(),
+    requiredEquipment: jsonb("required_equipment")
+      .$type<readonly string[]>()
+      .notNull(),
+    activeMinutes: integer("active_minutes").notNull(),
+    totalMinutes: integer("total_minutes").notNull(),
+    difficulty: varchar("difficulty", { length: 32 }).notNull(),
+    source: jsonb("source").$type<Record<string, unknown>>().notNull(),
+    reviewedAt: timestamp("reviewed_at", {
+      withTimezone: true,
+      mode: "date",
+    }),
+    ...timestamps,
+  },
+  (table) => [
+    check("recipes_version_check", sql`${table.version} > 0`),
+    check(
+      "recipes_status_check",
+      sql`${table.status} IN ('draft', 'reviewed', 'retired')`,
+    ),
+    check("recipes_servings_check", sql`${table.servings} > 0`),
+    check(
+      "recipes_dish_role_check",
+      sql`${table.dishRole} IN ('staple', 'main', 'vegetable', 'soup', 'side')`,
+    ),
+    check(
+      "recipes_steps_check",
+      sql`jsonb_typeof(${table.steps}) = 'array'`,
+    ),
+    check(
+      "recipes_required_equipment_check",
+      sql`jsonb_typeof(${table.requiredEquipment}) = 'array'`,
+    ),
+    check(
+      "recipes_active_minutes_check",
+      sql`${table.activeMinutes} >= 0`,
+    ),
+    check(
+      "recipes_total_minutes_check",
+      sql`${table.totalMinutes} > 0`,
+    ),
+    check(
+      "recipes_difficulty_check",
+      sql`${table.difficulty} IN ('beginner', 'intermediate', 'advanced')`,
+    ),
+    check(
+      "recipes_source_check",
+      sql`jsonb_typeof(${table.source}) = 'object'`,
+    ),
+    unique("recipes_id_version_unique").on(table.id, table.version),
+  ],
+);
+
+export const recipeIngredients = pgTable(
+  "recipe_ingredients",
+  {
+    id: uuid("id").primaryKey(),
+    recipeId: uuid("recipe_id").notNull(),
+    recipeVersion: integer("recipe_version").notNull(),
+    foodConceptId: uuid("food_concept_id")
+      .notNull()
+      .references(() => foodConcepts.id),
+    displayName: varchar("display_name", { length: 120 }).notNull(),
+    quantity: jsonb("quantity").$type<Record<string, unknown>>().notNull(),
+    optional: boolean("optional").notNull(),
+    allergenCodes: jsonb("allergen_codes")
+      .$type<readonly string[]>()
+      .notNull(),
+    mayContainAllergenCodes: jsonb("may_contain_allergen_codes")
+      .$type<readonly string[]>()
+      .notNull(),
+    position: integer("position").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "recipe_ingredients_recipe_foreign",
+      columns: [table.recipeId, table.recipeVersion],
+      foreignColumns: [recipes.id, recipes.version],
+    }),
+    unique("recipe_ingredients_id_unique").on(
+      table.recipeId,
+      table.recipeVersion,
+      table.id,
+    ),
+    check(
+      "recipe_ingredients_quantity_check",
+      sql`jsonb_typeof(${table.quantity}) = 'object'`,
+    ),
+    check(
+      "recipe_ingredients_allergen_codes_check",
+      sql`jsonb_typeof(${table.allergenCodes}) = 'array'`,
+    ),
+    check(
+      "recipe_ingredients_may_contain_allergen_codes_check",
+      sql`jsonb_typeof(${table.mayContainAllergenCodes}) = 'array'`,
+    ),
+    check(
+      "recipe_ingredients_position_check",
+      sql`${table.position} >= 1`,
+    ),
+  ],
+);
+
+export const recommendations = pgTable(
+  "recommendations",
+  {
+    id: uuid("id").primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id),
+    outcome: varchar("outcome", { length: 32 }).notNull(),
+    participantProfileIds: jsonb("participant_profile_ids")
+      .$type<readonly string[]>()
+      .notNull(),
+    cookProfileId: uuid("cook_profile_id").notNull(),
+    maximumTotalMinutes: integer("maximum_total_minutes").notNull(),
+    purchaseTolerance: varchar("purchase_tolerance", {
+      length: 16,
+    }).notNull(),
+    suggestedDishCount: integer("suggested_dish_count").notNull(),
+    blockerCodes: jsonb("blocker_codes")
+      .$type<readonly string[]>()
+      .notNull(),
+    assumptions: jsonb("assumptions")
+      .$type<readonly string[]>()
+      .notNull(),
+    preselectedCandidateIds: jsonb("preselected_candidate_ids")
+      .$type<readonly string[]>()
+      .notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    recommendationPolicyVersion: varchar("recommendation_policy_version", {
+      length: 100,
+    }).notNull(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    version: integer("version").notNull(),
+  },
+  (table) => [
+    unique("recommendations_household_id_unique").on(
+      table.householdId,
+      table.id,
+    ),
+    check(
+      "recommendations_outcome_check",
+      sql`${table.outcome} IN ('options', 'no_feasible_option')`,
+    ),
+    check(
+      "recommendations_participant_profile_ids_check",
+      sql`jsonb_typeof(${table.participantProfileIds}) = 'array'`,
+    ),
+    check(
+      "recommendations_maximum_total_minutes_check",
+      sql`${table.maximumTotalMinutes} > 0`,
+    ),
+    check(
+      "recommendations_purchase_tolerance_check",
+      sql`${table.purchaseTolerance} IN ('none', 'limited', 'allowed')`,
+    ),
+    check(
+      "recommendations_suggested_dish_count_check",
+      sql`${table.suggestedDishCount} BETWEEN 1 AND 3`,
+    ),
+    check(
+      "recommendations_blocker_codes_check",
+      sql`jsonb_typeof(${table.blockerCodes}) = 'array'`,
+    ),
+    check(
+      "recommendations_assumptions_check",
+      sql`jsonb_typeof(${table.assumptions}) = 'array'`,
+    ),
+    check(
+      "recommendations_preselected_candidate_ids_check",
+      sql`jsonb_typeof(${table.preselectedCandidateIds}) = 'array'
+        AND jsonb_array_length(${table.preselectedCandidateIds}) <= 3`,
+    ),
+    check(
+      "recommendations_snapshot_check",
+      sql`jsonb_typeof(${table.snapshot}) = 'object'`,
+    ),
+    check(
+      "recommendations_version_check",
+      sql`${table.version} >= 0`,
+    ),
+  ],
+);
+
+export const recommendationCandidates = pgTable(
+  "recommendation_candidates",
+  {
+    id: uuid("id").primaryKey(),
+    householdId: uuid("household_id").notNull(),
+    recommendationId: uuid("recommendation_id").notNull(),
+    recipeId: uuid("recipe_id").notNull(),
+    recipeVersion: integer("recipe_version").notNull(),
+    servings: numeric("servings").notNull(),
+    dishRole: varchar("dish_role", { length: 32 }).notNull(),
+    activeMinutes: integer("active_minutes").notNull(),
+    totalMinutes: integer("total_minutes").notNull(),
+    missingFoodConceptIds: jsonb("missing_food_concept_ids")
+      .$type<readonly string[]>()
+      .notNull(),
+    plannedInventoryLotIds: jsonb("planned_inventory_lot_ids")
+      .$type<readonly string[]>()
+      .notNull(),
+    reasonCodes: jsonb("reason_codes")
+      .$type<readonly string[]>()
+      .notNull(),
+    assumptions: jsonb("assumptions")
+      .$type<readonly string[]>()
+      .notNull(),
+    hardConstraintCheck: jsonb("hard_constraint_check")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    position: integer("position").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "recommendation_candidates_recommendation_foreign",
+      columns: [table.householdId, table.recommendationId],
+      foreignColumns: [recommendations.householdId, recommendations.id],
+    }),
+    unique("recommendation_candidates_household_id_unique").on(
+      table.householdId,
+      table.id,
+    ),
+    check(
+      "recommendation_candidates_dish_role_check",
+      sql`${table.dishRole} IN ('staple', 'main', 'vegetable', 'soup', 'side')`,
+    ),
+    check(
+      "recommendation_candidates_active_minutes_check",
+      sql`${table.activeMinutes} >= 0`,
+    ),
+    check(
+      "recommendation_candidates_total_minutes_check",
+      sql`${table.totalMinutes} > 0`,
+    ),
+    check(
+      "recommendation_candidates_missing_food_concept_ids_check",
+      sql`jsonb_typeof(${table.missingFoodConceptIds}) = 'array'`,
+    ),
+    check(
+      "recommendation_candidates_planned_inventory_lot_ids_check",
+      sql`jsonb_typeof(${table.plannedInventoryLotIds}) = 'array'`,
+    ),
+    check(
+      "recommendation_candidates_reason_codes_check",
+      sql`jsonb_typeof(${table.reasonCodes}) = 'array'
+        AND jsonb_array_length(${table.reasonCodes}) >= 1`,
+    ),
+    check(
+      "recommendation_candidates_assumptions_check",
+      sql`jsonb_typeof(${table.assumptions}) = 'array'`,
+    ),
+    check(
+      "recommendation_candidates_hard_constraint_check",
+      sql`jsonb_typeof(${table.hardConstraintCheck}) = 'object'
+        AND (${table.hardConstraintCheck}->>'status') = 'passed'`,
+    ),
+  ],
+);
+
+export const meals = pgTable(
+  "meals",
+  {
+    id: uuid("id").primaryKey(),
+    householdId: uuid("household_id")
+      .notNull()
+      .references(() => households.id),
+    recommendationId: uuid("recommendation_id"),
+    participantProfileIds: jsonb("participant_profile_ids")
+      .$type<readonly string[]>()
+      .notNull(),
+    cookProfileId: uuid("cook_profile_id").notNull(),
+    status: varchar("status", { length: 32 }).notNull(),
+    scheduledFor: timestamp("scheduled_for", {
+      withTimezone: true,
+      mode: "date",
+    }).notNull(),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    ...timestamps,
+    version: integer("version").notNull(),
+  },
+  (table) => [
+    unique("meals_household_id_unique").on(table.householdId, table.id),
+    check(
+      "meals_participant_profile_ids_check",
+      sql`jsonb_typeof(${table.participantProfileIds}) = 'array'`,
+    ),
+    check(
+      "meals_status_check",
+      sql`${table.status} IN (
+        'draft', 'confirmed', 'shopping_required', 'ready',
+        'cooking', 'completed', 'cancelled'
+      )`,
+    ),
+    check(
+      "meals_snapshot_check",
+      sql`jsonb_typeof(${table.snapshot}) = 'object'`,
+    ),
+    check("meals_version_check", sql`${table.version} >= 0`),
+  ],
+);
+
+export const mealRecipes = pgTable(
+  "meal_recipes",
+  {
+    id: uuid("id").primaryKey(),
+    householdId: uuid("household_id").notNull(),
+    mealId: uuid("meal_id").notNull(),
+    recipeId: uuid("recipe_id").notNull(),
+    recipeVersion: integer("recipe_version").notNull(),
+    servings: numeric("servings").notNull(),
+    position: integer("position").notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "meal_recipes_meal_foreign",
+      columns: [table.householdId, table.mealId],
+      foreignColumns: [meals.householdId, meals.id],
+    }),
+    unique("meal_recipes_household_id_unique").on(table.householdId, table.id),
+  ],
+);
+
 export const stage06Tables = {
   users,
   authIdentities,
@@ -794,4 +1167,11 @@ export const stage06Tables = {
   inventoryLots,
   inventoryEvents,
   idempotencyRecords,
+  foodConcepts,
+  recipes,
+  recipeIngredients,
+  recommendations,
+  recommendationCandidates,
+  meals,
+  mealRecipes,
 } as const;

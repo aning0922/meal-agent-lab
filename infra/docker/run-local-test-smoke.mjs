@@ -161,19 +161,27 @@ const expectedVisibilityServiceLabels = [
 
 /**
  * RLS 期望来自冻结迁移的事实（0000 六张 + 0001 invites + 0002 link_requests
- * 启用并 FORCE；其余表刻意不启用），不是对观察值的追认。
+ * 启用并 FORCE；0005 新增的四张 household 私有表同样启用并 FORCE，三张全局
+ * 只读参考表刻意不启用；其余表刻意不启用），不是对观察值的追认。
  */
 const expectedRowSecurity = {
   'drizzle.__meal_agent_migrations': false,
   'public.auth_identities': false,
+  'public.food_concepts': false,
   'public.household_invites': true,
   'public.households': true,
   'public.idempotency_records': true,
   'public.inventory_events': true,
   'public.inventory_lots': true,
+  'public.meal_recipes': true,
+  'public.meals': true,
   'public.memberships': true,
   'public.person_profile_link_requests': true,
   'public.person_profiles': true,
+  'public.recipe_ingredients': false,
+  'public.recipes': false,
+  'public.recommendation_candidates': true,
+  'public.recommendations': true,
   'public.sessions': false,
   'public.users': false
 }
@@ -767,7 +775,7 @@ export const runSmoke = async ({ keepFailure = false } = {}) => {
     if (JSON.stringify(actualRls) !== JSON.stringify(expectedRls)) {
       fail('row security enable/force evidence drifted from the registered table set')
     } else {
-      log('row security: enable/force state matches the frozen migrations for all 12 tables')
+      log('row security: enable/force state matches the frozen migrations for all 19 tables')
     }
 
     const roleRows = (

@@ -103,6 +103,18 @@ export const contractRuleManifest = [
     description: "meal participants and recipes are unique",
   },
   {
+    id: "meal.create-request.participants-unique.v1",
+    sourceKind: "refinement",
+    enforcement: "runtime-only",
+    description: "meal create request participants are unique",
+  },
+  {
+    id: "meal.recommendation-request.participants-unique.v1",
+    sourceKind: "refinement",
+    enforcement: "runtime-only",
+    description: "recommendation request participants are unique",
+  },
+  {
     id: "meal.recommendation.outcome-consistency.v1",
     sourceKind: "refinement",
     enforcement: "runtime-only",

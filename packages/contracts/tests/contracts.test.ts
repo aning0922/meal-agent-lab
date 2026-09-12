@@ -1208,6 +1208,8 @@ test("meal, recipe and recommendation contracts only expose validated candidates
     },
     reviewedAt: now,
   });
+  const syntheticDigest = (seed: number): string =>
+    `sha256:${seed.toString(16).padStart(64, "0")}`;
   const recommendation = recommendationSchema.parse({
     id: ids.recommendation,
     householdId: ids.household,
@@ -1240,8 +1242,51 @@ test("meal, recipe and recommendation contracts only expose validated candidates
     preselectedCandidateIds: [ids.candidate],
     blockerCodes: [],
     assumptions: ["未录入的食材保持未知"],
-    inventorySnapshotVersion: 2,
-    constraintSnapshotVersion: 1,
+    snapshot: {
+      inventory: {
+        lots: [
+          {
+            lotId: ids.lot,
+            lotVersion: 1,
+            foodConceptRevision: 1,
+            safetyAssessmentRevision: 1,
+          },
+        ],
+        inventoryDigest: syntheticDigest(1),
+      },
+      constraints: {
+        profiles: [
+          {
+            participantProfileId: ids.profile,
+            profileVersion: 1,
+            constraintSetDigest: syntheticDigest(2),
+          },
+        ],
+        mappingReleaseId: "synthetic-mapping-release",
+        constraintDigest: syntheticDigest(3),
+      },
+      recipes: {
+        recipes: [
+          {
+            recipeId: recipe.id,
+            recipeVersion: recipe.version,
+            contentDigest: syntheticDigest(4),
+            datasetReleaseId: "synthetic-recipe-release",
+          },
+        ],
+        recipeDigest: syntheticDigest(5),
+      },
+      policies: {
+        foodConceptReleaseId: "synthetic-food-concept-release",
+        allergenReleaseId: "synthetic-allergen-release",
+        religiousEthicalReleaseId: "synthetic-religious-ethical-release",
+        foodSafetyReleaseId: "synthetic-food-safety-release",
+        techniqueReleaseId: "synthetic-technique-release",
+        recommendationEngineVersion: "recommendation-engine-1",
+        policyDigest: syntheticDigest(6),
+      },
+      snapshotDigest: syntheticDigest(7),
+    },
     recommendationPolicyVersion: "recommendation-policy-1",
     createdAt: now,
     expiresAt: "2026-07-23T12:10:00Z",

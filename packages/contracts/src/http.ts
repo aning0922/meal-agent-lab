@@ -16,6 +16,7 @@ import {
   createInventoryLotResultSchema,
   inventoryLotSchema,
 } from "./inventory.js";
+import { mealSchema, recommendationSchema } from "./meals.js";
 import {
   confirmPersonProfileLinkResultSchema,
   createHouseholdInviteResultSchema,
@@ -91,6 +92,14 @@ export const createInventoryLotSuccessSchema =
   createApiSuccessSchema(createInventoryLotResultSchema);
 export const consumeInventoryLotSuccessSchema =
   createApiSuccessSchema(consumeInventoryLotResultSchema);
+
+/**
+ * 推荐纵切的两个成功信封。二者都从既有实体 schema 经 `createApiSuccessSchema`
+ * 生成（`{ ok: true, data, meta }`，`meta` 经 `apiMetaSchema`），不自造包络。
+ */
+export const recommendationSuccessSchema =
+  createApiSuccessSchema(recommendationSchema);
+export const mealSuccessSchema = createApiSuccessSchema(mealSchema);
 
 export const createHouseholdInviteSuccessSchema = createApiSuccessSchema(
   createHouseholdInviteResultSchema,

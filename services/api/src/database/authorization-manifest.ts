@@ -1732,8 +1732,165 @@ const manifestData: AuthorizationManifest = {
   ],
 };
 
-export const authorizationManifest: AuthorizationManifest =
-  deepFreeze(manifestData);
+/**
+ * 阶段 09P M-4a（`0005_stage_09p_synthetic_slice.sql`）新增的两条
+ * `(ledger, phase)` state。
+ *
+ * `0005` 不新增任何 `SECURITY DEFINER` routine、也不新增 default privilege，
+ * 因此这两条 state 的 `routines` / `defaults` / `defaultEffective` 与
+ * `[0000…0004]` 对应相**逐条精确相同**——直接复用同一份登记对象，杜绝两份副本
+ * 漂移（对照 §4.5 第 4 条）。差异只在 ledger 与 relation 授权面：
+ * `containment` 只给 `meal_agent_app`；`final` 另为每条新 relation 补一行
+ * `meal_agent_backup` 的 `SELECT`——因为 `final` 的 default ACL 物理行会让
+ * 新建的 public 表自动带上 backup `SELECT`，必须逐条登记，否则 verify 的全外
+ * 连接判 `unexpected drift`。
+ */
+const stage09pAppRelationGrants: readonly AuthorizationGrantEntry[] = [
+  { object: ["relation","public","food_concepts"],
+    grantee: "meal_agent_app",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","meal_recipes"],
+    grantee: "meal_agent_app",
+    privileges: ["INSERT","SELECT"] },
+  { object: ["relation","public","meals"],
+    grantee: "meal_agent_app",
+    privileges: ["INSERT","SELECT","UPDATE"] },
+  { object: ["relation","public","recipe_ingredients"],
+    grantee: "meal_agent_app",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recipes"],
+    grantee: "meal_agent_app",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recommendation_candidates"],
+    grantee: "meal_agent_app",
+    privileges: ["INSERT","SELECT"] },
+  { object: ["relation","public","recommendations"],
+    grantee: "meal_agent_app",
+    privileges: ["INSERT","SELECT"] },
+];
+
+const stage09pAppRelationEffective: readonly AuthorizationEffectiveEntry[] = [
+  { object: ["relation","public","food_concepts"],
+    role: "meal_agent_app",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","meal_recipes"],
+    role: "meal_agent_app",
+    privileges: ["INSERT","SELECT"] },
+  { object: ["relation","public","meals"],
+    role: "meal_agent_app",
+    privileges: ["INSERT","SELECT","UPDATE"] },
+  { object: ["relation","public","recipe_ingredients"],
+    role: "meal_agent_app",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recipes"],
+    role: "meal_agent_app",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recommendation_candidates"],
+    role: "meal_agent_app",
+    privileges: ["INSERT","SELECT"] },
+  { object: ["relation","public","recommendations"],
+    role: "meal_agent_app",
+    privileges: ["INSERT","SELECT"] },
+];
+
+const stage09pBackupRelationGrants: readonly AuthorizationGrantEntry[] = [
+  { object: ["relation","public","food_concepts"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","meal_recipes"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","meals"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recipe_ingredients"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recipes"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recommendation_candidates"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recommendations"],
+    grantee: "meal_agent_backup",
+    privileges: ["SELECT"] },
+];
+
+const stage09pBackupRelationEffective: readonly AuthorizationEffectiveEntry[] = [
+  { object: ["relation","public","food_concepts"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","meal_recipes"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","meals"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recipe_ingredients"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recipes"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recommendation_candidates"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+  { object: ["relation","public","recommendations"],
+    role: "meal_agent_backup",
+    privileges: ["SELECT"] },
+];
+
+const priorContainmentState = manifestData.states[2];
+const priorFinalState = manifestData.states[3];
+if (priorContainmentState === undefined || priorFinalState === undefined) {
+  throw new AuthorizationManifestError(
+    "the stage 08 authorization states are missing from the manifest",
+  );
+}
+
+const syntheticSliceStates: readonly AuthorizationState[] = [
+  {
+    ledger: [
+      ...priorContainmentState.ledger,
+      "0005_stage_09p_synthetic_slice.sql",
+    ],
+    phase: "containment",
+    routines: priorContainmentState.routines,
+    grants: [...priorContainmentState.grants, ...stage09pAppRelationGrants],
+    defaults: priorContainmentState.defaults,
+    defaultEffective: priorContainmentState.defaultEffective,
+    effective: [
+      ...priorContainmentState.effective,
+      ...stage09pAppRelationEffective,
+    ],
+  },
+  {
+    ledger: [
+      ...priorFinalState.ledger,
+      "0005_stage_09p_synthetic_slice.sql",
+    ],
+    phase: "final",
+    routines: priorFinalState.routines,
+    grants: [
+      ...priorFinalState.grants,
+      ...stage09pAppRelationGrants,
+      ...stage09pBackupRelationGrants,
+    ],
+    defaults: priorFinalState.defaults,
+    defaultEffective: priorFinalState.defaultEffective,
+    effective: [
+      ...priorFinalState.effective,
+      ...stage09pAppRelationEffective,
+      ...stage09pBackupRelationEffective,
+    ],
+  },
+];
+
+export const authorizationManifest: AuthorizationManifest = deepFreeze({
+  ...manifestData,
+  states: [...manifestData.states, ...syntheticSliceStates],
+});
 
 /**
  * `(ledger, phase)` 的稳定 key，编码是**结构化 JSON**

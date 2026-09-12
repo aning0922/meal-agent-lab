@@ -2766,6 +2766,87 @@
         ],
         "x-meal-agent-rule-boundary": "createInventoryLotResultSchema"
       },
+      "ContractRule.createMealRequestSchema": {
+        "type": "object",
+        "properties": {
+          "recommendationId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+          },
+          "participantProfileIds": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+            }
+          },
+          "cookProfileId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+          },
+          "recipes": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "recipeId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                },
+                "recipeVersion": {
+                  "type": "integer",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "exclusiveMinimum": true
+                },
+                "servings": {
+                  "type": "number",
+                  "minimum": 0,
+                  "exclusiveMinimum": true
+                }
+              },
+              "required": [
+                "recipeId",
+                "recipeVersion",
+                "servings"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "scheduledFor": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "expectedSnapshotDigest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "recommendationId",
+          "participantProfileIds",
+          "cookProfileId",
+          "recipes",
+          "scheduledFor",
+          "expectedSnapshotDigest"
+        ],
+        "additionalProperties": false,
+        "x-meal-agent-contract-rule-ids": [
+          "meal.create-request.participants-unique.v1"
+        ],
+        "x-zod-refinements": [
+          "meal create request participants are unique"
+        ],
+        "x-meal-agent-rule-boundary": "createMealRequestSchema"
+      },
       "ContractRule.dietaryConstraintInputSchema": {
         "type": "object",
         "properties": {
@@ -3028,6 +3109,59 @@
           "food date value and provenance match its kind"
         ],
         "x-meal-agent-rule-boundary": "foodDateSchema"
+      },
+      "ContractRule.generateRecommendationRequestSchema": {
+        "type": "object",
+        "properties": {
+          "participantProfileIds": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+            }
+          },
+          "cookProfileId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+          },
+          "maximumTotalMinutes": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "exclusiveMinimum": true
+          },
+          "purchaseTolerance": {
+            "type": "string",
+            "enum": [
+              "none",
+              "limited",
+              "allowed"
+            ]
+          },
+          "suggestedDishCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          }
+        },
+        "required": [
+          "participantProfileIds",
+          "cookProfileId",
+          "maximumTotalMinutes",
+          "purchaseTolerance",
+          "suggestedDishCount"
+        ],
+        "additionalProperties": false,
+        "x-meal-agent-contract-rule-ids": [
+          "meal.recommendation-request.participants-unique.v1"
+        ],
+        "x-zod-refinements": [
+          "recommendation request participants are unique"
+        ],
+        "x-meal-agent-rule-boundary": "generateRecommendationRequestSchema"
       },
       "ContractRule.householdInviteSchema": {
         "type": "object",
@@ -5235,15 +5369,217 @@
               "maxLength": 300
             }
           },
-          "inventorySnapshotVersion": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
-          },
-          "constraintSnapshotVersion": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+          "snapshot": {
+            "type": "object",
+            "properties": {
+              "inventory": {
+                "type": "object",
+                "properties": {
+                  "lots": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "lotId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                        },
+                        "lotVersion": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "foodConceptRevision": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "safetyAssessmentRevision": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "lotId",
+                        "lotVersion",
+                        "foodConceptRevision",
+                        "safetyAssessmentRevision"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "inventoryDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "lots",
+                  "inventoryDigest"
+                ],
+                "additionalProperties": false
+              },
+              "constraints": {
+                "type": "object",
+                "properties": {
+                  "profiles": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "participantProfileId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                        },
+                        "profileVersion": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "constraintSetDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        }
+                      },
+                      "required": [
+                        "participantProfileId",
+                        "profileVersion",
+                        "constraintSetDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "mappingReleaseId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "constraintDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "profiles",
+                  "mappingReleaseId",
+                  "constraintDigest"
+                ],
+                "additionalProperties": false
+              },
+              "recipes": {
+                "type": "object",
+                "properties": {
+                  "recipes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "recipeId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+                        },
+                        "recipeVersion": {
+                          "type": "integer",
+                          "maximum": 9007199254740991,
+                          "minimum": 0,
+                          "exclusiveMinimum": true
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[0-9a-f]{64}$"
+                        },
+                        "datasetReleaseId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 100
+                        }
+                      },
+                      "required": [
+                        "recipeId",
+                        "recipeVersion",
+                        "contentDigest",
+                        "datasetReleaseId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "recipeDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "recipes",
+                  "recipeDigest"
+                ],
+                "additionalProperties": false
+              },
+              "policies": {
+                "type": "object",
+                "properties": {
+                  "foodConceptReleaseId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "allergenReleaseId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "religiousEthicalReleaseId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "foodSafetyReleaseId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "techniqueReleaseId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "recommendationEngineVersion": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 100
+                  },
+                  "policyDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  }
+                },
+                "required": [
+                  "foodConceptReleaseId",
+                  "allergenReleaseId",
+                  "religiousEthicalReleaseId",
+                  "foodSafetyReleaseId",
+                  "techniqueReleaseId",
+                  "recommendationEngineVersion",
+                  "policyDigest"
+                ],
+                "additionalProperties": false
+              },
+              "snapshotDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "inventory",
+              "constraints",
+              "recipes",
+              "policies",
+              "snapshotDigest"
+            ],
+            "additionalProperties": false
           },
           "recommendationPolicyVersion": {
             "type": "string",
@@ -5274,8 +5610,7 @@
           "preselectedCandidateIds",
           "blockerCodes",
           "assumptions",
-          "inventorySnapshotVersion",
-          "constraintSnapshotVersion",
+          "snapshot",
           "recommendationPolicyVersion",
           "createdAt",
           "expiresAt"
@@ -48307,6 +48642,18 @@
       "description": "meal participants and recipes are unique"
     },
     {
+      "id": "meal.create-request.participants-unique.v1",
+      "sourceKind": "refinement",
+      "enforcement": "runtime-only",
+      "description": "meal create request participants are unique"
+    },
+    {
+      "id": "meal.recommendation-request.participants-unique.v1",
+      "sourceKind": "refinement",
+      "enforcement": "runtime-only",
+      "description": "recommendation request participants are unique"
+    },
+    {
       "id": "meal.recommendation.outcome-consistency.v1",
       "sourceKind": "refinement",
       "enforcement": "runtime-only",
@@ -48513,6 +48860,12 @@
       ]
     },
     {
+      "boundary": "createMealRequestSchema",
+      "ruleIds": [
+        "meal.create-request.participants-unique.v1"
+      ]
+    },
+    {
       "boundary": "dietaryConstraintInputSchema",
       "ruleIds": [
         "profiles.constraint.confirmation-fingerprint.v1"
@@ -48528,6 +48881,12 @@
       "boundary": "foodDateSchema",
       "ruleIds": [
         "quantity.food-date.kind-source.v1"
+      ]
+    },
+    {
+      "boundary": "generateRecommendationRequestSchema",
+      "ruleIds": [
+        "meal.recommendation-request.participants-unique.v1"
       ]
     },
     {

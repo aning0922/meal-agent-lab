@@ -139,6 +139,20 @@ export const utcDateTimeSchema = z.iso.datetime({ offset: true });
 export const localDateSchema = z.iso.date();
 export const versionSchema = z.int().nonnegative();
 
+/**
+ * 规范化摘要：`canonicalJson` 结果的小写十六进制 SHA-256，带 `sha256:` 前缀。
+ * 与 `packages/domain/src/canonical.ts` 及仓库既有口径一致：摘要只由规范化
+ * 字节决定，不承载任何原文。
+ */
+export const canonicalSha256DigestSchema = z
+  .string()
+  .regex(/^sha256:[0-9a-f]{64}$/, {
+    message: "canonical digest must be sha256: followed by 64 lowercase hex digits",
+  });
+export type CanonicalSha256Digest = z.infer<
+  typeof canonicalSha256DigestSchema
+>;
+
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export type Confidence = z.infer<typeof confidenceSchema>;
 

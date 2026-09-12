@@ -335,9 +335,9 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
   );
   assert.deepEqual(rows, sorted, "rows must be sorted");
 
-  // 至少覆盖 0000-only 与当前 0000—0004 两个 ledger，各带两个阶段。
+  // 至少覆盖 0000-only、0000—0004 与 0000—0005 三个 ledger，各带两个阶段。
   const states = authorizationStateKeys();
-  assert.equal(states.length, 4);
+  assert.equal(states.length, 6);
   // state identity 是结构化 JSON [[sorted names], phase]，不是拼接串。
   assert.ok(
     states.includes(authorizationStateKey(["0000_stage_06.sql"], "containment")),
@@ -347,7 +347,7 @@ test("the authorization manifest is ledger and phase keyed with unique rows", ()
   );
   assert.equal(
     states.filter((state) => state.endsWith(String.raw`, "final"]`)).length,
-    2,
+    3,
     "every ledger must have a final phase",
   );
 
@@ -1196,14 +1196,14 @@ test("the state identity is structural and cannot be forged by a comma in a file
     authorizationStateKey(["0000_stage_06.sql"], "containment"),
   );
 
-  // 5. digest 必须跟着变：把已登记的五文件 ledger 换成合并文件名之后，两份
+  // 5. digest 必须跟着变：把已登记的六文件 ledger 换成合并文件名之后，两份
   //    manifest 的 canonical digest 不可以相同。
   const [firstState] = authorizationManifest.states;
   assert.ok(firstState !== undefined);
   const merged: AuthorizationManifest = {
     ...authorizationManifest,
     states: authorizationManifest.states.map((state) =>
-      state.ledger.length === 5
+      state.ledger.length === 6
         ? {
             ...state,
             ledger: [
@@ -1211,6 +1211,7 @@ test("the state identity is structural and cannot be forged by a comma in a file
               "0002_stage_08_audit_closeout.sql",
               "0003_stage_08_secondary_closeout.sql",
               "0004_stage_08_final_closeout.sql",
+              "0005_stage_09p_synthetic_slice.sql",
             ],
           }
         : state,

@@ -36,7 +36,8 @@
 `closesAtModule` 只接受以下取值，或外部哨兵 `external`：
 
 `identity/G-ID`、`client/G-CLIENT`、`backend/G-BACKEND`、`source/G2`、
-`security/ADR-0004`、`migration/DB`、`wp-o4/maintainer`、`governance/总控`。
+`security/ADR-0004`、`migration/DB`、`wp-o4/maintainer`、`governance/总控`、
+`m4a/entitlement`、`m4a/guest-facts`、`m4a/serving-substitution`、`m4a/client-meal-confirm`。
 
 新增闭合模块必须显式改动 `scripts/check-deferral-register.mjs` 的
 `KNOWN_CLOSES_AT_MODULES`；若闭合方在仓库外，用 `external` 哨兵。这样任何写错模块名的

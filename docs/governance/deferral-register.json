@@ -3,7 +3,7 @@
   "registerId": "stage09p-m2-deferrals",
   "asOf": "2026-09-12",
   "reviewByMilestone": "M2",
-  "expectedEntryCount": 22,
+  "expectedEntryCount": 26,
   "unassignedExpiryCount": 21,
   "entries": [
     {
@@ -203,6 +203,42 @@
       "closeTrigger": "route 准入判定；Q10 关闭 / G-ENV·G-OUT freeze；未取得上述证据并解除前保持 admission blocker。",
       "expiry": "unassigned:待 W37 动态证据或 Q10 边界",
       "admissionBasis": "evidence-obligation"
+    },
+    {
+      "id": "m4a-recommendation-entitlement",
+      "owner": "auth / HTTP contract owner",
+      "closesAtModule": "m4a/entitlement",
+      "evidenceNeeded": "是否需专用 `recommendation:write` capability（vs 复用 `meal:write`）的显式裁定；须在 WP-O2 command boundary/entitlement 落定后，据其结论确定该 capability 的存在与语义。",
+      "closeTrigger": "WP-O2 command boundary/entitlement 落定；`m4a/entitlement` 关闭时一并结清。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "open-design-question"
+    },
+    {
+      "id": "m4a-guest-participants",
+      "owner": "食品安全 / domain owner",
+      "closesAtModule": "m4a/guest-facts",
+      "evidenceNeeded": "guest 的 `GuestParticipantSafetyFacts` 输入面与其全桌 allergy 规则的行使裁定；guest 输入进入引擎时据此关闭。",
+      "closeTrigger": "guest 输入进入引擎（`m4a/guest-facts` 落定）。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "open-design-question"
+    },
+    {
+      "id": "m4a-recipe-serving-substitution",
+      "owner": "culinary/domain owner",
+      "closesAtModule": "m4a/serving-substitution",
+      "evidenceNeeded": "recipe 份量缩放与替代食材后的重算裁定；替代组/份量进入食谱模型时据此关闭。",
+      "closeTrigger": "替代组/份量进入食谱模型（`m4a/serving-substitution` 落定）。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "open-design-question"
+    },
+    {
+      "id": "m4a-meal-confirm-client-wiring",
+      "owner": "client / API owner",
+      "closesAtModule": "m4a/client-meal-confirm",
+      "evidenceNeeded": "`POST .../meals` 的 typed 客户端命令与页面接线裁定；M-4 采购/确认闭环开始时据此关闭。",
+      "closeTrigger": "M-4 采购/确认闭环开始（`m4a/client-meal-confirm` 落定）。",
+      "expiry": "2026-12-31T23:59:59+08:00",
+      "admissionBasis": "open-design-question"
     }
   ]
 }
