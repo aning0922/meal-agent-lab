@@ -109,9 +109,9 @@
       "id": "P-M1",
       "owner": "M1 总控 / 独立审计（非 Gate Analyst）",
       "closesAtModule": "governance/总控",
-      "evidenceNeeded": "M1 Accepted / Fresh Audit B CLEAN（当前替代裁定不存在，不能从 R7-A 特批推导通用豁免）。",
-      "closeTrigger": "M1 Accepted 或总控明确替代裁定；M2 正式实施仍等待它；未取得上述证据并解除前保持 admission blocker。",
-      "expiry": "unassigned:待 M1 Accepted / Fresh Audit B CLEAN",
+      "evidenceNeeded": "M1 Accepted。纯 domain 动态腿已于 2026-09-12 由全新审计 M1D-3 取得 CLEAN（household-safety 292/292、候选 8a69bc24…、报告 .local/audit-reports/stage09p-m1-m1d3-household-safety-dynamic-audit-20260912.md）；**尚缺外部安全/许可审查腿**（计划 §7.2），取决于 §4.3 十二角色落到具名责任人。",
+      "closeTrigger": "M1 Accepted = 独立 A 静态 CLEAN + M1D-3 动态 CLEAN + 外部审查完成；三者未全部取得前保持 admission blocker，不得写成 gate closed。",
+      "expiry": "unassigned:待外部安全/许可审查腿（十二角色具名）",
       "admissionBasis": "evidence-obligation"
     },
     {
