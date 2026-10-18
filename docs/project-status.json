@@ -2,48 +2,48 @@
   "schemaVersion": 1,
   "scope": "repository_presentation",
   "snapshotDate": "2026-10-18",
-  "revision": "PUBLIC-README-VERIFIED-20261018",
-  "state": "REPOSITORY_PUBLIC_README_VERIFIED",
-  "phase": "公开仓库与项目首页 · main 文档交付",
-  "title": "灶边饭事簿：公开仓库与新版 README",
-  "deliveryName": "仓库公开与 README 整理",
+  "revision": "README-VISUAL-REFRESH-20261018",
+  "state": "README_VISUAL_REFRESH_VERIFIED",
+  "phase": "README 视觉整理 · main 文档交付",
+  "title": "灶边饭事簿：更清晰的项目首页",
+  "deliveryName": "README 品牌视觉与阅读结构优化",
   "sourceDocument": "docs/project-status.md",
-  "summary": "GitHub 已确认仓库公开；新版首页展示品牌、主线已有能力、技术栈、本地体验与许可边界。产品代码基线保持阶段 09A；其他工作树的合成产品探索未在本批合并。",
-  "authority": "依据用户 2026-10-18「把当前项目改成公开仓库，README 写好看一点」执行。本批授权为仓库可见性、项目展示及配套状态记录，不升级产品验收或开放真实使用。",
+  "summary": "新增米白、深绿与暖橙的原创矢量横幅，统一徽章配色，精简产品介绍，将体验步骤集中为三步，并折叠仓库结构和验证命令。主线产品仍为阶段 09A 基线。",
+  "authority": "依据用户 2026-10-18 追加要求「README 写好看一点」执行。本批为项目展示与文档整理，沿用本次会话已授权的 main 同步范围。",
   "handoff": {
     "branch": "main",
     "worktree": ".",
     "brief": "README.md",
     "codeBase": "23450a1f3508e8030d753748291d265ad308df05",
-    "designSource": "23450a1f3508e8030d753748291d265ad308df05",
+    "designSource": "379989637b1af6e1aa6e351b629759a3655a1f30",
     "integration": "本批仅文档、品牌图与状态快照；主线阶段 09A 产品基线保持，其他本地工作树未合并。"
   },
   "repository": {
-    "main": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
-    "candidate": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
-    "remoteCode": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
-    "remoteDesign": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
+    "main": "379989637b1af6e1aa6e351b629759a3655a1f30",
+    "candidate": "379989637b1af6e1aa6e351b629759a3655a1f30",
+    "remoteCode": "379989637b1af6e1aa6e351b629759a3655a1f30",
+    "remoteDesign": "379989637b1af6e1aa6e351b629759a3655a1f30",
     "checkedAt": "2026-10-18",
-    "remoteNote": "README 首次交付已推送 main；上述提交为本批 README 交付锚点。产品实现仍为 23450a1 基线。状态记录的后续提交不扩展产品能力。"
+    "remoteNote": "上述提交为本次 README 视觉整理的已核实起点；本次文档内容由 publication.readmeSha256 和 readmePresentation.heroSha256 标识。产品代码仍为阶段 09A 基线。"
   },
   "implementationTask": {
-    "title": "公开仓库与 README 整理",
-    "status": "仓库公开与 README 已推送；本批验证通过",
+    "title": "README 品牌视觉与阅读结构优化",
+    "status": "本批文档与视觉校验完成",
     "model": "本次 Codex 代理",
     "effort": "未单独记录",
     "worktree": ".",
-    "baseCommit": "23450a1f3508e8030d753748291d265ad308df05",
-    "candidateCommit": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
+    "baseCommit": "379989637b1af6e1aa6e351b629759a3655a1f30",
+    "candidateCommit": "379989637b1af6e1aa6e351b629759a3655a1f30",
     "url": "#checks"
   },
   "reviewTask": {
-    "title": "本批文档与公开范围集中自查",
+    "title": "README 排版与内容集中自查",
     "url": "#checks",
-    "status": "本批范围集中自查通过；无独立阶段验收",
+    "status": "范围内自查通过；不升级产品阶段验收",
     "model": "本次 Codex 代理",
     "effort": "未单独记录",
-    "targetHead": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
-    "candidateCommit": "85c68fe4e6e7baa35a933803f7589d27a9c1d468",
+    "targetHead": "379989637b1af6e1aa6e351b629759a3655a1f30",
+    "candidateCommit": "379989637b1af6e1aa6e351b629759a3655a1f30",
     "verdict": "IMPLEMENTATION_CHECKED",
     "targetedReport": "docs/project-status.md"
   },
@@ -56,8 +56,8 @@
   "capabilities": [
     {
       "name": "项目首页",
-      "status": "已推送并实际查看",
-      "detail": "既有品牌图、定位、能力表、架构、启动步骤、开发验证、文档入口与 UNLICENSED 说明。"
+      "status": "视觉与文档校验通过",
+      "detail": "自包含 SVG 品牌横幅、统一徽章、三栏产品价值、简洁能力表、三步本地体验、折叠开发细节与文档导航。"
     },
     {
       "name": "公开仓库",
@@ -72,36 +72,35 @@
   ],
   "gates": [
     {
-      "name": "仓库可见性",
+      "name": "README 文档",
       "status": "PASS",
-      "detail": "gh repo view 确认 aning0922/meal-agent-lab 的 isPrivate=false。"
+      "detail": "独立导出本批待提交文件的 Markdown 本地链接检查通过；GitHub GFM 渲染成功，内容保持主线范围和真实使用边界。"
     },
     {
-      "name": "公开内容扫描",
-      "status": "PASS（人工复核匹配项）",
-      "detail": "Gitleaks 8.30.1 检查远程所有 refs 的提交历史和当前跟踪文件。两次各 3 处匹配，均为合成安全反例或幂等测试键；未发现真实凭据。此为本批扫描范围。"
-    },
-    {
-      "name": "README 与发布文档",
+      "name": "品牌横幅",
       "status": "PASS",
-      "detail": "独立导出待提交文件，Markdown 链接检查 81 文档/333 本地链接通过；环境检查通过；GitHub 实页品牌图与全部 4 个徽章正常加载。"
+      "detail": "SVG XML 解析通过，自包含、无脚本和外部依赖；本地浏览器实际查看文字、色彩与插画比例。"
     },
     {
       "name": "本地总控看板",
       "status": "PASS",
-      "detail": "固定 Node.js 24.18.0 看板构建与测试 7/7 通过，localhost:3000/#top 已重新加载并实际查看。本交付工作树为快照源。"
+      "detail": "固定 Node.js 24.18.0 的构建与测试 7/7 通过，固定 localhost:3000/#top 重新加载并实际查看。"
+    },
+    {
+      "name": "历史公开检查",
+      "status": "沿用前批证据",
+      "detail": "公开可见性与历史凭据扫描属于此前仓库公开批次；本轮仅调整 README 与配套品牌/状态文档，不将历史产品门禁记为本轮重测。"
     }
   ],
   "nextSteps": [
-    "本批仓库公开和 README 展示工作完成；保留后续产品开发的独立授权与安全前置。",
-    "看板使用本交付快照；其他工作树的快照保留在原文件，不冒充本主线能力。",
-    "产品后续开发仍按各任务授权与安全边界推进。"
+    "本轮 README 视觉整理完成；后续产品能力按对应任务授权与安全前置推进。",
+    "看板以本交付工作树 docs/project-status.json 为源，历史事实保持各自范围。"
   ],
   "safety": [
     "仓库公开只开放源码浏览，不等于产品部署、真实微信接入或对外发布。",
     "本批没有食品规则或菜谱数据激活；合成 hard-check 不用于真实食品建议。",
     "食品硬约束缺权威映射时保持 needs_structured_mapping；模型不能绕过。",
-    "原未提交 AGENTS、文档交接及其他品牌说明保持本地；本批只发布已选定的品牌头像。",
+    "原未提交 AGENTS、文档交接及品牌文案保持本地；本批新增 README 专用原创 SVG 横幅。",
     "公开许可保持 UNLICENSED，未擅自授予 MIT 等使用授权。"
   ],
   "history": {
@@ -113,7 +112,7 @@
     "visibility": "public",
     "verified": true,
     "license": "UNLICENSED",
-    "readmeSha256": "9501397fab52b6ea3120c68689456bb8145a2a25b374df07bd4a0de584864248",
+    "readmeSha256": "6a3eb1bdf42dc7c9e1e33e8e1b4af68e5bb6d3f0393aa0623c45f00f7ab8f7a1",
     "historyScan": {
       "tool": "gitleaks",
       "version": "8.30.1",
@@ -141,5 +140,15 @@
       "failed": 0
     },
     "browserObserved": true
+  },
+  "readmePresentation": {
+    "date": "2026-10-18",
+    "baseCommit": "379989637b1af6e1aa6e351b629759a3655a1f30",
+    "hero": "assets/brand/zaobian-fanshibu/readme-hero.svg",
+    "heroSha256": "c3754283a5cc8fc0dcfe9520a0a5663ec834da4ab407af445c503216af4d4772",
+    "localVisualCheck": "verified",
+    "markdownRender": "GitHub GFM",
+    "collapsibleSections": 2,
+    "scope": "documentation_only"
   }
 }
