@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "scope": "repository_presentation",
+  "snapshotDate": "2026-10-18",
+  "revision": "PUBLIC-README-20261018",
+  "state": "REPOSITORY_PUBLIC_README_PREPARED",
+  "phase": "公开仓库与项目首页 · main 文档交付",
+  "title": "灶边饭事簿：公开仓库与新版 README",
+  "deliveryName": "仓库公开与 README 整理",
+  "sourceDocument": "docs/project-status.md",
+  "summary": "GitHub 已确认仓库公开；新版首页展示品牌、主线已有能力、技术栈、本地体验与许可边界。产品代码基线保持阶段 09A；其他工作树的合成产品探索未在本批合并。",
+  "authority": "依据用户 2026-10-18「把当前项目改成公开仓库，README 写好看一点」执行。本批授权为仓库可见性、项目展示及配套状态记录，不升级产品验收或开放真实使用。",
+  "handoff": {
+    "branch": "main",
+    "worktree": ".",
+    "brief": "README.md",
+    "codeBase": "23450a1f3508e8030d753748291d265ad308df05",
+    "designSource": "23450a1f3508e8030d753748291d265ad308df05",
+    "integration": "本批仅文档、品牌图与状态快照；主线阶段 09A 产品基线保持，其他本地工作树未合并。"
+  },
+  "repository": {
+    "main": "23450a1f3508e8030d753748291d265ad308df05",
+    "candidate": "23450a1f3508e8030d753748291d265ad308df05",
+    "remoteCode": "23450a1f3508e8030d753748291d265ad308df05",
+    "remoteDesign": "23450a1f3508e8030d753748291d265ad308df05",
+    "checkedAt": "2026-10-18",
+    "remoteNote": "以上为本批开始时核实的主线产品代码基线；文档交付另行提交。仓库 PUBLIC 与产品部署、食品数据激活分别记录。"
+  },
+  "implementationTask": {
+    "title": "公开仓库与 README 整理",
+    "status": "仓库公开已核实；文档与看板验证中",
+    "model": "本次 Codex 代理",
+    "effort": "未单独记录",
+    "worktree": ".",
+    "baseCommit": "23450a1f3508e8030d753748291d265ad308df05",
+    "candidateCommit": "23450a1f3508e8030d753748291d265ad308df05",
+    "url": "#checks"
+  },
+  "reviewTask": {
+    "title": "本批文档与公开范围集中自查",
+    "url": "#checks",
+    "status": "验证中；无独立阶段审查",
+    "model": "本次 Codex 代理",
+    "effort": "未单独记录",
+    "targetHead": "23450a1f3508e8030d753748291d265ad308df05",
+    "candidateCommit": "23450a1f3508e8030d753748291d265ad308df05",
+    "verdict": "PENDING",
+    "targetedReport": "docs/project-status.md"
+  },
+  "previousDelivery": {
+    "codeCommit": "23450a1f3508e8030d753748291d265ad308df05"
+  },
+  "coordinatorVerification": {
+    "candidateCommit": "23450a1f3508e8030d753748291d265ad308df05"
+  },
+  "capabilities": [
+    {
+      "name": "项目首页",
+      "status": "新版已准备",
+      "detail": "既有品牌图、定位、能力表、架构、启动步骤、开发验证、文档入口与 UNLICENSED 说明。"
+    },
+    {
+      "name": "公开仓库",
+      "status": "PUBLIC 已核实",
+      "detail": "GitHub 管理接口返回 isPrivate=false；覆盖远程已有分支和历史。本批未上传其他本地产品工作树。"
+    },
+    {
+      "name": "主线产品基线",
+      "status": "沿用阶段 09A 已验收范围",
+      "detail": "家庭、成员与档案、硬约束登记、批次库存和本地部署。推荐、采购、菜谱等独立分支探索不作为 main 已实现声明。"
+    }
+  ],
+  "gates": [
+    {
+      "name": "仓库可见性",
+      "status": "PASS",
+      "detail": "gh repo view 确认 aning0922/meal-agent-lab 的 isPrivate=false。"
+    },
+    {
+      "name": "公开内容扫描",
+      "status": "PASS（人工复核匹配项）",
+      "detail": "Gitleaks 8.30.1 检查远程所有 refs 的提交历史和当前跟踪文件。两次各 3 处匹配，均为合成安全反例或幂等测试键；未发现真实凭据。此为本批扫描范围。"
+    },
+    {
+      "name": "README 与发布文档",
+      "status": "待验证",
+      "detail": "核对链接、品牌图与声明；已有用户未提交的本机交接内容保持，不随本批提交。"
+    },
+    {
+      "name": "本地总控看板",
+      "status": "待验证",
+      "detail": "使用固定 Node.js 24.18.0，从本交付工作树 docs/project-status.json 复制、构建测试并重新加载 localhost:3000/#top。"
+    }
+  ],
+  "nextSteps": [
+    "完成 README 链接与渲染核对，仅提交本批文件到 main。",
+    "看板使用本交付快照；其他工作树的快照保留在原文件，不冒充本主线能力。",
+    "产品后续开发仍按各任务授权与安全边界推进。"
+  ],
+  "safety": [
+    "仓库公开只开放源码浏览，不等于产品部署、真实微信接入或对外发布。",
+    "本批没有食品规则或菜谱数据激活；合成 hard-check 不用于真实食品建议。",
+    "食品硬约束缺权威映射时保持 needs_structured_mapping；模型不能绕过。",
+    "原未提交 AGENTS、文档交接及其他品牌说明保持本地；本批只发布已选定的品牌头像。",
+    "公开许可保持 UNLICENSED，未擅自授予 MIT 等使用授权。"
+  ],
+  "history": {
+    "url": "/history",
+    "label": "查看 2026-09-12 历史看板（仅历史）"
+  },
+  "publication": {
+    "url": "https://github.com/aning0922/meal-agent-lab",
+    "visibility": "public",
+    "verified": true,
+    "license": "UNLICENSED",
+    "readmeSha256": "733def4aa14bca410ecfb1e535dd97ee5646f5fd7aeed259d35adb8580443e31",
+    "historyScan": {
+      "tool": "gitleaks",
+      "version": "8.30.1",
+      "commitsReported": 392,
+      "remoteRefs": 8,
+      "findings": 3,
+      "realCredentialFindings": 0
+    },
+    "trackedScan": {
+      "findings": 3,
+      "realCredentialFindings": 0
+    }
+  },
+  "dashboardVerification": {
+    "status": "pending",
+    "node": "24.18.0",
+    "source": "docs/project-status.json",
+    "url": "http://localhost:3000/#top"
+  }
+}
